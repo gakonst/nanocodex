@@ -100,6 +100,54 @@ and 35 seconds of Harbor runtime. It used 24,186 input tokens (17,712 cached),
 4,546 cache-write tokens, and 1,086 output tokens. The benchmark task and
 verifier were not modified.
 
+## Milestone 1.1: runtime cleanup
+
+Status: planned. Complete this before eval-driven tuning. Reduce production
+surface area while preserving the working OpenAI/Harbor vertical slice; avoid
+new framework layers whose main effect is moving code around.
+
+1. Delete the `phase0` and `fix_git` modes, their CLI/config dispatch, and the
+   synchronous shell path used only by the positive control. Model execution
+   becomes the only runtime path.
+2. Construct a fully configured model client in `main`. Required API and model
+   configuration is validated at construction and stored directly on the
+   client, rather than represented as `Option` and checked again during the
+   run. Keep `eyre` for top-level error reporting.
+3. Give the model run an owning struct and `impl` block. It owns the client
+   session, event writer, task context, timing, and run statistics; helpers use
+   that state instead of threading long argument lists and mutable statistics
+   references through free functions.
+4. Keep contractual JSONL events separate from diagnostic tracing. Use typed
+   protocol events at the repeated wire boundary, but use compact `json!`
+   values for one-off static tool schemas where dedicated serde types only add
+   lines. Do not add event buses, channels, collector traits, or shared mutable
+   statistics.
+5. Expose only the tool fields the harness implements. Remove ignored or
+   compatibility-only schema fields, including `yield_time_ms` and `tty`, rather
+   than modeling Codex features that this runtime does not support.
+6. Collapse redundant model-stream state and processing: consume completed
+   output once, remove unread response state and unused error variants, move
+   owned function calls into concurrent execution instead of cloning them, and
+   remove `Result` layers from operations whose expected failures are already
+   represented as tool outcomes.
+7. Replace post-hoc command-output truncation with bounded collection while the
+   subprocess runs. Preserve useful truncation metadata without retaining
+   unbounded stdout or stderr, and adopt Codex's process-group/parent-death
+   cleanup pattern so timeout or cancellation also cleans up descendants.
+8. Consolidate repeated defensive bookkeeping where the runtime already has a
+   hard invariant: sample terminal duration once, avoid silent saturating
+   counters, and eliminate validation repeated by constructed types.
+
+Validation for this cleanup is `cargo fmt`, Clippy with warnings denied, a real
+native `just run`, and a real `just eval`. Inspect the JSONL stream, Harbor
+result, trajectory, verifier output, long-output truncation behavior, and
+timeout cleanup. Do not add unit tests in this milestone.
+
+Gate: the model-only path retains the canonical reward and exactly one terminal
+event per accepted request, long command output remains memory-bounded,
+timed-out commands leave no descendant processes, and the cleanup produces a
+material net reduction in Rust LOC.
+
 ## Milestone 2: eval-driven tuning
 
 Use Harbor as the runner and result store. Establish a fixed Terminal-Bench
@@ -129,3 +177,11 @@ existing UI only if it cleanly exposes trace links; keep the CLI as the control.
 - Approval and policy machinery.
 - Durable replay, a parallel journal, or content-addressed artifact storage.
 - Large mock-heavy unit-test suites ahead of working end-to-end behavior.
+- Unit tests for the current runtime cleanup; rely on the real run/eval gates
+  until a demonstrated regression justifies a focused deterministic test.
+- Improving the environment-secret-name heuristic.
+- Preserving byte-exact inbound WebSocket frames instead of parsed and
+  reserialized API events.
+- Removing duplicate derived assistant/reasoning delta events or otherwise
+  reducing event volume; first establish which representation the ATIF adapter
+  should consume.
