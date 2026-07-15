@@ -10,6 +10,7 @@ agents:
     kwargs:
       effort: low
       max_model_calls: 32
+      compact_threshold: 350000
 
 datasets:
   - name: terminal-bench/terminal-bench-2

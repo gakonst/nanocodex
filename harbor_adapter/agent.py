@@ -45,6 +45,7 @@ class HarnessAgent(BaseInstalledAgent):
         model_name: str | None = None,
         effort: str = "low",
         max_model_calls: int = 32,
+        compact_threshold: int = 350_000,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
@@ -52,6 +53,7 @@ class HarnessAgent(BaseInstalledAgent):
         self._model = self._api_model_name(model_name)
         self._effort = effort
         self._max_model_calls = max_model_calls
+        self._compact_threshold = compact_threshold
 
     @staticmethod
     def name() -> str:
@@ -99,6 +101,8 @@ class HarnessAgent(BaseInstalledAgent):
             self._effort,
             "--max-model-calls",
             str(self._max_model_calls),
+            "--compact-threshold",
+            str(self._compact_threshold),
         ]
         command = (
             " ".join(shlex.quote(argument) for argument in arguments)
@@ -141,6 +145,8 @@ class HarnessAgent(BaseInstalledAgent):
         tool_calls = sum(event["type"] == "tool.call" for event in events)
         usage = terminal_payload.get("usage")
         usage = usage if isinstance(usage, dict) else {}
+        warmup_usage = terminal_payload.get("warmup_usage")
+        warmup_usage = warmup_usage if isinstance(warmup_usage, dict) else {}
         input_tokens = self._optional_int(usage.get("input_tokens"))
         cached_tokens = self._optional_int(usage.get("cached_input_tokens"))
         output_tokens = self._optional_int(usage.get("output_tokens"))
@@ -202,6 +208,10 @@ class HarnessAgent(BaseInstalledAgent):
                             "model_duration_ns": terminal_payload.get(
                                 "model_duration_ns"
                             ),
+                            "warmup_duration_ns": terminal_payload.get(
+                                "warmup_duration_ns"
+                            ),
+                            "warmup_usage": warmup_usage,
                             "tool_work_duration_ns": terminal_payload.get(
                                 "tool_work_duration_ns"
                             ),
@@ -231,6 +241,8 @@ class HarnessAgent(BaseInstalledAgent):
                     "tool_calls": tool_calls,
                     "duration_ns": terminal_payload.get("duration_ns"),
                     "model_duration_ns": terminal_payload.get("model_duration_ns"),
+                    "warmup_duration_ns": terminal_payload.get("warmup_duration_ns"),
+                    "warmup_usage": warmup_usage,
                     "tool_work_duration_ns": terminal_payload.get(
                         "tool_work_duration_ns"
                     ),
@@ -265,6 +277,8 @@ class HarnessAgent(BaseInstalledAgent):
             "duration_ms": terminal_payload.get("duration_ms"),
             "duration_ns": terminal_payload.get("duration_ns"),
             "model_duration_ns": terminal_payload.get("model_duration_ns"),
+            "warmup_duration_ns": terminal_payload.get("warmup_duration_ns"),
+            "warmup_usage": warmup_usage,
             "tool_work_duration_ns": terminal_payload.get("tool_work_duration_ns"),
             "tool_wall_duration_ns": terminal_payload.get("tool_wall_duration_ns"),
             "reasoning_output_tokens": usage.get("reasoning_output_tokens"),

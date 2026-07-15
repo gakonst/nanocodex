@@ -28,6 +28,7 @@ pub struct ModelConfig {
     pub effort: ReasoningEffort,
     pub websocket_url: String,
     pub max_model_calls: u32,
+    pub compact_threshold: u64,
 }
 
 #[derive(Clone, Copy, Default, ValueEnum)]
@@ -79,9 +80,11 @@ struct RunStats {
     model_calls: u32,
     tool_calls: u32,
     model_duration_ns: u64,
+    warmup_duration_ns: u64,
     tool_work_duration_ns: u64,
     tool_wall_duration_ns: u64,
     usage: UsageTotals,
+    warmup_usage: UsageTotals,
     last_response_id: Option<String>,
 }
 
@@ -146,10 +149,12 @@ fn terminal_payload<'a>(
         duration_ms: duration_ms(elapsed),
         duration_ns: duration_ns(elapsed),
         model_duration_ns: metrics.model_duration_ns,
+        warmup_duration_ns: metrics.warmup_duration_ns,
         tool_work_duration_ns: metrics.tool_work_duration_ns,
         tool_wall_duration_ns: metrics.tool_wall_duration_ns,
         last_response_id: metrics.last_response_id.as_deref(),
         usage: &metrics.usage,
+        warmup_usage: &metrics.warmup_usage,
         cost_usd: None,
         cost_status: COST_STATUS,
     }
@@ -165,6 +170,7 @@ struct RunStarted<'a> {
     workspace: Option<&'a str>,
     instruction_bytes: usize,
     max_model_calls: u32,
+    compact_threshold: u64,
 }
 
 #[derive(Serialize)]
@@ -188,10 +194,12 @@ struct TerminalPayload<'a> {
     duration_ms: u64,
     duration_ns: u64,
     model_duration_ns: u64,
+    warmup_duration_ns: u64,
     tool_work_duration_ns: u64,
     tool_wall_duration_ns: u64,
     last_response_id: Option<&'a str>,
     usage: &'a UsageTotals,
+    warmup_usage: &'a UsageTotals,
     cost_usd: Option<f64>,
     cost_status: &'static str,
 }
