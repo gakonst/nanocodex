@@ -19,7 +19,7 @@ const COST_STATUS: &str = "not_reported_by_responses_api";
 /// OpenAI-specific settings for the deliberately single-provider harness.
 pub struct ModelConfig {
     pub model: String,
-    pub api_key: Option<String>,
+    pub api_key: String,
     pub effort: ReasoningEffort,
     pub websocket_url: String,
     pub max_model_calls: u32,

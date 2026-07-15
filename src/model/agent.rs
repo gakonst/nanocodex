@@ -97,7 +97,6 @@ pub(super) async fn run<W: Write>(
     config: &ModelConfig,
     run_stats: &mut RunStats,
 ) -> Result<String> {
-    validate_config(config)?;
     let mut socket = connect(events, config).await?;
     let mut input = super::wire::initial_input(task, workspace);
     let mut previous_response_id: Option<String> = None;
@@ -143,29 +142,6 @@ pub(super) async fn run<W: Write>(
     .into())
 }
 
-fn validate_config(config: &ModelConfig) -> Result<()> {
-    if config
-        .api_key
-        .as_deref()
-        .is_none_or(|value| value.trim().is_empty())
-    {
-        return Err(HarnessError::Configuration(
-            "OPENAI_API_KEY or --api-key is required in model mode".to_owned(),
-        ));
-    }
-    if config.model.trim().is_empty() {
-        return Err(HarnessError::Configuration(
-            "model must not be empty".to_owned(),
-        ));
-    }
-    if config.max_model_calls == 0 {
-        return Err(HarnessError::Configuration(
-            "max_model_calls must be at least 1".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 async fn connect<W: Write>(
     events: &mut EventWriter<W>,
     config: &ModelConfig,
@@ -178,10 +154,8 @@ async fn connect<W: Write>(
             websocket_url: display_endpoint(&config.websocket_url),
         },
     )?;
-    let api_key = config.api_key.as_deref().ok_or_else(|| {
-        HarnessError::Configuration("OPENAI_API_KEY or --api-key is required".to_owned())
-    })?;
-    let (socket, metadata) = ResponsesSocket::connect(&config.websocket_url, api_key).await?;
+    let (socket, metadata) =
+        ResponsesSocket::connect(&config.websocket_url, &config.api_key).await?;
     events.emit(
         "model.connection.completed",
         ConnectionCompleted {

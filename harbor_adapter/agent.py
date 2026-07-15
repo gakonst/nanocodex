@@ -42,7 +42,6 @@ class HarnessAgent(BaseInstalledAgent):
         self,
         logs_dir: Path,
         binary_path: str | Path = ".harness/installed/harness",
-        mode: str = "phase0",
         model_name: str | None = None,
         effort: str = "low",
         max_model_calls: int = 32,
@@ -50,7 +49,6 @@ class HarnessAgent(BaseInstalledAgent):
     ) -> None:
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
         self._binary_path = Path(binary_path).resolve()
-        self._mode = mode
         self._model = self._api_model_name(model_name)
         self._effort = effort
         self._max_model_calls = max_model_calls
@@ -95,8 +93,6 @@ class HarnessAgent(BaseInstalledAgent):
         arguments = [
             self._BINARY,
             "run",
-            "--mode",
-            self._mode,
             "--model",
             self._model,
             "--effort",

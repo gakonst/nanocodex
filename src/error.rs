@@ -106,9 +106,6 @@ pub enum HarnessError {
     #[error("failed to write stdout event")]
     WriteOutput(#[source] io::Error),
 
-    #[error("invalid runtime configuration: {0}")]
-    Configuration(String),
-
     #[error(transparent)]
     Responses(#[from] ResponsesError),
 

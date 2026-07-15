@@ -1,8 +1,8 @@
 use std::io;
 
 use clap::{Parser, Subcommand};
-use eyre::Result;
-use harness::{Mode, ModelConfig, ReasoningEffort, RunConfig};
+use eyre::{Result, ensure, eyre};
+use harness::{ModelConfig, ReasoningEffort};
 
 #[derive(Parser)]
 #[command(version, about = "A Harbor-first OpenAI coding harness")]
@@ -15,10 +15,7 @@ struct Cli {
 enum Command {
     /// Read one task request from stdin and stream JSONL events to stdout.
     Run {
-        #[arg(long, value_enum, default_value_t)]
-        mode: Mode,
-
-        /// `OpenAI` model used by model mode.
+        /// `OpenAI` model used for the run.
         #[arg(long, env = "OPENAI_MODEL", default_value = "gpt-5.6-sol")]
         model: String,
 
@@ -26,7 +23,7 @@ enum Command {
         #[arg(long, env = "OPENAI_API_KEY", hide_env_values = true)]
         api_key: Option<String>,
 
-        /// Reasoning effort used by model mode.
+        /// Reasoning effort used by the model.
         #[arg(long, value_enum, env = "OPENAI_REASONING_EFFORT", default_value_t)]
         effort: ReasoningEffort,
 
@@ -48,22 +45,27 @@ enum Command {
 async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Run {
-            mode,
             model,
             api_key,
             effort,
             websocket_url,
             max_model_calls,
         } => {
-            let config = RunConfig {
-                mode,
-                model: ModelConfig {
-                    model,
-                    api_key,
-                    effort,
-                    websocket_url,
-                    max_model_calls,
-                },
+            ensure!(!model.trim().is_empty(), "model must not be empty");
+            ensure!(
+                !websocket_url.trim().is_empty(),
+                "Responses WebSocket URL must not be empty"
+            );
+            ensure!(max_model_calls > 0, "max-model-calls must be at least 1");
+            let api_key = api_key
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| eyre!("OPENAI_API_KEY or --api-key is required"))?;
+            let config = ModelConfig {
+                model,
+                api_key,
+                effort,
+                websocket_url,
+                max_model_calls,
             };
             harness::run(io::stdin().lock(), io::stdout().lock(), config).await?;
         }

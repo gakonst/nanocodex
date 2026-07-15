@@ -8,7 +8,6 @@ agents:
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     kwargs:
-      mode: model
       effort: low
       max_model_calls: 32
 
