@@ -76,6 +76,36 @@ use the eval loop continuously.
 - The registry's first task, `make-mips-interpreter`, is a bad verifier canary.
   Its cold run was stopped at 157.5 seconds after the verifier alone exceeded a
   minute.
+- The implemented local Rust loop takes about 0.14 seconds warm.
+- Before teardown tuning, the implemented external-agent Harbor probe took
+  about 16.7 seconds warm and a full no-model `fix-git` canary took 26–35
+  seconds depending on cache state.
+- Profiling identified Docker Compose's ten-second stop grace period as dead
+  time: Harbor's `sh -c "sleep infinity"` keepalive does not forward SIGTERM.
+  A runtime-only Compose overlay removes that wait after verification and
+  artifact capture. Two measured full canaries fell from 26.1 seconds to
+  13.6–14.9 seconds; 10.5–11.2 seconds of the remainder is the task's real
+  verifier. The verifier-free probe fell to 4.0 seconds.
+- Inspection showed that nearly all verifier time was dependency bootstrap:
+  `apt-get update`, installing curl, downloading uv, and resolving pytest on
+  every fresh container; the two assertions themselves take about 0.1 seconds.
+  The warm local eval therefore uses a derived image with those exact pinned
+  dependencies baked once and a generated task copy whose `test_outputs.py`
+  remains byte-identical. `just harbor-eval-canonical` retains the untouched
+  downloaded task as the parity gate. Two warm local samples took 6.7 and 7.2
+  seconds wall; verifier execution fell to 1.58–1.63 seconds, including about
+  0.11 seconds for the assertions themselves.
+- A command-level trace then found 18 Docker subprocesses consuming 4.5
+  seconds. Harbor was issuing Linux bind-mount ownership repairs on macOS,
+  probing the daemon twice, validating the original image even though the
+  local overlay replaces it, and removing a Compose project before assigning
+  it a fresh random name. A Darwin-only local Docker environment removes those
+  inapplicable checks while retaining fresh-container isolation. Rebuilding the
+  pinned 20KB task context for the native daemon architecture also removes
+  amd64 emulation from the warm path. Five final samples took 2.84–3.07 seconds
+  wall (2.91-second median); the median Harbor trial was 2.48 seconds: 0.99
+  seconds for container setup, 0.05 for the harness, 0.99 for verifier
+  upload/execution/CTRF, and 0.38 for cleanup.
 
 These numbers imply three CLI speeds:
 
@@ -84,8 +114,9 @@ These numbers imply three CLI speeds:
 2. `just harbor-probe`: run one pinned, locally cached Terminal-Bench task
    through the external adapter with verification disabled. This validates the
    real Harbor/container/tool boundary without paying a task verifier.
-3. `just harbor-eval`: run the same task through a fresh Harbor trial with its
-   real verifier. This is the integration gate, not the per-line edit loop.
+3. `just harbor-eval`: run the same task through a fresh Harbor trial with the
+   canonical assertions and pre-baked verifier dependencies. Use
+   `just harbor-eval-canonical` periodically as the untouched parity gate.
 
 Harbor is installed once into the repository virtualenv and invoked directly;
 the inner loop must not use `uv run`. Telemetry is disabled for local timing.
@@ -148,6 +179,10 @@ Rules:
   interchange format; it is not duplicated by a second local journal schema.
 
 ## Phase 0: prove the CLI loop
+
+Status: complete on 2026-07-15. The local stream, cached Harbor probe, real
+`fix-git` verifier, complete ATIF trajectory, and timeout/incomplete-trajectory
+recovery paths have all been exercised end to end.
 
 Deliver only enough code to exercise the architecture:
 

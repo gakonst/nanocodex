@@ -1,0 +1,6 @@
+services:
+  main:
+    image: harness/fix-git-verifier:20251031-local-v2
+    # See fast-stop.compose.yaml. Verification and artifact capture have
+    # already completed when Compose stops this keepalive container.
+    stop_grace_period: 0s

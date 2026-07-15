@@ -1,0 +1,6 @@
+services:
+  main:
+    # Harbor's keepalive is `sh -c "sleep infinity"`; the shell does not
+    # forward SIGTERM, so Compose otherwise waits its default ten seconds.
+    # Harbor has already collected artifacts and run the verifier at teardown.
+    stop_grace_period: 0s
