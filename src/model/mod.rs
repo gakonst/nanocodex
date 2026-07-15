@@ -2,7 +2,11 @@ mod agent;
 mod stream;
 mod wire;
 
-use std::{io::Write, path::PathBuf, time::Instant};
+use std::{
+    io::Write,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use clap::ValueEnum;
 use serde::Serialize;
@@ -48,7 +52,7 @@ impl ReasoningEffort {
 }
 
 #[allow(clippy::struct_field_names)]
-#[derive(Clone, Default, Serialize)]
+#[derive(Default, Serialize)]
 struct UsageTotals {
     input_tokens: u64,
     cached_input_tokens: u64,
@@ -60,18 +64,12 @@ struct UsageTotals {
 
 impl UsageTotals {
     fn add(&mut self, usage: &Usage) {
-        self.input_tokens = self.input_tokens.saturating_add(usage.input_tokens);
-        self.cached_input_tokens = self
-            .cached_input_tokens
-            .saturating_add(usage.input_tokens_details.cached_tokens);
-        self.cache_write_input_tokens = self
-            .cache_write_input_tokens
-            .saturating_add(usage.input_tokens_details.cache_write_tokens);
-        self.output_tokens = self.output_tokens.saturating_add(usage.output_tokens);
-        self.reasoning_output_tokens = self
-            .reasoning_output_tokens
-            .saturating_add(usage.output_tokens_details.reasoning_tokens);
-        self.total_tokens = self.total_tokens.saturating_add(usage.total_tokens);
+        self.input_tokens += usage.input_tokens;
+        self.cached_input_tokens += usage.input_tokens_details.cached_tokens;
+        self.cache_write_input_tokens += usage.input_tokens_details.cache_write_tokens;
+        self.output_tokens += usage.output_tokens;
+        self.reasoning_output_tokens += usage.output_tokens_details.reasoning_tokens;
+        self.total_tokens += usage.total_tokens;
     }
 }
 
@@ -96,7 +94,6 @@ struct ModelResponse {
     time_to_first_output_ns: Option<u64>,
 }
 
-#[derive(Clone)]
 struct FunctionCall {
     call_id: String,
     name: String,
@@ -109,46 +106,7 @@ pub(crate) async fn run<W: Write>(
     task: &Task,
     config: &ModelConfig,
 ) -> Result<()> {
-    let started_at = Instant::now();
-    let mut run_stats = RunStats::default();
-    let workspace = resolve_workspace(task.workspace.as_deref());
-    let reported_workspace = workspace.as_deref().ok().or(task.workspace.as_deref());
-    events.emit(
-        "run.started",
-        RunStarted {
-            mode: "openai_model",
-            model: &config.model,
-            effort: config.effort.as_str(),
-            transport: TRANSPORT,
-            websocket_url: display_endpoint(&config.websocket_url),
-            workspace: reported_workspace,
-            instruction_bytes: task.instruction.len(),
-            max_model_calls: config.max_model_calls,
-        },
-    )?;
-
-    let outcome = match workspace {
-        Ok(workspace) => agent::run(events, task, &workspace, config, &mut run_stats).await,
-        Err(error) => Err(error),
-    };
-    match outcome {
-        Ok(message) => {
-            events.emit("assistant.message", AssistantMessage { text: &message })?;
-            events.emit(
-                "run.completed",
-                terminal_payload("completed", started_at, config, &run_stats),
-            )
-        }
-        Err(error) => {
-            let message = error.to_string();
-            events.emit("run.error", RunError { message: &message })?;
-            events.emit(
-                "run.failed",
-                terminal_payload("failed", started_at, config, &run_stats),
-            )?;
-            Err(error)
-        }
-    }
+    agent::ModelRun::new(events, task, config).execute().await
 }
 
 fn resolve_workspace(requested: Option<&str>) -> Result<String> {
@@ -172,7 +130,7 @@ fn resolve_workspace(requested: Option<&str>) -> Result<String> {
 
 fn terminal_payload<'a>(
     terminal_status: &'static str,
-    started_at: Instant,
+    elapsed: Duration,
     config: &'a ModelConfig,
     metrics: &'a RunStats,
 ) -> TerminalPayload<'a> {
@@ -183,8 +141,8 @@ fn terminal_payload<'a>(
         transport: TRANSPORT,
         model_calls: metrics.model_calls,
         tool_calls: metrics.tool_calls,
-        duration_ms: elapsed_ms(started_at),
-        duration_ns: elapsed_ns(started_at),
+        duration_ms: duration_ms(elapsed),
+        duration_ns: duration_ns(elapsed),
         model_duration_ns: metrics.model_duration_ns,
         tool_duration_ns: metrics.tool_duration_ns,
         last_response_id: metrics.last_response_id.as_deref(),
@@ -234,12 +192,16 @@ struct TerminalPayload<'a> {
     cost_status: &'static str,
 }
 
-fn elapsed_ms(started_at: Instant) -> u64 {
-    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn elapsed_ns(started_at: Instant) -> u64 {
-    u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    duration_ns(started_at.elapsed())
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn display_endpoint(endpoint: &str) -> &str {
