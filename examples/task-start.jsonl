@@ -1,1 +1,1 @@
-{"protocol_version":1,"request_id":"local-phase0","seq":1,"type":"task.start","payload":{"instruction":"Inspect the task workspace and explain what you would do next.","workspace":"/app"}}
+{"protocol_version":1,"request_id":"local-ptc-smoke","seq":1,"type":"task.start","payload":{"instruction":"Use the available programmatic tool to run pwd exactly once without modifying anything, then report the path.","workspace":"."}}

@@ -5,7 +5,11 @@ use std::{io::Write, time::Instant};
 
 use clap::ValueEnum;
 
-use crate::protocol::{EventWriter, Task};
+use crate::{
+    Result,
+    model::{self, ModelConfig},
+    protocol::{EventWriter, Task},
+};
 
 #[derive(Clone, Copy, Default, ValueEnum)]
 pub enum Mode {
@@ -14,16 +18,20 @@ pub enum Mode {
     Phase0,
     /// Known-positive control for Terminal-Bench's fix-git task.
     FixGitCheat,
+    /// Run the task through `OpenAI`'s Responses API and local tools.
+    Model,
 }
 
-pub(crate) fn run<W: Write>(
+pub(crate) async fn run<W: Write>(
     mode: Mode,
     events: &mut EventWriter<W>,
     task: &Task,
-) -> Result<(), String> {
+    model_config: &ModelConfig,
+) -> Result<()> {
     match mode {
         Mode::Phase0 => phase0::run(events, task),
         Mode::FixGitCheat => fix_git::run(events, task),
+        Mode::Model => model::run(events, task, model_config).await,
     }
 }
 

@@ -15,9 +15,9 @@ bootstrap:
     uv sync --frozen
     cargo fetch --locked
 
-# Tight inner loop: native host process, JSONL stdin/stdout, no Harbor or Docker.
+# Tight inner loop: native PTC-only model process, no Harbor or Docker.
 run:
-    @cargo run --quiet -- run < examples/task-start.jsonl
+    @cargo run --quiet -- run --mode=model --model=gpt-5.6-sol --effort=low < examples/task-start.jsonl
 
 # Build a static Linux executable for the Docker daemon's native architecture.
 # This is a native container build, not an amd64 cross-compile on Apple Silicon.

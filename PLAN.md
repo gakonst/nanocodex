@@ -76,23 +76,29 @@ source-edit measurements.
 
 ## Milestone 1: OpenAI execution
 
-1. Call the Responses API from Rust and preserve its raw event stream.
-2. Target the current frontier coding model directly; do not add a provider
-   interface.
-3. Start with familiar shell and patch/file-edit tool shapes. Rust executes
-   local tools inside the Harbor container.
-4. Compare standard tool calls with programmatic tool calling/code mode on the
-   same tasks; use programmatic calls for bounded parallel work when they win.
+Status: first real model/tool vertical slice complete.
+
+1. Call the Responses API WebSocket endpoint from Rust and preserve every raw
+   inbound and outbound API event.
+2. Target `gpt-5.6-sol` directly; do not add a provider interface.
+3. Expose shell exclusively through hosted Programmatic Tool Calling. Do not
+   provide a direct function-call fallback or run generated JavaScript locally.
+4. Preserve program caller linkage, execute independent nested calls
+   concurrently, and return typed structured outputs to the hosted runtime.
 5. Prefer server-managed conversation state, compaction, prompt caching, and
    hosted multi-agent orchestration where the current API supports them.
 6. Keep stable instructions/tools in the cacheable prefix and task-specific
    content late. Record model, effort, cache, tokens, cost, latency, tools,
    retries, and compactions in JSONL/ATIF.
-7. Compare HTTP streaming and WebSocket transport on the real tool loop rather
-   than introducing both permanently.
 
 Gate: at least one Terminal-Bench task completes with a real OpenAI-driven tool
 loop, canonical reward, raw API events, and trustworthy usage/timing metadata.
+
+Gate achieved twice on Terminal-Bench `fix-git`. The final regression run earned
+reward `1.0` with 9 model calls, 8 PTC shell calls, 29.5 seconds inside Rust,
+and 35 seconds of Harbor runtime. It used 24,186 input tokens (17,712 cached),
+4,546 cache-write tokens, and 1,086 output tokens. The benchmark task and
+verifier were not modified.
 
 ## Milestone 2: eval-driven tuning
 

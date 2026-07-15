@@ -1,11 +1,13 @@
 use std::io::{BufRead, Write};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+use crate::{HarnessError, Result};
 
 const VERSION: u32 = 1;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InputEnvelope {
     protocol_version: u32,
     request_id: String,
@@ -16,13 +18,14 @@ struct InputEnvelope {
 }
 
 #[derive(Serialize)]
-struct OutputEnvelope<'a> {
+struct OutputEnvelope<'a, P> {
+    // is this neeedd?
     protocol_version: u32,
     request_id: &'a str,
     seq: u64,
     #[serde(rename = "type")]
     kind: &'a str,
-    payload: Value,
+    payload: P,
 }
 
 pub(crate) struct TaskRequest {
@@ -31,6 +34,7 @@ pub(crate) struct TaskRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Task {
     pub(crate) instruction: String,
     #[serde(default)]
@@ -52,7 +56,7 @@ impl<W: Write> EventWriter<W> {
         }
     }
 
-    pub(crate) fn emit(&mut self, kind: &str, payload: Value) -> Result<(), String> {
+    pub(crate) fn emit<P: Serialize>(&mut self, kind: &str, payload: P) -> Result<()> {
         let envelope = OutputEnvelope {
             protocol_version: VERSION,
             request_id: &self.request_id,
@@ -60,48 +64,54 @@ impl<W: Write> EventWriter<W> {
             kind,
             payload,
         };
-        serde_json::to_writer(&mut self.output, &envelope)
-            .map_err(|error| format!("failed to encode stdout event: {error}"))?;
+        serde_json::to_writer(&mut self.output, &envelope).map_err(HarnessError::EncodeOutput)?;
         self.output
             .write_all(b"\n")
             .and_then(|()| self.output.flush())
-            .map_err(|error| format!("failed to flush stdout event: {error}"))?;
+            .map_err(HarnessError::WriteOutput)?;
         self.next_seq += 1;
         Ok(())
     }
 }
 
-pub(crate) fn read_task_start(mut input: impl BufRead) -> Result<TaskRequest, String> {
+pub(crate) fn read_task_start(mut input: impl BufRead) -> Result<TaskRequest> {
     let mut line = String::new();
     loop {
         line.clear();
         let bytes_read = input
             .read_line(&mut line)
-            .map_err(|error| format!("failed to read stdin: {error}"))?;
+            .map_err(HarnessError::ReadInput)?;
         if bytes_read == 0 {
-            return Err("stdin ended before task.start".to_owned());
+            return Err(HarnessError::InvalidRequest(
+                "stdin ended before task.start".to_owned(),
+            ));
         }
         if !line.trim().is_empty() {
             break;
         }
     }
 
-    let request: InputEnvelope =
-        serde_json::from_str(&line).map_err(|error| format!("invalid input JSONL: {error}"))?;
+    let request: InputEnvelope = serde_json::from_str(&line).map_err(HarnessError::DecodeInput)?;
     if request.protocol_version != VERSION {
-        return Err(format!(
+        return Err(HarnessError::InvalidRequest(format!(
             "unsupported protocol_version {}; expected {VERSION}",
             request.protocol_version
-        ));
+        )));
     }
     if request.request_id.trim().is_empty() {
-        return Err("request_id must not be empty".to_owned());
+        return Err(HarnessError::InvalidRequest(
+            "request_id must not be empty".to_owned(),
+        ));
     }
     if request.seq != 1 || request.kind != "task.start" {
-        return Err("first input event must be task.start with seq 1".to_owned());
+        return Err(HarnessError::InvalidRequest(
+            "first input event must be task.start with seq 1".to_owned(),
+        ));
     }
     if request.payload.instruction.trim().is_empty() {
-        return Err("task.start instruction must not be empty".to_owned());
+        return Err(HarnessError::InvalidRequest(
+            "task.start instruction must not be empty".to_owned(),
+        ));
     }
     Ok(TaskRequest {
         request_id: request.request_id,

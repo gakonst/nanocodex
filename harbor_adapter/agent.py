@@ -12,7 +12,16 @@ from uuid import uuid4
 from harbor.agents.installed.base import BaseInstalledAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
-from harbor.models.trajectories import Agent, Step, Trajectory
+from harbor.models.trajectories import (
+    Agent,
+    FinalMetrics,
+    Metrics,
+    Observation,
+    ObservationResult,
+    Step,
+    ToolCall,
+    Trajectory,
+)
 from harbor.utils.trajectory_utils import format_trajectory_json
 
 
@@ -34,11 +43,17 @@ class HarnessAgent(BaseInstalledAgent):
         logs_dir: Path,
         binary_path: str | Path = ".harness/installed/harness",
         mode: str = "phase0",
+        model_name: str | None = None,
+        effort: str = "low",
+        max_model_calls: int = 32,
         **kwargs: Any,
     ) -> None:
-        super().__init__(logs_dir=logs_dir, **kwargs)
+        super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
         self._binary_path = Path(binary_path).resolve()
         self._mode = mode
+        self._model = self._api_model_name(model_name)
+        self._effort = effort
+        self._max_model_calls = max_model_calls
 
     @staticmethod
     def name() -> str:
@@ -68,7 +83,7 @@ class HarnessAgent(BaseInstalledAgent):
             "request_id": str(self.context_id or self.session_id or uuid4()),
             "seq": 1,
             "type": "task.start",
-            "payload": {"instruction": instruction, "workspace": "/app"},
+            "payload": {"instruction": instruction},
         }
         input_path = self.logs_dir / "input.jsonl"
         input_path.write_text(
@@ -77,11 +92,23 @@ class HarnessAgent(BaseInstalledAgent):
         if not environment.capabilities.mounted:
             await environment.upload_file(input_path, self._INPUT)
 
+        arguments = [
+            self._BINARY,
+            "run",
+            "--mode",
+            self._mode,
+            "--model",
+            self._model,
+            "--effort",
+            self._effort,
+            "--max-model-calls",
+            str(self._max_model_calls),
+        ]
         command = (
-            f"{self._BINARY} run --mode {shlex.quote(self._mode)} "
-            f"< {self._INPUT} 2> {self._STDERR} | tee {self._EVENTS}"
+            " ".join(shlex.quote(argument) for argument in arguments)
+            + f" < {self._INPUT} 2> {self._STDERR} | tee {self._EVENTS}"
         )
-        result = await self.exec_as_agent(environment, command, cwd="/app")
+        result = await self.exec_as_agent(environment, command)
         if result.stdout:
             print(result.stdout, end="", flush=True)
         if result.stderr:
@@ -105,12 +132,31 @@ class HarnessAgent(BaseInstalledAgent):
             ):
                 raise RuntimeError(f"invalid harness event at sequence {seq}")
 
-        terminal = next(
-            (event for event in events if event["type"] in TERMINAL_EVENTS), None
-        )
-        terminal_payload = terminal["payload"] if terminal else {}
+        terminals = [event for event in events if event["type"] in TERMINAL_EVENTS]
+        if len(terminals) != 1:
+            raise RuntimeError(
+                f"expected exactly one terminal event, found {len(terminals)}"
+            )
+        terminal = terminals[0]
+        if terminal["seq"] != events[-1]["seq"]:
+            raise RuntimeError("the terminal event must be the final event")
+        terminal_payload = terminal["payload"]
         model_calls = terminal_payload.get("model_calls", 0)
         tool_calls = sum(event["type"] == "tool.call" for event in events)
+        usage = terminal_payload.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        input_tokens = self._optional_int(usage.get("input_tokens"))
+        cached_tokens = self._optional_int(usage.get("cached_input_tokens"))
+        output_tokens = self._optional_int(usage.get("output_tokens"))
+        cost_usd = self._optional_float(terminal_payload.get("cost_usd"))
+        reasoning = "".join(
+            event["payload"].get("text", "")
+            for event in events
+            if event["type"] == "reasoning.summary.delta"
+            and isinstance(event["payload"].get("text"), str)
+        )
+        atif_tool_calls = self._atif_tool_calls(events)
+        observations = self._atif_observations(events, atif_tool_calls)
         message = next(
             (
                 event["payload"].get("text", "")
@@ -122,7 +168,12 @@ class HarnessAgent(BaseInstalledAgent):
 
         trajectory = Trajectory(
             session_id=request_id,
-            agent=Agent(name=self.name(), version=self.version()),
+            agent=Agent(
+                name=self.name(),
+                version=self.version() or "unknown",
+                model_name=terminal_payload.get("model"),
+                extra={"transport": terminal_payload.get("transport")},
+            ),
             steps=[
                 Step(
                     step_id=1,
@@ -133,29 +184,155 @@ class HarnessAgent(BaseInstalledAgent):
                     step_id=2,
                     source="agent",
                     message=message,
+                    model_name=terminal_payload.get("model"),
+                    reasoning_effort=terminal_payload.get("effort"),
+                    reasoning_content=reasoning or None,
+                    tool_calls=atif_tool_calls or None,
+                    observation=(
+                        Observation(results=observations) if observations else None
+                    ),
+                    metrics=Metrics(
+                        prompt_tokens=input_tokens,
+                        completion_tokens=output_tokens,
+                        cached_tokens=cached_tokens,
+                        cost_usd=cost_usd,
+                        extra={
+                            "cache_write_input_tokens": usage.get(
+                                "cache_write_input_tokens"
+                            ),
+                            "reasoning_output_tokens": usage.get(
+                                "reasoning_output_tokens"
+                            ),
+                            "model_duration_ns": terminal_payload.get(
+                                "model_duration_ns"
+                            ),
+                            "tool_duration_ns": terminal_payload.get(
+                                "tool_duration_ns"
+                            ),
+                        },
+                    )
+                    if model_calls
+                    else None,
                     llm_call_count=model_calls,
                     extra={
-                        "terminal_event_type": terminal["type"] if terminal else None,
+                        "terminal_event_type": terminal["type"],
                         "terminal_payload": terminal_payload,
                     },
                 ),
             ],
-            notes=None if terminal else "The process emitted no terminal event.",
+            notes=None,
+            final_metrics=FinalMetrics(
+                total_prompt_tokens=input_tokens,
+                total_completion_tokens=output_tokens,
+                total_cached_tokens=cached_tokens,
+                total_cost_usd=cost_usd,
+                total_steps=2,
+                extra={
+                    "model_calls": model_calls,
+                    "tool_calls": tool_calls,
+                    "duration_ns": terminal_payload.get("duration_ns"),
+                    "model_duration_ns": terminal_payload.get("model_duration_ns"),
+                    "tool_duration_ns": terminal_payload.get("tool_duration_ns"),
+                    "cache_write_input_tokens": usage.get(
+                        "cache_write_input_tokens"
+                    ),
+                    "reasoning_output_tokens": usage.get(
+                        "reasoning_output_tokens"
+                    ),
+                },
+            ),
         )
         (self.logs_dir / "trajectory.json").write_text(
             format_trajectory_json(trajectory.to_json_dict()), encoding="utf-8"
         )
 
-        context.n_input_tokens = 0
-        context.n_cache_tokens = 0
-        context.n_output_tokens = 0
-        context.cost_usd = 0.0
+        context.n_input_tokens = input_tokens
+        context.n_cache_tokens = cached_tokens
+        context.n_output_tokens = output_tokens
+        context.cost_usd = cost_usd
         context.metadata = {
             "protocol_version": PROTOCOL_VERSION,
-            "terminal_event_type": terminal["type"] if terminal else None,
+            "terminal_event_type": terminal["type"],
             "model_calls": model_calls,
             "tool_calls": tool_calls,
+            "model": terminal_payload.get("model"),
+            "effort": terminal_payload.get("effort"),
+            "transport": terminal_payload.get("transport"),
+            "duration_ms": terminal_payload.get("duration_ms"),
+            "duration_ns": terminal_payload.get("duration_ns"),
+            "model_duration_ns": terminal_payload.get("model_duration_ns"),
+            "tool_duration_ns": terminal_payload.get("tool_duration_ns"),
+            "reasoning_output_tokens": usage.get("reasoning_output_tokens"),
+            "cache_write_input_tokens": usage.get("cache_write_input_tokens"),
+            "last_response_id": terminal_payload.get("last_response_id"),
+            "cost_status": terminal_payload.get("cost_status"),
         }
+
+    @staticmethod
+    def _api_model_name(model_name: str | None) -> str:
+        if model_name is None:
+            return "gpt-5.6-sol"
+        _, separator, api_model = model_name.partition("/")
+        return api_model if separator else model_name
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return None
+
+    @staticmethod
+    def _atif_tool_calls(events: list[dict[str, Any]]) -> list[ToolCall]:
+        calls = []
+        for event in events:
+            if event["type"] != "tool.call":
+                continue
+            payload = event["payload"]
+            arguments = payload.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = {"raw": arguments}
+            calls.append(
+                ToolCall(
+                    tool_call_id=str(payload.get("call_id", "")),
+                    function_name=str(payload.get("tool", "")),
+                    arguments=arguments,
+                    extra={
+                        "model_call_index": payload.get("model_call_index"),
+                        "caller": payload.get("caller"),
+                    },
+                )
+            )
+        return calls
+
+    @staticmethod
+    def _atif_observations(
+        events: list[dict[str, Any]], calls: list[ToolCall]
+    ) -> list[ObservationResult]:
+        call_ids = {call.tool_call_id for call in calls}
+        observations = []
+        for event in events:
+            if event["type"] != "tool.result":
+                continue
+            payload = event["payload"]
+            call_id = str(payload.get("call_id", ""))
+            if call_id not in call_ids:
+                continue
+            result = payload.get("result", payload)
+            observations.append(
+                ObservationResult(
+                    source_call_id=call_id,
+                    content=json.dumps(result, separators=(",", ":")),
+                    extra={
+                        "status": payload.get("status"),
+                        "duration_ns": payload.get("duration_ns"),
+                    },
+                )
+            )
+        return observations
 
     @staticmethod
     def _read_jsonl(path: Path) -> list[dict[str, Any]]:

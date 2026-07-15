@@ -9,6 +9,18 @@
 - Add focused unit tests only for nontrivial deterministic behavior or a
   demonstrated regression; end-to-end Harbor trials are the milestone gates.
 
+## Codex reference implementation
+
+- For agent architecture and implementation decisions, first inspect how the
+  locally cloned OpenAI Codex repository handles the comparable concern. The
+  expected checkout is `~/github/openai/codex`, with Rust code under
+  `codex-rs/`.
+- Use the checked-out source rather than memory or general descriptions. Refer
+  to concrete Codex files and types when explaining the comparison.
+- Treat Codex as a reference, not a requirement to copy its abstractions.
+  Preserve this repository's `PLAN.md`, runtime boundary, milestone order, and
+  deliberately narrower scope when the designs differ.
+
 ## Runtime boundary
 
 - `just run` is native `cargo run`; it must not require Harbor or Docker.
