@@ -175,14 +175,14 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 .await?;
             previous_response_id = Some(response.id);
             input = response.next_input;
-            if input.is_empty()
-                && let Some(message) = response.final_message
-            {
-                return Ok(if message.trim().is_empty() {
-                    "The model completed without emitting assistant text.".to_owned()
-                } else {
-                    message
-                });
+            if input.is_empty() {
+                if let Some(message) = response.final_message {
+                    return Ok(if message.trim().is_empty() {
+                        "The model completed without emitting assistant text.".to_owned()
+                    } else {
+                        message
+                    });
+                }
             }
         }
 
