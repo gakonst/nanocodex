@@ -1,0 +1,8 @@
+.env
+.harness/
+.venv/
+target/
+jobs/
+trials/
+__pycache__/
+*.pyc
