@@ -49,6 +49,7 @@ datasets:
       - terminal-bench/write-compressor
       - terminal-bench/tune-mjcf
       - terminal-bench/build-pmars
+      - terminal-bench/prove-plus-comm
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
