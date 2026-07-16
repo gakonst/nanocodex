@@ -602,6 +602,18 @@ model call. The task's pinned WordNet download and canonical verifier were
 never reached. The task is deferred instead of modifying its Dockerfile or
 adding transport workarounds to the harness.
 
+`raman-fitting` passed the cold viability gate but is not admitted to the
+active low-effort suite. Its copy-only task and verifier images prepared in
+16.97 seconds, then two unchanged v12 runs scored 0.0 in 103.02 and 120.09
+seconds. Both fitted the raw first column instead of deriving the spectrum's
+coordinate semantics. A third experiment added a generic instruction to
+establish scientific units and validate coordinate conversions. That changed
+the trajectory, but still scored 0.0 after 12 model calls, 11 tool calls, and
+180.78 Rust seconds; it used 75,245 input, 26,014 cached-input, and 6,741 output
+tokens. The added prompt weight was reverted because it increased exploration
+without satisfying the canonical peak parameters. No task-specific conversion
+hint was added, and the active suite remains on the proven v12 prompt.
+
 The hard `llm-inference-batching-scheduler` task then passed all six canonical
 schema, integrity, feasibility, coverage, and performance checks on its first
 low-effort v12 attempt. Its network-free native task image plus verifier

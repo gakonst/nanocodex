@@ -83,6 +83,14 @@ automation, computer-use, GUI interaction, and image/video perception are
 outside this milestone. Downloaded tasks and canonical verifier assertions
 remain unchanged.
 
+Candidate admission is evidence-driven. Cold task preparation is measured
+before model work, and a task that repeatedly requires benchmark-specific
+prompt hints is deferred rather than adding that hint to the shared harness.
+The retained Raman-fitting experiment, for example, scored 0.0 in three
+canonical low-effort runs; its generic units prompt increased work without
+producing the required fit, so both the prompt change and task admission were
+reverted.
+
 Every trial retains `input.jsonl`, `events.jsonl`, `stderr.log`, and
 `trajectory.json` under `.harness/harbor/jobs`. Harbor receives aggregate token
 counts, while ATIF also records cache writes, reasoning summaries, model/tool
