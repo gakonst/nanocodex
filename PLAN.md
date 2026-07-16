@@ -254,14 +254,10 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All nineteen active public tasks have green low-effort
-PTC samples with the current `openai-coding-v12` prompt. The table records
-their last warm samples. The first sixteen rows come from the hash-verified
-offline-local checkpoint described below; `cobol-modernization` and
-`sqlite-with-gcov` are focused offline-local runs of their exact pinned task
-trees. The registry-resolved 18-task checkpoint described below is the
-authoritative correctness gate, and `llm-inference-batching-scheduler` is its
-subsequent registry-resolved focused run:
+Status: in progress. All twenty active public tasks have green low-effort PTC
+samples with the current `openai-coding-v12` prompt. The table records
+representative warm samples; the registry-resolved 20-task checkpoint
+described below is the authoritative correctness gate:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -284,6 +280,7 @@ subsequent registry-resolved focused run:
 | `cobol-modernization` | 1.0 | 80.94s | 77.05s | 76.31s | 0.65s | 7/6 | 37,877/14,996/4,046 |
 | `sqlite-with-gcov` | 1.0 | 57.17s | 53.43s | 52.44s | 22.36s | 6/5 | 33,122/17,715/1,425 |
 | `llm-inference-batching-scheduler` | 1.0 | 150.47s | 146.25s | 145.58s | 67.66s | 7/6 | 51,936/18,068/4,588 |
+| `kv-store-grpc` | 1.0 | 35.13s | 28.88s | 28.21s | 5.03s | 4/3 | 10,669/6,769/1,596 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -570,7 +567,7 @@ compilation and coverage work inside five local tool phases. The run used
 33,122 input, 17,715 cached-input, and 1,425 output tokens across six model
 calls.
 
-Once the package registry recovered, the required registry-resolved checkpoint
+Once the package registry recovered, the earlier registry-resolved checkpoint
 passed all 18 tasks with reward 1.0 and zero exceptions in 7 minutes 16.84
 seconds. Four-way concurrency compressed 1,017.57 aggregate model/API seconds
 and 188.63 aggregate tool seconds into that wall time; tool time is a measured
@@ -611,6 +608,59 @@ in each bucket exactly once. Bucket 1 reached cost `2.856e11`, padding ratio
 2 reached `4.543e10`, `0.13808`, `1.924e5` ms, and `3.198e7` ms. The 150.47-
 second Harbor trial used 51,936 input, 18,068 cached-input, and 4,588 output
 tokens across seven model calls, with no compaction or hosted subagents.
+
+Before adding a long-lived service task, the shell's successful-exit process
+lifecycle was compared directly with Codex's `codex-rs/core/src/exec.rs`.
+Codex gives inherited output pipes a two-second drain grace after the shell
+exits but does not then kill an otherwise successful process group. The local
+harness had coupled drain expiry to process-group termination. It now disarms
+the group guard after a successful shell exit while retaining group termination
+for command timeout and cancellation. A focused regression starts a plain
+background process with inherited descriptors and proves it remains alive
+after the foreground shell returns.
+
+`kv-store-grpc` then passed all seven canonical source, dependency, TCP,
+handshake, and stateful Set/Get assertions on its first low-effort attempt. Its
+network-free task/verifier preparation took 3.41 seconds. The focused scored
+trial took 35.78 seconds: environment startup, agent setup, agent execution,
+and verification used 1.27, 0.54, 30.16, and 0.71 seconds. Rust spent 28.72 of
+30.05 seconds in generated model turns and 5.90 seconds in three local tool
+phases, primarily installing gRPC. Four model calls used 10,451 input, 6,769
+cached-input, and 1,643 output tokens. The agent-launched service remained
+reachable across the agent-to-verifier boundary; Harbor container teardown
+owns final cleanup.
+
+The first shared 20-task gate passed 19 tasks but exposed a transport lifecycle
+bug on `git-multibranch`. A local tool ran for its full 120-second timeout after
+`response.completed`; during that interval the response driver no longer
+polled the raw WebSocket, so an API keepalive ping went unanswered and the
+server closed the connection with code 1011. Current Codex handles this in
+`codex-rs/codex-api/src/endpoint/responses_websocket.rs`: a private socket pump
+continuously services Ping/Pong independently of response consumption and
+channels application frames to the consumer. The harness now implements that
+same narrow boundary. A deterministic local WebSocket regression deliberately
+leaves `next_json` idle, requires a matching pong, and then proves the queued
+JSON event remains available. The focused benchmark rerun passed with reward
+1.0 and no exception in 105.59 seconds; its different trajectory spent only
+2.95 seconds in tools, so the deterministic test—not model variance—is the
+direct keepalive proof.
+
+The required registry-resolved 20-task gate then passed 20/20 with reward 1.0,
+zero exceptions, and zero retries in 8 minutes 21.21 seconds. Four-way
+concurrency compressed 1,298.07 aggregate generated-model seconds and 177.32
+aggregate tool seconds into that wall time; tool time is a measured subset of
+generated-turn time. Rust totaled 1,311.74 seconds, including 8.37 seconds of
+WebSocket warmup, leaving only 5.30 aggregate seconds outside model turns and
+warmup. Environment startup, agent upload/setup, and canonical verification
+totaled 29.56, 12.42, and 109.03 task-seconds. The suite used 860,739 input,
+267,891 cached-input, and 62,860 output tokens across 125 model calls and 105
+tool calls, with no compaction, hosted subagents, or API-reported cost.
+
+The scheduler was the main trajectory-variance outlier in that gate: it stayed
+green but used 14/13 model/tool rounds, 207.04 generated-model seconds, and
+238,230 input tokens, versus 7/6 rounds, 145.58 seconds, and 51,936 input tokens
+in its first green sample. That spread is retained as evidence against drawing
+latency or token conclusions from one successful trajectory.
 
 These public tasks are the development/tuning set: their instructions,
 verifiers, trajectories, and failure cases may be inspected while improving

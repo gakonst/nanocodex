@@ -58,6 +58,8 @@ class PytestVerifier(Verifier):
             'case "$*" in '
             '"install pytest==8.4.1 pytest-json-ctrf==0.3.5"|'
             '"install pytest==8.4.1 requests==2.32.5 '
+            'pytest-json-ctrf==0.3.5"|'
+            '"install pytest==8.4.2 requests==2.32.5 psutil==7.0.0 '
             'pytest-json-ctrf==0.3.5") return 0 ;; '
             '*) echo "unsupported cached pip command: $*" >&2; return 127 ;; '
             "esac; "

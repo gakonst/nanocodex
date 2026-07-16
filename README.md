@@ -10,7 +10,7 @@ work.
 just bootstrap      # install pinned host dependencies once
 just prepare-evals  # build/cache native task and verifier images; no model
 just run            # native low-effort PTC smoke; no Python, Docker, or Harbor
-just eval           # fresh model-driven Terminal-Bench trial
+just eval           # fresh full model-driven Terminal-Bench suite
 just view           # inspect retained Harbor jobs
 ```
 
@@ -29,7 +29,8 @@ then converts its retained JSONL to ATIF. It never dispatches tool calls.
 OpenAI runs the model-generated JavaScript in its hosted PTC runtime. The Rust
 process executes only the nested `exec_command` calls returned by the API,
 preserves their caller linkage, and sends their structured results back over
-the same WebSocket continuation chain.
+the same WebSocket continuation chain. A dedicated socket pump services API
+keepalives while the response consumer is waiting on local tools.
 
 `--multi-agent` switches to hosted Multi-agent with direct `exec_command`
 calls and live `response.inject`. The profiles are separate because the live
@@ -76,7 +77,7 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The current development slice contains nineteen public shell/code
+and tasks. The current development slice contains twenty public shell/code
 tasks, all with green samples from the real model/tool loop. Browser
 automation, computer-use, GUI interaction, and image/video perception are
 outside this milestone. Downloaded tasks and canonical verifier assertions
