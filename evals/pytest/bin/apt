@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+package_manifest=/opt/harness-verifier/manifests/texlive-latex-base.md5sums
+generated_manifest=/opt/harness-verifier/manifests/texlive-generated.md5sums
+
+if [ "$*" = "install -y --reinstall texlive-latex-base" ] && \
+    [ "$(dpkg-query -W -f='${Status}' texlive-latex-base 2>/dev/null || true)" = \
+        "install ok installed" ] && \
+    [ -s "$package_manifest" ] && \
+    [ -s "$generated_manifest" ] && \
+    (cd / && \
+        md5sum --check --quiet "$package_manifest" && \
+        md5sum --check --quiet "$generated_manifest"); then
+    exit 0
+fi
+
+exec /usr/bin/apt "$@"

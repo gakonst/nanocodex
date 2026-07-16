@@ -262,6 +262,16 @@ model failure. The verifier dependencies are now isolated, the affected
 focused regressions pass, and the corrected full gate passes 35/35 with zero
 exception or retry. The table records representative warm samples:
 
+The first unchanged `overfull-hbox` attempt passed all four assertions but
+spent 68.00 of its 135.45 trial seconds reinstalling an already pinned TeX
+package and regenerating formats. A guarded verifier-image cache now skips
+only the exact reinstall when the installed package files and generated
+`pdflatex.fmt`, `pdftex.map`, and `ls-R` state still match their baked hashes;
+any mismatch or other `apt` command delegates to the system executable. The
+focused rerun passed 4/4 with a 1.06-second verifier, 49.93 Rust seconds, 49.32
+generated-model seconds, and 0.69 tool seconds. Unrelated Fix Git and OpenSSL
+anchors remained green at 2/2 and 6/6, with 1.16- and 0.99-second verifiers.
+
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `fix-git` | 1.0 | 37.13s | 33.22s | 32.69s | 0.29s | 7/6 | 25,196/8,262/1,666 |

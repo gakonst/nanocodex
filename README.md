@@ -55,6 +55,12 @@ files remain unchanged, and their canonical `test.sh` launchers still own
 task-specific setup, assertion phases, CTRF output, and reward calculation.
 The adapter skips only allowlisted dependency-install commands already
 satisfied by the cached verifier layer; an unknown install shape fails closed.
+One canonical TeX verifier requests an exact
+`apt install -y --reinstall texlive-latex-base` before asserting its output.
+For that command only, the verifier image records the installed package files
+and generated TeX state. A small `apt` wrapper skips the reinstall only when
+the package is still installed and both manifests match byte-for-byte;
+otherwise it delegates the original arguments to `/usr/bin/apt` unchanged.
 
 `just prepare-evals` pays those image-build costs outside measured eval jobs by
 running Harbor's install-only path with its no-op agent. When adding one task,

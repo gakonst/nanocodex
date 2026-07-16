@@ -56,3 +56,21 @@ RUN if python -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then \
             numpy==2.3.1 \
             scikit-image==0.25.0; \
     fi
+# Canonical tests sometimes reinstall an already pinned package only to undo
+# possible agent edits. Preserve that guard without repeating expensive TeX
+# format generation when the package files are still byte-for-byte pristine.
+COPY bin/apt /opt/harness-verifier/bin/apt
+RUN chmod 0755 /opt/harness-verifier/bin/apt && \
+    if [ -s /var/lib/dpkg/info/texlive-latex-base.md5sums ]; then \
+        mkdir -p /opt/harness-verifier/manifests && \
+        while read -r digest path; do \
+            if [ -f "/$path" ]; then \
+                printf '%s  %s\n' "$digest" "$path"; \
+            fi; \
+        done < /var/lib/dpkg/info/texlive-latex-base.md5sums \
+            > /opt/harness-verifier/manifests/texlive-latex-base.md5sums && \
+        find /var/lib/texmf -type f \
+            \( -name pdflatex.fmt -o -name pdftex.map -o -name ls-R \) \
+            -exec md5sum {} + | sort -k2 \
+            > /opt/harness-verifier/manifests/texlive-generated.md5sums; \
+    fi

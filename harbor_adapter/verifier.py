@@ -40,6 +40,7 @@ class PytestVerifier(Verifier):
             "script_status=0",
             f"rm -f {reward_path} {ctrf_path} {original_ctrf_path}",
             f": > {test_stdout}",
+            "export PATH=/opt/harness-verifier/bin:$PATH",
             "if [ -x /usr/bin/chromedriver ]; then "
             "export SE_CHROMEDRIVER=/usr/bin/chromedriver; fi",
             "apt-get() { "
