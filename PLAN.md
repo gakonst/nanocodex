@@ -254,11 +254,11 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All twelve active public tasks have green low-effort PTC
+Status: in progress. All thirteen active public tasks have green low-effort PTC
 samples. The table records their last warm samples. `fix-git`, OpenSSL, and
-both database recovery tasks plus Nginx use the current `openai-coding-v10` prompt. The
-vulnerability task, multibranch task, and `git-leak-recovery` use v9; the other
-task digests have v7 samples:
+both database recovery tasks plus Nginx use v10; `polyglot-c-py` uses the
+current `openai-coding-v11` prompt. The vulnerability task, multibranch task,
+and `git-leak-recovery` use v9; the other task digests have v7 samples:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -274,6 +274,7 @@ task digests have v7 samples:
 | `db-wal-recovery` | 1.0 | 66.67s | 62.76s | 62.08s | 0.23s | 7/6 | 20,344/10,232/2,637 |
 | `sqlite-db-truncate` | 1.0 | 38.65s | 34.78s | 34.15s | 0.33s | 5/4 | 12,410/7,894/2,321 |
 | `nginx-request-logging` | 1.0 | 50.17s | 44.30s | 43.51s | 5.93s | 4/3 | 11,003/6,580/1,914 |
+| `polyglot-c-py` | 1.0 | 51.87s | 47.77s | 46.80s | 0.26s | 3/2 | 7,710/3,984/2,347 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -417,6 +418,18 @@ tool work took 5.93 seconds: 3.56 seconds installed/configured/started Nginx and
 2.35 seconds stress-tested rate limiting. Rust still spent 43.51 of 44.30
 seconds inside API turns, which include the hosted program waiting on those
 nested local calls.
+
+The first `polyglot-c-py` attempt correctly implemented and tested arbitrary-
+precision Fibonacci in both Python and C, but left its generated `cmain` and
+`__pycache__` beside a deliverable explicitly required to be a single file.
+The v11 prompt adds a generic final-state check that removes temporary test and
+build artifacts unless they are requested outputs. The retry compiled and
+tested both runtimes in each tool phase, removed the binary, cache, and
+diagnostics, and passed the canonical single-file assertion. Cold preparation
+took 33.83 seconds outside scoring. The warm trial used 1.79 seconds for
+environment startup, 0.45 seconds for agent setup, 47.91 seconds for agent
+execution, and 0.58 seconds for verification. Rust spent 46.80 of 47.77
+seconds in model/API calls and 0.26 seconds in local tools.
 
 These public tasks are the development/tuning set: their instructions,
 verifiers, trajectories, and failure cases may be inspected while improving

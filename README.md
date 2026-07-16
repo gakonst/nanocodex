@@ -74,7 +74,7 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The current development slice contains twelve public shell/code tasks,
+and tasks. The current development slice contains thirteen public shell/code tasks,
 all with green samples from the real model/tool loop. Browser automation,
 computer-use, and other modality-dependent tasks are outside this milestone.
 Downloaded tasks and canonical verifier assertions remain unchanged.
