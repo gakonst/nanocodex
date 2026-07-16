@@ -34,3 +34,5 @@ RUN uv pip install --system --break-system-packages --no-cache \
 # and Python dependency layers remain reusable across verifier overlays.
 RUN DEBIAN_FRONTEND=noninteractive \
     apt-get install --yes --no-install-recommends primer3
+RUN uv pip install --system --break-system-packages --no-cache \
+    rdflib==7.1.4

@@ -80,6 +80,8 @@ class PytestVerifier(Verifier):
             "uvx() { "
             'case "$*" in '
             '"-p 3.13 -w pytest==8.4.1 -w pytest-json-ctrf==0.3.5 pytest "*|'
+            '"-p 3.13 -w pytest==8.4.1 -w rdflib==7.1.4 '
+            '-w pytest-json-ctrf==0.3.5 pytest "*|'
             '"-p 3.13 -w pytest==8.4.1 -w requests==2.32.4 '
             '-w pytest-json-ctrf==0.3.5 pytest "*) ;; '
             '*) echo "unsupported cached uvx command: $*" >&2; return 127 ;; '

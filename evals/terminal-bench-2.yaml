@@ -42,6 +42,7 @@ datasets:
       - terminal-bench/dna-insert
       - terminal-bench/dna-assembly
       - terminal-bench/winning-avg-corewars
+      - terminal-bench/sparql-university
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
