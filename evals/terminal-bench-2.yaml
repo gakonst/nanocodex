@@ -40,6 +40,7 @@ datasets:
       - terminal-bench/kv-store-grpc
       - terminal-bench/merge-diff-arc-agi-task
       - terminal-bench/dna-insert
+      - terminal-bench/dna-assembly
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
