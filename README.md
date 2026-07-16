@@ -93,7 +93,7 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The configured development slice contains thirty-six public
+and tasks. The configured development slice contains thirty-five public
 shell/code tasks. The first 35-task gate after admitting Circuit Fib/Sqrt and
 Build POV-Ray completed every trial without an exception or retry in 16
 minutes 41.92 seconds and scored 34/35. Its only miss was a verifier-cache
@@ -103,12 +103,16 @@ verifier-isolated, and unchanged focused Cython, POV-Ray, and Distribution
 Search runs pass 11/11, 3/3, and 4/4 canonical checks. The corrected 35-task
 gate then passed 35/35 and all 137 assertions with zero exception or retry in
 18 minutes 32.29 seconds of Harbor wall; the complete `just eval` command took
-18 minutes 35.66 seconds. Overfull HBox is green in a focused run, with its
-36-task suite gate pending. Core Wars remains a separate variance experiment
-excluded from the stable gate rather than receiving a benchmark-specific
-prompt hint. Browser automation, computer-use, GUI interaction, and image/video
-perception are outside this milestone. Downloaded tasks and canonical verifier
-assertions remain unchanged.
+18 minutes 35.66 seconds. Overfull HBox is green and its guarded TeX verifier
+cache stayed green in the subsequent 36-task trial. That trial completed
+without a Harbor exception or retry in 15 minutes 21.72 seconds, scoring 33/36;
+unchanged focused retries recovered the Compressor and Cython misses. Tune
+MJCF missed its speed threshold both in the gate and an unchanged retry, so it
+joins Core Wars as a retained variance experiment excluded from the stable
+slice rather than receiving a benchmark-specific hint. The revised 35-task
+gate is pending. Browser automation, computer-use, GUI interaction, and
+image/video perception are outside this milestone. Downloaded tasks and
+canonical verifier assertions remain unchanged.
 
 Candidate admission is evidence-driven. Cold task preparation is measured
 before model work, and a task that repeatedly requires benchmark-specific
@@ -131,8 +135,8 @@ POV-Ray's Pillow/NumPy/scikit-image verifier stack is cached under
 that path only for the exact canonical POV-Ray `uvx` command, so verifier-only
 versions cannot mutate the agent's task environment.
 Largest Eigenvalue likewise uses an exact cached pip command and adds no image
-dependency. Tune MJCF uses an exact cached `mujoco==3.3.5` command shape and
-also adds no verifier-image dependency.
+dependency. The retained Tune MJCF experiment uses an exact cached
+`mujoco==3.3.5` command shape and adds no verifier-image dependency.
 Primer3 support is retained for the deferred DNA experiments, but `dna-insert`
 and `dna-assembly` are excluded from the active gate after respectively scoring
 2/4 and 1/3 across unchanged low-effort samples.

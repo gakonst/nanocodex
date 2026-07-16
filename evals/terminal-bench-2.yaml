@@ -46,7 +46,6 @@ datasets:
       - terminal-bench/largest-eigenval
       - terminal-bench/constraints-scheduling
       - terminal-bench/write-compressor
-      - terminal-bench/tune-mjcf
       - terminal-bench/build-pmars
       - terminal-bench/prove-plus-comm
       - terminal-bench/custom-memory-heap-crash
