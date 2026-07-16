@@ -26,7 +26,8 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
         python3 \
         python-is-python3 \
         vim && \
-    if apt-cache show python3-distutils >/dev/null 2>&1; then \
+    if apt-cache policy python3-distutils | \
+            grep -Eq 'Candidate: [^ (]'; then \
         DEBIAN_FRONTEND=noninteractive \
         apt-get install --yes --no-install-recommends python3-distutils; \
     fi

@@ -1154,6 +1154,21 @@ compaction, hosted subagent, API-reported cost, exception, retry, or agent
 stderr occurred. The earlier green sample with the verifier setup warning is
 retained as diagnostic evidence but is not the admission sample.
 
+The first complete overlay rebuild caught a second-order issue in the initial
+legacy-Python fix: `apt-cache show` exposes obsolete `python3-distutils`
+metadata on modern Debian and Ubuntu even when APT has no installation
+candidate. That 161.74-second, zero-model-token preparation job completed all
+34 install-only trials but correctly reported 16 image-build exceptions. The
+guard now requires a real candidate from `apt-cache policy`. Focused
+install-only probes covered both branches: Bullseye QEMU installed the package
+and completed 12.60 seconds of environment setup, while modern Debian pMARS
+skipped it and completed in 15.10 seconds. The repeated full preparation then
+completed 34/34 with zero exceptions or retries in 202.10 seconds of Harbor
+wall and 203.27 seconds for the whole command, still with no model tokens.
+Fresh scored anchors passed from those images: Fix Git passed 2/2 tests in
+49.95 seconds and OpenSSL passed 6/6 in 36.13 seconds, both at reward 1.0 with
+clean verifier logs and no exceptions, retries, or agent stderr.
+
 The scheduler was the main trajectory-variance outlier in the earlier 20-task
 gate: it stayed green but used 14/13 model/tool rounds, 207.04 generated-model
 seconds, and 238,230 input tokens, versus 7/6 rounds, 145.58 seconds, and 51,936
