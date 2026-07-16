@@ -82,6 +82,8 @@ class PytestVerifier(Verifier):
             '"-p 3.13 -w pytest==8.4.1 -w pytest-json-ctrf==0.3.5 pytest "*|'
             '"-p 3.13 -w pytest==8.4.1 -w pip==25.2 '
             '-w pytest-json-ctrf==0.3.5 pytest "*|'
+            '"-p 3.13 -w pytest==8.4.1 -w numpy==2.3.0 '
+            '-w pytest-json-ctrf==0.3.5 pytest "*|'
             '"-p 3.13 -w pytest==8.4.1 -w rdflib==7.1.4 '
             '-w pytest-json-ctrf==0.3.5 pytest "*|'
             '"-p 3.13 -w pytest==8.4.1 -w requests==2.32.4 '

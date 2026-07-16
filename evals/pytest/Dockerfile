@@ -36,3 +36,5 @@ RUN DEBIAN_FRONTEND=noninteractive \
     apt-get install --yes --no-install-recommends primer3
 RUN uv pip install --system --break-system-packages --no-cache \
     rdflib==7.1.4
+RUN uv pip install --system --break-system-packages --no-cache \
+    numpy==2.3.0

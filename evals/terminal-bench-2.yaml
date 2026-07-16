@@ -43,6 +43,7 @@ datasets:
       - terminal-bench/sparql-university
       - terminal-bench/pypi-server
       - terminal-bench/schemelike-metacircular-eval
+      - terminal-bench/distribution-search
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
