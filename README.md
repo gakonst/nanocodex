@@ -32,6 +32,12 @@ preserves their caller linkage, and sends their structured results back over
 the same WebSocket continuation chain. A dedicated socket pump services API
 keepalives while the response consumer is waiting on local tools.
 
+The adapter removes `OPENAI_API_KEY` from Harbor's per-exec environment before
+launching Docker. It uploads a mode-`0400` transient file for the agent user,
+reads and deletes it inside the container, and scopes the value only to the
+Rust process. The key is therefore absent from host process arguments, `tee`,
+verifier commands, retained logs, and model-generated shell environments.
+
 `--multi-agent` switches to hosted Multi-agent with direct `exec_command`
 calls and live `response.inject`. The profiles are separate because the live
 API currently rejects injection of PTC-nested outputs during a Multi-agent
@@ -77,7 +83,7 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The current development slice contains twenty public shell/code
+and tasks. The current development slice contains twenty-one public shell/code
 tasks, all with green samples from the real model/tool loop. Browser
 automation, computer-use, GUI interaction, and image/video perception are
 outside this milestone. Downloaded tasks and canonical verifier assertions

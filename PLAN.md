@@ -254,10 +254,10 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All twenty active public tasks have green low-effort PTC
-samples with the current `openai-coding-v12` prompt. The table records
-representative warm samples; the registry-resolved 20-task checkpoint
-described below is the authoritative correctness gate:
+Status: in progress. All twenty-one active public tasks have green low-effort
+PTC samples with the current `openai-coding-v12` prompt. The table records
+representative warm samples; the registry-resolved 21-task checkpoint described
+below is the authoritative correctness gate:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -281,6 +281,7 @@ described below is the authoritative correctness gate:
 | `sqlite-with-gcov` | 1.0 | 57.17s | 53.43s | 52.44s | 22.36s | 6/5 | 33,122/17,715/1,425 |
 | `llm-inference-batching-scheduler` | 1.0 | 150.47s | 146.25s | 145.58s | 67.66s | 7/6 | 51,936/18,068/4,588 |
 | `kv-store-grpc` | 1.0 | 35.13s | 28.88s | 28.21s | 5.03s | 4/3 | 10,669/6,769/1,596 |
+| `merge-diff-arc-agi-task` | 1.0 | 53.43s | 49.26s | 48.40s | 0.19s | 6/5 | 25,618/11,571/2,142 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -678,6 +679,40 @@ totaled 29.56, 12.42, and 109.03 task-seconds. The suite used 860,739 input,
 267,891 cached-input, 5,508 cache-write, and 62,860 output tokens across 125
 model calls and 105 tool calls, with no compaction, hosted subagents, or
 API-reported cost.
+
+A subsequent read-only process audit found that Harbor serialized agent
+environment variables as `docker compose exec -e KEY=value`, exposing the API
+key to the host process table during setup and execution. The adapter now
+removes the key from Harbor's scoped exec environment, stages it through the
+provider-neutral file-upload API with mode `0400`, reads and unlinks it inside
+the container, and assigns it only to the Rust side of the stdout pipeline.
+Rust's existing sensitive-environment filter keeps it out of generated shell
+children. Final focused `fix-git` and `openssl-selfsigned-cert` anchors passed;
+while each was live, the exact key, an `-e OPENAI_API_KEY` flag, and the staged
+file were all absent, and a byte scan found the key in zero retained files.
+
+`merge-diff-arc-agi-task` then passed all five canonical repository and output
+assertions. Its one-time preparation took 27.90 seconds, of which 27.09 seconds
+was the task/verifier environment build. The focused warm trial spent 1.75
+seconds on environment startup, 0.52 seconds on agent setup, 49.38 seconds on
+agent execution, and 0.57 seconds in the verifier. Rust spent 48.40 of 49.26
+seconds in generated model turns and 0.19 seconds in local tools; six model
+calls used 25,618 input, 11,571 cached-input, and 2,142 output tokens. Its
+canonical setup's exact `apt-get install -y curl git` command is a no-op against
+the existing verifier image, so admission added no package or image dependency.
+
+The required registry-resolved 21-task gate then passed 21/21 with reward 1.0,
+zero exceptions, and zero retries in 8 minutes 21.74 seconds. Four-way
+concurrency compressed 1,595.56 aggregate generated-model seconds and 357.52
+aggregate tool seconds into that wall time; tool time is a measured subset of
+generated-turn time. Rust totaled 1,606.81 seconds, including 5.84 seconds of
+WebSocket warmup and 5.37 seconds of connection setup, leaving 0.04 aggregate
+seconds of harness-local work outside connection, warmup, and model turns.
+Environment startup, agent upload/setup, and canonical verification totaled
+27.26, 11.43, and 110.30 task-seconds. The suite used 574,208 input, 225,570
+cached-input, 4,131 cache-write, and 55,785 output tokens across 112 model calls
+and 91 tool calls, with no compaction, hosted subagents, or API-reported cost.
+A separate warm native Linux agent-artifact build took 2.24 seconds.
 
 The scheduler was the main trajectory-variance outlier in that gate: it stayed
 green but used 14/13 model/tool rounds, 207.04 generated-model seconds, and
