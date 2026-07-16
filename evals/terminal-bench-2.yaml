@@ -34,6 +34,7 @@ datasets:
       - terminal-bench/polyglot-rust-c
       - terminal-bench/large-scale-text-editing
       - terminal-bench/log-summary-date-ranges
+      - terminal-bench/cobol-modernization
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment

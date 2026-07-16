@@ -254,31 +254,31 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All sixteen active public tasks have green low-effort PTC
-samples. The table records their last warm samples. `fix-git`, OpenSSL, and
-`db-wal-recovery` use the current `openai-coding-v12` prompt. Both polyglot
-tasks, large-scale text editing, and log summarization use v11;
-`sqlite-db-truncate` and Nginx use v10. The vulnerability task, multibranch
-task, and `git-leak-recovery` use v9; the other task digests have v7 samples:
+Status: in progress. All seventeen active public tasks have green low-effort
+PTC samples with the current `openai-coding-v12` prompt. The table records
+their last warm samples. The first sixteen rows come from the hash-verified
+offline-local checkpoint described below; `cobol-modernization` is its focused
+offline-local run. A registry-resolved final checkpoint remains outstanding:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `fix-git` | 1.0 | 32.68s | 28.74s | 28.15s | 0.26s | 6/5 | 24,088/11,571/1,495 |
-| `openssl-selfsigned-cert` | 1.0 | 34.98s | 31.05s | 30.62s | 0.58s | 3/2 | 7,565/4,368/1,694 |
-| `cancel-async-tasks` | 1.0 | 68.43s | 50.07s | 49.51s | 0.88s | 5/4 | 10,951/6,127/2,735 |
-| `headless-terminal` | 1.0 | 84.74s | 67.65s | 66.89s | 2.27s | 5/4 | 13,946/8,314/3,897 |
-| `regex-log` | 1.0 | 35.04s | 31.17s | 30.24s | 0.07s | 2/1 | 4,163/1,163/1,963 |
-| `build-cython-ext` | 1.0 | 160.79s | 154.45s | 153.80s | 67.27s | 21/20 | 240,833/43,306/4,797 |
-| `fix-code-vulnerability` | 1.0 | 46.96s | 42.98s | 42.23s | 1.32s | 5/4 | 33,408/5,096/1,033 |
-| `git-multibranch` | 1.0 | 100.90s | 87.70s | 87.12s | 1.46s | 5/4 | 17,824/8,758/2,949 |
-| `git-leak-recovery` | 1.0 | 31.69s | 27.12s | 26.02s | 0.57s | 3/2 | 7,258/2,888/1,477 |
-| `db-wal-recovery` | 1.0 | 43.20s | 39.24s | 38.54s | 0.22s | 6/5 | 33,471/14,290/2,297 |
-| `sqlite-db-truncate` | 1.0 | 38.65s | 34.78s | 34.15s | 0.33s | 5/4 | 12,410/7,894/2,321 |
-| `nginx-request-logging` | 1.0 | 50.17s | 44.30s | 43.51s | 5.93s | 4/3 | 11,003/6,580/1,914 |
-| `polyglot-c-py` | 1.0 | 51.87s | 47.77s | 46.80s | 0.26s | 3/2 | 7,710/3,984/2,347 |
-| `polyglot-rust-c` | 1.0 | 64.73s | 60.82s | 60.21s | 0.55s | 2/1 | 4,947/1,346/3,032 |
-| `large-scale-text-editing` | 1.0 | 120.37s | 93.35s | 92.71s | 36.53s | 4/3 | 11,935/7,700/2,796 |
-| `log-summary-date-ranges` | 1.0 | 31.43s | 22.86s | 22.12s | 0.32s | 3/2 | 11,288/6,354/1,101 |
+| `fix-git` | 1.0 | 37.13s | 33.22s | 32.69s | 0.29s | 7/6 | 25,196/8,262/1,666 |
+| `openssl-selfsigned-cert` | 1.0 | 32.78s | 29.24s | 28.71s | 0.56s | 3/2 | 7,666/4,368/1,794 |
+| `cancel-async-tasks` | 1.0 | 56.91s | 39.67s | 39.21s | 0.54s | 4/3 | 8,042/4,368/1,733 |
+| `headless-terminal` | 1.0 | 107.93s | 91.30s | 90.73s | 21.92s | 7/6 | 20,692/10,547/3,581 |
+| `regex-log` | 1.0 | 39.14s | 34.89s | 34.09s | 0.03s | 2/1 | 4,530/2,991/1,955 |
+| `build-cython-ext` | 1.0 | 183.96s | 178.03s | 177.59s | 79.77s | 12/11 | 158,073/34,169/4,328 |
+| `fix-code-vulnerability` | 1.0 | 37.90s | 33.89s | 33.23s | 1.71s | 6/5 | 44,858/16,691/1,576 |
+| `git-multibranch` | 1.0 | 223.56s | 95.09s | 94.56s | 1.55s | 10/9 | 47,696/18,103/5,125 |
+| `git-leak-recovery` | 1.0 | 76.33s | 72.65s | 72.02s | 0.30s | 7/6 | 22,794/12,948/3,876 |
+| `db-wal-recovery` | 1.0 | 33.80s | 30.47s | 29.80s | 0.23s | 6/5 | 15,793/9,170/1,596 |
+| `sqlite-db-truncate` | 1.0 | 45.28s | 41.61s | 40.97s | 0.23s | 6/5 | 16,576/10,547/2,420 |
+| `nginx-request-logging` | 1.0 | 44.91s | 39.10s | 38.47s | 5.90s | 4/3 | 11,482/6,769/2,090 |
+| `polyglot-c-py` | 1.0 | 51.97s | 47.97s | 47.38s | 0.16s | 3/2 | 8,163/5,392/2,687 |
+| `polyglot-rust-c` | 1.0 | 54.61s | 51.00s | 50.39s | 0.56s | 3/2 | 7,059/4,368/2,994 |
+| `large-scale-text-editing` | 1.0 | 88.43s | 56.98s | 54.18s | 18.45s | 5/4 | 13,618/7,122/2,129 |
+| `log-summary-date-ranges` | 1.0 | 30.50s | 26.97s | 26.37s | 0.44s | 5/4 | 18,965/10,194/1,672 |
+| `cobol-modernization` | 1.0 | 80.94s | 77.05s | 76.31s | 0.65s | 7/6 | 37,877/14,996/4,046 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -517,6 +517,35 @@ preparation took 21.56 seconds outside scoring. The warm trial used 1.82
 seconds for environment startup, 0.86 seconds for agent setup, 23.05 seconds
 for agent execution, and 1.32 seconds for verification. Rust spent 22.12 of
 22.86 seconds in API turns and 0.32 seconds in local tools.
+
+The first v12 full-suite command was interrupted after three green trials, then
+Harbor's package-registry metadata endpoint repeatedly returned Cloudflare 522
+before task setup. Harbor 0.18 resolves package metadata even when task bytes
+are already cached, and its resume path repeats that lookup. As a provisional
+gate, the interrupted job lock selected the exact 16 task digests and Harbor's
+own packager rehashed every cached tree to the same digest before those trees
+were run through the supported local-dataset path. This offline-local run is
+canonical in task and verifier bytes but not in package provenance, so it does
+not replace the required registry-resolved final checkpoint. It passed 16/16
+with no exceptions in 6 minutes 42 seconds. Concurrency compressed 890.39
+aggregate model/API seconds and 132.65 aggregate tool seconds into that wall
+time; the run used 431,203 input, 166,009 cached-input, and 41,222 output tokens
+across 90 model calls and 74 tool calls. `build-cython-ext` was the longest
+agent path at 178.03 Rust seconds after it chose to repair an additional
+upstream test, while `git-multibranch` was the largest verifier outlier at
+124.88 seconds.
+
+`cobol-modernization` then passed all three canonical assertions on its first
+low-effort v12 attempt. During the same registry outage, its locked task tree
+was run through Harbor's supported one-task local path at digest `0200cda…`;
+the result is therefore also labeled offline-local pending a registry-resolved
+rerun. Cold task/verifier preparation took 29.66 seconds, of which 28.91
+seconds built the environment. The warm trial used 1.27 seconds for environment
+startup, 0.50 seconds for agent setup, 77.16 seconds for agent execution, and
+0.79 seconds for verification. Rust spent 76.31 of 77.05 seconds in model/API
+turns and 0.65 seconds in six local tool phases. The agent compiled the COBOL
+reference and compared all three data files across valid, invalid, and
+same-account transaction cases before finishing.
 
 These public tasks are the development/tuning set: their instructions,
 verifiers, trajectories, and failure cases may be inspected while improving
