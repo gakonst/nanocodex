@@ -254,11 +254,11 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All thirty-one active public tasks have green low-effort
+Status: in progress. All thirty-two active public tasks have green low-effort
 PTC samples with the current `openai-coding-v13` prompt. The latest full-suite
-gate passed all 30/30 then-active tasks with zero exceptions or retries;
-Build pMARS is the first focused admission since that gate. The table records
-representative warm samples:
+gate passed all 30/30 then-active tasks with zero exceptions or retries; Build
+pMARS and Prove Plus Comm are the first two focused admissions since that gate.
+The table records representative warm samples:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -293,6 +293,7 @@ representative warm samples:
 | `write-compressor` | 1.0 | 174.45s | 155.55s | 154.24s | 69.25s | 7/6 | 37,685/15,290/5,210 |
 | `tune-mjcf` | 1.0 | 464.00s | 446.70s | 445.93s | 352.61s | 11/10 | 74,022/24,066/5,231 |
 | `build-pmars` | 1.0 | 87.24s | 82.99s | 81.45s | 18.05s | 12/11 | 144,910/35,732/3,121 |
+| `prove-plus-comm` | 1.0 | 14.98s | 10.88s | 9.95s | 0.34s | 3/2 | 5,866/4,466/566 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--1.31 seconds per task, and Rust
@@ -1050,6 +1051,20 @@ is the first focused admission after the 30-task full-suite gate. The task's
 Debian repository is mutable and its bundled reference currently names a stale
 `dpkg-dev` patch version, so this sample proves the prompt-compliant current
 repository path rather than byte-stable source provenance.
+
+`prove-plus-comm` at pinned digest
+`sha256:2c5295786c38135ca86b4b09cab3a82408e25129841f5fc533d31b885f6d737a`
+also needed only a YAML admission. Its first install-only Harbor job took 60.10
+seconds, including 59.29 seconds for the one-time Ubuntu/Coq task and verifier
+image build. The first low-effort sample completed the induction proof,
+compiled it with `coqc`, and passed all four canonical source, artifact,
+no-admit, and fresh-compilation checks. The 14.98-second trial used 1.27 seconds
+for warm environment startup, 0.50 seconds for agent setup, and 0.64 seconds
+for canonical verification. Rust used 10.88 seconds, including 9.95
+generated-model seconds and 0.34 seconds across two inspection/edit/compile
+tool phases. Three model calls consumed 5,866 input, 4,466 cached-input, and
+566 output tokens. This is the second focused admission after the 30-task gate;
+one more clean admission triggers the next full-suite batch gate.
 
 The scheduler was the main trajectory-variance outlier in the earlier 20-task
 gate: it stayed green but used 14/13 model/tool rounds, 207.04 generated-model
