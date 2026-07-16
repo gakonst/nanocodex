@@ -45,6 +45,7 @@ datasets:
       - terminal-bench/schemelike-metacircular-eval
       - terminal-bench/distribution-search
       - terminal-bench/largest-eigenval
+      - terminal-bench/constraints-scheduling
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
