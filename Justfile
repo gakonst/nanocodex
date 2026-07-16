@@ -33,9 +33,9 @@ eval config=default_eval: build-agent
     @HARBOR_TELEMETRY=off "{{harbor}}" run --config "{{config}}"
 
 # Run one registry task through the configured agent, environment, and verifier.
-eval-task task config=default_eval: build-agent
+eval-task task effort="low" multi_agent="false" config=default_eval: build-agent
     @test -x "{{harbor}}" || { echo "run 'just bootstrap' first" >&2; exit 2; }
-    @HARBOR_TELEMETRY=off "{{harbor}}" run --config "{{config}}" --task "{{task}}"
+    @HARBOR_TELEMETRY=off "{{harbor}}" run --config "{{config}}" --task "{{task}}" --agent-kwarg "effort={{effort}}" --agent-kwarg "multi_agent={{multi_agent}}"
 
 # Open all locally retained Harbor jobs unless another jobs directory is supplied.
 view jobs=default_jobs:

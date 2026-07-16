@@ -24,6 +24,7 @@ datasets:
       - terminal-bench/build-cython-ext
       - terminal-bench/fix-code-vulnerability
       - terminal-bench/git-multibranch
+      - terminal-bench/filter-js-from-html
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
