@@ -95,11 +95,13 @@ regression: POV-Ray's scientific stack had replaced the Cython task's required
 NumPy 2.3.0 with NumPy 2.3.1 before the agent started. The stack is now
 verifier-isolated, and unchanged focused Cython, POV-Ray, and Distribution
 Search runs pass 11/11, 3/3, and 4/4 canonical checks. The corrected 35-task
-gate is pending. Core Wars remains a separate variance experiment excluded
-from the stable gate rather than receiving a benchmark-specific prompt hint.
-Browser automation, computer-use, GUI interaction, and image/video perception
-are outside this milestone. Downloaded tasks and canonical verifier assertions
-remain unchanged.
+gate then passed 35/35 and all 137 assertions with zero exception or retry in
+18 minutes 32.29 seconds of Harbor wall; the complete `just eval` command took
+18 minutes 35.66 seconds. Core Wars remains a separate variance experiment
+excluded from the stable gate rather than receiving a benchmark-specific
+prompt hint. Browser automation, computer-use, GUI interaction, and
+image/video perception are outside this milestone. Downloaded tasks and
+canonical verifier assertions remain unchanged.
 
 Candidate admission is evidence-driven. Cold task preparation is measured
 before model work, and a task that repeatedly requires benchmark-specific
