@@ -254,10 +254,10 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All twenty-three active public tasks passed the same
-low-effort PTC full-suite gate with the current `openai-coding-v12` prompt. The
+Status: in progress. All twenty-four active public tasks passed the same
+low-effort PTC full-suite gate with the current `openai-coding-v13` prompt. The
 table records representative warm samples; the latest complete-suite
-checkpoint is the registry-resolved 23-task gate described below:
+checkpoint is the registry-resolved 24-task gate described below:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -284,6 +284,7 @@ checkpoint is the registry-resolved 23-task gate described below:
 | `merge-diff-arc-agi-task` | 1.0 | 53.43s | 49.26s | 48.40s | 0.19s | 6/5 | 25,618/11,571/2,142 |
 | `winning-avg-corewars` | 1.0 | 231.73s | 227.31s | 226.75s | 116.36s | 15/14 | 129,260/30,108/4,032 |
 | `sparql-university` | 1.0 | 38.76s | 34.70s | 34.17s | 0.42s | 4/3 | 16,983/8,817/1,956 |
+| `pypi-server` | 1.0 | 58.86s | 54.32s | 53.56s | 1.32s | 7/6 | 30,256/13,864/3,576 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -353,7 +354,7 @@ and orchestration settings:
 | medium hosted Multi-agent | 0.0 | 374.30s | 172.34s | 171.75s | 0.86s | 6/6 | 39,557/26,502/7,669 |
 | high PTC | 0.0 | 559.84s | 358.48s | 357.90s | 2.28s | 9/8 | 96,490/26,916/23,950 |
 
-The generic `openai-coding-v9` prompt now requires representative preservation
+The `openai-coding-v9` iteration introduced representative preservation
 checks for destructive transforms and mature parsers for security-sensitive
 grammars. It improved self-verification and parser choice but did not clear the
 same malformed browser-corpus batch, so no vector-specific prompt hint was
@@ -615,7 +616,8 @@ the trajectory, but still scored 0.0 after 12 model calls, 11 tool calls, and
 180.78 Rust seconds; it used 75,245 input, 26,014 cached-input, and 6,741 output
 tokens. The added prompt weight was reverted because it increased exploration
 without satisfying the canonical peak parameters. No task-specific conversion
-hint was added, and the active suite remains on the proven v12 prompt.
+hint was added, and the active suite remained on the proven v12 prompt at that
+checkpoint.
 
 The hard `llm-inference-batching-scheduler` task then passed all six canonical
 schema, integrity, feasibility, coverage, and performance checks on its first
@@ -810,6 +812,45 @@ cached-input, 6,885 cache-write, and 74,468 output tokens across 152 model calls
 and 129 tool calls; 15,707 output tokens were reasoning tokens. Warmup probes
 used a separate 39,125 input tokens. No compaction, hosted subagents, or
 API-reported cost occurred.
+
+`pypi-server` required only one exact cached-`uvx` command shape for its pinned
+`pip==25.2`; it added no verifier image dependency. Cold task preparation took
+23.92 seconds wall and 23.08 seconds of environment setup. Its first warm
+low-effort sample passed in 36.84 seconds: Rust used 32.35 seconds, generated
+turns used 31.37 seconds, and four local tool phases used 2.19 seconds. Five
+model calls used 14,314 input, 9,170 cached-input, and 1,957 output tokens. The
+canonical verifier uninstalled any existing package, installed
+`vectorops==0.1.0` from the agent's localhost PEP 503 index, and passed all four
+dot-product cases in 1.13 seconds.
+
+The first 24-task checkpoint kept `pypi-server` green but scored 23/24 because
+`kv-store-grpc` changed the explicitly requested `SetValRequest.value` field to
+`val`. This was KV's second failure in nine retained samples. The newer
+trajectory initially generated the correct field, then renamed it solely to
+satisfy its own incorrect smoke test. That measured pattern justified one
+generic v13 prompt sentence: explicitly requested public API, schema, file, and
+wire names are invariants, and a conflicting self-written check must be fixed
+instead of changing the contract. This matches Codex's GPT-5.6 migration
+guidance in
+`codex-rs/skills/src/assets/samples/openai-docs/references/upgrading-to-gpt-5p6-sol.md`,
+which preserves required schema fields and recommends prompt edits only after
+representative traces expose a regression. The focused v13 KV retry passed all
+seven canonical checks, and the unchanged Git and OpenSSL anchors remained
+green.
+
+The required registry-resolved v13 gate then passed 24/24 with reward 1.0, zero
+exceptions, and zero retries in 8 minutes 3.28 seconds. Four-way concurrency
+compressed 1,628.32 aggregate generated-model seconds and 306.31 aggregate tool
+seconds into that wall time; tool time is a measured subset of generated-turn
+time. Rust totaled 1,643.62 seconds, including 8.61 seconds of WebSocket warmup
+and 6.64 seconds of connection setup, leaving 0.06 aggregate seconds of
+harness-local work outside connection, warmup, and model turns. Environment
+startup, agent upload/setup, and canonical verification totaled 30.55, 12.88,
+and 85.96 task-seconds. The suite used 1,069,450 input, 325,148 cached-input,
+5,837 cache-write, and 75,322 output tokens across 159 model calls and 135 tool
+calls; 15,944 output tokens were reasoning tokens. Warmup probes used a
+separate 41,906 input tokens. No compaction, hosted subagents, or API-reported
+cost occurred.
 
 The scheduler was the main trajectory-variance outlier in the earlier 20-task
 gate: it stayed green but used 14/13 model/tool rounds, 207.04 generated-model

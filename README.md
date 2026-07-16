@@ -83,10 +83,10 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The current development slice contains twenty-three public
-shell/code tasks, all green in the same full-suite low-effort model/tool gate.
-Browser automation, computer-use, GUI interaction, and image/video perception
-are outside this milestone. Downloaded tasks and canonical verifier assertions
+and tasks. The current development slice contains twenty-four public shell/code
+tasks, all green in the same full-suite low-effort v13 model/tool gate. Browser
+automation, computer-use, GUI interaction, and image/video perception are
+outside this milestone. Downloaded tasks and canonical verifier assertions
 remain unchanged.
 
 Candidate admission is evidence-driven. Cold task preparation is measured
@@ -95,9 +95,11 @@ prompt hints is deferred rather than adding that hint to the shared harness.
 New verifier dependencies are appended as isolated image layers so prior apt
 and Python layers remain reusable. The pinned RDFLib layer used by the active
 SPARQL task was paid once during preparation and adds no warm-trial
-installation. Primer3 support is retained for the deferred DNA experiments,
-but `dna-insert` and `dna-assembly` are excluded from the active gate after
-respectively scoring 2/4 and 1/3 across unchanged low-effort samples.
+installation. The active PyPI-server task needs only an exact cached verifier
+command shape and adds no image dependency. Primer3 support is retained for the
+deferred DNA experiments, but `dna-insert` and `dna-assembly` are excluded from
+the active gate after respectively scoring 2/4 and 1/3 across unchanged
+low-effort samples.
 The retained Raman-fitting experiment, for example, scored 0.0 in three
 canonical low-effort runs; its generic units prompt increased work without
 producing the required fit, so both the prompt change and task admission were
