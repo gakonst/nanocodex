@@ -39,6 +39,7 @@ datasets:
       - terminal-bench/llm-inference-batching-scheduler
       - terminal-bench/kv-store-grpc
       - terminal-bench/merge-diff-arc-agi-task
+      - terminal-bench/dna-insert
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment

@@ -30,3 +30,7 @@ RUN uv pip install --system --break-system-packages --no-cache \
     pytest==8.4.1 \
     pytest-json-ctrf==0.3.5 \
     requests==2.32.5
+# Keep new task-specific system tools in an append-only layer so existing apt
+# and Python dependency layers remain reusable across verifier overlays.
+RUN DEBIAN_FRONTEND=noninteractive \
+    apt-get install --yes --no-install-recommends primer3
