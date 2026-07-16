@@ -250,7 +250,7 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. The first seven-task low-effort PTC baseline is green on
+Status: in progress. The first eight-task low-effort PTC baseline is green on
 the same `openai-coding-v7` stable prompt:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
@@ -262,6 +262,7 @@ the same `openai-coding-v7` stable prompt:
 | `regex-log` | 1.0 | 35.04s | 31.17s | 30.24s | 0.07s | 2/1 | 4,163/1,163/1,963 |
 | `build-cython-ext` | 1.0 | 160.79s | 154.45s | 153.80s | 67.27s | 21/20 | 240,833/43,306/4,797 |
 | `fix-code-vulnerability` | 1.0 | 34.05s | 29.90s | 29.23s | 1.50s | 6/5 | 33,896/5,815/1,324 |
+| `git-multibranch` | 1.0 | 65.40s | 54.22s | 53.51s | 4.57s | 6/5 | 23,667/10,501/3,209 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -294,6 +295,15 @@ phases: all 367 repository tests and all 6 hidden assertions ran and passed,
 with separate CTRF records. Harbor's `--task` override now backs `just
 eval-task terminal-bench/<name>`, so a one-task warm iteration keeps the shared
 agent, environment, and verifier configuration without editing the suite YAML.
+
+All three multibranch deployment attempts passed real password-authenticated
+SSH pushes, post-receive deployment, and HTTPS checks. The first attempt spent
+51.09 seconds building its task/verifier image and 10.87 seconds verifying.
+Caching the canonical test's system dependencies and package indexes reduced
+verification to 7.38 seconds; warm environment startup was 2.02 seconds and
+agent setup 0.49 seconds. Model-path variance was 54--71 seconds across the
+three green runs, so no prompt or tool change was inferred from a faster single
+trajectory.
 
 The first async attempt also exposed a verifier-adapter bug: its canonical
 assertions require a sibling `test.py`, while the fast verifier had staged only
