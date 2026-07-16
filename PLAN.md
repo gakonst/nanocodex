@@ -254,10 +254,12 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All twenty-four active public tasks passed the same
-low-effort PTC full-suite gate with the current `openai-coding-v13` prompt. The
-table records representative warm samples; the latest complete-suite
-checkpoint is the registry-resolved 24-task gate described below:
+Status: in progress. All twenty-five active public tasks have green low-effort
+PTC samples with the current `openai-coding-v13` prompt. The first twenty-four
+passed the same full-suite gate; Scheme is admission one of the next three-task
+batch. The table records representative warm samples, and the latest
+complete-suite checkpoint is the registry-resolved 24-task gate described
+below:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -285,6 +287,7 @@ checkpoint is the registry-resolved 24-task gate described below:
 | `winning-avg-corewars` | 1.0 | 231.73s | 227.31s | 226.75s | 116.36s | 15/14 | 129,260/30,108/4,032 |
 | `sparql-university` | 1.0 | 38.76s | 34.70s | 34.17s | 0.42s | 4/3 | 16,983/8,817/1,956 |
 | `pypi-server` | 1.0 | 58.86s | 54.32s | 53.56s | 1.32s | 7/6 | 30,256/13,864/3,576 |
+| `schemelike-metacircular-eval` | 1.0 | 156.46s | 88.85s | 88.19s | 16.15s | 6/5 | 107,509/29,224/4,455 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -851,6 +854,20 @@ and 85.96 task-seconds. The suite used 1,069,450 input, 325,148 cached-input,
 calls; 15,944 output tokens were reasoning tokens. Warmup probes used a
 separate 41,906 input tokens. No compaction, hosted subagents, or API-reported
 cost occurred.
+
+`schemelike-metacircular-eval` was admitted without a runtime, prompt,
+adapter, verifier, or image-dependency change. Its copy-only Python 3.13 task
+and verifier images prepared in 17.42 seconds wall and 16.55 seconds of
+environment setup. The first low-effort sample passed all 63 canonical Scheme
+programs, including the nested self-interpretation cases, in 156.46 seconds.
+Environment startup and agent setup used 1.27 and 0.52 seconds; Rust used 88.85
+seconds, of which 88.19 seconds was the generated-model envelope and 16.15
+seconds was five task-legitimate interpreter test phases. The canonical
+verifier used 64.19 seconds. Six model calls consumed 107,509 input, 29,224
+cached-input, and 4,455 output tokens, with no compaction, hosted subagent, or
+API-reported cost. This is the first admission after the 24-task full gate, so
+the next required complete-suite checkpoint remains due after two more clean
+task admissions.
 
 The scheduler was the main trajectory-variance outlier in the earlier 20-task
 gate: it stayed green but used 14/13 model/tool rounds, 207.04 generated-model

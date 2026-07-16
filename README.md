@@ -83,11 +83,12 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The current development slice contains twenty-four public shell/code
-tasks, all green in the same full-suite low-effort v13 model/tool gate. Browser
-automation, computer-use, GUI interaction, and image/video perception are
-outside this milestone. Downloaded tasks and canonical verifier assertions
-remain unchanged.
+and tasks. The current development slice contains twenty-five public shell/code
+tasks with green low-effort v13 samples. The latest complete-suite checkpoint
+passed its first twenty-four tasks together; Scheme is the first admission in
+the next three-task batch. Browser automation, computer-use, GUI interaction,
+and image/video perception are outside this milestone. Downloaded tasks and
+canonical verifier assertions remain unchanged.
 
 Candidate admission is evidence-driven. Cold task preparation is measured
 before model work, and a task that repeatedly requires benchmark-specific
