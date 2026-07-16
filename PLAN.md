@@ -254,12 +254,13 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All thirty-three active public tasks have green low-effort
+Status: in progress. All thirty-four active public tasks have green low-effort
 PTC samples with the current `openai-coding-v13` prompt. The latest required
 34-task full-suite gate scored 33/34 with zero exceptions or retries; the only
-miss, Core Wars, is now an evidence-backed variance exclusion, so all 33
-remaining active tasks were green in that gate. A literal 33-task rerun remains
-the next suite gate. The table records representative warm samples:
+miss, Core Wars, is now an evidence-backed variance exclusion, so all 33 tasks
+that remain from that gate were green. Circuit Fib/Sqrt then passed as the first
+focused admission in the next three-task batch. The table records representative
+warm samples:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -296,6 +297,7 @@ the next suite gate. The table records representative warm samples:
 | `build-pmars` | 1.0 | 87.24s | 82.99s | 81.45s | 18.05s | 12/11 | 144,910/35,732/3,121 |
 | `prove-plus-comm` | 1.0 | 14.98s | 10.88s | 9.95s | 0.34s | 3/2 | 5,866/4,466/566 |
 | `custom-memory-heap-crash` | 1.0 | 99.40s | 91.74s | 91.01s | 32.71s | 11/10 | 82,173/14,260/3,394 |
+| `circuit-fibsqrt` | 1.0 | 108.20s | 103.24s | 102.20s | 35.70s | 5/4 | 25,256/12,438/3,744 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--1.31 seconds per task, and Rust
@@ -1255,6 +1257,34 @@ the earlier unchanged green sample passed all five opponents at 78, 94, 87,
 modes, Core Wars is retained as a variance experiment but excluded from the
 stable active gate rather than receiving a benchmark-specific search loop or
 prompt hint.
+
+The pinned dataset ranks `make-mips-interpreter` before the next admitted task,
+but its success criterion requires generating and validating Doom render
+frames. It is deferred as an image-output task under the current non-modal
+shell/code scope; no preparation or scored attempt was run for this milestone.
+
+`circuit-fibsqrt` at pinned digest
+`sha256:fe25ab474ba626c4f45f57e757e86f2ad292de80b505e5b7ba0ba76c30d7fcc8`
+is the first admission in the next batch. Its cold install-only command took
+55.93 seconds, with 52.64 seconds in Harbor and 51.59 seconds constructing the
+task and verifier images; it made no model call. The first low-effort scored
+attempt generated a 3,267-line gate circuit and passed all three canonical
+existence, size, and Fibonacci-of-integer-square-root checks. The model also
+self-checked 30 boundary and seeded-random inputs, and its final workspace
+listing contained only the supplied simulator source and requested gate file.
+
+The warm Harbor trial took 108.20 seconds: environment startup used 1.29
+seconds, agent setup 0.52 seconds, execution 103.76 seconds, and canonical
+verification 1.25 seconds. Rust used 103.24 seconds, including 102.20 seconds
+in generated model turns and 35.70 seconds across four inspection, generation,
+compile, and boundary-check tool phases. Five model calls used 25,256 input,
+12,438 cached-input, and 3,744 output tokens; warmup used another 1,718 input
+tokens. JSONL and ATIF agreed on the 5/4 model/tool rounds, the agent emitted
+`run.completed`, and no exception, retry, reconnect, compaction, hosted
+subagent, API-reported cost, verifier setup warning, or agent stderr occurred.
+No shared harness change was needed, so the next full `just eval` remains due
+after two further admissions complete this three-task batch, or earlier if a
+shared runtime or environment change is required.
 
 The scheduler was the main trajectory-variance outlier in the earlier 20-task
 gate: it stayed green but used 14/13 model/tool rounds, 207.04 generated-model

@@ -51,6 +51,7 @@ datasets:
       - terminal-bench/prove-plus-comm
       - terminal-bench/custom-memory-heap-crash
       - terminal-bench/qemu-startup
+      - terminal-bench/circuit-fibsqrt
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
