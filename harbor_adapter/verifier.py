@@ -59,6 +59,8 @@ class PytestVerifier(Verifier):
             "pip() { "
             'case "$*" in '
             '"install pytest==8.4.1 pytest-json-ctrf==0.3.5"|'
+            '"install pytest==8.4.1 pytest-json-ctrf==0.3.5 '
+            '--break-system-packages"|'
             '"install pytest==8.4.1 requests==2.32.5 '
             'pytest-json-ctrf==0.3.5"|'
             '"install pytest==8.4.2 requests==2.32.5 psutil==7.0.0 '

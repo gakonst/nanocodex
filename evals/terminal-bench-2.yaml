@@ -44,6 +44,7 @@ datasets:
       - terminal-bench/pypi-server
       - terminal-bench/schemelike-metacircular-eval
       - terminal-bench/distribution-search
+      - terminal-bench/largest-eigenval
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
