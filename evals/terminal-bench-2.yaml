@@ -39,8 +39,6 @@ datasets:
       - terminal-bench/llm-inference-batching-scheduler
       - terminal-bench/kv-store-grpc
       - terminal-bench/merge-diff-arc-agi-task
-      - terminal-bench/dna-insert
-      - terminal-bench/dna-assembly
       - terminal-bench/winning-avg-corewars
       - terminal-bench/sparql-university
 
