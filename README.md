@@ -27,14 +27,15 @@ native BuildKit compile -> static Linux binary
 The Python `BaseInstalledAgent` shim only uploads and starts the executable,
 then converts its retained JSONL to ATIF. It never dispatches tool calls.
 OpenAI runs the model-generated JavaScript in its hosted PTC runtime. The Rust
-process executes only the nested `exec_command` calls returned by the API,
-preserves their caller linkage, and sends their structured results back over
-the same WebSocket continuation chain. A dedicated socket pump services API
-keepalives while the response consumer is waiting on local tools. If the
-server normally closes that idle socket before the next `response.create`,
-Rust reconnects once and resends the same stored continuation; connection
-attempts, reconnects, and connection wall time remain visible in JSONL and
-Harbor/ATIF.
+process executes the nested common-tool calls returned by the API, preserves
+their caller linkage, and sends their structured results back over the same
+stored WebSocket continuation chain. Requests use `store: true`, a stable
+session cache key, and matching session/thread transport identity. Rust also
+replays the server's per-turn sticky-routing token on every continuation and
+same-turn reconnect. A dedicated socket pump
+services API keepalives while the response consumer is waiting on local tools;
+connection attempts, reconnects, and connection wall time remain visible in
+JSONL and Harbor/ATIF.
 
 The adapter removes `OPENAI_API_KEY` from Harbor's per-exec environment before
 launching Docker. It uploads a mode-`0400` transient file for the agent user,

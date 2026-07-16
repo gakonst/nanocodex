@@ -32,9 +32,10 @@ Rust performs API calls and tools directly inside the task container.
 The governing runtime constraint is hosted-first. OpenAI owns model reasoning,
 the Programmatic Tool Calling JavaScript runtime, root/subagent orchestration,
 stored response state, prompt caching, and compaction. Rust owns the narrow
-capabilities that must touch the Harbor task container: JSONL, local shell
-execution, bounded process cleanup, and API-visible measurements. Do not grow a
-local agent scheduler, transcript manager, compactor, or second eval record.
+capabilities that must touch the Harbor task container: JSONL, local tools,
+bounded process cleanup, reconnect replay, and API-visible measurements. Do not
+grow a local agent scheduler, transcript manager, compactor, or second eval
+record.
 
 Local artifacts are built by a native-architecture Linux BuildKit container.
 Cargo `dev` is the default; `HARNESS_BUILD_PROFILE=profiling` selects an
@@ -95,15 +96,15 @@ Status: first real model/tool vertical slice complete.
    provider interface, alternate model path, HTTP/SSE fallback, or legacy wire
    compatibility.
 2. Keep one persistent Responses WebSocket connection. Streaming is implicit;
-   do not send the HTTP `stream` field. Warm stable request state with
-   `generate: false`, continue incrementally with `previous_response_id`, and
-   preserve every raw inbound and outbound API event.
-3. Use the Codex-trained `exec_command` function shape for local shell work.
-   In the default single-agent profile, expose it exclusively through hosted
-   Programmatic Tool Calling with `allowed_callers: ["programmatic"]`; Rust
-   executes typed `function_call` items and returns typed
-   `function_call_output` items with the original PTC caller. OpenAI runs the
-   generated JavaScript; Rust never does.
+   do not send the HTTP `stream` field. Prewarm the stable instructions and
+   tools with empty input and `generate: false`, continue incrementally with
+   `previous_response_id`, and preserve every raw inbound and outbound API
+   event.
+3. Keep the common local tool surface exclusively behind hosted Programmatic
+   Tool Calling with `allowed_callers: ["programmatic"]`. Rust executes typed
+   `function_call` items and returns typed `function_call_output` items with
+   the original PTC caller. OpenAI runs the generated JavaScript; Rust never
+   does.
 4. Treat one generated JavaScript program as a bounded mechanical phase. Use
    `Promise.all` for independent reads, sequence dependent work and mutations,
    reduce intermediate results in hosted JavaScript, retry transient work at
@@ -112,20 +113,21 @@ Status: first real model/tool vertical slice complete.
 5. A completed response is not a completed task until the root emits a final
    assistant message. A response containing only program or tool work
    continues from its response ID.
-6. Default to hosted state with `store: true` and `previous_response_id` so a
-   reconnect can rehydrate the response chain. Do not maintain or replay a
-   parallel local transcript. A later explicit ZDR mode may use `store: false`
-   and complete encrypted-item replay, but it must not complicate the default.
+6. Use `store: true` with `previous_response_id` so the server owns the response
+   chain and a reconnect can resend the same incremental continuation. Capture
+   `x-codex-turn-state` from the handshake or `response.metadata`, replay it
+   unchanged in WebSocket `client_metadata`, and send it on a same-turn
+   reconnect. Do not maintain or replay a parallel local transcript.
 7. Enable server-side compaction through `context_management` on every
    generated response. Preserve opaque compaction items in API order; never
    interpret, reorder, or replace them with a local natural-language summary.
    Seed the quality-first profile near 350K tokens and evaluate a cost-sensitive
    profile just below GPT-5.6 Sol's 272K long-context pricing boundary.
-8. Use explicit GPT-5.6 prompt caching. Put exact stable base instructions
-   and tools before dynamic task/environment content, place an explicit cache
-   breakpoint at that boundary, and derive `prompt_cache_key` from the selected
-   model, profile version, stable-prefix bytes, and tool-catalog bytes. Record
-   `cached_tokens` and `cache_write_tokens`; do not churn the stable prefix.
+8. Follow Codex's automatic GPT-5.6 prompt caching behavior. Keep exact base
+   instructions, tools, and contextual input in stable order, use the raw
+   run/session ID as `prompt_cache_key` for every request in the response chain,
+   and let the server cache the longest growing prefix without explicit cache
+   options or breakpoints. Record `cached_tokens` and `cache_write_tokens`.
 9. Use `reasoning.context: "all_turns"` while task goals remain stable. Keep
    `reasoning.mode: "standard"` for the interactive tool loop and make effort a
    CLI/eval setting: low for the fast smoke loop, max only when the measured
@@ -220,9 +222,12 @@ Status: complete.
 Before treating the hosted surface as the eval baseline, prove its combined
 event matrix with one real vertical smoke rather than separate mocks:
 
-1. Open ordinary WebSockets without a beta header and Multi-agent WebSockets
-   with only `OpenAI-Beta: responses_multi_agent=v1`. Warm each exact stable
-   prompt/tool profile with `generate: false`, then chain from that response ID.
+1. Open ordinary WebSockets with
+   `OpenAI-Beta: responses_websockets=2026-02-06`; append
+   `responses_multi_agent=v1` only for Multi-agent WebSockets. Send the stable
+   session ID as the session, thread, and client-request identity. Warm each
+   exact stable prompt/tool profile with `generate: false`, then chain from that
+   response ID.
 2. Prove the default PTC profile with a hosted JavaScript program, one
    programmatic `exec_command`, caller-preserving continuation, and one final
    assistant message.
@@ -436,10 +441,9 @@ runs kept `fix-git` and `openssl-selfsigned-cert` green at 51.44 and 42.03
 seconds of Harbor trial time, respectively.
 
 The active Milestone 2 ladder is limited to text-terminal and repository tasks
-that exercise the harness's current shell/code surface. Browser automation,
-computer-use, image/video perception, and other modality-dependent tasks are
-deferred until those tool surfaces are intentional milestones; they are not
-counted as failures of the shell-only loop.
+that exercise the harness's current common Codex tool surface. Browser
+automation, computer-use, and other modality-dependent tasks remain deferred;
+they are not counted as failures of the current loop.
 
 `vulnerable-secret` is retained as an excluded cyber-safety experiment. One
 low-effort v11 attempt completed normally in 32.30 seconds and passed all three
