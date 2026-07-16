@@ -40,8 +40,10 @@ for routine or sequential work.
 For the local eval loop, Harbor builds each canonical task Dockerfile for the
 Docker daemon's native architecture, then adds one content-addressed layer with
 the pinned verifier dependencies. Downloaded benchmark tasks and assertion
-files remain unchanged; only their dependency-installing shell launchers are
-replaced by a direct `pytest` invocation.
+files remain unchanged, and their canonical `test.sh` launchers still own
+task-specific setup, assertion phases, CTRF output, and reward calculation.
+The adapter skips only allowlisted dependency-install commands already
+satisfied by the cached verifier layer; an unknown install shape fails closed.
 
 `just prepare-evals` pays those image-build costs outside measured eval jobs by
 running Harbor's install-only path with its no-op agent. When adding one task,
@@ -74,10 +76,11 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The current development slice contains fourteen public shell/code tasks,
-all with green samples from the real model/tool loop. Browser automation,
-computer-use, and other modality-dependent tasks are outside this milestone.
-Downloaded tasks and canonical verifier assertions remain unchanged.
+and tasks. The current development slice contains fifteen public shell/code
+tasks, all with green samples from the real model/tool loop. Browser
+automation, computer-use, GUI interaction, and image/video perception are
+outside this milestone. Downloaded tasks and canonical verifier assertions
+remain unchanged.
 
 Every trial retains `input.jsonl`, `events.jsonl`, `stderr.log`, and
 `trajectory.json` under `.harness/harbor/jobs`. Harbor receives aggregate token

@@ -254,11 +254,12 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All fourteen active public tasks have green low-effort PTC
+Status: in progress. All fifteen active public tasks have green low-effort PTC
 samples. The table records their last warm samples. `fix-git`, OpenSSL, and
-both polyglot tasks use the current `openai-coding-v11` prompt. Both database
-recovery tasks plus Nginx use v10. The vulnerability task, multibranch task,
-and `git-leak-recovery` use v9; the other task digests have v7 samples:
+both polyglot tasks plus large-scale text editing use the current
+`openai-coding-v11` prompt. Both database recovery tasks plus Nginx use v10.
+The vulnerability task, multibranch task, and `git-leak-recovery` use v9; the
+other task digests have v7 samples:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -276,6 +277,7 @@ and `git-leak-recovery` use v9; the other task digests have v7 samples:
 | `nginx-request-logging` | 1.0 | 50.17s | 44.30s | 43.51s | 5.93s | 4/3 | 11,003/6,580/1,914 |
 | `polyglot-c-py` | 1.0 | 51.87s | 47.77s | 46.80s | 0.26s | 3/2 | 7,710/3,984/2,347 |
 | `polyglot-rust-c` | 1.0 | 64.73s | 60.82s | 60.21s | 0.55s | 2/1 | 4,947/1,346/3,032 |
+| `large-scale-text-editing` | 1.0 | 120.37s | 93.35s | 92.71s | 36.53s | 4/3 | 11,935/7,700/2,796 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -448,6 +450,31 @@ agent setup, 60.94 seconds for agent execution, and 0.84 seconds for
 verification. Rust spent 60.21 of 60.82 seconds in model/API calls and 0.55
 seconds in the sole local tool phase.
 
+`large-scale-text-editing` produced valid Vim macros and transformed the
+million-row input byte-for-byte on its first model attempt, but exposed a
+verifier-adapter integrity bug: the old direct-pytest shortcut skipped the
+canonical launcher's removal of agent-touched CSVs and trusted input
+regeneration, then replayed the macros against already transformed data. The
+generic adapter now executes each untouched canonical `test.sh`; it clears old
+reward/CTRF output and skips only exact, allowlisted dependency-install shapes
+already present in the cached verifier layer. Task-specific setup, multiple
+pytest phases, and reward calculation therefore remain benchmark-owned.
+
+The corrected large-file run passed all five assertions. Its one-time image
+preparation took 23.11 seconds outside scoring. The warm trial used 1.64
+seconds for environment startup, 0.53 seconds for agent setup, 93.47 seconds
+for agent execution, and 23.43 seconds for verification. The verifier spent
+21.64 seconds regenerating a fresh 51 MB input and replaying the submitted
+macros. Rust spent 92.71 of 93.35 seconds in API turns; those turns include
+36.53 seconds waiting for the three nested local tool phases.
+
+Targeted adapter regressions then stayed green: the ordinary `fix-git` uvx
+launcher verified in 0.87 seconds, the vulnerability task preserved both its
+367-test repository phase and six hidden assertions in 0.86 seconds, and the
+async launcher's canonical support-file copy plus real cancellation checks
+completed in 14.62 seconds. Their full warm trials took 41.56, 43.87, and
+67.17 seconds respectively.
+
 These public tasks are the development/tuning set: their instructions,
 verifiers, trajectories, and failure cases may be inspected while improving
 the harness. Report tuned development results separately from a later held-out
@@ -455,13 +482,13 @@ task slice so repeated verifier-guided changes are not mistaken for blind
 generalization.
 
 The first async attempt also exposed a verifier-adapter bug: its canonical
-assertions require a sibling `test.py`, while the fast verifier had staged only
-the assertion module. The generic adapter now stages canonical support files
-without modifying them. Once that infrastructure failure was removed, the
-model failed the queued-SIGINT cleanup edge case. A narrow prompt correction
-requiring verification at the requested external lifecycle boundary produced a
-green attempt that tested queued cancellation and a real subprocess signal.
-Earlier tasks were rerun and stayed green after the prompt change.
+assertions require a sibling `test.py`, while the old direct-pytest shortcut
+had staged only the assertion module. Running the canonical launcher now
+performs its own support-file copy. Once that infrastructure failure was
+removed, the model failed the queued-SIGINT cleanup edge case. A narrow prompt
+correction requiring verification at the requested external lifecycle boundary
+produced a green attempt that tested queued cancellation and a real subprocess
+signal. Earlier tasks were rerun and stayed green after the prompt change.
 
 Use Harbor as the runner and result store. First rerun `fix-git` and
 `openssl-selfsigned-cert` independently against the hosted-runtime baseline.

@@ -32,6 +32,7 @@ datasets:
       - terminal-bench/nginx-request-logging
       - terminal-bench/polyglot-c-py
       - terminal-bench/polyglot-rust-c
+      - terminal-bench/large-scale-text-editing
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
