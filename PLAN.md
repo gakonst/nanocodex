@@ -254,10 +254,11 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All sixteen active public tasks have green low-effort PTC
+Status: in progress. All seventeen active public tasks have green low-effort PTC
 samples. The table records their last warm samples. `fix-git`, OpenSSL, and
-both polyglot tasks, large-scale text editing, and log summarization use the
-current `openai-coding-v11` prompt. Both database recovery tasks plus Nginx use v10.
+both polyglot tasks, large-scale text editing, log summarization, and binary
+secret extraction use the current `openai-coding-v11` prompt. Both database
+recovery tasks plus Nginx use v10.
 The vulnerability task, multibranch task, and `git-leak-recovery` use v9; the
 other task digests have v7 samples:
 
@@ -279,6 +280,7 @@ other task digests have v7 samples:
 | `polyglot-rust-c` | 1.0 | 64.73s | 60.82s | 60.21s | 0.55s | 2/1 | 4,947/1,346/3,032 |
 | `large-scale-text-editing` | 1.0 | 120.37s | 93.35s | 92.71s | 36.53s | 4/3 | 11,935/7,700/2,796 |
 | `log-summary-date-ranges` | 1.0 | 31.43s | 22.86s | 22.12s | 0.32s | 3/2 | 11,288/6,354/1,101 |
+| `vulnerable-secret` | 1.0 | 32.30s | 28.45s | 27.63s | 0.25s | 6/5 | 37,265/16,536/1,021 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--0.93 seconds per task, and Rust
@@ -483,6 +485,16 @@ preparation took 21.56 seconds outside scoring. The warm trial used 1.82
 seconds for environment startup, 0.86 seconds for agent setup, 23.05 seconds
 for agent execution, and 1.32 seconds for verification. Rust spent 22.12 of
 22.86 seconds in API turns and 0.32 seconds in local tools.
+
+`vulnerable-secret` passed on its first low-effort v11 attempt, adding a
+stripped AArch64 binary-analysis path without a new tool surface. The model
+inspected the ELF headers, sections, disassembly, and encoded data across five
+local phases, decoded and behaviorally checked the XOR-obfuscated flag, and
+wrote the exact requested result. One-time native image preparation took 33.19
+seconds outside scoring. The warm trial used 1.19 seconds for environment
+startup, 0.45 seconds for agent setup, 28.57 seconds for agent execution, and
+0.80 seconds for verification. Rust spent 27.63 of 28.45 seconds in API turns
+and 0.25 seconds in local tools.
 
 These public tasks are the development/tuning set: their instructions,
 verifiers, trajectories, and failure cases may be inspected while improving
