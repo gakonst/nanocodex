@@ -254,11 +254,12 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. All thirty-two active public tasks have green low-effort
+Status: in progress. All thirty-three active public tasks have green low-effort
 PTC samples with the current `openai-coding-v13` prompt. The latest full-suite
 gate passed all 30/30 then-active tasks with zero exceptions or retries; Build
-pMARS and Prove Plus Comm are the first two focused admissions since that gate.
-The table records representative warm samples:
+pMARS, Prove Plus Comm, and Custom Memory Heap Crash are the three focused
+admissions since that gate. Their next full-suite batch gate is now due. The
+table records representative warm samples:
 
 | task | reward | trial | Rust | generated turns | tool wall | rounds/tools | input/cache/output |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -294,6 +295,7 @@ The table records representative warm samples:
 | `tune-mjcf` | 1.0 | 464.00s | 446.70s | 445.93s | 352.61s | 11/10 | 74,022/24,066/5,231 |
 | `build-pmars` | 1.0 | 87.24s | 82.99s | 81.45s | 18.05s | 12/11 | 144,910/35,732/3,121 |
 | `prove-plus-comm` | 1.0 | 14.98s | 10.88s | 9.95s | 0.34s | 3/2 | 5,866/4,466/566 |
+| `custom-memory-heap-crash` | 1.0 | 99.40s | 91.74s | 91.01s | 32.71s | 11/10 | 82,173/14,260/3,394 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--1.31 seconds per task, and Rust
@@ -1063,8 +1065,25 @@ for warm environment startup, 0.50 seconds for agent setup, and 0.64 seconds
 for canonical verification. Rust used 10.88 seconds, including 9.95
 generated-model seconds and 0.34 seconds across two inspection/edit/compile
 tool phases. Three model calls consumed 5,866 input, 4,466 cached-input, and
-566 output tokens. This is the second focused admission after the 30-task gate;
-one more clean admission triggers the next full-suite batch gate.
+566 output tokens. This was the second focused admission after the 30-task
+gate.
+
+`custom-memory-heap-crash` at pinned digest
+`sha256:72cdc9cf98c822a1449935ca32efc6612fe3d14928c9465c11285e95dcdf60cb`
+completed that batch. Its deliberately expensive install-only Harbor job took
+389.08 seconds, including 388.13 seconds to download GCC source, build the two
+patched debug/release libstdc++ variants, and create the 4.13 GB task and 4.34
+GB verifier images. That one-time compiler bootstrap used no model tokens. The
+first low-effort sample isolated the facet-lifetime failure, initialized facets
+before installing the temporary heap, and passed all six canonical protected
+source, debug/release compile and execution, and Valgrind leak checks. The
+99.40-second warm trial used 1.25 seconds for environment startup, 0.51 seconds
+for agent setup, and 4.08 seconds for canonical verification. Rust used 91.74
+seconds, including 91.01 generated-model seconds and 32.71 seconds across ten
+inspection, compile, execution, and Valgrind tool phases. Eleven model calls
+consumed 82,173 input, 14,260 cached-input, and 3,394 output tokens. The scored
+path was API-dominated once the canonical task image was cached; this third
+focused admission triggers the 33-task full-suite gate.
 
 The scheduler was the main trajectory-variance outlier in the earlier 20-task
 gate: it stayed green but used 14/13 model/tool rounds, 207.04 generated-model
