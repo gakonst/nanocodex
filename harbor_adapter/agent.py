@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -37,6 +38,7 @@ class HarnessAgent(BaseInstalledAgent):
     _INPUT = "/logs/agent/input.jsonl"
     _EVENTS = "/logs/agent/events.jsonl"
     _STDERR = "/logs/agent/stderr.log"
+    _API_KEY_FILE = "/installed-agent/.openai-api-key"
 
     def __init__(
         self,
@@ -47,9 +49,19 @@ class HarnessAgent(BaseInstalledAgent):
         max_model_calls: int = 32,
         compact_threshold: int = 350_000,
         multi_agent: bool = False,
+        extra_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
+        agent_env = dict(extra_env or {})
+        self._api_key = agent_env.pop("OPENAI_API_KEY", None)
+        if not self._api_key or not self._api_key.strip():
+            raise ValueError("OPENAI_API_KEY is required")
+        super().__init__(
+            logs_dir=logs_dir,
+            model_name=model_name,
+            extra_env=agent_env,
+            **kwargs,
+        )
         self._binary_path = Path(binary_path).resolve()
         self._model = self._api_model_name(model_name)
         self._effort = effort
@@ -72,6 +84,28 @@ class HarnessAgent(BaseInstalledAgent):
             )
         await environment.upload_file(self._binary_path, self._BINARY)
         await self.exec_as_root(environment, f"chmod 0755 {self._BINARY}")
+
+    async def _stage_api_key(self, environment: BaseEnvironment) -> None:
+        identity = await self.exec_as_agent(environment, "id -u")
+        user_id = (identity.stdout or "").strip()
+        if not user_id.isdecimal():
+            raise RuntimeError("failed to resolve the agent user identifier")
+
+        with tempfile.TemporaryDirectory(prefix="harness-agent-secret-") as directory:
+            api_key_path = Path(directory) / "openai-api-key"
+            api_key_path.write_text(self._api_key, encoding="utf-8")
+            api_key_path.chmod(0o600)
+            await environment.upload_file(api_key_path, self._API_KEY_FILE)
+        await self.exec_as_root(
+            environment,
+            f"chown {user_id} {self._API_KEY_FILE} && chmod 0400 {self._API_KEY_FILE}",
+        )
+
+    async def _remove_staged_api_key(self, environment: BaseEnvironment) -> None:
+        try:
+            await self.exec_as_root(environment, f"rm -f {self._API_KEY_FILE}")
+        except Exception as error:
+            self.logger.warning("failed to remove staged API key: %s", error)
 
     async def run(
         self,
@@ -109,10 +143,16 @@ class HarnessAgent(BaseInstalledAgent):
         if self._multi_agent:
             arguments.append("--multi-agent")
         command = (
-            " ".join(shlex.quote(argument) for argument in arguments)
+            f"api_key=$(<{self._API_KEY_FILE}) && test -n \"$api_key\" && "
+            f"rm -f {self._API_KEY_FILE} && OPENAI_API_KEY=\"$api_key\" "
+            + " ".join(shlex.quote(argument) for argument in arguments)
             + f" < {self._INPUT} 2> {self._STDERR} | tee {self._EVENTS}"
         )
-        result = await self.exec_as_agent(environment, command)
+        try:
+            await self._stage_api_key(environment)
+            result = await self.exec_as_agent(environment, command)
+        finally:
+            await self._remove_staged_api_key(environment)
         if result.stdout:
             print(result.stdout, end="", flush=True)
         if result.stderr:
