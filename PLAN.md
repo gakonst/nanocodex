@@ -254,15 +254,16 @@ and reproducibly rejected, which is why it is not a supported profile.
 
 ## Milestone 2: eval-driven tuning
 
-Status: in progress. Thirty-five public tasks are active with green low-effort
+Status: in progress. Thirty-six public tasks are active with green low-effort
 PTC samples under the current `openai-coding-v13` prompt. The first required
 35-task gate completed every trial without an exception or retry and scored
 34/35; its only miss exposed verifier-package contamination rather than a
 model failure. The verifier dependencies are now isolated, the affected
 focused regressions pass, and the corrected 35-task gate passes 35/35 with zero
-exception or retry. `overfull-hbox` is green; `tune-mjcf` is now a retained
-variance experiment after two consecutive current speed misses. The revised
-35-task gate is pending. The table records representative warm samples:
+exception or retry. `overfull-hbox` and `compile-compcert` are green;
+`tune-mjcf` is now a retained variance experiment after two consecutive current
+speed misses. CompCert starts the next three-task batch. The table records
+representative warm samples:
 
 The first unchanged `overfull-hbox` attempt passed all four assertions but
 spent 68.00 of its 135.45 trial seconds reinstalling an already pinned TeX
@@ -312,6 +313,7 @@ anchors remained green at 2/2 and 6/6, with 1.16- and 0.99-second verifiers.
 | `circuit-fibsqrt` | 1.0 | 108.20s | 103.24s | 102.20s | 35.70s | 5/4 | 25,256/12,438/3,744 |
 | `build-pov-ray` | 1.0 | 139.58s | 128.75s | 128.17s | 26.10s | 21/20 | 349,918/47,542/4,894 |
 | `overfull-hbox` | 1.0 | 54.56s | 49.93s | 49.32s | 0.69s | 8/7 | 47,067/15,692/2,605 |
+| `compile-compcert` | 1.0 | 960.91s | 953.13s | 952.26s | 855.66s | 15/14 | 312,242/55,370/3,427 |
 
 Generated-turn time includes local tool wait; tool wall is a measured subset.
 WebSocket connection and warmup added 0.56--1.31 seconds per task, and Rust
@@ -1454,6 +1456,36 @@ gate. Its unchanged 326.69-second retry again passed correctness but reached
 show this task can pass, but two consecutive current failures and its extreme
 cost make it unsuitable for the stable gate without a benchmark-specific hint;
 it is therefore retained as an excluded variance experiment.
+
+`compile-compcert` at pinned digest
+`sha256:59b8bdc7ad56243291afbc14cc1947d996db745a488ac018be4936643a47a999`
+starts the next batch. Its task/verifier image preparation was already cached:
+Harbor used 5 seconds and the complete command used 8.41 seconds. The first
+unchanged low-effort trial then built CompCert 3.13.1 from source for native
+AArch64 and passed all three authenticity and functionality assertions in
+960.91 trial seconds; the complete command used 965.02 seconds. Environment
+startup used 1.45 seconds, agent setup 0.72 seconds, agent execution 954.52
+seconds, and canonical verification 1.02 seconds.
+
+Rust used 953.13 seconds, including 952.26 seconds in generated-model turns
+and 855.66 seconds across fourteen tool phases; connection, warmup, and other
+in-process work used 0.59, 0.27, and less than 0.01 seconds. Fifteen model calls
+consumed 312,242 input, 55,370 cached-input, and 3,427 output tokens; 593 output
+tokens were reasoning tokens and warmup used another 1,528 input tokens. The
+two longest tools spent 345.98 seconds building Coq 8.16.1 and 384.99 seconds
+rebuilding CompCert proofs. Several failed configure/build probes preceded the
+valid artifact, so this baseline records agent strategy cost rather than a
+local harness bottleneck.
+
+The unchanged verifier confirmed the exact version, executable source build,
+native ELF output, randomized and edge-case behavior, and rejection of an
+unsupported VLA. Its launcher reported that `apt-get install -y curl binutils`
+was not a cached command, then continued because both tools were already
+present from the source build; the assertions passed in 0.08 seconds. With a
+1.02-second verifier phase, that warning is retained rather than adding a new
+shared dependency layer for no measured gain. Raw JSONL and ATIF terminal
+payloads matched, stderr was empty, and there was no exception, retry,
+reconnect, compaction, hosted subagent, injection, or API-reported cost.
 
 The scheduler was the main trajectory-variance outlier in the earlier 20-task
 gate: it stayed green but used 14/13 model/tool rounds, 207.04 generated-model

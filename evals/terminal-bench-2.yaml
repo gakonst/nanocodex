@@ -53,6 +53,7 @@ datasets:
       - terminal-bench/circuit-fibsqrt
       - terminal-bench/build-pov-ray
       - terminal-bench/overfull-hbox
+      - terminal-bench/compile-compcert
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment

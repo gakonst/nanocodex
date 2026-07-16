@@ -93,7 +93,7 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The configured development slice contains thirty-five public
+and tasks. The configured development slice contains thirty-six public
 shell/code tasks. The first 35-task gate after admitting Circuit Fib/Sqrt and
 Build POV-Ray completed every trial without an exception or retry in 16
 minutes 41.92 seconds and scored 34/35. Its only miss was a verifier-cache
@@ -109,10 +109,12 @@ without a Harbor exception or retry in 15 minutes 21.72 seconds, scoring 33/36;
 unchanged focused retries recovered the Compressor and Cython misses. Tune
 MJCF missed its speed threshold both in the gate and an unchanged retry, so it
 joins Core Wars as a retained variance experiment excluded from the stable
-slice rather than receiving a benchmark-specific hint. The revised 35-task
-gate is pending. Browser automation, computer-use, GUI interaction, and
-image/video perception are outside this milestone. Downloaded tasks and
-canonical verifier assertions remain unchanged.
+slice rather than receiving a benchmark-specific hint. CompCert 3.13.1 is the
+first green admission in the next three-task batch; the next full gate follows
+two more green admissions unless a shared behavior change triggers it earlier.
+Browser automation, computer-use, GUI interaction, and image/video perception
+are outside this milestone. Downloaded tasks and canonical verifier assertions
+remain unchanged.
 
 Candidate admission is evidence-driven. Cold task preparation is measured
 before model work, and a task that repeatedly requires benchmark-specific
