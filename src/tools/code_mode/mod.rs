@@ -177,10 +177,7 @@ impl CodeModeRuntime {
                 Vec::new(),
             );
         }
-        let cell_id = match state.allocate_cell_id() {
-            Ok(cell_id) => cell_id,
-            Err(message) => return failed_execution(started_at, &message, Vec::new()),
-        };
+        let cell_id = state.allocate_cell_id();
         if state.host.is_none() {
             match NodeHost::spawn() {
                 Ok(host) => state.host = Some(host),
@@ -465,12 +462,10 @@ async fn finish_cell(
 }
 
 impl CodeModeState {
-    fn allocate_cell_id(&mut self) -> Result<u64, String> {
+    fn allocate_cell_id(&mut self) -> u64 {
         let cell_id = self.next_cell_id;
-        self.next_cell_id = cell_id
-            .checked_add(1)
-            .ok_or_else(|| "local code mode exhausted its cell ID space".to_owned())?;
-        Ok(cell_id)
+        self.next_cell_id += 1;
+        cell_id
     }
 }
 
