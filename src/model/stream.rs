@@ -37,6 +37,12 @@ pub(super) struct CodeCall {
     pub(super) call_id: String,
     pub(super) name: String,
     pub(super) input: String,
+    pub(super) kind: CodeCallKind,
+}
+
+pub(super) enum CodeCallKind {
+    Custom,
+    Function,
 }
 
 #[derive(Serialize)]
@@ -214,13 +220,19 @@ fn code_calls(items: &[Value]) -> Result<Vec<CodeCall>> {
                     call_id,
                     name,
                     input,
+                    kind: CodeCallKind::Custom,
                 });
             }
             Some("function_call") => {
-                return Err(AgentError::MalformedResponse {
-                    detail: "Responses Lite returned a direct function call instead of exec",
-                }
-                .into());
+                let call_id = required_string(item, "call_id")?;
+                let name = required_string(item, "name")?;
+                let input = required_string(item, "arguments")?;
+                calls.push(CodeCall {
+                    call_id,
+                    name,
+                    input,
+                    kind: CodeCallKind::Function,
+                });
             }
             _ => {}
         }

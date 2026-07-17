@@ -110,6 +110,19 @@ async function runCell(init) {
     return stored.has(key) ? structuredClone(stored.get(key)) : undefined;
   }
 
+  async function yield_control() {
+    if (pending.size) {
+      throw new Error("yield_control() cannot run while nested tool calls are pending");
+    }
+    send({
+      type: "yielded",
+      cell_id: init.cell_id,
+      content: content.splice(0),
+      stored: Object.fromEntries(stored),
+    });
+    await Promise.resolve();
+  }
+
   const EXIT = Symbol("exit");
   function exit() { throw EXIT; }
 
@@ -122,13 +135,25 @@ async function runCell(init) {
       "image",
       "store",
       "load",
+      "yield_control",
       "exit",
       "require",
       "console",
       init.source,
     );
     try {
-      await script(tools, allTools, text, image, store, load, exit, require, scriptConsole);
+      await script(
+        tools,
+        allTools,
+        text,
+        image,
+        store,
+        load,
+        yield_control,
+        exit,
+        require,
+        scriptConsole,
+      );
     } catch (error) {
       if (error !== EXIT) throw error;
     }

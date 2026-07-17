@@ -124,12 +124,16 @@ impl ToolRuntime {
         })
     }
 
-    pub(crate) fn exec_spec(&self) -> Value {
-        code_mode::exec_spec(&self.handlers)
+    pub(crate) fn model_specs(&self) -> Vec<Value> {
+        vec![code_mode::exec_spec(&self.handlers), code_mode::wait_spec()]
     }
 
     pub(crate) async fn execute_code(&self, source: &str) -> CodeModeExecution {
         self.code_mode.execute(source, self).await
+    }
+
+    pub(crate) async fn wait_for_code(&self, input: &str) -> CodeModeExecution {
+        self.code_mode.wait(input, self).await
     }
 
     async fn execute_nested(&self, name: &str, input: Value) -> ToolExecution {

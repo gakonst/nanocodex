@@ -85,6 +85,72 @@ async fn store_false_local_code_mode_round_trip() -> Result<()> {
 }
 
 #[tokio::test]
+async fn yielded_exec_cell_continues_through_direct_wait_tool() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let generation = next_json(&mut socket).await?;
+        assert_eq!(generation["previous_response_id"], "resp-warmup");
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-exec",
+                &[json!({
+                    "type": "custom_tool_call",
+                    "call_id": "call-exec",
+                    "name": "exec",
+                    "input": "text(\"before\"); await yield_control(); await new Promise((resolve) => setTimeout(resolve, 10)); text(\"after\");"
+                })],
+            ),
+        )
+        .await?;
+
+        let yielded = next_json(&mut socket).await?;
+        assert_eq!(yielded["previous_response_id"], "resp-exec");
+        assert_eq!(yielded["input"][0]["type"], "custom_tool_call_output");
+        assert!(
+            yielded
+                .to_string()
+                .contains("Script running with cell ID 1")
+        );
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-wait",
+                &[json!({
+                    "type": "function_call",
+                    "call_id": "call-wait",
+                    "name": "wait",
+                    "arguments": "{\"cell_id\":\"1\",\"yield_time_ms\":1000}"
+                })],
+            ),
+        )
+        .await?;
+
+        let completed = next_json(&mut socket).await?;
+        assert_eq!(completed["previous_response_id"], "resp-wait");
+        assert_eq!(completed["input"][0]["type"], "function_call_output");
+        assert_eq!(completed["input"][0]["call_id"], "call-wait");
+        assert!(completed.to_string().contains("after"));
+        send_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("code-mode-wait")?;
+    let output = run_model(&endpoint, &workspace, "yield and wait").await?;
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    assert!(output.contains("\"tool\":\"wait\""));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn warmup_failure_falls_back_to_a_full_first_request() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
@@ -360,6 +426,8 @@ fn assert_warmup(warmup: &Value) {
     assert_eq!(warmup["input"][0]["role"], "developer");
     assert_eq!(warmup["input"][0]["tools"][0]["type"], "custom");
     assert_eq!(warmup["input"][0]["tools"][0]["name"], "exec");
+    assert_eq!(warmup["input"][0]["tools"][1]["type"], "function");
+    assert_eq!(warmup["input"][0]["tools"][1]["name"], "wait");
     assert_eq!(warmup["input"][1]["role"], "developer");
     assert!(warmup.get("tools").is_none());
     assert!(warmup.get("instructions").is_none());

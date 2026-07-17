@@ -22,7 +22,7 @@ impl RequestProfile {
                 json!({
                     "type": "additional_tools",
                     "role": "developer",
-                    "tools": [runtime.exec_spec()],
+                    "tools": runtime.model_specs(),
                 }),
                 json!({
                     "type": "message",
@@ -184,6 +184,14 @@ impl<'a> ResponseCreate<'a> {
 pub(in crate::model) fn custom_tool_output(call_id: &str, output: &ToolOutputBody) -> Value {
     json!({
         "type": "custom_tool_call_output",
+        "call_id": call_id,
+        "output": output,
+    })
+}
+
+pub(in crate::model) fn function_tool_output(call_id: &str, output: &ToolOutputBody) -> Value {
+    json!({
+        "type": "function_call_output",
         "call_id": call_id,
         "output": output,
     })

@@ -6,9 +6,12 @@ use serde_json::Value;
 use super::{
     ApiEvent, AssistantMessage, ModelConfig, RunError, RunStarted, RunStats, TRANSPORT,
     agents_md::load_project_instructions,
-    compaction, display_endpoint, elapsed_ns, resolve_workspace, terminal_payload,
+    compaction, display_endpoint, elapsed_ns, resolve_workspace,
+    stream::{CodeCall, CodeCallKind},
+    terminal_payload,
     wire::{
-        RequestProfile, ResponseCreate, Usage, WarmupServerEvent, custom_tool_output, task_input,
+        RequestProfile, ResponseCreate, Usage, WarmupServerEvent, custom_tool_output,
+        function_tool_output, task_input,
     },
 };
 use crate::{
@@ -300,42 +303,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
 
             conversation.delta = Vec::with_capacity(code_calls.len());
             for call in code_calls {
-                if call.name != "exec" {
-                    return Err(AgentError::UnsupportedFunction {
-                        name: call.name,
-                        call_id: call.call_id,
-                    }
-                    .into());
-                }
-                let arguments = Value::String(call.input.clone());
-                self.events.emit(
-                    "tool.call",
-                    ToolCallEvent {
-                        call_id: &call.call_id,
-                        tool: &call.name,
-                        arguments: &arguments,
-                        model_call_index: call_index,
-                    },
-                )?;
-                self.stats.tool_calls += 1;
-                let started_at = Instant::now();
-                let execution = tools.execute_code(&call.input).await;
-                let duration_ns = elapsed_ns(started_at);
-                self.stats.tool_wall_duration_ns += duration_ns;
-                for nested in &execution.nested_calls {
-                    self.emit_nested_tool(call_index, &call.call_id, nested)?;
-                }
-                self.events.emit(
-                    "tool.result",
-                    ToolResultEvent {
-                        call_id: &call.call_id,
-                        tool: &call.name,
-                        status: status(execution.success),
-                        duration_ns,
-                        result: &execution.output,
-                    },
-                )?;
-                let output = custom_tool_output(&call.call_id, &execution.output);
+                let output = self.execute_model_tool(&tools, call_index, call).await?;
                 conversation.history.push(output.clone());
                 conversation.delta.push(output);
             }
@@ -348,6 +316,61 @@ impl<'a, W: Write> ModelRun<'a, W> {
             )
             .await?;
         }
+    }
+
+    async fn execute_model_tool(
+        &mut self,
+        tools: &ToolRuntime,
+        call_index: u32,
+        call: CodeCall,
+    ) -> Result<Value> {
+        if !matches!(call.name.as_str(), "exec" | "wait") {
+            return Err(AgentError::UnsupportedFunction {
+                name: call.name,
+                call_id: call.call_id,
+            }
+            .into());
+        }
+        let arguments = if call.name == "exec" {
+            Value::String(call.input.clone())
+        } else {
+            serde_json::from_str(&call.input).unwrap_or_else(|_| Value::String(call.input.clone()))
+        };
+        self.events.emit(
+            "tool.call",
+            ToolCallEvent {
+                call_id: &call.call_id,
+                tool: &call.name,
+                arguments: &arguments,
+                model_call_index: call_index,
+            },
+        )?;
+        self.stats.tool_calls += 1;
+        let started_at = Instant::now();
+        let execution = if call.name == "exec" {
+            tools.execute_code(&call.input).await
+        } else {
+            tools.wait_for_code(&call.input).await
+        };
+        let duration_ns = elapsed_ns(started_at);
+        self.stats.tool_wall_duration_ns += duration_ns;
+        for nested in &execution.nested_calls {
+            self.emit_nested_tool(call_index, &call.call_id, nested)?;
+        }
+        self.events.emit(
+            "tool.result",
+            ToolResultEvent {
+                call_id: &call.call_id,
+                tool: &call.name,
+                status: status(execution.success),
+                duration_ns,
+                result: &execution.output,
+            },
+        )?;
+        Ok(match call.kind {
+            CodeCallKind::Custom => custom_tool_output(&call.call_id, &execution.output),
+            CodeCallKind::Function => function_tool_output(&call.call_id, &execution.output),
+        })
     }
 
     async fn connect_with_warmup_fallback(
