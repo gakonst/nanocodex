@@ -1,6 +1,7 @@
 mod agent;
 mod agents_md;
 mod compaction;
+mod context_manager;
 mod stream;
 mod wire;
 

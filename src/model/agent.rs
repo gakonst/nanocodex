@@ -1,12 +1,14 @@
 use std::{io::Write, path::Path, time::Instant};
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::{
     ApiEvent, AssistantMessage, ModelConfig, RunError, RunStarted, RunStats, TRANSPORT,
     agents_md::load_project_instructions,
-    compaction, display_endpoint, elapsed_ns, resolve_workspace,
+    compaction,
+    context_manager::ContextManager,
+    display_endpoint, elapsed_ns, resolve_workspace,
     stream::{CodeCall, CodeCallKind},
     terminal_payload,
     wire::{
@@ -174,7 +176,7 @@ pub(super) struct ModelRun<'a, W> {
 
 struct ConversationState {
     initial_context: Value,
-    history: Vec<Value>,
+    history: ContextManager,
     delta_start: Option<usize>,
     previous_response_id: Option<String>,
 }
@@ -189,18 +191,36 @@ impl ConversationState {
             })?;
         Ok(Self {
             initial_context,
-            history,
+            history: ContextManager::new(history),
             delta_start: Some(0),
             previous_response_id: None,
         })
     }
 
     fn delta(&self) -> &[Value] {
-        &self.history[self.delta_start.unwrap_or(0)..]
+        self.history.items_from(self.delta_start.unwrap_or(0))
+    }
+
+    fn raw_history(&self) -> &[Value] {
+        self.history.raw_items()
+    }
+
+    fn prompt_history(&self) -> Vec<Value> {
+        self.history.for_prompt()
+    }
+
+    fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    fn record_items(&mut self, items: impl IntoIterator<Item = Value>) {
+        self.history.record_items(items);
     }
 
     fn install_compaction(&mut self, item: Value) {
-        self.history = compaction::install_history(&self.history, &self.initial_context, item);
+        let history =
+            compaction::install_history(self.history.raw_items(), &self.initial_context, item);
+        self.history.replace(history);
         self.delta_start = None;
         self.previous_response_id = None;
     }
@@ -211,36 +231,7 @@ impl ConversationState {
     }
 
     fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
-        for item in self.history.iter_mut().rev() {
-            if item.get("type").and_then(Value::as_str) == Some("message")
-                && item.get("role").and_then(Value::as_str) == Some("user")
-            {
-                return false;
-            }
-            if !matches!(
-                item.get("type").and_then(Value::as_str),
-                Some("custom_tool_call_output" | "function_call_output")
-            ) {
-                continue;
-            }
-            let Some(output) = item.get_mut("output").and_then(Value::as_array_mut) else {
-                continue;
-            };
-            let mut replaced = false;
-            for content in output {
-                if content.get("type").and_then(Value::as_str) == Some("input_image") {
-                    *content = json!({
-                        "type": "input_text",
-                        "text": placeholder,
-                    });
-                    replaced = true;
-                }
-            }
-            if replaced {
-                return true;
-            }
-        }
-        false
+        self.history.replace_last_turn_images(placeholder)
     }
 }
 
@@ -344,13 +335,11 @@ impl<'a, W: Write> ModelRun<'a, W> {
             let end_turn = response.end_turn;
             let final_message = response.final_message;
             let code_calls = response.code_calls;
-            conversation
-                .history
-                .extend(response.output_items.into_iter().map(strip_item_id));
+            conversation.record_items(response.output_items.into_iter().map(strip_item_id));
 
             if code_calls.is_empty() {
                 if end_turn == Some(false) {
-                    conversation.delta_start = Some(conversation.history.len());
+                    conversation.delta_start = Some(conversation.history_len());
                     self.maybe_compact(
                         &mut socket,
                         call_index,
@@ -374,12 +363,12 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 .into());
             }
 
-            conversation.delta_start = Some(conversation.history.len());
+            conversation.delta_start = Some(conversation.history_len());
             for call in code_calls {
                 let output = self
-                    .execute_model_tool(&tools, call_index, call, &conversation.history)
+                    .execute_model_tool(&tools, call_index, call, conversation.raw_history())
                     .await?;
-                conversation.history.extend(output);
+                conversation.record_items(output);
             }
             self.maybe_compact(
                 &mut socket,
@@ -524,7 +513,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 socket,
                 after_model_call_index,
                 conversation.delta(),
-                &conversation.history,
+                &conversation.prompt_history(),
                 previous_response_id,
                 active_context_tokens,
                 auto_compact_token_limit,
@@ -737,7 +726,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
         let full_input = conversation
             .delta_start
             .is_none()
-            .then(|| profile.full_input(&conversation.history));
+            .then(|| profile.full_input(&conversation.prompt_history()));
         let input = full_input.as_deref().unwrap_or(conversation.delta());
         let previous_response_id = conversation.previous_response_id.as_deref();
         let request = EncodedRequest::new(&ResponseCreate::generation(
@@ -775,7 +764,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
             )?;
             self.capture_turn_state(socket);
             *socket = self.connect(ConnectionPurpose::Reconnect).await?;
-            let full_input = profile.full_input(&conversation.history);
+            let full_input = profile.full_input(&conversation.prompt_history());
             let replay = EncodedRequest::new(&ResponseCreate::generation(
                 self.config,
                 &full_input,
