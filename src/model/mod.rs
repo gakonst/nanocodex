@@ -11,8 +11,8 @@ use std::{
 };
 
 use clap::ValueEnum;
-use serde::Serialize;
-use serde_json::value::RawValue;
+use serde::{Serialize, Serializer};
+use serde_json::{Value, value::RawValue};
 
 use self::wire::Usage;
 use crate::{
@@ -31,7 +31,19 @@ struct ApiEvent<'a> {
     phase: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     model_call_index: Option<u32>,
+    #[serde(serialize_with = "serialize_compact_raw_json")]
     event: &'a RawValue,
+}
+
+fn serialize_compact_raw_json<S>(
+    event: &&RawValue,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let value = serde_json::from_str::<Value>(event.get()).map_err(serde::ser::Error::custom)?;
+    value.serialize(serializer)
 }
 
 /// OpenAI-specific settings for the deliberately single-provider harness.
@@ -211,4 +223,35 @@ fn duration_ns(duration: Duration) -> u64 {
 
 fn display_endpoint(endpoint: &str) -> &str {
     endpoint.split_once('?').map_or(endpoint, |(base, _)| base)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::value::RawValue;
+
+    use super::{ApiEvent, TRANSPORT};
+    use crate::protocol::EventWriter;
+
+    #[test]
+    fn pretty_api_events_remain_one_jsonl_record() {
+        let raw = RawValue::from_string("{\n  \"type\": \"error\"\n}".to_owned())
+            .expect("the regression fixture should be valid JSON");
+        let mut output = Vec::new();
+        EventWriter::new(&mut output, "test".to_owned())
+            .emit(
+                "api.event",
+                ApiEvent {
+                    direction: "inbound",
+                    transport: TRANSPORT,
+                    phase: "generation",
+                    model_call_index: Some(1),
+                    event: &raw,
+                },
+            )
+            .expect("the event should serialize");
+
+        let text = String::from_utf8(output).expect("JSONL should be UTF-8");
+        assert_eq!(text.lines().count(), 1);
+        serde_json::from_str::<serde_json::Value>(&text).expect("JSONL should parse");
+    }
 }
