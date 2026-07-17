@@ -171,6 +171,7 @@ pub(super) struct ModelRun<'a, W> {
     config: &'a ModelConfig,
     started_at: Instant,
     stats: RunStats,
+    server_reasoning_included: bool,
     turn_state: Option<String>,
 }
 
@@ -217,6 +218,15 @@ impl ConversationState {
         self.history.record_items(items);
     }
 
+    fn update_token_info(&mut self, usage: Option<&Usage>) {
+        self.history.update_token_info(usage);
+    }
+
+    fn active_context_tokens(&self, server_reasoning_included: bool) -> u64 {
+        self.history
+            .active_context_tokens(server_reasoning_included)
+    }
+
     fn install_compaction(&mut self, item: Value) {
         let history =
             compaction::install_history(self.history.raw_items(), &self.initial_context, item);
@@ -247,6 +257,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
             config,
             started_at: Instant::now(),
             stats: RunStats::default(),
+            server_reasoning_included: false,
             turn_state: None,
         }
     }
@@ -331,6 +342,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 }
                 Err(error) => return Err(error),
             };
+            conversation.update_token_info(response.usage.as_ref());
             conversation.previous_response_id = Some(response.id.clone());
             let end_turn = response.end_turn;
             let final_message = response.final_message;
@@ -340,14 +352,8 @@ impl<'a, W: Write> ModelRun<'a, W> {
             if code_calls.is_empty() {
                 if end_turn == Some(false) {
                     conversation.delta_start = Some(conversation.history_len());
-                    self.maybe_compact(
-                        &mut socket,
-                        call_index,
-                        response.usage.as_ref(),
-                        &mut conversation,
-                        &profile,
-                    )
-                    .await?;
+                    self.maybe_compact(&mut socket, call_index, &mut conversation, &profile)
+                        .await?;
                     continue;
                 }
                 if let Some(message) = final_message {
@@ -370,14 +376,8 @@ impl<'a, W: Write> ModelRun<'a, W> {
                     .await?;
                 conversation.record_items(output);
             }
-            self.maybe_compact(
-                &mut socket,
-                call_index,
-                response.usage.as_ref(),
-                &mut conversation,
-                &profile,
-            )
-            .await?;
+            self.maybe_compact(&mut socket, call_index, &mut conversation, &profile)
+                .await?;
         }
     }
 
@@ -485,19 +485,16 @@ impl<'a, W: Write> ModelRun<'a, W> {
         &mut self,
         socket: &mut ResponsesSocket,
         after_model_call_index: u32,
-        usage: Option<&Usage>,
         conversation: &mut ConversationState,
         profile: &RequestProfile,
     ) -> Result<()> {
-        let Some(usage) = usage else {
-            return Ok(());
-        };
         let Some(auto_compact_token_limit) =
             compaction::auto_compact_token_limit(&self.config.model)
         else {
             return Ok(());
         };
-        let active_context_tokens = compaction::active_context_tokens(usage, conversation.delta());
+        let active_context_tokens =
+            conversation.active_context_tokens(self.server_reasoning_included);
         if active_context_tokens < auto_compact_token_limit {
             return Ok(());
         }
@@ -508,7 +505,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 .ok_or(AgentError::MalformedResponse {
                     detail: "compaction did not have a previous response ID",
                 })?;
-        let item = self
+        let (item, usage) = self
             .perform_compaction(
                 socket,
                 after_model_call_index,
@@ -520,6 +517,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 profile,
             )
             .await?;
+        conversation.update_token_info(usage.as_ref());
         conversation.install_compaction(item);
         Ok(())
     }
@@ -699,6 +697,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
         if metadata.turn_state.is_some() {
             self.turn_state.clone_from(&metadata.turn_state);
         }
+        self.server_reasoning_included |= metadata.reasoning_included;
         self.events.emit(
             "model.connection.completed",
             ConnectionCompleted {
@@ -817,7 +816,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
         active_context_tokens: u64,
         auto_compact_token_limit: u64,
         profile: &RequestProfile,
-    ) -> Result<Value> {
+    ) -> Result<(Value, Option<Usage>)> {
         self.capture_turn_state(socket);
         let trigger = compaction::trigger();
         let delta_start =
@@ -916,7 +915,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 usage: response.usage.as_ref(),
             },
         )?;
-        Ok(response.item)
+        Ok((response.item, response.usage))
     }
 
     fn compaction_failed<T>(

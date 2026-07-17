@@ -7,8 +7,6 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde_json::{Value, json};
 use sha1::{Digest as _, Sha1};
 
-use super::wire::Usage;
-
 const SOL_CONTEXT_WINDOW: u64 = 372_000;
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
@@ -60,15 +58,6 @@ pub(super) fn auto_compact_token_limit(model: &str) -> Option<u64> {
     }
 }
 
-pub(super) fn active_context_tokens(usage: &Usage, local_items: &[Value]) -> u64 {
-    let reported = usage
-        .total_tokens
-        .max(usage.input_tokens.saturating_add(usage.output_tokens));
-    local_items.iter().fold(reported, |total, item| {
-        total.saturating_add(u64::try_from(approx_tokens(serialized_len(item))).unwrap_or(u64::MAX))
-    })
-}
-
 pub(super) fn trigger() -> Value {
     json!({ "type": "compaction_trigger" })
 }
@@ -83,14 +72,13 @@ pub(super) fn trim_tool_outputs_to_fit_context_window(
         if estimated_tokens <= SOL_CONTEXT_WINDOW {
             break;
         }
-        let tokens_before = approx_tokens(serialized_len(item));
+        let tokens_before = estimate_item_tokens(item);
         if !rewrite_tool_output(item) {
             break;
         }
-        let tokens_after = approx_tokens(serialized_len(item));
-        estimated_tokens = estimated_tokens.saturating_sub(
-            u64::try_from(tokens_before.saturating_sub(tokens_after)).unwrap_or(u64::MAX),
-        );
+        let tokens_after = estimate_item_tokens(item);
+        estimated_tokens =
+            estimated_tokens.saturating_sub(tokens_before.saturating_sub(tokens_after));
         rewritten_outputs += 1;
     }
     rewritten_outputs
@@ -257,11 +245,31 @@ fn ceil_char_boundary(text: &str, target: usize) -> usize {
     boundary
 }
 
-fn serialized_len(item: &Value) -> usize {
+pub(super) fn estimate_item_tokens(item: &Value) -> u64 {
+    u64::try_from(approx_tokens(model_visible_len(item))).unwrap_or(u64::MAX)
+}
+
+fn model_visible_len(item: &Value) -> usize {
+    if matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("reasoning" | "compaction" | "context_compaction")
+    ) && let Some(encrypted) = item.get("encrypted_content").and_then(Value::as_str)
+    {
+        return encrypted
+            .len()
+            .saturating_mul(3)
+            .checked_div(4)
+            .unwrap_or_default()
+            .saturating_sub(650);
+    }
     let raw = serde_json::to_vec(item).map_or(0, |encoded| encoded.len());
     let (image_payload_bytes, image_replacement_bytes) = image_estimate_adjustment(item);
+    let (encrypted_payload_bytes, encrypted_replacement_bytes) =
+        encrypted_function_output_estimate_adjustment(item);
     raw.saturating_sub(image_payload_bytes)
         .saturating_add(image_replacement_bytes)
+        .saturating_sub(encrypted_payload_bytes)
+        .saturating_add(encrypted_replacement_bytes)
 }
 
 fn image_estimate_adjustment(item: &Value) -> (usize, usize) {
@@ -333,6 +341,24 @@ fn original_image_bytes_estimate(image_url: &str) -> Option<usize> {
         Ok(mut cache) => cache.get_or_insert_with(key, estimate),
         Err(poisoned) => poisoned.into_inner().get_or_insert_with(key, estimate),
     }
+}
+
+fn encrypted_function_output_estimate_adjustment(item: &Value) -> (usize, usize) {
+    if item.get("type").and_then(Value::as_str) != Some("function_call_output") {
+        return (0, 0);
+    }
+    item.get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|content| content.get("type").and_then(Value::as_str) == Some("encrypted_content"))
+        .filter_map(|content| content.get("encrypted_content").and_then(Value::as_str))
+        .fold((0usize, 0usize), |(payload, replacement), encrypted| {
+            (
+                payload.saturating_add(encrypted.len()),
+                replacement.saturating_add(encrypted.len().saturating_mul(9).div_ceil(16)),
+            )
+        })
 }
 
 const fn approx_tokens(bytes: usize) -> usize {
@@ -483,12 +509,6 @@ mod tests {
                 "detail": "high"
             }]
         });
-        let usage = Usage {
-            input_tokens: 9_000,
-            output_tokens: 100,
-            total_tokens: 9_100,
-            ..Usage::default()
-        };
         let raw = serde_json::to_vec(&item)
             .expect("serialize image item")
             .len();
@@ -498,10 +518,32 @@ mod tests {
         );
 
         assert_eq!(
-            active_context_tokens(&usage, &[item]),
-            9_100 + u64::try_from(expected_item_tokens).expect("estimate fits u64")
+            estimate_item_tokens(&item),
+            u64::try_from(expected_item_tokens).expect("estimate fits u64")
         );
         assert!(expected_item_tokens < 2_000);
+    }
+
+    #[test]
+    fn encrypted_payloads_use_codex_decoded_size_estimates() {
+        let reasoning = json!({
+            "type": "reasoning",
+            "encrypted_content": "r".repeat(4_000),
+        });
+        assert_eq!(estimate_item_tokens(&reasoning), 588);
+
+        let encrypted = "e".repeat(1_600);
+        let output = json!({
+            "type": "function_call_output",
+            "call_id": "call",
+            "output": [{
+                "type": "encrypted_content",
+                "encrypted_content": encrypted,
+            }],
+        });
+        let raw = serde_json::to_vec(&output).unwrap().len();
+        let expected = approx_tokens(raw - 1_600 + 900);
+        assert_eq!(estimate_item_tokens(&output), expected as u64);
     }
 
     fn message(text: &str) -> Value {

@@ -2,6 +2,8 @@ use std::collections::HashSet;
 
 use serde_json::{Value, json};
 
+use super::{compaction::estimate_item_tokens, wire::Usage};
+
 const TOOL_OUTPUT_TOKEN_LIMIT: usize = 12_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 
@@ -9,11 +11,15 @@ const APPROX_BYTES_PER_TOKEN: usize = 4;
 /// prompt-only repairs are applied to a clone when a full history is replayed.
 pub(super) struct ContextManager {
     items: Vec<Value>,
+    last_token_usage: Option<Usage>,
 }
 
 impl ContextManager {
     pub(super) fn new(items: Vec<Value>) -> Self {
-        let mut history = Self { items: Vec::new() };
+        let mut history = Self {
+            items: Vec::new(),
+            last_token_usage: None,
+        };
         history.record_items(items);
         history
     }
@@ -41,6 +47,31 @@ impl ContextManager {
 
     pub(super) fn replace(&mut self, items: Vec<Value>) {
         self.items = items;
+    }
+
+    pub(super) fn update_token_info(&mut self, usage: Option<&Usage>) {
+        if let Some(usage) = usage {
+            self.last_token_usage = Some(usage.clone());
+        }
+    }
+
+    pub(super) fn active_context_tokens(&self, server_reasoning_included: bool) -> u64 {
+        let reported = self
+            .last_token_usage
+            .as_ref()
+            .map_or(0, |usage| usage.total_tokens);
+        let local_tail = self
+            .items_after_last_model_generated_item()
+            .iter()
+            .map(estimate_item_tokens)
+            .fold(0, u64::saturating_add);
+        if server_reasoning_included {
+            reported.saturating_add(local_tail)
+        } else {
+            reported
+                .saturating_add(self.non_last_reasoning_tokens())
+                .saturating_add(local_tail)
+        }
     }
 
     pub(super) fn for_prompt(&self) -> Vec<Value> {
@@ -82,6 +113,69 @@ impl ContextManager {
         }
         false
     }
+
+    fn items_after_last_model_generated_item(&self) -> &[Value] {
+        let start = self
+            .items
+            .iter()
+            .rposition(is_model_generated_item)
+            .map_or(self.items.len(), |index| index.saturating_add(1));
+        &self.items[start..]
+    }
+
+    fn non_last_reasoning_tokens(&self) -> u64 {
+        let Some(last_user) = self.items.iter().rposition(is_user_turn_boundary) else {
+            return 0;
+        };
+        self.items[..last_user]
+            .iter()
+            .filter(|item| {
+                item.get("type").and_then(Value::as_str) == Some("reasoning")
+                    && item
+                        .get("encrypted_content")
+                        .and_then(Value::as_str)
+                        .is_some()
+            })
+            .map(estimate_item_tokens)
+            .fold(0, u64::saturating_add)
+    }
+}
+
+fn is_model_generated_item(item: &Value) -> bool {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") => item.get("role").and_then(Value::as_str) == Some("assistant"),
+        Some(
+            "reasoning"
+            | "function_call"
+            | "tool_search_call"
+            | "web_search_call"
+            | "image_generation_call"
+            | "custom_tool_call"
+            | "local_shell_call"
+            | "compaction"
+            | "context_compaction",
+        ) => true,
+        _ => false,
+    }
+}
+
+fn is_user_turn_boundary(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("message")
+        && item.get("role").and_then(Value::as_str) == Some("user")
+        && !is_contextual_user_message(item)
+}
+
+fn is_contextual_user_message(item: &Value) -> bool {
+    item.get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .any(|text| {
+            let text = text.trim_start();
+            text.starts_with("# AGENTS.md instructions for ")
+                || text.starts_with("<environment_context>")
+        })
 }
 
 fn is_api_item(item: &Value) -> bool {
@@ -297,7 +391,8 @@ fn ceil_char_boundary(text: &str, target: usize) -> usize {
 mod tests {
     use serde_json::json;
 
-    use super::ContextManager;
+    use super::{ContextManager, estimate_item_tokens};
+    use crate::model::wire::Usage;
 
     #[test]
     fn stores_only_codex_api_items() {
@@ -354,5 +449,38 @@ mod tests {
         );
         assert_eq!(output[1]["type"], "input_image");
         assert_eq!(output[2]["text"], "[omitted 1 text items ...]");
+    }
+
+    #[test]
+    fn active_tokens_retain_usage_and_count_only_the_local_tail() {
+        let old_reasoning = json!({
+            "type": "reasoning",
+            "encrypted_content": "r".repeat(4_000),
+        });
+        let local_output = json!({
+            "type": "custom_tool_call_output",
+            "call_id": "call",
+            "output": "tail",
+        });
+        let mut history = ContextManager::new(vec![
+            old_reasoning.clone(),
+            json!({ "type": "message", "role": "user", "content": [] }),
+            json!({ "type": "message", "role": "assistant", "content": [] }),
+            local_output.clone(),
+        ]);
+        history.update_token_info(Some(&Usage {
+            total_tokens: 1_000,
+            ..Usage::default()
+        }));
+
+        let tail = estimate_item_tokens(&local_output);
+        assert_eq!(history.active_context_tokens(true), 1_000 + tail);
+        assert_eq!(
+            history.active_context_tokens(false),
+            1_000 + tail + estimate_item_tokens(&old_reasoning)
+        );
+
+        history.update_token_info(None);
+        assert_eq!(history.active_context_tokens(true), 1_000 + tail);
     }
 }
