@@ -4,6 +4,13 @@ import readline from "node:readline";
 
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 const executions = [];
+const imageDetails = new Set(["auto", "low", "high", "original"]);
+const imageHelperExpects =
+  "image expects a non-empty image URL string or an object with image_url and optional detail";
+const invalidImageOutput =
+  "Tool call failed: invalid image output. Pass a base64 data URI instead";
+const remoteImageOutput =
+  "Tool call failed: remote image URLs are not supported in tool outputs. Pass a base64 data URI instead";
 let wakeExecution;
 let currentCell;
 
@@ -101,18 +108,50 @@ async function runCell(init) {
     content.push({ type: "input_text", text: stringify(value) });
   }
 
-  function image(value, detail = "auto") {
+  function image(value, detail) {
+    let imageUrl;
+    let embeddedDetail;
     if (typeof value === "string") {
-      content.push({ type: "input_image", image_url: value, detail });
-      return;
+      imageUrl = value;
+    } else if (value && typeof value === "object" && typeof value.image_url === "string") {
+      imageUrl = value.image_url;
+      embeddedDetail = value.detail;
+    } else {
+      throw new TypeError(imageHelperExpects);
     }
-    if (!value || typeof value !== "object" || typeof value.image_url !== "string") {
-      throw new TypeError("image() requires a data URL or image item");
+
+    if (!imageUrl) {
+      throw new TypeError(imageHelperExpects);
     }
+    const separator = imageUrl.indexOf(":");
+    if (separator < 0) {
+      throw new TypeError(invalidImageOutput);
+    }
+    const scheme = imageUrl.slice(0, separator).toLowerCase();
+    if (scheme === "http" || scheme === "https") {
+      throw new TypeError(remoteImageOutput);
+    }
+    if (scheme !== "data") {
+      throw new TypeError(invalidImageOutput);
+    }
+
+    const selectedDetail = detail != null
+      ? detail
+      : embeddedDetail != null
+        ? embeddedDetail
+        : "auto";
+    if (typeof selectedDetail !== "string") {
+      throw new TypeError("image detail must be one of: auto, low, high, original");
+    }
+    const normalizedDetail = selectedDetail.toLowerCase();
+    if (!imageDetails.has(normalizedDetail)) {
+      throw new TypeError("image detail must be one of: auto, low, high, original");
+    }
+
     content.push({
       type: "input_image",
-      image_url: value.image_url,
-      detail: value.detail != null ? value.detail : detail != null ? detail : "auto",
+      image_url: imageUrl,
+      detail: normalizedDetail,
     });
   }
 

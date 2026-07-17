@@ -83,6 +83,64 @@ try {
 }
 
 #[tokio::test]
+async fn image_helper_requires_data_urls() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-image-urls")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+
+    let remote = tools
+        .execute_code(
+            r#"image("https://example.com/image.png");"#,
+            test_context(&history),
+        )
+        .await;
+    assert!(!remote.success);
+    assert!(execution_output(&remote).contains(
+        "Tool call failed: remote image URLs are not supported in tool outputs. Pass a base64 data URI instead"
+    ));
+
+    let invalid = tools
+        .execute_code(r#"image("not-an-image");"#, test_context(&history))
+        .await;
+    assert!(!invalid.success);
+    assert!(
+        execution_output(&invalid)
+            .contains("Tool call failed: invalid image output. Pass a base64 data URI instead")
+    );
+
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_helper_normalizes_detail_and_honors_override() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-image-detail")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"image({ image_url: "data:image/png;base64,a", detail: "low" }, "ORIGINAL");"#,
+            test_context(&history),
+        )
+        .await;
+
+    assert!(execution.success, "{}", execution_output(&execution));
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    assert!(matches!(
+        content.last(),
+        Some(ToolOutputContent::InputImage {
+            image_url,
+            detail: crate::tools::ImageDetail::Original,
+        }) if image_url == "data:image/png;base64,a"
+    ));
+
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn yielded_cell_completes_through_wait() -> Result<()> {
     let workspace = temporary_workspace("yielded-cell")?;
     let tools = test_tools(&workspace);
@@ -202,6 +260,7 @@ fn model_description_uses_codex_style_declarations() {
         .as_str()
         .expect("exec should have a description");
     assert!(description.contains("// @exec:"));
+    assert!(description.contains("must be a base64-encoded `data:` URL"));
     assert!(description.contains("apply_patch(input: string): Promise<unknown>"));
     assert!(description.contains("exec_command(args: {"));
     assert!(!description.contains("Input schema:"));

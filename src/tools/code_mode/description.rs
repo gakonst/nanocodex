@@ -18,7 +18,7 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - Global helpers:
 - `exit()`: Immediately ends the current script successfully (like an early return from the top level).
 - `text(value: string | number | boolean | undefined | null)`: Appends a text item. Non-string values are stringified with `JSON.stringify(...)` when possible.
-- `image(imageUrlOrItem: string | { image_url: string; detail?: "auto" | "low" | "high" | "original" | null }, detail?: "auto" | "low" | "high" | "original" | null)`: Appends an image item.
+- `image(imageUrlOrItem: string | { image_url: string; detail?: "auto" | "low" | "high" | "original" | null }, detail?: "auto" | "low" | "high" | "original" | null)`: Appends an image item. `image_url` must be a base64-encoded `data:` URL. When provided, the second `detail` argument overrides the detail embedded in the first argument.
 - `store(key: string, value: any)`: stores a serializable value under a string key for later `exec` calls in the same session.
 - `load(key: string)`: returns the stored value for a string key, or `undefined` if it is missing.
 - `setTimeout(callback: () => void, delayMs?: number)`: schedules a callback to run later and returns a timeout id.

@@ -104,7 +104,7 @@ async fn prepares_images_and_strips_detail_before_lite_request() -> Result<()> {
                     "type": "custom_tool_call",
                     "call_id": "call-image",
                     "name": "exec",
-                    "input": "image(\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=\", \"original\"); image(\"https://example.com/image.png\", \"high\");"
+                    "input": "image(\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=\", \"original\");"
                 })],
             ),
         )
@@ -124,12 +124,6 @@ async fn prepares_images_and_strips_detail_before_lite_request() -> Result<()> {
                 .is_some_and(|url| url.starts_with("data:image/png;base64,"))
         );
         assert!(image.get("detail").is_none());
-        assert!(
-            output.iter().any(|item| {
-                item["text"] == "image content omitted because remote image URLs are not supported"
-            }),
-            "remote image placeholder was missing"
-        );
         send_final(&mut socket, "resp-final").await
     });
 
