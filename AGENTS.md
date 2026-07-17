@@ -31,6 +31,15 @@
   deliberately narrower scope when the designs differ.
 - Copy relevant invariants and operational behavior, not Codex compatibility
   surface. Expose only tool fields and lifecycle behavior implemented here.
+- The upstream review checkpoint is
+  `openai/codex@3a067484584861606ad842de5bc4ac735a865ddf`. When asked to keep
+  pace with Codex, fetch its `origin/main` and review every commit after this
+  checkpoint, prioritizing supported model changes, defaults, prompts, API
+  semantics, tools, and lifecycle behavior. Present candidates as port,
+  evaluate, defer, or out of scope before implementing unless the user asks to
+  implement directly. Advance the checkpoint only after the full range is
+  reviewed; retain material deferred work in `PLAN.md`, and cite the exact
+  upstream commit for behavior that is adopted.
 
 ## Runtime boundary
 
