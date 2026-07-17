@@ -7,6 +7,12 @@ use serde_json::{Value, json};
 
 use super::{ToolContext, ToolExecution, ToolFuture, ToolHandler, ToolKind};
 
+mod parser;
+mod seek_sequence;
+mod streaming_parser;
+
+use parser::{Hunk, UpdateFileChunk, parse_patch};
+
 const GRAMMAR: &str = include_str!("apply_patch.lark");
 
 pub(super) struct ApplyPatchHandler {
@@ -53,40 +59,21 @@ impl ToolHandler for ApplyPatchHandler {
     }
 }
 
-const BEGIN_PATCH: &str = "*** Begin Patch";
-const END_PATCH: &str = "*** End Patch";
-const ADD_FILE: &str = "*** Add File: ";
-const DELETE_FILE: &str = "*** Delete File: ";
-const UPDATE_FILE: &str = "*** Update File: ";
-const MOVE_TO: &str = "*** Move to: ";
-const END_OF_FILE: &str = "*** End of File";
-
-#[derive(Debug)]
-enum Hunk {
-    Add {
-        path: PathBuf,
-        contents: String,
-    },
-    Delete {
-        path: PathBuf,
-    },
-    Update {
-        path: PathBuf,
-        move_path: Option<PathBuf>,
-        chunks: Vec<Chunk>,
-    },
-}
-
-#[derive(Debug)]
-struct Chunk {
-    context: Option<String>,
-    old_lines: Vec<String>,
-    new_lines: Vec<String>,
-    end_of_file: bool,
+#[derive(Debug, PartialEq)]
+struct ApplyPatchArgs {
+    patch: String,
+    hunks: Vec<Hunk>,
+    workdir: Option<String>,
+    environment_id: Option<String>,
 }
 
 pub(super) fn apply(patch: &str, workspace: &Path) -> Result<String, String> {
-    let hunks = parse(patch)?;
+    let ApplyPatchArgs {
+        hunks,
+        patch: _,
+        workdir: _,
+        environment_id: _,
+    } = parse_patch(patch).map_err(|error| error.to_string())?;
     if hunks.is_empty() {
         return Err("No files were modified.".to_owned());
     }
@@ -96,20 +83,21 @@ pub(super) fn apply(patch: &str, workspace: &Path) -> Result<String, String> {
     let mut deleted = Vec::new();
 
     for hunk in hunks {
+        let affected_path = hunk.path().to_path_buf();
         match hunk {
-            Hunk::Add { path, contents } => {
+            Hunk::AddFile { path, contents } => {
                 let target = resolve(workspace, &path);
                 write_file(&target, contents.as_bytes())?;
-                added.push(path);
+                added.push(affected_path);
             }
-            Hunk::Delete { path } => {
+            Hunk::DeleteFile { path } => {
                 let target = resolve(workspace, &path);
                 fs::remove_file(&target).map_err(|error| {
                     format!("Failed to delete file {}: {error}", target.display())
                 })?;
-                deleted.push(path);
+                deleted.push(affected_path);
             }
-            Hunk::Update {
+            Hunk::UpdateFile {
                 path,
                 move_path,
                 chunks,
@@ -128,10 +116,10 @@ pub(super) fn apply(patch: &str, workspace: &Path) -> Result<String, String> {
                     fs::remove_file(&source).map_err(|error| {
                         format!("Failed to remove original {}: {error}", source.display())
                     })?;
-                    modified.push(move_path);
+                    modified.push(affected_path);
                 } else {
                     write_file(&source, updated.as_bytes())?;
-                    modified.push(path);
+                    modified.push(affected_path);
                 }
             }
         }
@@ -150,148 +138,7 @@ pub(super) fn apply(patch: &str, workspace: &Path) -> Result<String, String> {
     Ok(summary)
 }
 
-fn parse(patch_text: &str) -> Result<Vec<Hunk>, String> {
-    let normalized = patch_text.replace("\r\n", "\n");
-    let lines = normalized.trim().lines().collect::<Vec<_>>();
-    if lines.first().map(|line| line.trim()) != Some(BEGIN_PATCH) {
-        return Err(
-            "Invalid patch: The first line of the patch must be '*** Begin Patch'".to_owned(),
-        );
-    }
-    if lines.last().map(|line| line.trim()) != Some(END_PATCH) {
-        return Err("Invalid patch: The last line of the patch must be '*** End Patch'".to_owned());
-    }
-
-    let mut hunks = Vec::new();
-    let mut index = 1;
-    while index + 1 < lines.len() {
-        let line = lines[index].trim();
-        if let Some(path_text) = line.strip_prefix(ADD_FILE) {
-            hunks.push(parse_add_hunk(&lines, &mut index, path_text)?);
-            continue;
-        }
-        if let Some(path_text) = line.strip_prefix(DELETE_FILE) {
-            hunks.push(Hunk::Delete {
-                path: required_path(path_text, index)?,
-            });
-            index += 1;
-            continue;
-        }
-        if let Some(path_text) = line.strip_prefix(UPDATE_FILE) {
-            hunks.push(parse_update_hunk(&lines, &mut index, path_text)?);
-            continue;
-        }
-        return Err(invalid_hunk(
-            index,
-            "expected an add, delete, or update file header",
-        ));
-    }
-    Ok(hunks)
-}
-
-fn parse_add_hunk(lines: &[&str], index: &mut usize, path_text: &str) -> Result<Hunk, String> {
-    let path = required_path(path_text, *index)?;
-    *index += 1;
-    let mut contents = String::new();
-    while *index + 1 < lines.len() && !is_hunk_header(lines[*index]) {
-        let added = lines[*index]
-            .strip_prefix('+')
-            .ok_or_else(|| invalid_hunk(*index, "every added-file line must start with '+'"))?;
-        contents.push_str(added);
-        contents.push('\n');
-        *index += 1;
-    }
-    if contents.is_empty() {
-        return Err(invalid_hunk(
-            *index,
-            "add-file hunk must contain at least one line",
-        ));
-    }
-    Ok(Hunk::Add { path, contents })
-}
-
-fn parse_update_hunk(lines: &[&str], index: &mut usize, path_text: &str) -> Result<Hunk, String> {
-    let path = required_path(path_text, *index)?;
-    *index += 1;
-    let move_path = lines
-        .get(*index)
-        .and_then(|line| line.trim_end().strip_prefix(MOVE_TO).map(ToOwned::to_owned));
-    let move_path = match move_path {
-        Some(destination) => {
-            let destination = required_path(&destination, *index)?;
-            *index += 1;
-            Some(destination)
-        }
-        None => None,
-    };
-    let mut chunks = Vec::new();
-    while *index + 1 < lines.len() && !is_hunk_header(lines[*index]) {
-        parse_update_line(lines[*index], *index, &mut chunks)?;
-        *index += 1;
-    }
-    if chunks.is_empty()
-        || chunks
-            .iter()
-            .any(|chunk| chunk.old_lines.is_empty() && chunk.new_lines.is_empty())
-    {
-        return Err(invalid_hunk(*index, "update-file hunk is empty"));
-    }
-    Ok(Hunk::Update {
-        path,
-        move_path,
-        chunks,
-    })
-}
-
-fn parse_update_line(line: &str, index: usize, chunks: &mut Vec<Chunk>) -> Result<(), String> {
-    let trimmed = line.trim_end();
-    if trimmed == "@@" || trimmed.starts_with("@@ ") {
-        chunks.push(Chunk {
-            context: trimmed.strip_prefix("@@ ").map(ToOwned::to_owned),
-            old_lines: Vec::new(),
-            new_lines: Vec::new(),
-            end_of_file: false,
-        });
-        return Ok(());
-    }
-    if trimmed == END_OF_FILE {
-        let chunk = chunks
-            .last_mut()
-            .ok_or_else(|| invalid_hunk(index, "end-of-file marker must follow changed lines"))?;
-        chunk.end_of_file = true;
-        return Ok(());
-    }
-    if chunks.is_empty() {
-        chunks.push(Chunk {
-            context: None,
-            old_lines: Vec::new(),
-            new_lines: Vec::new(),
-            end_of_file: false,
-        });
-    }
-    let Some(chunk) = chunks.last_mut() else {
-        return Err(invalid_hunk(index, "update-file hunk is empty"));
-    };
-    if let Some(value) = line.strip_prefix('+') {
-        chunk.new_lines.push(value.to_owned());
-    } else if let Some(value) = line.strip_prefix('-') {
-        chunk.old_lines.push(value.to_owned());
-    } else if let Some(value) = line.strip_prefix(' ') {
-        chunk.old_lines.push(value.to_owned());
-        chunk.new_lines.push(value.to_owned());
-    } else if line.is_empty() {
-        chunk.old_lines.push(String::new());
-        chunk.new_lines.push(String::new());
-    } else {
-        return Err(invalid_hunk(
-            index,
-            "every update line must start with ' ', '+', or '-'",
-        ));
-    }
-    Ok(())
-}
-
-fn apply_chunks(original: &str, chunks: &[Chunk], path: &Path) -> Result<String, String> {
+fn apply_chunks(original: &str, chunks: &[UpdateFileChunk], path: &Path) -> Result<String, String> {
     let mut original_lines = original
         .split('\n')
         .map(ToOwned::to_owned)
@@ -303,10 +150,10 @@ fn apply_chunks(original: &str, chunks: &[Chunk], path: &Path) -> Result<String,
     let mut replacements = Vec::new();
     let mut line_index = 0;
     for chunk in chunks {
-        if let Some(context) = &chunk.context {
+        if let Some(context) = &chunk.change_context {
             let context = [context.clone()];
-            let found =
-                seek_sequence(&original_lines, &context, line_index, false).ok_or_else(|| {
+            let found = seek_sequence::seek_sequence(&original_lines, &context, line_index, false)
+                .ok_or_else(|| {
                     format!(
                         "Failed to find context '{}' in {}",
                         context[0],
@@ -317,19 +164,34 @@ fn apply_chunks(original: &str, chunks: &[Chunk], path: &Path) -> Result<String,
         }
 
         if chunk.old_lines.is_empty() {
-            replacements.push((original_lines.len(), 0, chunk.new_lines.clone()));
+            let insertion_index = if original_lines.last().is_some_and(String::is_empty) {
+                original_lines.len() - 1
+            } else {
+                original_lines.len()
+            };
+            replacements.push((insertion_index, 0, chunk.new_lines.clone()));
             continue;
         }
 
         let mut old_lines = chunk.old_lines.as_slice();
         let mut new_lines = chunk.new_lines.as_slice();
-        let mut found = seek_sequence(&original_lines, old_lines, line_index, chunk.end_of_file);
+        let mut found = seek_sequence::seek_sequence(
+            &original_lines,
+            old_lines,
+            line_index,
+            chunk.is_end_of_file,
+        );
         if found.is_none() && old_lines.last().is_some_and(String::is_empty) {
             old_lines = &old_lines[..old_lines.len() - 1];
             if new_lines.last().is_some_and(String::is_empty) {
                 new_lines = &new_lines[..new_lines.len() - 1];
             }
-            found = seek_sequence(&original_lines, old_lines, line_index, chunk.end_of_file);
+            found = seek_sequence::seek_sequence(
+                &original_lines,
+                old_lines,
+                line_index,
+                chunk.is_end_of_file,
+            );
         }
         let found = found.ok_or_else(|| {
             format!(
@@ -346,43 +208,10 @@ fn apply_chunks(original: &str, chunks: &[Chunk], path: &Path) -> Result<String,
     for (start, old_len, new_lines) in replacements.into_iter().rev() {
         original_lines.splice(start..start + old_len, new_lines);
     }
-    original_lines.push(String::new());
+    if !original_lines.last().is_some_and(String::is_empty) {
+        original_lines.push(String::new());
+    }
     Ok(original_lines.join("\n"))
-}
-
-fn seek_sequence(lines: &[String], pattern: &[String], start: usize, eof: bool) -> Option<usize> {
-    if pattern.is_empty() {
-        return Some(start.min(lines.len()));
-    }
-    if pattern.len() > lines.len() {
-        return None;
-    }
-    let last_start = lines.len() - pattern.len();
-    if !eof && start > last_start {
-        return None;
-    }
-    let first = if eof { last_start } else { start };
-    let range = first..=last_start;
-    for index in range.clone() {
-        if lines[index..index + pattern.len()] == *pattern {
-            return Some(index);
-        }
-    }
-    for index in range.clone() {
-        if lines[index..index + pattern.len()]
-            .iter()
-            .zip(pattern)
-            .all(|(line, expected)| line.trim_end() == expected.trim_end())
-        {
-            return Some(index);
-        }
-    }
-    range.into_iter().find(|&index| {
-        lines[index..index + pattern.len()]
-            .iter()
-            .zip(pattern)
-            .all(|(line, expected)| line.trim() == expected.trim())
-    })
 }
 
 fn resolve(workspace: &Path, path: &Path) -> PathBuf {
@@ -413,41 +242,25 @@ fn push_summary_line(summary: &mut String, operation: char, path: &Path) {
     summary.push('\n');
 }
 
-fn required_path(path: &str, line: usize) -> Result<PathBuf, String> {
-    let path = path.trim();
-    if path.is_empty() {
-        Err(invalid_hunk(line, "file path cannot be empty"))
-    } else {
-        Ok(PathBuf::from(path))
-    }
-}
-
-fn is_hunk_header(line: &str) -> bool {
-    let line = line.trim();
-    line == END_PATCH
-        || line.starts_with(ADD_FILE)
-        || line.starts_with(DELETE_FILE)
-        || line.starts_with(UPDATE_FILE)
-}
-
-fn invalid_hunk(index: usize, message: &str) -> String {
-    format!("Invalid patch hunk on line {}: {message}", index + 1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::apply;
 
-    #[test]
-    fn applies_add_update_move_and_delete() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_root(name: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
-            "harness-apply-patch-{}-{}",
+            "harness-apply-patch-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    #[test]
+    fn applies_add_update_move_and_delete() -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("basic")?;
         std::fs::write(root.join("old.txt"), "one\ntwo\n")?;
         std::fs::write(root.join("gone.txt"), "gone\n")?;
 
@@ -466,6 +279,55 @@ mod tests {
         assert!(output.contains("A added.txt"));
         assert!(output.contains("M moved.txt"));
         assert!(output.contains("D gone.txt"));
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_codex_lenient_heredoc_form() -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("heredoc")?;
+        let output = apply(
+            "<<'EOF'\n*** Begin Patch\n*** Add File: added.txt\n+added\n*** End Patch\nEOF",
+            &root,
+        )?;
+
+        assert_eq!(std::fs::read_to_string(root.join("added.txt"))?, "added\n");
+        assert!(output.contains("A added.txt"));
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn matches_codex_unicode_context_normalization() -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("unicode")?;
+        std::fs::write(root.join("unicode.txt"), "Before — “quoted”\n")?;
+
+        apply(
+            "*** Begin Patch\n*** Update File: unicode.txt\n@@\n-Before - \"quoted\"\n+After\n*** End Patch",
+            &root,
+        )?;
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("unicode.txt"))?,
+            "After\n"
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_empty_update_with_codex_error() -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_root("empty-update")?;
+        let error = apply(
+            "*** Begin Patch\n*** Update File: file.txt\n*** End Patch",
+            &root,
+        )
+        .expect_err("empty update should fail");
+
+        assert_eq!(
+            error,
+            "invalid hunk at line 2, Update file hunk for path 'file.txt' is empty"
+        );
         std::fs::remove_dir_all(root)?;
         Ok(())
     }
