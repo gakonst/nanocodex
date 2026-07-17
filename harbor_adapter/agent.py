@@ -36,14 +36,6 @@ RUN_METRIC_FIELDS = (
     "warmup_duration_ns",
     "tool_work_duration_ns",
     "tool_wall_duration_ns",
-    "injections_sent",
-    "injections_accepted",
-    "injections_deferred",
-    "continuations_queued",
-    "injection_ack_wait_ns",
-    "hosted_multi_agent_calls",
-    "agent_messages",
-    "compactions",
 )
 USAGE_METRIC_FIELDS = ("cache_write_input_tokens", "reasoning_output_tokens")
 
@@ -64,9 +56,6 @@ class HarnessAgent(BaseInstalledAgent):
         binary_path: str | Path = ".harness/installed/harness",
         model_name: str | None = None,
         effort: str = "low",
-        max_model_calls: int = 32,
-        compact_threshold: int = 350_000,
-        multi_agent: bool = False,
         extra_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -83,9 +72,6 @@ class HarnessAgent(BaseInstalledAgent):
         self._binary_path = Path(binary_path).resolve()
         self._model = self._api_model_name(model_name)
         self._effort = effort
-        self._max_model_calls = max_model_calls
-        self._compact_threshold = compact_threshold
-        self._multi_agent = multi_agent
 
     @staticmethod
     def name() -> str:
@@ -153,13 +139,7 @@ class HarnessAgent(BaseInstalledAgent):
             self._model,
             "--effort",
             self._effort,
-            "--max-model-calls",
-            str(self._max_model_calls),
-            "--compact-threshold",
-            str(self._compact_threshold),
         ]
-        if self._multi_agent:
-            arguments.append("--multi-agent")
         command = (
             f"api_key=$(<{self._API_KEY_FILE}) && test -n \"$api_key\" && "
             f"rm -f {self._API_KEY_FILE} && OPENAI_API_KEY=\"$api_key\" "
@@ -354,7 +334,6 @@ class HarnessAgent(BaseInstalledAgent):
                     arguments=arguments,
                     extra={
                         "model_call_index": payload.get("model_call_index"),
-                        "caller": payload.get("caller"),
                     },
                 )
             )

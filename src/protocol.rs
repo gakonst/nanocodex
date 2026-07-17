@@ -56,6 +56,10 @@ impl<W: Write> EventWriter<W> {
         }
     }
 
+    pub(crate) fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
     pub(crate) fn emit<P: Serialize>(&mut self, kind: &str, payload: P) -> Result<()> {
         let envelope = OutputEnvelope {
             protocol_version: VERSION,

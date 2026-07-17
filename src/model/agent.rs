@@ -1,18 +1,21 @@
 use std::{io::Write, path::Path, time::Instant};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use super::{
-    ApiEvent, AssistantMessage, MAX_CONCURRENT_SUBAGENTS, ModelConfig, RunError, RunStarted,
-    RunStats, TRANSPORT,
+    ApiEvent, AssistantMessage, ModelConfig, RunError, RunStarted, RunStats, TRANSPORT,
     agents_md::load_project_instructions,
-    display_endpoint, elapsed_ns, resolve_workspace, terminal_payload,
-    wire::{InputItem, RequestProfile, ResponseCreate, Usage, WarmupServerEvent},
+    compaction, display_endpoint, elapsed_ns, resolve_workspace, terminal_payload,
+    wire::{
+        RequestProfile, ResponseCreate, Usage, WarmupServerEvent, custom_tool_output, task_input,
+    },
 };
 use crate::{
-    AgentError, ResponsesError, Result,
+    AgentError, HarnessError, ResponsesError, Result,
     protocol::{EventWriter, Task},
     responses::{EncodedRequest, ResponsesSocket, decode_event, parse_raw_json},
+    tools::{NestedToolCall, ToolOutputBody, ToolRuntime},
 };
 
 #[derive(Serialize)]
@@ -48,13 +51,15 @@ struct ConnectionFailed<'a> {
 #[serde(rename_all = "snake_case")]
 enum ConnectionPurpose {
     Initial,
+    WarmupFallback,
     Reconnect,
 }
 
 #[derive(Serialize)]
 struct ConnectionRetry<'a> {
     call_index: u32,
-    previous_response_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<&'a str>,
     reason: &'a str,
 }
 
@@ -63,14 +68,14 @@ struct ModelCallStarted<'a> {
     call_index: u32,
     model: &'a str,
     effort: &'static str,
-    previous_response_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
 struct WarmupStarted<'a> {
     model: &'a str,
     prompt_cache_key: &'a str,
-    compact_threshold: u64,
 }
 
 #[derive(Serialize)]
@@ -78,6 +83,12 @@ struct WarmupCompleted<'a> {
     response_id: &'a str,
     duration_ns: u64,
     usage: Option<&'a Usage>,
+}
+
+#[derive(Serialize)]
+struct WarmupFailed<'a> {
+    duration_ns: u64,
+    error: &'a str,
 }
 
 #[derive(Serialize)]
@@ -101,12 +112,91 @@ struct ModelCallFailed<'a> {
     error: &'a str,
 }
 
+#[derive(Serialize)]
+struct CompactionStarted<'a> {
+    after_model_call_index: u32,
+    active_context_tokens: u64,
+    auto_compact_token_limit: u64,
+    previous_response_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct CompactionCompleted<'a> {
+    after_model_call_index: u32,
+    response_id: &'a str,
+    status: &'a str,
+    duration_ns: u64,
+    time_to_first_event_ns: u64,
+    time_to_first_output_ns: Option<u64>,
+    usage: &'a Usage,
+}
+
+#[derive(Serialize)]
+struct CompactionFailed<'a> {
+    after_model_call_index: u32,
+    duration_ns: u64,
+    error: &'a str,
+}
+
+#[derive(Serialize)]
+struct ToolCallEvent<'a> {
+    call_id: &'a str,
+    tool: &'a str,
+    arguments: &'a Value,
+    model_call_index: u32,
+}
+
+#[derive(Serialize)]
+struct ToolResultEvent<'a> {
+    call_id: &'a str,
+    tool: &'a str,
+    status: &'static str,
+    duration_ns: u64,
+    result: &'a ToolOutputBody,
+}
+
 pub(super) struct ModelRun<'a, W> {
     events: &'a mut EventWriter<W>,
     task: &'a Task,
     config: &'a ModelConfig,
     started_at: Instant,
     stats: RunStats,
+    turn_state: Option<String>,
+}
+
+struct ConversationState {
+    initial_context: Value,
+    history: Vec<Value>,
+    delta: Vec<Value>,
+    previous_response_id: Option<String>,
+}
+
+impl ConversationState {
+    fn new(history: Vec<Value>) -> Result<Self> {
+        let initial_context = history
+            .first()
+            .cloned()
+            .ok_or(AgentError::MalformedResponse {
+                detail: "task input did not include initial project context",
+            })?;
+        Ok(Self {
+            initial_context,
+            delta: history.clone(),
+            history,
+            previous_response_id: None,
+        })
+    }
+
+    fn install_compaction(&mut self, item: Value, profile: &RequestProfile) {
+        self.history = compaction::install_history(&self.history, &self.initial_context, item);
+        self.delta = profile.full_input(&self.history);
+        self.previous_response_id = None;
+    }
+
+    fn reset_for_full_request(&mut self, profile: &RequestProfile) {
+        self.delta = profile.full_input(&self.history);
+        self.previous_response_id = None;
+    }
 }
 
 impl<'a, W: Write> ModelRun<'a, W> {
@@ -121,6 +211,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
             config,
             started_at: Instant::now(),
             stats: RunStats::default(),
+            turn_state: None,
         }
     }
 
@@ -132,17 +223,10 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 model: &self.config.model,
                 effort: self.config.effort.as_str(),
                 transport: TRANSPORT,
-                orchestration: self.config.orchestration(),
+                orchestration: ModelConfig::orchestration(),
                 websocket_url: display_endpoint(&self.config.websocket_url),
                 workspace: self.task.workspace.as_deref(),
                 instruction_bytes: self.task.instruction.len(),
-                max_model_calls: self.config.max_model_calls,
-                compact_threshold: self.config.compact_threshold,
-                multi_agent: self.config.multi_agent,
-                max_concurrent_subagents: self
-                    .config
-                    .multi_agent
-                    .then_some(MAX_CONCURRENT_SUBAGENTS),
             },
         )?;
 
@@ -173,76 +257,233 @@ impl<'a, W: Write> ModelRun<'a, W> {
     async fn execute_task(&mut self) -> Result<String> {
         let workspace = resolve_workspace(self.task.workspace.as_deref())?;
         let project_instructions = load_project_instructions(Path::new(&workspace))?;
-        let mut socket = self.connect(ConnectionPurpose::Initial).await?;
-        let profile = RequestProfile::new(self.config)?;
-        let initial_input =
-            InputItem::for_task(self.task, &workspace, project_instructions.as_deref());
-        let mut previous_response_id = self
-            .perform_warmup(&mut socket, &initial_input, &profile)
+        let tools = ToolRuntime::new(&workspace);
+        let profile = RequestProfile::new(self.events.request_id(), &tools);
+        let history = task_input(self.task, &workspace, project_instructions.as_deref());
+        let mut conversation = ConversationState::new(history)?;
+        let mut socket = self
+            .connect_with_warmup_fallback(&mut conversation, &profile)
             .await?;
-        let mut input = Vec::new();
 
-        for call_index in 1..=self.config.max_model_calls {
+        loop {
+            let call_index = self.stats.model_calls + 1;
             let response = self
                 .perform_model_call(
                     &mut socket,
                     call_index,
-                    &input,
-                    &previous_response_id,
+                    &conversation.delta,
+                    &conversation.history,
+                    conversation.previous_response_id.as_deref(),
                     &profile,
-                    &workspace,
                 )
                 .await?;
-            previous_response_id = response.id;
-            input = response.next_input;
-            if input.is_empty() {
-                if let Some(message) = response.final_message {
+            conversation.previous_response_id = Some(response.id.clone());
+            let final_message = response.final_message;
+            let code_calls = response.code_calls;
+            conversation
+                .history
+                .extend(response.output_items.into_iter().map(strip_item_id));
+
+            if code_calls.is_empty() {
+                if let Some(message) = final_message {
                     return Ok(if message.trim().is_empty() {
                         "The model completed without emitting assistant text.".to_owned()
                     } else {
                         message
                     });
                 }
+                return Err(AgentError::MalformedResponse {
+                    detail: "model completed without a final message or exec call",
+                }
+                .into());
             }
-        }
 
-        Err(AgentError::ModelCallLimit {
-            limit: self.config.max_model_calls,
+            conversation.delta = Vec::with_capacity(code_calls.len());
+            for call in code_calls {
+                if call.name != "exec" {
+                    return Err(AgentError::UnsupportedFunction {
+                        name: call.name,
+                        call_id: call.call_id,
+                    }
+                    .into());
+                }
+                let arguments = Value::String(call.input.clone());
+                self.events.emit(
+                    "tool.call",
+                    ToolCallEvent {
+                        call_id: &call.call_id,
+                        tool: &call.name,
+                        arguments: &arguments,
+                        model_call_index: call_index,
+                    },
+                )?;
+                self.stats.tool_calls += 1;
+                let started_at = Instant::now();
+                let execution = tools.execute_code(&call.input).await;
+                let duration_ns = elapsed_ns(started_at);
+                self.stats.tool_wall_duration_ns += duration_ns;
+                for nested in &execution.nested_calls {
+                    self.emit_nested_tool(call_index, &call.call_id, nested)?;
+                }
+                self.events.emit(
+                    "tool.result",
+                    ToolResultEvent {
+                        call_id: &call.call_id,
+                        tool: &call.name,
+                        status: status(execution.success),
+                        duration_ns,
+                        result: &execution.output,
+                    },
+                )?;
+                let output = custom_tool_output(&call.call_id, &execution.output);
+                conversation.history.push(output.clone());
+                conversation.delta.push(output);
+            }
+            self.maybe_compact(
+                &mut socket,
+                call_index,
+                &response.usage,
+                &mut conversation,
+                &profile,
+            )
+            .await?;
         }
-        .into())
+    }
+
+    async fn connect_with_warmup_fallback(
+        &mut self,
+        conversation: &mut ConversationState,
+        profile: &RequestProfile,
+    ) -> Result<ResponsesSocket> {
+        let socket = match self.connect(ConnectionPurpose::Initial).await {
+            Ok(mut socket) => match self.perform_warmup(&mut socket, profile).await {
+                Ok(response_id) => {
+                    conversation.previous_response_id = Some(response_id);
+                    socket
+                }
+                Err(HarnessError::Responses(_)) => {
+                    self.capture_turn_state(&socket);
+                    drop(socket);
+                    conversation.reset_for_full_request(profile);
+                    self.stats.last_response_id = None;
+                    self.connect(ConnectionPurpose::WarmupFallback).await?
+                }
+                Err(error) => return Err(error),
+            },
+            Err(HarnessError::Responses(_)) => {
+                conversation.reset_for_full_request(profile);
+                self.stats.last_response_id = None;
+                self.connect(ConnectionPurpose::WarmupFallback).await?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(socket)
+    }
+
+    async fn maybe_compact(
+        &mut self,
+        socket: &mut ResponsesSocket,
+        after_model_call_index: u32,
+        usage: &Usage,
+        conversation: &mut ConversationState,
+        profile: &RequestProfile,
+    ) -> Result<()> {
+        let Some(auto_compact_token_limit) =
+            compaction::auto_compact_token_limit(&self.config.model)
+        else {
+            return Ok(());
+        };
+        let active_context_tokens = compaction::active_context_tokens(usage, &conversation.delta);
+        if active_context_tokens < auto_compact_token_limit {
+            return Ok(());
+        }
+        let previous_response_id =
+            conversation
+                .previous_response_id
+                .as_deref()
+                .ok_or(AgentError::MalformedResponse {
+                    detail: "compaction did not have a previous response ID",
+                })?;
+        let item = self
+            .perform_compaction(
+                socket,
+                after_model_call_index,
+                &conversation.delta,
+                &conversation.history,
+                previous_response_id,
+                active_context_tokens,
+                auto_compact_token_limit,
+                profile,
+            )
+            .await?;
+        conversation.install_compaction(item, profile);
+        Ok(())
+    }
+
+    fn emit_nested_tool(
+        &mut self,
+        call_index: u32,
+        parent_call_id: &str,
+        call: &NestedToolCall,
+    ) -> Result<()> {
+        let call_id = format!("{parent_call_id}/{}", call.call_id);
+        self.events.emit(
+            "tool.call",
+            ToolCallEvent {
+                call_id: &call_id,
+                tool: &call.name,
+                arguments: &call.input,
+                model_call_index: call_index,
+            },
+        )?;
+        self.events.emit(
+            "tool.result",
+            ToolResultEvent {
+                call_id: &call_id,
+                tool: &call.name,
+                status: status(call.success),
+                duration_ns: call.duration_ns,
+                result: &call.output,
+            },
+        )?;
+        self.stats.tool_calls += 1;
+        self.stats.tool_work_duration_ns += call.duration_ns;
+        Ok(())
     }
 
     async fn perform_warmup(
         &mut self,
         socket: &mut ResponsesSocket,
-        input: &[InputItem],
         profile: &RequestProfile,
     ) -> Result<String> {
-        let request = EncodedRequest::new(&ResponseCreate::warmup(self.config, input, profile))?;
+        self.capture_turn_state(socket);
+        let request = EncodedRequest::new(&ResponseCreate::warmup(
+            self.config,
+            profile,
+            self.turn_state.as_deref(),
+        ))?;
         let started_at = Instant::now();
         self.events.emit(
             "model.warmup.started",
             WarmupStarted {
                 model: &self.config.model,
                 prompt_cache_key: profile.prompt_cache_key(),
-                compact_threshold: self.config.compact_threshold,
             },
         )?;
-        self.events.emit(
-            "api.event",
-            ApiEvent {
-                direction: "outbound",
-                transport: TRANSPORT,
-                phase: "warmup",
-                model_call_index: None,
-                event: request.raw(),
-            },
-        )?;
-        socket.send(&request).await?;
+        self.emit_outbound("warmup", None, &request)?;
+        if let Err(error) = socket.send(&request).await {
+            return self.warmup_failed(started_at, error.into());
+        }
 
         loop {
-            let text = socket.next_text_or_idle_timeout().await?;
-            let raw_event = parse_raw_json(text.as_str())?;
+            let text = match socket.next_text_or_idle_timeout().await {
+                Ok(text) => text,
+                Err(error) => return self.warmup_failed(started_at, error.into()),
+            };
+            let raw_event = match parse_raw_json(text.as_str()) {
+                Ok(event) => event,
+                Err(error) => return self.warmup_failed(started_at, error.into()),
+            };
             self.events.emit(
                 "api.event",
                 ApiEvent {
@@ -253,14 +494,19 @@ impl<'a, W: Write> ModelRun<'a, W> {
                     event: raw_event,
                 },
             )?;
-            let event = decode_event::<WarmupServerEvent>(raw_event)?;
+            let event = match decode_event::<WarmupServerEvent>(raw_event) {
+                Ok(event) => event,
+                Err(error) => return self.warmup_failed(started_at, error.into()),
+            };
             match event {
                 WarmupServerEvent::Completed { response } => {
+                    self.capture_turn_state(socket);
                     let duration_ns = elapsed_ns(started_at);
                     self.stats.warmup_duration_ns += duration_ns;
                     if let Some(usage) = &response.usage {
                         self.stats.warmup_usage.add(usage);
                     }
+                    self.stats.last_response_id = Some(response.id.clone());
                     self.events.emit(
                         "model.warmup.completed",
                         WarmupCompleted {
@@ -274,10 +520,10 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 WarmupServerEvent::Error
                 | WarmupServerEvent::Failed
                 | WarmupServerEvent::Incomplete => {
-                    return Err(ResponsesError::Api {
+                    let error = ResponsesError::Api {
                         event: raw_event.get().to_owned(),
-                    }
-                    .into());
+                    };
+                    return self.warmup_failed(started_at, error.into());
                 }
                 WarmupServerEvent::Created { response } => {
                     self.stats.last_response_id = Some(response.id);
@@ -285,6 +531,20 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 WarmupServerEvent::Other => {}
             }
         }
+    }
+
+    fn warmup_failed<T>(&mut self, started_at: Instant, error: HarnessError) -> Result<T> {
+        let duration_ns = elapsed_ns(started_at);
+        self.stats.warmup_duration_ns += duration_ns;
+        let message = error.to_string();
+        self.events.emit(
+            "model.warmup.failed",
+            WarmupFailed {
+                duration_ns,
+                error: &message,
+            },
+        )?;
+        Err(error)
     }
 
     async fn connect(&mut self, purpose: ConnectionPurpose) -> Result<ResponsesSocket> {
@@ -303,7 +563,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
         let connection = ResponsesSocket::connect(
             &self.config.websocket_url,
             &self.config.api_key,
-            self.config.multi_agent,
+            self.events.request_id(),
         )
         .await;
         let duration_ns = elapsed_ns(started_at);
@@ -325,8 +585,14 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 return Err(error.into());
             }
         };
-        if matches!(purpose, ConnectionPurpose::Reconnect) {
+        if matches!(
+            purpose,
+            ConnectionPurpose::WarmupFallback | ConnectionPurpose::Reconnect
+        ) {
             self.stats.websocket_reconnects += 1;
+        }
+        if metadata.turn_state.is_some() {
+            self.turn_state.clone_from(&metadata.turn_state);
         }
         self.events.emit(
             "model.connection.completed",
@@ -344,44 +610,23 @@ impl<'a, W: Write> ModelRun<'a, W> {
         Ok(socket)
     }
 
-    async fn send_model_request(
-        &mut self,
-        socket: &mut ResponsesSocket,
-        request: &EncodedRequest,
-        call_index: u32,
-        previous_response_id: &str,
-    ) -> Result<()> {
-        match socket.send(request).await {
-            Ok(()) => return Ok(()),
-            Err(error) if error.is_reconnectable_send() => {
-                let reason = error.to_string();
-                self.events.emit(
-                    "model.connection.retrying",
-                    ConnectionRetry {
-                        call_index,
-                        previous_response_id,
-                        reason: &reason,
-                    },
-                )?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-
-        *socket = self.connect(ConnectionPurpose::Reconnect).await?;
-        socket.send(request).await.map_err(Into::into)
-    }
-
     async fn perform_model_call(
         &mut self,
         socket: &mut ResponsesSocket,
         call_index: u32,
-        input: &[InputItem],
-        previous_response_id: &str,
+        delta: &[Value],
+        history: &[Value],
+        previous_response_id: Option<&str>,
         profile: &RequestProfile,
-        workspace: &str,
     ) -> Result<super::stream::TurnResult> {
-        let request = ResponseCreate::continued(self.config, input, previous_response_id, profile);
-        let request = EncodedRequest::new(&request)?;
+        self.capture_turn_state(socket);
+        let request = EncodedRequest::new(&ResponseCreate::generation(
+            self.config,
+            delta,
+            previous_response_id,
+            profile,
+            self.turn_state.as_deref(),
+        ))?;
         let started_at = Instant::now();
         self.stats.model_calls += 1;
         self.events.emit(
@@ -393,49 +638,42 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 previous_response_id,
             },
         )?;
-        self.events.emit(
-            "api.event",
-            ApiEvent {
-                direction: "outbound",
-                transport: TRANSPORT,
-                phase: "generation",
-                model_call_index: Some(call_index),
-                event: request.raw(),
-            },
-        )?;
-        let response = match async {
-            self.send_model_request(socket, &request, call_index, previous_response_id)
-                .await?;
-            super::stream::receive(
-                socket,
-                self.events,
-                &mut self.stats,
-                workspace,
-                call_index,
-                started_at,
-                self.config.multi_agent,
-            )
-            .await
-        }
-        .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                let duration_ns = elapsed_ns(started_at);
-                self.stats.model_duration_ns += duration_ns;
-                let message = error.to_string();
-                self.events.emit(
-                    "model.call.failed",
-                    ModelCallFailed {
-                        call_index,
-                        model: &self.config.model,
-                        duration_ns,
-                        error: &message,
-                    },
-                )?;
-                return Err(error);
+        self.emit_outbound("generation", Some(call_index), &request)?;
+
+        if let Err(error) = socket.send(&request).await {
+            if !error.is_reconnectable_send() {
+                return self.model_call_failed(call_index, started_at, error.into());
             }
-        };
+            let reason = error.to_string();
+            self.events.emit(
+                "model.connection.retrying",
+                ConnectionRetry {
+                    call_index,
+                    previous_response_id,
+                    reason: &reason,
+                },
+            )?;
+            self.capture_turn_state(socket);
+            *socket = self.connect(ConnectionPurpose::Reconnect).await?;
+            let full_input = profile.full_input(history);
+            let replay = EncodedRequest::new(&ResponseCreate::generation(
+                self.config,
+                &full_input,
+                None,
+                profile,
+                self.turn_state.as_deref(),
+            ))?;
+            self.emit_outbound("generation", Some(call_index), &replay)?;
+            if let Err(error) = socket.send(&replay).await {
+                return self.model_call_failed(call_index, started_at, error.into());
+            }
+        }
+
+        let response =
+            match super::stream::receive(socket, self.events, call_index, started_at).await {
+                Ok(response) => response,
+                Err(error) => return self.model_call_failed(call_index, started_at, error),
+            };
         let duration_ns = elapsed_ns(started_at);
         self.stats.model_duration_ns += duration_ns;
         self.stats.usage.add(&response.usage);
@@ -450,12 +688,187 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 duration_ns,
                 time_to_first_event_ns: response.time_to_first_event_ns,
                 time_to_first_output_ns: response.time_to_first_output_ns,
-                tool_calls: response.tool_calls,
+                tool_calls: response.code_calls.len(),
                 usage: &response.usage,
             },
         )?;
         Ok(response)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn perform_compaction(
+        &mut self,
+        socket: &mut ResponsesSocket,
+        after_model_call_index: u32,
+        delta: &[Value],
+        history: &[Value],
+        previous_response_id: &str,
+        active_context_tokens: u64,
+        auto_compact_token_limit: u64,
+        profile: &RequestProfile,
+    ) -> Result<Value> {
+        self.capture_turn_state(socket);
+        let trigger = compaction::trigger();
+        let mut incremental_input = Vec::with_capacity(delta.len() + 1);
+        incremental_input.extend_from_slice(delta);
+        incremental_input.push(trigger.clone());
+        let request = EncodedRequest::new(&ResponseCreate::generation(
+            self.config,
+            &incremental_input,
+            Some(previous_response_id),
+            profile,
+            self.turn_state.as_deref(),
+        ))?;
+        let started_at = Instant::now();
+        self.stats.compactions += 1;
+        self.events.emit(
+            "model.compaction.started",
+            CompactionStarted {
+                after_model_call_index,
+                active_context_tokens,
+                auto_compact_token_limit,
+                previous_response_id,
+            },
+        )?;
+        self.emit_outbound("compaction", Some(after_model_call_index), &request)?;
+
+        if let Err(error) = socket.send(&request).await {
+            if !error.is_reconnectable_send() {
+                return self.compaction_failed(after_model_call_index, started_at, error.into());
+            }
+            let reason = error.to_string();
+            self.events.emit(
+                "model.connection.retrying",
+                ConnectionRetry {
+                    call_index: after_model_call_index,
+                    previous_response_id: Some(previous_response_id),
+                    reason: &reason,
+                },
+            )?;
+            self.capture_turn_state(socket);
+            *socket = self.connect(ConnectionPurpose::Reconnect).await?;
+            let mut replay_input = profile.full_input(history);
+            replay_input.push(trigger);
+            let replay = EncodedRequest::new(&ResponseCreate::generation(
+                self.config,
+                &replay_input,
+                None,
+                profile,
+                self.turn_state.as_deref(),
+            ))?;
+            self.emit_outbound("compaction", Some(after_model_call_index), &replay)?;
+            if let Err(error) = socket.send(&replay).await {
+                return self.compaction_failed(after_model_call_index, started_at, error.into());
+            }
+        }
+
+        let response = match super::stream::receive_compaction(
+            socket,
+            self.events,
+            after_model_call_index,
+            started_at,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return self.compaction_failed(after_model_call_index, started_at, error);
+            }
+        };
+        let duration_ns = elapsed_ns(started_at);
+        self.stats.model_duration_ns += duration_ns;
+        self.stats.usage.add(&response.usage);
+        self.stats.last_response_id = Some(response.id.clone());
+        self.events.emit(
+            "model.compaction.completed",
+            CompactionCompleted {
+                after_model_call_index,
+                response_id: &response.id,
+                status: &response.status,
+                duration_ns,
+                time_to_first_event_ns: response.time_to_first_event_ns,
+                time_to_first_output_ns: response.time_to_first_output_ns,
+                usage: &response.usage,
+            },
+        )?;
+        Ok(response.item)
+    }
+
+    fn compaction_failed<T>(
+        &mut self,
+        after_model_call_index: u32,
+        started_at: Instant,
+        error: crate::HarnessError,
+    ) -> Result<T> {
+        let duration_ns = elapsed_ns(started_at);
+        self.stats.model_duration_ns += duration_ns;
+        let message = error.to_string();
+        self.events.emit(
+            "model.compaction.failed",
+            CompactionFailed {
+                after_model_call_index,
+                duration_ns,
+                error: &message,
+            },
+        )?;
+        Err(error)
+    }
+
+    fn model_call_failed<T>(
+        &mut self,
+        call_index: u32,
+        started_at: Instant,
+        error: crate::HarnessError,
+    ) -> Result<T> {
+        let duration_ns = elapsed_ns(started_at);
+        self.stats.model_duration_ns += duration_ns;
+        let message = error.to_string();
+        self.events.emit(
+            "model.call.failed",
+            ModelCallFailed {
+                call_index,
+                model: &self.config.model,
+                duration_ns,
+                error: &message,
+            },
+        )?;
+        Err(error)
+    }
+
+    fn emit_outbound(
+        &mut self,
+        phase: &'static str,
+        call_index: Option<u32>,
+        request: &EncodedRequest,
+    ) -> Result<()> {
+        self.events.emit(
+            "api.event",
+            ApiEvent {
+                direction: "outbound",
+                transport: TRANSPORT,
+                phase,
+                model_call_index: call_index,
+                event: request.raw(),
+            },
+        )
+    }
+
+    fn capture_turn_state(&mut self, socket: &ResponsesSocket) {
+        if let Some(turn_state) = socket.turn_state() {
+            self.turn_state = Some(turn_state.to_owned());
+        }
+    }
+}
+
+fn strip_item_id(mut item: Value) -> Value {
+    if let Some(object) = item.as_object_mut() {
+        object.remove("id");
+    }
+    item
+}
+
+const fn status(success: bool) -> &'static str {
+    if success { "completed" } else { "failed" }
 }
 
 #[cfg(test)]

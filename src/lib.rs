@@ -3,6 +3,7 @@ mod model;
 mod protocol;
 mod responses;
 mod shell;
+mod tools;
 
 use std::io::{BufRead, Write};
 

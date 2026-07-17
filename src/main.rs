@@ -34,18 +34,6 @@ enum Command {
             default_value = "wss://api.openai.com/v1/responses"
         )]
         websocket_url: String,
-
-        /// Maximum number of sequential model calls in one task.
-        #[arg(long, default_value_t = 32)]
-        max_model_calls: u32,
-
-        /// Rendered-token threshold for server-managed compaction.
-        #[arg(long, env = "OPENAI_COMPACT_THRESHOLD", default_value_t = 350_000)]
-        compact_threshold: u64,
-
-        /// Enable hosted Multi-agent for explicit delegation or hard parallel work.
-        #[arg(long, env = "OPENAI_MULTI_AGENT", default_value_t = false)]
-        multi_agent: bool,
     },
 }
 
@@ -61,19 +49,11 @@ async fn main() -> Result<()> {
             api_key,
             effort,
             websocket_url,
-            max_model_calls,
-            compact_threshold,
-            multi_agent,
         } => {
             ensure!(!model.trim().is_empty(), "model must not be empty");
             ensure!(
                 !websocket_url.trim().is_empty(),
                 "Responses WebSocket URL must not be empty"
-            );
-            ensure!(max_model_calls > 0, "max-model-calls must be at least 1");
-            ensure!(
-                compact_threshold > 0,
-                "compact-threshold must be at least 1"
             );
             let api_key = api_key
                 .filter(|value| !value.trim().is_empty())
@@ -83,9 +63,6 @@ async fn main() -> Result<()> {
                 api_key,
                 effort,
                 websocket_url,
-                max_model_calls,
-                compact_threshold,
-                multi_agent,
             };
             harness::run(io::stdin().lock(), io::stdout().lock(), config).await?;
         }

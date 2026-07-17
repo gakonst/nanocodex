@@ -1,5 +1,6 @@
 mod agent;
 mod agents_md;
+mod compaction;
 mod stream;
 mod wire;
 
@@ -22,7 +23,6 @@ use crate::{
 const TRANSPORT: &str = "responses_websocket_v2";
 const COST_STATUS: &str = "not_reported_by_responses_api";
 const SYSTEM_PROMPT: &str = include_str!("prompts/system.md");
-pub(super) const MAX_CONCURRENT_SUBAGENTS: u32 = 3;
 
 #[derive(Serialize)]
 struct ApiEvent<'a> {
@@ -40,18 +40,11 @@ pub struct ModelConfig {
     pub api_key: String,
     pub effort: ReasoningEffort,
     pub websocket_url: String,
-    pub max_model_calls: u32,
-    pub compact_threshold: u64,
-    pub multi_agent: bool,
 }
 
 impl ModelConfig {
-    pub(super) const fn orchestration(&self) -> &'static str {
-        if self.multi_agent {
-            "hosted_multi_agent"
-        } else {
-            "programmatic_tool_calling"
-        }
+    pub(super) const fn orchestration() -> &'static str {
+        "local_code_mode"
     }
 
     pub(super) const fn system_prompt() -> &'static str {
@@ -106,6 +99,7 @@ impl UsageTotals {
 #[derive(Default, Serialize)]
 struct RunStats {
     model_calls: u32,
+    compactions: u32,
     tool_calls: u32,
     connection_attempts: u32,
     websocket_reconnects: u32,
@@ -117,14 +111,6 @@ struct RunStats {
     usage: UsageTotals,
     warmup_usage: UsageTotals,
     last_response_id: Option<String>,
-    injections_sent: u32,
-    injections_accepted: u32,
-    injections_deferred: u32,
-    continuations_queued: u32,
-    injection_ack_wait_ns: u64,
-    hosted_multi_agent_calls: u32,
-    agent_messages: u32,
-    compactions: u32,
 }
 
 pub(crate) async fn run<W: Write>(
@@ -165,7 +151,7 @@ fn terminal_payload<'a>(
         model: &config.model,
         effort: config.effort.as_str(),
         transport: TRANSPORT,
-        orchestration: config.orchestration(),
+        orchestration: ModelConfig::orchestration(),
         duration_ms: duration_ms(elapsed),
         duration_ns: duration_ns(elapsed),
         stats,
@@ -184,11 +170,6 @@ struct RunStarted<'a> {
     websocket_url: &'a str,
     workspace: Option<&'a str>,
     instruction_bytes: usize,
-    max_model_calls: u32,
-    compact_threshold: u64,
-    multi_agent: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_concurrent_subagents: Option<u32>,
 }
 
 #[derive(Serialize)]

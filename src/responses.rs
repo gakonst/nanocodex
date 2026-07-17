@@ -2,6 +2,7 @@ use std::{sync::Once, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Serialize, de::DeserializeOwned};
+use serde_json::Value;
 use serde_json::value::{RawValue, to_raw_value};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
@@ -24,7 +25,8 @@ const EVENT_IDLE_TIMEOUT: Duration = if cfg!(test) {
 } else {
     Duration::from_secs(300)
 };
-const RESPONSES_BETA: &str = "responses_multi_agent=v1";
+const RESPONSES_WEBSOCKETS_BETA: &str = "responses_websockets=2026-02-06";
+const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -33,10 +35,12 @@ pub(crate) struct ConnectionMetadata {
     pub(crate) request_id: Option<String>,
     pub(crate) server_model: Option<String>,
     pub(crate) reasoning_included: bool,
+    pub(crate) turn_state: Option<String>,
 }
 
 pub(crate) struct ResponsesSocket {
     pump: SocketPump,
+    turn_state: Option<String>,
 }
 
 /// A request serialized once at the API boundary and ready for transport.
@@ -71,7 +75,7 @@ impl ResponsesSocket {
     pub(crate) async fn connect(
         endpoint: &str,
         api_key: &str,
-        multi_agent: bool,
+        session_id: &str,
     ) -> Result<(Self, ConnectionMetadata), ResponsesError> {
         ensure_crypto_provider();
         let mut request = endpoint
@@ -82,10 +86,15 @@ impl ResponsesSocket {
         request
             .headers_mut()
             .insert(header::AUTHORIZATION, authorization);
-        if multi_agent {
-            request
-                .headers_mut()
-                .insert("OpenAI-Beta", HeaderValue::from_static(RESPONSES_BETA));
+        request.headers_mut().insert(
+            "OpenAI-Beta",
+            HeaderValue::from_static(RESPONSES_WEBSOCKETS_BETA),
+        );
+        for name in ["session-id", "thread-id", "x-client-request-id"] {
+            request.headers_mut().insert(
+                name,
+                HeaderValue::from_str(session_id).map_err(ResponsesError::InvalidSessionId)?,
+            );
         }
         request.headers_mut().insert(
             "x-responsesapi-include-timing-metrics",
@@ -95,22 +104,24 @@ impl ResponsesSocket {
             header::USER_AGENT,
             HeaderValue::from_static(concat!("harness/", env!("CARGO_PKG_VERSION"))),
         );
-
         let (socket, response) = timeout(CONNECT_TIMEOUT, connect_async(request))
             .await
             .map_err(|_| ResponsesError::HandshakeTimeout {
                 seconds: CONNECT_TIMEOUT.as_secs(),
             })?
             .map_err(map_handshake_error)?;
+        let turn_state = header_string(response.headers(), TURN_STATE_HEADER);
         let metadata = ConnectionMetadata {
             status: response.status().as_u16(),
             request_id: header_string(response.headers(), "x-request-id"),
             server_model: header_string(response.headers(), "openai-model"),
             reasoning_included: response.headers().contains_key("x-reasoning-included"),
+            turn_state: turn_state.clone(),
         };
         Ok((
             Self {
                 pump: SocketPump::new(socket),
+                turn_state,
             },
             metadata,
         ))
@@ -145,7 +156,10 @@ impl ResponsesSocket {
                 .map_err(ResponsesError::Receive)?;
 
             match message {
-                Message::Text(text) => return Ok(text),
+                Message::Text(text) => {
+                    self.capture_turn_state(text.as_str());
+                    return Ok(text);
+                }
                 Message::Binary(_) => return Err(ResponsesError::UnexpectedBinary),
                 Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
                 Message::Close(frame) => {
@@ -157,6 +171,32 @@ impl ResponsesSocket {
                 }
             }
         }
+    }
+
+    pub(crate) fn turn_state(&self) -> Option<&str> {
+        self.turn_state.as_deref()
+    }
+
+    fn capture_turn_state(&mut self, text: &str) {
+        if self.turn_state.is_some() {
+            return;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(text) else {
+            return;
+        };
+        if event.get("type").and_then(Value::as_str) != Some("response.metadata") {
+            return;
+        }
+        self.turn_state = event
+            .get("headers")
+            .and_then(Value::as_object)
+            .and_then(|headers| {
+                headers.iter().find_map(|(name, value)| {
+                    name.eq_ignore_ascii_case(TURN_STATE_HEADER)
+                        .then(|| value.as_str().map(str::to_owned))
+                        .flatten()
+                })
+            });
     }
 }
 
@@ -285,11 +325,18 @@ mod tests {
     use eyre::{Result, eyre};
     use futures_util::{SinkExt, StreamExt};
     use tokio::{net::TcpListener, time::timeout};
-    use tokio_tungstenite::{accept_async, tungstenite::Message};
+    use tokio_tungstenite::{
+        accept_hdr_async,
+        tungstenite::{Message, handshake::server::Request},
+    };
 
     use super::{ResponsesSocket, parse_raw_json};
 
     #[tokio::test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "tungstenite fixes the handshake callback's error response type"
+    )]
     async fn answers_ping_while_response_consumer_is_idle() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -297,7 +344,38 @@ mod tests {
         let expected_keepalive = keepalive.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await?;
-            let mut socket = accept_async(stream).await?;
+            let mut socket = accept_hdr_async(stream, |request: &Request, response| {
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("session-id")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("session-test")
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("thread-id")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("session-test")
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("x-client-request-id")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("session-test")
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("OpenAI-Beta")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("responses_websockets=2026-02-06")
+                );
+                Ok(response)
+            })
+            .await?;
             socket.send(Message::Ping(keepalive.into())).await?;
             let reply = timeout(Duration::from_secs(1), socket.next())
                 .await
@@ -312,7 +390,8 @@ mod tests {
         });
 
         let endpoint = format!("ws://{address}");
-        let (mut socket, _) = ResponsesSocket::connect(&endpoint, "test-key", false).await?;
+        let (mut socket, _) =
+            ResponsesSocket::connect(&endpoint, "test-key", "session-test").await?;
 
         server.await??;
         let text = socket.next_text().await?;
