@@ -190,6 +190,43 @@ event per accepted request, long command output remains memory-bounded,
 timed-out commands leave no descendant processes, and the cleanup produces a
 material net reduction in Rust LOC.
 
+### Intentional retention and deferred cleanup
+
+The 2026-07-17 Rust LOC audit removed incidental ownership, cloning, and stream
+bookkeeping. The following boundaries are deliberate decisions, not slop to
+erase opportunistically:
+
+1. Do not add mid-run user steering or turn injection. One accepted
+   `task.start` owns the model/tool loop through exactly one terminal event.
+   Subprocess timeout and cancellation remain explicit runtime concerns, but
+   there is no second interactive input lifecycle.
+2. Preserve Codex-shaped compaction behavior: retain the Responses Lite
+   prefix, the first real user task, and the installed compacted context. Give
+   the retained task an approximate 64k-token budget and middle-truncate only
+   its overflow. Do not restore a generic multi-message history trimmer without
+   an eval-backed need.
+3. Share only mechanical stream ingestion between generation and compaction:
+   WebSocket receive, raw-event retention, decode, timing, and API failure
+   handling. Keep their completion rules and result consumers separate so the
+   common helper does not become a generic stream framework.
+4. Keep `PlanHandler`'s small mutex-protected owned snapshot. It is intentional
+   tool state, not a reason to introduce shared run-state infrastructure or an
+   event bus.
+5. Keep typed serde messages for repeated protocol events and wire shapes; keep
+   compact `json!` for one-use static schemas. Do not optimize either style into
+   a single universal representation.
+6. Retain the native Responses/WebSocket boundary, production shell lifecycle,
+   `apply_patch` implementation, and Codex-aligned code-mode tool shapes. Their
+   LOC carries required protocol, parsing, bounded-output, and cleanup behavior;
+   reduce them only around demonstrated duplication or a regression.
+7. Rebuilding the small tool catalog at request or code-cell boundaries is
+   acceptable. Do not add cache ownership and invalidation machinery merely to
+   avoid reconstructing a handful of JSON values.
+8. The remaining generation/compaction request-send and reconnect duplication
+   is deferred. Revisit it only when the shared portion can shrink production
+   LOC without merging their distinct lifecycle semantics or adding a generic
+   client/provider layer.
+
 ## Milestone 2: eval-driven tuning
 
 Status: in progress. Thirty-seven public tasks are active under the current
