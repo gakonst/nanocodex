@@ -414,7 +414,7 @@ async fn sol_compacts_with_a_trigger_and_installs_the_returned_context() -> Resu
                     "name": "exec",
                     "input": "text(\"tool completed\")"
                 })],
-                334_800,
+                244_800,
             ),
         )
         .await?;
