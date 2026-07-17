@@ -244,7 +244,7 @@ fn call_ids(calls: &[NestedToolCall]) -> Vec<&str> {
     calls.iter().map(|call| call.call_id.as_str()).collect()
 }
 
-fn test_tools(workspace: &std::path::Path) -> std::sync::Arc<ToolRuntime> {
+fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
     ToolRuntime::new(
         workspace,
         WebSearchConfig {

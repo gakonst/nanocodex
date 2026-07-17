@@ -136,7 +136,7 @@ pub(crate) struct ToolRuntime {
 }
 
 impl ToolRuntime {
-    pub(crate) fn new(workspace: impl Into<PathBuf>, web_search: WebSearchConfig) -> Arc<Self> {
+    pub(crate) fn new(workspace: impl Into<PathBuf>, web_search: WebSearchConfig) -> Self {
         let workspace = workspace.into();
         let sessions = Arc::new(ShellSessions::new());
         let handlers: Vec<Box<dyn ToolHandler>> = vec![
@@ -150,10 +150,10 @@ impl ToolRuntime {
             Box::new(view_image::ViewImageHandler::new(workspace)),
             Box::new(web_search::WebSearchHandler::new(web_search)),
         ];
-        Arc::new(Self {
+        Self {
             handlers,
             code_mode: code_mode::CodeModeRuntime::new(),
-        })
+        }
     }
 
     pub(crate) fn model_specs(&self) -> Vec<Value> {
