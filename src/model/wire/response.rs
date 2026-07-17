@@ -84,6 +84,8 @@ pub(in crate::model) struct CompletedResponse {
     #[serde(default = "completed_status")]
     pub(in crate::model) status: String,
     #[serde(default)]
+    pub(in crate::model) end_turn: Option<bool>,
+    #[serde(default)]
     pub(in crate::model) output: Vec<Value>,
     #[serde(default)]
     pub(in crate::model) usage: Usage,

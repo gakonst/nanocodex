@@ -16,6 +16,7 @@ use crate::{
 pub(super) struct TurnResult {
     pub(super) id: String,
     pub(super) status: String,
+    pub(super) end_turn: Option<bool>,
     pub(super) final_message: Option<String>,
     pub(super) output_items: Vec<Value>,
     pub(super) code_calls: Vec<CodeCall>,
@@ -109,6 +110,7 @@ pub(super) async fn receive<W: Write>(
                 return Ok(TurnResult {
                     id: response.id,
                     status: response.status,
+                    end_turn: response.end_turn,
                     final_message,
                     output_items,
                     code_calls,

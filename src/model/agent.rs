@@ -294,6 +294,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 .perform_model_call(&mut socket, call_index, &conversation, &profile)
                 .await?;
             conversation.previous_response_id = Some(response.id.clone());
+            let end_turn = response.end_turn;
             let final_message = response.final_message;
             let code_calls = response.code_calls;
             conversation
@@ -301,6 +302,18 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 .extend(response.output_items.into_iter().map(strip_item_id));
 
             if code_calls.is_empty() {
+                if end_turn == Some(false) {
+                    conversation.delta_start = Some(conversation.history.len());
+                    self.maybe_compact(
+                        &mut socket,
+                        call_index,
+                        &response.usage,
+                        &mut conversation,
+                        &profile,
+                    )
+                    .await?;
+                    continue;
+                }
                 if let Some(message) = final_message {
                     return Ok(if message.trim().is_empty() {
                         "The model completed without emitting assistant text.".to_owned()

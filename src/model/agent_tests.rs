@@ -339,6 +339,46 @@ async fn continues_past_previous_model_call_limit() -> Result<()> {
 }
 
 #[tokio::test]
+async fn explicit_end_turn_false_continues_without_a_tool_call() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let generation = next_json(&mut socket).await?;
+        assert_eq!(generation["previous_response_id"], "resp-warmup");
+        let mut response = completed_response(
+            "resp-continue",
+            &[json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "intermediate" }]
+            })],
+        );
+        response["response"]["end_turn"] = json!(false);
+        send_json(&mut socket, response).await?;
+
+        let continuation = next_json(&mut socket).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-continue");
+        assert_eq!(continuation["input"].as_array().map(Vec::len), Some(0));
+        send_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("end-turn-false")?;
+    let output = run_model(&endpoint, &workspace, "continue when requested").await?;
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    assert!(output.contains("\"model_calls\":2"));
+    assert!(output.contains("\"text\":\"done\""));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn reconnect_drops_previous_response_id_and_replays_full_history() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
