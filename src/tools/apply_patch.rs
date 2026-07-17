@@ -6,7 +6,7 @@ use std::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{ToolExecution, ToolFuture, ToolHandler};
+use super::{ToolContext, ToolExecution, ToolFuture, ToolHandler};
 
 pub(super) struct ApplyPatchHandler {
     workspace: PathBuf,
@@ -43,7 +43,7 @@ impl ToolHandler for ApplyPatchHandler {
         })
     }
 
-    fn execute(&self, input: String) -> ToolFuture<'_> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
         let workspace = self.workspace.clone();
         Box::pin(async move {
             let arguments = match serde_json::from_str::<ApplyPatchArguments>(&input) {

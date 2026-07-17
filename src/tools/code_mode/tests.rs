@@ -4,15 +4,17 @@ use eyre::{Result, eyre};
 use serde_json::Value;
 
 use super::{CodeModeExecution, NestedToolCall};
-use crate::tools::{ToolOutputBody, ToolOutputContent, ToolRuntime};
+use crate::tools::{ToolContext, ToolOutputBody, ToolOutputContent, ToolRuntime, WebSearchConfig};
 
 #[tokio::test]
 async fn reuses_one_node_host_between_cells() -> Result<()> {
     let workspace = temporary_workspace("persistent-node-host")?;
-    let tools = ToolRuntime::new(&workspace);
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let context = test_context(&history);
 
-    let first = tools.execute_code("text(process.pid)").await;
-    let second = tools.execute_code("text(process.pid)").await;
+    let first = tools.execute_code("text(process.pid)", context).await;
+    let second = tools.execute_code("text(process.pid)", context).await;
 
     assert!(first.success);
     assert!(second.success);
@@ -24,7 +26,8 @@ async fn reuses_one_node_host_between_cells() -> Result<()> {
 #[tokio::test]
 async fn promise_all_runs_nested_tools_concurrently() -> Result<()> {
     let workspace = temporary_workspace("parallel-nested-tools")?;
-    let tools = ToolRuntime::new(&workspace);
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
     let execution = tools
         .execute_code(
             r#"
@@ -40,6 +43,7 @@ const [first, second] = await Promise.all([
 ]);
 text({ first: first.exit_code, second: second.exit_code });
 "#,
+            test_context(&history),
         )
         .await;
 
@@ -54,7 +58,8 @@ text({ first: first.exit_code, second: second.exit_code });
 #[tokio::test]
 async fn failed_nested_tool_rejects_its_javascript_promise() -> Result<()> {
     let workspace = temporary_workspace("nested-tool-rejection")?;
-    let tools = ToolRuntime::new(&workspace);
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
     let execution = tools
         .execute_code(
             r#"
@@ -65,6 +70,7 @@ try {
   text(error);
 }
 "#,
+            test_context(&history),
         )
         .await;
 
@@ -79,7 +85,8 @@ try {
 #[tokio::test]
 async fn yielded_cell_completes_through_wait() -> Result<()> {
     let workspace = temporary_workspace("yielded-cell")?;
-    let tools = ToolRuntime::new(&workspace);
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
     let execution = tools
         .execute_code(
             r#"
@@ -88,6 +95,7 @@ await yield_control();
 await new Promise((resolve) => setTimeout(resolve, 10));
 text("after");
 "#,
+            test_context(&history),
         )
         .await;
 
@@ -96,7 +104,10 @@ text("after");
     assert!(execution_output(&execution).contains("before"));
 
     let completed = tools
-        .wait_for_code(r#"{"cell_id":"1","yield_time_ms":1000}"#)
+        .wait_for_code(
+            r#"{"cell_id":"1","yield_time_ms":1000}"#,
+            test_context(&history),
+        )
         .await;
     assert!(completed.success);
     assert!(execution_output(&completed).contains("Script completed"));
@@ -135,6 +146,24 @@ fn execution_output(execution: &CodeModeExecution) -> String {
 
 fn call_ids(calls: &[NestedToolCall]) -> Vec<&str> {
     calls.iter().map(|call| call.call_id.as_str()).collect()
+}
+
+fn test_tools(workspace: &std::path::Path) -> std::sync::Arc<ToolRuntime> {
+    ToolRuntime::new(
+        workspace,
+        WebSearchConfig {
+            endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
+            api_key: "test-key".to_owned(),
+        },
+    )
+}
+
+fn test_context(history: &[Value]) -> ToolContext<'_> {
+    ToolContext {
+        model: "test-model",
+        session_id: "test-session",
+        history,
+    }
 }
 
 fn temporary_workspace(label: &str) -> Result<PathBuf> {

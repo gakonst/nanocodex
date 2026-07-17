@@ -18,7 +18,7 @@ use crate::{
     AgentError, HarnessError, ResponsesError, Result,
     protocol::{EventWriter, Task},
     responses::{EncodedRequest, ResponsesSocket, decode_event, parse_raw_json},
-    tools::{NestedToolCall, ToolOutputBody, ToolRuntime},
+    tools::{NestedToolCall, ToolContext, ToolOutputBody, ToolRuntime, WebSearchConfig},
 };
 
 #[derive(Serialize)]
@@ -156,6 +156,8 @@ struct ToolResultEvent<'a> {
     status: &'static str,
     duration_ns: u64,
     result: &'a ToolOutputBody,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<&'a Value>,
 }
 
 pub(super) struct ModelRun<'a, W> {
@@ -260,7 +262,13 @@ impl<'a, W: Write> ModelRun<'a, W> {
     async fn execute_task(&mut self) -> Result<String> {
         let workspace = resolve_workspace(self.task.workspace.as_deref())?;
         let project_instructions = load_project_instructions(Path::new(&workspace))?;
-        let tools = ToolRuntime::new(&workspace);
+        let tools = ToolRuntime::new(
+            &workspace,
+            WebSearchConfig {
+                endpoint: self.config.search_endpoint(),
+                api_key: self.config.api_key.clone(),
+            },
+        );
         let profile = RequestProfile::new(self.events.request_id(), &tools);
         let history = task_input(self.task, &workspace, project_instructions.as_deref());
         let mut conversation = ConversationState::new(history)?;
@@ -303,7 +311,9 @@ impl<'a, W: Write> ModelRun<'a, W> {
 
             conversation.delta = Vec::with_capacity(code_calls.len());
             for call in code_calls {
-                let output = self.execute_model_tool(&tools, call_index, call).await?;
+                let output = self
+                    .execute_model_tool(&tools, call_index, call, &conversation.history)
+                    .await?;
                 conversation.history.push(output.clone());
                 conversation.delta.push(output);
             }
@@ -323,6 +333,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
         tools: &ToolRuntime,
         call_index: u32,
         call: CodeCall,
+        history: &[Value],
     ) -> Result<Value> {
         if !matches!(call.name.as_str(), "exec" | "wait") {
             return Err(AgentError::UnsupportedFunction {
@@ -347,10 +358,15 @@ impl<'a, W: Write> ModelRun<'a, W> {
         )?;
         self.stats.tool_calls += 1;
         let started_at = Instant::now();
+        let context = ToolContext {
+            model: &self.config.model,
+            session_id: self.events.request_id(),
+            history,
+        };
         let execution = if call.name == "exec" {
-            tools.execute_code(&call.input).await
+            tools.execute_code(&call.input, context).await
         } else {
-            tools.wait_for_code(&call.input).await
+            tools.wait_for_code(&call.input, context).await
         };
         let duration_ns = elapsed_ns(started_at);
         self.stats.tool_wall_duration_ns += duration_ns;
@@ -365,6 +381,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 status: status(execution.success),
                 duration_ns,
                 result: &execution.output,
+                metadata: None,
             },
         )?;
         Ok(match call.kind {
@@ -467,6 +484,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 status: status(call.success),
                 duration_ns: call.duration_ns,
                 result: &call.output,
+                metadata: call.metadata.as_ref(),
             },
         )?;
         self.stats.tool_calls += 1;

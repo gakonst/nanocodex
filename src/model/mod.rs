@@ -52,6 +52,7 @@ pub struct ModelConfig {
     pub api_key: String,
     pub effort: ReasoningEffort,
     pub websocket_url: String,
+    pub api_base_url: String,
 }
 
 impl ModelConfig {
@@ -61,6 +62,10 @@ impl ModelConfig {
 
     pub(super) const fn system_prompt() -> &'static str {
         SYSTEM_PROMPT
+    }
+
+    pub(super) fn search_endpoint(&self) -> String {
+        format!("{}/alpha/search", self.api_base_url.trim_end_matches('/'))
     }
 }
 

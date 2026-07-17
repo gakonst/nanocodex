@@ -8,7 +8,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    ImageDetail, ToolExecution, ToolFuture, ToolHandler, ToolOutputBody, ToolOutputContent,
+    ImageDetail, ToolContext, ToolExecution, ToolFuture, ToolHandler, ToolOutputBody,
+    ToolOutputContent,
 };
 
 pub(super) struct ViewImageHandler {
@@ -67,7 +68,7 @@ impl ToolHandler for ViewImageHandler {
         })
     }
 
-    fn execute(&self, input: String) -> ToolFuture<'_> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
             let arguments = match serde_json::from_str::<ViewImageArguments>(&input) {
                 Ok(arguments) => arguments,
@@ -118,6 +119,7 @@ impl ToolHandler for ViewImageHandler {
                     "image_url": image_url,
                     "detail": detail,
                 })),
+                metadata: None,
             }
         })
     }

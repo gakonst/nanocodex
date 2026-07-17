@@ -426,6 +426,11 @@ fn assert_warmup(warmup: &Value) {
     assert_eq!(warmup["input"][0]["role"], "developer");
     assert_eq!(warmup["input"][0]["tools"][0]["type"], "custom");
     assert_eq!(warmup["input"][0]["tools"][0]["name"], "exec");
+    assert!(
+        warmup["input"][0]["tools"][0]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("`web__run`"))
+    );
     assert_eq!(warmup["input"][0]["tools"][1]["type"], "function");
     assert_eq!(warmup["input"][0]["tools"][1]["name"], "wait");
     assert_eq!(warmup["input"][1]["role"], "developer");
@@ -458,6 +463,7 @@ async fn run_model_with_model(
         api_key: "test-key".to_owned(),
         effort: ReasoningEffort::Low,
         websocket_url: endpoint.to_owned(),
+        api_base_url: "http://127.0.0.1:1/v1".to_owned(),
     };
     let mut output = Vec::new();
     {

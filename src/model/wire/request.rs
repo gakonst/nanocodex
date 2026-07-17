@@ -324,8 +324,15 @@ mod tests {
             api_key: "test-key".to_owned(),
             effort: ReasoningEffort::Low,
             websocket_url: "ws://localhost".to_owned(),
+            api_base_url: "http://localhost/v1".to_owned(),
         };
-        let runtime = ToolRuntime::new(".");
+        let runtime = ToolRuntime::new(
+            ".",
+            crate::tools::WebSearchConfig {
+                endpoint: config.search_endpoint(),
+                api_key: config.api_key.clone(),
+            },
+        );
         let first = RequestProfile::new("session-a", &runtime);
         let same = RequestProfile::new("session-a", &runtime);
         let different = RequestProfile::new("session-b", &runtime);

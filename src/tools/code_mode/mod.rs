@@ -10,7 +10,7 @@ use tokio::{
     time::Duration,
 };
 
-use super::{ToolHandler, ToolOutputBody, ToolOutputContent, ToolRuntime};
+use super::{ToolContext, ToolHandler, ToolOutputBody, ToolOutputContent, ToolRuntime};
 
 const RUNTIME: &str = include_str!("runtime.js");
 const MAX_PROTOCOL_LINE_BYTES: u64 = 8 * 1024 * 1024;
@@ -59,6 +59,7 @@ pub(crate) struct NestedToolCall {
     pub(crate) output: ToolOutputBody,
     pub(crate) success: bool,
     pub(crate) duration_ns: u64,
+    pub(crate) metadata: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -153,7 +154,12 @@ impl CodeModeRuntime {
         }
     }
 
-    pub(super) async fn execute(&self, source: &str, tools: &ToolRuntime) -> CodeModeExecution {
+    pub(super) async fn execute(
+        &self,
+        source: &str,
+        tools: &ToolRuntime,
+        context: ToolContext<'_>,
+    ) -> CodeModeExecution {
         let started_at = Instant::now();
         let mut state = self.state.lock().await;
         if let Some(cell_id) = state.live_cell {
@@ -177,7 +183,10 @@ impl CodeModeRuntime {
         let stored = state.stored.clone();
         let result = if let Some(host) = state.host.as_mut() {
             match host.start_cell(cell_id, source, stored, tools).await {
-                Ok(()) => host.drive_cell(cell_id, tools, INITIAL_YIELD).await,
+                Ok(()) => {
+                    host.drive_cell(cell_id, tools, context, INITIAL_YIELD)
+                        .await
+                }
                 Err(error) => Err(error),
             }
         } else {
@@ -190,7 +199,12 @@ impl CodeModeRuntime {
         finish_cell(&mut state, cell_id, started_at, result).await
     }
 
-    pub(super) async fn wait(&self, input: &str, tools: &ToolRuntime) -> CodeModeExecution {
+    pub(super) async fn wait(
+        &self,
+        input: &str,
+        tools: &ToolRuntime,
+        context: ToolContext<'_>,
+    ) -> CodeModeExecution {
         let started_at = Instant::now();
         let arguments = match serde_json::from_str::<WaitArguments>(input) {
             Ok(arguments) => arguments,
@@ -238,7 +252,7 @@ impl CodeModeRuntime {
         )
         .min(MAX_WAIT_YIELD);
         let result = if let Some(host) = state.host.as_mut() {
-            host.drive_cell(cell_id, tools, yield_time).await
+            host.drive_cell(cell_id, tools, context, yield_time).await
         } else {
             Err(HostFailure::new(
                 "local Node.js code-mode host was unavailable".to_owned(),
@@ -390,6 +404,7 @@ impl NodeHost {
         &mut self,
         cell_id: u64,
         tools: &ToolRuntime,
+        context: ToolContext<'_>,
         yield_after: Duration,
     ) -> Result<CellOutcome, HostFailure> {
         let mut completed_calls = Vec::new();
@@ -426,7 +441,9 @@ impl NodeHost {
                             input,
                         } => {
                             validate_cell_id(cell_id, event_cell_id, &completed_calls)?;
-                            pending_calls.push(execute_nested_call(tools, id, name, input).boxed());
+                            pending_calls.push(
+                                execute_nested_call(tools, id, name, input, context).boxed(),
+                            );
                         }
                         RuntimeEvent::Yielded {
                             cell_id: event_cell_id,
@@ -576,9 +593,10 @@ async fn execute_nested_call(
     id: u64,
     name: String,
     input: Value,
+    context: ToolContext<'_>,
 ) -> CompletedNestedCall {
     let started_at = Instant::now();
-    let execution = tools.execute_nested(&name, input.clone()).await;
+    let execution = tools.execute_nested(&name, input.clone(), context).await;
     let duration_ns = u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let value = execution.value();
     CompletedNestedCall {
@@ -591,6 +609,7 @@ async fn execute_nested_call(
             output: execution.output,
             success: execution.success,
             duration_ns,
+            metadata: execution.metadata,
         },
     }
 }

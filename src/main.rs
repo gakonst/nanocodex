@@ -34,6 +34,14 @@ enum Command {
             default_value = "wss://api.openai.com/v1/responses"
         )]
         websocket_url: String,
+
+        /// `OpenAI` HTTP API base used by standalone web search.
+        #[arg(
+            long,
+            env = "OPENAI_API_BASE_URL",
+            default_value = "https://api.openai.com/v1"
+        )]
+        api_base_url: String,
     },
 }
 
@@ -49,11 +57,22 @@ async fn main() -> Result<()> {
             api_key,
             effort,
             websocket_url,
+            api_base_url,
         } => {
             ensure!(!model.trim().is_empty(), "model must not be empty");
             ensure!(
                 !websocket_url.trim().is_empty(),
                 "Responses WebSocket URL must not be empty"
+            );
+            ensure!(
+                !api_base_url.trim().is_empty(),
+                "OpenAI API base URL must not be empty"
+            );
+            let api_base_url = reqwest::Url::parse(&api_base_url)
+                .map_err(|error| eyre!("invalid OpenAI API base URL: {error}"))?;
+            ensure!(
+                matches!(api_base_url.scheme(), "http" | "https"),
+                "OpenAI API base URL must use http or https"
             );
             let api_key = api_key
                 .filter(|value| !value.trim().is_empty())
@@ -63,6 +82,7 @@ async fn main() -> Result<()> {
                 api_key,
                 effort,
                 websocket_url,
+                api_base_url: api_base_url.to_string(),
             };
             harness::run(io::stdin().lock(), io::stdout().lock(), config).await?;
         }

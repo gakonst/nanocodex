@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use super::{ToolExecution, ToolFuture, ToolHandler};
+use super::{ToolContext, ToolExecution, ToolFuture, ToolHandler};
 
 pub(super) struct PlanHandler {
     current: Mutex<Option<UpdatePlanArgs>>,
@@ -58,7 +58,7 @@ impl ToolHandler for PlanHandler {
         })
     }
 
-    fn execute(&self, input: String) -> ToolFuture<'_> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
             let plan = match serde_json::from_str::<UpdatePlanArgs>(&input) {
                 Ok(plan) => plan,

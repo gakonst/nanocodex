@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{ToolExecution, ToolFuture, ToolHandler};
+use super::{ToolContext, ToolExecution, ToolFuture, ToolHandler};
 use crate::shell::{ExecCommand, ShellSessions, WriteStdin};
 
 pub(super) struct ExecCommandHandler {
@@ -63,7 +63,7 @@ impl ToolHandler for ExecCommandHandler {
         })
     }
 
-    fn execute(&self, input: String) -> ToolFuture<'_> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
             let arguments = match serde_json::from_str::<ExecCommandArguments>(&input) {
                 Ok(arguments) => arguments,
@@ -135,7 +135,7 @@ impl ToolHandler for WriteStdinHandler {
         })
     }
 
-    fn execute(&self, input: String) -> ToolFuture<'_> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
         Box::pin(async move {
             let arguments = match serde_json::from_str::<WriteStdinArguments>(&input) {
                 Ok(arguments) => arguments,

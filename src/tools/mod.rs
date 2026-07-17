@@ -3,6 +3,7 @@ mod code_mode;
 mod plan;
 mod shell;
 mod view_image;
+mod web_search;
 
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
@@ -45,6 +46,7 @@ pub(crate) struct ToolExecution {
     pub(crate) output: ToolOutputBody,
     pub(crate) success: bool,
     code_mode_value: Option<Value>,
+    pub(crate) metadata: Option<Value>,
 }
 
 impl ToolExecution {
@@ -53,6 +55,7 @@ impl ToolExecution {
             output: ToolOutputBody::Text(output.into()),
             success: true,
             code_mode_value: None,
+            metadata: None,
         }
     }
 
@@ -61,6 +64,7 @@ impl ToolExecution {
             output: ToolOutputBody::Text(error.into()),
             success: false,
             code_mode_value: None,
+            metadata: None,
         }
     }
 
@@ -89,14 +93,31 @@ impl ToolExecution {
         self.code_mode_value = Some(value);
         self
     }
+
+    fn with_metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
 }
 
 type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolExecution> + Send + 'a>>;
 
+#[derive(Clone, Copy)]
+pub(crate) struct ToolContext<'a> {
+    pub(crate) model: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) history: &'a [Value],
+}
+
 trait ToolHandler: Send + Sync {
     fn name(&self) -> &'static str;
     fn spec(&self) -> Value;
-    fn execute(&self, input: String) -> ToolFuture<'_>;
+    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ToolFuture<'a>;
+}
+
+pub(crate) struct WebSearchConfig {
+    pub(crate) endpoint: String,
+    pub(crate) api_key: String,
 }
 
 pub(crate) struct ToolRuntime {
@@ -105,7 +126,7 @@ pub(crate) struct ToolRuntime {
 }
 
 impl ToolRuntime {
-    pub(crate) fn new(workspace: impl Into<PathBuf>) -> Arc<Self> {
+    pub(crate) fn new(workspace: impl Into<PathBuf>, web_search: WebSearchConfig) -> Arc<Self> {
         let workspace = workspace.into();
         let sessions = Arc::new(ShellSessions::new());
         let handlers: Vec<Box<dyn ToolHandler>> = vec![
@@ -117,6 +138,7 @@ impl ToolRuntime {
             Box::new(plan::PlanHandler::new()),
             Box::new(apply_patch::ApplyPatchHandler::new(workspace.clone())),
             Box::new(view_image::ViewImageHandler::new(workspace)),
+            Box::new(web_search::WebSearchHandler::new(web_search)),
         ];
         Arc::new(Self {
             handlers,
@@ -128,15 +150,28 @@ impl ToolRuntime {
         vec![code_mode::exec_spec(&self.handlers), code_mode::wait_spec()]
     }
 
-    pub(crate) async fn execute_code(&self, source: &str) -> CodeModeExecution {
-        self.code_mode.execute(source, self).await
+    pub(crate) async fn execute_code(
+        &self,
+        source: &str,
+        context: ToolContext<'_>,
+    ) -> CodeModeExecution {
+        self.code_mode.execute(source, self, context).await
     }
 
-    pub(crate) async fn wait_for_code(&self, input: &str) -> CodeModeExecution {
-        self.code_mode.wait(input, self).await
+    pub(crate) async fn wait_for_code(
+        &self,
+        input: &str,
+        context: ToolContext<'_>,
+    ) -> CodeModeExecution {
+        self.code_mode.wait(input, self, context).await
     }
 
-    async fn execute_nested(&self, name: &str, input: Value) -> ToolExecution {
+    async fn execute_nested(
+        &self,
+        name: &str,
+        input: Value,
+        context: ToolContext<'_>,
+    ) -> ToolExecution {
         let Some(handler) = self.handlers.iter().find(|handler| handler.name() == name) else {
             return ToolExecution::error(format!("unsupported nested tool call: {name}"));
         };
@@ -146,7 +181,7 @@ impl ToolRuntime {
             ));
         }
         match serde_json::to_string(&input) {
-            Ok(input) => handler.execute(input).await,
+            Ok(input) => handler.execute(input, context).await,
             Err(error) => ToolExecution::error(format!("failed to encode {name} input: {error}")),
         }
     }
