@@ -10,6 +10,9 @@ from harbor.verifier.verifier import Verifier
 
 _POV_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/pov"
 _PARQUET_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/parquet"
+_SCIENTIFIC_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/scientific"
+_PORTFOLIO_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/portfolio"
+_ADAPTIVE_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/adaptive"
 
 
 class PytestVerifier(Verifier):
@@ -51,6 +54,7 @@ class PytestVerifier(Verifier):
             '"install -y curl git"|'
             '"install -y curl expect"|'
             '"install -y curl primer3"|'
+            '"install -y curl sshpass"|'
             '"install -y expect curl"|'
             '"install -y curl expect git openssh-client") return 0 ;; '
             '*) echo "unsupported cached apt-get command: $*" >&2; return 127 ;; '
@@ -91,11 +95,24 @@ class PytestVerifier(Verifier):
             '"-p 3.13 -w pytest==8.4.1 -w pandas==2.3.3 '
             '-w pyarrow==22.0.0 -w pytest-json-ctrf==0.3.5 pytest "*) '
             f'verifier_pythonpath={_PARQUET_VERIFIER_SITE_PACKAGES} ;; '
+            '"-p 3.13 -w pytest==8.4.1 -w numpy==2.3.4 '
+            '-w pandas==2.3.3 -w matplotlib==3.10.7 '
+            '-w scipy==1.16.3 -w pytest-json-ctrf==0.3.5 pytest "*) '
+            f'verifier_pythonpath={_SCIENTIFIC_VERIFIER_SITE_PACKAGES} ;; '
+            '"-p 3.13 -w pytest==8.4.1 -w numpy==2.3.2 '
+            '-w setuptools==78.1.1 -w pytest-json-ctrf==0.3.5 pytest "*) '
+            f'verifier_pythonpath={_PORTFOLIO_VERIFIER_SITE_PACKAGES} ;; '
+            '"-p 3.13 -w pytest==8.4.1 -w numpy==2.3.3 '
+            '-w scipy==1.16.2 -w pytest-json-ctrf==0.3.5 pytest "*) '
+            f'verifier_pythonpath={_ADAPTIVE_VERIFIER_SITE_PACKAGES} ;; '
             '"-p 3.13 -w pytest==8.4.1 -w pytest-json-ctrf==0.3.5 pytest "*|'
             '"-p 3.13 -w pytest==8.4.1 -w pip==25.2 '
             '-w pytest-json-ctrf==0.3.5 pytest "*|'
             '"-p 3.13 -w pytest==8.4.1 -w numpy==2.3.0 '
             '-w pytest-json-ctrf==0.3.5 pytest "*|'
+            '"-p 3.13 -w pytest==8.4.1 -w numpy==2.3.1 '
+            '-w pytest-json-ctrf==0.3.5 pytest "*) '
+            f'verifier_pythonpath={_POV_VERIFIER_SITE_PACKAGES} ;; '
             '"-p 3.13 -w pytest==8.4.1 -w pillow==11.1.0 '
             '-w numpy==2.3.1 -w scikit-image==0.25.0 '
             '-w pytest-json-ctrf==0.3.5 pytest "*) '

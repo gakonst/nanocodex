@@ -106,9 +106,9 @@ Status: first real model/tool vertical slice complete.
 4. Expose only the custom freeform `exec` tool to the model. Run its raw
    JavaScript through one local Node.js host reused for the run and inject the
    common Rust tools through the `tools` object. Execute independent nested
-   calls concurrently. Native runs use `node` from `PATH`; the shared Harbor
-   eval-image overlay installs the distribution's `nodejs` package. The Rust
-   executable does not download or bundle a runtime.
+   calls concurrently. Native runs use Node.js 12.22 or newer from `PATH`; the
+   shared Harbor eval-image overlay installs the distribution's `nodejs`
+   package. The Rust executable does not download or bundle a runtime.
 5. Use `store: false` and retain the complete ordered logical history locally.
    Preserve model output items and encrypted reasoning, but remove top-level
    response item IDs before replay just as Codex does when item IDs are not
@@ -1552,6 +1552,112 @@ also passed all 3 assertions in 29.07 agent-seconds over 3 model calls and 2
 tool calls, using 29,265 input, 18,144 cached-input (62.0%), and 1,654 output
 tokens. The harness stream was monotonic with one terminal event, empty stderr,
 and no exception, reconnect, or compaction.
+
+The ensuing 38-task harness gate at
+`.harness/harbor/jobs/2026-07-16__23-49-42-eval-92193` completed in 19 minutes
+11 seconds and scored 31/38 with zero exception, retry, reconnect, or stderr.
+All 38 streams used protocol version 1, contiguous sequence numbers, one
+request ID, paired every tool call/result, and ended in one `run.completed`.
+Rust used 3,375.45 aggregate seconds across 409 model calls and 741
+outer-plus-nested tool events, consuming 6,090,877 input, 5,551,167
+cached-input (91.1%), and 97,480 output tokens. The seven task-output misses
+were Cancel Async Tasks, DB WAL Recovery, KV Store gRPC, Polyglot C/Python,
+PyPI Server, QEMU Startup, and SQLite/gcov.
+
+The matched Codex 0.144.5 gate at
+`.harness/harbor/jobs/2026-07-17__00-09-31-codex-0.144.5-full-38-5387`
+completed in 20 minutes 47 seconds and also scored 31/38 with zero exception or
+retry. Codex used 10,474,705 input, 9,774,852 cached-input (93.3%), and 105,548
+output tokens across 509 model calls and 471 tool calls, reporting $11.55.
+Harness therefore used 540k uncached tokens versus Codex's 700k despite the
+lower cache percentage. Both passed 28 tasks; harness was faster on 20, using
+2,757 shared-pass agent-seconds versus Codex's 3,286. Both missed Cancel Async
+Tasks, DB WAL Recovery, KV Store gRPC, and PyPI Server. Harness alone passed
+POV-Ray, Largest Eigenvalue, and Overfull HBox; Codex alone passed Polyglot
+C/Python, QEMU Startup, and SQLite/gcov.
+
+CompCert was green in both full gates and directly exercised the removed depth
+limit. Harness completed it in 1,129.44 seconds after 61 model calls and 120
+outer-plus-nested tool events, using 1,635,642 input and 1,590,605 cached-input.
+Codex completed it in 1,177.95 seconds after 104 model calls and 103 tool calls,
+using 4,229,605 input and 4,166,785 cached-input and reporting $2.62.
+
+The identical Cancel Async Tasks full-gate miss on both agents was the final
+above-concurrency cancellation assertion. Unchanged focused retries at
+`.harness/harbor/jobs/2026-07-17__00-31-25-cancel-async-tasks-18793` and
+`.harness/harbor/jobs/2026-07-17__00-32-12-cancel-async-tasks-codex-19221`
+both passed all 6 assertions, confirming sampling variance. The unchanged
+harness SQLite/gcov retry at
+`.harness/harbor/jobs/2026-07-17__00-33-26-sqlite-with-gcov-19896` also passed
+all 3 assertions after the full-gate trajectory failed to place generated
+coverage under the source tree. No benchmark-specific prompt or runtime path
+was added for either retry.
+
+`modernize-scientific-stack` is the thirty-ninth active task. Its exact
+NumPy/Pandas/Matplotlib/SciPy verifier pins are isolated under
+`/opt/harness-verifier/scientific` and selected only for the canonical `uvx`
+shape, so they cannot replace the task's own scientific environment. Cold
+preparation at
+`.harness/harbor/setup/2026-07-17__00-35-40-prepare-modernize-scientific-stack-20984`
+took 1 minute 28 seconds with no model or verifier work.
+
+The unchanged harness trial at
+`.harness/harbor/jobs/2026-07-17__00-37-18-modernize-scientific-stack-21794`
+passed both assertions in 12.58 Rust seconds over 4 model calls and 9
+outer-plus-nested tool events, using 24,042 input, 17,286 cached-input, and 852
+output tokens. Its stream was monotonic with one terminal event, paired tools,
+empty stderr, and no reconnect or compaction. The matched Codex 0.144.5 trial
+at
+`.harness/harbor/jobs/2026-07-17__00-37-51-modernize-scientific-stack-codex-22129`
+also passed both assertions in 22.30 agent-seconds over 4 model calls and 3
+tool calls, using 39,897 input, 29,173 cached-input, and 882 output tokens.
+
+The next ladder probe, `qemu-alpine-ssh`, exposed two general runtime gaps
+before producing task evidence. Debian Bullseye supplies Node 12.22, whose
+`--eval` modules lack both newer JavaScript syntax and `import.meta.url`; the
+local code-mode host now runs on Node 12.22 or newer. The task also exercised
+Codex's image-preparation invariant: `view_image` now decodes unsupported PPM
+screenshots and re-encodes them as API-supported PNGs. Pretty-printed API error
+events are compacted when embedded so every retained protocol event remains a
+single JSONL record. Focused regressions cover PPM conversion and single-line
+event serialization, and the exact Node 12 launch form passed in the task
+image.
+
+Neither agent earned a stable QEMU admission after the fixes. The harness
+sample stopped its own container by killing the task image's `sleep` PID 1,
+while the matched Codex 0.144.5 sample at
+`.harness/harbor/jobs/2026-07-17__01-04-42-qemu-alpine-ssh-codex-postfix-36007`
+hit the 15-minute agent timeout. `sanitize-git-repo` split harness pass/Codex
+miss, and both agents reconstructed the same wrong fragment ordering on
+`password-recovery`; all three remain outside the stable slice.
+
+`portfolio-optimization` is the fortieth active task. Its exact NumPy 2.3.2
+and setuptools 78.1.1 verifier pair is isolated under
+`/opt/harness-verifier/portfolio`. Cold preparation at
+`.harness/harbor/setup/2026-07-17__07-23-03-prepare-portfolio-optimization-553`
+took 48 seconds with no model or verifier work. The unchanged harness trial at
+`.harness/harbor/jobs/2026-07-17__07-24-01-portfolio-optimization-1167`
+passed all six canonical checks in 75.50 Rust seconds over 8 model calls and
+14 tool calls, using 76,298 input, 63,674 cached-input, and 3,094 output
+tokens. Its protocol stream was contiguous with paired tools, one terminal
+event, empty stderr, and no reconnect or compaction. The matched Codex 0.144.5
+trial at
+`.harness/harbor/jobs/2026-07-17__07-26-18-portfolio-optimization-codex-2459`
+also passed all six checks, using 113,431 input, 94,987 cached-input, and 3,087
+output tokens and reporting $0.232.
+
+`model-extraction-relu-logits` is the forty-first active task. Cold preparation
+at
+`.harness/harbor/setup/2026-07-17__07-32-02-prepare-model-extraction-relu-logits-5069`
+took 52 seconds with no model or verifier work. The unchanged harness trial at
+`.harness/harbor/jobs/2026-07-17__07-33-02-model-extraction-relu-logits-5598`
+matched every hidden row in 81.46 Rust seconds over 4 model calls and 6 tool
+calls, using 24,074 input, 16,657 cached-input, and 2,429 output tokens. Its
+stream was contiguous with paired tools, one terminal event, empty stderr, and
+no reconnect or compaction. The matched Codex 0.144.5 trial at
+`.harness/harbor/jobs/2026-07-17__07-34-46-model-extraction-relu-logits-codex-6423`
+also passed, using 108,507 input, 91,680 cached-input, and 3,911 output tokens
+and reporting $0.247.
 
 The sibling branch's later six-worker gate reproduced RStan's sampler-thinning
 semantic miss, so its historical focused green result is not sufficient to

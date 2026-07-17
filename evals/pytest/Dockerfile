@@ -26,6 +26,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
         openssh-client \
         python3 \
         python-is-python3 \
+        sshpass \
         vim && \
     if apt-cache policy python3-distutils | \
             grep -Eq 'Candidate: [^ (]'; then \
@@ -63,6 +64,29 @@ RUN if python -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then \
         uv pip install --target /opt/harness-verifier/parquet --no-cache \
             pandas==2.3.3 \
             pyarrow==22.0.0; \
+    fi
+# Modern scientific-stack assertions use newer pins than the task image. Keep
+# the complete canonical stack verifier-only, just like the POV and Parquet
+# overlays above.
+RUN if python -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then \
+        uv pip install --target /opt/harness-verifier/scientific --no-cache \
+            numpy==2.3.4 \
+            pandas==2.3.3 \
+            matplotlib==3.10.7 \
+            scipy==1.16.3; \
+    fi
+# Portfolio assertions use a distinct NumPy/setuptools pair. Isolate it from
+# both the task packages and the other scientific verifier stacks.
+RUN if python -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then \
+        uv pip install --target /opt/harness-verifier/portfolio --no-cache \
+            numpy==2.3.2 \
+            setuptools==78.1.1; \
+    fi
+# Adaptive-sampler statistical checks pin a nearby but distinct pair.
+RUN if python -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then \
+        uv pip install --target /opt/harness-verifier/adaptive --no-cache \
+            numpy==2.3.3 \
+            scipy==1.16.2; \
     fi
 # Canonical tests sometimes reinstall an already pinned package only to undo
 # possible agent edits. Preserve that guard without repeating expensive TeX

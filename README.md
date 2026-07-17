@@ -49,9 +49,10 @@ process and its Node.js code-mode host. The key is absent from host process
 arguments, `tee`, verifier commands, retained logs, and Rust-dispatched shell
 environments.
 
-Node.js is an ordinary runtime prerequisite. Native `just run` uses `node` from
-the host `PATH`; Harbor's shared eval-image overlay installs the distribution's
-`nodejs` package. The Rust executable does not download or bundle a runtime.
+Node.js 12.22 or newer is an ordinary runtime prerequisite. Native `just run`
+uses `node` from the host `PATH`; Harbor's shared eval-image overlay installs
+the distribution's `nodejs` package. The Rust executable does not download or
+bundle a runtime.
 
 For the local eval loop, Harbor builds each canonical task Dockerfile for the
 Docker daemon's native architecture, then adds one content-addressed layer with
@@ -98,7 +99,7 @@ HARNESS_BUILD_PROFILE=profiling
 ## Eval selection
 
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml) selects datasets
-and tasks. The configured development slice contains thirty-eight public
+and tasks. The configured development slice contains forty-one public
 shell/code tasks. The first 35-task gate after admitting Circuit Fib/Sqrt and
 Build POV-Ray completed every trial without an exception or retry in 16
 minutes 41.92 seconds and scored 34/35. Its only miss was a verifier-cache
@@ -140,6 +141,30 @@ agents passed its three deterministic assertions. Its canonical pandas and
 PyArrow verifier stack is cached in an isolated overlay so it cannot replace
 the task environment's scientific packages.
 
+The subsequent matched 38-task gates both scored 31/38 with zero exceptions.
+Harness finished in 19m11s versus Codex's 20m47s and was faster on 20 of 28
+shared passes. Harness used 6.09M input tokens at 91.1% cached over 409 model
+calls; Codex used 10.47M at 93.3% cached over 509 calls. Despite the lower
+cache percentage, harness used fewer uncached tokens (540k versus 700k).
+Unchanged focused retries recovered the shared Cancel Async Tasks miss on both
+agents and the harness-only SQLite/gcov miss.
+
+`modernize-scientific-stack` is the thirty-ninth active task after both agents
+passed its two assertions. Harness used 12.6 agent-seconds and 24.0k input
+tokens versus Codex's 22.3 seconds and 39.9k. Its exact scientific verifier
+pins are isolated under `/opt/harness-verifier/scientific`.
+
+`portfolio-optimization` is the fortieth active task after both agents passed
+all six correctness and performance checks. Harness used 75.5 agent-seconds
+and 76.3k input tokens versus Codex's 113.4k input tokens. The exact portfolio
+NumPy/setuptools verifier pair is isolated under
+`/opt/harness-verifier/portfolio`.
+
+`model-extraction-relu-logits` is the forty-first active task after both agents
+matched every hidden row up to permutation and scaling. Harness used 81.5
+agent-seconds and 24.1k input tokens versus Codex's 108.5k input tokens; its
+exact NumPy verifier reuses the isolated 2.3.1 layer.
+
 Browser automation, computer-use, GUI interaction, and image/video perception
 are outside this milestone. Downloaded tasks and canonical verifier assertions
 remain unchanged.
@@ -167,6 +192,9 @@ versions cannot mutate the agent's task environment.
 The data-merger verifier's pandas/PyArrow stack is likewise isolated under
 `/opt/harness-verifier/parquet` and selected only for its exact canonical
 `uvx` command.
+The modern scientific-stack verifier follows the same rule under
+`/opt/harness-verifier/scientific`.
+The portfolio verifier follows it under `/opt/harness-verifier/portfolio`.
 Largest Eigenvalue likewise uses an exact cached pip command and adds no image
 dependency. The retained Tune MJCF experiment uses an exact cached
 `mujoco==3.3.5` command shape and adds no verifier-image dependency.

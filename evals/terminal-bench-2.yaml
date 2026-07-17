@@ -54,6 +54,9 @@ datasets:
       - terminal-bench/compile-compcert
       - terminal-bench/crack-7z-hash
       - terminal-bench/multi-source-data-merger
+      - terminal-bench/modernize-scientific-stack
+      - terminal-bench/portfolio-optimization
+      - terminal-bench/model-extraction-relu-logits
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
