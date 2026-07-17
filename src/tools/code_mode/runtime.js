@@ -150,7 +150,12 @@ async function runCell(init) {
     let embeddedDetail;
     if (typeof value === "string") {
       imageUrl = value;
-    } else if (value && typeof value === "object" && typeof value.image_url === "string") {
+    } else if (
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      typeof value.image_url === "string"
+    ) {
       imageUrl = value.image_url;
       embeddedDetail = value.detail;
     } else {
@@ -176,7 +181,7 @@ async function runCell(init) {
       ? detail
       : embeddedDetail != null
         ? embeddedDetail
-        : "auto";
+        : "high";
     if (typeof selectedDetail !== "string") {
       throw "image detail must be one of: auto, low, high, original";
     }
@@ -190,6 +195,20 @@ async function runCell(init) {
       image_url: imageUrl,
       detail: normalizedDetail,
     });
+  }
+
+  function generatedImage(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw "generatedImage expects an image generation result object";
+    }
+    const outputHint = value.output_hint;
+    if (outputHint !== undefined && typeof outputHint !== "string") {
+      throw "generatedImage output_hint must be a string when provided";
+    }
+    image(value);
+    if (outputHint !== undefined) {
+      content.push({ type: "input_text", text: outputHint });
+    }
   }
 
   function store(key, value) {
@@ -225,6 +244,7 @@ async function runCell(init) {
       "ALL_TOOLS",
       "text",
       "image",
+      "generatedImage",
       "notify",
       "store",
       "load",
@@ -240,6 +260,7 @@ async function runCell(init) {
         allTools,
         text,
         image,
+        generatedImage,
         notify,
         store,
         load,

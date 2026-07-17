@@ -1,10 +1,54 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{LazyLock, Mutex},
+};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde_json::{Value, json};
+use sha1::{Digest as _, Sha1};
 
 use super::wire::Usage;
 
 const SOL_CONTEXT_WINDOW: u64 = 372_000;
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
+const RESIZED_IMAGE_BYTES_ESTIMATE: usize = 7_373;
+const ORIGINAL_IMAGE_PATCH_SIZE: u32 = 32;
+const ORIGINAL_IMAGE_MAX_PATCHES: usize = 10_000;
+const ORIGINAL_IMAGE_ESTIMATE_CACHE_SIZE: usize = 32;
+
+#[derive(Default)]
+struct OriginalImageEstimateCache {
+    entries: HashMap<[u8; 20], Option<usize>>,
+    order: VecDeque<[u8; 20]>,
+}
+
+impl OriginalImageEstimateCache {
+    fn get_or_insert_with(
+        &mut self,
+        key: [u8; 20],
+        estimate: impl FnOnce() -> Option<usize>,
+    ) -> Option<usize> {
+        if let Some(value) = self.entries.get(&key).copied() {
+            self.order.retain(|candidate| candidate != &key);
+            self.order.push_back(key);
+            return value;
+        }
+        let value = estimate();
+        self.entries.insert(key, value);
+        self.order.push_back(key);
+        while self.entries.len() > ORIGINAL_IMAGE_ESTIMATE_CACHE_SIZE {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        value
+    }
+}
+
+static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<Mutex<OriginalImageEstimateCache>> =
+    LazyLock::new(|| Mutex::new(OriginalImageEstimateCache::default()));
 
 pub(super) fn auto_compact_token_limit(model: &str) -> Option<u64> {
     if model == "gpt-5.6-sol" {
@@ -115,7 +159,81 @@ fn ceil_char_boundary(text: &str, target: usize) -> usize {
 }
 
 fn serialized_len(item: &Value) -> usize {
-    serde_json::to_vec(item).map_or(0, |encoded| encoded.len())
+    let raw = serde_json::to_vec(item).map_or(0, |encoded| encoded.len());
+    let (image_payload_bytes, image_replacement_bytes) = image_estimate_adjustment(item);
+    raw.saturating_sub(image_payload_bytes)
+        .saturating_add(image_replacement_bytes)
+}
+
+fn image_estimate_adjustment(item: &Value) -> (usize, usize) {
+    let content = match item.get("type").and_then(Value::as_str) {
+        Some("message") => item.get("content").and_then(Value::as_array),
+        Some("function_call_output" | "custom_tool_call_output") => {
+            item.get("output").and_then(Value::as_array)
+        }
+        _ => None,
+    };
+    content.into_iter().flatten().fold(
+        (0_usize, 0_usize),
+        |(payload_bytes, replacement_bytes), content_item| {
+            if content_item.get("type").and_then(Value::as_str) != Some("input_image") {
+                return (payload_bytes, replacement_bytes);
+            }
+            let Some(image_url) = content_item.get("image_url").and_then(Value::as_str) else {
+                return (payload_bytes, replacement_bytes);
+            };
+            let Some(payload) = base64_image_payload(image_url) else {
+                return (payload_bytes, replacement_bytes);
+            };
+            let replacement =
+                if content_item.get("detail").and_then(Value::as_str) == Some("original") {
+                    original_image_bytes_estimate(image_url).unwrap_or(RESIZED_IMAGE_BYTES_ESTIMATE)
+                } else {
+                    RESIZED_IMAGE_BYTES_ESTIMATE
+                };
+            (
+                payload_bytes.saturating_add(payload.len()),
+                replacement_bytes.saturating_add(replacement),
+            )
+        },
+    )
+}
+
+fn base64_image_payload(image_url: &str) -> Option<&str> {
+    if !image_url
+        .get(.."data:".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    {
+        return None;
+    }
+    let (metadata, payload) = image_url.split_once(',')?;
+    let mut metadata = metadata["data:".len()..].split(';');
+    let mime = metadata.next().unwrap_or_default();
+    let base64 = metadata.any(|part| part.eq_ignore_ascii_case("base64"));
+    (mime
+        .get(.."image/".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
+        && base64)
+        .then_some(payload)
+}
+
+fn original_image_bytes_estimate(image_url: &str) -> Option<usize> {
+    let key = Sha1::digest(image_url.as_bytes()).into();
+    let estimate = || {
+        let payload = base64_image_payload(image_url)?;
+        let bytes = BASE64_STANDARD.decode(payload).ok()?;
+        let image = image::load_from_memory(&bytes).ok()?;
+        let patches_wide = image.width().div_ceil(ORIGINAL_IMAGE_PATCH_SIZE);
+        let patches_high = image.height().div_ceil(ORIGINAL_IMAGE_PATCH_SIZE);
+        let patches = usize::try_from(u64::from(patches_wide) * u64::from(patches_high))
+            .unwrap_or(usize::MAX)
+            .min(ORIGINAL_IMAGE_MAX_PATCHES);
+        Some(patches.saturating_mul(APPROX_BYTES_PER_TOKEN))
+    };
+    match ORIGINAL_IMAGE_ESTIMATE_CACHE.lock() {
+        Ok(mut cache) => cache.get_or_insert_with(key, estimate),
+        Err(poisoned) => poisoned.into_inner().get_or_insert_with(key, estimate),
+    }
 }
 
 const fn approx_tokens(bytes: usize) -> usize {
@@ -156,6 +274,39 @@ mod tests {
                 json!({ "type": "compaction", "encrypted_content": "opaque" }),
             ]
         );
+    }
+
+    #[test]
+    fn image_payload_uses_codex_fixed_cost_in_context_estimate() {
+        let payload = "A".repeat(2_500_000);
+        let item = json!({
+            "type": "custom_tool_call_output",
+            "call_id": "call-image",
+            "output": [{
+                "type": "input_image",
+                "image_url": format!("data:image/png;base64,{payload}"),
+                "detail": "high"
+            }]
+        });
+        let usage = Usage {
+            input_tokens: 9_000,
+            output_tokens: 100,
+            total_tokens: 9_100,
+            ..Usage::default()
+        };
+        let raw = serde_json::to_vec(&item)
+            .expect("serialize image item")
+            .len();
+        let expected_item_tokens = approx_tokens(
+            raw.saturating_sub(payload.len())
+                .saturating_add(RESIZED_IMAGE_BYTES_ESTIMATE),
+        );
+
+        assert_eq!(
+            active_context_tokens(&usage, &[item]),
+            9_100 + u64::try_from(expected_item_tokens).expect("estimate fits u64")
+        );
+        assert!(expected_item_tokens < 2_000);
     }
 
     fn message(text: &str) -> Value {

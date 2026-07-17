@@ -339,6 +339,21 @@ fn load_for_prompt_bytes(
     Ok(image)
 }
 
+pub(super) fn load_for_prompt_data_url(
+    path: &Path,
+    file_bytes: Vec<u8>,
+    detail: ImageDetail,
+) -> Result<String, String> {
+    let limits = match detail {
+        ImageDetail::Auto | ImageDetail::High => HIGH_DETAIL_LIMITS,
+        ImageDetail::Original => ORIGINAL_DETAIL_LIMITS,
+        ImageDetail::Low => return Err("image detail `low` is not supported".to_owned()),
+    };
+    load_for_prompt_bytes(path, file_bytes, limits)
+        .map(EncodedImage::into_data_url)
+        .map_err(|error| error.to_string())
+}
+
 fn prompt_image_output_dimensions_for_limits(
     width: u32,
     height: u32,

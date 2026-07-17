@@ -778,14 +778,24 @@ async fn execute_nested_call(
     context: ToolContext<'_>,
 ) -> CompletedNestedCall {
     let started_at = Instant::now();
-    let execution = tools.execute_nested(&name, input.clone(), context).await;
+    let call_id = format!("code-{id}");
+    let execution = tools
+        .execute_nested(
+            &name,
+            input.clone(),
+            ToolContext {
+                call_id: &call_id,
+                ..context
+            },
+        )
+        .await;
     let duration_ns = u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let value = execution.value();
     CompletedNestedCall {
         id,
         value,
         call: NestedToolCall {
-            call_id: format!("code-{id}"),
+            call_id,
             name,
             input,
             output: execution.output,

@@ -372,6 +372,11 @@ mod tests {
                 endpoint: config.search_endpoint(),
                 api_key: config.api_key.clone(),
             },
+            crate::tools::ImageGenerationConfig {
+                api_base_url: config.api_base_url.clone(),
+                api_key: config.api_key.clone(),
+                save_root: std::env::temp_dir().join("harness-test-images"),
+            },
         );
         let first = RequestProfile::new("session-a", &runtime);
         let same = RequestProfile::new("session-a", &runtime);
@@ -406,6 +411,11 @@ mod tests {
             crate::tools::WebSearchConfig {
                 endpoint: config.search_endpoint(),
                 api_key: config.api_key.clone(),
+            },
+            crate::tools::ImageGenerationConfig {
+                api_base_url: config.api_base_url.clone(),
+                api_key: config.api_key.clone(),
+                save_root: std::env::temp_dir().join("harness-test-images"),
             },
         );
         let profile = RequestProfile::new("session-a", &runtime);

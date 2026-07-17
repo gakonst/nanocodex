@@ -19,8 +19,8 @@ use crate::{
     protocol::{EventWriter, Task},
     responses::{EncodedRequest, ResponsesSocket, decode_event, parse_raw_json},
     tools::{
-        NestedToolCall, ToolContext, ToolOutputBody, ToolRuntime, WebSearchConfig,
-        prepare_output_images,
+        ImageGenerationConfig, NestedToolCall, ToolContext, ToolOutputBody, ToolRuntime,
+        WebSearchConfig, prepare_output_images,
     },
 };
 
@@ -274,6 +274,11 @@ impl<'a, W: Write> ModelRun<'a, W> {
             WebSearchConfig {
                 endpoint: self.config.search_endpoint(),
                 api_key: self.config.api_key.clone(),
+            },
+            ImageGenerationConfig {
+                api_base_url: self.config.api_base_url.clone(),
+                api_key: self.config.api_key.clone(),
+                save_root: std::env::temp_dir().join("harness"),
             },
         );
         let profile = RequestProfile::new(self.events.request_id(), &tools);

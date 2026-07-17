@@ -4,7 +4,10 @@ use eyre::{Result, eyre};
 use serde_json::Value;
 
 use super::{CodeModeExecution, NestedToolCall, parse_exec_source};
-use crate::tools::{ToolContext, ToolOutputBody, ToolOutputContent, ToolRuntime, WebSearchConfig};
+use crate::tools::{
+    ImageGenerationConfig, ToolContext, ToolOutputBody, ToolOutputContent, ToolRuntime,
+    WebSearchConfig,
+};
 
 #[tokio::test]
 async fn reuses_one_node_host_between_cells() -> Result<()> {
@@ -179,6 +182,55 @@ async fn image_helper_normalizes_detail_and_honors_override() -> Result<()> {
             detail: crate::tools::ImageDetail::Original,
         }) if image_url == "data:image/png;base64,a"
     ));
+
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn generated_image_helper_appends_high_detail_image_and_hint() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-generated-image")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"
+generatedImage({
+  image_url: "data:image/png;base64,a",
+  output_hint: "generated image save hint",
+});
+"#,
+            test_context(&history),
+        )
+        .await;
+
+    assert!(execution.success, "{}", execution_output(&execution));
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    assert!(matches!(
+        content.get(1),
+        Some(ToolOutputContent::InputImage {
+            image_url,
+            detail: crate::tools::ImageDetail::High,
+        }) if image_url == "data:image/png;base64,a"
+    ));
+    assert!(matches!(
+        content.get(2),
+        Some(ToolOutputContent::InputText { text }) if text == "generated image save hint"
+    ));
+
+    let invalid = tools
+        .execute_code(
+            r#"generatedImage({ image_url: "data:image/png;base64,a", output_hint: 1 });"#,
+            test_context(&history),
+        )
+        .await;
+    assert!(!invalid.success);
+    assert!(
+        execution_output(&invalid)
+            .contains("generatedImage output_hint must be a string when provided")
+    );
 
     std::fs::remove_dir_all(workspace)?;
     Ok(())
@@ -477,6 +529,11 @@ fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
         WebSearchConfig {
             endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
             api_key: "test-key".to_owned(),
+        },
+        ImageGenerationConfig {
+            api_base_url: "http://127.0.0.1:1/v1".to_owned(),
+            api_key: "test-key".to_owned(),
+            save_root: workspace.join("generated-image-test-output"),
         },
     )
 }

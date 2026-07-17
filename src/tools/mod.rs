@@ -1,6 +1,7 @@
 mod apply_patch;
 mod code_mode;
 mod image;
+mod image_generation;
 mod plan;
 mod shell;
 mod view_image;
@@ -133,6 +134,12 @@ pub(crate) struct WebSearchConfig {
     pub(crate) api_key: String,
 }
 
+pub(crate) struct ImageGenerationConfig {
+    pub(crate) api_base_url: String,
+    pub(crate) api_key: String,
+    pub(crate) save_root: PathBuf,
+}
+
 pub(crate) struct ToolRuntime {
     handlers: Vec<Box<dyn ToolHandler>>,
     code_mode: code_mode::CodeModeRuntime,
@@ -140,7 +147,11 @@ pub(crate) struct ToolRuntime {
 }
 
 impl ToolRuntime {
-    pub(crate) fn new(workspace: impl Into<PathBuf>, web_search: WebSearchConfig) -> Self {
+    pub(crate) fn new(
+        workspace: impl Into<PathBuf>,
+        web_search: WebSearchConfig,
+        image_generation: ImageGenerationConfig,
+    ) -> Self {
         let workspace = workspace.into();
         let sessions = Arc::new(ShellSessions::new());
         let default_shell_name = sessions.default_shell_name();
@@ -154,6 +165,9 @@ impl ToolRuntime {
             Box::new(apply_patch::ApplyPatchHandler::new(workspace.clone())),
             Box::new(view_image::ViewImageHandler::new(workspace)),
             Box::new(web_search::WebSearchHandler::new(web_search)),
+            Box::new(image_generation::ImageGenerationHandler::new(
+                image_generation,
+            )),
         ];
         Self {
             handlers,
