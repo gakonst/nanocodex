@@ -72,5 +72,6 @@ view jobs=default_jobs:
 check:
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
+    cargo test
     .venv/bin/python -m compileall -q harbor_adapter
     "{{harbor}}" run --config "{{default_eval}}" --print-config >/dev/null

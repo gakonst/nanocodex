@@ -456,12 +456,16 @@ mod tests {
 
     #[tokio::test]
     async fn tty_command_has_a_terminal_and_accepts_stdin() {
+        let ready = std::env::temp_dir().join(format!("harness-pty-ready-{}", std::process::id()));
+        let _ = std::fs::remove_file(&ready);
         let sessions = ShellSessions::new();
         let first = sessions
             .execute(
                 ExecCommand::new(
-                    "test -t 0 && test -t 1 && test -t 2; stty -echo; printf ready; read value; printf 'got:%s' \"$value\""
-                        .to_owned(),
+                    format!(
+                        "test -t 0 && test -t 1 && test -t 2; stty -echo; : > '{}'; printf ready; read value; printf 'got:%s' \"$value\"",
+                        ready.display()
+                    ),
                     None,
                     Some(false),
                     true,
@@ -472,6 +476,14 @@ mod tests {
             )
             .await;
         assert_eq!(first.session_id, Some(1));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !ready.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("PTY command should disable echo before stdin is written");
+        std::fs::remove_file(&ready).expect("PTY readiness marker should be removable");
 
         let second = sessions
             .write_stdin(WriteStdin::new(1, "hello\n".to_owned(), Some(1_000), None))
