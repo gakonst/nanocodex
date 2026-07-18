@@ -4,7 +4,7 @@ use harness_core::ToolDefinition;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{ToolContext, ToolExecution, ToolFuture, ToolHandler};
+use crate::{ErasedTool, ErasedToolFuture, ToolContext, ToolExecution};
 
 use super::{ExecCommand, ShellSessions, WriteStdin};
 
@@ -22,7 +22,7 @@ impl ExecCommandHandler {
     }
 }
 
-impl ToolHandler for ExecCommandHandler {
+impl ErasedTool for ExecCommandHandler {
     fn name(&self) -> &'static str {
         "exec_command"
     }
@@ -67,7 +67,7 @@ impl ToolHandler for ExecCommandHandler {
         .with_output_schema(unified_exec_output_schema())
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
         Box::pin(async move {
             let arguments = match serde_json::from_str::<ExecCommandArguments>(&input) {
                 Ok(arguments) => arguments,
@@ -102,7 +102,7 @@ impl WriteStdinHandler {
     }
 }
 
-impl ToolHandler for WriteStdinHandler {
+impl ErasedTool for WriteStdinHandler {
     fn name(&self) -> &'static str {
         "write_stdin"
     }
@@ -138,7 +138,7 @@ impl ToolHandler for WriteStdinHandler {
         .with_output_schema(unified_exec_output_schema())
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
         Box::pin(async move {
             let arguments = match serde_json::from_str::<WriteStdinArguments>(&input) {
                 Ok(arguments) => arguments,
@@ -228,7 +228,7 @@ fn unified_exec_output_schema() -> Value {
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
-    use super::{ExecCommandHandler, ToolHandler};
+    use super::{ErasedTool, ExecCommandHandler};
     use crate::shell::ShellSessions;
 
     #[test]

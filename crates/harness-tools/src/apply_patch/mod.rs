@@ -6,7 +6,7 @@ use std::{
 use harness_core::{CustomToolFormat, ToolDefinition};
 use serde_json::json;
 
-use super::{ToolContext, ToolExecution, ToolFuture, ToolHandler, ToolKind};
+use super::{ErasedTool, ErasedToolFuture, ToolContext, ToolExecution, ToolKind};
 
 mod parser;
 mod seek_sequence;
@@ -26,7 +26,7 @@ impl ApplyPatchHandler {
     }
 }
 
-impl ToolHandler for ApplyPatchHandler {
+impl ErasedTool for ApplyPatchHandler {
     fn name(&self) -> &'static str {
         "apply_patch"
     }
@@ -43,7 +43,7 @@ impl ToolHandler for ApplyPatchHandler {
         )
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
         let workspace = self.workspace.clone();
         Box::pin(async move {
             match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {

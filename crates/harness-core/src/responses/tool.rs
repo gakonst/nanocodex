@@ -62,6 +62,13 @@ impl ToolDefinition {
     }
 
     #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Function { name, .. } | Self::Custom { name, .. } => name,
+        }
+    }
+
+    #[must_use]
     pub fn description(&self) -> &str {
         match self {
             Self::Function { description, .. } | Self::Custom { description, .. } => description,

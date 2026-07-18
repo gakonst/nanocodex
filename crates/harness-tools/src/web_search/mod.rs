@@ -11,7 +11,7 @@ use self::{
     schema::commands_schema,
     wire::{SearchCommands, SearchRequest, SearchResponse, SearchSettings},
 };
-use super::{ToolContext, ToolExecution, ToolFuture, ToolHandler, WebSearchConfig};
+use super::{ErasedTool, ErasedToolFuture, ToolContext, ToolExecution, WebSearchConfig};
 
 const DESCRIPTION: &str = include_str!("web_run_description.md");
 const MAX_OUTPUT_TOKENS: u64 = 10_000;
@@ -109,7 +109,7 @@ impl WebSearchHandler {
     }
 }
 
-impl ToolHandler for WebSearchHandler {
+impl ErasedTool for WebSearchHandler {
     fn name(&self) -> &'static str {
         "web__run"
     }
@@ -118,7 +118,7 @@ impl ToolHandler for WebSearchHandler {
         ToolDefinition::function(self.name(), DESCRIPTION, commands_schema())
     }
 
-    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ToolFuture<'a> {
+    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ErasedToolFuture<'a> {
         Box::pin(async move { self.run(&input, context).await })
     }
 }
@@ -143,7 +143,7 @@ mod tests {
         task::JoinHandle,
     };
 
-    use super::{ToolContext, ToolHandler, WebSearchConfig, WebSearchHandler};
+    use super::{ErasedTool, ToolContext, WebSearchConfig, WebSearchHandler};
     use crate::ToolOutputBody;
 
     #[tokio::test]

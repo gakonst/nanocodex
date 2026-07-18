@@ -55,7 +55,7 @@ impl Run {
             .websocket_url(self.websocket_url)
             .api_base_url(self.api_base_url)
             .build();
-        let tools = Tools::builder().web_search(self.web_search).build();
+        let tools = Tools::builder().web_search(self.web_search).build()?;
         let (handle, mut events) = Agent::builder(self.api_key)
             .thinking(self.thinking)
             .tools(tools)

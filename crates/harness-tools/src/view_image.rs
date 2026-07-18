@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    ImageDetail, ToolContext, ToolExecution, ToolFuture, ToolHandler, ToolOutputBody,
+    ErasedTool, ErasedToolFuture, ImageDetail, ToolContext, ToolExecution, ToolOutputBody,
     ToolOutputContent,
 };
 
@@ -20,7 +20,7 @@ impl ViewImageHandler {
     }
 }
 
-impl ToolHandler for ViewImageHandler {
+impl ErasedTool for ViewImageHandler {
     fn name(&self) -> &'static str {
         "view_image"
     }
@@ -64,7 +64,7 @@ impl ToolHandler for ViewImageHandler {
             }))
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
         Box::pin(async move {
             let arguments = match serde_json::from_str::<ViewImageArguments>(&input) {
                 Ok(arguments) => arguments,

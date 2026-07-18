@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use super::{ToolContext, ToolExecution, ToolFuture, ToolHandler};
+use super::{ErasedTool, ErasedToolFuture, ToolContext, ToolExecution};
 
 pub(super) struct PlanHandler {
     current: Mutex<Option<UpdatePlanArgs>>,
@@ -17,7 +17,7 @@ impl PlanHandler {
     }
 }
 
-impl ToolHandler for PlanHandler {
+impl ErasedTool for PlanHandler {
     fn name(&self) -> &'static str {
         "update_plan"
     }
@@ -57,7 +57,7 @@ impl ToolHandler for PlanHandler {
         )
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ToolFuture<'a> {
+    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
         Box::pin(async move {
             let plan = match serde_json::from_str::<UpdatePlanArgs>(&input) {
                 Ok(plan) => plan,

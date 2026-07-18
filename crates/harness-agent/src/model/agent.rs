@@ -239,7 +239,8 @@ where
                         api_key: self.config.api_key.clone(),
                         save_root: Path::new(&workspace).to_path_buf(),
                     }),
-            );
+            )
+            .with_tools(&self.tools);
             let factory = ResponsesAttemptFactory::new(
                 request_profile(
                     self.events.request_id(),

@@ -11,8 +11,8 @@ use tokio::{
 };
 
 use super::{
-    ImageGenerationConfig, ImageGenerationHandler, ImageRequest, ImagegenArgs, ToolContext,
-    ToolHandler, ToolOutputBody, ToolOutputContent, request_for_args,
+    ErasedTool, ImageGenerationConfig, ImageGenerationHandler, ImageRequest, ImagegenArgs,
+    ToolContext, ToolOutputBody, ToolOutputContent, request_for_args,
 };
 
 const TINY_PNG: &[u8] = &[

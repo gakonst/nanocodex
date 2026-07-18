@@ -1,7 +1,7 @@
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
+use std::{fmt, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 use harness_core::{ImageDetail, ResponseItem, ToolDefinition};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::{RawValue, to_raw_value};
 use serde_json::{Value, json};
 
@@ -40,7 +40,8 @@ pub struct ToolExecution {
 }
 
 impl ToolExecution {
-    pub(crate) fn text(output: impl Into<String>) -> Self {
+    #[must_use]
+    pub fn text(output: impl Into<String>) -> Self {
         Self {
             output: ToolOutputBody::Text(output.into()),
             success: true,
@@ -49,7 +50,8 @@ impl ToolExecution {
         }
     }
 
-    pub(crate) fn error(error: impl Into<String>) -> Self {
+    #[must_use]
+    pub fn error(error: impl Into<String>) -> Self {
         Self {
             output: ToolOutputBody::Text(error.into()),
             success: false,
@@ -58,7 +60,8 @@ impl ToolExecution {
         }
     }
 
-    pub(crate) fn json(output: &impl Serialize) -> Self {
+    #[must_use]
+    pub fn json(output: &impl Serialize) -> Self {
         match serde_json::to_string(output) {
             Ok(output) => Self::text(output),
             Err(error) => Self::error(format!("failed to encode tool result: {error}")),
@@ -84,7 +87,8 @@ impl ToolExecution {
         self
     }
 
-    pub(crate) fn with_metadata(mut self, metadata: impl Serialize) -> Self {
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: impl Serialize) -> Self {
         match to_raw_value(&metadata) {
             Ok(metadata) => self.metadata = Some(metadata),
             Err(error) => {
@@ -97,7 +101,7 @@ impl ToolExecution {
     }
 }
 
-pub(crate) type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolExecution> + Send + 'a>>;
+pub(crate) type ErasedToolFuture<'a> = Pin<Box<dyn Future<Output = ToolExecution> + Send + 'a>>;
 
 #[derive(Clone, Copy)]
 pub struct ToolContext<'a> {
@@ -107,13 +111,66 @@ pub struct ToolContext<'a> {
     pub history: &'a [ResponseItem],
 }
 
-pub(crate) trait ToolHandler: Send + Sync {
-    fn name(&self) -> &'static str;
+/// A typed function tool that can be installed in an agent's tool runtime.
+pub trait Tool: Send + Sync {
+    /// Arguments decoded from the model's JSON function call.
+    type Input: DeserializeOwned + Send + 'static;
+
+    /// Returns the model-visible function definition.
+    fn definition(&self) -> ToolDefinition;
+
+    /// Executes one decoded tool call.
+    fn execute<'a>(
+        &'a self,
+        input: Self::Input,
+        context: ToolContext<'a>,
+    ) -> impl Future<Output = ToolExecution> + Send + 'a;
+}
+
+pub(crate) trait ErasedTool: Send + Sync {
+    fn name(&self) -> &str;
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
     fn spec(&self) -> ToolDefinition;
-    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ToolFuture<'a>;
+    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ErasedToolFuture<'a>;
+}
+
+struct RegisteredTool<T> {
+    tool: T,
+    definition: ToolDefinition,
+}
+
+impl<T: Tool> RegisteredTool<T> {
+    fn new(tool: T) -> Self {
+        let definition = tool.definition();
+        Self { tool, definition }
+    }
+}
+
+impl<T: Tool> ErasedTool for RegisteredTool<T> {
+    fn name(&self) -> &str {
+        self.definition.name()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.definition.clone()
+    }
+
+    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ErasedToolFuture<'a> {
+        Box::pin(async move {
+            let input = match serde_json::from_str(&input) {
+                Ok(input) => input,
+                Err(error) => {
+                    return ToolExecution::error(format!(
+                        "failed to decode {} arguments: {error}",
+                        self.name()
+                    ));
+                }
+            };
+            self.tool.execute(input, context).await
+        })
+    }
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -135,10 +192,11 @@ pub struct ImageGenerationConfig {
 }
 
 /// Declarative selection of the built-in tools installed for an agent.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Tools {
     web_search: bool,
     image_generation: bool,
+    registered: Vec<Arc<dyn ErasedTool>>,
 }
 
 impl Default for Tools {
@@ -146,7 +204,26 @@ impl Default for Tools {
         Self {
             web_search: true,
             image_generation: true,
+            registered: Vec::new(),
         }
+    }
+}
+
+impl fmt::Debug for Tools {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Tools")
+            .field("web_search", &self.web_search)
+            .field("image_generation", &self.image_generation)
+            .field(
+                "registered",
+                &self
+                    .registered
+                    .iter()
+                    .map(|tool| tool.name())
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
     }
 }
 
@@ -175,6 +252,21 @@ pub struct ToolsBuilder {
     tools: Tools,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ToolsBuildError {
+    #[error("tool name must not be empty")]
+    EmptyName,
+
+    #[error("tool name `{0}` is registered more than once")]
+    DuplicateName(Box<str>),
+
+    #[error("tool name `{0}` conflicts with an enabled built-in tool")]
+    BuiltInName(Box<str>),
+
+    #[error("registered tool `{0}` must use a function definition")]
+    NonFunctionDefinition(Box<str>),
+}
+
 impl ToolsBuilder {
     /// Starts from an empty built-in tool set.
     #[must_use]
@@ -196,14 +288,53 @@ impl ToolsBuilder {
         self
     }
 
+    /// Adds a typed function tool to the runtime.
     #[must_use]
-    pub fn build(self) -> Tools {
+    pub fn tool<T: Tool + 'static>(mut self, tool: T) -> Self {
         self.tools
+            .registered
+            .push(Arc::new(RegisteredTool::new(tool)));
+        self
+    }
+
+    /// Validates tool names and finishes the runtime configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty, duplicate, non-function, or enabled
+    /// built-in tool definitions.
+    pub fn build(self) -> Result<Tools, ToolsBuildError> {
+        let mut names = Vec::with_capacity(self.tools.registered.len());
+        for tool in &self.tools.registered {
+            let name = tool.name();
+            if name.is_empty() {
+                return Err(ToolsBuildError::EmptyName);
+            }
+            if !matches!(tool.spec(), ToolDefinition::Function { .. }) {
+                return Err(ToolsBuildError::NonFunctionDefinition(name.into()));
+            }
+            if built_in_name(&self.tools, name) {
+                return Err(ToolsBuildError::BuiltInName(name.into()));
+            }
+            if names.contains(&name) {
+                return Err(ToolsBuildError::DuplicateName(name.into()));
+            }
+            names.push(name);
+        }
+        Ok(self.tools)
     }
 }
 
+fn built_in_name(tools: &Tools, name: &str) -> bool {
+    matches!(
+        name,
+        "exec_command" | "write_stdin" | "update_plan" | "apply_patch" | "view_image"
+    ) || (tools.web_search && name == "web__run")
+        || (tools.image_generation && name == "image_gen__imagegen")
+}
+
 pub struct ToolRuntime {
-    handlers: Vec<Box<dyn ToolHandler>>,
+    handlers: Vec<Arc<dyn ErasedTool>>,
     code_mode: code_mode::CodeModeRuntime,
     default_shell_name: &'static str,
 }
@@ -217,21 +348,21 @@ impl ToolRuntime {
         let workspace = workspace.into();
         let sessions = Arc::new(ShellSessions::new());
         let default_shell_name = sessions.default_shell_name();
-        let mut handlers: Vec<Box<dyn ToolHandler>> = vec![
-            Box::new(shell::ExecCommandHandler::new(
+        let mut handlers: Vec<Arc<dyn ErasedTool>> = vec![
+            Arc::new(shell::ExecCommandHandler::new(
                 workspace.clone(),
                 Arc::clone(&sessions),
             )),
-            Box::new(shell::WriteStdinHandler::new(sessions)),
-            Box::new(plan::PlanHandler::new()),
-            Box::new(apply_patch::ApplyPatchHandler::new(workspace.clone())),
-            Box::new(view_image::ViewImageHandler::new(workspace)),
+            Arc::new(shell::WriteStdinHandler::new(sessions)),
+            Arc::new(plan::PlanHandler::new()),
+            Arc::new(apply_patch::ApplyPatchHandler::new(workspace.clone())),
+            Arc::new(view_image::ViewImageHandler::new(workspace)),
         ];
         if let Some(web_search) = web_search {
-            handlers.push(Box::new(web_search::WebSearchHandler::new(web_search)));
+            handlers.push(Arc::new(web_search::WebSearchHandler::new(web_search)));
         }
         if let Some(image_generation) = image_generation {
-            handlers.push(Box::new(image_generation::ImageGenerationHandler::new(
+            handlers.push(Arc::new(image_generation::ImageGenerationHandler::new(
                 image_generation,
             )));
         }
@@ -240,6 +371,12 @@ impl ToolRuntime {
             code_mode: code_mode::CodeModeRuntime::new(),
             default_shell_name,
         }
+    }
+
+    #[must_use]
+    pub fn with_tools(mut self, tools: &Tools) -> Self {
+        self.handlers.extend(tools.registered.iter().cloned());
+        self
     }
 
     pub const fn default_shell_name(&self) -> &'static str {
@@ -308,7 +445,42 @@ impl ToolRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageGenerationConfig, ToolRuntime, WebSearchConfig};
+    use harness_core::ToolDefinition;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    use super::{
+        ImageGenerationConfig, Tool, ToolContext, ToolExecution, ToolOutputBody, ToolRuntime,
+        Tools, WebSearchConfig,
+    };
+
+    struct Double;
+
+    #[derive(Deserialize)]
+    struct DoubleInput {
+        value: i64,
+    }
+
+    impl Tool for Double {
+        type Input = DoubleInput;
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition::function(
+                "double",
+                "Doubles an integer.",
+                json!({
+                    "type": "object",
+                    "properties": { "value": { "type": "integer" } },
+                    "required": ["value"],
+                    "additionalProperties": false
+                }),
+            )
+        }
+
+        async fn execute(&self, input: DoubleInput, _context: ToolContext<'_>) -> ToolExecution {
+            ToolExecution::text((input.value * 2).to_string())
+        }
+    }
 
     fn runtime(web_search: bool) -> ToolRuntime {
         ToolRuntime::new(
@@ -354,5 +526,45 @@ mod tests {
                 .as_str()
                 .is_some_and(|description| !description.contains("`web__run`"))
         );
+    }
+
+    #[tokio::test]
+    async fn registered_tool_is_described_and_receives_typed_input() {
+        let tools = Tools::builder()
+            .without_defaults()
+            .tool(Double)
+            .build()
+            .unwrap();
+        let runtime = ToolRuntime::new(".", None, None).with_tools(&tools);
+        let description = serde_json::to_value(runtime.model_specs()).unwrap();
+        assert!(
+            description[0]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains(
+                    "declare const tools: { double(args: { value: number; }): Promise<unknown>; };"
+                ))
+        );
+
+        let handler = runtime
+            .handlers
+            .iter()
+            .find(|handler| handler.name() == "double")
+            .unwrap();
+        let execution = handler
+            .execute(
+                r#"{"value":21}"#.to_owned(),
+                ToolContext {
+                    model: "test-model",
+                    session_id: "test-session",
+                    call_id: "test-call",
+                    history: &[],
+                },
+            )
+            .await;
+        assert!(execution.success);
+        let ToolOutputBody::Text(output) = execution.output else {
+            panic!("expected text output");
+        };
+        assert_eq!(output, "42");
     }
 }

@@ -18,7 +18,7 @@ pub use harness_service::{
     DefaultResponsesService, ResponsesAttempt, ResponsesAttemptKind, ResponsesClient,
     ResponsesRetryPolicy, ResponsesService, ResponsesServiceError, ResponsesServiceResponse,
 };
-pub use harness_tools::{Tools, ToolsBuilder};
+pub use harness_tools::{Tool, ToolContext, ToolExecution, Tools, ToolsBuildError, ToolsBuilder};
 #[doc(hidden)]
 pub use responses::{LayeredResponses, StandardResponses};
 pub use responses::{Responses, ResponsesBuilder};

@@ -3,7 +3,7 @@ use std::{fmt::Write as _, sync::Arc};
 use harness_core::JsonSchema;
 use serde_json::Value;
 
-use crate::{ToolHandler, ToolKind};
+use crate::{ErasedTool, ToolKind};
 
 const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose tool calls
 - Evaluates the provided JavaScript in a fresh local Node.js host. Yielded cells keep running independently until completion or termination.
@@ -29,7 +29,7 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description, kind }` entries.
 - `yield_control()`: yields the accumulated output to the model immediately while the cell keeps running."#;
 
-pub(super) fn exec_description(handlers: &[Arc<dyn ToolHandler>]) -> String {
+pub(super) fn exec_description(handlers: &[Arc<dyn ErasedTool>]) -> String {
     let mut description = EXEC_DESCRIPTION.to_owned();
     for handler in handlers {
         let spec = handler.spec();
