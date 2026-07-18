@@ -1,193 +1,238 @@
-# Deferred Responses WebSocket Tower rewrite
+# Responses WebSocket Tower architecture
 
-Status: deferred. Do not change the runtime retry behavior as part of the current milestones. This note preserves the design constraints and reference findings for a later, dedicated Tower rewrite.
+Status: implemented.
 
-## Decision
+## Public ownership and composition
 
-The eventual rewrite should use Tower to make retry, backoff, and reconnection policy explicit, but it must operate on a complete logical Responses attempt—not on an individual WebSocket send and not on a stream handle returned before the response finishes.
+`Agent::builder(config)` is the high-level library entry point. Its standard
+`build_parts()` constructor installs the persistent WebSocket transport and the
+bounded Responses retry policy. It returns three independently owned values:
 
-Until that rewrite is intentionally started:
+- `Agent`: a cheap, cloneable command handle used to queue follow-on prompts.
+- `AgentDriver<S>`: the sole owner of mutable model, conversation, tool, and
+  service state. The embedder drives it on a Tokio task of its choice.
+- `AgentEvents`: an ordered receiver with typed event kinds and lossless raw
+  payloads that can be decoded into a caller-selected type or rendered as the
+  existing JSONL protocol.
 
-- Keep the current narrow reconnect behavior in [`src/model/agent.rs`](../src/model/agent.rs).
-- Do not add another retry abstraction, HTTP fallback, or provider-generic client layer.
-- Do not depend directly on Alloy's transport middleware. Reuse its policy ideas and typed error classification, not its JSON-RPC wire types.
+The driver stays alive until every `Agent` handle is dropped. Each accepted
+prompt returns a `Turn`; prompts submitted while a turn is active are reported
+as queued. One driver therefore reuses the WebSocket, server response chain,
+local typed history, code-mode runtime, and shell sessions across turns.
 
-## Protocol state that the rewrite must preserve
+`ResponsesClient<S>` is deliberately generic over
+`Service<ResponsesAttempt>`. It owns the caller's concrete service stack and
+provides accessors and `map_service` without boxing or imposing a global stack.
+`AgentBuilder::responses_service` defers composition to the embedder:
 
-The stateful Responses WebSocket protocol is a sequence of `response.create` operations over a long-lived socket. Each operation is complete only when its terminal event arrives, normally `response.completed`; successfully sending the frame is not success.
+```rust,ignore
+use std::{sync::Arc, time::Duration};
+use harness_agent::{
+    Agent, ModelConfig, ResponsesRetryPolicy, ResponsesService,
+};
+use tower::{
+    ServiceBuilder,
+    limit::ConcurrencyLimitLayer,
+    retry::Retry,
+    timeout::TimeoutLayer,
+};
 
-Harness currently uses three distinct kinds of state:
+let shared = Arc::new(config.clone());
+let responses = ResponsesService::new(shared);
+let retrying = Retry::new(ResponsesRetryPolicy, responses);
+let stack = ServiceBuilder::new()
+    // This timeout covers retry/backoff and complete streamed attempts.
+    .layer(TimeoutLayer::new(Duration::from_secs(180)))
+    .layer(ConcurrencyLimitLayer::new(1))
+    .service(retrying);
 
-1. **Connection-local response chain.** On a healthy socket, a generation can send only the strict input delta and set `previous_response_id` to the prior response on that socket.
-2. **Opaque turn state.** The `x-codex-turn-state` response header can be carried into a replacement connection.
-3. **Client-owned committed history.** This is the authoritative replay source because requests use `store: false`. `prompt_cache_key` is a cache optimization, not recovery state.
+let parts = Agent::builder(config)
+    .request_id("stable-session-id")
+    .responses_service(stack)
+    .build_parts()?;
+```
 
-After a socket is replaced, the old `previous_response_id` must be treated as invalid. The first generation on the new socket must omit it and replay the full committed history. A stable cache key and any available turn state should still be retained.
+The standard constructor is the convenient configured path; the custom path is
+the library escape hatch. There is no `run_with_responses_client` helper and no
+requirement that applications adopt a process server, JSON-RPC, or JSONL.
 
-A partial stream must not be committed to logical history. In particular, a close after deltas or `response.output_item.done`, but before `response.completed`, is a failed attempt. Harness currently executes tool calls only after completion, which prevents a retry from repeating a tool side effect. Any future change to execute output items earlier must introduce an equally strong commit discipline.
+The crate boundaries mirror those ownership rules:
 
-## Current harness behavior
+- `harness-core` is dependency-light and owns the shared public data model:
+  prompts, event envelopes, model configuration, and the complete typed
+  Responses request, server-event, usage, content, tool, and item model.
+- `harness-service` owns Responses behavior: the OpenAI WebSocket, stream
+  processing, typed transport errors, telemetry, and generic Tower
+  client/service/retry API. It depends only on `harness-core` from this
+  workspace and is usable by another orchestrator without `harness-agent` or
+  the built-in tools.
+- `harness-tools` owns tool execution and depends only on `harness-core` from
+  the SDK crates.
+- `harness-agent` composes core, service, and tools into the queued turn/session
+  lifecycle. Its public re-exports keep the common high-level path ergonomic.
 
-The current implementation deliberately has only small, immediate recovery paths:
-
-- Initial connection/warmup failure gets one fallback connection followed by a full first request.
-- A send failure classified as a reconnectable closed WebSocket gets one immediate reconnect. The replacement request omits `previous_response_id` and replays full history.
-- Receive, idle, protocol, and mid-stream failures are terminal.
-- Compaction uses the same one-send-reconnect behavior.
-- [`src/model/stream.rs`](../src/model/stream.rs) accumulates response items locally and returns them only after completion.
-- [`src/error.rs`](../src/error.rs) contains only the narrow reconnectable-send classification; it is not a general retry policy.
-
-This is safe enough for the present slice, but it is not the final policy. In particular, it has no backoff, server delay handling, shared attempt budget, or retry of transient receive failures.
-
-## Reference findings
-
-### Alloy
-
-Inspected `~/github/alloy-rs/alloy` at commit `5cabb039`.
-
-Alloy's `crates/transport/src/layers/retry.rs` is a real Tower middleware: `RetryBackoffLayer<P>` wraps a `Service<RequestPacket>`, clones the request for each attempt, applies a bounded retry budget, and delegates error classification and optional server delay extraction to a `RetryPolicy`. Policies compose with `or`.
-
-Useful invariants to carry over:
-
-- Classification is typed and separate from the retry loop.
-- The retry budget belongs to the logical request.
-- A server-provided backoff hint can override the local delay.
-- Policy and mechanism are composable.
-
-Details not worth copying directly:
-
-- The service is coupled to JSON-RPC `RequestPacket`/`ResponsePacket` types.
-- Its fallback delay is constant rather than exponential.
-- Its compute-unit/concurrency offset solves an Alloy-wide shared-client problem that Harness does not currently have.
-- Alloy's pubsub reconnect loop in `crates/pubsub/src/service.rs` is separate from request retry and uses fixed reconnect delays; it does not model Responses state.
-
-### Codex
-
-Inspected `~/github/openai/codex` at commit `f90e7deea6a715bbd153044af6f475eefa749177`.
-
-Relevant files:
-
-- `codex-rs/codex-client/src/retry.rs` defines bounded attempts, exponential backoff from 200 ms, small jitter, and separate switches for transport, 5xx, and 429 failures.
-- `codex-rs/core/src/responses_retry.rs` owns the outer retry loop and lets a server-requested delay override local exponential backoff.
-- `codex-rs/core/src/session/turn.rs` rebuilds a retry from cloned committed session history and preserves completed items while excluding the incomplete active item.
-- `codex-rs/codex-api/src/sse/responses.rs` distinguishes context, quota, usage, policy, invalid-prompt, overloaded, and otherwise retryable response failures.
-- `codex-rs/codex-api/src/endpoint/responses_websocket.rs` maps WebSocket, handshake, and API failures, including the retryable WebSocket connection-limit error.
-
-Codex does not wrap its Responses WebSocket lifecycle in Tower; it has a purpose-built connection/session actor and manual retry loop. Its broad `CodexErr::is_retryable` classification should not be copied wholesale: malformed protocol data, authentication failures, and other permanent errors should remain terminal.
-
-Codex can exhaust WebSocket retries, switch to HTTP, and reset its budget. That fallback is outside Harness's deliberately narrower scope.
+Socket pumping and stream state are private service implementation details.
+Wire types live in `harness_core::responses`; the public behavioral surface is
+expressed in terms of `RequestProfile`, `ResponsesAttemptFactory`,
+`ResponsesAttempt`, `ResponsesClient<S>`, typed outputs/errors, and Tower
+`Service`. This keeps typed protocol construction/inspection usable without a
+socket while preventing higher-level components from depending on the socket
+task itself.
 
 ## Correct Tower boundary
 
-The service operation should represent one complete logical attempt:
+The Tower operation is one complete logical Responses attempt:
 
 ```rust,ignore
-Service<ResponsesAttempt, Response = CompletedResponse, Error = ResponsesAttemptError>
+Service<ResponsesAttempt,
+        Response = ResponsesServiceResponse,
+        Error = ResponsesServiceError>
 ```
 
-Its future must drive the WebSocket through the terminal response event. This allows Tower retry policy to observe send, receive, idle, premature-close, API, and completion failures.
+`Service::call` does not return success after sending a WebSocket frame. Its
+future owns receive processing through `response.completed`, so retry, timeout,
+load shedding, metrics, and error mapping see failures from connect, send,
+streaming, idle handling, API errors, and premature close.
 
-The tempting alternative is wrong:
+`ResponsesAttempt` is an owned replay snapshot. Large histories are shared with
+`Arc<Vec<ResponseItem>>`; cloning an attempt is O(1) for history. A healthy
+socket sends only the strict delta with `previous_response_id`. Any retry that
+replaces the socket invalidates that connection-local ID and serializes the
+complete committed history instead.
 
-```rust,ignore
-Service<ResponsesAttempt, Response = ResponseStream>
+Only a completed response is committed. Failed partial output cannot execute a
+tool or enter logical history, so replay does not duplicate side effects.
+
+## Standard resilience policy
+
+The default stack is:
+
+```text
+Tower Retry<ResponsesRetryPolicy>
+  -> owned ResponsesService
+       -> one persistent ResponsesSocket
 ```
 
-That service reports success as soon as it returns the stream. Failures encountered while consuming the stream happen outside `Service::call`, so generic Tower retry cannot classify or recover them.
+Generation and compaction get at most five attempts. The typed error classifier
+retries transient connection, handshake, send, receive, idle, premature-close,
+rate-limit, overload, and server failures when the protocol supplies retry
+advice. Authentication, malformed wire data, invalid requests/images, policy,
+quota, usage-limit, and context failures remain terminal.
 
-Likewise, reconnect middleware must never blindly replay a serialized incremental `response.create` frame. After reconnection, that frame may contain a `previous_response_id` belonging to the dead socket and only an input delta. Recovery has to re-encode the logical attempt as a full replay.
+Server delay hints override bounded exponential backoff. Every reconnect keeps
+the stable prompt-cache key and opaque turn state, opens a new socket, drops
+`previous_response_id`, and forces full-history replay. Warmup is best effort;
+generation can fall back to a normal full first request.
 
-## Candidate component responsibilities
+Requests continue to use `store: false`. Client-owned typed history is the
+source of truth; prompt caching is only an optimization. Stable instructions,
+tool definitions, contextual input order, and `prompt_cache_key` are preserved
+across attempts and follow-on turns.
 
-This is a design direction, not a commitment to exact type names or layering:
+## Middleware worth composing
 
-- `ResponsesAttempt` is an owned, replayable snapshot: attempt kind (warmup, generation, or compaction), committed history, current input/trigger, stable cache/profile data, and available turn state.
-- The inner attempt service owns or borrows the live connection, decides whether its response chain is valid, encodes an incremental request only on that valid connection, and consumes events through completion.
-- A connection manager recreates the socket and invalidates all connection-local response-chain state.
-- An outer retry policy owns classification, attempt budget, backoff, jitter, and server hints.
+Tower gives embedders useful policy without putting every policy in the core
+SDK:
 
-Do not lock in a literal `RetryLayer<ReconnectLayer<_>>` stack until the ownership and live-event path are worked through. The important ordering invariant is that retry wraps the logical attempt, while socket recreation remains below it.
+| Concern | Recommended layer or boundary | Important ordering |
+| --- | --- | --- |
+| Responses retry/reconnect | `ResponsesRetryPolicy` around `ResponsesService` | Keep exactly one logical retry owner. |
+| Whole-turn deadline | `TimeoutLayer` outside retry | Bounds connection, stream, retries, and backoff together. |
+| Per-attempt deadline | `TimeoutLayer` inside retry | Makes a timed-out attempt eligible for an outer typed retry only if its error is classified deliberately. |
+| Concurrency | `ConcurrencyLimitLayer` | Normally `1` per owned WebSocket; use separate agents for true parallel response chains. |
+| Load shedding | `LoadShedLayer` outside the limit | Rejects immediately instead of growing hidden latency. The agent command channel already provides a bounded queue. |
+| Rate limiting | Tower rate limit outside retry | Decide whether retries consume rate budget; usually they should. |
+| Buffering | `Buffer` only for a concrete cross-task need | The agent's bounded command channel already owns prompt queueing and steering order. Avoid a second invisible queue. |
+| Logging and tracing | A small `Layer<ResponsesAttempt>` around the stack | Record kind, model call, attempt, replay mode, duration, and error class; never record secrets or full prompt bodies. |
+| Metrics | A result/timing layer plus emitted typed events | Count logical calls separately from attempts, retries, reconnects, and backoff. |
+| Circuit breaking | Application-owned layer outside retry | Useful for shared upstream outages; scope by endpoint/account rather than by individual socket. |
+| Bulkheads | Separate concurrency limits per agent/workload | Prevent one batch or tenant from occupying every connection. |
+| Error mapping | `map_err` at the application boundary | Preserve typed retry classification below it. |
 
-Generic Tower adapters are useful primitives but are not a complete implementation:
+HTTP-specific `tower-http::TraceLayer` is not directly suitable because this
+service carries `ResponsesAttempt`, not `http::Request`. A small generic Tower
+layer or the existing typed event stream is the cleaner observability boundary.
 
-- Tower `Reconnect` recreates an inner service; it does not know that a Responses retry needs a different request shape.
-- Tower `Retry` retries based on the result of `Service::call`; it cannot see later stream errors unless the call future owns stream completion.
-- `tokio-tower` multiplexing assumes tagged discrete request/response framing, unlike a Responses event stream whose boundary is a terminal protocol event.
+Cancellation is ordinary future cancellation: dropping the driver/turn task
+interrupts connection, stream, and backoff futures, while owned shell work keeps
+its explicit process-group cleanup rules.
 
-## Error and delay policy requirements
+## Typed and allocation-conscious history
 
-The later policy should start narrow and typed.
+Repeated API history uses typed enums rather than `serde_json::Value`. Known
+output text retains annotations and logprobs; shell, function, custom-tool,
+tool-search, web-search, image-generation, audio, reasoning, and compaction
+items preserve their API fields. Unknown item types remain forward-compatible
+as `ResponseItem::Other(JsonValue)`, preserving every unknown field for replay
+without putting an unstructured `Value` in known history variants.
 
-Likely retryable:
+The common prompt path shares an `Arc<Vec<ResponseItem>>`. Incremental call-ID
+sets make the complete call/output-pair check O(1); a repaired copy is allocated
+only for an incomplete pair. Tool output truncation and compaction are explicit
+rare rewrite paths. Delta serialization borrows prefix/history/tail slices and
+does not build a temporary combined `Vec`.
 
-- Connection close/reset and transient network failures.
-- Transient DNS/connect/TLS failures where classification is available.
-- Handshake HTTP 5xx.
-- Send, receive, and event-idle timeouts.
-- Premature close before a terminal Responses event.
-- Known transient Responses errors such as server overload or connection limits.
-- Rate limiting only when it is transient rather than exhausted quota/usage.
+Benchmarks remain evidence-driven. On retained Codex- and Harbor-sized
+fixtures, serde is the best complete request-encoding path, typed history is
+cheaper than `Value`, and Tower dispatch is negligible beside JSON and
+network/model latency. Sonic is narrowly faster for some isolated text-delta
+decodes but loses on request encoding; simd-json loses on these immutable-input
+workloads because it must copy before in-place parsing. Both stay benchmark-only
+dependencies unless a representative end-to-end workload reverses that result.
 
-Terminal:
+The retained Criterion snapshot from 2026-07-18 on an Apple M1 Max measured:
 
-- Invalid configuration or URL.
-- Authentication/authorization failures and HTTP 400/401/403.
-- Malformed JSON, invalid wire payloads, and unsupported binary frames.
-- Context-window, quota, usage-limit, invalid-prompt, and policy failures.
-- Cancellation.
+| workload | result |
+| --- | ---: |
+| direct async dispatch, 128 KiB prompt | 9.64 ns |
+| generic Tower service dispatch | 10.54 ns |
+| Tower concurrency-limit + timeout stack | 76.95 ns |
+| 128 KiB send-ready request / old send-copy path | 78.0 / 92.8 us |
+| 128 KiB request: serde / sonic / simd-json | 71.5 / 95.9 / 104.0 us |
+| 16 KiB text-delta decode: serde / sonic / simd-json | 2.86 / 2.66 / 4.58 us |
+| 128 KiB history decode: typed / `Value` | 240 / 305 us |
+| 128 KiB history encode: typed / `Value` | 84.4 / 83.4 us |
+| 128 KiB history deep clone: typed / `Value` | 30.8 / 169.6 us |
+| 128 KiB attempt history `Arc` clone | 10.2 ns |
+| retained 622 KiB JSONL decode: raw / `Value` payload | 0.67 / 1.70 ms |
+| retained 622 KiB JSONL encode: raw / `Value` payload | 0.097 / 0.482 ms |
 
-Respect `Retry-After` or an API-provided retry delay when present. Otherwise use bounded exponential backoff with jitter. Codex's five stream attempts and 200 ms initial delay are useful reference values, not yet Harness policy.
+Other Docker and Harbor work was active during this run, so the absolute
+figures are a local snapshot rather than a release threshold; the within-group
+comparisons are the useful result. The real JSONL group consumes an existing
+retained Harbor stream rather than checking private trace contents into the
+repository:
 
-Every retry caused by a connection failure must invalidate the connection-local response chain and force full-history replay on the replacement socket. Retrying an API failure on a still-healthy socket may be able to retain connection state, but that case must be proven per error rather than assumed.
+```sh
+HARNESS_BENCH_EVENTS=.harness/harbor/jobs/<job>/<trial>/agent/events.jsonl \
+  cargo bench -p harness-service --bench tower_responses
+```
 
-Warmup needs an explicit decision: either it consumes the same logical attempt budget or it remains best effort and generation owns a fresh budget.
+Without that variable, the portable synthetic groups still run and the
+retained-trace group is skipped. Use a quiet target machine before treating a
+smaller difference as actionable.
 
-## JSONL, observability, and cancellation
+A live repeated-prompt probe used the same 128 KiB prompt three times on one
+agent session. The first turn wrote 35,085 cache tokens; turns two and three
+each reported 35,085 cached tokens and zero cache writes (99.991% of their
+input), while retaining one WebSocket and recording no retry or reconnect.
+Full turn times were 1.44, 2.58, and 1.82 seconds, so model/network variance
+dominated the local dispatch costs.
 
-Harness emits exact raw events and user-visible deltas while the response is still in flight. A `Service` future that waits for completion therefore still needs a concrete live observer/writer path. Design that path without introducing a generic event bus, collector trait, or shared mutable run-state abstraction merely for Tower.
+Three focused Harbor gates also passed with reward 1.0: `db-wal-recovery`
+(7/7 checks), `merge-diff-arc-agi-task` (5/5), and `prove-plus-comm` (4/4).
+Each used one socket with no retry/reconnect, and their retained stderr streams
+were empty.
 
-At minimum, retry diagnostics should make these facts reconstructable without exposing secrets:
+## Validation invariants
 
-- Logical request and attempt number.
-- Phase: connect, handshake, send, receive, idle, API event, or completion.
-- Typed error class and selected delay.
-- Whether a new socket was opened.
-- Whether the attempt used an incremental input or full replay.
-- Connection generation and response-chain invalidation.
-
-Raw events and deltas from a failed partial attempt have already crossed the JSONL boundary. They need an attempt identity (or an equivalent derivation rule) so ATIF construction cannot accidentally concatenate failed-attempt text with the successful replay. Logical history must still commit only completed responses.
-
-Cancellation must interrupt backoff, connection establishment, and streaming promptly; terminate any owned work; and still preserve the JSONL contract of exactly one terminal event per accepted request.
-
-## Validation plan for the future rewrite
-
-Use deterministic fault injection for the policy boundary, followed by a real end-to-end Harbor trial:
-
-1. Handshake 5xx retries within budget and then succeeds.
-2. Permanent 400/auth failure does not retry.
-3. A server delay hint overrides local backoff.
-4. Closed-socket send failure opens a new socket, omits `previous_response_id`, and sends full history.
-5. Mid-stream close after deltas/output items commits no partial history, executes no tool, and replays from committed history.
-6. Compaction retry replays its full history and compaction trigger.
-7. Exhaustion emits one terminal failure and accurate attempt/timing statistics.
-8. Cancellation during backoff, connect, and stream returns promptly.
-9. Opaque turn state is carried to a replacement connection when available.
-10. Cache key and cacheable prefix stay stable across attempts.
-
-## Explicit non-goals
-
-- HTTP fallback after WebSocket exhaustion.
-- Direct use of `alloy-transport` or its JSON-RPC request types.
-- Retrying raw WebSocket frames.
-- Provider portability or a generic provider/client hierarchy.
-- A process-global concurrency or compute-unit throttle.
-- Early execution of partially streamed tool calls.
-
-## External primitive references
-
-- [Tower reconnect module](https://docs.rs/tower/latest/tower/reconnect/index.html)
-- [Tower retry module](https://docs.rs/tower/latest/tower/retry/index.html)
-- [`tower-resilience-reconnect`](https://docs.rs/tower-resilience-reconnect/latest/src/tower_resilience_reconnect/lib.rs.html)
-- [`tokio-tower` multiplex module](https://docs.rs/tokio-tower/latest/tokio_tower/multiplex/index.html)
-
-No existing Tower adapter found during this review implements the stateful OpenAI Responses WebSocket lifecycle through `response.completed`; the protocol-specific attempt and replay semantics remain Harness-owned.
+- A close after partial deltas commits no partial history and executes no tool.
+- A replacement socket omits the dead socket's `previous_response_id` and
+  replays the full committed history.
+- Cache key, stable prefix, `store: false`, and turn state survive retry.
+- Follow-on prompts reuse one socket and send only their new user delta.
+- Exactly one terminal event is emitted for every accepted prompt.
+- Retry/connection events identify attempt, phase, error class, delay, replay
+  mode, and connection generation.
+- The standard and caller-composed builder paths use the same owned driver and
+  typed event contract.

@@ -1,40 +1,53 @@
-[package]
-name = "harness"
+[workspace]
+members = ["bin/harness", "crates/harness-agent", "crates/harness-core", "crates/harness-service", "crates/harness-tools"]
+default-members = ["bin/harness"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
 
-[dependencies]
+[workspace.dependencies]
 base64 = "0.22.1"
 chrono = "0.4.43"
 clap = { version = "4.5.54", features = ["derive", "env"] }
+criterion = { version = "0.7.0", features = ["async_tokio"] }
 dotenvy = "0.15.7"
 eyre = "0.6.12"
 futures-util = "0.3.31"
+harness-agent = { path = "crates/harness-agent" }
+harness-core = { path = "crates/harness-core" }
+harness-service = { path = "crates/harness-service" }
+harness-tools = { path = "crates/harness-tools" }
 image = { version = "0.25.9", default-features = false, features = ["gif", "jpeg", "png", "pnm", "webp"] }
 iana-time-zone = "0.1.64"
 nix = { version = "0.30.1", default-features = false, features = ["process", "signal", "user"] }
 portable-pty = "0.9.0"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23.42", default-features = false, features = ["ring", "std"] }
 schemars = "0.8.22"
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 sha1 = "0.11.0"
+simd-json = "=0.15.1"
+smallvec = { version = "1.15.1", features = ["serde"] }
+sonic-rs = "0.5.8"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-rustls = { version = "0.23.42", default-features = false, features = ["ring", "std"] }
+tower = { version = "0.5.2", features = ["limit", "load-shed", "retry", "timeout", "util"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
 
 # Optimized enough for representative CPU profiles while retaining full symbols.
 [profile.profiling]
 inherits = "release"
 debug = 2
 strip = false
-
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
