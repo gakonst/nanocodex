@@ -4,7 +4,6 @@ use serde_json::{Value, json};
 
 use crate::{
     model::ModelConfig,
-    protocol::Task,
     tools::{ToolOutputBody, ToolRuntime},
 };
 
@@ -52,14 +51,14 @@ impl RequestProfile {
 }
 
 pub(in crate::model) fn task_input(
-    task: &Task,
+    user_content: &[Value],
     workspace: &str,
     shell: &str,
     project_instructions: Option<&str>,
 ) -> Vec<Value> {
     let (current_date, timezone) = local_time_context();
     task_input_with_time_context(
-        task,
+        user_content,
         workspace,
         shell,
         project_instructions,
@@ -69,7 +68,7 @@ pub(in crate::model) fn task_input(
 }
 
 fn task_input_with_time_context(
-    task: &Task,
+    user_content: &[Value],
     workspace: &str,
     shell: &str,
     project_instructions: Option<&str>,
@@ -98,10 +97,7 @@ fn task_input_with_time_context(
         json!({
             "type": "message",
             "role": "user",
-            "content": [{
-                "type": "input_text",
-                "text": task.instruction,
-            }],
+            "content": user_content,
         }),
     ]
 }
@@ -316,14 +312,12 @@ mod tests {
 
     #[test]
     fn task_input_matches_codex_context_shape() {
-        let task = Task {
-            instruction: "fix the bug".to_owned(),
-            workspace: None,
-        };
-
         assert_eq!(
             task_input_with_time_context(
-                &task,
+                &[json!({
+                    "type": "input_text",
+                    "text": "fix the bug",
+                })],
                 "/workspace/a&b",
                 "bash",
                 Some("Follow the project formatter."),

@@ -9,7 +9,7 @@ use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 use super::ModelRun;
 use crate::{
     model::{ModelConfig, ReasoningEffort},
-    protocol::{EventWriter, Task},
+    protocol::{EventWriter, Task, TaskInstruction},
 };
 
 #[tokio::test]
@@ -707,7 +707,7 @@ async fn run_model_with_model(
     model: &str,
 ) -> Result<String> {
     let task = Task {
-        instruction: instruction.to_owned(),
+        instruction: TaskInstruction::Text(instruction.to_owned()),
         workspace: Some(workspace.to_string_lossy().into_owned()),
     };
     let config = ModelConfig {

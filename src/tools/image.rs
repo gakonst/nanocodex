@@ -12,9 +12,11 @@ use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder},
     imageops::FilterType,
 };
+use serde_json::{Value, json};
 use sha1::{Digest as _, Sha1};
 
 use super::{ImageDetail, ToolOutputBody, ToolOutputContent};
+use crate::protocol::{TaskInstruction, UserInput};
 
 pub(super) const IMAGE_PROCESSING_ERROR_PLACEHOLDER: &str =
     "image content omitted because it could not be processed";
@@ -174,6 +176,89 @@ pub(crate) async fn prepare_output_images(output: &mut ToolOutputBody) {
             }]);
         }
     }
+}
+
+pub(crate) async fn prepare_user_input(input: &TaskInstruction) -> Vec<Value> {
+    let input = match input {
+        TaskInstruction::Text(text) => vec![UserInput::Text { text: text.clone() }],
+        TaskInstruction::Content(items) => items.clone(),
+    };
+    match tokio::task::spawn_blocking(move || prepare_user_content(input)).await {
+        Ok(content) => content,
+        Err(error) => {
+            eprintln!("failed to join user image preparation task: {error}");
+            vec![input_text(IMAGE_PROCESSING_ERROR_PLACEHOLDER)]
+        }
+    }
+}
+
+fn prepare_user_content(input: Vec<UserInput>) -> Vec<Value> {
+    let mut content = Vec::with_capacity(input.len());
+    let mut image_index = 0;
+    for item in input {
+        match item {
+            UserInput::Text { text } => content.push(input_text(text)),
+            UserInput::Image { image_url, detail } => {
+                image_index += 1;
+                content.push(prepare_user_image(
+                    image_url,
+                    detail.unwrap_or(ImageDetail::High),
+                ));
+            }
+            UserInput::LocalImage { path, detail } => {
+                image_index += 1;
+                let detail = detail.unwrap_or(ImageDetail::High);
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        content.push(input_text(format!(
+                            "<image name=[Image #{image_index}] path=\"{}\">",
+                            path.display()
+                        )));
+                        content.push(prepare_user_image(
+                            format!(
+                                "data:application/octet-stream;base64,{}",
+                                BASE64_STANDARD.encode(bytes)
+                            ),
+                            detail,
+                        ));
+                        content.push(input_text("</image>"));
+                    }
+                    Err(error) => content.push(input_text(format!(
+                        "Codex could not read the local image at `{}`: {error}",
+                        path.display()
+                    ))),
+                }
+            }
+            UserInput::Audio { .. } => {
+                content.push(input_text("Codex does not support audio input yet."));
+            }
+            UserInput::LocalAudio { .. } => {
+                content.push(input_text("Codex does not support local audio input yet."));
+            }
+        }
+    }
+    content
+}
+
+fn prepare_user_image(mut image_url: String, detail: ImageDetail) -> Value {
+    match prepare_image(&mut image_url, detail) {
+        Ok(()) => json!({
+            "type": "input_image",
+            "image_url": image_url,
+            "detail": detail,
+        }),
+        Err(error) => {
+            eprintln!("failed to prepare message image: {error}");
+            input_text(error.placeholder())
+        }
+    }
+}
+
+fn input_text(text: impl Into<String>) -> Value {
+    json!({
+        "type": "input_text",
+        "text": text.into(),
+    })
 }
 
 fn prepare_content(mut content: Vec<ToolOutputContent>) -> Vec<ToolOutputContent> {
@@ -536,6 +621,57 @@ mod tests {
             .expect("decode prepared data URL");
         let prepared = image::load_from_memory(&bytes).expect("decode prepared image");
         assert_eq!(prepared.dimensions(), (1600, 1600));
+    }
+
+    #[test]
+    fn user_input_uses_codex_local_image_labels_and_audio_placeholders() {
+        let image = RgbaImage::from_pixel(1, 1, Rgba([10, 20, 30, 255]));
+        let mut encoded = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut encoded, ImageFormat::Png)
+            .expect("encode fixture");
+        let bytes = encoded.into_inner();
+        let local_path = std::env::temp_dir().join(format!(
+            "harness-user-input-image-{}.png",
+            std::process::id()
+        ));
+        std::fs::write(&local_path, &bytes).expect("write local image fixture");
+
+        let content = prepare_user_content(vec![
+            UserInput::Image {
+                image_url: format!("data:image/png;base64,{}", BASE64_STANDARD.encode(&bytes)),
+                detail: None,
+            },
+            UserInput::LocalImage {
+                path: local_path.clone(),
+                detail: Some(ImageDetail::Original),
+            },
+            UserInput::Audio {
+                audio_url: "data:audio/wav;base64,AAAA".to_owned(),
+            },
+            UserInput::LocalAudio {
+                path: local_path.with_extension("wav"),
+            },
+        ]);
+        std::fs::remove_file(&local_path).expect("remove local image fixture");
+
+        assert_eq!(content[0]["type"], "input_image");
+        assert_eq!(content[0]["detail"], "high");
+        assert_eq!(
+            content[1]["text"],
+            format!("<image name=[Image #2] path=\"{}\">", local_path.display())
+        );
+        assert_eq!(content[2]["type"], "input_image");
+        assert_eq!(content[2]["detail"], "original");
+        assert_eq!(content[3]["text"], "</image>");
+        assert_eq!(
+            content[4]["text"],
+            "Codex does not support audio input yet."
+        );
+        assert_eq!(
+            content[5]["text"],
+            "Codex does not support local audio input yet."
+        );
     }
 
     #[test]

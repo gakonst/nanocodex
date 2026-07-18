@@ -22,7 +22,7 @@ use crate::{
     responses::{EncodedRequest, ResponsesSocket, decode_event, parse_raw_json},
     tools::{
         ImageGenerationConfig, NestedToolCall, ToolContext, ToolOutputBody, ToolRuntime,
-        WebSearchConfig, prepare_output_images,
+        WebSearchConfig, prepare_output_images, prepare_user_input,
     },
 };
 
@@ -273,7 +273,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
                 orchestration: ModelConfig::orchestration(),
                 websocket_url: display_endpoint(&self.config.websocket_url),
                 workspace: self.task.workspace.as_deref(),
-                instruction_bytes: self.task.instruction.len(),
+                instruction_bytes: self.task.instruction.text_bytes(),
             },
         )?;
 
@@ -317,8 +317,9 @@ impl<'a, W: Write> ModelRun<'a, W> {
             },
         );
         let profile = RequestProfile::new(self.events.request_id(), &tools);
+        let user_content = prepare_user_input(&self.task.instruction).await;
         let history = task_input(
-            self.task,
+            &user_content,
             &workspace,
             tools.default_shell_name(),
             project_instructions.as_deref(),

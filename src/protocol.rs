@@ -1,10 +1,14 @@
-use std::io::{BufRead, Write};
+use std::{
+    io::{BufRead, Write},
+    path::PathBuf,
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{HarnessError, Result};
 
 const VERSION: u32 = 1;
+const MAX_USER_INPUT_TEXT_CHARS: usize = 1 << 20;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,9 +40,104 @@ pub(crate) struct TaskRequest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Task {
-    pub(crate) instruction: String,
+    pub(crate) instruction: TaskInstruction,
     #[serde(default)]
     pub(crate) workspace: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub(crate) enum TaskInstruction {
+    Text(String),
+    Content(Vec<UserInput>),
+}
+
+impl TaskInstruction {
+    pub(crate) fn text_bytes(&self) -> usize {
+        match self {
+            Self::Text(text) => text.len(),
+            Self::Content(items) => items.iter().map(UserInput::text_bytes).sum(),
+        }
+    }
+
+    fn text_chars(&self) -> usize {
+        match self {
+            Self::Text(text) => text.chars().count(),
+            Self::Content(items) => items.iter().map(UserInput::text_chars).sum(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Text(text) => text.trim().is_empty(),
+            Self::Content(items) => items.is_empty() || items.iter().all(UserInput::is_empty),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum UserInput {
+    Text {
+        text: String,
+    },
+    Image {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<ImageDetail>,
+    },
+    LocalImage {
+        path: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<ImageDetail>,
+    },
+    Audio {
+        audio_url: String,
+    },
+    LocalAudio {
+        path: PathBuf,
+    },
+}
+
+impl UserInput {
+    fn text_bytes(&self) -> usize {
+        match self {
+            Self::Text { text } => text.len(),
+            Self::Image { .. }
+            | Self::LocalImage { .. }
+            | Self::Audio { .. }
+            | Self::LocalAudio { .. } => 0,
+        }
+    }
+
+    fn text_chars(&self) -> usize {
+        match self {
+            Self::Text { text } => text.chars().count(),
+            Self::Image { .. }
+            | Self::LocalImage { .. }
+            | Self::Audio { .. }
+            | Self::LocalAudio { .. } => 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Text { text } => text.trim().is_empty(),
+            Self::Image { .. }
+            | Self::LocalImage { .. }
+            | Self::Audio { .. }
+            | Self::LocalAudio { .. } => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ImageDetail {
+    Auto,
+    Low,
+    High,
+    Original,
 }
 
 pub(crate) struct EventWriter<W> {
@@ -112,13 +211,50 @@ pub(crate) fn read_task_start(mut input: impl BufRead) -> Result<TaskRequest> {
             "first input event must be task.start with seq 1".to_owned(),
         ));
     }
-    if request.payload.instruction.trim().is_empty() {
+    if request.payload.instruction.is_empty() {
         return Err(HarnessError::InvalidRequest(
             "task.start instruction must not be empty".to_owned(),
         ));
+    }
+    let text_chars = request.payload.instruction.text_chars();
+    if text_chars > MAX_USER_INPUT_TEXT_CHARS {
+        return Err(HarnessError::InvalidRequest(format!(
+            "task.start instruction exceeds the maximum length of {MAX_USER_INPUT_TEXT_CHARS} characters ({text_chars} provided)"
+        )));
     }
     Ok(TaskRequest {
         request_id: request.request_id,
         task: request.payload,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn task_start_accepts_ordered_codex_user_input() {
+        let input = concat!(
+            r#"{"protocol_version":1,"request_id":"multimodal","seq":1,"type":"task.start","payload":{"instruction":[{"type":"local_image","path":"/tmp/image.png","detail":"original"},{"type":"text","text":"describe it"},{"type":"audio","audio_url":"data:audio/wav;base64,AAAA"}],"workspace":"/tmp"}}"#,
+            "\n",
+        );
+        let request = read_task_start(Cursor::new(input)).expect("decode structured task input");
+
+        let TaskInstruction::Content(input) = request.task.instruction else {
+            panic!("expected structured content");
+        };
+        assert!(matches!(
+            input.as_slice(),
+            [
+                UserInput::LocalImage {
+                    detail: Some(ImageDetail::Original),
+                    ..
+                },
+                UserInput::Text { text },
+                UserInput::Audio { .. },
+            ] if text == "describe it"
+        ));
+    }
 }

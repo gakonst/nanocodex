@@ -12,10 +12,10 @@ use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::shell::ShellSessions;
+use crate::{protocol::ImageDetail, shell::ShellSessions};
 
 pub(crate) use code_mode::{CodeModeExecution, NestedToolCall};
-pub(crate) use image::prepare_output_images;
+pub(crate) use image::{prepare_output_images, prepare_user_input};
 
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
@@ -34,15 +34,6 @@ pub(crate) enum ToolOutputContent {
         image_url: String,
         detail: ImageDetail,
     },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum ImageDetail {
-    Auto,
-    Low,
-    High,
-    Original,
 }
 
 pub(crate) struct ToolExecution {
