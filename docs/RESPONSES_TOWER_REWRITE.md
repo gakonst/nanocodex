@@ -18,6 +18,9 @@ every handle is dropped. Each submitted prompt immediately returns a `Turn`;
 the driver's bounded command channel queues prompts submitted while a turn is
 active. One driver therefore reuses the WebSocket, server response chain, local
 typed history, code-mode runtime, and shell sessions across turns.
+`prompt().await` waits only for the bounded command channel to accept the work;
+the returned `Turn` remains independently awaitable through `turn.result()` and
+produces the final typed `TurnResult`.
 
 `AgentEvents` retains typed event kinds and lossless raw payloads for the CLI
 adapter. A later events/observability slice will define filtering, callbacks,

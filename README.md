@@ -34,7 +34,24 @@ overrides for the system prompt, thinking level, tools, workspace, stable
 session ID, and Responses stack. `build()` spawns the stateful driver and
 returns `(Agent, AgentEvents)`: one cheap, cloneable prompt handle and the
 single ordered event stream. Callers submit and queue follow-on `Prompt`s
-through the handle and await each typed `TurnOutcome`.
+through the handle and await each typed `TurnResult` with `turn.result()`.
+
+```rust,ignore
+let (agent, events) = Agent::builder(api_key).build()?;
+
+let first = agent.prompt("Inspect the repository").await?;
+// The turn is running; the caller remains free to do other work here.
+let first = first.result().await?;
+
+let follow_on = agent
+    .prompt(format!("Summarize your previous result: {}", first.final_message))
+    .await?;
+let follow_on = follow_on.result().await?;
+```
+
+`AgentEvents` is independent from the result path: applications that need live
+events consume it once for the session, while callers interested only in final
+results may discard it.
 
 `Responses::builder().layer(...)` defers Tower composition until the standard
 service is created, so embedders can add deadlines, concurrency limits, load

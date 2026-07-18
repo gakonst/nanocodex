@@ -3,7 +3,7 @@ mod error;
 mod model;
 mod responses;
 
-pub use agent::{Agent, AgentBuilder, Turn, TurnOutcome};
+pub use agent::{Agent, AgentBuilder, Turn, TurnResult};
 pub use error::{AgentError, HarnessError, ResponsesError, Result};
 pub use harness_core::responses::RequestProfile;
 pub use harness_core::{

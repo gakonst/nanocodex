@@ -56,18 +56,14 @@ impl Run {
             .api_base_url(self.api_base_url)
             .build();
         let tools = Tools::builder().web_search(self.web_search).build();
-        let (handle, events) = Agent::builder(self.api_key)
+        let (handle, mut events) = Agent::builder(self.api_key)
             .thinking(self.thinking)
             .tools(tools)
             .responses(responses)
             .build()?;
-        let event_writer = tokio::spawn(events.write_jsonl(io::stdout()));
         let turn = handle.prompt(self.prompt).await?;
-        let completion = turn.wait().await;
-        drop(handle);
-
-        event_writer.await??;
-        completion?;
+        events.write_turn_jsonl(io::stdout()).await?;
+        turn.result().await?;
         Ok(())
     }
 }

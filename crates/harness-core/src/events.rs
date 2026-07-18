@@ -19,6 +19,9 @@ pub enum EventError {
 
     #[error("failed to write agent event")]
     Write(#[source] std::io::Error),
+
+    #[error("agent event stream closed before the turn emitted a terminal event")]
+    ClosedBeforeTerminal,
 }
 
 /// One ordered event emitted by an agent run.
@@ -105,13 +108,35 @@ impl AgentEvents {
     /// Returns an error when an event cannot be encoded or written.
     pub async fn write_jsonl(mut self, mut output: impl Write) -> Result<(), EventError> {
         while let Some(event) = self.recv().await {
-            serde_json::to_writer(&mut output, &event).map_err(EventError::Encode)?;
-            output
-                .write_all(b"\n")
-                .and_then(|()| output.flush())
-                .map_err(EventError::Write)?;
+            write_jsonl_event(&mut output, &event)?;
         }
         Ok(())
+    }
+
+    /// Writes one turn through its terminal event and leaves the session stream
+    /// available for follow-on turns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an event cannot be written or the agent stops
+    /// before emitting `run.completed` or `run.failed`.
+    pub async fn write_turn_jsonl(&mut self, mut output: impl Write) -> Result<(), EventError> {
+        while let Some(event) = self.recv().await {
+            let terminal = event.kind.is_terminal();
+            write_jsonl_event(&mut output, &event)?;
+            if terminal {
+                return Ok(());
+            }
+        }
+        Err(EventError::ClosedBeforeTerminal)
+    }
+}
+
+impl AgentEventKind {
+    /// Returns whether this event completes a turn.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::RunCompleted | Self::RunFailed)
     }
 }
 
@@ -124,6 +149,14 @@ impl AgentEvent {
     pub fn decode_payload<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
         serde_json::from_str(self.payload.get())
     }
+}
+
+fn write_jsonl_event(output: &mut impl Write, event: &AgentEvent) -> Result<(), EventError> {
+    serde_json::to_writer(&mut *output, event).map_err(EventError::Encode)?;
+    output
+        .write_all(b"\n")
+        .and_then(|()| output.flush())
+        .map_err(EventError::Write)
 }
 
 /// Internal emission handle shared by orchestration and transport crates.

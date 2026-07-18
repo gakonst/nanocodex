@@ -19,32 +19,33 @@ const COMMAND_CAPACITY: usize = 8;
 
 /// Completion handle for an accepted turn.
 pub struct Turn {
-    result: oneshot::Receiver<Result<TurnOutcome>>,
+    result: oneshot::Receiver<Result<TurnResult>>,
 }
 
 impl Turn {
-    /// Waits for the final typed turn result.
+    /// Waits for and returns the final typed turn result.
     ///
     /// # Errors
     ///
     /// Returns the model-run failure or an error if the driver stopped early.
-    pub async fn wait(self) -> Result<TurnOutcome> {
+    pub async fn result(self) -> Result<TurnResult> {
         self.result
             .await
             .map_err(|_| HarnessError::Agent(AgentError::TurnStopped))?
     }
 }
 
-/// Final outcome of a completed turn.
+/// Final result of a completed turn.
 #[derive(Clone, Debug)]
-pub struct TurnOutcome {
+#[non_exhaustive]
+pub struct TurnResult {
     pub final_message: String,
 }
 
 enum Command {
     Prompt {
         prompt: Prompt,
-        result: oneshot::Sender<Result<TurnOutcome>>,
+        result: oneshot::Sender<Result<TurnResult>>,
     },
 }
 
@@ -273,7 +274,7 @@ where
             let outcome = model
                 .execute(prompt)
                 .await
-                .map(|final_message| TurnOutcome { final_message });
+                .map(|final_message| TurnResult { final_message });
             drop(result.send(outcome));
         }
         Ok(())

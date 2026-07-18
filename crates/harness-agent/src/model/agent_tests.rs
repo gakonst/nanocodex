@@ -44,9 +44,9 @@ async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> 
     let first = agent
         .prompt(Prompt::new("first prompt").workspace(workspace.to_string_lossy()))
         .await?;
-    assert_eq!(first.wait().await?.final_message, "done");
+    assert_eq!(first.result().await?.final_message, "done");
     let second = agent.prompt(Prompt::new("second prompt")).await?;
-    assert_eq!(second.wait().await?.final_message, "done");
+    assert_eq!(second.result().await?.final_message, "done");
     drop(agent);
 
     let mut completed = Vec::new();
@@ -922,7 +922,7 @@ async fn run_model(endpoint: &str, workspace: &Path, instruction: &str) -> Resul
     let turn = agent.prompt(task).await?;
     drop(agent);
     let mut output = Vec::new();
-    let (event_result, turn_result) = tokio::join!(events.write_jsonl(&mut output), turn.wait());
+    let (event_result, turn_result) = tokio::join!(events.write_jsonl(&mut output), turn.result());
     event_result?;
     turn_result?;
     Ok(String::from_utf8(output)?)
