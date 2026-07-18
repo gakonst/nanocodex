@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use tokio::{net::TcpListener, time::timeout};
 use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
-use crate::{Agent, AgentParts, ModelConfig, Prompt, ReasoningEffort};
+use crate::{Agent, Prompt, Responses, Thinking};
 
 #[tokio::test]
 async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> {
@@ -15,7 +15,9 @@ async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> 
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
         let mut socket = accept_async(stream).await?;
-        assert_warmup(&next_json(&mut socket).await?);
+        let warmup = next_json(&mut socket).await?;
+        assert_warmup(&warmup);
+        assert_eq!(warmup["input"][1]["content"][0]["text"], "custom prompt");
         send_warmup(&mut socket, "resp-warmup").await?;
 
         let first = next_json(&mut socket).await?;
@@ -31,32 +33,22 @@ async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> 
     });
 
     let workspace = temporary_workspace("follow-on")?;
-    let config = ModelConfig {
-        model: "test-model".to_owned(),
-        api_key: "test-key".to_owned(),
-        effort: ReasoningEffort::Low,
-        web_search: true,
-        websocket_url: endpoint,
-        api_base_url: "http://127.0.0.1:1/v1".to_owned(),
-    };
-    let AgentParts {
-        agent,
-        driver,
-        mut events,
-    } = Agent::builder(config)
-        .request_id("model-test")
-        .build_parts()?;
-    let driver = tokio::spawn(driver.run());
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, mut events) = Agent::builder("test-key")
+        .prompt("custom prompt")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
 
     let first = agent
         .prompt(Prompt::new("first prompt").workspace(workspace.to_string_lossy()))
         .await?;
-    assert_eq!(first.turn.completed().await?.final_message, "done");
+    assert_eq!(first.wait().await?.final_message, "done");
     let second = agent.prompt(Prompt::new("second prompt")).await?;
-    assert_eq!(second.turn.completed().await?.final_message, "done");
+    assert_eq!(second.wait().await?.final_message, "done");
     drop(agent);
 
-    driver.await??;
     let mut completed = Vec::new();
     while let Some(event) = events.recv().await {
         if event.kind == harness_core::AgentEventKind::RunCompleted {
@@ -879,8 +871,7 @@ async fn sol_compacts_with_a_trigger_and_installs_the_returned_context() -> Resu
     });
 
     let workspace = temporary_workspace("compaction")?;
-    let output =
-        run_model_with_model(&endpoint, &workspace, "exercise compaction", "gpt-5.6-sol").await?;
+    let output = run_model(&endpoint, &workspace, "exercise compaction").await?;
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
@@ -921,40 +912,17 @@ fn assert_warmup(warmup: &Value) {
 }
 
 async fn run_model(endpoint: &str, workspace: &Path, instruction: &str) -> Result<String> {
-    run_model_with_model(endpoint, workspace, instruction, "test-model").await
-}
-
-async fn run_model_with_model(
-    endpoint: &str,
-    workspace: &Path,
-    instruction: &str,
-    model: &str,
-) -> Result<String> {
     let task = Prompt::new(instruction).workspace(workspace.to_string_lossy().into_owned());
-    let config = ModelConfig {
-        model: model.to_owned(),
-        api_key: "test-key".to_owned(),
-        effort: ReasoningEffort::Low,
-        web_search: true,
-        websocket_url: endpoint.to_owned(),
-        api_base_url: "http://127.0.0.1:1/v1".to_owned(),
-    };
-    let AgentParts {
-        agent,
-        driver,
-        events,
-    } = Agent::builder(config)
-        .request_id("model-test")
-        .build_parts()?;
-    let receipt = agent.prompt(task).await?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, events) = Agent::builder("test-key")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+    let turn = agent.prompt(task).await?;
     drop(agent);
     let mut output = Vec::new();
-    let (driver_result, event_result, turn_result) = tokio::join!(
-        driver.run(),
-        events.write_jsonl(&mut output),
-        receipt.turn.completed(),
-    );
-    driver_result?;
+    let (event_result, turn_result) = tokio::join!(events.write_jsonl(&mut output), turn.wait());
     event_result?;
     turn_result?;
     Ok(String::from_utf8(output)?)

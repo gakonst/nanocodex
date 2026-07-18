@@ -4,57 +4,60 @@ Status: implemented.
 
 ## Public ownership and composition
 
-`Agent::builder(config)` is the high-level library entry point. Its standard
-`build_parts()` constructor installs the persistent WebSocket transport and the
-bounded Responses retry policy. It returns three independently owned values:
+`Agent::new(api_key)` is the zero-configuration library entry point. It uses the
+SDK's fixed model contract, standard system prompt, medium thinking, built-in
+tools, persistent WebSocket transport, and bounded Responses retry policy.
+`Agent::builder(api_key)` exposes only the useful high-level overrides:
+`prompt`, `thinking`, `tools`, `workspace`, `session_id`, and `responses`.
 
-- `Agent`: a cheap, cloneable command handle used to queue follow-on prompts.
-- `AgentDriver<S>`: the sole owner of mutable model, conversation, tool, and
-  service state. The embedder drives it on a Tokio task of its choice.
-- `AgentEvents`: an ordered receiver with typed event kinds and lossless raw
-  payloads that can be decoded into a caller-selected type or rendered as the
-  existing JSONL protocol.
+`build()` requires an active Tokio runtime, spawns the stateful driver, and
+returns `(Agent, AgentEvents)`: one cheap, cloneable prompt handle and the
+single ordered event receiver. The driver is private and remains the sole owner
+of mutable model, conversation, tool, and Tower service state. It stops after
+every handle is dropped. Each submitted prompt immediately returns a `Turn`;
+the driver's bounded command channel queues prompts submitted while a turn is
+active. One driver therefore reuses the WebSocket, server response chain, local
+typed history, code-mode runtime, and shell sessions across turns.
 
-The driver stays alive until every `Agent` handle is dropped. Each accepted
-prompt returns a `Turn`; prompts submitted while a turn is active are reported
-as queued. One driver therefore reuses the WebSocket, server response chain,
-local typed history, code-mode runtime, and shell sessions across turns.
+`AgentEvents` retains typed event kinds and lossless raw payloads for the CLI
+adapter. A later events/observability slice will define filtering, callbacks,
+and tracing policy without reopening the ownership boundary.
 
 `ResponsesClient<S>` is deliberately generic over
 `Service<ResponsesAttempt>`. It owns the caller's concrete service stack and
 provides accessors and `map_service` without boxing or imposing a global stack.
-`AgentBuilder::responses_service` defers composition to the embedder:
+`Responses::builder().layer(...)` defers composition until `Agent::build()`,
+when the SDK can first construct the correctly configured standard service:
 
 ```rust,ignore
-use std::{sync::Arc, time::Duration};
-use harness_agent::{
-    Agent, ModelConfig, ResponsesRetryPolicy, ResponsesService,
-};
+use std::time::Duration;
+use harness_agent::{Agent, Responses, Thinking, Tools};
 use tower::{
-    ServiceBuilder,
     limit::ConcurrencyLimitLayer,
-    retry::Retry,
     timeout::TimeoutLayer,
 };
 
-let shared = Arc::new(config.clone());
-let responses = ResponsesService::new(shared);
-let retrying = Retry::new(ResponsesRetryPolicy, responses);
-let stack = ServiceBuilder::new()
-    // This timeout covers retry/backoff and complete streamed attempts.
+let responses = Responses::builder()
+    // These layers wrap retry/backoff and each complete streamed attempt.
     .layer(TimeoutLayer::new(Duration::from_secs(180)))
     .layer(ConcurrencyLimitLayer::new(1))
-    .service(retrying);
+    .build();
 
-let parts = Agent::builder(config)
-    .request_id("stable-session-id")
-    .responses_service(stack)
-    .build_parts()?;
+let tools = Tools::builder().web_search(false).build();
+let (handle, events) = Agent::builder(api_key)
+    .prompt("project-specific system prompt")
+    .thinking(Thinking::High)
+    .tools(tools)
+    .session_id("stable-session-id")
+    .responses(responses)
+    .build()?;
 ```
 
-The standard constructor is the convenient configured path; the custom path is
-the library escape hatch. There is no `run_with_responses_client` helper and no
-requirement that applications adopt a process server, JSON-RPC, or JSONL.
+`Responses::builder().service(stack)` is the lower-level escape hatch for a
+fully caller-composed `Service<ResponsesAttempt>`. `ResponsesClient<S>` remains
+generic over the concrete service type, so neither path boxes the stack. There
+is no `run_with_responses_client` lifecycle helper and no requirement that
+applications adopt a process server, JSON-RPC, or JSONL.
 
 The crate boundaries mirror those ownership rules:
 

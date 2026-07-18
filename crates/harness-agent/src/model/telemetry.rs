@@ -209,8 +209,8 @@ pub(super) fn terminal_payload<'a>(
 ) -> TerminalPayload<'a> {
     TerminalPayload {
         status: terminal_status,
-        model: &config.model,
-        effort: config.effort.as_str(),
+        model: harness_core::MODEL,
+        effort: config.thinking.as_str(),
         transport: TRANSPORT,
         orchestration: ModelConfig::orchestration(),
         duration_ms: duration_ms(elapsed),

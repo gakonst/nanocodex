@@ -147,13 +147,13 @@ impl<'a> ResponseCreate<'a> {
     ) -> Self {
         Self {
             kind: "response.create",
-            model: &config.model,
+            model: crate::MODEL,
             previous_response_id,
             input,
             tool_choice: "auto",
             parallel_tool_calls: false,
             reasoning: ReasoningControls {
-                effort: config.effort.as_str(),
+                effort: config.thinking.as_str(),
                 context: "all_turns",
             },
             store: false,
@@ -197,18 +197,15 @@ struct ClientMetadata<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContentItem, MessageRole, ReasoningEffort};
+    use crate::{ContentItem, MessageRole, Thinking};
     use serde_json::json;
 
     #[test]
     fn prompt_cache_key_is_stable_across_the_session() {
         let config = ModelConfig {
-            model: "test-model".to_owned(),
             api_key: "test-key".to_owned(),
-            effort: ReasoningEffort::Low,
-            web_search: true,
-            websocket_url: "ws://localhost".to_owned(),
-            api_base_url: "http://localhost/v1".to_owned(),
+            thinking: Thinking::Low,
+            ..ModelConfig::default()
         };
         let prefix: Arc<[ResponseItem]> = Arc::from([ResponseItem::message(
             MessageRole::Developer,
@@ -230,5 +227,10 @@ mod tests {
         assert!(request["reasoning"].get("summary").is_none());
         assert!(request["reasoning"].get("mode").is_none());
         assert!(request.get("context_management").is_none());
+    }
+
+    #[test]
+    fn thinking_defaults_to_medium() {
+        assert_eq!(ModelConfig::default().thinking, Thinking::Medium);
     }
 }

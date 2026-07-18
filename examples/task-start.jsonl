@@ -1,1 +1,0 @@
-{"protocol_version":1,"request_id":"local-code-mode-smoke","seq":1,"type":"task.start","payload":{"instruction":"Use the available exec tool to run pwd exactly once without modifying anything, then report the path.","workspace":"."}}

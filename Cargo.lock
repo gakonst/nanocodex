@@ -693,7 +693,6 @@ dependencies = [
  "dotenvy",
  "eyre",
  "harness-agent",
- "reqwest",
  "tokio",
 ]
 

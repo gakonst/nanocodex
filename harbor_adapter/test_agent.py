@@ -32,10 +32,16 @@ class WebSearchContractTests(unittest.TestCase):
         agent._effort = "low"
 
         agent._web_search = True
-        self.assertEqual(agent._run_arguments()[-2:], ["--web-search", "true"])
+        self.assertEqual(
+            agent._run_arguments("test prompt")[-3:],
+            ["--web-search", "true", "test prompt"],
+        )
 
         agent._web_search = False
-        self.assertEqual(agent._run_arguments()[-2:], ["--web-search", "false"])
+        self.assertEqual(
+            agent._run_arguments("test prompt")[-3:],
+            ["--web-search", "false", "test prompt"],
+        )
 
     def test_terminal_bench_disables_web_search(self) -> None:
         repository = Path(__file__).resolve().parents[1]
@@ -640,13 +646,7 @@ class InterruptedRunContractTests(unittest.TestCase):
 
     @staticmethod
     def _write_partial_stream(logs_dir: Path) -> None:
-        request = {
-            "protocol_version": 1,
-            "request_id": "request-1",
-            "seq": 1,
-            "type": "task.start",
-            "payload": {"instruction": "test"},
-        }
+        prompt = {"instruction": "test"}
         event = {
             "protocol_version": 1,
             "request_id": "request-1",
@@ -655,7 +655,7 @@ class InterruptedRunContractTests(unittest.TestCase):
             "payload": {},
         }
         (logs_dir / "input.jsonl").write_text(
-            json.dumps(request) + "\n", encoding="utf-8"
+            json.dumps(prompt) + "\n", encoding="utf-8"
         )
         (logs_dir / "events.jsonl").write_text(
             json.dumps(event) + "\n", encoding="utf-8"

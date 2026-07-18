@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc, time::Instant};
 
 use harness_core::{
-    AgentEventKind, EventSink, ModelConfig, Prompt, ResponseItem, ToolDefinition, Usage,
+    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, ToolDefinition, Usage,
     responses::RequestProfile,
 };
 use harness_service::{
@@ -24,7 +24,7 @@ use super::{
 };
 use crate::{AgentError, HarnessError, ResponsesError, Result};
 use harness_tools::{
-    ImageGenerationConfig, NestedToolCall, ToolContext, ToolOutputBody, ToolRuntime,
+    ImageGenerationConfig, NestedToolCall, ToolContext, ToolOutputBody, ToolRuntime, Tools,
     WebSearchConfig, prepare_output_images, prepare_user_input,
 };
 
@@ -37,6 +37,7 @@ pub(crate) struct ModelRun<S> {
     stats: RunStats,
     server_reasoning_included: bool,
     session: Option<ModelSessionState>,
+    tools: Tools,
 }
 
 struct ModelSessionState {
@@ -124,6 +125,7 @@ impl<S> ModelRun<S> {
         config: Arc<ModelConfig>,
         client: ResponsesClient<S>,
         transport_stats: Arc<TransportStats>,
+        tools: Tools,
     ) -> Self {
         Self {
             events,
@@ -134,6 +136,7 @@ impl<S> ModelRun<S> {
             stats: RunStats::default(),
             server_reasoning_included: false,
             session: None,
+            tools,
         }
     }
 }
@@ -152,8 +155,8 @@ where
             AgentEventKind::RunStarted,
             RunStarted {
                 mode: "openai_model",
-                model: &self.config.model,
-                effort: self.config.effort.as_str(),
+                model: MODEL,
+                effort: self.config.thinking.as_str(),
                 transport: TRANSPORT,
                 orchestration: ModelConfig::orchestration(),
                 websocket_url: display_endpoint(&self.config.websocket_url),
@@ -225,18 +228,24 @@ where
             let project_instructions = load_project_instructions(Path::new(&workspace))?;
             let tools = ToolRuntime::new(
                 &workspace,
-                self.config.web_search.then(|| WebSearchConfig {
+                self.tools.web_search_enabled().then(|| WebSearchConfig {
                     endpoint: self.config.search_endpoint(),
                     api_key: self.config.api_key.clone(),
                 }),
-                ImageGenerationConfig {
-                    api_base_url: self.config.api_base_url.clone(),
-                    api_key: self.config.api_key.clone(),
-                    save_root: Path::new(&workspace).to_path_buf(),
-                },
+                self.tools
+                    .image_generation_enabled()
+                    .then(|| ImageGenerationConfig {
+                        api_base_url: self.config.api_base_url.clone(),
+                        api_key: self.config.api_key.clone(),
+                        save_root: Path::new(&workspace).to_path_buf(),
+                    }),
             );
             let factory = ResponsesAttemptFactory::new(
-                request_profile(self.events.request_id(), tools.model_specs()),
+                request_profile(
+                    self.events.request_id(),
+                    tools.model_specs(),
+                    self.config.system_prompt(),
+                ),
                 self.events.clone(),
                 Arc::clone(&self.transport_stats),
             );
@@ -380,7 +389,7 @@ where
         }
         let started_at = Instant::now();
         let context = ToolContext {
-            model: &self.config.model,
+            model: MODEL,
             session_id: self.events.request_id(),
             call_id: &call.call_id,
             history,
@@ -427,9 +436,7 @@ where
         conversation: &mut ConversationState,
         factory: &ResponsesAttemptFactory,
     ) -> Result<()> {
-        let Some(auto_compact_token_limit) =
-            compaction::auto_compact_token_limit(&self.config.model)
-        else {
+        let Some(auto_compact_token_limit) = compaction::auto_compact_token_limit(MODEL) else {
             return Ok(());
         };
         let active_context_tokens =
@@ -497,7 +504,7 @@ where
         self.events.emit(
             AgentEventKind::ModelWarmupStarted,
             WarmupStarted {
-                model: &self.config.model,
+                model: MODEL,
                 prompt_cache_key: factory.profile().prompt_cache_key(),
             },
         )?;
@@ -560,8 +567,8 @@ where
             AgentEventKind::ModelCallStarted,
             ModelCallStarted {
                 call_index,
-                model: &self.config.model,
-                effort: self.config.effort.as_str(),
+                model: MODEL,
+                effort: self.config.thinking.as_str(),
                 previous_response_id,
             },
         )?;
@@ -595,7 +602,7 @@ where
             AgentEventKind::ModelCallCompleted,
             ModelCallCompleted {
                 call_index,
-                model: &self.config.model,
+                model: MODEL,
                 response_id: &response.id,
                 attempt,
                 connection_generation,
@@ -715,7 +722,7 @@ where
             AgentEventKind::ModelCallFailed,
             ModelCallFailed {
                 call_index,
-                model: &self.config.model,
+                model: MODEL,
                 duration_ns,
                 error: &message,
             },
@@ -740,7 +747,11 @@ fn strip_item_id(mut item: ResponseItem) -> ResponseItem {
     item
 }
 
-fn request_profile(session_id: &str, tool_specs: Vec<ToolDefinition>) -> RequestProfile {
+fn request_profile(
+    session_id: &str,
+    tool_specs: Vec<ToolDefinition>,
+    system_prompt: &str,
+) -> RequestProfile {
     RequestProfile::new(
         session_id,
         Arc::from([
@@ -748,7 +759,7 @@ fn request_profile(session_id: &str, tool_specs: Vec<ToolDefinition>) -> Request
             ResponseItem::message(
                 harness_core::MessageRole::Developer,
                 [harness_core::ContentItem::InputText {
-                    text: ModelConfig::system_prompt().into(),
+                    text: system_prompt.into(),
                 }],
             ),
         ]),

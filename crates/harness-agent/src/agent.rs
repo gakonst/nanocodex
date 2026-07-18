@@ -1,33 +1,21 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::{path::PathBuf, sync::Arc};
 
-use harness_core::{AgentEvents, EventSink, ModelConfig, Prompt};
+use harness_core::{AgentEvents, EventSink, ModelConfig, Prompt, Thinking};
 use harness_service::{
     DefaultResponsesService, ResponsesAttempt, ResponsesClient, ResponsesService,
     ResponsesServiceResponse, TransportStats,
 };
+use harness_tools::Tools;
 use tokio::sync::{mpsc, oneshot};
 use tower::Service;
 
-use crate::{AgentError, HarnessError, Result, model::agent::ModelRun};
+use crate::{
+    AgentError, HarnessError, Result,
+    model::agent::ModelRun,
+    responses::{LayeredResponses, Responses, StandardResponses},
+};
 
 const COMMAND_CAPACITY: usize = 8;
-
-/// How a submitted prompt was accepted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum PromptDisposition {
-    Started,
-    Queued,
-}
-
-/// Receipt returned as soon as a prompt is accepted by the driver.
-pub struct PromptReceipt {
-    pub disposition: PromptDisposition,
-    pub turn: Turn,
-}
 
 /// Completion handle for an accepted turn.
 pub struct Turn {
@@ -40,7 +28,7 @@ impl Turn {
     /// # Errors
     ///
     /// Returns the model-run failure or an error if the driver stopped early.
-    pub async fn completed(self) -> Result<TurnOutcome> {
+    pub async fn wait(self) -> Result<TurnOutcome> {
         self.result
             .await
             .map_err(|_| HarnessError::Agent(AgentError::TurnStopped))?
@@ -64,16 +52,34 @@ enum Command {
 #[derive(Clone)]
 pub struct Agent {
     commands: mpsc::Sender<Command>,
-    pending: Arc<AtomicUsize>,
+    workspace: Option<Arc<str>>,
 }
 
 impl Agent {
-    /// Starts configuring an agent with the standard `OpenAI` WebSocket stack.
+    /// Builds a running agent with the standard prompt, tools, thinking level,
+    /// and Responses WebSocket stack, returning its prompt handle and ordered
+    /// event stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the API key is empty or no Tokio runtime is active.
+    pub fn new(api_key: impl Into<String>) -> Result<(Self, AgentEvents)> {
+        Self::builder(api_key).build()
+    }
+
+    /// Starts configuring an agent with sensible defaults.
     #[must_use]
-    pub fn builder(config: ModelConfig) -> AgentBuilder {
+    pub fn builder(api_key: impl Into<String>) -> AgentBuilder {
+        let config = ModelConfig {
+            api_key: api_key.into(),
+            ..ModelConfig::default()
+        };
         AgentBuilder {
             config,
-            request_id: None,
+            tools: Tools::default(),
+            workspace: None,
+            session_id: None,
+            responses: Responses::default(),
         }
     }
 
@@ -82,13 +88,16 @@ impl Agent {
     /// # Errors
     ///
     /// Returns an error for an empty prompt or if the driver stopped.
-    pub async fn prompt(&self, prompt: Prompt) -> Result<PromptReceipt> {
+    pub async fn prompt(&self, prompt: impl Into<Prompt>) -> Result<Turn> {
+        let mut prompt = prompt.into();
         if prompt.instruction.is_empty() {
             return Err(HarnessError::InvalidRequest(
                 "prompt instruction must not be empty".to_owned(),
             ));
         }
-        let queued_before = self.pending.fetch_add(1, Ordering::AcqRel);
+        if prompt.workspace.is_none() {
+            prompt.workspace = self.workspace.as_deref().map(str::to_owned);
+        }
         let (result, receiver) = oneshot::channel();
         if self
             .commands
@@ -96,109 +105,155 @@ impl Agent {
             .await
             .is_err()
         {
-            self.pending.fetch_sub(1, Ordering::AcqRel);
             return Err(HarnessError::Agent(AgentError::DriverStopped));
         }
-        Ok(PromptReceipt {
-            disposition: if queued_before == 0 {
-                PromptDisposition::Started
-            } else {
-                PromptDisposition::Queued
-            },
-            turn: Turn { result: receiver },
-        })
+        Ok(Turn { result: receiver })
     }
 }
 
-/// Builder for a handle, driver, and event stream with deferred service composition.
-pub struct AgentBuilder {
+/// Builder for a running agent with deferred Responses service composition.
+pub struct AgentBuilder<S = StandardResponses> {
     config: ModelConfig,
-    request_id: Option<String>,
+    tools: Tools,
+    workspace: Option<PathBuf>,
+    session_id: Option<String>,
+    responses: Responses<S>,
 }
 
-impl AgentBuilder {
-    /// Sets the stable session/request ID used for headers and prompt caching.
+impl<S> AgentBuilder<S> {
+    /// Replaces the stable system/developer prompt.
     #[must_use]
-    pub fn request_id(mut self, request_id: impl Into<String>) -> Self {
-        self.request_id = Some(request_id.into());
+    pub fn prompt(mut self, prompt: impl Into<Arc<str>>) -> Self {
+        self.config.system_prompt = prompt.into();
         self
     }
 
-    /// Replaces the configured transport with a fully caller-composed Tower stack.
+    /// Sets the model thinking level. The default is [`Thinking::Medium`].
     #[must_use]
-    pub fn responses_service<S>(self, service: S) -> CustomAgentBuilder<S> {
-        CustomAgentBuilder {
+    pub const fn thinking(mut self, thinking: Thinking) -> Self {
+        self.config.thinking = thinking;
+        self
+    }
+
+    /// Replaces the standard built-in tool selection.
+    #[must_use]
+    pub fn tools(mut self, tools: Tools) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Fixes the workspace used by every prompt in this agent session.
+    #[must_use]
+    pub fn workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
+    }
+
+    /// Sets the stable session/request ID used for headers and prompt caching.
+    #[must_use]
+    pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Replaces the default Responses configuration or service stack.
+    #[must_use]
+    pub fn responses<T>(self, responses: Responses<T>) -> AgentBuilder<T> {
+        AgentBuilder {
             config: self.config,
-            request_id: self.request_id,
-            service,
+            tools: self.tools,
+            workspace: self.workspace,
+            session_id: self.session_id,
+            responses,
         }
     }
+}
 
-    /// Builds the standard persistent-WebSocket service and retry policy.
+impl AgentBuilder<StandardResponses> {
+    /// Builds and spawns the agent with the standard persistent-WebSocket and
+    /// retry stack, returning its prompt handle and ordered event stream.
     ///
     /// # Errors
     ///
-    /// Returns an error when the configured request ID is empty.
-    pub fn build_parts(self) -> Result<AgentParts<DefaultResponsesService>> {
+    /// Returns an error for invalid configuration or when no Tokio runtime is
+    /// active.
+    pub fn build(mut self) -> Result<(Agent, AgentEvents)> {
+        configure(&mut self.config, &self.responses);
+        validate(&self.config, self.session_id.as_deref())?;
         let config = Arc::new(self.config);
         let service = ResponsesService::standard(Arc::clone(&config));
-        build_parts(config, self.request_id, service)
+        build_agent(config, self.tools, self.workspace, self.session_id, service)
     }
 }
 
-/// Builder state containing a caller-composed Tower service.
-pub struct CustomAgentBuilder<S> {
-    config: ModelConfig,
-    request_id: Option<String>,
-    service: S,
-}
-
-impl<S> CustomAgentBuilder<S> {
-    /// Sets the stable session/request ID used for headers and prompt caching.
-    #[must_use]
-    pub fn request_id(mut self, request_id: impl Into<String>) -> Self {
-        self.request_id = Some(request_id.into());
-        self
-    }
-}
-
-impl<S> CustomAgentBuilder<S>
+impl<L> AgentBuilder<LayeredResponses<L>>
 where
-    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + Send + 'static,
-    S::Error: Into<HarnessError>,
-    S::Future: Send,
+    L: tower::Layer<DefaultResponsesService>,
+    L::Service: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + Send + 'static,
+    <L::Service as Service<ResponsesAttempt>>::Error: Into<HarnessError> + Send + 'static,
+    <L::Service as Service<ResponsesAttempt>>::Future: Send,
 {
-    /// Builds with the caller's already-composed Tower service stack.
+    /// Builds and spawns the agent after applying the caller's deferred Tower
+    /// layers around the standard persistent-WebSocket and retry stack,
+    /// returning its prompt handle and ordered event stream.
     ///
     /// # Errors
     ///
-    /// Returns an error when the configured request ID is empty.
-    pub fn build_parts(self) -> Result<AgentParts<S>> {
-        build_parts(Arc::new(self.config), self.request_id, self.service)
+    /// Returns an error for invalid configuration or when no Tokio runtime is
+    /// active.
+    pub fn build(mut self) -> Result<(Agent, AgentEvents)> {
+        configure(&mut self.config, &self.responses);
+        validate(&self.config, self.session_id.as_deref())?;
+        let config = Arc::new(self.config);
+        let service = self
+            .responses
+            .service
+            .0
+            .service(ResponsesService::standard(Arc::clone(&config)));
+        build_agent(config, self.tools, self.workspace, self.session_id, service)
     }
 }
 
-/// The three independently owned pieces of a configured agent.
-pub struct AgentParts<S> {
-    pub agent: Agent,
-    pub driver: AgentDriver<S>,
-    pub events: AgentEvents,
+impl<S> AgentBuilder<S>
+where
+    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + Send + 'static,
+    S::Error: Into<HarnessError> + Send + 'static,
+    S::Future: Send,
+{
+    /// Builds and spawns the agent with the caller's Responses service stack,
+    /// returning its prompt handle and ordered event stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid configuration or when no Tokio runtime is
+    /// active.
+    pub fn build(mut self) -> Result<(Agent, AgentEvents)> {
+        configure(&mut self.config, &self.responses);
+        validate(&self.config, self.session_id.as_deref())?;
+        build_agent(
+            Arc::new(self.config),
+            self.tools,
+            self.workspace,
+            self.session_id,
+            self.responses.service,
+        )
+    }
 }
 
 /// Sole owner of mutable run state and the Responses service stack.
-pub struct AgentDriver<S> {
+struct AgentDriver<S> {
     commands: mpsc::Receiver<Command>,
     config: Arc<ModelConfig>,
     events: EventSink,
     client: ResponsesClient<S>,
     transport_stats: Arc<TransportStats>,
-    pending: Arc<AtomicUsize>,
+    tools: Tools,
 }
 
 impl<S> AgentDriver<S>
 where
     S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + Send + 'static,
-    S::Error: Into<HarnessError>,
+    S::Error: Into<HarnessError> + Send + 'static,
     S::Future: Send,
 {
     /// Drives queued turns until every command handle is dropped.
@@ -206,53 +261,103 @@ where
     /// # Errors
     ///
     /// Returns an infrastructure error while receiving or starting a command.
-    pub async fn run(mut self) -> Result<()> {
-        let mut model = ModelRun::new(self.events, self.config, self.client, self.transport_stats);
+    async fn run(mut self) -> Result<()> {
+        let mut model = ModelRun::new(
+            self.events,
+            self.config,
+            self.client,
+            self.transport_stats,
+            self.tools,
+        );
         while let Some(Command::Prompt { prompt, result }) = self.commands.recv().await {
             let outcome = model
                 .execute(prompt)
                 .await
                 .map(|final_message| TurnOutcome { final_message });
-            self.pending.fetch_sub(1, Ordering::AcqRel);
             drop(result.send(outcome));
         }
         Ok(())
     }
 }
 
-fn build_parts<S>(
+fn build_agent<S>(
     config: Arc<ModelConfig>,
-    request_id: Option<String>,
+    tools: Tools,
+    workspace: Option<PathBuf>,
+    session_id: Option<String>,
     service: S,
-) -> Result<AgentParts<S>> {
-    let request_id = request_id.unwrap_or_else(new_request_id);
-    if request_id.trim().is_empty() {
-        return Err(HarnessError::InvalidRequest(
-            "request_id must not be empty".to_owned(),
-        ));
-    }
-    let (events, event_stream) = EventSink::channel(request_id);
+) -> Result<(Agent, AgentEvents)>
+where
+    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + Send + 'static,
+    S::Error: Into<HarnessError> + Send + 'static,
+    S::Future: Send,
+{
+    let runtime = tokio::runtime::Handle::try_current()
+        .map_err(|_| HarnessError::Agent(AgentError::TokioRuntimeUnavailable))?;
+    let session_id = session_id.unwrap_or_else(new_session_id);
+    let (events, event_stream) = EventSink::channel(session_id);
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
     let transport_stats = Arc::new(TransportStats::default());
-    let pending = Arc::new(AtomicUsize::new(0));
-    Ok(AgentParts {
-        agent: Agent {
-            commands,
-            pending: Arc::clone(&pending),
-        },
-        driver: AgentDriver {
-            commands: receiver,
-            config,
-            events,
-            client: ResponsesClient::new(service),
-            transport_stats,
-            pending,
-        },
-        events: event_stream,
-    })
+    let workspace = workspace
+        .map(|path| {
+            path.into_os_string()
+                .into_string()
+                .map(Arc::<str>::from)
+                .map_err(|path| AgentError::WorkspaceNotUtf8 {
+                    path: PathBuf::from(path),
+                })
+        })
+        .transpose()?;
+    let agent = Agent {
+        commands,
+        workspace,
+    };
+    drop(
+        runtime.spawn(
+            AgentDriver {
+                commands: receiver,
+                config,
+                events,
+                client: ResponsesClient::new(service),
+                transport_stats,
+                tools,
+            }
+            .run(),
+        ),
+    );
+    Ok((agent, event_stream))
 }
 
-fn new_request_id() -> String {
+fn configure<S>(config: &mut ModelConfig, responses: &Responses<S>) {
+    config.websocket_url.clone_from(&responses.websocket_url);
+    config.api_base_url.clone_from(&responses.api_base_url);
+}
+
+fn validate(config: &ModelConfig, session_id: Option<&str>) -> Result<()> {
+    if config.api_key.trim().is_empty() {
+        return Err(HarnessError::InvalidRequest(
+            "OpenAI API key must not be empty".to_owned(),
+        ));
+    }
+    if config.websocket_url.trim().is_empty() {
+        return Err(HarnessError::InvalidRequest(
+            "Responses WebSocket URL must not be empty".to_owned(),
+        ));
+    }
+    if config.api_base_url.trim().is_empty() {
+        return Err(HarnessError::InvalidRequest(
+            "OpenAI API base URL must not be empty".to_owned(),
+        ));
+    }
+    if session_id.is_some_and(|session_id| session_id.trim().is_empty()) {
+        return Err(HarnessError::InvalidRequest(
+            "session_id must not be empty".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn new_session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let timestamp = SystemTime::now()
@@ -284,56 +389,38 @@ mod tests {
         }
 
         fn call(&mut self, _request: ResponsesAttempt) -> Self::Future {
-            panic!("the driver is not run by this test")
+            panic!("the service is not called by this test")
         }
     }
 
     #[tokio::test]
-    async fn queues_a_second_prompt_before_it_reaches_the_driver() {
-        let config = ModelConfig {
-            model: "test".to_owned(),
-            api_key: "test".to_owned(),
-            effort: crate::ReasoningEffort::Low,
-            web_search: true,
-            websocket_url: "ws://localhost".to_owned(),
-            api_base_url: "http://localhost".to_owned(),
-        };
-        let parts = Agent::builder(config)
-            .responses_service(NeverCalled)
-            .build_parts()
-            .unwrap();
-        let first = parts.agent.prompt(Prompt::new("first")).await;
-        assert!(first.is_ok());
-        let second = parts.agent.prompt(Prompt::new("second")).await;
-        assert!(matches!(
-            second,
-            Ok(PromptReceipt {
-                disposition: PromptDisposition::Queued,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn accepts_a_caller_composed_tower_stack() {
-        let config = ModelConfig {
-            model: "test".to_owned(),
-            api_key: "test".to_owned(),
-            effort: crate::ReasoningEffort::Low,
-            web_search: false,
-            websocket_url: "ws://localhost".to_owned(),
-            api_base_url: "http://localhost".to_owned(),
-        };
+    async fn accepts_a_caller_composed_tower_stack() {
         let stack = ServiceBuilder::new()
             .layer(TimeoutLayer::new(Duration::from_secs(30)))
             .layer(ConcurrencyLimitLayer::new(1))
             .service(NeverCalled);
+        let responses = Responses::builder().service(stack).build();
 
-        assert!(
-            Agent::builder(config)
-                .responses_service(stack)
-                .build_parts()
-                .is_ok()
-        );
+        let (_agent, events) = Agent::builder("test").responses(responses).build().unwrap();
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn defers_layers_until_the_standard_service_is_built() {
+        let responses = Responses::builder()
+            .layer(TimeoutLayer::new(Duration::from_secs(30)))
+            .layer(ConcurrencyLimitLayer::new(1))
+            .build();
+
+        let (_agent, events) = Agent::builder("test").responses(responses).build().unwrap();
+        drop(events);
+    }
+
+    #[test]
+    fn building_requires_a_tokio_runtime() {
+        assert!(matches!(
+            Agent::new("test"),
+            Err(HarnessError::Agent(AgentError::TokioRuntimeUnavailable))
+        ));
     }
 }

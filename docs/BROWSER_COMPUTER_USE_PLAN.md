@@ -256,7 +256,7 @@ extensions/background services, a scrubbed environment, process-group cleanup,
 bounded output, and explicit startup/operation timeouts. A loopback DevTools
 endpoint is sufficient; copying Codex's privileged app pipe is not a goal.
 
-The first real-browser gate is one stdin CLI trajectory that navigates to the
+The first real-browser gate is one positional-prompt CLI trajectory that navigates to the
 fixture, reads title and URL, explicitly emits a screenshot, closes, and leaves
 no browser descendants.
 

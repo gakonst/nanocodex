@@ -10,7 +10,6 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from harbor.agents.installed.base import BaseInstalledAgent
 from harbor.environments.base import BaseEnvironment
@@ -29,6 +28,7 @@ from harbor.utils.trajectory_utils import format_trajectory_json
 
 
 PROTOCOL_VERSION = 1
+MODEL = "gpt-5.6-sol"
 TERMINAL_EVENTS = {"run.completed", "run.failed"}
 RUN_METRIC_FIELDS = (
     "connection_attempts",
@@ -47,7 +47,6 @@ class HarnessAgent(BaseInstalledAgent):
 
     SUPPORTS_ATIF = True
     _BINARY = "/installed-agent/harness"
-    _INPUT = "/logs/agent/input.jsonl"
     _EVENTS = "/logs/agent/events.jsonl"
     _STDERR = "/logs/agent/stderr.log"
     _API_KEY_FILE = "/installed-agent/.openai-api-key"
@@ -78,6 +77,8 @@ class HarnessAgent(BaseInstalledAgent):
         )
         self._binary_path = Path(binary_path).resolve()
         self._model = self._api_model_name(model_name)
+        if self._model != MODEL:
+            raise ValueError(f"harness supports only {MODEL}, got {self._model}")
         self._effort = effort
         self._web_search = web_search
         self._install_node = install_node
@@ -171,28 +172,19 @@ class HarnessAgent(BaseInstalledAgent):
         context: AgentContext,
     ) -> None:
         del context
-        request = {
-            "protocol_version": PROTOCOL_VERSION,
-            "request_id": str(self.context_id or self.session_id or uuid4()),
-            "seq": 1,
-            "type": "task.start",
-            "payload": {"instruction": instruction},
-        }
+        prompt = {"instruction": instruction}
         input_path = self.logs_dir / "input.jsonl"
         input_path.write_text(
-            json.dumps(request, separators=(",", ":")) + "\n", encoding="utf-8"
+            json.dumps(prompt, separators=(",", ":")) + "\n", encoding="utf-8"
         )
-        if not environment.capabilities.mounted:
-            await environment.upload_file(input_path, self._INPUT)
         await self._stage_agents_md(environment)
-
-        arguments = self._run_arguments()
+        arguments = self._run_arguments(instruction)
         command = (
             f'api_key=$(<{self._API_KEY_FILE}) && test -n "$api_key" && '
             f'rm -f {self._API_KEY_FILE} && OPENAI_API_KEY="$api_key" '
             "PATH=$PATH:/opt/harness-verifier/bin "
             + " ".join(shlex.quote(argument) for argument in arguments)
-            + f" < {self._INPUT} 2> {self._STDERR} | tee {self._EVENTS}"
+            + f" 2> {self._STDERR} | tee {self._EVENTS}"
         )
         try:
             await self._stage_api_key(environment)
@@ -204,16 +196,15 @@ class HarnessAgent(BaseInstalledAgent):
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr, flush=True)
 
-    def _run_arguments(self) -> list[str]:
+    def _run_arguments(self, prompt: str) -> list[str]:
         return [
             self._BINARY,
             "run",
-            "--model",
-            self._model,
-            "--effort",
+            "--thinking",
             self._effort,
             "--web-search",
             str(self._web_search).lower(),
+            prompt,
         ]
 
     def populate_context_post_run(self, context: AgentContext) -> None:
@@ -228,13 +219,15 @@ class HarnessAgent(BaseInstalledAgent):
             )
 
     def _populate_context_post_run_strict(self, context: AgentContext) -> None:
-        requests = self._read_jsonl(self.logs_dir / "input.jsonl")
-        if len(requests) != 1 or requests[0].get("type") != "task.start":
-            raise RuntimeError("input.jsonl must contain one task.start event")
-        request = requests[0]
-        request_id = request["request_id"]
+        prompts = self._read_jsonl(self.logs_dir / "input.jsonl")
+        if len(prompts) != 1 or not isinstance(prompts[0].get("instruction"), str):
+            raise RuntimeError("input.jsonl must contain one prompt")
+        prompt = prompts[0]
 
         events = self._read_jsonl(self.logs_dir / "events.jsonl")
+        if not events or not isinstance(events[0].get("request_id"), str):
+            raise RuntimeError("events.jsonl must contain a request ID")
+        request_id = events[0]["request_id"]
         for seq, event in enumerate(events, start=1):
             if (
                 event.get("protocol_version") != PROTOCOL_VERSION
@@ -304,7 +297,7 @@ class HarnessAgent(BaseInstalledAgent):
                 Step(
                     step_id=1,
                     source="user",
-                    message=request["payload"]["instruction"],
+                    message=prompt["instruction"],
                 ),
                 Step(
                     step_id=2,
@@ -424,7 +417,7 @@ class HarnessAgent(BaseInstalledAgent):
     @staticmethod
     def _api_model_name(model_name: str | None) -> str:
         if model_name is None:
-            return "gpt-5.6-sol"
+            return MODEL
         _, separator, api_model = model_name.partition("/")
         return api_model if separator else model_name
 

@@ -13,6 +13,6 @@ pub use harness_core::ImageDetail;
 pub use image::{prepare_output_images, prepare_user_input};
 pub use runtime::{
     ImageGenerationConfig, ToolContext, ToolExecution, ToolOutputBody, ToolOutputContent,
-    ToolRuntime, WebSearchConfig,
+    ToolRuntime, Tools, ToolsBuilder, WebSearchConfig,
 };
 pub(crate) use runtime::{ToolFuture, ToolHandler, ToolKind};

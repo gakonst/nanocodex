@@ -45,17 +45,14 @@ pub enum AgentError {
 
     #[error("the agent driver stopped before the turn completed")]
     TurnStopped,
+
+    #[error("building an agent requires an active Tokio runtime")]
+    TokioRuntimeUnavailable,
 }
 
 /// Error returned by the harness library boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum HarnessError {
-    #[error("failed to read task request")]
-    ReadInput(#[source] io::Error),
-
-    #[error("failed to decode task request")]
-    DecodeInput(#[source] serde_json::Error),
-
     #[error("invalid task request: {0}")]
     InvalidRequest(String),
 
@@ -80,9 +77,7 @@ impl HarnessError {
         match self {
             Self::Responses(error) => Some(error),
             Self::ResponsesService(error) => error.responses_error(),
-            Self::ReadInput(_)
-            | Self::DecodeInput(_)
-            | Self::InvalidRequest(_)
+            Self::InvalidRequest(_)
             | Self::Event(_)
             | Self::Agent(_)
             | Self::ResponsesMiddleware(_) => None,

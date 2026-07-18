@@ -233,7 +233,7 @@ async function buildTrial(jobName, trialName, trialPath, context) {
     readJsonLines(inputPath),
     readJsonLines(eventsPath),
   ]);
-  const instructionEvent = inputEvents.find((event) => event.type === "task.start");
+  const prompt = inputEvents.find((input) => typeof input.instruction === "string");
   const finalMessage = events.findLast((event) => event.type === "assistant.message");
   const codexInstruction = (codexTrajectory?.steps ?? []).findLast(
     (step) =>
@@ -300,7 +300,7 @@ async function buildTrial(jobName, trialName, trialPath, context) {
   const detail = {
     schemaVersion: detailSchemaVersion,
     ...summary,
-    instruction: instructionEvent?.payload?.instruction ?? codexInstruction?.message ?? null,
+    instruction: prompt?.instruction ?? codexInstruction?.message ?? null,
     finalMessage: finalMessage?.payload?.text ?? codexFinalMessage?.message ?? null,
     exception: result.exception_info
       ? {

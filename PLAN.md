@@ -4,15 +4,16 @@
 
 Build a thin Rust coding harness for the current best OpenAI model and API,
 without a TUI, provider abstraction, approval system, or backwards compatibility.
-The public process surface is JSONL on stdin/stdout. Harbor owns benchmark task
-isolation, verification, result storage, and ATIF.
+The public process surface is one positional prompt argument and JSONL on
+stdout. Harbor owns benchmark task isolation, verification, result storage,
+and ATIF.
 
 ## Architecture
 
 ```text
 development                       evaluation
 
-task.start                        Harbor job YAML
+prompt argument                   Harbor job YAML
     |                                  |
 cargo run                         task container
     |                                  |
@@ -49,10 +50,11 @@ Every event has this envelope:
 {"protocol_version":1,"request_id":"...","seq":1,"type":"...","payload":{}}
 ```
 
-Initial input is `task.start`. Output includes `run.started`, model events,
-`tool.call`, `tool.result`, assistant messages, metrics, and exactly one
-`run.completed` or `run.failed`. Stdout is flushed JSONL; diagnostics are stderr.
-Raw streams are authoritative and ATIF is derived from them.
+The CLI accepts one non-empty positional prompt. Output includes `run.started`,
+model events, `tool.call`, `tool.result`, assistant messages, metrics, and
+exactly one `run.completed` or `run.failed`. Stdout is flushed JSONL;
+diagnostics are stderr. Raw streams are authoritative and ATIF is derived from
+them.
 
 ## Milestone 0: installed-agent eval baseline
 
@@ -197,10 +199,11 @@ The 2026-07-17 Rust LOC audit removed incidental ownership, cloning, and stream
 bookkeeping. The following boundaries are deliberate decisions, not slop to
 erase opportunistically:
 
-1. Do not add mid-run user steering or turn injection. One accepted
-   `task.start` owns the model/tool loop through exactly one terminal event.
-   Subprocess timeout and cancellation remain explicit runtime concerns, but
-   there is no second interactive input lifecycle.
+1. Do not add mid-turn steering or turn injection yet. The owned library agent
+   accepts queued follow-on prompts between turns and emits exactly one terminal
+   outcome for each accepted prompt; the process adapter still accepts one
+   positional prompt. Subprocess timeout and cancellation remain explicit
+   runtime concerns.
 2. Preserve Codex-shaped compaction behavior: retain the Responses Lite
    prefix, the first real user task, and the installed compacted context. Give
    the retained task an approximate 64k-token budget and middle-truncate only
@@ -225,8 +228,8 @@ erase opportunistically:
    avoid reconstructing a handful of JSON values.
 8. The remaining generation/compaction request-send and reconnect duplication
    is deferred. Revisit it only when the shared portion can shrink production
-   LOC without merging their distinct lifecycle semantics or adding a generic
-   client/provider layer.
+   LOC without merging their distinct lifecycle semantics or adding a provider
+   portability abstraction.
 9. Codex serializes concurrent `write_stdin` interactions that target the same
    unified-exec session, while this runtime only locks the session's individual
    stdin, child, and output components. This is an unresolved, low-priority
@@ -239,7 +242,7 @@ erase opportunistically:
 
 ## Milestone 1.2: library and Tower foundation
 
-Status: complete pending the current post-rebase validation gate.
+Status: complete.
 
 1. Make the root a virtual workspace, keep the executable under `bin/harness`,
    and expose independently usable `harness-core`, `harness-service`,
@@ -265,6 +268,13 @@ Status: complete pending the current post-rebase validation gate.
    Criterion trace, and only two or three representative hard/quick Harbor
    evals. Inspect their JSONL, trajectory, result, and verifier output; do not
    run the full eval suite for this maintenance phase.
+
+The final 2026-07-18 rebase onto `master` passed all 82 Rust tests, Clippy and
+rustdoc with warnings denied, formatting, and the native Linux artifact build.
+The user explicitly waived repeating the focused Harbor tasks after that
+rebase; the earlier green focused traces and verifier results remain recorded
+in `docs/RESPONSES_TOWER_REWRITE.md` and are not represented as a post-rebase
+eval run.
 
 ## Milestone 2: eval-driven tuning
 
@@ -1806,19 +1816,6 @@ tokens, cache utilization, compactions, and cost when the API reports it. Once
 one attempt works, use repeated attempts to estimate variance and p50/p95 rather
 than drawing tuning conclusions from one lucky trajectory. Add private taste or
 regression tasks only after the public baseline is stable.
-
-### Upstream Codex parity review (2026-07-18)
-
-The review covered every OpenAI Codex commit from
-`3ac476bed22a7b7322a710a6ca79a0dbe917d604` through
-`35eaf3ffb0bf2001486c68c47a3d946b34d16634`. The harness adopts the corrected
-272,000-token `gpt-5.6-sol` context window from upstream commit
-`d26a9bf671b1c03aabfc32e1092d137c1feb3962`, yielding a 244,800-token automatic
-compaction threshold. Audio forwarding from
-`23899f7cb63a1510e53fddd68740dfc325853e3b` and modality-aware audio history
-from `56395bddaf26eb2829387ca6a417bf9128e5b239` remain deferred until the target
-model advertises audio input; current bundled Sol metadata supports only text
-and image. Do not import a model-catalog abstraction for that deferred path.
 
 ## Milestone 3: review provenance
 

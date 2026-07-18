@@ -134,6 +134,74 @@ pub struct ImageGenerationConfig {
     pub save_root: PathBuf,
 }
 
+/// Declarative selection of the built-in tools installed for an agent.
+#[derive(Clone, Debug)]
+pub struct Tools {
+    web_search: bool,
+    image_generation: bool,
+}
+
+impl Default for Tools {
+    fn default() -> Self {
+        Self {
+            web_search: true,
+            image_generation: true,
+        }
+    }
+}
+
+impl Tools {
+    #[must_use]
+    pub fn builder() -> ToolsBuilder {
+        ToolsBuilder::default()
+    }
+
+    /// Returns whether the standard web-search tool is enabled.
+    #[must_use]
+    pub const fn web_search_enabled(&self) -> bool {
+        self.web_search
+    }
+
+    /// Returns whether the standard image-generation tool is enabled.
+    #[must_use]
+    pub const fn image_generation_enabled(&self) -> bool {
+        self.image_generation
+    }
+}
+
+/// Builder for the built-in tool selection.
+#[derive(Default)]
+pub struct ToolsBuilder {
+    tools: Tools,
+}
+
+impl ToolsBuilder {
+    /// Starts from an empty built-in tool set.
+    #[must_use]
+    pub fn without_defaults(mut self) -> Self {
+        self.tools.web_search = false;
+        self.tools.image_generation = false;
+        self
+    }
+
+    #[must_use]
+    pub fn web_search(mut self, enabled: bool) -> Self {
+        self.tools.web_search = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn image_generation(mut self, enabled: bool) -> Self {
+        self.tools.image_generation = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> Tools {
+        self.tools
+    }
+}
+
 pub struct ToolRuntime {
     handlers: Vec<Box<dyn ToolHandler>>,
     code_mode: code_mode::CodeModeRuntime,
@@ -144,7 +212,7 @@ impl ToolRuntime {
     pub fn new(
         workspace: impl Into<PathBuf>,
         web_search: Option<WebSearchConfig>,
-        image_generation: ImageGenerationConfig,
+        image_generation: Option<ImageGenerationConfig>,
     ) -> Self {
         let workspace = workspace.into();
         let sessions = Arc::new(ShellSessions::new());
@@ -162,9 +230,11 @@ impl ToolRuntime {
         if let Some(web_search) = web_search {
             handlers.push(Box::new(web_search::WebSearchHandler::new(web_search)));
         }
-        handlers.push(Box::new(image_generation::ImageGenerationHandler::new(
-            image_generation,
-        )));
+        if let Some(image_generation) = image_generation {
+            handlers.push(Box::new(image_generation::ImageGenerationHandler::new(
+                image_generation,
+            )));
+        }
         Self {
             handlers,
             code_mode: code_mode::CodeModeRuntime::new(),
@@ -247,11 +317,11 @@ mod tests {
                 endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
                 api_key: "test-key".to_owned(),
             }),
-            ImageGenerationConfig {
+            Some(ImageGenerationConfig {
                 api_base_url: "http://127.0.0.1:1/v1".to_owned(),
                 api_key: "test-key".to_owned(),
                 save_root: std::env::temp_dir().join("harness-test-images"),
-            },
+            }),
         )
     }
 

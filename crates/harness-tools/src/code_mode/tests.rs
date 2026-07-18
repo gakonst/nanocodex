@@ -532,11 +532,11 @@ fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
             endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
             api_key: "test-key".to_owned(),
         }),
-        super::super::ImageGenerationConfig {
+        Some(super::super::ImageGenerationConfig {
             api_base_url: "http://127.0.0.1:1/v1".to_owned(),
             api_key: "test-key".to_owned(),
             save_root: workspace.to_path_buf(),
-        },
+        }),
     )
 }
 

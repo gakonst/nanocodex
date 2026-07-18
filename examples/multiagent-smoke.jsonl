@@ -1,1 +1,0 @@
-{"protocol_version":1,"request_id":"local-multiagent-smoke","seq":1,"type":"task.start","payload":{"instruction":"Explicitly spawn exactly one named subagent called probe. Ask probe to call exec_command directly to run pwd exactly once without modifying anything. Wait for probe to finish, then have /root report only the path probe found.","workspace":"."}}

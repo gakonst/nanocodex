@@ -1,7 +1,7 @@
 mod events;
 pub mod responses;
 
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::{fmt, path::PathBuf, str::FromStr, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,9 @@ pub use responses::{
 };
 
 const SYSTEM_PROMPT: &str = include_str!("../prompts/system.md");
+
+/// The single Responses model contract supported by this SDK.
+pub const MODEL: &str = "gpt-5.6-sol";
 
 /// Input for one agent turn.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -47,6 +50,18 @@ impl Prompt {
     pub fn workspace(mut self, workspace: impl Into<String>) -> Self {
         self.workspace = Some(workspace.into());
         self
+    }
+}
+
+impl From<String> for Prompt {
+    fn from(instruction: String) -> Self {
+        Self::new(instruction)
+    }
+}
+
+impl From<&str> for Prompt {
+    fn from(instruction: &str) -> Self {
+        Self::new(instruction)
     }
 }
 
@@ -168,12 +183,11 @@ impl UserInput {
 /// OpenAI-specific settings for the deliberately single-provider harness.
 #[derive(Clone)]
 pub struct ModelConfig {
-    pub model: String,
     pub api_key: String,
-    pub effort: ReasoningEffort,
-    pub web_search: bool,
+    pub thinking: Thinking,
     pub websocket_url: String,
     pub api_base_url: String,
+    pub system_prompt: Arc<str>,
 }
 
 impl ModelConfig {
@@ -183,8 +197,8 @@ impl ModelConfig {
     }
 
     #[must_use]
-    pub const fn system_prompt() -> &'static str {
-        SYSTEM_PROMPT
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
     }
 
     #[must_use]
@@ -193,17 +207,29 @@ impl ModelConfig {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-pub enum ReasoningEffort {
-    #[default]
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            thinking: Thinking::default(),
+            websocket_url: "wss://api.openai.com/v1/responses".to_owned(),
+            api_base_url: "https://api.openai.com/v1".to_owned(),
+            system_prompt: SYSTEM_PROMPT.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Thinking {
     Low,
+    #[default]
     Medium,
     High,
     Xhigh,
     Max,
 }
 
-impl ReasoningEffort {
+impl Thinking {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -216,13 +242,13 @@ impl ReasoningEffort {
     }
 }
 
-impl fmt::Display for ReasoningEffort {
+impl fmt::Display for Thinking {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
-impl FromStr for ReasoningEffort {
+impl FromStr for Thinking {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {

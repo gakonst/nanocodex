@@ -12,10 +12,9 @@ default_eval := "evals/terminal-bench-2.yaml"
 default_jobs := ".harness/harbor/jobs"
 setup_jobs := ".harness/harbor/setup"
 prepare_concurrency := env_var_or_default("HARBOR_PREPARE_CONCURRENCY", "4")
-# Twelve keeps model-bound evaluation waves saturated on the local Docker VM.
-# Timing-sensitive or unusually heavy cohorts can lower this without changing
-# the eval definition.
-eval_concurrency := env_var_or_default("HARBOR_EVAL_CONCURRENCY", "12")
+# Six fits the current suite's heaviest mixed-resource wave on the local Docker VM.
+# Lighter suites can raise this without changing the eval definition.
+eval_concurrency := env_var_or_default("HARBOR_EVAL_CONCURRENCY", "6")
 # Cloud sandboxes make trials I/O-bound. Keep this independently tunable from
 # the local Docker concurrency, since Daytona account quotas vary.
 hosted_eval_concurrency := env_var_or_default("HARBOR_HOSTED_EVAL_CONCURRENCY", "32")
@@ -30,7 +29,7 @@ bootstrap:
 
 # Tight inner loop: native model process with local code mode, no Harbor or Docker.
 run:
-    @cargo run --quiet -- run --model=gpt-5.6-sol --effort=low < examples/task-start.jsonl
+    @cargo run --quiet --manifest-path bin/harness/Cargo.toml -- run --thinking=low "Use the available exec tool to run pwd exactly once without modifying anything, then report the path."
 
 # Build a static Linux executable for the Docker daemon's native architecture.
 # This is a native container build, not an amd64 cross-compile on Apple Silicon.
@@ -102,9 +101,9 @@ view jobs=default_jobs:
 
 # Checks stay small until the end-to-end agent path is real.
 check:
-    cargo fmt --check
-    cargo clippy --all-targets --all-features -- -D warnings
-    cargo test
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo test --workspace
     .venv/bin/python -m unittest discover -s harbor_adapter -p 'test_*.py'
     .venv/bin/python -m compileall -q harbor_adapter
     "{{harbor}}" run --config "{{default_eval}}" --print-config >/dev/null

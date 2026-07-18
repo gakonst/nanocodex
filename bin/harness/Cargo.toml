@@ -10,7 +10,6 @@ clap.workspace = true
 dotenvy.workspace = true
 eyre.workspace = true
 harness-agent.workspace = true
-reqwest.workspace = true
 tokio.workspace = true
 
 [lints]

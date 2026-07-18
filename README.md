@@ -24,6 +24,40 @@ native BuildKit compile -> static Linux binary
                        -> Harbor verifier
 ```
 
+## Library embedding
+
+The process/JSONL path is an adapter over the Rust library API, not the SDK
+boundary. `Agent::new(api_key)` starts the fixed-model agent with the standard
+prompt, medium thinking, built-in tools, persistent Responses WebSocket, and
+typed retry/reconnect policy. `Agent::builder(api_key)` exposes deliberate
+overrides for the system prompt, thinking level, tools, workspace, stable
+session ID, and Responses stack. `build()` spawns the stateful driver and
+returns `(Agent, AgentEvents)`: one cheap, cloneable prompt handle and the
+single ordered event stream. Callers submit and queue follow-on `Prompt`s
+through the handle and await each typed `TurnOutcome`.
+
+`Responses::builder().layer(...)` defers Tower composition until the standard
+service is created, so embedders can add deadlines, concurrency limits, load
+shedding, tracing, metrics, circuit breaking, or application-specific error
+mapping without boxing the client or rebuilding agent orchestration. Passing
+`Responses::builder().service(stack)` replaces the standard service with a
+fully caller-composed `tower::Service<ResponsesAttempt>`. Event filtering and
+observability policy are intentionally a separate API iteration. See
+[`docs/RESPONSES_TOWER_REWRITE.md`](docs/RESPONSES_TOWER_REWRITE.md) for the
+ownership, ordering, retry-safety, and middleware details.
+
+The Rust workspace exposes four independently usable library layers. Following
+the same boundary style as `alloy-core` and Alloy's ergonomic top-level API,
+`harness-core` owns the dependency-light typed foundation: prompts, event
+envelopes, model configuration, and the complete Responses request/event/item
+model. `harness-service` contains behavior only: the persistent WebSocket,
+stream processing, typed errors, Tower service/client, retry middleware, and
+transport telemetry. `harness-tools` owns the built-in tool runtime, while
+`harness-agent` is the ergonomic composition layer for the complete owned agent
+lifecycle and re-exports the common lower-level API. The executable is the
+`harness` package under `bin/harness`; the workspace root is intentionally only
+a virtual manifest.
+
 ## Hosted evals
 
 Harbor Hub hosts uploaded results, but it does not execute the benchmark. For
