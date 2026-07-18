@@ -165,17 +165,25 @@ fn is_user_turn_boundary(item: &Value) -> bool {
         && !is_contextual_user_message(item)
 }
 
-fn is_contextual_user_message(item: &Value) -> bool {
+pub(super) fn is_contextual_user_message(item: &Value) -> bool {
     item.get("content")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|content| content.get("text").and_then(Value::as_str))
         .any(|text| {
-            let text = text.trim_start();
-            text.starts_with("# AGENTS.md instructions for ")
-                || text.starts_with("<environment_context>")
+            matches_marked_text("# AGENTS.md instructions", "</INSTRUCTIONS>", text)
+                || matches_marked_text("<environment_context>", "</environment_context>", text)
         })
+}
+
+fn matches_marked_text(start: &str, end: &str, text: &str) -> bool {
+    let text = text.trim();
+    text.get(..start.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(start))
+        && text
+            .get(text.len().saturating_sub(end.len())..)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(end))
 }
 
 fn is_api_item(item: &Value) -> bool {
@@ -482,5 +490,25 @@ mod tests {
 
         history.update_token_info(None);
         assert_eq!(history.active_context_tokens(true), 1_000 + tail);
+    }
+
+    #[test]
+    fn contextual_messages_require_codex_start_and_end_markers() {
+        let contextual = |text: &str| {
+            super::is_contextual_user_message(&json!({
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": text }],
+            }))
+        };
+
+        assert!(contextual(
+            "  # agents.md instructions\n\n<INSTRUCTIONS>\nnew\n</instructions>\n"
+        ));
+        assert!(contextual(
+            "<ENVIRONMENT_CONTEXT>\n<cwd>/tmp</cwd>\n</environment_context>"
+        ));
+        assert!(!contextual("# AGENTS.md instructions are useful"));
+        assert!(!contextual("ordinary user input"));
     }
 }

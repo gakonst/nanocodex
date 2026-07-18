@@ -7,6 +7,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde_json::{Value, json};
 use sha1::{Digest as _, Sha1};
 
+use super::context_manager::is_contextual_user_message;
+
 const SOL_CONTEXT_WINDOW: u64 = 372_000;
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
@@ -100,7 +102,7 @@ fn rewrite_tool_output(item: &mut Value) -> bool {
 
 pub(super) fn install_history(
     history: &[Value],
-    initial_context: &Value,
+    canonical_context: &Value,
     mut compaction: Value,
 ) -> Vec<Value> {
     if compaction.get("type").and_then(Value::as_str) == Some("compaction_summary") {
@@ -114,18 +116,18 @@ pub(super) fn install_history(
 
     let retained = history
         .iter()
-        .filter(|item| is_real_user_message(item, initial_context))
+        .filter(|item| is_real_user_message(item))
         .cloned()
         .collect();
     let mut installed = truncate_retained_messages(retained, RETAINED_MESSAGE_TOKEN_BUDGET);
     let insertion_index = installed.len().saturating_sub(1);
-    installed.insert(insertion_index, initial_context.clone());
+    installed.insert(insertion_index, canonical_context.clone());
     installed.push(compaction);
     installed
 }
 
-fn is_real_user_message(item: &Value, initial_context: &Value) -> bool {
-    item != initial_context && is_user_message(item)
+fn is_real_user_message(item: &Value) -> bool {
+    is_user_message(item) && !is_contextual_user_message(item)
 }
 
 fn is_user_message(item: &Value) -> bool {
@@ -253,14 +255,15 @@ fn model_visible_len(item: &Value) -> usize {
     if matches!(
         item.get("type").and_then(Value::as_str),
         Some("reasoning" | "compaction" | "context_compaction")
-    ) && let Some(encrypted) = item.get("encrypted_content").and_then(Value::as_str)
-    {
-        return encrypted
-            .len()
-            .saturating_mul(3)
-            .checked_div(4)
-            .unwrap_or_default()
-            .saturating_sub(650);
+    ) {
+        if let Some(encrypted) = item.get("encrypted_content").and_then(Value::as_str) {
+            return encrypted
+                .len()
+                .saturating_mul(3)
+                .checked_div(4)
+                .unwrap_or_default()
+                .saturating_sub(650);
+        }
     }
     let raw = serde_json::to_vec(item).map_or(0, |encoded| encoded.len());
     let (image_payload_bytes, image_replacement_bytes) = image_estimate_adjustment(item);
@@ -377,15 +380,31 @@ mod tests {
 
     #[test]
     fn installed_history_retains_user_inputs_and_reinjects_initial_context() {
-        let initial = message("initial context");
+        let initial = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "<environment_context>\n<cwd>/workspace</cwd>\n</environment_context>",
+            }],
+        });
         let first = message("do the task");
         let latest = message("and preserve the tests");
+        let replaced_context = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nThese instructions replace the old ones.\n</INSTRUCTIONS>",
+            }],
+        });
         let history = vec![
             initial.clone(),
             first.clone(),
             json!({ "type": "reasoning", "encrypted_content": "old" }),
             json!({ "type": "custom_tool_call", "call_id": "call-1", "name": "exec", "input": "text(1)" }),
             json!({ "type": "custom_tool_call_output", "call_id": "call-1", "output": "done" }),
+            replaced_context,
             latest.clone(),
         ];
 

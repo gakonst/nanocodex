@@ -176,7 +176,7 @@ pub(super) struct ModelRun<'a, W> {
 }
 
 struct ConversationState {
-    initial_context: Value,
+    canonical_context: Value,
     history: ContextManager,
     delta_start: Option<usize>,
     previous_response_id: Option<String>,
@@ -184,14 +184,14 @@ struct ConversationState {
 
 impl ConversationState {
     fn new(history: Vec<Value>) -> Result<Self> {
-        let initial_context = history
+        let canonical_context = history
             .first()
             .cloned()
             .ok_or(AgentError::MalformedResponse {
                 detail: "task input did not include initial context",
             })?;
         Ok(Self {
-            initial_context,
+            canonical_context,
             history: ContextManager::new(history),
             delta_start: Some(0),
             previous_response_id: None,
@@ -229,7 +229,7 @@ impl ConversationState {
 
     fn install_compaction(&mut self, item: Value) {
         let history =
-            compaction::install_history(self.history.raw_items(), &self.initial_context, item);
+            compaction::install_history(self.history.raw_items(), &self.canonical_context, item);
         self.history.replace(history);
         self.delta_start = None;
         self.previous_response_id = None;
