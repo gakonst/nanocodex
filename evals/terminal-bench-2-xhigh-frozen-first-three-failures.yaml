@@ -1,0 +1,27 @@
+# Focused xhigh retries of the first three failures from the corrected frozen
+# high-effort cohort. Keep the pre-lifecycle binary pinned for comparability.
+jobs_dir: .harness/harbor/jobs
+
+agents:
+  - import_path: harbor_adapter.agent:HarnessAgent
+    model_name: openai/gpt-5.6-sol
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    kwargs:
+      binary_path: .harness/installed/pre-lifecycle/harness
+      effort: xhigh
+      web_search: false
+
+datasets:
+  - name: terminal-bench/terminal-bench-2
+    ref: sha256:c6fc2e2382c1dbae99b2d5ecd2f4f4a60c3c01e0d84642d69b4afd92e99d078b
+    task_names:
+      - terminal-bench/configure-git-webserver
+      - terminal-bench/filter-js-from-html
+      - terminal-bench/gpt2-codegolf
+
+environment:
+  import_path: harbor_adapter.environment:FastDockerEnvironment
+
+verifier:
+  import_path: harbor_adapter.verifier:PytestVerifier
