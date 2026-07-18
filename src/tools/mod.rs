@@ -140,13 +140,13 @@ pub(crate) struct ToolRuntime {
 impl ToolRuntime {
     pub(crate) fn new(
         workspace: impl Into<PathBuf>,
-        web_search: WebSearchConfig,
+        web_search: Option<WebSearchConfig>,
         image_generation: ImageGenerationConfig,
     ) -> Self {
         let workspace = workspace.into();
         let sessions = Arc::new(ShellSessions::new());
         let default_shell_name = sessions.default_shell_name();
-        let handlers: Vec<Box<dyn ToolHandler>> = vec![
+        let mut handlers: Vec<Box<dyn ToolHandler>> = vec![
             Box::new(shell::ExecCommandHandler::new(
                 workspace.clone(),
                 Arc::clone(&sessions),
@@ -155,11 +155,13 @@ impl ToolRuntime {
             Box::new(plan::PlanHandler::new()),
             Box::new(apply_patch::ApplyPatchHandler::new(workspace.clone())),
             Box::new(view_image::ViewImageHandler::new(workspace)),
-            Box::new(web_search::WebSearchHandler::new(web_search)),
-            Box::new(image_generation::ImageGenerationHandler::new(
-                image_generation,
-            )),
         ];
+        if let Some(web_search) = web_search {
+            handlers.push(Box::new(web_search::WebSearchHandler::new(web_search)));
+        }
+        handlers.push(Box::new(image_generation::ImageGenerationHandler::new(
+            image_generation,
+        )));
         Self {
             handlers,
             code_mode: code_mode::CodeModeRuntime::new(),
@@ -236,5 +238,54 @@ impl ToolRuntime {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ImageGenerationConfig, ToolRuntime, WebSearchConfig};
+
+    fn runtime(web_search: bool) -> ToolRuntime {
+        ToolRuntime::new(
+            ".",
+            web_search.then(|| WebSearchConfig {
+                endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
+                api_key: "test-key".to_owned(),
+            }),
+            ImageGenerationConfig {
+                api_base_url: "http://127.0.0.1:1/v1".to_owned(),
+                api_key: "test-key".to_owned(),
+                save_root: std::env::temp_dir().join("harness-test-images"),
+            },
+        )
+    }
+
+    #[test]
+    fn web_search_handler_and_spec_are_absent_when_disabled() {
+        let enabled = runtime(true);
+        assert!(
+            enabled
+                .handlers
+                .iter()
+                .any(|handler| handler.name() == "web__run")
+        );
+        assert!(
+            enabled.model_specs()[0]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("`web__run`"))
+        );
+
+        let disabled = runtime(false);
+        assert!(
+            disabled
+                .handlers
+                .iter()
+                .all(|handler| handler.name() != "web__run")
+        );
+        assert!(
+            disabled.model_specs()[0]["description"]
+                .as_str()
+                .is_some_and(|description| !description.contains("`web__run`"))
+        );
     }
 }

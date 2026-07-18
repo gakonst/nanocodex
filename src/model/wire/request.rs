@@ -357,15 +357,16 @@ mod tests {
             model: "test-model".to_owned(),
             api_key: "test-key".to_owned(),
             effort: ReasoningEffort::Low,
+            web_search: true,
             websocket_url: "ws://localhost".to_owned(),
             api_base_url: "http://localhost/v1".to_owned(),
         };
         let runtime = ToolRuntime::new(
             ".",
-            crate::tools::WebSearchConfig {
+            Some(crate::tools::WebSearchConfig {
                 endpoint: config.search_endpoint(),
                 api_key: config.api_key.clone(),
-            },
+            }),
             crate::tools::ImageGenerationConfig {
                 api_base_url: config.api_base_url.clone(),
                 api_key: config.api_key.clone(),
@@ -397,15 +398,16 @@ mod tests {
             model: "test-model".to_owned(),
             api_key: "test-key".to_owned(),
             effort: ReasoningEffort::Low,
+            web_search: true,
             websocket_url: "ws://localhost".to_owned(),
             api_base_url: "http://localhost/v1".to_owned(),
         };
         let runtime = ToolRuntime::new(
             ".",
-            crate::tools::WebSearchConfig {
+            Some(crate::tools::WebSearchConfig {
                 endpoint: config.search_endpoint(),
                 api_key: config.api_key.clone(),
-            },
+            }),
             crate::tools::ImageGenerationConfig {
                 api_base_url: config.api_base_url.clone(),
                 api_key: config.api_key.clone(),

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareFileTreeInput } from "@pierre/trees";
@@ -9,13 +9,21 @@ const repositoryPath = resolve(
   process.env.HARNESS_REPO ?? resolve(projectRoot, ".."),
 );
 const outputPath = resolve(projectRoot, "src", "data", "harness-repository.json");
-const patchDirectory = resolve(projectRoot, "public", "data", "patches");
+const commitPatchPath = resolve(projectRoot, "public", "data", "commits.diff");
+const legacyPatchDirectory = resolve(projectRoot, "public", "data", "patches");
 const blobDirectory = resolve(projectRoot, "public", "data", "blobs");
 const requestedCommitLimit = process.env.HARNESS_COMMIT_LIMIT;
 const projectPath = relative(repositoryPath, projectRoot).replaceAll("\\", "/");
-const generatedDataPrefixes = [
-  `${projectPath}/public/data/`,
-  `${projectPath}/src/data/`,
+const projectIsInRepository =
+  projectPath === "" ||
+  (projectPath !== ".." && !projectPath.startsWith("../"));
+const projectPrefix = projectPath === "" ? "" : `${projectPath}/`;
+const generatedDataPrefixes = projectIsInRepository
+  ? [`${projectPrefix}public/data/`, `${projectPrefix}src/data/`]
+  : [];
+const sourcePathspec = [
+  ".",
+  ...generatedDataPrefixes.map((prefix) => `:(exclude)${prefix}**`),
 ];
 
 function git(args, { optional = false } = {}) {
@@ -65,6 +73,8 @@ function parseChangedFiles(hash) {
     "-r",
     "-M",
     hash,
+    "--",
+    ...sourcePathspec,
   ]);
 
   for (const row of statusRows.split("\n").filter(Boolean)) {
@@ -86,6 +96,8 @@ function parseChangedFiles(hash) {
     "-r",
     "-M",
     hash,
+    "--",
+    ...sourcePathspec,
   ]);
 
   return numstatRows
@@ -112,7 +124,7 @@ if (requestedCommitLimit) {
 }
 logArgs.push(`--format=${format}`);
 const rawLog = git(logArgs);
-const patchFiles = [];
+const commitPatches = [];
 const commits = rawLog
   .split("\x1e")
   .map((record) => record.replace(/^\n+|\n+$/g, ""))
@@ -132,9 +144,12 @@ const commits = rawLog
       "--find-copies",
       "--unified=3",
       hash,
+      "--",
+      ...sourcePathspec,
     ]);
-    const patchUrl = `/data/patches/${hash}.diff`;
-    patchFiles.push({ hash, patch });
+    commitPatches.push(
+      `From ${hash} Mon Sep 17 00:00:00 2001\n${patch}\n`,
+    );
 
     return {
       hash,
@@ -150,7 +165,6 @@ const commits = rawLog
       body: body.trim(),
       files,
       stats: { files: files.length, additions, deletions },
-      patchUrl,
     };
   });
 
@@ -201,19 +215,20 @@ const snapshot = {
     dirtyCount: dirtyRows.length,
   },
   generatedAt: new Date().toISOString(),
+  commitPatchUrl: "/data/commits.diff",
   tree,
   treeInput,
   commits,
 };
 
 await mkdir(dirname(outputPath), { recursive: true });
-await mkdir(patchDirectory, { recursive: true });
+await mkdir(dirname(commitPatchPath), { recursive: true });
+await rm(legacyPatchDirectory, { recursive: true, force: true });
+await rm(blobDirectory, { recursive: true, force: true });
 await mkdir(blobDirectory, { recursive: true });
 await Promise.all(
   [
-    ...patchFiles.map(({ hash, patch }) =>
-      writeFile(resolve(patchDirectory, `${hash}.diff`), `${patch}\n`, "utf8"),
-    ),
+    writeFile(commitPatchPath, commitPatches.join(""), "utf8"),
     ...blobFiles.map(({ objectId, contents }) =>
       writeFile(resolve(blobDirectory, `${objectId}.txt`), contents),
     ),

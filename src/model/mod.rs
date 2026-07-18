@@ -2,6 +2,7 @@ mod agent;
 mod agents_md;
 mod compaction;
 mod context_manager;
+mod execution_guidance;
 mod stream;
 mod wire;
 
@@ -52,6 +53,7 @@ pub struct ModelConfig {
     pub model: String,
     pub api_key: String,
     pub effort: ReasoningEffort,
+    pub web_search: bool,
     pub websocket_url: String,
     pub api_base_url: String,
 }
@@ -61,8 +63,8 @@ impl ModelConfig {
         "local_code_mode"
     }
 
-    pub(super) const fn system_prompt() -> &'static str {
-        SYSTEM_PROMPT
+    pub(super) fn system_prompt() -> &'static str {
+        SYSTEM_PROMPT.trim()
     }
 
     pub(super) fn search_endpoint(&self) -> String {

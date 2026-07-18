@@ -9,7 +9,7 @@ use sha1::{Digest as _, Sha1};
 
 use super::context_manager::is_contextual_user_message;
 
-const SOL_CONTEXT_WINDOW: u64 = 372_000;
+const SOL_CONTEXT_WINDOW: u64 = 272_000;
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 const RESIZED_IMAGE_BYTES_ESTIMATE: usize = 7_373;
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn sol_compacts_at_ninety_percent_of_its_context_window() {
-        assert_eq!(auto_compact_token_limit("gpt-5.6-sol"), Some(334_800));
+        assert_eq!(auto_compact_token_limit("gpt-5.6-sol"), Some(244_800));
         assert_eq!(auto_compact_token_limit("unknown-model"), None);
     }
 

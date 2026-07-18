@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -49,6 +51,7 @@ class HarnessAgent(BaseInstalledAgent):
     _EVENTS = "/logs/agent/events.jsonl"
     _STDERR = "/logs/agent/stderr.log"
     _API_KEY_FILE = "/installed-agent/.openai-api-key"
+    _REMOTE_AGENTS_MD = "/app/AGENTS.md"
 
     def __init__(
         self,
@@ -56,6 +59,10 @@ class HarnessAgent(BaseInstalledAgent):
         binary_path: str | Path = ".harness/installed/harness",
         model_name: str | None = None,
         effort: str = "low",
+        web_search: bool = True,
+        install_node: bool = False,
+        system_prompt_path: str | Path | None = None,
+        agents_md_path: str | Path | None = None,
         extra_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -72,6 +79,13 @@ class HarnessAgent(BaseInstalledAgent):
         self._binary_path = Path(binary_path).resolve()
         self._model = self._api_model_name(model_name)
         self._effort = effort
+        self._web_search = web_search
+        self._install_node = install_node
+        self._system_prompt_path = self._resolve_context_file(
+            system_prompt_path, "system prompt"
+        )
+        self._agents_md_path = self._resolve_context_file(agents_md_path, "AGENTS.md")
+        self._run_interrupted = False
 
     @staticmethod
     def name() -> str:
@@ -83,8 +97,18 @@ class HarnessAgent(BaseInstalledAgent):
     async def install(self, environment: BaseEnvironment) -> None:
         if not self._binary_path.is_file():
             raise RuntimeError(
-                f"missing harness binary at {self._binary_path}; "
-                "run `just build-agent`"
+                f"missing harness binary at {self._binary_path}; run `just build-agent`"
+            )
+        if self._install_node:
+            await self.exec_as_root(
+                environment,
+                "if ! command -v node >/dev/null 2>&1; then "
+                "command -v apt-get >/dev/null 2>&1 || { "
+                "echo 'Node.js is missing and this image has no apt-get' >&2; "
+                "exit 1; }; "
+                "apt-get update && DEBIAN_FRONTEND=noninteractive "
+                "apt-get install --yes --no-install-recommends nodejs; "
+                "fi; node --version",
             )
         await environment.upload_file(self._binary_path, self._BINARY)
         await self.exec_as_root(environment, f"chmod 0755 {self._BINARY}")
@@ -111,7 +135,36 @@ class HarnessAgent(BaseInstalledAgent):
         except Exception as error:
             self.logger.warning("failed to remove staged API key: %s", error)
 
+    async def _stage_agents_md(self, environment: BaseEnvironment) -> None:
+        agents_md_path = getattr(self, "_agents_md_path", None)
+        if agents_md_path is None:
+            return
+        result = await self.exec_as_agent(
+            environment,
+            "test ! -e /app/AGENTS.md && test ! -e /app/AGENTS.override.md",
+        )
+        if result.return_code != 0:
+            raise RuntimeError(
+                "context-parity eval refuses to replace an existing /app/AGENTS.md "
+                "or /app/AGENTS.override.md"
+            )
+        await environment.upload_file(agents_md_path, self._REMOTE_AGENTS_MD)
+        await self.exec_as_root(environment, f"chmod 0444 {self._REMOTE_AGENTS_MD}")
+
     async def run(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+    ) -> None:
+        self._run_interrupted = False
+        try:
+            await self._run_to_completion(instruction, environment, context)
+        except asyncio.CancelledError:
+            self._run_interrupted = True
+            raise
+
+    async def _run_to_completion(
         self,
         instruction: str,
         environment: BaseEnvironment,
@@ -131,18 +184,13 @@ class HarnessAgent(BaseInstalledAgent):
         )
         if not environment.capabilities.mounted:
             await environment.upload_file(input_path, self._INPUT)
+        await self._stage_agents_md(environment)
 
-        arguments = [
-            self._BINARY,
-            "run",
-            "--model",
-            self._model,
-            "--effort",
-            self._effort,
-        ]
+        arguments = self._run_arguments()
         command = (
-            f"api_key=$(<{self._API_KEY_FILE}) && test -n \"$api_key\" && "
-            f"rm -f {self._API_KEY_FILE} && OPENAI_API_KEY=\"$api_key\" "
+            f'api_key=$(<{self._API_KEY_FILE}) && test -n "$api_key" && '
+            f'rm -f {self._API_KEY_FILE} && OPENAI_API_KEY="$api_key" '
+            "PATH=$PATH:/opt/harness-verifier/bin "
             + " ".join(shlex.quote(argument) for argument in arguments)
             + f" < {self._INPUT} 2> {self._STDERR} | tee {self._EVENTS}"
         )
@@ -156,7 +204,30 @@ class HarnessAgent(BaseInstalledAgent):
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr, flush=True)
 
+    def _run_arguments(self) -> list[str]:
+        return [
+            self._BINARY,
+            "run",
+            "--model",
+            self._model,
+            "--effort",
+            self._effort,
+            "--web-search",
+            str(self._web_search).lower(),
+        ]
+
     def populate_context_post_run(self, context: AgentContext) -> None:
+        try:
+            self._populate_context_post_run_strict(context)
+        except Exception:
+            if not self._run_interrupted:
+                raise
+            self.logger.debug(
+                "skipping strict harness trajectory validation after run cancellation",
+                exc_info=True,
+            )
+
+    def _populate_context_post_run_strict(self, context: AgentContext) -> None:
         requests = self._read_jsonl(self.logs_dir / "input.jsonl")
         if len(requests) != 1 or requests[0].get("type") != "task.start":
             raise RuntimeError("input.jsonl must contain one task.start event")
@@ -173,6 +244,7 @@ class HarnessAgent(BaseInstalledAgent):
                 or not isinstance(event.get("payload"), dict)
             ):
                 raise RuntimeError(f"invalid harness event at sequence {seq}")
+        self._verify_model_context(events)
 
         terminals = [event for event in events if event["type"] in TERMINAL_EVENTS]
         if len(terminals) != 1:
@@ -300,6 +372,55 @@ class HarnessAgent(BaseInstalledAgent):
             "cost_status": terminal_payload.get("cost_status"),
         }
 
+    def _verify_model_context(self, events: list[dict[str, Any]]) -> None:
+        system_prompt_path = getattr(self, "_system_prompt_path", None)
+        agents_md_path = getattr(self, "_agents_md_path", None)
+        if system_prompt_path is None and agents_md_path is None:
+            return
+
+        input_texts = []
+        for event in events:
+            if event.get("type") != "api.event":
+                continue
+            api_event = event.get("payload", {}).get("event", {})
+            if not isinstance(api_event, dict):
+                continue
+            for item in api_event.get("input", []):
+                if not isinstance(item, dict):
+                    continue
+                for block in item.get("content", []):
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        input_texts.append(block["text"])
+
+        if system_prompt_path is not None:
+            expected = system_prompt_path.read_text(encoding="utf-8").strip()
+            if expected not in input_texts:
+                raise RuntimeError(
+                    "the harness request did not contain the configured system prompt "
+                    "byte-for-byte; rebuild the installed agent"
+                )
+
+        if agents_md_path is not None:
+            agents_md = agents_md_path.read_text(encoding="utf-8")
+            expected = (
+                "# AGENTS.md instructions for /app\n\n"
+                f"<INSTRUCTIONS>\n{agents_md}\n</INSTRUCTIONS>"
+            )
+            if expected not in input_texts:
+                raise RuntimeError(
+                    "the harness request did not contain the configured AGENTS.md "
+                    "byte-for-byte"
+                )
+
+    @staticmethod
+    def _resolve_context_file(path: str | Path | None, description: str) -> Path | None:
+        if path is None:
+            return None
+        resolved = Path(path).resolve()
+        if not resolved.is_file():
+            raise ValueError(f"{description} file does not exist: {resolved}")
+        return resolved
+
     @staticmethod
     def _api_model_name(model_name: str | None) -> str:
         if model_name is None:
@@ -367,13 +488,22 @@ class HarnessAgent(BaseInstalledAgent):
 
     @staticmethod
     def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-        try:
-            values = [
-                json.loads(line)
-                for line in path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-        except (OSError, json.JSONDecodeError) as error:
+        error: OSError | json.JSONDecodeError | None = None
+        values: list[Any] = []
+        for attempt in range(10):
+            try:
+                values = [
+                    json.loads(line)
+                    for line in path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                error = None
+                break
+            except (OSError, json.JSONDecodeError) as current_error:
+                error = current_error
+                if attempt < 9:
+                    time.sleep(0.05)
+        if error is not None:
             raise RuntimeError(f"failed to read JSONL from {path}: {error}") from error
         if not all(isinstance(value, dict) for value in values):
             raise RuntimeError(f"all JSONL values in {path} must be objects")

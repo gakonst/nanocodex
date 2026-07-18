@@ -6,13 +6,20 @@ harbor := ".venv/bin/harbor"
 build_profile := env_var_or_default("HARNESS_BUILD_PROFILE", "dev")
 agent_artifact_dir := ".harness/installed"
 agent_artifact := agent_artifact_dir + "/harness"
+hosted_agent_artifact_dir := agent_artifact_dir + "/daytona-amd64"
+hosted_agent_artifact := hosted_agent_artifact_dir + "/harness"
 default_eval := "evals/terminal-bench-2.yaml"
 default_jobs := ".harness/harbor/jobs"
 setup_jobs := ".harness/harbor/setup"
 prepare_concurrency := env_var_or_default("HARBOR_PREPARE_CONCURRENCY", "4")
-# Six fits the current suite's heaviest mixed-resource wave on the local Docker VM.
-# Lighter suites can raise this without changing the eval definition.
-eval_concurrency := env_var_or_default("HARBOR_EVAL_CONCURRENCY", "6")
+# Twelve keeps model-bound evaluation waves saturated on the local Docker VM.
+# Timing-sensitive or unusually heavy cohorts can lower this without changing
+# the eval definition.
+eval_concurrency := env_var_or_default("HARBOR_EVAL_CONCURRENCY", "12")
+# Cloud sandboxes make trials I/O-bound. Keep this independently tunable from
+# the local Docker concurrency, since Daytona account quotas vary.
+hosted_eval_concurrency := env_var_or_default("HARBOR_HOSTED_EVAL_CONCURRENCY", "32")
+canonical_verifier := "harbor.verifier.verifier:Verifier"
 
 default: run
 
@@ -33,7 +40,18 @@ build-agent:
     @docker build --quiet --build-arg CARGO_PROFILE="{{build_profile}}" --file harbor_adapter/harness.Dockerfile --target artifact --output type=local,dest="{{agent_artifact_dir}}" .
     @test -x "{{agent_artifact}}"
 
-# Pay native task/verifier image construction once, outside measured eval jobs.
+# Daytona sandboxes are AMD64 even when Harbor is orchestrated from Apple
+# Silicon. Keep this artifact separate from the native local-Docker build.
+build-agent-hosted:
+    @mkdir -p "{{hosted_agent_artifact_dir}}"
+    @echo "Building AMD64 Linux agent artifact for Daytona (Cargo profile: {{build_profile}})..."
+    @docker build --quiet --platform linux/amd64 --build-arg CARGO_PROFILE="{{build_profile}}" --file harbor_adapter/harness.Dockerfile --target artifact --output type=local,dest="{{hosted_agent_artifact_dir}}" .
+    @test -f "{{hosted_agent_artifact}}" && test -x "{{hosted_agent_artifact}}"
+
+check-hosted-auth:
+    @test -n "${DAYTONA_API_KEY:-}" || { test -n "${DAYTONA_JWT_TOKEN:-}" && test -n "${DAYTONA_ORGANIZATION_ID:-}"; } || { echo "set DAYTONA_API_KEY (or DAYTONA_JWT_TOKEN and DAYTONA_ORGANIZATION_ID) in .env" >&2; exit 2; }
+
+# Pay native task and shared verifier-toolbox construction outside measured jobs.
 # The no-op agent performs no model call, verification, or harness build.
 prepare-evals config=default_eval:
     @test -x "{{harbor}}" || { echo "run 'just bootstrap' first" >&2; exit 2; }
@@ -62,6 +80,20 @@ eval-task task effort="low" config=default_eval: build-agent
         job_name="$(date +%Y-%m-%d__%H-%M-%S)-${task##*/}-$BASHPID"; \
         HARBOR_TELEMETRY=off "{{harbor}}" run --config "{{config}}" --dataset "$dataset" --include-task-name "$task" --job-name "$job_name" --agent-kwarg "effort={{effort}}"
 
+# Run the same pinned task selection in hosted Daytona sandboxes. Harbor still
+# writes the job record locally; use `harbor upload` separately to share it.
+eval-hosted config=default_eval: check-hosted-auth build-agent-hosted
+    @test -x "{{harbor}}" || { echo "run 'just bootstrap' first" >&2; exit 2; }
+    @job_name="$(date +%Y-%m-%d__%H-%M-%S)-eval-daytona-$BASHPID"; \
+        HARBOR_TELEMETRY=off "{{harbor}}" run --config "{{config}}" --env daytona --verifier "{{canonical_verifier}}" --agent-kwarg "binary_path={{hosted_agent_artifact}}" --agent-kwarg "install_node=true" --job-name "$job_name" --n-concurrent "{{hosted_eval_concurrency}}"
+
+eval-task-hosted task effort="low" config=default_eval: check-hosted-auth build-agent-hosted
+    @test -x "{{harbor}}" || { echo "run 'just bootstrap' first" >&2; exit 2; }
+    @task="{{task}}"; \
+        dataset=$(HARBOR_TELEMETRY=off "{{harbor}}" run --config "{{config}}" --print-config | jq -er '.datasets | if length == 1 then .[0] | "\(.name)@\(.ref)" else error("expected exactly one dataset") end'); \
+        job_name="$(date +%Y-%m-%d__%H-%M-%S)-${task##*/}-daytona-$BASHPID"; \
+        HARBOR_TELEMETRY=off "{{harbor}}" run --config "{{config}}" --env daytona --verifier "{{canonical_verifier}}" --dataset "$dataset" --include-task-name "$task" --job-name "$job_name" --agent-kwarg "binary_path={{hosted_agent_artifact}}" --agent-kwarg "install_node=true" --agent-kwarg "effort={{effort}}"
+
 # Open all locally retained Harbor jobs unless another jobs directory is supplied.
 view jobs=default_jobs:
     @test -x "{{harbor}}" || { echo "run 'just bootstrap' first" >&2; exit 2; }
@@ -73,5 +105,7 @@ check:
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
     cargo test
+    .venv/bin/python -m unittest discover -s harbor_adapter -p 'test_*.py'
     .venv/bin/python -m compileall -q harbor_adapter
     "{{harbor}}" run --config "{{default_eval}}" --print-config >/dev/null
+    "{{harbor}}" run --config "{{default_eval}}" --env daytona --verifier "{{canonical_verifier}}" --agent-kwarg "binary_path={{hosted_agent_artifact}}" --agent-kwarg "install_node=true" --print-config >/dev/null

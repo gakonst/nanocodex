@@ -7,7 +7,7 @@ dependencies = [
     # Pin an official nightly wheel instead of a raw Git checkout. Harbor's
     # release pipeline embeds the viewer frontend; wheels built directly from
     # Git contain only the API server because the frontend is a CI artifact.
-    "harbor==0.18.1.dev202607150126",
+    "harbor[daytona]==0.18.1.dev202607150126",
     # Harbor's own lock uses this universal wheel. Newer unconstrained releases
     # currently fall back to a slow, broken native build on macOS arm64.
     "litellm==1.86.2",

@@ -31,9 +31,10 @@ the same Cloudflare Vite-plugin layout as Tempo's React MPP examples.
 `npm run dev` and `npm run build` first regenerate
 `src/data/harness-repository.json` from the parent repository. Override the source or
 history depth with `HARNESS_REPO` and `HARNESS_COMMIT_LIMIT`. The default index
-covers the complete repository history and stores each patch as a separate
-asset. The commit view parses them in bounded batches and appends them to one
-Pierre CodeView, yielding between batches so scrolling stays responsive.
+covers the complete repository history and stores it as one streamed patch
+asset. The commit view parses complete files in bounded batches and appends
+them to one Pierre CodeView, yielding between batches so scrolling stays
+responsive.
 
 The same sync step discovers linked worktrees and derives a compact eval index
 from their retained Harness and Codex jobs. It automatically pairs the largest

@@ -1,14 +1,16 @@
 use std::{io::Write, path::Path, time::Instant};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{
     ApiEvent, AssistantMessage, ModelConfig, RunError, RunStarted, RunStats, TRANSPORT,
     agents_md::load_project_instructions,
     compaction,
     context_manager::ContextManager,
-    display_endpoint, elapsed_ns, resolve_workspace,
+    display_endpoint, elapsed_ns,
+    execution_guidance::{ExecutionGuidance, GuidanceNote},
+    resolve_workspace,
     stream::{CodeCall, CodeCallKind},
     terminal_payload,
     wire::{
@@ -25,6 +27,9 @@ use crate::{
         WebSearchConfig, prepare_output_images, prepare_user_input,
     },
 };
+
+const FINALIZATION_REVIEW: &str = "<finalization_review>\nBefore finalizing, perform one last evaluator-facing audit of the current publish state. Re-read the literal acceptance contract: exact paths, working directory, public interfaces, ports, output formats, lifecycle requirements, and forbidden extras. If an evaluator-shaped check already passed, preserve that state and only remove explicitly forbidden temporary artifacts. Otherwise, use the cheapest decisive inspection or check and correct any discrepancy. Do not merely describe this audit; use tools when inspection or correction is needed.\n</finalization_review>";
+const MAX_FINALIZATION_REVIEWS: u8 = 3;
 
 #[derive(Serialize)]
 struct ConnectionStarted<'a> {
@@ -69,6 +74,23 @@ struct ConnectionRetry<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<&'a str>,
     reason: &'a str,
+}
+
+struct FullReplay<'a> {
+    phase: &'static str,
+    call_index: u32,
+    previous_response_id: Option<&'a str>,
+    reason: &'a str,
+    input: &'a [Value],
+    profile: &'a RequestProfile,
+}
+
+struct CompactionReplay<'a> {
+    call_index: u32,
+    previous_response_id: &'a str,
+    history: &'a [Value],
+    trigger: &'a Value,
+    profile: &'a RequestProfile,
 }
 
 #[derive(Serialize)]
@@ -165,6 +187,19 @@ struct ToolResultEvent<'a> {
     metadata: Option<&'a Value>,
 }
 
+#[derive(Serialize)]
+struct GuidanceReminderEvent<'a> {
+    model_call_index: u32,
+    notes: &'a [GuidanceNote],
+}
+
+#[derive(Serialize)]
+struct FinalizationReviewEvent {
+    after_model_call_index: u32,
+    review: u8,
+    max_reviews: u8,
+}
+
 pub(super) struct ModelRun<'a, W> {
     events: &'a mut EventWriter<W>,
     task: &'a Task,
@@ -173,6 +208,9 @@ pub(super) struct ModelRun<'a, W> {
     stats: RunStats,
     server_reasoning_included: bool,
     turn_state: Option<String>,
+    guidance: ExecutionGuidance,
+    finalization_reviews: u8,
+    tool_calls_at_finalization_review: u32,
 }
 
 struct ConversationState {
@@ -259,6 +297,9 @@ impl<'a, W: Write> ModelRun<'a, W> {
             stats: RunStats::default(),
             server_reasoning_included: false,
             turn_state: None,
+            guidance: ExecutionGuidance::default(),
+            finalization_reviews: 0,
+            tool_calls_at_finalization_review: 0,
         }
     }
 
@@ -306,10 +347,10 @@ impl<'a, W: Write> ModelRun<'a, W> {
         let project_instructions = load_project_instructions(Path::new(&workspace))?;
         let tools = ToolRuntime::new(
             &workspace,
-            WebSearchConfig {
+            self.config.web_search.then(|| WebSearchConfig {
                 endpoint: self.config.search_endpoint(),
                 api_key: self.config.api_key.clone(),
-            },
+            }),
             ImageGenerationConfig {
                 api_base_url: self.config.api_base_url.clone(),
                 api_key: self.config.api_key.clone(),
@@ -331,6 +372,8 @@ impl<'a, W: Write> ModelRun<'a, W> {
 
         loop {
             let call_index = self.stats.model_calls + 1;
+            self.guidance.observe_elapsed(self.started_at.elapsed());
+            self.record_pending_guidance(call_index, &mut conversation)?;
             let response = match self
                 .perform_model_call(&mut socket, call_index, &conversation, &profile)
                 .await
@@ -358,6 +401,11 @@ impl<'a, W: Write> ModelRun<'a, W> {
                     continue;
                 }
                 if let Some(message) = final_message {
+                    if self.request_finalization_review(call_index, &mut conversation)? {
+                        self.maybe_compact(&mut socket, call_index, &mut conversation, &profile)
+                            .await?;
+                        continue;
+                    }
                     return Ok(if message.trim().is_empty() {
                         "The model completed without emitting assistant text.".to_owned()
                     } else {
@@ -437,6 +485,7 @@ impl<'a, W: Write> ModelRun<'a, W> {
         prepare_output_images(&mut execution.output).await;
         let duration_ns = elapsed_ns(started_at);
         self.stats.tool_wall_duration_ns += duration_ns;
+        self.guidance.observe(&execution.nested_calls);
         for nested in &execution.nested_calls {
             self.emit_nested_tool(call_index, &call.call_id, nested)?;
         }
@@ -461,6 +510,60 @@ impl<'a, W: Write> ModelRun<'a, W> {
             custom_tool_notification(&notification.call_id, &notification.text)
         }));
         Ok(outputs)
+    }
+
+    fn request_finalization_review(
+        &mut self,
+        after_model_call_index: u32,
+        conversation: &mut ConversationState,
+    ) -> Result<bool> {
+        if self.stats.tool_calls == 0
+            || self.finalization_reviews >= MAX_FINALIZATION_REVIEWS
+            || (self.finalization_reviews > 0
+                && self.stats.tool_calls == self.tool_calls_at_finalization_review)
+        {
+            return Ok(false);
+        }
+        self.finalization_reviews += 1;
+        self.tool_calls_at_finalization_review = self.stats.tool_calls;
+        conversation.delta_start = Some(conversation.history_len());
+        conversation.record_items([json!({
+            "type": "message",
+            "role": "developer",
+            "content": [{
+                "type": "input_text",
+                "text": FINALIZATION_REVIEW,
+            }],
+        })]);
+        self.events.emit(
+            "lifecycle.finalization_review",
+            FinalizationReviewEvent {
+                after_model_call_index,
+                review: self.finalization_reviews,
+                max_reviews: MAX_FINALIZATION_REVIEWS,
+            },
+        )?;
+        Ok(true)
+    }
+
+    fn record_pending_guidance(
+        &mut self,
+        model_call_index: u32,
+        conversation: &mut ConversationState,
+    ) -> Result<()> {
+        let Some(reminder) = self.guidance.pending_reminder() else {
+            return Ok(());
+        };
+        conversation.record_items([reminder.developer_message()]);
+        self.events.emit(
+            "guidance.reminder",
+            GuidanceReminderEvent {
+                model_call_index,
+                notes: reminder.notes(),
+            },
+        )?;
+        self.guidance.mark_delivered(&reminder);
+        Ok(())
     }
 
     async fn connect_with_warmup_fallback(
@@ -760,40 +863,51 @@ impl<'a, W: Write> ModelRun<'a, W> {
         )?;
         self.emit_outbound("generation", Some(call_index), &request)?;
 
+        let mut reconnected = false;
         if let Err(error) = socket.send(&request).await {
             if !error.is_reconnectable_send() {
                 return self.model_call_failed(call_index, started_at, error.into());
             }
             let reason = error.to_string();
-            self.events.emit(
-                "model.connection.retrying",
-                ConnectionRetry {
+            if let Err(error) = self
+                .replay_generation(
+                    socket,
                     call_index,
                     previous_response_id,
-                    reason: &reason,
-                },
-            )?;
-            self.capture_turn_state(socket);
-            *socket = self.connect(ConnectionPurpose::Reconnect).await?;
-            let full_input = profile.full_input(&conversation.prompt_history());
-            let replay = EncodedRequest::new(&ResponseCreate::generation(
-                self.config,
-                &full_input,
-                None,
-                profile,
-                self.turn_state.as_deref(),
-            ))?;
-            self.emit_outbound("generation", Some(call_index), &replay)?;
-            if let Err(error) = socket.send(&replay).await {
-                return self.model_call_failed(call_index, started_at, error.into());
+                    &reason,
+                    conversation,
+                    profile,
+                )
+                .await
+            {
+                return self.model_call_failed(call_index, started_at, error);
             }
+            reconnected = true;
         }
 
-        let response =
+        let response = loop {
             match super::stream::receive(socket, self.events, call_index, started_at).await {
-                Ok(response) => response,
+                Ok(response) => break response,
+                Err(error) if !reconnected && is_reconnectable_stream_error(&error) => {
+                    let reason = error.to_string();
+                    if let Err(error) = self
+                        .replay_generation(
+                            socket,
+                            call_index,
+                            previous_response_id,
+                            &reason,
+                            conversation,
+                            profile,
+                        )
+                        .await
+                    {
+                        return self.model_call_failed(call_index, started_at, error);
+                    }
+                    reconnected = true;
+                }
                 Err(error) => return self.model_call_failed(call_index, started_at, error),
-            };
+            }
+        };
         let duration_ns = elapsed_ns(started_at);
         self.stats.model_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
@@ -866,47 +980,45 @@ impl<'a, W: Write> ModelRun<'a, W> {
         )?;
         self.emit_outbound("compaction", Some(after_model_call_index), &request)?;
 
+        let replay = CompactionReplay {
+            call_index: after_model_call_index,
+            previous_response_id,
+            history: &compaction_history,
+            trigger: &trigger,
+            profile,
+        };
+        let mut reconnected = false;
         if let Err(error) = socket.send(&request).await {
             if !error.is_reconnectable_send() {
                 return self.compaction_failed(after_model_call_index, started_at, error.into());
             }
             let reason = error.to_string();
-            self.events.emit(
-                "model.connection.retrying",
-                ConnectionRetry {
-                    call_index: after_model_call_index,
-                    previous_response_id: Some(previous_response_id),
-                    reason: &reason,
-                },
-            )?;
-            self.capture_turn_state(socket);
-            *socket = self.connect(ConnectionPurpose::Reconnect).await?;
-            let mut replay_input = profile.full_input(&compaction_history);
-            replay_input.push(trigger);
-            let replay = EncodedRequest::new(&ResponseCreate::generation(
-                self.config,
-                &replay_input,
-                None,
-                profile,
-                self.turn_state.as_deref(),
-            ))?;
-            self.emit_outbound("compaction", Some(after_model_call_index), &replay)?;
-            if let Err(error) = socket.send(&replay).await {
-                return self.compaction_failed(after_model_call_index, started_at, error.into());
+            if let Err(error) = self.replay_compaction(socket, &replay, &reason).await {
+                return self.compaction_failed(after_model_call_index, started_at, error);
             }
+            reconnected = true;
         }
 
-        let response = match super::stream::receive_compaction(
-            socket,
-            self.events,
-            after_model_call_index,
-            started_at,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                return self.compaction_failed(after_model_call_index, started_at, error);
+        let response = loop {
+            match super::stream::receive_compaction(
+                socket,
+                self.events,
+                after_model_call_index,
+                started_at,
+            )
+            .await
+            {
+                Ok(response) => break response,
+                Err(error) if !reconnected && is_reconnectable_stream_error(&error) => {
+                    let reason = error.to_string();
+                    if let Err(error) = self.replay_compaction(socket, &replay, &reason).await {
+                        return self.compaction_failed(after_model_call_index, started_at, error);
+                    }
+                    reconnected = true;
+                }
+                Err(error) => {
+                    return self.compaction_failed(after_model_call_index, started_at, error);
+                }
             }
         };
         let duration_ns = elapsed_ns(started_at);
@@ -928,6 +1040,79 @@ impl<'a, W: Write> ModelRun<'a, W> {
             },
         )?;
         Ok((response.item, response.usage))
+    }
+
+    async fn replay_generation(
+        &mut self,
+        socket: &mut ResponsesSocket,
+        call_index: u32,
+        previous_response_id: Option<&str>,
+        reason: &str,
+        conversation: &ConversationState,
+        profile: &RequestProfile,
+    ) -> Result<()> {
+        let input = profile.full_input(&conversation.prompt_history());
+        self.reconnect_and_replay(
+            socket,
+            FullReplay {
+                phase: "generation",
+                call_index,
+                previous_response_id,
+                reason,
+                input: &input,
+                profile,
+            },
+        )
+        .await
+    }
+
+    async fn replay_compaction(
+        &mut self,
+        socket: &mut ResponsesSocket,
+        replay: &CompactionReplay<'_>,
+        reason: &str,
+    ) -> Result<()> {
+        let mut input = replay.profile.full_input(replay.history);
+        input.push(replay.trigger.clone());
+        self.reconnect_and_replay(
+            socket,
+            FullReplay {
+                phase: "compaction",
+                call_index: replay.call_index,
+                previous_response_id: Some(replay.previous_response_id),
+                reason,
+                input: &input,
+                profile: replay.profile,
+            },
+        )
+        .await
+    }
+
+    async fn reconnect_and_replay(
+        &mut self,
+        socket: &mut ResponsesSocket,
+        replay: FullReplay<'_>,
+    ) -> Result<()> {
+        self.events.emit(
+            "model.connection.retrying",
+            ConnectionRetry {
+                call_index: replay.call_index,
+                previous_response_id: replay.previous_response_id,
+                reason: replay.reason,
+            },
+        )?;
+        self.capture_turn_state(socket);
+        *socket = self.connect(ConnectionPurpose::Reconnect).await?;
+        let request = EncodedRequest::new(&ResponseCreate::generation(
+            self.config,
+            replay.input,
+            None,
+            replay.profile,
+            self.turn_state.as_deref(),
+        ))?;
+        self.emit_outbound(replay.phase, Some(replay.call_index), &request)?;
+        socket.send(&request).await?;
+        Ok(())
     }
 
     fn compaction_failed<T>(
@@ -1005,6 +1190,10 @@ fn unsupported_tool_message(call: &CodeCall) -> Option<String> {
         CodeCallKind::Custom => format!("unsupported custom tool call: {qualified_name}"),
         CodeCallKind::Function => format!("unsupported call: {qualified_name}"),
     })
+}
+
+fn is_reconnectable_stream_error(error: &HarnessError) -> bool {
+    matches!(error, HarnessError::Responses(error) if error.is_reconnectable_stream())
 }
 
 fn strip_item_id(mut item: Value) -> Value {

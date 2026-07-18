@@ -3,10 +3,8 @@
 import {
   ArrowUpRight,
   ChevronRight,
-  GitBranch,
   GitPullRequest,
   Moon,
-  PanelLeft,
   Search,
   Sun,
   X,
@@ -21,16 +19,11 @@ import {
   useState,
 } from "react";
 import type { CodeBrowserHandle } from "./CodeBrowser";
-import {
-  CommitCodeStream,
-  type CommitCodeStreamHandle,
-} from "./CommitCodeStream";
 import harborSummaryData from "./data/harbor-summary.json";
 import repositoryData from "./data/harness-repository.json";
 import type { EvalComparison } from "./Harbor";
 import { fuzzyScore } from "./fuzzy";
 import { PierreWorkerProvider } from "./PierreWorkerProvider";
-import { registerRepositorySyntax } from "./syntax";
 
 const Harbor = lazy(() =>
   import("./Harbor").then((module) => ({ default: module.Harbor }))
@@ -38,9 +31,13 @@ const Harbor = lazy(() =>
 const CodeBrowser = lazy(() =>
   import("./CodeBrowser").then((module) => ({ default: module.CodeBrowser }))
 );
+const CommitCodeStream = lazy(() =>
+  import("./CommitCodeStream").then((module) => ({
+    default: module.CommitCodeStream,
+  }))
+);
 
 export type Theme = "light" | "dark";
-type Scope = "all" | "eval" | "fix" | "docs" | "perf";
 type ProposalState = "ready" | "submitting" | "payment-required";
 type Surface =
   | "home"
@@ -90,7 +87,6 @@ export type HarnessCommit = {
     additions: number;
     deletions: number;
   };
-  patchUrl: string;
 };
 
 type RepositorySnapshot = {
@@ -103,6 +99,7 @@ type RepositorySnapshot = {
     dirtyCount: number;
   };
   generatedAt: string;
+  commitPatchUrl: string;
   tree: RepositoryFile[];
   treeInput: SerializedTreeInput;
   commits: HarnessCommit[];
@@ -112,55 +109,6 @@ const snapshot = repositoryData as RepositorySnapshot;
 const evalComparison = (
   harborSummaryData as { comparison: EvalComparison | null }
 ).comparison;
-registerRepositorySyntax([
-  ...snapshot.tree.map((file) => file.path),
-  ...snapshot.commits.flatMap((commit) =>
-    commit.files.flatMap((file) =>
-      file.previousPath ? [file.path, file.previousPath] : [file.path]
-    )
-  ),
-]);
-const scopes: Array<{ id: Scope; label: string }> = [
-  { id: "all", label: "All commits" },
-  { id: "eval", label: "Eval" },
-  { id: "fix", label: "Fix" },
-  { id: "docs", label: "Docs" },
-  { id: "perf", label: "Perf" },
-];
-
-const dateFormatter = new Intl.DateTimeFormat("en", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
-
-const relativeFormatter = new Intl.RelativeTimeFormat("en", {
-  numeric: "auto",
-});
-
-function relativeDate(value: string) {
-  const milliseconds = new Date(value).getTime() - Date.now();
-  const hours = Math.round(milliseconds / 3_600_000);
-  if (Math.abs(hours) < 24) return relativeFormatter.format(hours, "hour");
-  const days = Math.round(milliseconds / 86_400_000);
-  if (Math.abs(days) < 30) return relativeFormatter.format(days, "day");
-  return dateFormatter.format(new Date(value));
-}
-
-function subjectScope(subject: string) {
-  const prefix = subject.split(":", 1)[0].toLowerCase();
-  return scopes.some(({ id }) => id === prefix) ? (prefix as Scope) : "other";
-}
-
-function scopeCount(scope: Scope) {
-  if (scope === "all") return snapshot.commits.length;
-  return snapshot.commits.filter(
-    (commit) => subjectScope(commit.subject) === scope
-  ).length;
-}
-
 function commitSearchScore(commit: HarnessCommit, query: string) {
   const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!tokens.length) return 0;
@@ -278,36 +226,19 @@ export function Xedoc() {
     }
     return "home";
   });
-  const [scope, setScope] = useState<Scope>("all");
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [selectedHash, setSelectedHash] = useState(snapshot.repository.head);
   const [proposalOpen, setProposalOpen] = useState(false);
   const [proposalState, setProposalState] = useState<ProposalState>("ready");
   const [proposalTitle, setProposalTitle] = useState("");
-  const [commitRailOpen, setCommitRailOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const headerCenterRef = useRef<HTMLDivElement>(null);
   const codeBrowserRef = useRef<CodeBrowserHandle>(null);
-  const commitStreamRef = useRef<CommitCodeStreamHandle>(null);
 
   const selected =
     snapshot.commits.find((commit) => commit.hash === selectedHash) ??
     snapshot.commits[0];
-
-  const filteredCommits = useMemo(() => {
-    const matches = snapshot.commits
-      .filter(
-        (commit) => scope === "all" || subjectScope(commit.subject) === scope
-      )
-      .map((commit) => ({ commit, score: commitSearchScore(commit, query) }))
-      .filter(
-        (match): match is { commit: HarnessCommit; score: number } =>
-          match.score !== null
-      );
-    if (query.trim()) matches.sort((left, right) => right.score - left.score);
-    return matches.map((match) => match.commit);
-  }, [query, scope]);
 
   const searchResults = useMemo(
     () =>
@@ -359,11 +290,6 @@ export function Xedoc() {
   }, [searchOpen]);
 
   useEffect(() => {
-    if (surface !== "commits") return;
-    requestAnimationFrame(() => commitStreamRef.current?.focus());
-  }, [surface]);
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const originalTarget = event.composedPath()[0];
       const target =
@@ -402,7 +328,6 @@ export function Xedoc() {
       if (event.key === "Escape") {
         setSearchOpen(false);
         setProposalOpen(false);
-        setCommitRailOpen(false);
         codeBrowserRef.current?.closeSearches();
         return;
       }
@@ -452,14 +377,9 @@ export function Xedoc() {
   }, [surface]);
 
   const selectCommit = (commit: HarnessCommit) => {
-    const index = snapshot.commits.findIndex(
-      (candidate) => candidate.hash === commit.hash
-    );
     setSelectedHash(commit.hash);
     setSearchOpen(false);
-    setCommitRailOpen(false);
     setQuery("");
-    if (index >= 0) commitStreamRef.current?.scrollToCommit(index);
   };
 
   const submitProposal = async () => {
@@ -562,13 +482,13 @@ export function Xedoc() {
                 <article className="home-article">
                   <header className="home-intro">
                     <h1 id="home-title">
-                      Nanocodex: Minimal Codex reimplementation for the
-                      frontier.
+                      Nanocodex: a headless Codex runtime you can embed.
                     </h1>
                     <p>
-                      Codex is awesome. It is also almost 1M Rust LoC. nanocodex
-                      is a small experiment in rebuilding only what the latest
-                      models need.
+                      Nanocodex packages Codex lifecycle and context management
+                      behind an ergonomic Rust API, so you can bring the agent
+                      loop into your own applications without bringing along an
+                      entire product.
                     </p>
                   </header>
 
@@ -651,44 +571,42 @@ export function Xedoc() {
 
                   <div className="home-copy">
                     <section>
-                      <h2>Why</h2>
+                      <h2>A library, not a product</h2>
                       <ul>
                         <li>
-                          If you squint, a coding agent is an elaborate WebSocket
-                          client around a tool loop and a working tree. The loop
-                          is the easy part.
+                          Codex is a complete coding agent. Nanocodex isolates
+                          the reusable engine: model lifecycle, conversation
+                          context &amp; the exact tool boundary.
                         </li>
                         <li>
-                          The generic agent SDK layer feels leaky. Exact tool
-                          shapes, cancellation, compaction, process cleanup & what
-                          the model sees after every action are the actual
-                          contract.
+                          The core intentionally does not ship subagents, skills
+                          or on-disk history. Your application owns orchestration,
+                          persistence &amp; product policy.
                         </li>
                         <li>
-                          Stock harnesses should win long term as the model and
-                          harness get co-designed. A 3p harness probably only
-                          keeps up if it uses ~the same tools and lifecycle.
+                          The library-first architecture is designed for native
+                          Rust applications, WebAssembly in the browser &amp;
+                          Python bindings through PyO3.
                         </li>
                       </ul>
                     </section>
 
                     <section>
-                      <h2>How</h2>
+                      <h2>What we optimize for</h2>
                       <ul>
                         <li>
-                          Copy the Codex tools + lifecycle the model was trained
-                          against, without carrying its backwards compatibility
-                          surface.
+                          Production-grade Rust patterns. Tower middleware keeps
+                          cross-cutting behavior composable &amp; application-specific
+                          extensions straightforward.
                         </li>
                         <li>
-                          Build one vertical slice at a time, eval it on real
-                          tasks & trace failures through the verifier + tool
-                          trajectory.
+                          Conversation forks as a first-class primitive, so
+                          branching from shared context is fast &amp; efficient.
                         </li>
                         <li>
-                          Keep the runtime small enough that every behavior is
-                          legible. No multi-agent yet; first make one agent
-                          compatible, inspectable & good.
+                          Eval-driven development. Every vertical slice runs on
+                          real tasks, with failures traced through the verifier
+                          &amp; complete tool trajectory.
                         </li>
                       </ul>
                     </section>
@@ -712,155 +630,13 @@ export function Xedoc() {
               className="commits-workspace"
               aria-label="Repository commits"
             >
-                <button
-                  className={
-                    commitRailOpen
-                      ? "workspace-backdrop is-visible"
-                      : "workspace-backdrop"
-                  }
-                  type="button"
-                  aria-label="Close commit list"
-                  onClick={() => setCommitRailOpen(false)}
+              <Suspense fallback={null}>
+                <CommitCodeStream
+                  commits={snapshot.commits}
+                  patchUrl={snapshot.commitPatchUrl}
+                  theme={theme}
                 />
-                <aside
-                  className={
-                    commitRailOpen
-                      ? "commit-sidebar is-mobile-open"
-                      : "commit-sidebar"
-                  }
-                  aria-labelledby="history-title"
-                >
-                  <header className="commit-sidebar-header">
-                    <div>
-                      <strong id="history-title">Jump to commit</strong>
-                      <span>
-                        <GitBranch aria-hidden="true" />{" "}
-                        {snapshot.repository.branch} · {snapshot.commits.length}
-                      </span>
-                    </div>
-                    <nav
-                      className="commit-sidebar-actions"
-                      aria-label="Commit index actions"
-                    >
-                      <button
-                        className="icon-button"
-                        type="button"
-                        onClick={() => setSearchOpen(true)}
-                      >
-                        <Search aria-hidden="true" />
-                        <span className="sr-only">Find commits</span>
-                        <kbd>F</kbd>
-                      </button>
-                      <button
-                        className="mobile-drawer-close"
-                        type="button"
-                        onClick={() => setCommitRailOpen(false)}
-                        aria-label="Close commit index"
-                      >
-                        <X aria-hidden="true" />
-                      </button>
-                    </nav>
-                  </header>
-
-                  <nav
-                    className="commit-scope-tabs"
-                    aria-label="Quick jump scopes"
-                  >
-                    {scopes.map((item) => (
-                      <button
-                        className={scope === item.id ? "is-active" : ""}
-                        type="button"
-                        key={item.id}
-                        onClick={() => setScope(item.id)}
-                      >
-                        {item.label} <span>{scopeCount(item.id)}</span>
-                      </button>
-                    ))}
-                  </nav>
-
-                  {query ? (
-                    <div className="commit-query">
-                      <span>
-                        {filteredCommits.length} matches for “{query}”
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setQuery("")}
-                        aria-label="Clear commit search"
-                      >
-                        <X aria-hidden="true" />
-                      </button>
-                    </div>
-                  ) : null}
-
-                  <div className="commit-list">
-                    {filteredCommits.length ? (
-                      filteredCommits.map((commit) => {
-                          const isSelected = commit.hash === selected.hash;
-                          return (
-                            <button
-                              className={
-                                isSelected
-                                  ? "commit-row is-selected"
-                                  : "commit-row"
-                              }
-                              type="button"
-                              key={commit.hash}
-                              aria-current={isSelected ? "location" : undefined}
-                              onClick={() => selectCommit(commit)}
-                            >
-                              <span className="commit-meta">
-                                <span>{commit.shortHash}</span>
-                                <span>{relativeDate(commit.authoredAt)}</span>
-                              </span>
-                              <strong>{commit.subject}</strong>
-                              <span className="commit-byline">
-                                {commit.author} · {commit.stats.files} file
-                                {commit.stats.files === 1 ? "" : "s"}
-                              </span>
-                              <ChevronRight
-                                className="commit-chevron"
-                                aria-hidden="true"
-                              />
-                            </button>
-                          );
-                        })
-                    ) : (
-                      <div className="empty-state">
-                        <p>No commits match this filter.</p>
-                        <button type="button" onClick={() => setQuery("")}>
-                          Clear search
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </aside>
-
-                <section
-                  className="commit-stream-pane"
-                  aria-label="All commits"
-                >
-                  <header className="commit-stream-toolbar">
-                    <div>
-                      <button
-                        className="mobile-tree-toggle"
-                        type="button"
-                        onClick={() => setCommitRailOpen(true)}
-                        aria-label="Open commit index"
-                      >
-                        <PanelLeft aria-hidden="true" />
-                      </button>
-                      <strong>All commits</strong>
-                      <span>{snapshot.commits.length}</span>
-                    </div>
-                    <span>Newest to oldest</span>
-                  </header>
-                  <CommitCodeStream
-                    ref={commitStreamRef}
-                    commits={snapshot.commits}
-                    theme={theme}
-                  />
-                </section>
+              </Suspense>
             </section>
           ) : surface === "requests" ? (
             <section

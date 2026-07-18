@@ -526,10 +526,10 @@ fn call_ids(calls: &[NestedToolCall]) -> Vec<&str> {
 fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
     ToolRuntime::new(
         workspace,
-        WebSearchConfig {
+        Some(WebSearchConfig {
             endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
             api_key: "test-key".to_owned(),
-        },
+        }),
         ImageGenerationConfig {
             api_base_url: "http://127.0.0.1:1/v1".to_owned(),
             api_key: "test-key".to_owned(),

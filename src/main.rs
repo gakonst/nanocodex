@@ -1,6 +1,6 @@
 use std::io;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use eyre::{Result, ensure, eyre};
 use harness::{ModelConfig, ReasoningEffort};
 
@@ -26,6 +26,15 @@ enum Command {
         /// Reasoning effort used by the model.
         #[arg(long, value_enum, env = "OPENAI_REASONING_EFFORT", default_value_t)]
         effort: ReasoningEffort,
+
+        /// Whether standalone web search is exposed to the model.
+        #[arg(
+            long,
+            env = "HARNESS_WEB_SEARCH",
+            default_value_t = true,
+            action = ArgAction::Set
+        )]
+        web_search: bool,
 
         /// Responses API WebSocket endpoint.
         #[arg(
@@ -56,6 +65,7 @@ async fn main() -> Result<()> {
             model,
             api_key,
             effort,
+            web_search,
             websocket_url,
             api_base_url,
         } => {
@@ -81,6 +91,7 @@ async fn main() -> Result<()> {
                 model,
                 api_key,
                 effort,
+                web_search,
                 websocket_url,
                 api_base_url: api_base_url.to_string(),
             };
@@ -88,4 +99,19 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Command};
+    use clap::Parser;
+
+    #[test]
+    fn web_search_accepts_an_explicit_boolean() {
+        let cli = Cli::try_parse_from(["harness", "run", "--web-search", "false"])
+            .expect("explicit false should parse");
+        let Command::Run { web_search, .. } = cli.command;
+
+        assert!(!web_search);
+    }
 }

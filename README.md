@@ -7,9 +7,10 @@ JavaScript in local Node.js and calls the common Rust tool surface.
 
 ```sh
 just bootstrap      # install pinned host dependencies once
-just prepare-evals  # build/cache native task and verifier images; no model
+just prepare-evals  # build/cache native tasks and the shared verifier toolbox
 just run            # native low-effort smoke; requires local Node.js
 just eval           # fresh full model-driven Terminal-Bench suite
+just eval-hosted    # same pinned suite in hosted Daytona sandboxes
 just view           # inspect retained Harbor jobs
 ```
 
@@ -22,6 +23,46 @@ native BuildKit compile -> static Linux binary
                        -> Rust executes tools in /app
                        -> Harbor verifier
 ```
+
+## Hosted evals
+
+Harbor Hub hosts uploaded results, but it does not execute the benchmark. For
+hosted Terminal-Bench compute, this repository uses Harbor's Daytona sandbox
+backend while the Harbor process continues to orchestrate the job locally.
+Add a Daytona API key alongside `OPENAI_API_KEY` in `.env`, then run:
+
+```env
+DAYTONA_API_KEY=...
+```
+
+```sh
+just bootstrap
+just eval-task-hosted terminal-bench/fix-git
+just eval-hosted
+```
+
+Daytona runs AMD64 sandboxes, so the hosted targets build a separate static
+`linux/amd64` harness artifact instead of reusing the Docker daemon's native
+artifact. They also select Harbor's canonical verifier, which supports remote
+file transfer, and install the harness's Node.js prerequisite during agent
+setup. The dataset digest and task selection still come from
+[`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml), exactly as they do
+for local evals. Set `HARBOR_HOSTED_EVAL_CONCURRENCY` in `.env` to fit the
+Daytona account quota; it defaults to 32.
+
+Job records remain under `.harness/harbor/jobs` and work with `just view`. To
+put a completed result on Harbor Hub, authenticate once and upload its job
+directory:
+
+```sh
+.venv/bin/harbor auth login
+.venv/bin/harbor upload .harness/harbor/jobs/<job-name> --private
+```
+
+Daytona accounts may restrict outbound internet by default. Terminal-Bench and
+the harness need outbound access for task setup, package installation, and the
+OpenAI API; Harbor's Daytona documentation identifies `HARBOR_NETWORK` as the
+account coupon for removing that restriction.
 
 The Python `BaseInstalledAgent` shim only uploads and starts the executable,
 then converts its retained JSONL to ATIF. It never dispatches tool calls.
@@ -50,23 +91,23 @@ arguments, `tee`, verifier commands, retained logs, and Rust-dispatched shell
 environments.
 
 Node.js 12.22 or newer is an ordinary runtime prerequisite. Native `just run`
-uses `node` from the host `PATH`; Harbor's shared eval-image overlay installs
-the distribution's `nodejs` package. The Rust executable does not download or
-bundle a runtime.
+uses `node` from the host `PATH`; local Harbor trials fall back to the shared
+read-only verifier toolbox's `nodejs` package. The Rust executable does not
+download or bundle a runtime.
 
 For the local eval loop, Harbor builds each canonical task Dockerfile for the
-Docker daemon's native architecture, then adds one content-addressed layer with
-the pinned verifier dependencies. Downloaded benchmark tasks and assertion
-files remain unchanged, and their canonical `test.sh` launchers still own
-task-specific setup, assertion phases, CTRF output, and reward calculation.
+Docker daemon's native architecture while concurrently ensuring one
+content-addressed verifier toolbox image. Each native task container mounts
+that toolbox read-only at `/opt/harness-toolbox`; there is no derived verifier
+image per task. Downloaded benchmark tasks and assertion files remain
+unchanged, and their canonical `test.sh` launchers still own task-specific
+setup, assertion phases, CTRF output, and reward calculation. ABI-keyed Python
+package trees preserve the task interpreter for direct `python` launchers,
+while canonical `uvx -p 3.13` commands use the toolbox's managed Python 3.13.
 The adapter skips only allowlisted dependency-install commands already
-satisfied by the cached verifier layer; an unknown install shape fails closed.
-One canonical TeX verifier requests an exact
-`apt install -y --reinstall texlive-latex-base` before asserting its output.
-For that command only, the verifier image records the installed package files
-and generated TeX state. A small `apt` wrapper skips the reinstall only when
-the package is still installed and both manifests match byte-for-byte;
-otherwise it delegates the original arguments to `/usr/bin/apt` unchanged.
+satisfied by the toolbox; an unknown install shape fails closed. One canonical
+TeX verifier requests `apt install -y --reinstall texlive-latex-base`; its
+wrapper refreshes the task's APT indexes and performs that real reinstall.
 
 `just prepare-evals` pays those image-build costs outside measured eval jobs by
 running Harbor's install-only path with its no-op agent. When adding one task,
@@ -83,9 +124,9 @@ Rust and adapter edits do not invalidate task images. `src/**` rebuilds only
 the final Cargo artifact layer, which Harbor uploads during agent setup.
 Task-image rebuilds occur only when a task's `environment/**`, native platform,
 or the deliberately pinned dataset digest changes. Editing
-`evals/pytest/Dockerfile` rebuilds the verifier overlay once per task. A warm
-environment phase should therefore be container startup rather than package
-installation.
+`evals/pytest/Dockerfile` rebuilds the single shared toolbox once. A warm
+environment phase should therefore be native container startup plus an image
+mount rather than package installation or a derived-image build.
 
 ## Build profiles
 

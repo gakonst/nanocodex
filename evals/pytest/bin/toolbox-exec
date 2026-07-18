@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+
+root=/opt/harness-toolbox
+command_name=${0##*/}
+
+case "$command_name" in
+    node)
+        for candidate in /usr/local/bin/node /usr/bin/node; do
+            if [ -x "$candidate" ]; then
+                exec "$candidate" "$@"
+            fi
+        done
+        executable="$root/usr/bin/node"
+        ;;
+    vim)
+        executable="$root/usr/bin/vim.basic"
+        ;;
+    *)
+        executable="$root/usr/bin/$command_name"
+        ;;
+esac
+
+if [ ! -x "$executable" ]; then
+    echo "missing toolbox executable: $executable" >&2
+    exit 127
+fi
+
+loader=$(find "$root/usr/lib" "$root/lib" -type f \
+    -name 'ld-linux-*.so.*' -print -quit 2>/dev/null)
+if [ -z "$loader" ]; then
+    echo "missing dynamic loader in verifier toolbox" >&2
+    exit 127
+fi
+
+library_path=
+for directory in "$root"/usr/lib/*-linux-gnu "$root"/lib/*-linux-gnu \
+    "$root/usr/local/lib" "$root/usr/lib" "$root/lib"; do
+    if [ -d "$directory" ]; then
+        library_path="${library_path:+$library_path:}$directory"
+    fi
+done
+
+if [ "$command_name" = gcc ]; then
+    export GCC_EXEC_PREFIX="$root/usr/lib/gcc/"
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$library_path"
+    set -- "--sysroot=$root" "$@"
+fi
+
+export GIT_EXEC_PATH="$root/usr/lib/git-core"
+export GIT_TEMPLATE_DIR="$root/usr/share/git-core/templates"
+export SSL_CERT_FILE="$root/etc/ssl/certs/ca-certificates.crt"
+export TCL_LIBRARY="$root/usr/share/tcltk/tcl8.6"
+export TESSDATA_PREFIX="$root/usr/share/tesseract-ocr/5/tessdata"
+export VIMRUNTIME="$root/usr/share/vim/vim90"
+
+exec "$loader" --library-path "$library_path" "$executable" "$@"

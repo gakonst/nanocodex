@@ -70,7 +70,7 @@ async fn store_false_local_code_mode_round_trip() -> Result<()> {
                         .is_some_and(|text| text.contains("hello"))
                 }))
         );
-        send_final(&mut socket, "resp-final").await
+        send_reviewed_final(&mut socket, "resp-final").await
     });
 
     let workspace = temporary_workspace("code-mode")?;
@@ -80,6 +80,79 @@ async fn store_false_local_code_mode_round_trip() -> Result<()> {
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
     assert!(output.contains("\"tool\":\"exec\""));
     assert!(output.contains("\"tool\":\"exec_command\""));
+    assert!(output.contains("\"lifecycle.finalization_review\""));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn finalization_review_repeats_when_the_review_uses_tools() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let generation = next_json(&mut socket).await?;
+        assert_eq!(generation["previous_response_id"], "resp-warmup");
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-tool",
+                &[json!({
+                    "type": "custom_tool_call",
+                    "call_id": "call-work",
+                    "name": "exec",
+                    "input": "text(\"changed\")"
+                })],
+            ),
+        )
+        .await?;
+
+        let continuation = next_json(&mut socket).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-tool");
+        send_final(&mut socket, "resp-first-final").await?;
+
+        let first_review = next_json(&mut socket).await?;
+        assert_eq!(first_review["previous_response_id"], "resp-first-final");
+        assert!(first_review.to_string().contains("<finalization_review>"));
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-review-tool",
+                &[json!({
+                    "type": "custom_tool_call",
+                    "call_id": "call-review",
+                    "name": "exec",
+                    "input": "text(\"verified\")"
+                })],
+            ),
+        )
+        .await?;
+
+        let reviewed = next_json(&mut socket).await?;
+        assert_eq!(reviewed["previous_response_id"], "resp-review-tool");
+        send_final(&mut socket, "resp-second-final").await?;
+
+        let second_review = next_json(&mut socket).await?;
+        assert_eq!(second_review["previous_response_id"], "resp-second-final");
+        assert!(second_review.to_string().contains("<finalization_review>"));
+        send_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("repeated-finalization-review")?;
+    let output = run_model(&endpoint, &workspace, "change and verify a file").await?;
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    assert_eq!(
+        output.matches("\"lifecycle.finalization_review\"").count(),
+        2
+    );
+    assert!(output.contains("\"review\":1"));
+    assert!(output.contains("\"review\":2"));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -139,7 +212,7 @@ async fn unsupported_direct_tools_return_failed_results_to_the_model() -> Result
                 }),
             ]
         );
-        send_final(&mut socket, "resp-final").await
+        send_reviewed_final(&mut socket, "resp-final").await
     });
 
     let workspace = temporary_workspace("unsupported-tools")?;
@@ -200,7 +273,7 @@ async fn code_mode_notify_adds_a_named_exec_output_to_the_next_request() -> Resu
         assert_eq!(input[1]["name"], "exec");
         assert_eq!(input[1]["output"], r#"{"phase":"working"}"#);
         assert!(input[1].get("success").is_none());
-        send_final(&mut socket, "resp-final").await
+        send_reviewed_final(&mut socket, "resp-final").await
     });
 
     let workspace = temporary_workspace("code-mode-notify")?;
@@ -208,6 +281,62 @@ async fn code_mode_notify_adds_a_named_exec_output_to_the_next_request() -> Resu
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn repeated_shell_error_adds_one_guidance_reminder_to_the_next_request() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let generation = next_json(&mut socket).await?;
+        assert_eq!(generation["previous_response_id"], "resp-warmup");
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-errors",
+                &[json!({
+                    "type": "custom_tool_call",
+                    "call_id": "call-exec",
+                    "name": "exec",
+                    "input": r#"await tools.exec_command({cmd:"printf 'Error: repeated failure\\n' >&2; exit 7"}); await tools.exec_command({cmd:"printf 'Error: repeated failure\\n' >&2; exit 7"}); text("done");"#
+                })],
+            ),
+        )
+        .await?;
+
+        let continuation = next_json(&mut socket).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-errors");
+        let input = continuation["input"]
+            .as_array()
+            .ok_or_else(|| eyre!("continuation input was not an array"))?;
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["type"], "custom_tool_call_output");
+        assert_eq!(input[0]["call_id"], "call-exec");
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["role"], "developer");
+        let reminder = input[1]["content"][0]["text"]
+            .as_str()
+            .ok_or_else(|| eyre!("guidance reminder did not contain text"))?;
+        assert!(reminder.starts_with("<execution_risk>"));
+        assert!(reminder.contains("same error family just repeated"));
+        assert!(reminder.ends_with("</execution_risk>"));
+        send_reviewed_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("execution-guidance")?;
+    let output = run_model(&endpoint, &workspace, "recover from repeated errors").await?;
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    assert_eq!(output.matches("\"guidance.reminder\"").count(), 1);
+    assert!(output.contains("\"kind\":\"repeated_error\""));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -278,7 +407,7 @@ async fn prepares_images_and_recovers_from_invalid_image_requests() -> Result<()
         assert!(output.iter().any(|item| {
             item["type"] == "input_text" && item["text"].as_str() == Some("Invalid image")
         }));
-        send_final(&mut socket, "resp-final").await
+        send_reviewed_final(&mut socket, "resp-final").await
     });
 
     let workspace = temporary_workspace("images")?;
@@ -286,7 +415,7 @@ async fn prepares_images_and_recovers_from_invalid_image_requests() -> Result<()
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
-    assert!(output.contains("\"model_calls\":3"));
+    assert!(output.contains("\"model_calls\":4"));
     assert!(output.contains("\"run.completed\""));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
@@ -345,7 +474,7 @@ async fn yielded_exec_cell_continues_through_direct_wait_tool() -> Result<()> {
         assert_eq!(completed["input"][0]["type"], "function_call_output");
         assert_eq!(completed["input"][0]["call_id"], "call-wait");
         assert!(completed.to_string().contains("after"));
-        send_final(&mut socket, "resp-final").await
+        send_reviewed_final(&mut socket, "resp-final").await
     });
 
     let workspace = temporary_workspace("code-mode-wait")?;
@@ -475,7 +604,7 @@ async fn continues_past_previous_model_call_limit() -> Result<()> {
 
         let final_generation = next_json(&mut socket).await?;
         assert_eq!(final_generation["previous_response_id"], "resp-tool-33");
-        send_final(&mut socket, "resp-final").await
+        send_reviewed_final(&mut socket, "resp-final").await
     });
 
     let workspace = temporary_workspace("unbounded-turn")?;
@@ -483,7 +612,7 @@ async fn continues_past_previous_model_call_limit() -> Result<()> {
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
-    assert!(output.contains("\"model_calls\":34"));
+    assert!(output.contains("\"model_calls\":35"));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -644,7 +773,7 @@ async fn reconnect_drops_previous_response_id_and_replays_full_history() -> Resu
         assert_eq!(replay["input"][4]["type"], "custom_tool_call");
         assert!(replay["input"][4].get("id").is_none());
         assert_eq!(replay["input"][5]["type"], "custom_tool_call_output");
-        send_final(&mut second, "resp-final").await
+        send_reviewed_final(&mut second, "resp-final").await
     });
 
     let workspace = temporary_workspace("reconnect")?;
@@ -652,6 +781,93 @@ async fn reconnect_drops_previous_response_id_and_replays_full_history() -> Resu
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn receive_reset_reconnects_without_replaying_completed_tools() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut first = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut first).await?);
+        send_warmup(&mut first, "resp-warmup").await?;
+
+        let generation = next_json(&mut first).await?;
+        assert_eq!(generation["previous_response_id"], "resp-warmup");
+        send_json(
+            &mut first,
+            completed_response(
+                "resp-tool",
+                &[json!({
+                    "id": "server-item-id",
+                    "type": "custom_tool_call",
+                    "call_id": "call-exec",
+                    "name": "exec",
+                    "input": "const result = await tools.exec_command({cmd: \"printf x >> marker.txt\"}); text(result.output);"
+                })],
+            ),
+        )
+        .await?;
+
+        let continuation = next_json(&mut first).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-tool");
+        assert_eq!(continuation["input"].as_array().map(Vec::len), Some(1));
+        let tool_output = continuation["input"][0].clone();
+        send_json(
+            &mut first,
+            json!({
+                "type": "response.created",
+                "response": { "id": "resp-interrupted" }
+            }),
+        )
+        .await?;
+        send_json(
+            &mut first,
+            json!({
+                "type": "response.in_progress",
+                "response": { "id": "resp-interrupted" }
+            }),
+        )
+        .await?;
+        send_json(
+            &mut first,
+            json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": { "type": "reasoning" }
+            }),
+        )
+        .await?;
+        drop(first);
+
+        let (stream, _) = listener.accept().await?;
+        let mut second = accept_async(stream).await?;
+        let replay = next_json(&mut second).await?;
+        assert!(replay.get("previous_response_id").is_none());
+        assert_eq!(replay["input"].as_array().map(Vec::len), Some(6));
+        assert_eq!(replay["input"][4]["type"], "custom_tool_call");
+        assert_eq!(replay["input"][4]["call_id"], "call-exec");
+        assert_eq!(replay["input"][5], tool_output);
+        send_reviewed_final(&mut second, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("receive-reconnect")?;
+    let output = run_model(&endpoint, &workspace, "recover after a receive reset").await?;
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    assert_eq!(std::fs::read_to_string(workspace.join("marker.txt"))?, "x");
+    assert!(output.contains("\"model.connection.retrying\""));
+    assert!(output.contains("failed to receive a Responses WebSocket frame"));
+    assert!(output.contains("\"purpose\":\"reconnect\""));
+    assert!(output.contains("\"connection_attempts\":2"));
+    assert!(output.contains("\"websocket_reconnects\":1"));
+    assert!(output.contains("\"model_calls\":3"));
+    assert!(!output.contains("\"model.call.failed\""));
+    assert!(output.contains("\"run.completed\""));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -726,7 +942,7 @@ async fn sol_compacts_with_a_trigger_and_installs_the_returned_context() -> Resu
         assert!(continuation["input"][4].get("id").is_none());
         assert!(continuation.to_string().contains("exercise compaction"));
         assert!(!continuation.to_string().contains("tool completed"));
-        send_final(&mut socket, "resp-final").await
+        send_reviewed_final(&mut socket, "resp-final").await
     });
 
     let workspace = temporary_workspace("compaction")?;
@@ -789,6 +1005,7 @@ async fn run_model_with_model(
         model: model.to_owned(),
         api_key: "test-key".to_owned(),
         effort: ReasoningEffort::Low,
+        web_search: true,
         websocket_url: endpoint.to_owned(),
         api_base_url: "http://127.0.0.1:1/v1".to_owned(),
     };
@@ -830,6 +1047,29 @@ where
         ),
     )
     .await
+}
+
+async fn send_reviewed_final<S>(socket: &mut WebSocketStream<S>, response_id: &str) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let before_review_id = format!("{response_id}-before-review");
+    send_final(socket, &before_review_id).await?;
+    let review = next_json(socket).await?;
+    assert_eq!(review["previous_response_id"], before_review_id);
+    let input = review["input"]
+        .as_array()
+        .ok_or_else(|| eyre!("finalization review input was not an array"))?;
+    assert_eq!(input.len(), 1);
+    assert_eq!(input[0]["type"], "message");
+    assert_eq!(input[0]["role"], "developer");
+    let text = input[0]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| eyre!("finalization review did not contain text"))?;
+    assert!(text.starts_with("<finalization_review>"));
+    assert!(text.contains("literal acceptance contract"));
+    assert!(text.ends_with("</finalization_review>"));
+    send_final(socket, response_id).await
 }
 
 fn completed_response(response_id: &str, output: &[Value]) -> Value {

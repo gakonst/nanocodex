@@ -8,7 +8,6 @@ import {
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { preloadedSyntaxLanguages } from "./syntax";
 
 function isMobileBrowser() {
   const browserNavigator = globalThis.navigator;
@@ -38,7 +37,18 @@ const poolOptions: WorkerPoolOptions = {
 
 const highlighterOptions: WorkerInitializationRenderOptions = {
   theme: DEFAULT_THEMES,
-  langs: preloadedSyntaxLanguages,
+  langs: [
+    "cpp",
+    "css",
+    "go",
+    "python",
+    "rust",
+    "sh",
+    "swift",
+    "tsx",
+    "typescript",
+    "zig",
+  ],
   preferredHighlighter: "shiki-wasm",
 };
 

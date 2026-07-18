@@ -1,0 +1,27 @@
+# High-effort rerun for trials invalidated when the shared verifier toolbox
+# preceded each task's native compiler/linker on PATH.
+jobs_dir: .harness/harbor/jobs
+
+agents:
+  - import_path: harbor_adapter.agent:HarnessAgent
+    model_name: openai/gpt-5.6-sol
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    kwargs:
+      effort: high
+      web_search: false
+
+datasets:
+  - name: terminal-bench/terminal-bench-2
+    ref: sha256:c6fc2e2382c1dbae99b2d5ecd2f4f4a60c3c01e0d84642d69b4afd92e99d078b
+    task_names:
+      - terminal-bench/custom-memory-heap-crash
+      - terminal-bench/extract-elf
+      - terminal-bench/path-tracing
+      - terminal-bench/polyglot-rust-c
+
+environment:
+  import_path: harbor_adapter.environment:FastDockerEnvironment
+
+verifier:
+  import_path: harbor_adapter.verifier:PytestVerifier

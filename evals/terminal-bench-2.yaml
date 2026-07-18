@@ -9,6 +9,7 @@ agents:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     kwargs:
       effort: low
+      web_search: false
 
 datasets:
   - name: terminal-bench/terminal-bench-2
@@ -60,8 +61,6 @@ datasets:
 
 environment:
   import_path: harbor_adapter.environment:FastDockerEnvironment
-  kwargs:
-    verifier_dockerfile: evals/pytest/Dockerfile
 
 verifier:
   import_path: harbor_adapter.verifier:PytestVerifier

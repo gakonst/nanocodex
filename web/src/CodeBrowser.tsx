@@ -77,7 +77,6 @@ export const CodeBrowser = forwardRef<CodeBrowserHandle, CodeBrowserProps>(funct
   const [fileQuery, setFileQuery] = useState("");
   const [activeFileIndex, setActiveFileIndex] = useState(0);
   const fileSearchInputRef = useRef<HTMLInputElement>(null);
-  const fileViewerRef = useRef<HTMLElement>(null);
   const renderer = usePierreRenderer();
   const { model } = useFileTree({
     preparedInput: treeInput as unknown as FileTreePreparedInput,
@@ -157,7 +156,6 @@ export const CodeBrowser = forwardRef<CodeBrowserHandle, CodeBrowserProps>(funct
     setFileSearchOpen(false);
     setFileQuery("");
     setTreeOpen(false);
-    requestAnimationFrame(() => fileViewerRef.current?.focus({ preventScroll: true }));
   };
   const treeHeader = useMemo(
     () => (
@@ -294,8 +292,6 @@ export const CodeBrowser = forwardRef<CodeBrowserHandle, CodeBrowserProps>(funct
       <article
         className="code-file"
         aria-label={selected?.path ?? "File viewer"}
-        ref={fileViewerRef}
-        tabIndex={-1}
       >
         {selected ? (
           <>

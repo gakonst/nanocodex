@@ -71,6 +71,13 @@ impl ResponsesError {
             Self::Send(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed)
         )
     }
+
+    pub(crate) const fn is_reconnectable_stream(&self) -> bool {
+        matches!(
+            self,
+            Self::IdleTimeout { .. } | Self::UnexpectedEnd | Self::Receive(_) | Self::Closed { .. }
+        )
+    }
 }
 
 /// Failures in the model/tool orchestration layer.

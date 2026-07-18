@@ -64,7 +64,7 @@ Status: complete.
 - Thin InstalledAgent upload/run adapter with no tool bridge.
 - Rust shell call and canonical assertions producing reward `1`.
 - Raw input/events/stderr plus valid ATIF retained per trial.
-- Content-addressed native eval image with verifier dependencies baked once.
+- Content-addressed native task images plus one shared read-only verifier toolbox.
 
 Measured on the development machine:
 
@@ -77,8 +77,8 @@ Measured on the development machine:
 - full Harbor trial: about 3.6 seconds warm;
 - full `just eval`, including the cached agent build: about 6.7 seconds warm.
 
-The first run after task, platform, or eval-image changes also builds the
-content-addressed native image. Keep that cold setup cost separate from warm
+The first run after task, platform, or verifier-toolbox changes also builds the
+content-addressed native images. Keep that cold setup cost separate from warm
 source-edit measurements. `just prepare-evals` performs this construction for
 the configured suite with Harbor's no-op install-only path, while `just
 prepare-task terminal-bench/<name>` prepares one newly added task. Neither path
@@ -107,8 +107,9 @@ Status: first real model/tool vertical slice complete.
    JavaScript through one local Node.js host reused for the run and inject the
    common Rust tools through the `tools` object. Execute independent nested
    calls concurrently. Native runs use Node.js 12.22 or newer from `PATH`; the
-   shared Harbor eval-image overlay installs the distribution's `nodejs`
-   package. The Rust executable does not download or bundle a runtime.
+   shared Harbor verifier toolbox provides the distribution's `nodejs`
+   package as a fallback. The Rust executable does not download or bundle a
+   runtime.
 5. Use `store: false` and retain the complete ordered logical history locally.
    Preserve model output items and encrypted reasoning, but remove top-level
    response item IDs before replay just as Codex does when item IDs are not
@@ -226,6 +227,15 @@ erase opportunistically:
    is deferred. Revisit it only when the shared portion can shrink production
    LOC without merging their distinct lifecycle semantics or adding a generic
    client/provider layer.
+9. Codex serializes concurrent `write_stdin` interactions that target the same
+   unified-exec session, while this runtime only locks the session's individual
+   stdin, child, and output components. This is an unresolved, low-priority
+   parity question rather than an accepted defect: concurrent writes to one
+   stateful terminal are questionable model behavior, and no retained eval has
+   demonstrated output misassociation. Do not change code mode or unified exec
+   for this alone. Revisit only with a real trajectory or focused parity probe;
+   any eventual coordination belongs to the session owner and must preserve
+   concurrency across independent session IDs.
 
 ## Milestone 2: eval-driven tuning
 
@@ -1696,6 +1706,20 @@ no reconnect or compaction. The matched Codex 0.144.5 trial at
 also passed, using 108,507 input, 91,680 cached-input, and 3,911 output tokens
 and reporting $0.247.
 
+The local Harbor loop now builds one content-addressed, 4.37 GB verifier
+toolbox and mounts it read-only into native task containers instead of deriving
+one verifier image per task. The task image and toolbox build concurrently; a
+process-wide async guard ensures a cold multi-task job constructs the shared
+toolbox only once. The full cold toolbox rebuild took 3 minutes 3 seconds
+outside scoring. The immediately repeated one-task install-only run took 4.28
+Harbor seconds, and a six-task concurrent install-only gate took 8 seconds with
+zero environment failures. Focused warm trials started their environments in
+1.86--1.92 seconds. The direct-Python regression passed 367 upstream and 6
+benchmark tests, the GitPython regression passed 3/3, and the current-artifact
+PyPI trial passed its canonical install check. The Torch profile ran all five
+assertions; its remaining 4/5 result was a genuine one-argument model signature
+miss rather than a verifier failure.
+
 The sibling branch's later six-worker gate reproduced RStan's sampler-thinning
 semantic miss, so its historical focused green result is not sufficient to
 import that admission. Select and revalidate the third task in this batch on
@@ -1753,6 +1777,19 @@ tokens, cache utilization, compactions, and cost when the API reports it. Once
 one attempt works, use repeated attempts to estimate variance and p50/p95 rather
 than drawing tuning conclusions from one lucky trajectory. Add private taste or
 regression tasks only after the public baseline is stable.
+
+### Upstream Codex parity review (2026-07-18)
+
+The review covered every OpenAI Codex commit from
+`3ac476bed22a7b7322a710a6ca79a0dbe917d604` through
+`35eaf3ffb0bf2001486c68c47a3d946b34d16634`. The harness adopts the corrected
+272,000-token `gpt-5.6-sol` context window from upstream commit
+`d26a9bf671b1c03aabfc32e1092d137c1feb3962`, yielding a 244,800-token automatic
+compaction threshold. Audio forwarding from
+`23899f7cb63a1510e53fddd68740dfc325853e3b` and modality-aware audio history
+from `56395bddaf26eb2829387ca6a417bf9128e5b239` remain deferred until the target
+model advertises audio input; current bundled Sol metadata supports only text
+and image. Do not import a model-catalog abstraction for that deferred path.
 
 ## Milestone 3: review provenance
 

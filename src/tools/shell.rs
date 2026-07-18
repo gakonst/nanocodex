@@ -29,7 +29,7 @@ impl ToolHandler for ExecCommandHandler {
         json!({
             "type": "function",
             "name": self.name(),
-            "description": "Runs a shell command, returning output or a session ID for ongoing interaction. Live sessions are terminated when the agent ends; detach services that must remain running afterward.",
+            "description": "Runs a shell command, returning output or a session ID for ongoing interaction. Live sessions are terminated when the agent ends. For a service required afterward, launch it from a command that exits, redirect stdin/stdout/stderr, and verify it from a separate call.",
             "strict": false,
             "parameters": {
                 "type": "object",
@@ -242,7 +242,7 @@ mod tests {
             spec.pointer("/description")
                 .and_then(serde_json::Value::as_str),
             Some(
-                "Runs a shell command, returning output or a session ID for ongoing interaction. Live sessions are terminated when the agent ends; detach services that must remain running afterward."
+                "Runs a shell command, returning output or a session ID for ongoing interaction. Live sessions are terminated when the agent ends. For a service required afterward, launch it from a command that exits, redirect stdin/stdout/stderr, and verify it from a separate call."
             )
         );
         assert_eq!(
