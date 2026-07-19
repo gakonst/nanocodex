@@ -60,7 +60,7 @@ function isText(buffer) {
 
 function parseRepositoryIdentity(remote) {
   const match = remote.match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?$/);
-  return { fullName: match ? `${match[1]}/${match[2]}` : "gakonst/harness" };
+  return { fullName: match ? `${match[1]}/${match[2]}` : "gakonst/nanocodex" };
 }
 
 function parseChangedFiles(hash) {
