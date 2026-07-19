@@ -170,16 +170,16 @@ impl ShellSessions {
         };
 
         let _interaction = session.begin_interaction();
-        if !request.chars.is_empty() {
-            if let Err(error) = session.write(&request.chars).await {
-                return ExecCommandResult::failed(
-                    started_at.elapsed(),
-                    format!(
-                        "failed to write to exec session {}: {error}",
-                        request.session_id
-                    ),
-                );
-            }
+        if !request.chars.is_empty()
+            && let Err(error) = session.write(&request.chars).await
+        {
+            return ExecCommandResult::failed(
+                started_at.elapsed(),
+                format!(
+                    "failed to write to exec session {}: {error}",
+                    request.session_id
+                ),
+            );
         }
         let (default, minimum, maximum) = if request.chars.is_empty() {
             (DEFAULT_POLL_YIELD_MS, 5_000, 300_000)

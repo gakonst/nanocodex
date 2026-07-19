@@ -6,6 +6,7 @@ use schemars::{JsonSchema, r#gen::SchemaSettings};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::{RawValue, to_raw_value};
 use serde_json::{Map, Value, json};
+use tracing::{Instrument, info_span};
 
 use crate::{
     apply_patch,
@@ -490,6 +491,41 @@ pub(crate) struct ToolRegistry {
 
 impl ToolRegistry {
     pub(crate) async fn execute_nested(
+        &self,
+        name: &str,
+        input: Value,
+        context: ToolContext<'_>,
+    ) -> ToolExecution {
+        let span = info_span!(
+            target: "nanocodex_tools",
+            "tool.execute",
+            tool.name = name,
+            session.id = context.session_id,
+            tool.call_id = context.call_id,
+            status = tracing::field::Empty,
+            duration_ns = tracing::field::Empty,
+        );
+        let started_at = std::time::Instant::now();
+        let execution = self
+            .execute_nested_inner(name, input, context)
+            .instrument(span.clone())
+            .await;
+        span.record(
+            "status",
+            if execution.success {
+                "completed"
+            } else {
+                "failed"
+            },
+        );
+        span.record(
+            "duration_ns",
+            u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        );
+        execution
+    }
+
+    async fn execute_nested_inner(
         &self,
         name: &str,
         input: Value,

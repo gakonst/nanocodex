@@ -1,0 +1,175 @@
+name: CI
+
+permissions: {}
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test ${{ matrix.os }} / Rust ${{ matrix.rust }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust: stable
+          - os: ubuntu-latest
+            rust: "1.88"
+          - os: macos-latest
+            rust: stable
+          - os: windows-latest
+            rust: stable
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - run: cargo test --workspace --locked
+
+  quality:
+    name: rustfmt, clippy, and docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  policy:
+    name: dependencies and spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+      - uses: crate-ci/typos@96d9af6217dc2855210655af7e1ff19d23d4e593 # v1
+
+  bindings:
+    name: Python, Node, and browser bindings
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            bindings/wasm/package-lock.json
+            examples/react-vite/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+      - name: Build and test WASM consumers
+        run: |
+          npm ci --prefix bindings/wasm
+          npm ci --prefix examples/react-vite
+          cargo build --locked -p nanocodex-wasm --target wasm32-unknown-unknown --profile wasm
+          wasm-bindgen target/wasm32-unknown-unknown/wasm/nanocodex_wasm.wasm --target nodejs --out-dir bindings/wasm/pkg-node --out-name nanocodex
+          wasm-bindgen target/wasm32-unknown-unknown/wasm/nanocodex_wasm.wasm --target web --out-dir bindings/wasm/pkg-web --out-name nanocodex
+          node bindings/wasm/js/write-package-types.mjs
+          npm test --prefix bindings/wasm
+          npm run build --prefix examples/react-vite
+      - name: Build and test Python bindings
+        shell: bash
+        run: |
+          python -m venv bindings/python/.venv
+          source bindings/python/.venv/bin/activate
+          python -m pip install 'maturin>=1.9,<2'
+          maturin develop --manifest-path bindings/python/Cargo.toml
+          python -m unittest discover -s bindings/python/tests -v
+
+  codeql:
+    name: CodeQL actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@eec0bff2f6c15bf3f1e8a0152f94d17664a06a06 # v4
+        with:
+          languages: actions
+          build-mode: none
+      - uses: github/codeql-action/analyze@eec0bff2f6c15bf3f1e8a0152f94d17664a06a06 # v4
+        with:
+          category: /language:actions
+
+  ci-success:
+    name: ci success
+    if: always()
+    needs: [test, quality, policy, bindings, codeql]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job
+        env:
+          TEST: ${{ needs.test.result }}
+          QUALITY: ${{ needs.quality.result }}
+          POLICY: ${{ needs.policy.result }}
+          BINDINGS: ${{ needs.bindings.result }}
+          CODEQL: ${{ needs.codeql.result }}
+        run: |
+          test "$TEST" = success
+          test "$QUALITY" = success
+          test "$POLICY" = success
+          test "$BINDINGS" = success
+          test "$CODEQL" = success

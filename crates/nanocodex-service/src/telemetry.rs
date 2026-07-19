@@ -40,7 +40,7 @@ pub(crate) struct ApiEvent<'a> {
     pub(crate) event: &'a RawValue,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ConnectionPurpose {
     Initial,

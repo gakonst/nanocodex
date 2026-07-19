@@ -10,6 +10,7 @@ use nanocodex_service::{
 };
 use serde_json::value::RawValue;
 use tower::Service;
+use tracing::{Instrument, info_span};
 use web_time::Instant;
 
 use super::{
@@ -426,13 +427,35 @@ where
             history,
             output_token_budget: nanocodex_tools::DEFAULT_TOOL_OUTPUT_TOKENS,
         };
-        let mut execution = if call.name == "exec" {
-            tools.execute_code(&call.input, context).await
-        } else {
-            tools.wait_for_code(&call.input, context).await
-        };
+        let tool_span = info_span!(
+            target: "nanocodex",
+            "tool.call",
+            tool.name = %call.name,
+            tool.call_id = %call.call_id,
+            model.call_index = call_index,
+            status = tracing::field::Empty,
+            duration_ns = tracing::field::Empty,
+        );
+        let mut execution = async {
+            if call.name == "exec" {
+                tools.execute_code(&call.input, context).await
+            } else {
+                tools.wait_for_code(&call.input, context).await
+            }
+        }
+        .instrument(tool_span.clone())
+        .await;
         prepare_output_images(&mut execution.output).await;
         let duration_ns = elapsed_ns(started_at);
+        tool_span.record(
+            "status",
+            if execution.success {
+                "completed"
+            } else {
+                "failed"
+            },
+        );
+        tool_span.record("duration_ns", duration_ns);
         self.stats.tool_wall_duration_ns += duration_ns;
         for nested in &execution.nested_calls {
             self.emit_nested_tool(call_index, &call.call_id, nested)?;
@@ -543,9 +566,25 @@ where
                 prompt_cache_key: factory.profile().prompt_cache_key(),
             },
         )?;
-        let success = match self.client.execute(factory.warmup()).await {
+        let span = info_span!(
+            target: "nanocodex",
+            "model.warmup",
+            model = MODEL,
+            status = tracing::field::Empty,
+            duration_ns = tracing::field::Empty,
+        );
+        let success = match self
+            .client
+            .execute(factory.warmup())
+            .instrument(span.clone())
+            .await
+        {
             Ok(success) => success,
-            Err(error) => return self.warmup_failed(started_at, error.into()),
+            Err(error) => {
+                span.record("status", "failed");
+                span.record("duration_ns", elapsed_ns(started_at));
+                return self.warmup_failed(started_at, error.into());
+            }
         };
         let attempt = success.attempt();
         let connection_generation = success.connection_generation();
@@ -557,6 +596,8 @@ where
             .into());
         };
         let duration_ns = elapsed_ns(started_at);
+        span.record("status", "completed");
+        span.record("duration_ns", duration_ns);
         self.stats.warmup_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
             self.stats.warmup_usage.add(usage);
@@ -614,9 +655,25 @@ where
             conversation.delta_start,
             previous_response_id,
         );
-        let success = match self.client.execute(request).await {
+        let span = info_span!(
+            target: "nanocodex",
+            "model.call",
+            model = MODEL,
+            model.call_index = call_index,
+            previous_response = previous_response_id.is_some(),
+            status = tracing::field::Empty,
+            duration_ns = tracing::field::Empty,
+            input_tokens = tracing::field::Empty,
+            cached_input_tokens = tracing::field::Empty,
+            output_tokens = tracing::field::Empty,
+        );
+        let success = match self.client.execute(request).instrument(span.clone()).await {
             Ok(success) => success,
-            Err(error) => return self.model_call_failed(call_index, started_at, error.into()),
+            Err(error) => {
+                span.record("status", "failed");
+                span.record("duration_ns", elapsed_ns(started_at));
+                return self.model_call_failed(call_index, started_at, error.into());
+            }
         };
         let attempt = success.attempt();
         let connection_generation = success.connection_generation();
@@ -628,6 +685,19 @@ where
             .into());
         };
         let duration_ns = elapsed_ns(started_at);
+        span.record("status", "completed");
+        span.record("duration_ns", duration_ns);
+        if let Some(usage) = &response.usage {
+            span.record("input_tokens", usage.input_tokens);
+            span.record(
+                "cached_input_tokens",
+                usage
+                    .input_tokens_details
+                    .as_ref()
+                    .map_or(0, |details| details.cached_tokens),
+            );
+            span.record("output_tokens", usage.output_tokens);
+        }
         self.stats.model_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
             self.stats.usage.add(usage);

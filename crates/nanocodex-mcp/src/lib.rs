@@ -20,6 +20,7 @@ use nanocodex_tools::{DynamicToolProvider, Tool, ToolContext, ToolExecution, Too
 use rmcp::model::CallToolRequestParams;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tracing::{Instrument, info_span};
 
 pub use config::McpServer;
 
@@ -135,23 +136,45 @@ impl DynamicToolProvider for Mcp {
             let name = server.name.clone();
             let config = server.config.clone();
             let state = Arc::clone(&self.state);
-            drop(tokio::spawn(async move {
-                let result = client::connect(&config).await.map(|connected| {
-                    connected
-                        .tools
-                        .into_iter()
-                        .map(|tool| {
-                            ToolEntry::new(
-                                &name,
-                                &tool,
-                                Arc::clone(&connected.client),
-                                config.tool_timeout,
-                            )
-                        })
-                        .collect()
-                });
-                state.complete_server(&name, result);
-            }));
+            let span = info_span!(
+                target: "nanocodex_mcp",
+                "mcp.server_start",
+                mcp.server = %name,
+                status = tracing::field::Empty,
+                tool.count = tracing::field::Empty,
+            );
+            drop(tokio::spawn(
+                async move {
+                    let result = client::connect(&config).await.map(|connected| {
+                        connected
+                            .tools
+                            .into_iter()
+                            .map(|tool| {
+                                ToolEntry::new(
+                                    &name,
+                                    &tool,
+                                    Arc::clone(&connected.client),
+                                    config.tool_timeout,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                    let current = tracing::Span::current();
+                    current.record(
+                        "status",
+                        if result.is_ok() {
+                            "completed"
+                        } else {
+                            "failed"
+                        },
+                    );
+                    if let Ok(tools) = &result {
+                        current.record("tool.count", tools.len());
+                    }
+                    state.complete_server(&name, result);
+                }
+                .instrument(span),
+            ));
         }
     }
 
@@ -177,16 +200,29 @@ impl DynamicToolProvider for Mcp {
         };
         let params =
             CallToolRequestParams::new(entry.remote_name.clone()).with_arguments(arguments);
-        let result = match tokio::time::timeout(entry.timeout, entry.client.call_tool(params)).await
+        let span = info_span!(
+            target: "nanocodex_mcp",
+            "mcp.tool_call",
+            mcp.server = %entry.server_name,
+            mcp.tool = %entry.remote_name,
+            status = tracing::field::Empty,
+        );
+        let result = match tokio::time::timeout(
+            entry.timeout,
+            entry.client.call_tool(params).instrument(span.clone()),
+        )
+        .await
         {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
+                span.record("status", "failed");
                 return Some(ToolExecution::error(format!(
                     "MCP tool {}/{} failed: {error}",
                     entry.server_name, entry.remote_name
                 )));
             }
             Err(_) => {
+                span.record("status", "timeout");
                 return Some(ToolExecution::error(format!(
                     "MCP tool {}/{} exceeded {:.1} seconds",
                     entry.server_name,
@@ -196,6 +232,7 @@ impl DynamicToolProvider for Mcp {
             }
         };
         let success = !result.is_error.unwrap_or(false);
+        span.record("status", if success { "completed" } else { "failed" });
         let value = match serde_json::to_value(result) {
             Ok(value) => value,
             Err(error) => {
@@ -319,6 +356,7 @@ fn search_description(servers: &[NamedServer]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::future::join_all;
     use nanocodex_core::MODEL;
     use nanocodex_tools::{DEFAULT_TOOL_OUTPUT_TOKENS, ToolOutputBody};
     use serde_json::value::to_raw_value;
@@ -418,5 +456,94 @@ mod tests {
             execution.output,
             ToolOutputBody::Text(output) if output.contains("fixture:hello")
         ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_server_startup_and_remote_calls_are_bounded_and_reusable() {
+        const SERVERS: usize = 8;
+        const CALLS: usize = 256;
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/stdio-server.mjs");
+        let mut builder = Mcp::builder();
+        for index in 0..SERVERS {
+            builder = builder.server(
+                format!("fixture_{index}"),
+                McpServer::stdio("node").arg(fixture.to_string_lossy()),
+            );
+        }
+        let mcp = builder.build().unwrap();
+        mcp.start();
+        let context = ToolContext {
+            model: MODEL,
+            session_id: "stress-session",
+            call_id: "stress-call",
+            history: &[],
+            output_token_budget: DEFAULT_TOOL_OUTPUT_TOKENS,
+        };
+        let search = mcp
+            .search
+            .execute(
+                ToolInput::Function(
+                    to_raw_value(&json!({ "query": "echo message", "limit": 32 })).unwrap(),
+                ),
+                context,
+            )
+            .await;
+        assert!(search.success);
+        let names = mcp
+            .available_definitions()
+            .into_iter()
+            .map(|definition| definition.name().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), SERVERS);
+
+        let calls = (0..CALLS).map(|index| {
+            mcp.execute(
+                &names[index % names.len()],
+                json!({ "message": index.to_string() }),
+                context,
+            )
+        });
+        let results = join_all(calls).await;
+        assert!(
+            results
+                .into_iter()
+                .all(|result| { result.is_some_and(|execution| execution.success) })
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "manual repeated-search stress benchmark"]
+    async fn stress_repeated_tool_search() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/stdio-server.mjs");
+        let mcp = Mcp::builder()
+            .server(
+                "fixture",
+                McpServer::stdio("node").arg(fixture.to_string_lossy()),
+            )
+            .build()
+            .unwrap();
+        mcp.start();
+        let context = ToolContext {
+            model: MODEL,
+            session_id: "stress-session",
+            call_id: "stress-search",
+            history: &[],
+            output_token_budget: DEFAULT_TOOL_OUTPUT_TOKENS,
+        };
+        let started = std::time::Instant::now();
+        for _ in 0..10_000 {
+            let result = mcp
+                .search
+                .execute(
+                    ToolInput::Function(to_raw_value(&json!({ "query": "echo message" })).unwrap()),
+                    context,
+                )
+                .await;
+            assert!(result.success);
+        }
+        eprintln!("10k repeated searches: {:?}", started.elapsed());
     }
 }

@@ -1,4 +1,6 @@
 mod config;
+mod mcp;
+mod observability;
 mod run;
 mod tui;
 
@@ -6,6 +8,7 @@ use clap::{Parser, Subcommand, builder::NonEmptyStringValueParser};
 use eyre::Result;
 
 use config::AgentArgs;
+use observability::ObservabilityArgs;
 
 #[derive(Parser)]
 #[command(
@@ -18,6 +21,9 @@ struct Cli {
 
     #[command(flatten)]
     agent: AgentArgs,
+
+    #[command(flatten)]
+    observability: ObservabilityArgs,
 
     /// Submit an initial prompt immediately after the TUI opens.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
@@ -37,6 +43,9 @@ async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
 
     let cli = Cli::parse();
+    let _observability = cli
+        .observability
+        .install(cli.command.is_none(), cli.agent.cwd())?;
     match cli.command {
         Some(Command::Run(command)) => command.run(cli.agent).await,
         None => tui::run(cli.agent, cli.prompt).await,

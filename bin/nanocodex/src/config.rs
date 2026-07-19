@@ -4,6 +4,8 @@ use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::Result;
 use nanocodex::{AgentEvents, Nanocodex, Responses, Thinking, Tools};
 
+use crate::mcp::McpArgs;
+
 #[derive(Args)]
 pub(crate) struct AgentArgs {
     /// `OpenAI` API key. Prefer `OPENAI_API_KEY` or the repository `.env` file.
@@ -64,6 +66,9 @@ pub(crate) struct AgentArgs {
         default_value = "https://api.openai.com/v1"
     )]
     api_base_url: String,
+
+    #[command(flatten)]
+    mcp: McpArgs,
 }
 
 impl AgentArgs {
@@ -76,10 +81,13 @@ impl AgentArgs {
             .websocket_url(self.websocket_url)
             .api_base_url(self.api_base_url)
             .build();
-        let tools = Tools::builder()
+        let mut tools = Tools::builder()
             .web_search(self.web_search)
-            .image_generation(self.image_generation)
-            .build()?;
+            .image_generation(self.image_generation);
+        if let Some(mcp) = self.mcp.build()? {
+            tools = tools.provider(mcp);
+        }
+        let tools = tools.build()?;
         let builder = Nanocodex::builder(self.api_key)
             .thinking(self.thinking)
             .tools(tools)

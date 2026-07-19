@@ -1,0 +1,80 @@
+name: Release
+
+permissions: {}
+
+on:
+  push:
+    tags: ["*.*.*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: nanocodex-x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: nanocodex-aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: nanocodex-x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: nanocodex-x86_64-pc-windows-msvc.exe
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - run: cargo build --locked --release -p nanocodex-bin --target ${{ matrix.target }}
+      - name: Stage Unix artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
+      - name: Stage Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist
+          Copy-Item "target/${{ matrix.target }}/release/nanocodex.exe" "dist/${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release and attach binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes

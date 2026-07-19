@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Background MCP discovery and deferred Code Mode tools for Nanocodex"
 
 [dependencies]
 async-trait.workspace = true
@@ -17,6 +22,10 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "rt", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
 
 [lints]
 workspace = true

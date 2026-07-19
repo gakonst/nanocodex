@@ -11,6 +11,7 @@ use nanocodex_core::{
 };
 use tokio::sync::Mutex;
 use tower::{Service, retry::Retry};
+use tracing::{Instrument, info_span};
 use web_time::Instant;
 
 use crate::{
@@ -18,7 +19,7 @@ use crate::{
     attempt::{ResponsesAttempt, ResponsesAttemptKind, ResponsesOutput, ResponsesServiceResponse},
     middleware::{DefaultResponsesService, ResponsesRetryPolicy},
     service_error::{FailurePhase, ResponsesServiceError},
-    socket::{ResponsesSocket, decode_event, parse_raw_json},
+    socket::{ConnectionMetadata, ResponsesSocket, decode_event, parse_raw_json},
     stream,
     telemetry::{
         ApiEvent, AttemptFailed, AttemptStarted, ConnectionCompleted, ConnectionFailed,
@@ -39,6 +40,13 @@ struct ConnectionState {
     generation: u32,
     next_purpose: ConnectionPurpose,
     server_reasoning_included: bool,
+}
+
+struct EstablishedConnection {
+    socket: ResponsesSocket,
+    metadata: ConnectionMetadata,
+    attempt: u32,
+    duration_ns: u64,
 }
 
 impl ConnectionState {
@@ -99,6 +107,15 @@ impl ResponsesService {
             .fetch_add(1, Ordering::Relaxed);
         let started_at = Instant::now();
         let result = self.run_inner(connection, request, started_at).await;
+        tracing::Span::current().record(
+            "status",
+            if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            },
+        );
+        tracing::Span::current().record("duration_ns", elapsed_ns(started_at));
         connection.capture_turn_state();
         if let Err(failure) = &result {
             if matches!(request.kind, ResponsesAttemptKind::Warmup) {
@@ -235,59 +252,18 @@ impl ResponsesService {
         connection: &mut ConnectionState,
         request: &ResponsesAttempt,
     ) -> Result<(), ResponsesServiceError> {
-        let started_at = Instant::now();
         let purpose = connection.next_purpose;
-        let attempt = request
-            .observer
-            .stats
-            .connection_attempts
-            .fetch_add(1, Ordering::Relaxed)
-            + 1;
-        request.observer.emit(
-            AgentEventKind::ModelConnectionStarted,
-            ConnectionStarted {
-                transport: TRANSPORT,
-                websocket_url: display_endpoint(&self.config.websocket_url),
-                attempt,
-                purpose,
-                connection_generation: connection.generation + 1,
-            },
-        )?;
-        let result = ResponsesSocket::connect(
-            &self.config.websocket_url,
-            &self.config.api_key,
-            request.profile.prompt_cache_key(),
-        )
-        .await;
-        let elapsed = started_at.elapsed();
-        request
-            .observer
-            .stats
-            .connection_duration_ns
-            .fetch_add(duration_ns(elapsed), Ordering::Relaxed);
-        let (socket, metadata) = match result {
-            Ok(connection) => connection,
-            Err(error) => {
-                let message = error.to_string();
-                request.observer.emit(
-                    AgentEventKind::ModelConnectionFailed,
-                    ConnectionFailed {
-                        transport: TRANSPORT,
-                        attempt,
-                        purpose,
-                        duration_ns: duration_ns(elapsed),
-                        error: &message,
-                        connection_generation: connection.generation + 1,
-                    },
-                )?;
-                return Err(ResponsesServiceError::responses(
-                    error,
-                    FailurePhase::Connect,
-                    connection.generation,
-                ));
-            }
-        };
-        connection.generation += 1;
+        let generation = connection.generation + 1;
+        let established = self
+            .establish_connection(request, purpose, generation)
+            .await?;
+        let EstablishedConnection {
+            socket,
+            metadata,
+            attempt,
+            duration_ns,
+        } = established;
+        connection.generation = generation;
         connection.next_purpose = ConnectionPurpose::Reconnect;
         if !matches!(purpose, ConnectionPurpose::Initial) {
             request
@@ -306,7 +282,7 @@ impl ResponsesService {
                 transport: TRANSPORT,
                 attempt,
                 purpose,
-                duration_ns: duration_ns(elapsed),
+                duration_ns,
                 http_status: metadata.status,
                 request_id: metadata.request_id.as_deref(),
                 server_model: metadata.server_model.as_deref(),
@@ -316,6 +292,89 @@ impl ResponsesService {
         )?;
         connection.socket = Some(socket);
         Ok(())
+    }
+
+    async fn establish_connection(
+        &self,
+        request: &ResponsesAttempt,
+        purpose: ConnectionPurpose,
+        generation: u32,
+    ) -> Result<EstablishedConnection, ResponsesServiceError> {
+        let started_at = Instant::now();
+        let attempt = request
+            .observer
+            .stats
+            .connection_attempts
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        request.observer.emit(
+            AgentEventKind::ModelConnectionStarted,
+            ConnectionStarted {
+                transport: TRANSPORT,
+                websocket_url: display_endpoint(&self.config.websocket_url),
+                attempt,
+                purpose,
+                connection_generation: generation,
+            },
+        )?;
+        let connect_span = info_span!(
+            target: "nanocodex_service",
+            "responses.connect",
+            purpose = ?purpose,
+            connection.generation = generation,
+            status = tracing::field::Empty,
+            duration_ns = tracing::field::Empty,
+        );
+        let result = ResponsesSocket::connect(
+            &self.config.websocket_url,
+            &self.config.api_key,
+            request.profile.prompt_cache_key(),
+        )
+        .instrument(connect_span.clone())
+        .await;
+        let elapsed = started_at.elapsed();
+        connect_span.record(
+            "status",
+            if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            },
+        );
+        connect_span.record("duration_ns", duration_ns(elapsed));
+        request
+            .observer
+            .stats
+            .connection_duration_ns
+            .fetch_add(duration_ns(elapsed), Ordering::Relaxed);
+        let (socket, metadata) = match result {
+            Ok(connection) => connection,
+            Err(error) => {
+                let message = error.to_string();
+                request.observer.emit(
+                    AgentEventKind::ModelConnectionFailed,
+                    ConnectionFailed {
+                        transport: TRANSPORT,
+                        attempt,
+                        purpose,
+                        duration_ns: duration_ns(elapsed),
+                        error: &message,
+                        connection_generation: generation,
+                    },
+                )?;
+                return Err(ResponsesServiceError::responses(
+                    error,
+                    FailurePhase::Connect,
+                    generation.saturating_sub(1),
+                ));
+            }
+        };
+        Ok(EstablishedConnection {
+            socket,
+            metadata,
+            attempt,
+            duration_ns: duration_ns(elapsed),
+        })
     }
 }
 
@@ -330,10 +389,24 @@ impl Service<ResponsesAttempt> for ResponsesService {
 
     fn call(&mut self, request: ResponsesAttempt) -> Self::Future {
         let service = self.clone();
-        Box::pin(async move {
-            let mut connection = service.connection.lock().await;
-            service.run(&mut connection, &request).await
-        })
+        let span = info_span!(
+            target: "nanocodex_service",
+            "responses.attempt",
+            phase = request.kind.phase(),
+            model.call_index = request.call_index,
+            attempt = request.attempt,
+            max_attempts = request.max_attempts,
+            replay.mode = request.replay_mode(),
+            status = tracing::field::Empty,
+            duration_ns = tracing::field::Empty,
+        );
+        Box::pin(
+            async move {
+                let mut connection = service.connection.lock().await;
+                service.run(&mut connection, &request).await
+            }
+            .instrument(span),
+        )
     }
 }
 

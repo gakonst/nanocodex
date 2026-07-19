@@ -1,0 +1,13 @@
+[files]
+extend-exclude = [
+    ".nanocodex/",
+    "web/public/data/",
+    "web/src/data/harness-repository.json",
+    "web/worker-configuration.d.ts",
+]
+
+[default.extend-words]
+ratatui = "ratatui"
+serde = "serde"
+wasm = "wasm"
+ba = "ba"

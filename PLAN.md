@@ -124,10 +124,10 @@ Socket tasks and mutable driver details stay private.
 
 ## Active roadmap
 
-### Phase 1: events and observability
+### Phase 1: events and observability (complete)
 
-This is the next production slice. Preserve the ownership and result API while
-making the library straightforward to operate inside a long-lived application.
+The ownership and result API now expose stable diagnostics for long-lived
+applications without coupling the library to a subscriber or exporter.
 
 Outcomes:
 
@@ -155,6 +155,13 @@ Gate:
 - Tracing writes no stdout and no secrets.
 - Warnings-denied Clippy, workspace tests, public examples, a native CLI smoke,
   and representative retained-trace benchmarks pass.
+
+The deterministic operations gate covers compact/pretty/JSON formatting,
+OTLP/HTTP export and flush, persistent Responses attempt/connect/retry spans,
+parallel MCP startup and dispatch, 256 concurrent MCP calls, and an eight-turn
+CLI-to-library-to-Code-Mode-to-MCP round trip. The cached MCP BM25 index handles
+10,000 repeated searches in roughly 88 ms in the release profile on the
+development machine.
 
 ### Phase 2: lifecycle control, steering, and branching
 
@@ -240,15 +247,24 @@ fast Harbor tasks for model/tool behavior changes. Run the complete configured
 `just eval` for a milestone, release, or cross-cutting lifecycle/transport
 rewrite.
 
-Latest full gate: `master@408eb96`, 41 Terminal-Bench tasks, 40/41 reward in 24
-minutes 16 seconds. All 41 JSONL streams were contiguous and ended in one
-`run.completed`; there were zero errored/retried Harbor trials, zero Responses
-retries, and zero WebSocket reconnects. The run used 13,676,067 input tokens,
-13,013,613 cached input tokens (95.16%), 128,800 output tokens, 633 model calls,
-and 1,106 tool calls. The sole miss left a local verification binary beside the
-required source file; it was not a runtime or transport failure. The retained
-record is under
-`.nanocodex/harbor/jobs/2026-07-18__20-37-28-eval-52286`.
+Latest full gate: the current worktree on `master@f466fb3`, 41 Terminal-Bench
+tasks, 38/41 reward in 20 minutes 58 seconds. All 93,248 JSONL events parsed and
+all 41 streams had contiguous sequence numbers, one stable request ID, and one
+terminal event: 40 `run.completed` and one typed `run.failed`. Across 503 model
+calls and 892 tool calls there were 41 initial connections, zero Responses
+retries, and zero WebSocket reconnects. The run used 8,359,123 input tokens,
+7,709,348 cached input tokens (92.23%), and 114,675 output tokens.
+
+The three verifier misses were model/task outcomes rather than transport
+failures: an invalid synonym substitution, forbidden extra build/cache files,
+and a C extension below the required speedup. An isolated rerun confirmed the
+speedup miss. The one Harbor-classified error was an upstream `cyber_policy`
+rejection after the task had already produced a verifier-passing artifact; the
+same pinned task then completed and passed in isolation. The retained full job
+is `.nanocodex/harbor/jobs/2026-07-19__10-00-16-eval-35805`; focused records are
+`2026-07-19__10-22-04-portfolio-optimization-48842` and
+`2026-07-19__10-24-43-model-extraction-relu-logits-50144` under the same jobs
+directory.
 
 Harbor results and ATIF are the eval record. Do not copy another append-only
 experiment diary into this plan; use Git history and retained job paths for

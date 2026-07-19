@@ -40,6 +40,21 @@ flushed JSONL only:
 nanocodex run "Inspect this repository and summarize it."
 ```
 
+The CLI accepts the same MCP providers as the library. For example, a local
+stdio server can be exercised across repeated turns on one retained session:
+
+```sh
+nanocodex \
+  --mcp-stdio workspace=node \
+  --mcp-arg workspace=./server.mjs \
+  run --repeat 3 "Search the workspace tools and summarize the result."
+```
+
+Lifecycle tracing is written to stderr for headless runs and to
+`.nanocodex/logs/tui.log` for the TUI. `--log-format json` selects structured
+local logs, `RUST_LOG` or `--log-filter` controls filtering, and
+`--otel-endpoint http://localhost:4318` exports spans over OTLP/HTTP.
+
 ## Use it as a library
 
 Until the crates are published, depend on the repository directly:
@@ -215,6 +230,40 @@ headers; secret values are resolved only by the background connection task.
 Server/tool filters and startup/tool timeouts are configured per `McpServer`.
 See [`mcp.rs`](examples/mcp.rs) for a runnable example.
 
+### Add tracing and OpenTelemetry
+
+Nanocodex libraries emit stable `tracing` spans for sessions, turns, model
+calls, Responses attempts and connections, retries, tools, and MCP activity.
+They never install a global subscriber, so an embedding application can use
+its existing formatting, metrics, or OpenTelemetry stack. Contractual
+`AgentEvents` remain separate from diagnostic tracing.
+
+The optional `nanocodex-observability` crate provides the same compact stderr,
+JSON/file, and OTLP/HTTP setup used by the CLI:
+
+```toml
+[dependencies]
+nanocodex-observability = { git = "https://github.com/gakonst/nanocodex" }
+```
+
+```rust
+use nanocodex_observability::{LogFormat, ObservabilityBuilder};
+
+# fn install() -> Result<(), Box<dyn std::error::Error>> {
+let _guard = ObservabilityBuilder::new("my-agent", env!("CARGO_PKG_VERSION"))
+    .filter("warn,nanocodex=info,nanocodex_service=info,nanocodex_mcp=info")
+    .format(LogFormat::Json)
+    .otlp_endpoint("http://localhost:4318")
+    .install()?;
+# Ok(())
+# }
+```
+
+Keep the returned guard alive for the application lifetime so non-blocking
+formatting and batched trace export are flushed during shutdown. Spans include
+IDs, attempt/replay state, durations, status, token usage, and cache usage, but
+not API keys or full prompt bodies.
+
 ### Embed from Python, Node.js, or a browser Worker
 
 The language bindings preserve the same owned session rather than wrapping the
@@ -366,7 +415,8 @@ just eval-hosted
 ```
 
 Retained jobs live under `.nanocodex/harbor/jobs`; `just view` opens them. The
-latest full 41-task gate scored 40/41 with zero errored trials, Responses
-retries, or WebSocket reconnects and 95.16% cached input. Current architecture,
-validation policy, baseline details, and ordered future work live in
-[`PLAN.md`](PLAN.md).
+latest full 41-task gate scored 38/41 with zero Responses retries or WebSocket
+reconnects and 92.23% cached input. One task hit a transient upstream policy
+rejection after producing a verifier-passing artifact and passed an isolated
+rerun. Current architecture, validation policy, failure classifications, and
+ordered future work live in [`PLAN.md`](PLAN.md).

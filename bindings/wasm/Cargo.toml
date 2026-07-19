@@ -3,7 +3,12 @@ name = "nanocodex-wasm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = false
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Embedded Node and browser WASM bindings for Nanocodex"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

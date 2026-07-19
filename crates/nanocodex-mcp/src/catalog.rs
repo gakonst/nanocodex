@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use bm25::{Document, Language, SearchEngineBuilder};
+use bm25::{Document, Language, SearchEngine, SearchEngineBuilder};
 use nanocodex_core::ToolDefinition;
 use rmcp::model::Tool as RmcpTool;
 use serde::Serialize;
@@ -31,6 +31,12 @@ struct Catalog {
     entries: BTreeMap<String, Arc<ToolEntry>>,
     active: HashSet<String>,
     failures: BTreeMap<String, String>,
+    search_index: Option<SearchIndex>,
+}
+
+struct SearchIndex {
+    entries: Vec<Arc<ToolEntry>>,
+    engine: SearchEngine<usize>,
 }
 
 pub(crate) struct ProviderState {
@@ -93,6 +99,7 @@ impl ProviderState {
                 catalog.failures.insert(server_name.to_owned(), error);
             }
         }
+        catalog.search_index = None;
         drop(catalog);
         self.remaining.send_modify(|remaining| {
             *remaining = remaining.saturating_sub(1);
@@ -114,26 +121,29 @@ impl ProviderState {
         }
         self.wait_for_startup().await;
         let mut catalog = self.catalog();
-        let entries = catalog.entries.values().cloned().collect::<Vec<_>>();
-        let selected = if entries.is_empty() {
-            Vec::new()
-        } else {
-            let documents: Vec<Document<usize>> = entries
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| Document::new(index, entry.search_text.clone()))
-                .collect();
-            let search =
-                SearchEngineBuilder::<usize>::with_documents(Language::English, documents).build();
-            search
-                .search(query, limit.min(MAX_SEARCH_LIMIT))
-                .into_iter()
-                .filter_map(|result| entries.get(result.document.id).cloned())
-                .collect::<Vec<_>>()
-        };
+        if catalog.search_index.is_none() {
+            tracing::info!(
+                target: "nanocodex_mcp",
+                tool_count = catalog.entries.len(),
+                "building MCP tool search index"
+            );
+            catalog.search_index = Some(SearchIndex::new(catalog.entries.values().cloned()));
+        }
+        let selected = catalog
+            .search_index
+            .as_ref()
+            .map_or_else(Vec::new, |index| {
+                index.search(query, limit.min(MAX_SEARCH_LIMIT))
+            });
         for entry in &selected {
             catalog.active.insert(entry.canonical_name.clone());
         }
+        tracing::debug!(
+            target: "nanocodex_mcp",
+            result_count = selected.len(),
+            active_count = catalog.active.len(),
+            "searched MCP tool catalog"
+        );
         let tools = selected.iter().map(|entry| entry.summary()).collect();
         Ok(SearchResponse {
             tools,
@@ -180,6 +190,27 @@ impl ProviderState {
         self.catalog
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl SearchIndex {
+    fn new(entries: impl IntoIterator<Item = Arc<ToolEntry>>) -> Self {
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        let documents = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| Document::new(index, entry.search_text.clone()));
+        let engine =
+            SearchEngineBuilder::<usize>::with_documents(Language::English, documents).build();
+        Self { entries, engine }
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Vec<Arc<ToolEntry>> {
+        self.engine
+            .search(query, limit)
+            .into_iter()
+            .filter_map(|result| self.entries.get(result.document.id).cloned())
+            .collect()
     }
 }
 

@@ -8,6 +8,7 @@ use nanocodex_service::{
 use nanocodex_tools::Tools;
 use tokio::sync::{mpsc, oneshot};
 use tower::Service;
+use tracing::{Instrument, info_span};
 
 use crate::{
     AgentError, NanocodexError, Result,
@@ -263,6 +264,13 @@ where
     ///
     /// Returns an infrastructure error while receiving or starting a command.
     async fn run(mut self) -> Result<()> {
+        let session_span = info_span!(
+            target: "nanocodex",
+            "agent.session",
+            session.id = self.events.request_id(),
+            model = nanocodex_core::MODEL,
+            thinking = self.config.thinking.as_str(),
+        );
         self.tools.start_providers();
         let mut model = ModelRun::new(
             self.events,
@@ -271,11 +279,30 @@ where
             self.transport_stats,
             self.tools,
         );
+        let mut turn_index = 0_u64;
         while let Some(Command::Prompt { prompt, result }) = self.commands.recv().await {
+            turn_index += 1;
+            let turn_span = info_span!(
+                target: "nanocodex",
+                parent: &session_span,
+                "agent.turn",
+                turn.index = turn_index,
+                prompt.bytes = prompt.instruction.text_bytes(),
+                status = tracing::field::Empty,
+            );
             let outcome = model
                 .execute(prompt)
+                .instrument(turn_span.clone())
                 .await
                 .map(|final_message| TurnResult { final_message });
+            turn_span.record(
+                "status",
+                if outcome.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                },
+            );
             drop(result.send(outcome));
         }
         Ok(())

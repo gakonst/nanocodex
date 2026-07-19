@@ -73,6 +73,17 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
             .stats
             .response_retries
             .fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            target: "nanocodex_service",
+            phase = request.kind.phase(),
+            model.call_index = request.call_index,
+            attempt = request.attempt,
+            next_attempt = request.attempt + 1,
+            error.class = advice.class,
+            delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            server_requested_delay = advice.server_delay.is_some(),
+            "retrying Responses attempt"
+        );
         if !request.prepare_retry() {
             return None;
         }

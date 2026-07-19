@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Tower services and persistent Responses WebSocket transport for Nanocodex"
 
 [dependencies]
 nanocodex-core.workspace = true
@@ -13,6 +18,7 @@ smallvec.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tower.workspace = true
+tracing.workspace = true
 web-time.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

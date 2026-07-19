@@ -54,13 +54,13 @@ impl StreamingPatchParser {
 
     fn ensure_update_hunk_is_not_empty(&self, line: &str) -> Result<(), ParseError> {
         if let Some(UpdateFile { path, chunks, .. }) = self.state.hunks.last() {
-            if chunks.is_empty() {
-                if let StreamingParserMode::UpdateFile { hunk_line_number } = self.state.mode {
-                    return Err(InvalidHunkError {
-                        message: format!("Update file hunk for path '{}' is empty", path.display()),
-                        line_number: hunk_line_number,
-                    });
-                }
+            if chunks.is_empty()
+                && let StreamingParserMode::UpdateFile { hunk_line_number } = self.state.mode
+            {
+                return Err(InvalidHunkError {
+                    message: format!("Update file hunk for path '{}' is empty", path.display()),
+                    line_number: hunk_line_number,
+                });
             }
             if chunks
                 .last()
@@ -84,22 +84,22 @@ impl StreamingPatchParser {
     }
 
     fn handle_hunk_headers_and_end_patch(&mut self, trimmed: &str) -> Result<bool, ParseError> {
-        if matches!(self.state.mode, StreamingParserMode::StartedPatch) {
-            if let Some(environment_id) = trimmed.strip_prefix(ENVIRONMENT_ID_MARKER) {
-                if self.state.environment_id.is_some() {
-                    return Err(InvalidPatchError(
-                        "apply_patch environment_id cannot be specified more than once".to_string(),
-                    ));
-                }
-                let environment_id = environment_id.trim();
-                if environment_id.is_empty() {
-                    return Err(InvalidPatchError(
-                        "apply_patch environment_id cannot be empty".to_string(),
-                    ));
-                }
-                self.state.environment_id = Some(environment_id.to_string());
-                return Ok(true);
+        if matches!(self.state.mode, StreamingParserMode::StartedPatch)
+            && let Some(environment_id) = trimmed.strip_prefix(ENVIRONMENT_ID_MARKER)
+        {
+            if self.state.environment_id.is_some() {
+                return Err(InvalidPatchError(
+                    "apply_patch environment_id cannot be specified more than once".to_string(),
+                ));
             }
+            let environment_id = environment_id.trim();
+            if environment_id.is_empty() {
+                return Err(InvalidPatchError(
+                    "apply_patch environment_id cannot be empty".to_string(),
+                ));
+            }
+            self.state.environment_id = Some(environment_id.to_string());
+            return Ok(true);
         }
         if trimmed == END_PATCH_MARKER {
             self.ensure_update_hunk_is_not_empty(trimmed)?;
@@ -201,12 +201,12 @@ impl StreamingPatchParser {
                 if self.handle_hunk_headers_and_end_patch(trimmed)? {
                     return Ok(());
                 }
-                if let Some(line_to_add) = line.strip_prefix('+') {
-                    if let Some(AddFile { contents, .. }) = self.state.hunks.last_mut() {
-                        contents.push_str(line_to_add);
-                        contents.push('\n');
-                        return Ok(());
-                    }
+                if let Some(line_to_add) = line.strip_prefix('+')
+                    && let Some(AddFile { contents, .. }) = self.state.hunks.last_mut()
+                {
+                    contents.push_str(line_to_add);
+                    contents.push('\n');
+                    return Ok(());
                 }
                 Err(InvalidHunkError {
                     message: format!(
@@ -252,12 +252,13 @@ impl StreamingPatchParser {
                         }
                     }
 
-                    if chunks.is_empty() && move_path.is_none() {
-                        if let Some(move_to_path) = update_line.strip_prefix(MOVE_TO_MARKER) {
-                            *move_path = Some(PathBuf::from(move_to_path));
-                            self.state.mode = StreamingParserMode::UpdateFile { hunk_line_number };
-                            return Ok(());
-                        }
+                    if chunks.is_empty()
+                        && move_path.is_none()
+                        && let Some(move_to_path) = update_line.strip_prefix(MOVE_TO_MARKER)
+                    {
+                        *move_path = Some(PathBuf::from(move_to_path));
+                        self.state.mode = StreamingParserMode::UpdateFile { hunk_line_number };
+                        return Ok(());
                     }
 
                     if (update_line == EMPTY_CHANGE_CONTEXT_MARKER

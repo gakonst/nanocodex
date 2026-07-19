@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "A small, high-performance, headless Rust agents SDK"
 
 [dependencies]
 nanocodex-core.workspace = true
@@ -14,6 +19,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tower.workspace = true
+tracing.workspace = true
 web-time.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

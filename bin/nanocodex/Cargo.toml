@@ -3,7 +3,12 @@ name = "nanocodex-bin"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = false
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Daily-driver TUI and headless JSONL adapter for Nanocodex"
 
 [dependencies]
 clap.workspace = true
@@ -12,11 +17,15 @@ dotenvy.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 nanocodex.workspace = true
+nanocodex-observability.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 unicode-width.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
 
 [[bin]]
 name = "nanocodex"
