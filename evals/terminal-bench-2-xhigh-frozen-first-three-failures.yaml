@@ -1,14 +1,14 @@
 # Focused xhigh retries of the first three failures from the corrected frozen
 # high-effort cohort. Keep the pre-lifecycle binary pinned for comparability.
-jobs_dir: .harness/harbor/jobs
+jobs_dir: .nanocodex/harbor/jobs
 
 agents:
-  - import_path: harbor_adapter.agent:HarnessAgent
+  - import_path: harbor_adapter.agent:NanocodexAgent
     model_name: openai/gpt-5.6-sol
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     kwargs:
-      binary_path: .harness/installed/pre-lifecycle/harness
+      binary_path: .nanocodex/installed/pre-lifecycle/nanocodex
       effort: xhigh
       web_search: false
 

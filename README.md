@@ -1,6 +1,6 @@
-# harness
+# nanocodex
 
-A small Rust coding-agent harness built around Harbor and the OpenAI API.
+A small Rust coding agent built around Harbor and the OpenAI API.
 It currently runs `gpt-5.6-sol` over the Responses API WebSocket transport.
 It follows Codex's Responses Lite pattern: one model-visible `exec` tool runs
 JavaScript in local Node.js and calls the common Rust tool surface.
@@ -19,7 +19,7 @@ just view           # inspect retained Harbor jobs
 ```text
 native BuildKit compile -> static Linux binary
                        -> Harbor task container
-                       -> /installed-agent/harness
+                       -> /installed-agent/nanocodex
                        -> Rust executes tools in /app
                        -> Harbor verifier
 ```
@@ -27,17 +27,17 @@ native BuildKit compile -> static Linux binary
 ## Library embedding
 
 The process/JSONL path is an adapter over the Rust library API, not the SDK
-boundary. `Agent::new(api_key)` starts the fixed-model agent with the standard
+boundary. `Nanocodex::new(api_key)` starts the fixed-model agent with the standard
 prompt, medium thinking, built-in tools, persistent Responses WebSocket, and
-typed retry/reconnect policy. `Agent::builder(api_key)` exposes deliberate
+typed retry/reconnect policy. `Nanocodex::builder(api_key)` exposes deliberate
 overrides for the system prompt, thinking level, tools, workspace, stable
 session ID, and Responses stack. `build()` spawns the stateful driver and
-returns `(Agent, AgentEvents)`: one cheap, cloneable prompt handle and the
+returns `(Nanocodex, AgentEvents)`: one cheap, cloneable prompt handle and the
 single ordered event stream. Callers submit and queue follow-on `Prompt`s
 through the handle and await each typed `TurnResult` with `turn.result()`.
 
 ```rust,ignore
-let (agent, events) = Agent::builder(api_key).build()?;
+let (agent, events) = Nanocodex::builder(api_key).build()?;
 
 let first = agent.prompt("Inspect the repository").await?;
 // The turn is running; the caller remains free to do other work here.
@@ -65,15 +65,15 @@ ownership, ordering, retry-safety, and middleware details.
 
 The Rust workspace exposes four independently usable library layers. Following
 the same boundary style as `alloy-core` and Alloy's ergonomic top-level API,
-`harness-core` owns the dependency-light typed foundation: prompts, event
+`nanocodex-core` owns the dependency-light typed foundation: prompts, event
 envelopes, model configuration, and the complete Responses request/event/item
-model. `harness-service` contains behavior only: the persistent WebSocket,
+model. `nanocodex-service` contains behavior only: the persistent WebSocket,
 stream processing, typed errors, Tower service/client, retry middleware, and
-transport telemetry. `harness-tools` owns the built-in tool runtime, while
-`harness-agent` is the ergonomic composition layer for the complete owned agent
-lifecycle and re-exports the common lower-level API. The executable is the
-`harness` package under `bin/harness`; the workspace root is intentionally only
-a virtual manifest.
+transport telemetry. `nanocodex-tools` owns the built-in tool runtime, while
+`nanocodex` is the ergonomic composition layer for the complete owned agent
+lifecycle and re-exports the common lower-level API. The `nanocodex-bin`
+package under `bin/nanocodex` provides the `nanocodex` executable; the workspace
+root is intentionally only a virtual manifest.
 
 ## Hosted evals
 
@@ -93,25 +93,25 @@ just eval-hosted
 ```
 
 Daytona runs AMD64 sandboxes, so the hosted targets build a separate static
-`linux/amd64` harness artifact instead of reusing the Docker daemon's native
+`linux/amd64` nanocodex artifact instead of reusing the Docker daemon's native
 artifact. They also select Harbor's canonical verifier, which supports remote
-file transfer, and install the harness's Node.js prerequisite during agent
+file transfer, and install Nanocodex's Node.js prerequisite during agent
 setup. The dataset digest and task selection still come from
 [`evals/terminal-bench-2.yaml`](evals/terminal-bench-2.yaml), exactly as they do
 for local evals. Set `HARBOR_HOSTED_EVAL_CONCURRENCY` in `.env` to fit the
 Daytona account quota; it defaults to 32.
 
-Job records remain under `.harness/harbor/jobs` and work with `just view`. To
+Job records remain under `.nanocodex/harbor/jobs` and work with `just view`. To
 put a completed result on Harbor Hub, authenticate once and upload its job
 directory:
 
 ```sh
 .venv/bin/harbor auth login
-.venv/bin/harbor upload .harness/harbor/jobs/<job-name> --private
+.venv/bin/harbor upload .nanocodex/harbor/jobs/<job-name> --private
 ```
 
 Daytona accounts may restrict outbound internet by default. Terminal-Bench and
-the harness need outbound access for task setup, package installation, and the
+Nanocodex needs outbound access for task setup, package installation, and the
 OpenAI API; Harbor's Daytona documentation identifies `HARBOR_NETWORK` as the
 account coupon for removing that restriction.
 
@@ -149,7 +149,7 @@ download or bundle a runtime.
 For the local eval loop, Harbor builds each canonical task Dockerfile for the
 Docker daemon's native architecture while concurrently ensuring one
 content-addressed verifier toolbox image. Each native task container mounts
-that toolbox read-only at `/opt/harness-toolbox`; there is no derived verifier
+that toolbox read-only at `/opt/nanocodex-toolbox`; there is no derived verifier
 image per task. Downloaded benchmark tasks and assertion files remain
 unchanged, and their canonical `test.sh` launchers still own task-specific
 setup, assertion phases, CTRF output, and reward calculation. ABI-keyed Python
@@ -163,8 +163,8 @@ wrapper refreshes the task's APT indexes and performs that real reinstall.
 `just prepare-evals` pays those image-build costs outside measured eval jobs by
 running Harbor's install-only path with its no-op agent. When adding one task,
 `just prepare-task terminal-bench/<name>` prepares only that task. Preparation
-records go under `.harness/harbor/setup`; scored jobs remain under
-`.harness/harbor/jobs`.
+records go under `.nanocodex/harbor/setup`; scored jobs remain under
+`.nanocodex/harbor/jobs`.
 
 The eval YAML pins an immutable Terminal-Bench-2 dataset digest. `prepare-task`
 and `eval-task` filter that dataset rather than resolving a standalone task's
@@ -185,7 +185,7 @@ Local artifacts use Cargo's `dev` profile by default. Set this in `.env` for an
 optimized build with full debug symbols:
 
 ```env
-HARNESS_BUILD_PROFILE=profiling
+NANOCODEX_BUILD_PROFILE=profiling
 ```
 
 ## Eval selection
@@ -211,7 +211,7 @@ slice rather than receiving a benchmark-specific hint. CompCert 3.13.1 is the
 first green admission in the next three-task batch. The Alloy-style WebSocket
 convergence slice reduced production code by 221 lines; its 36-task gate
 completed without an exception, retry, or reconnect in 20 minutes 33 seconds
-and scored 34/36. The two misses were task-output failures, not harness
+and scored 34/36. The two misses were task-output failures, not nanocodex
 failures, and are next for unchanged focused retries before another task is
 admitted.
 
@@ -220,13 +220,13 @@ limit after confirming Codex uses an unbounded tool-follow-up loop with
 context-limit compaction. Fixed CompCert passed after 40 model calls, and an
 unchanged POV-Ray retry recovered the full run's only outcome difference from
 Codex. The revalidated matrix is therefore 30/36 for both systems with the same
-six misses. Harness used 5.08M input tokens at 90.3% cached versus Codex's
+six misses. Nanocodex used 5.08M input tokens at 90.3% cached versus Codex's
 9.30M at 92.8% cached, and was faster on 20 of their 30 shared passes. Public
 task admission can continue one task at a time. `crack-7z-hash` is now active
 after passing both canonical assertions in 5 minutes 51 seconds with zero
 exception or retry and 95.1% cached input.
 
-The matched Codex 0.144.5 archive trial also passed, but the harness completed
+The matched Codex 0.144.5 archive trial also passed, but Nanocodex completed
 agent work in 347.3 seconds over 24 model calls versus Codex's 626.2 seconds
 over 36. `multi-source-data-merger` is the thirty-eighth active task after both
 agents passed its three deterministic assertions. Its canonical pandas and
@@ -234,26 +234,26 @@ PyArrow verifier stack is cached in an isolated overlay so it cannot replace
 the task environment's scientific packages.
 
 The subsequent matched 38-task gates both scored 31/38 with zero exceptions.
-Harness finished in 19m11s versus Codex's 20m47s and was faster on 20 of 28
-shared passes. Harness used 6.09M input tokens at 91.1% cached over 409 model
+Nanocodex finished in 19m11s versus Codex's 20m47s and was faster on 20 of 28
+shared passes. Nanocodex used 6.09M input tokens at 91.1% cached over 409 model
 calls; Codex used 10.47M at 93.3% cached over 509 calls. Despite the lower
-cache percentage, harness used fewer uncached tokens (540k versus 700k).
+cache percentage, nanocodex used fewer uncached tokens (540k versus 700k).
 Unchanged focused retries recovered the shared Cancel Async Tasks miss on both
-agents and the harness-only SQLite/gcov miss.
+agents and the Nanocodex-only SQLite/gcov miss.
 
 `modernize-scientific-stack` is the thirty-ninth active task after both agents
-passed its two assertions. Harness used 12.6 agent-seconds and 24.0k input
+passed its two assertions. Nanocodex used 12.6 agent-seconds and 24.0k input
 tokens versus Codex's 22.3 seconds and 39.9k. Its exact scientific verifier
-pins are isolated under `/opt/harness-verifier/scientific`.
+pins are isolated under `/opt/nanocodex-verifier/scientific`.
 
 `portfolio-optimization` is the fortieth active task after both agents passed
-all six correctness and performance checks. Harness used 75.5 agent-seconds
+all six correctness and performance checks. Nanocodex used 75.5 agent-seconds
 and 76.3k input tokens versus Codex's 113.4k input tokens. The exact portfolio
 NumPy/setuptools verifier pair is isolated under
-`/opt/harness-verifier/portfolio`.
+`/opt/nanocodex-verifier/portfolio`.
 
 `model-extraction-relu-logits` is the forty-first active task after both agents
-matched every hidden row up to permutation and scaling. Harness used 81.5
+matched every hidden row up to permutation and scaling. Nanocodex used 81.5
 agent-seconds and 24.1k input tokens versus Codex's 108.5k input tokens; its
 exact NumPy verifier reuses the isolated 2.3.1 layer.
 
@@ -263,7 +263,7 @@ remain unchanged.
 
 Candidate admission is evidence-driven. Cold task preparation is measured
 before model work, and a task that repeatedly requires benchmark-specific
-prompt hints is deferred rather than adding that hint to the shared harness.
+prompt hints is deferred rather than adding that hint to the shared nanocodex.
 New verifier dependencies are appended as isolated image layers so prior apt
 and Python layers remain reusable. The pinned RDFLib layer used by the active
 SPARQL task was paid once during preparation and adds no warm-trial
@@ -278,15 +278,15 @@ without breaking newer distributions that retain obsolete package metadata.
 The compatibility path was prepared across all 34 task images and regressed
 against Fix Git and OpenSSL without changing canonical tests.
 POV-Ray's Pillow/NumPy/scikit-image verifier stack is cached under
-`/opt/harness-verifier/pov` instead of the system interpreter. The adapter adds
+`/opt/nanocodex-verifier/pov` instead of the system interpreter. The adapter adds
 that path only for the exact canonical POV-Ray `uvx` command, so verifier-only
 versions cannot mutate the agent's task environment.
 The data-merger verifier's pandas/PyArrow stack is likewise isolated under
-`/opt/harness-verifier/parquet` and selected only for its exact canonical
+`/opt/nanocodex-verifier/parquet` and selected only for its exact canonical
 `uvx` command.
 The modern scientific-stack verifier follows the same rule under
-`/opt/harness-verifier/scientific`.
-The portfolio verifier follows it under `/opt/harness-verifier/portfolio`.
+`/opt/nanocodex-verifier/scientific`.
+The portfolio verifier follows it under `/opt/nanocodex-verifier/portfolio`.
 Largest Eigenvalue likewise uses an exact cached pip command and adds no image
 dependency. The retained Tune MJCF experiment uses an exact cached
 `mujoco==3.3.5` command shape and adds no verifier-image dependency.
@@ -299,7 +299,7 @@ producing the required fit, so both the prompt change and task admission were
 reverted.
 
 Every trial retains `input.jsonl`, `events.jsonl`, `stderr.log`, and
-`trajectory.json` under `.harness/harbor/jobs`. Harbor receives aggregate token
+`trajectory.json` under `.nanocodex/harbor/jobs`. Harbor receives aggregate token
 counts, while ATIF also records cache writes, reasoning summaries, model/tool
 durations, code-mode and nested-tool calls, arguments, and structured
 observations.

@@ -697,104 +697,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "harness"
-version = "0.1.0"
-dependencies = [
- "clap",
- "dotenvy",
- "eyre",
- "harness-agent",
- "tokio",
-]
-
-[[package]]
-name = "harness-agent"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64",
- "chrono",
- "eyre",
- "futures-util",
- "harness-core",
- "harness-macros",
- "harness-service",
- "harness-tools",
- "iana-time-zone",
- "image",
- "schemars",
- "serde",
- "serde_json",
- "sha1",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tower",
-]
-
-[[package]]
-name = "harness-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "smallvec",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "harness-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "harness-service"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "eyre",
- "futures-util",
- "harness-core",
- "rustls",
- "serde",
- "serde_json",
- "simd-json",
- "smallvec",
- "sonic-rs",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tower",
-]
-
-[[package]]
-name = "harness-tools"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64",
- "eyre",
- "futures-util",
- "harness-core",
- "image",
- "nix 0.30.1",
- "portable-pty",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "sha1",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1217,6 +1119,104 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "nanocodex"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "eyre",
+ "futures-util",
+ "iana-time-zone",
+ "image",
+ "nanocodex-core",
+ "nanocodex-macros",
+ "nanocodex-service",
+ "nanocodex-tools",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha1",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tower",
+]
+
+[[package]]
+name = "nanocodex-bin"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "dotenvy",
+ "eyre",
+ "nanocodex",
+ "tokio",
+]
+
+[[package]]
+name = "nanocodex-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "smallvec",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "nanocodex-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "nanocodex-service"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "eyre",
+ "futures-util",
+ "nanocodex-core",
+ "rustls",
+ "serde",
+ "serde_json",
+ "simd-json",
+ "smallvec",
+ "sonic-rs",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tower",
+]
+
+[[package]]
+name = "nanocodex-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "eyre",
+ "futures-util",
+ "image",
+ "nanocodex-core",
+ "nix 0.30.1",
+ "portable-pty",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha1",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

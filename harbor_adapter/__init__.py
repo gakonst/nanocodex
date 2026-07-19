@@ -1,1 +1,1 @@
-"""Harbor integration for the Rust harness."""
+"""Harbor integration for Nanocodex."""

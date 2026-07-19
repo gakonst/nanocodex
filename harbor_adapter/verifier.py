@@ -8,39 +8,39 @@ from harbor.models.verifier.result import VerifierResult
 from harbor.utils.env import resolve_env_vars
 from harbor.verifier.verifier import Verifier
 
-_BASE_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/base"
-_NUMPY_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/numpy"
-_POV_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/pov"
-_PARQUET_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/parquet"
-_SCIENTIFIC_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/scientific"
-_PORTFOLIO_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/portfolio"
-_ADAPTIVE_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/adaptive"
-_MUJOCO_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/mujoco"
-_TORCH270_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/torch270"
-_TRANSFORMERS455_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/transformers455"
-_PYTEST834_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/pytest834"
-_PYTEST842_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/pytest842"
-_REQUESTS2324_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/requests2324"
-_BROWSER_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/browser"
-_FILTER_JS_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/filter-js"
-_DATASETS360_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/datasets360"
-_PILLOW1121_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/pillow1121"
-_BN_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/bn"
-_SETUPTOOLS809_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/setuptools809"
-_PYTORCH_CLI_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/pytorch-cli"
+_BASE_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/base"
+_NUMPY_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/numpy"
+_POV_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/pov"
+_PARQUET_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/parquet"
+_SCIENTIFIC_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/scientific"
+_PORTFOLIO_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/portfolio"
+_ADAPTIVE_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/adaptive"
+_MUJOCO_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/mujoco"
+_TORCH270_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/torch270"
+_TRANSFORMERS455_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/transformers455"
+_PYTEST834_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/pytest834"
+_PYTEST842_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/pytest842"
+_REQUESTS2324_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/requests2324"
+_BROWSER_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/browser"
+_FILTER_JS_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/filter-js"
+_DATASETS360_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/datasets360"
+_PILLOW1121_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/pillow1121"
+_BN_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/bn"
+_SETUPTOOLS809_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/setuptools809"
+_PYTORCH_CLI_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/pytorch-cli"
 _INSTALL_WINDOWS_311_VERIFIER_SITE_PACKAGES = (
-    "/opt/harness-verifier/install-windows-311"
+    "/opt/nanocodex-verifier/install-windows-311"
 )
-_FASTTEXT_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/fasttext"
-_SAM_CELL_SEG_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/sam-cell-seg"
-_PYPI_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/pypi"
-_GITPYTHON_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/gitpython"
-_BIOPYTHON_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/biopython"
-_CHESS_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/chess"
-_VIDEO_VERIFIER_SITE_PACKAGES = "/opt/harness-verifier/video"
-_MANAGED_VERIFIER_PYTHON = "/opt/harness-verifier/python"
-_MANAGED_VERIFIER_PYTHON_311 = "/opt/harness-verifier/python3.11"
-_TASK_VERIFIER_PYTHON = "/opt/harness-verifier/bin/python"
+_FASTTEXT_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/fasttext"
+_SAM_CELL_SEG_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/sam-cell-seg"
+_PYPI_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/pypi"
+_GITPYTHON_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/gitpython"
+_BIOPYTHON_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/biopython"
+_CHESS_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/chess"
+_VIDEO_VERIFIER_SITE_PACKAGES = "/opt/nanocodex-verifier/video"
+_MANAGED_VERIFIER_PYTHON = "/opt/nanocodex-verifier/python"
+_MANAGED_VERIFIER_PYTHON_311 = "/opt/nanocodex-verifier/python3.11"
+_TASK_VERIFIER_PYTHON = "/opt/nanocodex-verifier/bin/python"
 _VERIFIER_OVERLAY_PATH_VALIDATION = (
     "verifier_overlay_ifs=$IFS; IFS=:; "
     "for verifier_overlay_path in $verifier_pythonpath; do "
@@ -52,7 +52,7 @@ _VERIFIER_OVERLAY_PATH_VALIDATION = (
 
 
 def _toolbox_library_path_setup_command(
-    verifier_library_path: str = "/opt/harness-verifier/lib",
+    verifier_library_path: str = "/opt/nanocodex-verifier/lib",
 ) -> str:
     library_path = shlex.quote(verifier_library_path)
     return (
@@ -93,7 +93,7 @@ class PytestVerifier(Verifier):
             "script_status=0",
             f"rm -f {reward_path} {ctrf_path} {original_ctrf_path}",
             f": > {test_stdout}",
-            "export PATH=$PATH:/opt/harness-verifier/bin",
+            "export PATH=$PATH:/opt/nanocodex-verifier/bin",
             _toolbox_library_path_setup_command(),
             'verifier_original_pythonpath=${PYTHONPATH:-}',
             'verifier_python_minor=$(python -c \'import sys; '
@@ -326,13 +326,13 @@ class PytestVerifier(Verifier):
             "verifier_cleanup() { "
             'if [ "$verifier_linked_expect" = 1 ] && '
             '[ "$(readlink /usr/bin/expect)" = '
-            '"/opt/harness-verifier/bin/expect" ]; then '
+            '"/opt/nanocodex-verifier/bin/expect" ]; then '
             "rm -f /usr/bin/expect; fi; }",
             "trap verifier_cleanup EXIT",
             "if [ ! -x /usr/bin/expect ]; then "
             "if [ -e /usr/bin/expect ] || [ -L /usr/bin/expect ]; then "
             'echo "unusable existing /usr/bin/expect" >&2; exit 127; fi; '
-            "ln -s /opt/harness-verifier/bin/expect /usr/bin/expect; "
+            "ln -s /opt/nanocodex-verifier/bin/expect /usr/bin/expect; "
             "verifier_linked_expect=1; fi",
             "cd /app",
             f"bash {test_script} >> {test_stdout} 2>&1 || script_status=$?",

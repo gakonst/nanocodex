@@ -1,9 +1,9 @@
 # Edit this file—not the Justfile—to select datasets, tasks, and attempts.
 # Let Harbor generate a unique job name so every invocation is a fresh eval.
-jobs_dir: .harness/harbor/jobs
+jobs_dir: .nanocodex/harbor/jobs
 
 agents:
-  - import_path: harbor_adapter.agent:HarnessAgent
+  - import_path: harbor_adapter.agent:NanocodexAgent
     model_name: openai/gpt-5.6-sol
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -14,7 +14,7 @@ agents:
 datasets:
   - name: terminal-bench/terminal-bench-2
     # Update this digest deliberately; moving `latest` invalidates task images
-    # and makes before/after harness comparisons use different task revisions.
+    # and makes before/after nanocodex comparisons use different task revisions.
     ref: sha256:c6fc2e2382c1dbae99b2d5ecd2f4f4a60c3c01e0d84642d69b4afd92e99d078b
     task_names:
       - terminal-bench/fix-git

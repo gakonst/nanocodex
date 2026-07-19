@@ -1,0 +1,28 @@
+[package]
+name = "nanocodex-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+nanocodex-core.workspace = true
+image.workspace = true
+nix.workspace = true
+portable-pty.workspace = true
+reqwest.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+eyre.workspace = true
+
+[lints]
+workspace = true

@@ -1,14 +1,14 @@
 # Long-running failure cohort for the elapsed-run reminder. Query optimization
 # is deliberately absent because its verifier remains timing-sensitive.
-jobs_dir: .harness/harbor/jobs
+jobs_dir: .nanocodex/harbor/jobs
 
 agents:
-  - import_path: harbor_adapter.agent:HarnessAgent
+  - import_path: harbor_adapter.agent:NanocodexAgent
     model_name: openai/gpt-5.6-sol
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     kwargs:
-      binary_path: .harness/installed/budget-aware/harness
+      binary_path: .nanocodex/installed/budget-aware/nanocodex
       effort: high
       web_search: false
 

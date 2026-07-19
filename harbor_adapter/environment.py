@@ -12,8 +12,8 @@ from harbor.environments.docker.utils import (
 )
 from harbor.models.trial.config import ServiceVolumeConfig
 
-_TOOLBOX_ROOT = "/opt/harness-toolbox"
-_VERIFIER_ROOT = "/opt/harness-verifier"
+_TOOLBOX_ROOT = "/opt/nanocodex-toolbox"
+_VERIFIER_ROOT = "/opt/nanocodex-verifier"
 _TOOLBOX_BUILD_LOCK = asyncio.Lock()
 _TOOLBOX_IMAGES: dict[tuple[Path, str], str] = {}
 
@@ -77,7 +77,7 @@ class FastDockerEnvironment(DockerEnvironment):
                     if image := _TOOLBOX_IMAGES.get(key):
                         return image
                     image = await ensure_docker_image_built(
-                        docker_name="harness/verifier-toolbox",
+                        docker_name="nanocodex/verifier-toolbox",
                         docker_build_context=self._toolbox_dockerfile.parent,
                         dockerfile_path=self._toolbox_dockerfile,
                         build_args={},
@@ -89,7 +89,7 @@ class FastDockerEnvironment(DockerEnvironment):
 
             task_image, toolbox_image = await asyncio.gather(
                 ensure_docker_image_built(
-                    docker_name=f"harness/{self.environment_name}-task",
+                    docker_name=f"nanocodex/{self.environment_name}-task",
                     docker_build_context=self.environment_dir,
                     dockerfile_path=task_dockerfile,
                     build_args={},

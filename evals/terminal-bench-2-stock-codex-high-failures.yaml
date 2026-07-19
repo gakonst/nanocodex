@@ -1,6 +1,6 @@
 # Stock Codex control on the same non-policy high-effort failure cohort. Query
 # optimization remains isolated because its verifier is timing-sensitive.
-jobs_dir: .harness/harbor/jobs
+jobs_dir: .nanocodex/harbor/jobs
 
 agents:
   - name: codex

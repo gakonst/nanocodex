@@ -1,9 +1,9 @@
 # Complete the interrupted high-effort sweep and rerun trials invalidated by
 # verifier-toolchain or adapter collection failures.
-jobs_dir: .harness/harbor/jobs
+jobs_dir: .nanocodex/harbor/jobs
 
 agents:
-  - import_path: harbor_adapter.agent:HarnessAgent
+  - import_path: harbor_adapter.agent:NanocodexAgent
     model_name: openai/gpt-5.6-sol
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}

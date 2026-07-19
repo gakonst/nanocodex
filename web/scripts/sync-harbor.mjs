@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryPath = resolve(
-  process.env.HARNESS_REPO ?? resolve(projectRoot, ".."),
+  process.env.NANOCODEX_REPO ?? resolve(projectRoot, ".."),
 );
 const outputDirectory = resolve(projectRoot, "public", "data", "harbor");
 const detailDirectory = resolve(outputDirectory, "trials");
@@ -87,7 +87,12 @@ function jobMean(result) {
 function runnerFromResult(result, fallback) {
   const evalName = Object.keys(result?.stats?.evals ?? {})[0] ?? "";
   if (evalName.startsWith("codex__") || result?.agent_info?.name === "codex") return "codex";
-  if (evalName.startsWith("harness__") || result?.agent_info?.name === "harness") {
+  if (
+    evalName.startsWith("nanocodex__") ||
+    evalName.startsWith("harness__") ||
+    result?.agent_info?.name === "nanocodex" ||
+    result?.agent_info?.name === "harness"
+  ) {
     return "harness";
   }
   return fallback;
@@ -124,18 +129,23 @@ async function discoverJobStores() {
   const stores = [];
   for (const worktree of worktrees) {
     const branchKey = safeSegment(worktree.branch);
-    stores.push({
-      path: resolve(worktree.path, ".harness", "harbor", "jobs"),
-      branch: worktree.branch,
-      key: `${branchKey}-harness`,
-      fallbackRunner: "harness",
-    });
-    stores.push({
-      path: resolve(worktree.path, ".harness", "harbor", "codex-jobs"),
-      branch: worktree.branch,
-      key: `${branchKey}-codex`,
-      fallbackRunner: "codex",
-    });
+    for (const artifactRoot of [".nanocodex", ".harness"]) {
+      const rootKey = artifactRoot.slice(1);
+      stores.push({
+        path: resolve(worktree.path, artifactRoot, "harbor", "jobs"),
+        branch: worktree.branch,
+        key: `${branchKey}-${rootKey}`,
+        source: `${worktree.branch}/${artifactRoot}/harbor/jobs`,
+        fallbackRunner: "harness",
+      });
+      stores.push({
+        path: resolve(worktree.path, artifactRoot, "harbor", "codex-jobs"),
+        branch: worktree.branch,
+        key: `${branchKey}-${rootKey}-codex`,
+        source: `${worktree.branch}/${artifactRoot}/harbor/codex-jobs`,
+        fallbackRunner: "codex",
+      });
+    }
   }
   return stores;
 }
@@ -358,7 +368,7 @@ for (const store of await discoverJobStores()) {
       name: jobEntry.name,
       runner,
       branch: store.branch,
-      source: `${store.branch}/.harness/harbor/${runner === "codex" ? "codex-jobs" : "jobs"}`,
+      source: store.source,
       startedAt: result.started_at,
       finishedAt: result.finished_at,
       durationMs: millisecondsBetween(result.started_at, result.finished_at),
@@ -496,6 +506,6 @@ await Promise.all([
 ]);
 console.log(
   `Synced ${index.jobCount} Harbor jobs and ${index.trialCount} trials${
-    comparison ? `; matched ${comparison.taskCount}-task Harness/Codex comparison` : ""
+    comparison ? `; matched ${comparison.taskCount}-task Nanocodex/Codex comparison` : ""
   }`,
 );

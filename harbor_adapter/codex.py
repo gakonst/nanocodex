@@ -12,9 +12,9 @@ from harbor.models.agent.context import AgentContext
 
 
 class ParityCodexAgent(Codex):
-    """Run Codex with the harness prompt and shared eval AGENTS.md exactly."""
+    """Run Codex with the nanocodex prompt and shared eval AGENTS.md exactly."""
 
-    _REMOTE_SYSTEM_PROMPT = "/tmp/harness-system-prompt.md"
+    _REMOTE_SYSTEM_PROMPT = "/tmp/nanocodex-system-prompt.md"
     _REMOTE_AGENTS_MD = "/app/AGENTS.md"
 
     def __init__(
@@ -87,7 +87,7 @@ class ParityCodexAgent(Codex):
         )
         if actual_prompt != expected_prompt:
             raise RuntimeError(
-                "Codex did not use the configured harness system prompt byte-for-byte"
+                "Codex did not use the configured nanocodex system prompt byte-for-byte"
             )
 
         agents_md = self._agents_md_path.read_text(encoding="utf-8")

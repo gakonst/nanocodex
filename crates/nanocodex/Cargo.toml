@@ -1,0 +1,32 @@
+[package]
+name = "nanocodex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+nanocodex-core.workspace = true
+nanocodex-macros.workspace = true
+nanocodex-service.workspace = true
+nanocodex-tools.workspace = true
+image.workspace = true
+iana-time-zone.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+sha1.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+
+[dev-dependencies]
+eyre.workspace = true
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+
+[lints]
+workspace = true

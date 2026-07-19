@@ -1,5 +1,6 @@
 .env
 .harness/
+.nanocodex/
 .venv/
 target/
 jobs/

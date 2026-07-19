@@ -7,7 +7,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "sync": "node scripts/sync-harness.mjs && node scripts/sync-harbor.mjs",
+    "sync": "node scripts/sync-nanocodex.mjs && node scripts/sync-harbor.mjs",
     "predev": "npm run sync",
     "dev": "vite dev",
     "typecheck": "tsc --noEmit",

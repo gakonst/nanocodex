@@ -1,8 +1,8 @@
-# Harbor-first OpenAI harness
+# Harbor-first OpenAI nanocodex
 
 ## Goal
 
-Build a thin Rust coding harness for the current best OpenAI model and API,
+Build a thin Rust coding agent for the current best OpenAI model and API,
 without a TUI, provider abstraction, approval system, or backwards compatibility.
 The public process surface is one positional prompt argument and JSONL on
 stdout. Harbor owns benchmark task isolation, verification, result storage,
@@ -38,7 +38,7 @@ for a run and Rust dispatches independent nested calls concurrently. Do not grow
 a local agent scheduler, compactor, provider abstraction, or second eval record.
 
 Local artifacts are built by a native-architecture Linux BuildKit container.
-Cargo `dev` is the default; `HARNESS_BUILD_PROFILE=profiling` selects an
+Cargo `dev` is the default; `NANOCODEX_BUILD_PROFILE=profiling` selects an
 optimized profile with full symbols. Hosted jobs will eventually fetch a
 versioned, digest-verified artifact instead of requiring the source tree.
 
@@ -84,7 +84,7 @@ content-addressed native images. Keep that cold setup cost separate from warm
 source-edit measurements. `just prepare-evals` performs this construction for
 the configured suite with Harbor's no-op install-only path, while `just
 prepare-task terminal-bench/<name>` prepares one newly added task. Neither path
-builds or runs the harness, calls a model, or invokes a verifier; their Harbor
+builds or runs the nanocodex, calls a model, or invokes a verifier; their Harbor
 records live outside the scored jobs directory.
 
 ## Milestone 1: OpenAI execution
@@ -244,9 +244,9 @@ erase opportunistically:
 
 Status: complete.
 
-1. Make the root a virtual workspace, keep the executable under `bin/harness`,
-   and expose independently usable `harness-core`, `harness-service`,
-   `harness-tools`, and `harness-agent` crates. Delete obsolete root and former
+1. Make the root a virtual workspace, keep the executable under `bin/nanocodex`,
+   and expose independently usable `nanocodex-core`, `nanocodex-service`,
+   `nanocodex-tools`, and `nanocodex` crates. Delete obsolete root and former
    crate paths rather than keeping compatibility modules.
 2. Follow the Alloy-style boundary: core owns the typed Responses request,
    event, item, tool, usage, prompt, and public event model; service owns
@@ -306,7 +306,7 @@ is both smaller and green again.
 All four steps are complete. Production code shrank by 221 lines while the two
 demonstrated regressions gained focused deterministic coverage. `just check`,
 the live PTC and Multi-agent smokes, and both unchanged anchors passed. The
-complete gate at `.harness/harbor/jobs/2026-07-16__11-28-41` completed 36/36
+complete gate at `.nanocodex/harbor/jobs/2026-07-16__11-28-41` completed 36/36
 trials with no exception, retry, or WebSocket reconnect in 20 minutes 33
 seconds and scored 34/36. Its misses were task-output failures: POV-Ray omitted
 a canonical source file after a successful build, and Cancel Async Tasks missed
@@ -453,7 +453,7 @@ runs kept `fix-git` and `openssl-selfsigned-cert` green at 51.44 and 42.03
 seconds of Harbor trial time, respectively.
 
 The active Milestone 2 ladder is limited to text-terminal and repository tasks
-that exercise the harness's current common Codex tool surface. Browser
+that exercise the nanocodex's current common Codex tool surface. Browser
 automation, computer-use, and other modality-dependent tasks remain deferred;
 they are not counted as failures of the current loop.
 
@@ -672,7 +672,7 @@ canonical task image rebuilt. The four large canonical verifiers accounted
 for 91.2% of the aggregate 165.01 verifier seconds, led by the real SSH/HTTPS
 deployment test and million-row Vim replay. Rust exceeded model/generated-turn
 time by only 10.80 seconds across all 18 tasks, confirming that ordinary warm
-harness overhead remains negligible.
+nanocodex overhead remains negligible.
 
 `configure-git-webserver` was considered next but not admitted to the active
 suite. Its published task image is amd64-only, while its canonical native-ARM
@@ -690,7 +690,7 @@ downloads from `ports.ubuntu.com:80` timed out. The complete install-only Harbor
 attempt took 172.99 seconds and stopped before agent setup, verification, or a
 model call. The task's pinned WordNet download and canonical verifier were
 never reached. The task is deferred instead of modifying its Dockerfile or
-adding transport workarounds to the harness.
+adding transport workarounds to the nanocodex.
 
 `raman-fitting` passed the cold viability gate but is not admitted to the
 active low-effort suite. Its copy-only task and verifier images prepared in
@@ -725,7 +725,7 @@ Before adding a long-lived service task, the shell's successful-exit process
 lifecycle was compared directly with Codex's `codex-rs/core/src/exec.rs`.
 Codex gives inherited output pipes a two-second drain grace after the shell
 exits but does not then kill an otherwise successful process group. The local
-harness had coupled drain expiry to process-group termination. It now disarms
+nanocodex had coupled drain expiry to process-group termination. It now disarms
 the group guard after a successful shell exit while retaining group termination
 for command timeout and cancellation. A focused regression starts a plain
 background process with inherited descriptors and proves it remains alive
@@ -749,7 +749,7 @@ polled the raw WebSocket, so an API keepalive ping went unanswered and the
 server closed the connection with code 1011. Current Codex handles this in
 `codex-rs/codex-api/src/endpoint/responses_websocket.rs`: a private socket pump
 continuously services Ping/Pong independently of response consumption and
-channels application frames to the consumer. The harness now implements that
+channels application frames to the consumer. The nanocodex now implements that
 same narrow boundary. A deterministic local WebSocket regression deliberately
 leaves `next_json` idle, requires a matching pong, and then proves the queued
 JSON event remains available. The focused benchmark rerun passed with reward
@@ -763,7 +763,7 @@ concurrency compressed 1,298.07 aggregate generated-model seconds and 177.32
 aggregate tool seconds into that wall time; tool time is a measured subset of
 generated-turn time. Rust totaled 1,311.74 seconds, including 8.37 seconds of
 WebSocket warmup and 5.26 seconds of connection setup, leaving only 0.04
-aggregate seconds of harness-local work outside connection, warmup, and model
+aggregate seconds of nanocodex-local work outside connection, warmup, and model
 turns. Environment startup, agent upload/setup, and canonical verification
 totaled 29.56, 12.42, and 109.03 task-seconds. The suite used 860,739 input,
 267,891 cached-input, 5,508 cache-write, and 62,860 output tokens across 125
@@ -797,7 +797,7 @@ concurrency compressed 1,595.56 aggregate generated-model seconds and 357.52
 aggregate tool seconds into that wall time; tool time is a measured subset of
 generated-turn time. Rust totaled 1,606.81 seconds, including 5.84 seconds of
 WebSocket warmup and 5.37 seconds of connection setup, leaving 0.04 aggregate
-seconds of harness-local work outside connection, warmup, and model turns.
+seconds of nanocodex-local work outside connection, warmup, and model turns.
 Environment startup, agent upload/setup, and canonical verification totaled
 27.26, 11.43, and 110.30 task-seconds. The suite used 574,208 input, 225,570
 cached-input, 4,131 cache-write, and 55,785 output tokens across 112 model calls
@@ -832,7 +832,7 @@ exceptions, and zero retries in 8 minutes 14.31 seconds. Four-way concurrency
 compressed 1,577.17 aggregate generated-model seconds and 342.97 aggregate tool
 seconds into that wall time; tool time is nested inside generated-turn time.
 Rust totaled 1,592.80 seconds, including 9.23 seconds of WebSocket warmup and
-6.35 seconds of connection setup, leaving 0.05 aggregate seconds of harness-local
+6.35 seconds of connection setup, leaving 0.05 aggregate seconds of nanocodex-local
 work outside connection, warmup, and model turns. Environment startup, agent
 upload/setup, and canonical verification totaled 29.42, 14.48, and 86.02
 task-seconds. The suite used 709,089 input, 247,400 cached-input, 4,131
@@ -891,7 +891,7 @@ concurrency compressed 1,812.42 aggregate generated-model seconds and 440.62
 aggregate tool seconds into that wall time; tool time is a measured subset of
 generated-turn time. Rust totaled 1,825.66 seconds, including 7.10 seconds of
 WebSocket warmup and 6.10 seconds of connection setup, leaving 0.04 aggregate
-seconds of harness-local work outside connection, warmup, and model turns.
+seconds of nanocodex-local work outside connection, warmup, and model turns.
 Environment startup, agent upload/setup, and canonical verification totaled
 28.74, 12.56, and 82.21 task-seconds. The suite used 1,038,520 input, 314,800
 cached-input, 6,885 cache-write, and 74,468 output tokens across 152 model calls
@@ -930,7 +930,7 @@ compressed 1,628.32 aggregate generated-model seconds and 306.31 aggregate tool
 seconds into that wall time; tool time is a measured subset of generated-turn
 time. Rust totaled 1,643.62 seconds, including 8.61 seconds of WebSocket warmup
 and 6.64 seconds of connection setup, leaving 0.06 aggregate seconds of
-harness-local work outside connection, warmup, and model turns. Environment
+nanocodex-local work outside connection, warmup, and model turns. Environment
 startup, agent upload/setup, and canonical verification totaled 30.55, 12.88,
 and 85.96 task-seconds. The suite used 1,069,450 input, 325,148 cached-input,
 5,837 cache-write, and 75,322 output tokens across 159 model calls and 135 tool
@@ -981,7 +981,7 @@ concurrency compressed 1,605.84 aggregate generated-model seconds and 231.88
 aggregate tool seconds into that wall time; tool time is a measured subset of
 generated-turn time. Rust totaled 1,620.34 seconds, including 7.87 seconds of
 WebSocket warmup and 6.59 seconds of connection setup, leaving 0.05 aggregate
-seconds of harness-local work outside connection, warmup, and model turns.
+seconds of nanocodex-local work outside connection, warmup, and model turns.
 Environment startup, agent upload/setup, and canonical verification totaled
 32.45, 13.64, and 155.82 task-seconds. The suite used 1,048,224 input, 312,984
 cached-input, 5,704 cache-write, and 76,725 output tokens across 162 model calls
@@ -1021,7 +1021,7 @@ retries in 10 minutes 19.61 seconds. Four-way concurrency compressed 2,018.52
 aggregate generated-model seconds and 407.76 aggregate tool seconds into that
 wall time; tool time is contained within generated-turn time. Rust totaled
 2,033.88 seconds, including 8.34 seconds of warmup and 6.97 seconds of
-connection setup, leaving 0.04 aggregate seconds of other harness-local work.
+connection setup, leaving 0.04 aggregate seconds of other nanocodex-local work.
 Environment startup, agent upload/setup, and canonical verification totaled
 34.22, 14.34, and 123.05 task-seconds. The suite used 1,448,275 input, 373,538
 cached-input, 9,982 cache-write, and 85,015 output tokens across 177 model
@@ -1097,7 +1097,7 @@ minutes 58.09 seconds. Four-way concurrency compressed 2,113.70 aggregate
 generated-model seconds and 536.60 aggregate tool-wall seconds into that wall
 time; tool time is contained within generated-turn time. Rust totaled 2,132.55
 seconds, including 9.37 seconds of warmup and 9.43 seconds of WebSocket setup,
-leaving 0.05 aggregate seconds of other harness-local work. Environment
+leaving 0.05 aggregate seconds of other nanocodex-local work. Environment
 startup, agent upload/setup, and canonical verification totaled 38.07, 16.57,
 and 244.54 task-seconds. The suite used 1,170,343 input, 384,630 cached-input,
 8,556 cache-write, and 88,049 output tokens across 193 model calls and 163 tool
@@ -1166,7 +1166,7 @@ build, configuration, and launch. Four-way concurrency compressed 2,084.81
 aggregate generated-model seconds and 444.55 aggregate tool-wall seconds into
 the job wall; tool time is contained within generated-turn time. Rust totaled
 2,107.79 seconds, including 13.55 seconds of warmup and 9.38 seconds of
-WebSocket setup, leaving 0.06 aggregate seconds of other in-process harness
+WebSocket setup, leaving 0.06 aggregate seconds of other in-process nanocodex
 work. Environment startup, agent upload/setup, and canonical verification
 totaled 43.14, 17.42, and 162.82 task-seconds; agent execution outside the Rust
 process totaled 15.61 seconds across all trials.
@@ -1305,7 +1305,7 @@ input, 449,990 cached-input, 10,317 cache-write, and 102,460 output tokens over
 224 model calls and 190 tool phases; warmup used another 58,611 input tokens.
 Aggregate Rust time was 2,310.65 seconds: 2,283.25 seconds in generated model
 turns, 13.40 seconds connecting, 13.95 seconds warming, and about 0.05 seconds
-of remaining harness-local work. Local tools occupied 505.21 seconds within
+of remaining nanocodex-local work. Local tools occupied 505.21 seconds within
 the model envelope. Environment startup, agent setup, and canonical verification
 totaled 45.83, 18.99, and 135.31 task-seconds. No reconnect, compaction, hosted
 subagent, or API-reported cost occurred in this particular gate.
@@ -1352,7 +1352,7 @@ compile, and boundary-check tool phases. Five model calls used 25,256 input,
 tokens. JSONL and ATIF agreed on the 5/4 model/tool rounds, the agent emitted
 `run.completed`, and no exception, retry, reconnect, compaction, hosted
 subagent, API-reported cost, verifier setup warning, or agent stderr occurred.
-No shared harness change was needed, so the next full `just eval` remains due
+No shared nanocodex change was needed, so the next full `just eval` remains due
 after two further admissions complete this three-task batch, or earlier if a
 shared runtime or environment change is required.
 
@@ -1419,7 +1419,7 @@ deterministic: 10/11 assertions passed, including all compiled-extension and
 behavior checks, while `test_numpy_version` found that the verifier layer had
 replaced the task's required NumPy 2.3.0 with verifier-only NumPy 2.3.1 before
 the agent started. The scientific image stack now installs under
-`/opt/harness-verifier/pov`, and only the exact POV-Ray `uvx` launcher receives
+`/opt/nanocodex-verifier/pov`, and only the exact POV-Ray `uvx` launcher receives
 that path through `PYTHONPATH`; the agent and all other verifiers keep their
 system interpreter unchanged.
 
@@ -1446,7 +1446,7 @@ trial-seconds into that wall time. Environment startup, agent setup, agent
 execution, and canonical verification totaled 44.94, 20.02, 2,829.08, and
 149.47 task-seconds. Rust totaled 2,811.21 seconds: 2,789.47 seconds in the
 generated-model envelope, 10.82 seconds connecting, 10.86 seconds warming,
-and 0.07 seconds of other in-process harness work. Local tools occupied
+and 0.07 seconds of other in-process nanocodex work. Local tools occupied
 1,032.37 seconds within the model envelope.
 
 The gate used 1,614,579 input, 477,678 cached-input, 11,842 cache-write, and
@@ -1495,7 +1495,7 @@ matched raw JSONL, and all agent stderr files were empty. No reconnect,
 compaction, hosted subagent, agent message, injection, verifier-cache warning,
 or API-reported cost occurred.
 
-The three misses were solution-level variance, not harness failures. Write
+The three misses were solution-level variance, not nanocodex failures. Write
 Compressor round-tripped correctly but produced 2,649 bytes against a
 2,500-byte limit; its unchanged retry passed 3/3 in 159.78 command seconds,
 with 146.45 Rust seconds, 145.64 model seconds, 79.72 tool seconds, 6/5 rounds,
@@ -1529,7 +1529,7 @@ tokens were reasoning tokens and warmup used another 1,528 input tokens. The
 two longest tools spent 345.98 seconds building Coq 8.16.1 and 384.99 seconds
 rebuilding CompCert proofs. Several failed configure/build probes preceded the
 valid artifact, so this baseline records agent strategy cost rather than a
-local harness bottleneck.
+local nanocodex bottleneck.
 
 The unchanged verifier confirmed the exact version, executable source build,
 native ELF output, randomized and edge-case behavior, and rejection of an
@@ -1546,39 +1546,39 @@ reconnect, compaction, hosted subagent, injection, or API-reported cost.
 The current local Codex checkout established that a model turn is not bounded
 by a fixed number of model calls. `codex-rs/core/src/session/turn.rs` keeps the
 tool-follow-up loop running until completion or cancellation and compacts at
-the context limit. The harness's fixed 32-call ceiling was therefore removed
+the context limit. The nanocodex's fixed 32-call ceiling was therefore removed
 from the Rust runtime, CLI, Harbor adapter, and eval configuration. A focused
 mock regression now drives 33 tool-producing responses and completes on model
 call 34.
 
-The literal 36-task harness job at
-`.harness/harbor/jobs/2026-07-16__17-20-40` completed in 11 minutes 29 seconds
+The literal 36-task nanocodex job at
+`.nanocodex/harbor/jobs/2026-07-16__17-20-40` completed in 11 minutes 29 seconds
 and scored 28/36 before the fix; CompCert was its only exception and stopped
 at the artificial ceiling. The unchanged fixed CompCert rerun at
-`.harness/harbor/jobs/2026-07-16__17-34-05` passed all assertions after 40
+`.nanocodex/harbor/jobs/2026-07-16__17-34-05` passed all assertions after 40
 model calls and 78 outer-plus-nested tool calls. It used 1,575,977 input,
 1,518,293 cached-input, and 4,225 output tokens over 883.01 Rust seconds, with
 no exception, reconnect, compaction, or stderr. An unchanged POV-Ray retry at
-`.harness/harbor/jobs/2026-07-16__18-20-37` also passed 3/3 after replacing the
+`.nanocodex/harbor/jobs/2026-07-16__18-20-37` also passed 3/3 after replacing the
 noncanonical ZIP layout with the authentic TAR.Z source tree.
 
 Substituting those two focused revalidations into the full task matrix yields
-30/36 for the current harness, with the same six misses as the valid Codex
+30/36 for the current nanocodex, with the same six misses as the valid Codex
 0.144.5 comparison at
-`.harness/harbor/jobs/20260716-codex-0.144.5-full-2`. Codex completed 30/36
+`.nanocodex/harbor/jobs/20260716-codex-0.144.5-full-2`. Codex completed 30/36
 with zero exception or retry in 22 minutes 19 seconds. This substitution is a
 paired diagnostic, not a second full-suite score; the original full job and
 both focused jobs remain separate records. The only original outcome
 difference was POV-Ray archive selection, and the unchanged retry recovered
 it without a benchmark-specific prompt.
 
-Across the revalidated 36-task matrix, the harness used 5,075,084 input tokens
+Across the revalidated 36-task matrix, the nanocodex used 5,075,084 input tokens
 with 4,583,442 cached (90.3%) and 95,708 output tokens across 380 model calls.
 Codex used 9,300,633 input with 8,633,709 cached (92.8%) and 114,136 output
-tokens across 513 model calls, reporting $11.08. The harness API did not report
-cost. On the 30 tasks both systems passed, the harness was faster on 20,
+tokens across 513 model calls, reporting $11.08. The nanocodex API did not report
+cost. On the 30 tasks both systems passed, the nanocodex was faster on 20,
 totaled 2,750.05 agent-seconds versus Codex's 2,819, and had a 46.68-second
-median versus 59.50 seconds. All harness event streams were monotonic, paired
+median versus 59.50 seconds. All nanocodex event streams were monotonic, paired
 every tool call with a result, and ended in exactly one terminal event. No
 reconnect or compaction was needed. This meets the parity gate for continuing
 one-at-a-time public task admission while retaining the six shared misses as
@@ -1588,10 +1588,10 @@ solution-quality work rather than changing the common runtime around them.
 `sha256:c5b858a93a842b32c06ce0713d82af10102b7c1a3f3b8d6351c1d0ecb4d47dc9`
 is the next admission after the parity gate and the thirty-seventh active task.
 Its install-only preparation at
-`.harness/harbor/setup/2026-07-16__18-22-46-prepare-crack-7z-hash-49343`
+`.nanocodex/harbor/setup/2026-07-16__18-22-46-prepare-crack-7z-hash-49343`
 completed in 30.54 seconds with no model or verifier work. The unchanged
 low-effort trial at
-`.harness/harbor/jobs/2026-07-16__18-23-24-crack-7z-hash-49717` then passed
+`.nanocodex/harbor/jobs/2026-07-16__18-23-24-crack-7z-hash-49717` then passed
 both canonical assertions in 5 minutes 51 seconds with zero exception or
 retry.
 
@@ -1605,35 +1605,35 @@ stream was monotonic with one `run.completed`, all tool calls had results,
 stderr was empty, and there was no reconnect or compaction.
 
 The matched Codex 0.144.5 trial at
-`.harness/harbor/jobs/2026-07-16__23-31-19-crack-7z-hash-codex-` also passed
+`.nanocodex/harbor/jobs/2026-07-16__23-31-19-crack-7z-hash-codex-` also passed
 both assertions. Codex agent work took 626.23 seconds across 36 model calls,
 used 659,998 input, 636,252 cached-input (96.4%), and 3,596 output tokens, and
 reported $0.54. Its trajectory initially spent time in a slow John run before
-switching to direct archive tests; the harness trajectory parallelized those
+switching to direct archive tests; the nanocodex trajectory parallelized those
 tests and completed 278.94 seconds sooner.
 
 `multi-source-data-merger` is the thirty-eighth active task. Cold preparation
-at `.harness/harbor/setup/2026-07-16__23-43-22-prepare-multi-source-data-merger-88805`
-took 58 seconds. The first unchanged harness answer was correct and
+at `.nanocodex/harbor/setup/2026-07-16__23-43-22-prepare-multi-source-data-merger-88805`
+took 58 seconds. The first unchanged nanocodex answer was correct and
 self-validated, but its canonical verifier never ran because the cached
 verifier rejected the task's pandas/PyArrow `uvx` command. The exact pinned
 `pandas==2.3.3` and `pyarrow==22.0.0` stack now lives under the isolated
-`/opt/harness-verifier/parquet` overlay and is selected only for that canonical
+`/opt/nanocodex-verifier/parquet` overlay and is selected only for that canonical
 command shape, preserving task-interpreter packages.
 
-After a 9-second overlay preparation, the unchanged harness retry at
-`.harness/harbor/jobs/2026-07-16__23-46-33-multi-source-data-merger-90529`
+After a 9-second overlay preparation, the unchanged nanocodex retry at
+`.nanocodex/harbor/jobs/2026-07-16__23-46-33-multi-source-data-merger-90529`
 passed all 3 assertions. Agent work took 26.49 seconds over 5 model calls and 8
 outer-plus-nested tool events, using 30,246 input, 22,642 cached-input (74.9%),
 7,589 cache-write, and 1,955 output tokens. The matched Codex 0.144.5 trial at
-`.harness/harbor/jobs/2026-07-16__23-47-24-multi-source-data-merger-codex-91000`
+`.nanocodex/harbor/jobs/2026-07-16__23-47-24-multi-source-data-merger-codex-91000`
 also passed all 3 assertions in 29.07 agent-seconds over 3 model calls and 2
 tool calls, using 29,265 input, 18,144 cached-input (62.0%), and 1,654 output
-tokens. The harness stream was monotonic with one terminal event, empty stderr,
+tokens. The nanocodex stream was monotonic with one terminal event, empty stderr,
 and no exception, reconnect, or compaction.
 
-The ensuing 38-task harness gate at
-`.harness/harbor/jobs/2026-07-16__23-49-42-eval-92193` completed in 19 minutes
+The ensuing 38-task nanocodex gate at
+`.nanocodex/harbor/jobs/2026-07-16__23-49-42-eval-92193` completed in 19 minutes
 11 seconds and scored 31/38 with zero exception, retry, reconnect, or stderr.
 All 38 streams used protocol version 1, contiguous sequence numbers, one
 request ID, paired every tool call/result, and ended in one `run.completed`.
@@ -1644,50 +1644,50 @@ were Cancel Async Tasks, DB WAL Recovery, KV Store gRPC, Polyglot C/Python,
 PyPI Server, QEMU Startup, and SQLite/gcov.
 
 The matched Codex 0.144.5 gate at
-`.harness/harbor/jobs/2026-07-17__00-09-31-codex-0.144.5-full-38-5387`
+`.nanocodex/harbor/jobs/2026-07-17__00-09-31-codex-0.144.5-full-38-5387`
 completed in 20 minutes 47 seconds and also scored 31/38 with zero exception or
 retry. Codex used 10,474,705 input, 9,774,852 cached-input (93.3%), and 105,548
 output tokens across 509 model calls and 471 tool calls, reporting $11.55.
-Harness therefore used 540k uncached tokens versus Codex's 700k despite the
-lower cache percentage. Both passed 28 tasks; harness was faster on 20, using
+Nanocodex therefore used 540k uncached tokens versus Codex's 700k despite the
+lower cache percentage. Both passed 28 tasks; nanocodex was faster on 20, using
 2,757 shared-pass agent-seconds versus Codex's 3,286. Both missed Cancel Async
-Tasks, DB WAL Recovery, KV Store gRPC, and PyPI Server. Harness alone passed
+Tasks, DB WAL Recovery, KV Store gRPC, and PyPI Server. Nanocodex alone passed
 POV-Ray, Largest Eigenvalue, and Overfull HBox; Codex alone passed Polyglot
 C/Python, QEMU Startup, and SQLite/gcov.
 
 CompCert was green in both full gates and directly exercised the removed depth
-limit. Harness completed it in 1,129.44 seconds after 61 model calls and 120
+limit. Nanocodex completed it in 1,129.44 seconds after 61 model calls and 120
 outer-plus-nested tool events, using 1,635,642 input and 1,590,605 cached-input.
 Codex completed it in 1,177.95 seconds after 104 model calls and 103 tool calls,
 using 4,229,605 input and 4,166,785 cached-input and reporting $2.62.
 
 The identical Cancel Async Tasks full-gate miss on both agents was the final
 above-concurrency cancellation assertion. Unchanged focused retries at
-`.harness/harbor/jobs/2026-07-17__00-31-25-cancel-async-tasks-18793` and
-`.harness/harbor/jobs/2026-07-17__00-32-12-cancel-async-tasks-codex-19221`
+`.nanocodex/harbor/jobs/2026-07-17__00-31-25-cancel-async-tasks-18793` and
+`.nanocodex/harbor/jobs/2026-07-17__00-32-12-cancel-async-tasks-codex-19221`
 both passed all 6 assertions, confirming sampling variance. The unchanged
-harness SQLite/gcov retry at
-`.harness/harbor/jobs/2026-07-17__00-33-26-sqlite-with-gcov-19896` also passed
+nanocodex SQLite/gcov retry at
+`.nanocodex/harbor/jobs/2026-07-17__00-33-26-sqlite-with-gcov-19896` also passed
 all 3 assertions after the full-gate trajectory failed to place generated
 coverage under the source tree. No benchmark-specific prompt or runtime path
 was added for either retry.
 
 `modernize-scientific-stack` is the thirty-ninth active task. Its exact
 NumPy/Pandas/Matplotlib/SciPy verifier pins are isolated under
-`/opt/harness-verifier/scientific` and selected only for the canonical `uvx`
+`/opt/nanocodex-verifier/scientific` and selected only for the canonical `uvx`
 shape, so they cannot replace the task's own scientific environment. Cold
 preparation at
-`.harness/harbor/setup/2026-07-17__00-35-40-prepare-modernize-scientific-stack-20984`
+`.nanocodex/harbor/setup/2026-07-17__00-35-40-prepare-modernize-scientific-stack-20984`
 took 1 minute 28 seconds with no model or verifier work.
 
-The unchanged harness trial at
-`.harness/harbor/jobs/2026-07-17__00-37-18-modernize-scientific-stack-21794`
+The unchanged nanocodex trial at
+`.nanocodex/harbor/jobs/2026-07-17__00-37-18-modernize-scientific-stack-21794`
 passed both assertions in 12.58 Rust seconds over 4 model calls and 9
 outer-plus-nested tool events, using 24,042 input, 17,286 cached-input, and 852
 output tokens. Its stream was monotonic with one terminal event, paired tools,
 empty stderr, and no reconnect or compaction. The matched Codex 0.144.5 trial
 at
-`.harness/harbor/jobs/2026-07-17__00-37-51-modernize-scientific-stack-codex-22129`
+`.nanocodex/harbor/jobs/2026-07-17__00-37-51-modernize-scientific-stack-codex-22129`
 also passed both assertions in 22.30 agent-seconds over 4 model calls and 3
 tool calls, using 39,897 input, 29,173 cached-input, and 882 output tokens.
 
@@ -1702,39 +1702,39 @@ single JSONL record. Focused regressions cover PPM conversion and single-line
 event serialization, and the exact Node 12 launch form passed in the task
 image.
 
-Neither agent earned a stable QEMU admission after the fixes. The harness
+Neither agent earned a stable QEMU admission after the fixes. The nanocodex
 sample stopped its own container by killing the task image's `sleep` PID 1,
 while the matched Codex 0.144.5 sample at
-`.harness/harbor/jobs/2026-07-17__01-04-42-qemu-alpine-ssh-codex-postfix-36007`
-hit the 15-minute agent timeout. `sanitize-git-repo` split harness pass/Codex
+`.nanocodex/harbor/jobs/2026-07-17__01-04-42-qemu-alpine-ssh-codex-postfix-36007`
+hit the 15-minute agent timeout. `sanitize-git-repo` split nanocodex pass/Codex
 miss, and both agents reconstructed the same wrong fragment ordering on
 `password-recovery`; all three remain outside the stable slice.
 
 `portfolio-optimization` is the fortieth active task. Its exact NumPy 2.3.2
 and setuptools 78.1.1 verifier pair is isolated under
-`/opt/harness-verifier/portfolio`. Cold preparation at
-`.harness/harbor/setup/2026-07-17__07-23-03-prepare-portfolio-optimization-553`
-took 48 seconds with no model or verifier work. The unchanged harness trial at
-`.harness/harbor/jobs/2026-07-17__07-24-01-portfolio-optimization-1167`
+`/opt/nanocodex-verifier/portfolio`. Cold preparation at
+`.nanocodex/harbor/setup/2026-07-17__07-23-03-prepare-portfolio-optimization-553`
+took 48 seconds with no model or verifier work. The unchanged nanocodex trial at
+`.nanocodex/harbor/jobs/2026-07-17__07-24-01-portfolio-optimization-1167`
 passed all six canonical checks in 75.50 Rust seconds over 8 model calls and
 14 tool calls, using 76,298 input, 63,674 cached-input, and 3,094 output
 tokens. Its protocol stream was contiguous with paired tools, one terminal
 event, empty stderr, and no reconnect or compaction. The matched Codex 0.144.5
 trial at
-`.harness/harbor/jobs/2026-07-17__07-26-18-portfolio-optimization-codex-2459`
+`.nanocodex/harbor/jobs/2026-07-17__07-26-18-portfolio-optimization-codex-2459`
 also passed all six checks, using 113,431 input, 94,987 cached-input, and 3,087
 output tokens and reporting $0.232.
 
 `model-extraction-relu-logits` is the forty-first active task. Cold preparation
 at
-`.harness/harbor/setup/2026-07-17__07-32-02-prepare-model-extraction-relu-logits-5069`
-took 52 seconds with no model or verifier work. The unchanged harness trial at
-`.harness/harbor/jobs/2026-07-17__07-33-02-model-extraction-relu-logits-5598`
+`.nanocodex/harbor/setup/2026-07-17__07-32-02-prepare-model-extraction-relu-logits-5069`
+took 52 seconds with no model or verifier work. The unchanged nanocodex trial at
+`.nanocodex/harbor/jobs/2026-07-17__07-33-02-model-extraction-relu-logits-5598`
 matched every hidden row in 81.46 Rust seconds over 4 model calls and 6 tool
 calls, using 24,074 input, 16,657 cached-input, and 2,429 output tokens. Its
 stream was contiguous with paired tools, one terminal event, empty stderr, and
 no reconnect or compaction. The matched Codex 0.144.5 trial at
-`.harness/harbor/jobs/2026-07-17__07-34-46-model-extraction-relu-logits-codex-6423`
+`.nanocodex/harbor/jobs/2026-07-17__07-34-46-model-extraction-relu-logits-codex-6423`
 also passed, using 108,507 input, 91,680 cached-input, and 3,911 output tokens
 and reporting $0.247.
 
@@ -1765,7 +1765,7 @@ against drawing latency or token conclusions from one successful trajectory.
 
 These public tasks are the development/tuning set: their instructions,
 verifiers, trajectories, and failure cases may be inspected while improving
-the harness. Report tuned development results separately from a later held-out
+the nanocodex. Report tuned development results separately from a later held-out
 task slice so repeated verifier-guided changes are not mistaken for blind
 generalization.
 
@@ -1782,13 +1782,13 @@ Use Harbor as the runner and result store. First rerun `fix-git` and
 `openssl-selfsigned-cert` independently against the hosted-runtime baseline.
 Then add one Terminal-Bench task at a time in `evals/*.yaml`, ordered from small
 repository investigation/editing through compilation, debugging, and long tool
-output. Never modify a benchmark task or verifier to make the harness pass.
+output. Never modify a benchmark task or verifier to make the nanocodex pass.
 
 For every new task:
 
 1. Run `just prepare-task terminal-bench/<name>` once, then run one scored
    attempt and inspect the JSONL, ATIF trajectory, verifier output, and
-   task-container diff before changing the harness.
+   task-container diff before changing the nanocodex.
 2. Separate cold artifact/image work from the warm source-edit loop. Break wall
    time into local artifact build, Harbor setup/upload, task-container startup,
    WebSocket connection/warmup, model generation, local tool execution,
@@ -1814,7 +1814,7 @@ regression tasks only after the public baseline is stable.
 
 The review covered every OpenAI Codex commit from
 `3ac476bed22a7b7322a710a6ca79a0dbe917d604` through
-`35eaf3ffb0bf2001486c68c47a3d946b34d16634`. The harness adopts the corrected
+`35eaf3ffb0bf2001486c68c47a3d946b34d16634`. The nanocodex adopts the corrected
 272,000-token `gpt-5.6-sol` context window from upstream commit
 `d26a9bf671b1c03aabfc32e1092d137c1feb3962`, yielding a 244,800-token automatic
 compaction threshold. Audio forwarding from
@@ -1842,7 +1842,7 @@ Codex's `TurnDiffTracker` is a useful reference for live presentation, not a
 replacement for review provenance. It reduces exact, text-only `apply_patch`
 deltas into one in-memory net diff for the current user turn. It does not capture
 arbitrary shell mutations, persist a complete workspace tree, or provide stable
-revision and blob identities for later comments. Harness should not add a
+revision and blob identities for later comments. Nanocodex should not add a
 competing durable diff tracker: JJ is the authoritative snapshot history, and
 any future live diff is a disposable projection reconciled at the next JJ
 checkpoint.

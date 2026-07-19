@@ -52,7 +52,7 @@
   tools, and mutations belong in Rust; never add a per-tool Python bridge.
 - Do not modify benchmark tasks or compile Rust inside their images.
 - Eval selection belongs in `evals/*.yaml`, not the Justfile.
-- Local artifacts default to Cargo `dev`; honor `HARNESS_BUILD_PROFILE` and use
+- Local artifacts default to Cargo `dev`; honor `NANOCODEX_BUILD_PROFILE` and use
   `profiling` for optimized builds with debug symbols.
 
 ## JSONL contract

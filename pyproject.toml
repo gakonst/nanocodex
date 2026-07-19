@@ -1,7 +1,7 @@
 [project]
-name = "openai-harness-adapter"
+name = "openai-nanocodex-adapter"
 version = "0.1.0"
-description = "Harbor integration for the Rust harness"
+description = "Harbor integration for the Rust nanocodex"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     # Pin an official nightly wheel instead of a raw Git checkout. Harbor's

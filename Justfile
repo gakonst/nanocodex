@@ -3,14 +3,14 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 export PYTHONPATH := justfile_directory()
 
 harbor := ".venv/bin/harbor"
-build_profile := env_var_or_default("HARNESS_BUILD_PROFILE", "dev")
-agent_artifact_dir := ".harness/installed"
-agent_artifact := agent_artifact_dir + "/harness"
+build_profile := env_var_or_default("NANOCODEX_BUILD_PROFILE", "dev")
+agent_artifact_dir := ".nanocodex/installed"
+agent_artifact := agent_artifact_dir + "/nanocodex"
 hosted_agent_artifact_dir := agent_artifact_dir + "/daytona-amd64"
-hosted_agent_artifact := hosted_agent_artifact_dir + "/harness"
+hosted_agent_artifact := hosted_agent_artifact_dir + "/nanocodex"
 default_eval := "evals/terminal-bench-2.yaml"
-default_jobs := ".harness/harbor/jobs"
-setup_jobs := ".harness/harbor/setup"
+default_jobs := ".nanocodex/harbor/jobs"
+setup_jobs := ".nanocodex/harbor/setup"
 prepare_concurrency := env_var_or_default("HARBOR_PREPARE_CONCURRENCY", "4")
 # Six fits the current suite's heaviest mixed-resource wave on the local Docker VM.
 # Lighter suites can raise this without changing the eval definition.
@@ -29,14 +29,14 @@ bootstrap:
 
 # Tight inner loop: native model process with local code mode, no Harbor or Docker.
 run:
-    @cargo run --quiet --manifest-path bin/harness/Cargo.toml -- run --thinking=low "Use the available exec tool to run pwd exactly once without modifying anything, then report the path."
+    @cargo run --quiet --manifest-path bin/nanocodex/Cargo.toml -- run --thinking=low "Use the available exec tool to run pwd exactly once without modifying anything, then report the path."
 
 # Build a static Linux executable for the Docker daemon's native architecture.
 # This is a native container build, not an amd64 cross-compile on Apple Silicon.
 build-agent:
     @mkdir -p "{{agent_artifact_dir}}"
     @echo "Building native Linux agent artifact (Cargo profile: {{build_profile}})..."
-    @docker build --quiet --build-arg CARGO_PROFILE="{{build_profile}}" --file harbor_adapter/harness.Dockerfile --target artifact --output type=local,dest="{{agent_artifact_dir}}" .
+    @docker build --quiet --build-arg CARGO_PROFILE="{{build_profile}}" --file harbor_adapter/nanocodex.Dockerfile --target artifact --output type=local,dest="{{agent_artifact_dir}}" .
     @test -x "{{agent_artifact}}"
 
 # Daytona sandboxes are AMD64 even when Harbor is orchestrated from Apple
@@ -44,14 +44,14 @@ build-agent:
 build-agent-hosted:
     @mkdir -p "{{hosted_agent_artifact_dir}}"
     @echo "Building AMD64 Linux agent artifact for Daytona (Cargo profile: {{build_profile}})..."
-    @docker build --quiet --platform linux/amd64 --build-arg CARGO_PROFILE="{{build_profile}}" --file harbor_adapter/harness.Dockerfile --target artifact --output type=local,dest="{{hosted_agent_artifact_dir}}" .
+    @docker build --quiet --platform linux/amd64 --build-arg CARGO_PROFILE="{{build_profile}}" --file harbor_adapter/nanocodex.Dockerfile --target artifact --output type=local,dest="{{hosted_agent_artifact_dir}}" .
     @test -f "{{hosted_agent_artifact}}" && test -x "{{hosted_agent_artifact}}"
 
 check-hosted-auth:
     @test -n "${DAYTONA_API_KEY:-}" || { test -n "${DAYTONA_JWT_TOKEN:-}" && test -n "${DAYTONA_ORGANIZATION_ID:-}"; } || { echo "set DAYTONA_API_KEY (or DAYTONA_JWT_TOKEN and DAYTONA_ORGANIZATION_ID) in .env" >&2; exit 2; }
 
 # Pay native task and shared verifier-toolbox construction outside measured jobs.
-# The no-op agent performs no model call, verification, or harness build.
+# The no-op agent performs no model call, verification, or nanocodex build.
 prepare-evals config=default_eval:
     @test -x "{{harbor}}" || { echo "run 'just bootstrap' first" >&2; exit 2; }
     @job_name="$(date +%Y-%m-%d__%H-%M-%S)-prepare-evals-$BASHPID"; \

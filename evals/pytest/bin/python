@@ -7,4 +7,4 @@ for candidate in /usr/local/bin/python /usr/local/bin/python3 /usr/bin/python3; 
     fi
 done
 
-exec /opt/harness-verifier/python "$@"
+exec /opt/nanocodex-verifier/python "$@"

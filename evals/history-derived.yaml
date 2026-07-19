@@ -1,17 +1,17 @@
 # Local Harbor dataset synthesized from recurring tasks in the owner's Codex
 # history. Keep task selection here so `just eval config=...` remains the only
 # scored execution path.
-jobs_dir: .harness/harbor/jobs
+jobs_dir: .nanocodex/harbor/jobs
 
 agents:
-  - import_path: harbor_adapter.agent:HarnessAgent
+  - import_path: harbor_adapter.agent:NanocodexAgent
     model_name: openai/gpt-5.6-sol
     env:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     kwargs:
       effort: low
       web_search: false
-      system_prompt_path: crates/harness-core/prompts/system.md
+      system_prompt_path: crates/nanocodex-core/prompts/system.md
       agents_md_path: evals/history-derived/AGENTS.md
 
 datasets:

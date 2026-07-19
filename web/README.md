@@ -30,14 +30,14 @@ the same Cloudflare Vite-plugin layout as Tempo's React MPP examples.
 
 `npm run dev` and `npm run build` first regenerate
 `src/data/harness-repository.json` from the parent repository. Override the source or
-history depth with `HARNESS_REPO` and `HARNESS_COMMIT_LIMIT`. The default index
+history depth with `NANOCODEX_REPO` and `NANOCODEX_COMMIT_LIMIT`. The default index
 covers the complete repository history and stores it as one streamed patch
 asset. The commit view parses complete files in bounded batches and appends
 them to one Pierre CodeView, yielding between batches so scrolling stays
 responsive.
 
 The same sync step discovers linked worktrees and derives a compact eval index
-from their retained Harness and Codex jobs. It automatically pairs the largest
+from their retained Nanocodex and Codex jobs. It automatically pairs the largest
 exact task-set match for a like-for-like comparison. Trial
 details retain metrics, phase timing, verifier assertions, tool status, and
 API-visible final output. Raw tool output, stderr, secrets, and hidden reasoning

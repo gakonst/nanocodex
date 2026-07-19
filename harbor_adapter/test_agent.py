@@ -1,4 +1,4 @@
-"""Source-level contracts for the Harbor harness adapter."""
+"""Source-level contracts for the Harbor nanocodex adapter."""
 
 import asyncio
 import json
@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import yaml
 from harbor.models.agent.context import AgentContext
 
-from harbor_adapter.agent import HarnessAgent
+from harbor_adapter.agent import NanocodexAgent
 from harbor_adapter.codex import ParityCodexAgent
 from harbor_adapter.environment import _toolbox_mount_setup_command
 from harbor_adapter.verifier import (
@@ -27,7 +27,7 @@ from harbor_adapter.verifier import (
 
 class WebSearchContractTests(unittest.TestCase):
     def test_run_arguments_always_pass_web_search_explicitly(self) -> None:
-        agent = object.__new__(HarnessAgent)
+        agent = object.__new__(NanocodexAgent)
         agent._model = "test-model"
         agent._effort = "low"
 
@@ -55,7 +55,7 @@ class WebSearchContractTests(unittest.TestCase):
 class ContextParityContractTests(unittest.TestCase):
     def test_history_eval_arms_use_the_same_context_files(self) -> None:
         repository = Path(__file__).resolve().parents[1]
-        harness_config = yaml.safe_load(
+        nanocodex_config = yaml.safe_load(
             (repository / "evals" / "history-derived.yaml").read_text(encoding="utf-8")
         )
         codex_config = yaml.safe_load(
@@ -64,14 +64,14 @@ class ContextParityContractTests(unittest.TestCase):
             )
         )
 
-        harness_kwargs = harness_config["agents"][0]["kwargs"]
+        nanocodex_kwargs = nanocodex_config["agents"][0]["kwargs"]
         codex_kwargs = codex_config["agents"][0]["kwargs"]
         self.assertEqual(
-            harness_kwargs["system_prompt_path"],
+            nanocodex_kwargs["system_prompt_path"],
             codex_kwargs["system_prompt_path"],
         )
         self.assertEqual(
-            harness_kwargs["agents_md_path"], codex_kwargs["agents_md_path"]
+            nanocodex_kwargs["agents_md_path"], codex_kwargs["agents_md_path"]
         )
         self.assertEqual(
             codex_config["agents"][0]["import_path"],
@@ -84,14 +84,14 @@ class ContextParityContractTests(unittest.TestCase):
             agent = ParityCodexAgent(
                 logs_dir=Path(directory),
                 model_name="openai/test-model",
-                system_prompt_path=repository / "crates/harness-core/prompts/system.md",
+                system_prompt_path=repository / "crates/nanocodex-core/prompts/system.md",
                 agents_md_path=repository / "evals/history-derived/AGENTS.md",
                 reasoning_effort="low",
                 web_search="disabled",
             )
 
         self.assertIn(
-            '-c model_instructions_file="/tmp/harness-system-prompt.md"',
+            '-c model_instructions_file="/tmp/nanocodex-system-prompt.md"',
             agent.build_cli_flags(),
         )
 
@@ -103,8 +103,8 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("export PATH=$PATH:/opt/harness-verifier/bin", verifier)
-        self.assertNotIn("export PATH=/opt/harness-verifier/bin:$PATH", verifier)
+        self.assertIn("export PATH=$PATH:/opt/nanocodex-verifier/bin", verifier)
+        self.assertNotIn("export PATH=/opt/nanocodex-verifier/bin:$PATH", verifier)
 
     def test_regex_chess_uses_the_exact_cached_overlay(self) -> None:
         repository = Path(__file__).resolve().parents[1]
@@ -115,7 +115,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/chess/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/chess/3.13", dockerfile)
         self.assertIn("chess==1.11.2", dockerfile)
         self.assertIn('"-p 3.13 -w pytest==8.4.1 -w chess==1.11.2 ', verifier)
         self.assertIn(
@@ -132,8 +132,8 @@ class VerifierOverlayContractTests(unittest.TestCase):
         )
 
         self.assertEqual(dockerfile.count("torch==2.7.0"), 1)
-        self.assertIn("--target /opt/harness-verifier/torch270/3.13", dockerfile)
-        self.assertIn("--target /opt/harness-verifier/transformers455/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/torch270/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/transformers455/3.13", dockerfile)
         self.assertIn("transformers==4.55.0", dockerfile)
         self.assertIn(
             """'"-p 3.13 -w pytest==8.4.1 -w torch==2.7.0 '
@@ -241,7 +241,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
         self.assertIn(
             "apt-get install --yes --no-install-recommends libgl1", dockerfile
         )
-        self.assertIn("/opt/harness-verifier/lib/$library", dockerfile)
+        self.assertIn("/opt/nanocodex-verifier/lib/$library", dockerfile)
         self.assertNotIn("libc.so.6", dockerfile)
 
     def test_filter_js_uses_its_exact_cached_overlay(self) -> None:
@@ -253,7 +253,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/filter-js/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/filter-js/3.13", dockerfile)
         self.assertIn("selenium==4.38.0", dockerfile)
         self.assertIn("bs4==0.0.2", dockerfile)
         self.assertIn(
@@ -275,7 +275,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/datasets360/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/datasets360/3.13", dockerfile)
         self.assertIn("datasets==3.6.0", dockerfile)
         self.assertIn("tqdm==4.67.1", dockerfile)
         self.assertIn(
@@ -313,7 +313,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/pytest834/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/pytest834/3.13", dockerfile)
         self.assertIn("pytest==8.3.4", dockerfile)
         self.assertIn('"-p 3.13 -w pytest==8.3.4 ', verifier)
         self.assertIn(
@@ -330,7 +330,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/pillow1121/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/pillow1121/3.13", dockerfile)
         self.assertEqual(dockerfile.count("pillow==11.2.1"), 1)
         self.assertIn("numpy==2.3.1", dockerfile)
         self.assertIn('"install -y curl python3-pillow"', verifier)
@@ -360,7 +360,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/bn/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/bn/3.13", dockerfile)
         self.assertIn("pandas==2.3.2", dockerfile)
         self.assertIn("scipy==1.16.1", dockerfile)
         self.assertIn(
@@ -388,7 +388,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/setuptools809/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/setuptools809/3.13", dockerfile)
         self.assertIn("setuptools==80.9.0", dockerfile)
         self.assertIn('"install -y curl gcc"', verifier)
         self.assertIn(
@@ -410,7 +410,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/pytorch-cli/3.13", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/pytorch-cli/3.13", dockerfile)
         self.assertIn("--index https://download.pytorch.org/whl/cpu", dockerfile)
         self.assertIn("--index-strategy unsafe-best-match", dockerfile)
         self.assertIn("torch==2.7.1", dockerfile)
@@ -466,7 +466,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            "--target /opt/harness-verifier/install-windows-311/3.13",
+            "--target /opt/nanocodex-verifier/install-windows-311/3.13",
             dockerfile,
         )
         self.assertIn("opencv-python==4.11.0.86", dockerfile)
@@ -498,7 +498,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/fasttext/3.11", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/fasttext/3.11", dockerfile)
         self.assertIn("scikit-learn==1.7.0", dockerfile)
         self.assertIn("fasttext-wheel==0.9.2", dockerfile)
         self.assertIn("numpy==1.24.0", dockerfile)
@@ -530,11 +530,11 @@ class VerifierOverlayContractTests(unittest.TestCase):
         self.assertIn("expect", dockerfile)
         self.assertIn('"install -y expect"', verifier)
         self.assertIn(
-            "ln -s /opt/harness-verifier/bin/expect /usr/bin/expect", verifier
+            "ln -s /opt/nanocodex-verifier/bin/expect /usr/bin/expect", verifier
         )
         self.assertIn("trap verifier_cleanup EXIT", verifier)
         self.assertIn("readlink /usr/bin/expect", verifier)
-        self.assertIn('"/opt/harness-verifier/bin/expect" ]; then', verifier)
+        self.assertIn('"/opt/nanocodex-verifier/bin/expect" ]; then', verifier)
 
     def test_sam_cell_seg_uses_its_exact_python311_overlay(self) -> None:
         repository = Path(__file__).resolve().parents[1]
@@ -545,7 +545,7 @@ class VerifierOverlayContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("--target /opt/harness-verifier/sam-cell-seg/3.11", dockerfile)
+        self.assertIn("--target /opt/nanocodex-verifier/sam-cell-seg/3.11", dockerfile)
         self.assertIn("torch==2.5.1", dockerfile)
         self.assertIn("torchvision==0.20.1", dockerfile)
         self.assertIn("timm==1.0.19", dockerfile)
@@ -584,7 +584,7 @@ class EnvironmentToolboxContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             toolbox = root / "toolbox"
-            toolbox_verifier = toolbox / "opt" / "harness-verifier"
+            toolbox_verifier = toolbox / "opt" / "nanocodex-verifier"
             toolbox_modules = toolbox / "usr" / "share" / "nodejs"
             toolbox_verifier.mkdir(parents=True)
             (toolbox_modules / "font-awesome").mkdir(parents=True)
@@ -593,7 +593,7 @@ class EnvironmentToolboxContractTests(unittest.TestCase):
             for has_task_modules in (False, True):
                 with self.subTest(has_task_modules=has_task_modules):
                     task_root = root / f"task-{has_task_modules}"
-                    verifier = task_root / "opt" / "harness-verifier"
+                    verifier = task_root / "opt" / "nanocodex-verifier"
                     task_modules = task_root / "usr" / "share" / "nodejs"
                     verifier.parent.mkdir(parents=True)
                     task_modules.parent.mkdir(parents=True)
@@ -637,8 +637,8 @@ class EnvironmentToolboxContractTests(unittest.TestCase):
 
 class InterruptedRunContractTests(unittest.TestCase):
     @staticmethod
-    def _agent(logs_dir: Path, *, interrupted: bool) -> HarnessAgent:
-        agent = object.__new__(HarnessAgent)
+    def _agent(logs_dir: Path, *, interrupted: bool) -> NanocodexAgent:
+        agent = object.__new__(NanocodexAgent)
         agent.logs_dir = logs_dir
         agent._run_interrupted = interrupted
         agent.logger = logging.getLogger("harbor_adapter.test_agent")
@@ -706,7 +706,7 @@ class InterruptedRunContractTests(unittest.TestCase):
             writer = threading.Thread(target=finish_write)
             writer.start()
             try:
-                self.assertEqual(HarnessAgent._read_jsonl(path), [complete])
+                self.assertEqual(NanocodexAgent._read_jsonl(path), [complete])
             finally:
                 writer.join()
 
@@ -714,7 +714,7 @@ class InterruptedRunContractTests(unittest.TestCase):
 class RunCancellationContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_is_recorded_and_reraised(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            agent = object.__new__(HarnessAgent)
+            agent = object.__new__(NanocodexAgent)
             agent.logs_dir = Path(directory)
             agent.context_id = None
             agent.session_id = "session-1"

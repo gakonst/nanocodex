@@ -1,4 +1,4 @@
-"""Install and run the Rust harness inside a Harbor task environment."""
+"""Install and run Nanocodex inside a Harbor task environment."""
 
 from __future__ import annotations
 
@@ -42,11 +42,11 @@ RUN_METRIC_FIELDS = (
 USAGE_METRIC_FIELDS = ("cache_write_input_tokens", "reasoning_output_tokens")
 
 
-class HarnessAgent(BaseInstalledAgent):
+class NanocodexAgent(BaseInstalledAgent):
     """Upload one Rust binary, run it once, and retain its JSONL."""
 
     SUPPORTS_ATIF = True
-    _BINARY = "/installed-agent/harness"
+    _BINARY = "/installed-agent/nanocodex"
     _EVENTS = "/logs/agent/events.jsonl"
     _STDERR = "/logs/agent/stderr.log"
     _API_KEY_FILE = "/installed-agent/.openai-api-key"
@@ -55,7 +55,7 @@ class HarnessAgent(BaseInstalledAgent):
     def __init__(
         self,
         logs_dir: Path,
-        binary_path: str | Path = ".harness/installed/harness",
+        binary_path: str | Path = ".nanocodex/installed/nanocodex",
         model_name: str | None = None,
         effort: str = "low",
         web_search: bool = True,
@@ -78,7 +78,7 @@ class HarnessAgent(BaseInstalledAgent):
         self._binary_path = Path(binary_path).resolve()
         self._model = self._api_model_name(model_name)
         if self._model != MODEL:
-            raise ValueError(f"harness supports only {MODEL}, got {self._model}")
+            raise ValueError(f"nanocodex supports only {MODEL}, got {self._model}")
         self._effort = effort
         self._web_search = web_search
         self._install_node = install_node
@@ -90,7 +90,7 @@ class HarnessAgent(BaseInstalledAgent):
 
     @staticmethod
     def name() -> str:
-        return "harness"
+        return "nanocodex"
 
     def get_version_command(self) -> str:
         return f"{self._BINARY} --version"
@@ -98,7 +98,7 @@ class HarnessAgent(BaseInstalledAgent):
     async def install(self, environment: BaseEnvironment) -> None:
         if not self._binary_path.is_file():
             raise RuntimeError(
-                f"missing harness binary at {self._binary_path}; run `just build-agent`"
+                f"missing nanocodex binary at {self._binary_path}; run `just build-agent`"
             )
         if self._install_node:
             await self.exec_as_root(
@@ -120,7 +120,7 @@ class HarnessAgent(BaseInstalledAgent):
         if not user_id.isdecimal():
             raise RuntimeError("failed to resolve the agent user identifier")
 
-        with tempfile.TemporaryDirectory(prefix="harness-agent-secret-") as directory:
+        with tempfile.TemporaryDirectory(prefix="nanocodex-secret-") as directory:
             api_key_path = Path(directory) / "openai-api-key"
             api_key_path.write_text(self._api_key, encoding="utf-8")
             api_key_path.chmod(0o600)
@@ -182,7 +182,7 @@ class HarnessAgent(BaseInstalledAgent):
         command = (
             f'api_key=$(<{self._API_KEY_FILE}) && test -n "$api_key" && '
             f'rm -f {self._API_KEY_FILE} && OPENAI_API_KEY="$api_key" '
-            "PATH=$PATH:/opt/harness-verifier/bin "
+            "PATH=$PATH:/opt/nanocodex-verifier/bin "
             + " ".join(shlex.quote(argument) for argument in arguments)
             + f" 2> {self._STDERR} | tee {self._EVENTS}"
         )
@@ -214,7 +214,7 @@ class HarnessAgent(BaseInstalledAgent):
             if not self._run_interrupted:
                 raise
             self.logger.debug(
-                "skipping strict harness trajectory validation after run cancellation",
+                "skipping strict nanocodex trajectory validation after run cancellation",
                 exc_info=True,
             )
 
@@ -236,7 +236,7 @@ class HarnessAgent(BaseInstalledAgent):
                 or not isinstance(event.get("type"), str)
                 or not isinstance(event.get("payload"), dict)
             ):
-                raise RuntimeError(f"invalid harness event at sequence {seq}")
+                raise RuntimeError(f"invalid nanocodex event at sequence {seq}")
         self._verify_model_context(events)
 
         terminals = [event for event in events if event["type"] in TERMINAL_EVENTS]
@@ -279,7 +279,7 @@ class HarnessAgent(BaseInstalledAgent):
                 for event in reversed(events)
                 if event["type"] == "assistant.message"
             ),
-            "Harness emitted no assistant message.",
+            "Nanocodex emitted no assistant message.",
         )
 
         trajectory = Trajectory(
@@ -389,7 +389,7 @@ class HarnessAgent(BaseInstalledAgent):
             expected = system_prompt_path.read_text(encoding="utf-8").strip()
             if expected not in input_texts:
                 raise RuntimeError(
-                    "the harness request did not contain the configured system prompt "
+                    "the nanocodex request did not contain the configured system prompt "
                     "byte-for-byte; rebuild the installed agent"
                 )
 
@@ -401,7 +401,7 @@ class HarnessAgent(BaseInstalledAgent):
             )
             if expected not in input_texts:
                 raise RuntimeError(
-                    "the harness request did not contain the configured AGENTS.md "
+                    "the nanocodex request did not contain the configured AGENTS.md "
                     "byte-for-byte"
                 )
 

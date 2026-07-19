@@ -13,7 +13,7 @@ Each child directory is a standard Harbor task with:
 - `tests/` for the agent-hidden deterministic verifier; and
 - `solution/` for an oracle implementation used to validate the task itself.
 
-Run the harness against the complete dataset with:
+Run the nanocodex against the complete dataset with:
 
 ```sh
 just prepare-evals config=evals/history-derived.yaml
@@ -34,7 +34,7 @@ solutions with Harbor:
 HARBOR_TELEMETRY=off .venv/bin/harbor run \
   --path evals/history-derived \
   --agent oracle \
-  --jobs-dir .harness/harbor/setup
+  --jobs-dir .nanocodex/harbor/setup
 ```
 
 The two context-compaction probes found in history are not included yet. Their

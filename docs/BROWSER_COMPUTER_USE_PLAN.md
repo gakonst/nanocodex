@@ -1,6 +1,6 @@
 # Browser and Computer Use Parity Plan
 
-Status: proposed. No browser or computer-use production code exists in Harness yet.
+Status: proposed. No browser or computer-use production code exists in Nanocodex yet.
 
 This plan is based on the local Codex checkout at `3ac476b` and the locally
 installed `browser@26.715.21425` and `computer-use@1.0.1000451` plugins. The
@@ -9,7 +9,7 @@ and operational invariants, not their packaging or internal abstractions.
 
 ## Decision
 
-Browser and computer use stay behind Harness's persistent JavaScript execution
+Browser and computer use stay behind Nanocodex's persistent JavaScript execution
 surface. They must not become top-level Responses tools.
 
 Stock Codex works the same way:
@@ -21,7 +21,7 @@ Stock Codex works the same way:
   large flat set of browser or computer functions.
 
 This is important for tool-shape parity and prompt caching. When UI capabilities
-are disabled, the existing Harness request profile, tool descriptions, prompt,
+are disabled, the existing Nanocodex request profile, tool descriptions, prompt,
 and cache prefix must remain byte-for-byte unchanged. Browser and computer
 documentation is included only in their dedicated eval configurations.
 
@@ -83,7 +83,7 @@ transport is not portable or available to copy.
 
 After successful mutations, the plugin captures sanitized tab metadata and a
 viewport screenshot in response metadata. It does not print screenshot base64
-into JavaScript output. Harness should preserve the separation: operation
+into JavaScript output. Nanocodex should preserve the separation: operation
 metadata is not textual model context, and a screenshot becomes model-visible
 only through an explicit image result. Whether automatic response metadata is
 useful to our CLI can be decided by an eval; it is not required for the first
@@ -137,12 +137,12 @@ Important behavior:
 - End the computer-use turn on every terminal path.
 
 The native backend depends on macOS Accessibility, ScreenCaptureKit, process
-authentication, and OS policy. Harness needs a separate Linux/Harbor backend;
+authentication, and OS policy. Nanocodex needs a separate Linux/Harbor backend;
 the model-facing `sky` contract and the invariants above are the parity target.
 
-## Harness Architecture
+## Nanocodex Architecture
 
-Harness already has the correct outer shape:
+Nanocodex already has the correct outer shape:
 
 ```text
 Responses exec call
@@ -157,15 +157,15 @@ argument/result adaptation. Rust owns subprocesses, bounded I/O, state,
 cancellation, timeouts, turn identity, and cleanup. There is no per-operation
 Python bridge and no generic plugin framework.
 
-Each accepted Harness request owns at most one browser runtime and one computer
+Each accepted Nanocodex request owns at most one browser runtime and one computer
 runtime. A runtime survives JavaScript cells, model turns, and Responses
 WebSocket reconnects within that request. It never survives the request's
 terminal event.
 
 UI runtimes receive a scrubbed child environment. In particular, they must not
-inherit `OPENAI_API_KEY`, web-search credentials, or arbitrary Harness secrets.
+inherit `OPENAI_API_KEY`, web-search credentials, or arbitrary Nanocodex secrets.
 
-Harness's existing image output and image-aware context accounting are reused.
+Nanocodex's existing image output and image-aware context accounting are reused.
 DOM and accessibility text remain bounded text. Screenshots enter Responses
 history only when explicitly emitted. Compaction may discard old UI outputs;
 the runtime remains live, but the model must obtain fresh state before acting.
@@ -202,7 +202,7 @@ Build a deterministic desktop contract fixture containing:
 - the same immutable side-effect ledger.
 
 Capture stock-Codex trajectories against the logical fixtures before adding a
-Harness runtime. Preserve the raw rollout/tool stream and derive measurements
+Nanocodex runtime. Preserve the raw rollout/tool stream and derive measurements
 from it; do not add another journal.
 
 Record:
@@ -267,7 +267,7 @@ and scoped to the current document. Navigation and document replacement
 invalidate them. Mutations are serialized and never replayed after ambiguous
 transport failure.
 
-Admit semantic fixture tasks one at a time. Compare Harness to stock Codex on
+Admit semantic fixture tasks one at a time. Compare Nanocodex to stock Codex on
 success, action count, state-check discipline, tokens, latency, and duplicate
 side effects.
 

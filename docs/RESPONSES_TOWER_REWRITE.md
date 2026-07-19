@@ -4,14 +4,14 @@ Status: implemented.
 
 ## Public ownership and composition
 
-`Agent::new(api_key)` is the zero-configuration library entry point. It uses the
+`Nanocodex::new(api_key)` is the zero-configuration library entry point. It uses the
 SDK's fixed model contract, standard system prompt, medium thinking, built-in
 tools, persistent WebSocket transport, and bounded Responses retry policy.
-`Agent::builder(api_key)` exposes only the useful high-level overrides:
+`Nanocodex::builder(api_key)` exposes only the useful high-level overrides:
 `prompt`, `thinking`, `tools`, `workspace`, `session_id`, and `responses`.
 
 `build()` requires an active Tokio runtime, spawns the stateful driver, and
-returns `(Agent, AgentEvents)`: one cheap, cloneable prompt handle and the
+returns `(Nanocodex, AgentEvents)`: one cheap, cloneable prompt handle and the
 single ordered event receiver. The driver is private and remains the sole owner
 of mutable model, conversation, tool, and Tower service state. It stops after
 every handle is dropped. Each submitted prompt immediately returns a `Turn`;
@@ -29,12 +29,12 @@ and tracing policy without reopening the ownership boundary.
 `ResponsesClient<S>` is deliberately generic over
 `Service<ResponsesAttempt>`. It owns the caller's concrete service stack and
 provides accessors and `map_service` without boxing or imposing a global stack.
-`Responses::builder().layer(...)` defers composition until `Agent::build()`,
+`Responses::builder().layer(...)` defers composition until `Nanocodex::build()`,
 when the SDK can first construct the correctly configured standard service:
 
 ```rust,ignore
 use std::time::Duration;
-use harness_agent::{Agent, Responses, Thinking, Tools};
+use nanocodex::{Nanocodex, Responses, Thinking, Tools};
 use tower::{
     limit::ConcurrencyLimitLayer,
     timeout::TimeoutLayer,
@@ -47,7 +47,7 @@ let responses = Responses::builder()
     .build();
 
 let tools = Tools::builder().web_search(false).build();
-let (handle, events) = Agent::builder(api_key)
+let (handle, events) = Nanocodex::builder(api_key)
     .prompt("project-specific system prompt")
     .thinking(Thinking::High)
     .tools(tools)
@@ -64,21 +64,21 @@ applications adopt a process server, JSON-RPC, or JSONL.
 
 The crate boundaries mirror those ownership rules:
 
-- `harness-core` is dependency-light and owns the shared public data model:
+- `nanocodex-core` is dependency-light and owns the shared public data model:
   prompts, event envelopes, model configuration, and the complete typed
   Responses request, server-event, usage, content, tool, and item model.
-- `harness-service` owns Responses behavior: the OpenAI WebSocket, stream
+- `nanocodex-service` owns Responses behavior: the OpenAI WebSocket, stream
   processing, typed transport errors, telemetry, and generic Tower
-  client/service/retry API. It depends only on `harness-core` from this
-  workspace and is usable by another orchestrator without `harness-agent` or
+  client/service/retry API. It depends only on `nanocodex-core` from this
+  workspace and is usable by another orchestrator without `nanocodex` or
   the built-in tools.
-- `harness-tools` owns tool execution and depends only on `harness-core` from
+- `nanocodex-tools` owns tool execution and depends only on `nanocodex-core` from
   the SDK crates.
-- `harness-agent` composes core, service, and tools into the queued turn/session
+- `nanocodex` composes core, service, and tools into the queued turn/session
   lifecycle. Its public re-exports keep the common high-level path ergonomic.
 
 Socket pumping and stream state are private service implementation details.
-Wire types live in `harness_core::responses`; the public behavioral surface is
+Wire types live in `nanocodex_core::responses`; the public behavioral surface is
 expressed in terms of `RequestProfile`, `ResponsesAttemptFactory`,
 `ResponsesAttempt`, `ResponsesClient<S>`, typed outputs/errors, and Tower
 `Service`. This keeps typed protocol construction/inspection usable without a
@@ -210,8 +210,8 @@ retained Harbor stream rather than checking private trace contents into the
 repository:
 
 ```sh
-HARNESS_BENCH_EVENTS=.harness/harbor/jobs/<job>/<trial>/agent/events.jsonl \
-  cargo bench -p harness-service --bench tower_responses
+NANOCODEX_BENCH_EVENTS=.nanocodex/harbor/jobs/<job>/<trial>/agent/events.jsonl \
+  cargo bench -p nanocodex-service --bench tower_responses
 ```
 
 Without that variable, the portable synthetic groups still run and the
