@@ -168,28 +168,110 @@ development machine.
 Do not expose this surface until Phase 1 is stable and a real multi-turn
 consumer exists.
 
-Desired semantics:
+The local Codex implementation establishes useful behavioral invariants but is
+not the implementation template. It accepts steering only for an active regular
+turn, preserves FIFO order, and makes queued input model-visible at the next
+safe sampling boundary after a complete response/tool-output pair. Its forks
+exclude partial work and start an independent thread from committed history.
+Nanocodex should adopt those invariants without Codex's shared active-turn
+mutexes, watch channels, task-per-turn cancellation, rollout flush/read cycle,
+or whole-history clone and truncation.
 
-- Plain `prompt(...)` queues after the active turn and remains the default API.
-- Steering targets the latest active turn by default. Advanced targeting may
-  expose an opaque turn handle/ID without forcing IDs into ordinary prompting.
-- A prompt may branch from a prior committed turn. Branch history should share
-  an immutable prefix and allocate only its new tail.
-- One WebSocket is sequential. Truly concurrent branches require independent
-  response chains/connections; do not serialize nominally parallel agents
-  through one socket or reconnect from scratch for every branch.
-- Queue capacity and scheduling policy stay internal unless measured consumer
-  pressure proves a public knob is necessary.
-- Cancellation has an explicit terminal result and cleans up descendant tool
-  processes.
+#### 2.1 One actor for queueing, steering, and cancellation
+
+- Keep `prompt(...)` unchanged: it always enters the bounded FIFO command queue
+  and never changes meaning merely because a turn is active.
+- Let the private driver continue receiving commands while a model run is
+  active. The driver owns a pinned active-turn future and selects between its
+  completion and the one command receiver; it does not spawn a task or expose
+  shared mutable run state for each command.
+- Route explicit steering and cancellation over a private bounded control
+  channel owned by the active run. Prefer command receipt in the completion
+  race so every accepted control has a deterministic linearization point.
+- `agent.steer(...)` targets the latest active regular turn. A `Turn`-scoped
+  method may target its opaque internal key, but ordinary prompting must not
+  expose or require turn IDs. Reject no-active, queued, stale, mismatched, and
+  non-steerable targets with typed errors.
+- A steering acknowledgement means the input entered the active FIFO, not that
+  the model has sampled it. Drain that FIFO only between complete model
+  responses: after any tool call and its output have been committed, before the
+  next request. Never mutate an in-flight Responses frame or commit a failed
+  partial response.
+- If steering is pending when a response would otherwise finish, continue the
+  same turn and preserve one result and exactly one terminal event for the
+  original accepted prompt. Multiple steers remain distinct ordered user
+  messages in the next request.
+- Cancellation follows the same control path, yields a typed terminal result,
+  and terminates subprocess groups and descendants. Queue capacities and
+  scheduling policy remain private.
+
+#### 2.2 Persistent committed history
+
+- Replace copy-on-write `Arc<Vec<ResponseItem>>` history with immutable
+  per-turn segments. Each committed segment points to its predecessor; the
+  active turn alone owns a mutable tail. Committing or snapshotting a turn is
+  O(1), and a fork allocates only its new tail instead of cloning the retained
+  prefix on first mutation.
+- Serialize requests by walking segment references oldest-first plus the active
+  tail. Full replay may traverse the prefix but must not clone or flatten its
+  `ResponseItem`s. Healthy turns continue to send only their delta.
+- Create checkpoints only after successful terminal turns. Forking while a turn
+  is active uses the latest committed checkpoint and excludes partial model or
+  tool work. Compaction installs a new root for that lineage without rewriting
+  roots retained by existing branches.
+- Retain an opaque cheap checkpoint in `TurnResult`. Start with
+  `agent.fork()` from the latest commit; add `agent.fork_from(&turn_result)` only
+  when a consumer demonstrates historical branching.
+
+#### 2.3 Independent branch execution
+
+- `fork()` returns a normal `(Nanocodex, AgentEvents)` pair with its own driver,
+  Tower service, WebSocket, response chain, and `ToolRuntime`. Immutable tool
+  definitions and MCP provider clients may be shared; shell sessions and Code
+  Mode state may not.
+- Never clone the current standard `ResponsesService` for a branch because its
+  clone shares connection state. Retain a factory that can build a fresh
+  service stack. Standard services always support forks; deferred cloneable
+  layer factories may recreate their stack; an arbitrary replacement service
+  must provide an explicit factory or return a typed unsupported error.
+- Give every branch a unique session/request identity while preserving a shared
+  lineage cache key and byte-stable prompt prefix. Decouple those concepts in
+  `RequestProfile` before exposing forks.
+- With `store: false`, a child's first model call replays its shared prefix once
+  on the fresh connection without a parent `previous_response_id`. Later child
+  turns use their own delta and response chain. Concurrent branches must
+  actually overlap on distinct connections rather than serialize through a
+  shared connection mutex.
+
+#### Delivery order
+
+1. Refactor the driver to receive commands during an active turn without
+   changing the public prompt API; prove existing queue order first.
+2. Add explicit steering at safe response boundaries, then cancellation through
+   the same owned control path.
+3. Introduce segmented history and retained committed checkpoints, with memory
+   and replay benchmarks before adding the public fork operation.
+4. Add fresh service-stack factories, separate lineage/cache identity from
+   session identity, and expose latest-committed `fork()`.
+5. Promote historical `fork_from(...)` only with a concrete consumer. Do not
+   add an app-server protocol, persistence journal, side-conversation UI, or
+   generic scheduler in this phase.
 
 Gate:
 
-- Deterministic multi-turn tests cover queue order, steer-latest behavior,
-  targeted rejection, cancellation, and branch isolation.
-- A retained trace demonstrates that a follow-on turn sends only its delta and
-  that a reconnect/branch replay preserves the stable cache prefix.
-- The default one-prompt program does not gain lifecycle ceremony.
+- Deterministic tests cover queued prompt order; steer FIFO and safe-boundary
+  placement; no-active, stale, and terminal-race rejection; cancellation and
+  descendant cleanup; and exactly one terminal result/event per accepted turn.
+- Fork tests cover active-turn exclusion, historical checkpoint isolation, and
+  compaction isolation. Branching a large retained trace shares segment
+  pointers, performs no `ResponseItem` clone/flatten, and grows memory with new
+  branch tails rather than branch count times retained history.
+- Captured requests prove that a child first replays the exact byte-stable
+  prefix with the lineage cache key and no parent response ID, then sends only
+  deltas. Concurrent branch tests prove distinct connections and overlapping
+  execution.
+- Reconnect replay, cache-prefix invariants, the default one-prompt program, and
+  all existing result/event consumers remain unchanged.
 
 ### Phase 3: bindings and richer consumers (complete foundation)
 
