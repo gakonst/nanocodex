@@ -306,7 +306,7 @@ is both smaller and green again.
 All four steps are complete. Production code shrank by 221 lines while the two
 demonstrated regressions gained focused deterministic coverage. `just check`,
 the live PTC and Multi-agent smokes, and both unchanged anchors passed. The
-complete gate at `.nanocodex/harbor/jobs/2026-07-16__11-28-41` completed 36/36
+complete gate at `.harness/harbor/jobs/2026-07-16__11-28-41` completed 36/36
 trials with no exception, retry, or WebSocket reconnect in 20 minutes 33
 seconds and scored 34/36. Its misses were task-output failures: POV-Ray omitted
 a canonical source file after a successful build, and Cancel Async Tasks missed
@@ -1552,20 +1552,20 @@ mock regression now drives 33 tool-producing responses and completes on model
 call 34.
 
 The literal 36-task nanocodex job at
-`.nanocodex/harbor/jobs/2026-07-16__17-20-40` completed in 11 minutes 29 seconds
+`.harness/harbor/jobs/2026-07-16__17-20-40` completed in 11 minutes 29 seconds
 and scored 28/36 before the fix; CompCert was its only exception and stopped
 at the artificial ceiling. The unchanged fixed CompCert rerun at
-`.nanocodex/harbor/jobs/2026-07-16__17-34-05` passed all assertions after 40
+`.harness/harbor/jobs/2026-07-16__17-34-05` passed all assertions after 40
 model calls and 78 outer-plus-nested tool calls. It used 1,575,977 input,
 1,518,293 cached-input, and 4,225 output tokens over 883.01 Rust seconds, with
 no exception, reconnect, compaction, or stderr. An unchanged POV-Ray retry at
-`.nanocodex/harbor/jobs/2026-07-16__18-20-37` also passed 3/3 after replacing the
+`.harness/harbor/jobs/2026-07-16__18-20-37` also passed 3/3 after replacing the
 noncanonical ZIP layout with the authentic TAR.Z source tree.
 
 Substituting those two focused revalidations into the full task matrix yields
 30/36 for the current nanocodex, with the same six misses as the valid Codex
 0.144.5 comparison at
-`.nanocodex/harbor/jobs/20260716-codex-0.144.5-full-2`. Codex completed 30/36
+`.harness/harbor/jobs/20260716-codex-0.144.5-full-2`. Codex completed 30/36
 with zero exception or retry in 22 minutes 19 seconds. This substitution is a
 paired diagnostic, not a second full-suite score; the original full job and
 both focused jobs remain separate records. The only original outcome
@@ -1588,10 +1588,10 @@ solution-quality work rather than changing the common runtime around them.
 `sha256:c5b858a93a842b32c06ce0713d82af10102b7c1a3f3b8d6351c1d0ecb4d47dc9`
 is the next admission after the parity gate and the thirty-seventh active task.
 Its install-only preparation at
-`.nanocodex/harbor/setup/2026-07-16__18-22-46-prepare-crack-7z-hash-49343`
+`.harness/harbor/setup/2026-07-16__18-22-46-prepare-crack-7z-hash-49343`
 completed in 30.54 seconds with no model or verifier work. The unchanged
 low-effort trial at
-`.nanocodex/harbor/jobs/2026-07-16__18-23-24-crack-7z-hash-49717` then passed
+`.harness/harbor/jobs/2026-07-16__18-23-24-crack-7z-hash-49717` then passed
 both canonical assertions in 5 minutes 51 seconds with zero exception or
 retry.
 
@@ -1605,7 +1605,7 @@ stream was monotonic with one `run.completed`, all tool calls had results,
 stderr was empty, and there was no reconnect or compaction.
 
 The matched Codex 0.144.5 trial at
-`.nanocodex/harbor/jobs/2026-07-16__23-31-19-crack-7z-hash-codex-` also passed
+`.harness/harbor/jobs/2026-07-16__23-31-19-crack-7z-hash-codex-` also passed
 both assertions. Codex agent work took 626.23 seconds across 36 model calls,
 used 659,998 input, 636,252 cached-input (96.4%), and 3,596 output tokens, and
 reported $0.54. Its trajectory initially spent time in a slow John run before
@@ -1613,7 +1613,7 @@ switching to direct archive tests; the nanocodex trajectory parallelized those
 tests and completed 278.94 seconds sooner.
 
 `multi-source-data-merger` is the thirty-eighth active task. Cold preparation
-at `.nanocodex/harbor/setup/2026-07-16__23-43-22-prepare-multi-source-data-merger-88805`
+at `.harness/harbor/setup/2026-07-16__23-43-22-prepare-multi-source-data-merger-88805`
 took 58 seconds. The first unchanged nanocodex answer was correct and
 self-validated, but its canonical verifier never ran because the cached
 verifier rejected the task's pandas/PyArrow `uvx` command. The exact pinned
@@ -1622,18 +1622,18 @@ verifier rejected the task's pandas/PyArrow `uvx` command. The exact pinned
 command shape, preserving task-interpreter packages.
 
 After a 9-second overlay preparation, the unchanged nanocodex retry at
-`.nanocodex/harbor/jobs/2026-07-16__23-46-33-multi-source-data-merger-90529`
+`.harness/harbor/jobs/2026-07-16__23-46-33-multi-source-data-merger-90529`
 passed all 3 assertions. Agent work took 26.49 seconds over 5 model calls and 8
 outer-plus-nested tool events, using 30,246 input, 22,642 cached-input (74.9%),
 7,589 cache-write, and 1,955 output tokens. The matched Codex 0.144.5 trial at
-`.nanocodex/harbor/jobs/2026-07-16__23-47-24-multi-source-data-merger-codex-91000`
+`.harness/harbor/jobs/2026-07-16__23-47-24-multi-source-data-merger-codex-91000`
 also passed all 3 assertions in 29.07 agent-seconds over 3 model calls and 2
 tool calls, using 29,265 input, 18,144 cached-input (62.0%), and 1,654 output
 tokens. The nanocodex stream was monotonic with one terminal event, empty stderr,
 and no exception, reconnect, or compaction.
 
 The ensuing 38-task nanocodex gate at
-`.nanocodex/harbor/jobs/2026-07-16__23-49-42-eval-92193` completed in 19 minutes
+`.harness/harbor/jobs/2026-07-16__23-49-42-eval-92193` completed in 19 minutes
 11 seconds and scored 31/38 with zero exception, retry, reconnect, or stderr.
 All 38 streams used protocol version 1, contiguous sequence numbers, one
 request ID, paired every tool call/result, and ended in one `run.completed`.
@@ -1644,7 +1644,7 @@ were Cancel Async Tasks, DB WAL Recovery, KV Store gRPC, Polyglot C/Python,
 PyPI Server, QEMU Startup, and SQLite/gcov.
 
 The matched Codex 0.144.5 gate at
-`.nanocodex/harbor/jobs/2026-07-17__00-09-31-codex-0.144.5-full-38-5387`
+`.harness/harbor/jobs/2026-07-17__00-09-31-codex-0.144.5-full-38-5387`
 completed in 20 minutes 47 seconds and also scored 31/38 with zero exception or
 retry. Codex used 10,474,705 input, 9,774,852 cached-input (93.3%), and 105,548
 output tokens across 509 model calls and 471 tool calls, reporting $11.55.
@@ -1663,11 +1663,11 @@ using 4,229,605 input and 4,166,785 cached-input and reporting $2.62.
 
 The identical Cancel Async Tasks full-gate miss on both agents was the final
 above-concurrency cancellation assertion. Unchanged focused retries at
-`.nanocodex/harbor/jobs/2026-07-17__00-31-25-cancel-async-tasks-18793` and
-`.nanocodex/harbor/jobs/2026-07-17__00-32-12-cancel-async-tasks-codex-19221`
+`.harness/harbor/jobs/2026-07-17__00-31-25-cancel-async-tasks-18793` and
+`.harness/harbor/jobs/2026-07-17__00-32-12-cancel-async-tasks-codex-19221`
 both passed all 6 assertions, confirming sampling variance. The unchanged
 nanocodex SQLite/gcov retry at
-`.nanocodex/harbor/jobs/2026-07-17__00-33-26-sqlite-with-gcov-19896` also passed
+`.harness/harbor/jobs/2026-07-17__00-33-26-sqlite-with-gcov-19896` also passed
 all 3 assertions after the full-gate trajectory failed to place generated
 coverage under the source tree. No benchmark-specific prompt or runtime path
 was added for either retry.
@@ -1677,17 +1677,17 @@ NumPy/Pandas/Matplotlib/SciPy verifier pins are isolated under
 `/opt/nanocodex-verifier/scientific` and selected only for the canonical `uvx`
 shape, so they cannot replace the task's own scientific environment. Cold
 preparation at
-`.nanocodex/harbor/setup/2026-07-17__00-35-40-prepare-modernize-scientific-stack-20984`
+`.harness/harbor/setup/2026-07-17__00-35-40-prepare-modernize-scientific-stack-20984`
 took 1 minute 28 seconds with no model or verifier work.
 
 The unchanged nanocodex trial at
-`.nanocodex/harbor/jobs/2026-07-17__00-37-18-modernize-scientific-stack-21794`
+`.harness/harbor/jobs/2026-07-17__00-37-18-modernize-scientific-stack-21794`
 passed both assertions in 12.58 Rust seconds over 4 model calls and 9
 outer-plus-nested tool events, using 24,042 input, 17,286 cached-input, and 852
 output tokens. Its stream was monotonic with one terminal event, paired tools,
 empty stderr, and no reconnect or compaction. The matched Codex 0.144.5 trial
 at
-`.nanocodex/harbor/jobs/2026-07-17__00-37-51-modernize-scientific-stack-codex-22129`
+`.harness/harbor/jobs/2026-07-17__00-37-51-modernize-scientific-stack-codex-22129`
 also passed both assertions in 22.30 agent-seconds over 4 model calls and 3
 tool calls, using 39,897 input, 29,173 cached-input, and 882 output tokens.
 
@@ -1705,7 +1705,7 @@ image.
 Neither agent earned a stable QEMU admission after the fixes. The nanocodex
 sample stopped its own container by killing the task image's `sleep` PID 1,
 while the matched Codex 0.144.5 sample at
-`.nanocodex/harbor/jobs/2026-07-17__01-04-42-qemu-alpine-ssh-codex-postfix-36007`
+`.harness/harbor/jobs/2026-07-17__01-04-42-qemu-alpine-ssh-codex-postfix-36007`
 hit the 15-minute agent timeout. `sanitize-git-repo` split nanocodex pass/Codex
 miss, and both agents reconstructed the same wrong fragment ordering on
 `password-recovery`; all three remain outside the stable slice.
@@ -1713,28 +1713,28 @@ miss, and both agents reconstructed the same wrong fragment ordering on
 `portfolio-optimization` is the fortieth active task. Its exact NumPy 2.3.2
 and setuptools 78.1.1 verifier pair is isolated under
 `/opt/nanocodex-verifier/portfolio`. Cold preparation at
-`.nanocodex/harbor/setup/2026-07-17__07-23-03-prepare-portfolio-optimization-553`
+`.harness/harbor/setup/2026-07-17__07-23-03-prepare-portfolio-optimization-553`
 took 48 seconds with no model or verifier work. The unchanged nanocodex trial at
-`.nanocodex/harbor/jobs/2026-07-17__07-24-01-portfolio-optimization-1167`
+`.harness/harbor/jobs/2026-07-17__07-24-01-portfolio-optimization-1167`
 passed all six canonical checks in 75.50 Rust seconds over 8 model calls and
 14 tool calls, using 76,298 input, 63,674 cached-input, and 3,094 output
 tokens. Its protocol stream was contiguous with paired tools, one terminal
 event, empty stderr, and no reconnect or compaction. The matched Codex 0.144.5
 trial at
-`.nanocodex/harbor/jobs/2026-07-17__07-26-18-portfolio-optimization-codex-2459`
+`.harness/harbor/jobs/2026-07-17__07-26-18-portfolio-optimization-codex-2459`
 also passed all six checks, using 113,431 input, 94,987 cached-input, and 3,087
 output tokens and reporting $0.232.
 
 `model-extraction-relu-logits` is the forty-first active task. Cold preparation
 at
-`.nanocodex/harbor/setup/2026-07-17__07-32-02-prepare-model-extraction-relu-logits-5069`
+`.harness/harbor/setup/2026-07-17__07-32-02-prepare-model-extraction-relu-logits-5069`
 took 52 seconds with no model or verifier work. The unchanged nanocodex trial at
-`.nanocodex/harbor/jobs/2026-07-17__07-33-02-model-extraction-relu-logits-5598`
+`.harness/harbor/jobs/2026-07-17__07-33-02-model-extraction-relu-logits-5598`
 matched every hidden row in 81.46 Rust seconds over 4 model calls and 6 tool
 calls, using 24,074 input, 16,657 cached-input, and 2,429 output tokens. Its
 stream was contiguous with paired tools, one terminal event, empty stderr, and
 no reconnect or compaction. The matched Codex 0.144.5 trial at
-`.nanocodex/harbor/jobs/2026-07-17__07-34-46-model-extraction-relu-logits-codex-6423`
+`.harness/harbor/jobs/2026-07-17__07-34-46-model-extraction-relu-logits-codex-6423`
 also passed, using 108,507 input, 91,680 cached-input, and 3,911 output tokens
 and reporting $0.247.
 
@@ -1809,6 +1809,26 @@ tokens, cache utilization, compactions, and cost when the API reports it. Once
 one attempt works, use repeated attempts to estimate variance and p50/p95 rather
 than drawing tuning conclusions from one lucky trajectory. Add private taste or
 regression tasks only after the public baseline is stable.
+
+### Nanocodex rename and SDK gate (2026-07-18)
+
+The rebased Tower/owned-agent SDK and repository rename were validated on
+`master@408eb96` with the full 41-task Terminal-Bench slice. The Harbor job at
+`.nanocodex/harbor/jobs/2026-07-18__20-37-28-eval-52286` scored 40/41
+(0.9756) in 24 minutes 16 seconds with no errored, cancelled, or retried trials.
+All 41 event streams parsed as contiguous protocol-v1 JSONL with one stable
+request ID and exactly one terminal event; every terminal was `run.completed`.
+The run used 633 model calls and 1,106 tool calls with 41 connection attempts,
+zero response retries, and zero WebSocket reconnects.
+
+Prompt caching remained intact across the new service stack: 13,013,613 of
+13,676,067 input tokens were cached (95.16%), with 660,555 cache-write input
+tokens, 128,800 output tokens, and 30,643 reasoning-output tokens. The API did
+not report cost. The only task miss, `polyglot-c-py`, completed normally in
+40.44 agent seconds but left its locally compiled `cmain` verification binary
+beside the required `main.py.c`; the canonical verifier rejected that extra
+file. This was a task-output cleanup error, not a transport, protocol, adapter,
+or verifier-infrastructure failure.
 
 ### Upstream Codex parity review (2026-07-18)
 
