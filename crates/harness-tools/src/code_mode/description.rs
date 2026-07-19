@@ -1,9 +1,7 @@
-use std::{fmt::Write as _, sync::Arc};
+use std::fmt::Write as _;
 
 use harness_core::JsonSchema;
 use serde_json::Value;
-
-use crate::{ErasedTool, ToolKind};
 
 const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose tool calls
 - Evaluates the provided JavaScript in a fresh local Node.js host. Yielded cells keep running independently until completion or termination.
@@ -29,26 +27,25 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description, kind }` entries.
 - `yield_control()`: yields the accumulated output to the model immediately while the cell keeps running."#;
 
-pub(super) fn exec_description(handlers: &[Arc<dyn ErasedTool>]) -> String {
+pub(super) fn exec_description(definitions: &[harness_core::ToolDefinition]) -> String {
     let mut description = EXEC_DESCRIPTION.to_owned();
-    for handler in handlers {
-        let spec = handler.spec();
-        let input_name = match handler.kind() {
-            ToolKind::Function => "args",
-            ToolKind::Freeform => "input",
+    for spec in definitions {
+        let input_name = match &spec {
+            harness_core::ToolDefinition::Function { .. } => "args",
+            harness_core::ToolDefinition::Custom { .. } => "input",
         };
-        let input_type = match handler.kind() {
-            ToolKind::Function => spec
+        let input_type = match &spec {
+            harness_core::ToolDefinition::Function { .. } => spec
                 .parameters()
                 .map(JsonSchema::as_value)
                 .map_or_else(|| "unknown".to_owned(), render_json_schema_to_typescript),
-            ToolKind::Freeform => "string".to_owned(),
+            harness_core::ToolDefinition::Custom { .. } => "string".to_owned(),
         };
         let output_type = spec
             .output_schema()
             .map(JsonSchema::as_value)
             .map_or_else(|| "unknown".to_owned(), render_json_schema_to_typescript);
-        let global_name = normalize_identifier(handler.name());
+        let global_name = normalize_identifier(spec.name());
         let _ = write!(
             description,
             "\n\n### `{global_name}`\n{}\n\nexec tool declaration:\n```ts\n\

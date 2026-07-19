@@ -10,7 +10,7 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use tokio::{sync::Mutex, time::Duration};
 
-use super::{ErasedTool, ToolContext, ToolOutputBody, ToolOutputContent, ToolRuntime};
+use super::{ToolContext, ToolOutputBody, ToolOutputContent, ToolRuntime};
 use host::NodeHost;
 
 const INITIAL_YIELD: Duration = if cfg!(test) {
@@ -545,10 +545,10 @@ fn failed_execution(
     }
 }
 
-pub(super) fn exec_spec(handlers: &[std::sync::Arc<dyn ErasedTool>]) -> ToolDefinition {
+pub(super) fn exec_spec(definitions: &[ToolDefinition]) -> ToolDefinition {
     ToolDefinition::custom(
         "exec",
-        description::exec_description(handlers),
+        description::exec_description(definitions),
         CustomToolFormat::grammar("lark", GRAMMAR),
     )
 }

@@ -11,8 +11,8 @@ use tokio::{
 };
 
 use super::{
-    ErasedTool, ImageGenerationConfig, ImageGenerationHandler, ImageRequest, ImagegenArgs,
-    ToolContext, ToolOutputBody, ToolOutputContent, request_for_args,
+    ImageGenerationConfig, ImageGenerationHandler, ImageRequest, ImagegenArgs, Tool, ToolContext,
+    ToolOutputBody, ToolOutputContent, request_for_args,
 };
 
 const TINY_PNG: &[u8] = &[
@@ -164,7 +164,7 @@ fn exposes_codex_imagegen_shape() {
         api_key: "test-key".to_owned(),
         save_root: PathBuf::from("/tmp/harness-imagegen-test"),
     });
-    let spec = serde_json::to_value(handler.spec()).unwrap();
+    let spec = serde_json::to_value(handler.definition()).unwrap();
 
     assert_eq!(spec["name"], "image_gen__imagegen");
     assert_eq!(spec["strict"], false);

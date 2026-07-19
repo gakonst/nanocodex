@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    ErasedTool, ErasedToolFuture, ImageDetail, ImageGenerationConfig, ToolContext, ToolExecution,
+    ImageDetail, ImageGenerationConfig, Tool, ToolContext, ToolExecution, ToolInput,
     ToolOutputBody, ToolOutputContent, image::load_for_prompt_data_url,
 };
 
@@ -140,12 +140,13 @@ impl ImageGenerationHandler {
     }
 }
 
-impl ErasedTool for ImageGenerationHandler {
+#[async_trait::async_trait]
+impl Tool for ImageGenerationHandler {
     fn name(&self) -> &'static str {
         "image_gen__imagegen"
     }
 
-    fn spec(&self) -> ToolDefinition {
+    fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             self.name(),
             DESCRIPTION,
@@ -170,8 +171,12 @@ impl ErasedTool for ImageGenerationHandler {
         )
     }
 
-    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ErasedToolFuture<'a> {
-        Box::pin(async move { self.run(&input, context).await })
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolExecution {
+        let input = match input.function_json() {
+            Ok(input) => input,
+            Err(error) => return ToolExecution::error(error.to_string()),
+        };
+        self.run(input.get(), context).await
     }
 }
 

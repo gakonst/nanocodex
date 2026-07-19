@@ -6,7 +6,7 @@ use std::{
 use harness_core::{CustomToolFormat, ToolDefinition};
 use serde_json::json;
 
-use super::{ErasedTool, ErasedToolFuture, ToolContext, ToolExecution, ToolKind};
+use super::{Tool, ToolContext, ToolExecution, ToolInput};
 
 mod parser;
 mod seek_sequence;
@@ -26,16 +26,13 @@ impl ApplyPatchHandler {
     }
 }
 
-impl ErasedTool for ApplyPatchHandler {
+#[async_trait::async_trait]
+impl Tool for ApplyPatchHandler {
     fn name(&self) -> &'static str {
         "apply_patch"
     }
 
-    fn kind(&self) -> ToolKind {
-        ToolKind::Freeform
-    }
-
-    fn spec(&self) -> ToolDefinition {
+    fn definition(&self) -> ToolDefinition {
         ToolDefinition::custom(
             self.name(),
             "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
@@ -43,15 +40,17 @@ impl ErasedTool for ApplyPatchHandler {
         )
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
+        let input = match input.into_freeform() {
+            Ok(input) => input,
+            Err(error) => return ToolExecution::error(error.to_string()),
+        };
         let workspace = self.workspace.clone();
-        Box::pin(async move {
-            match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {
-                Ok(Ok(output)) => ToolExecution::text(output).with_code_mode_value(json!({})),
-                Ok(Err(error)) => ToolExecution::error(error),
-                Err(error) => ToolExecution::error(format!("apply_patch task failed: {error}")),
-            }
-        })
+        match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {
+            Ok(Ok(output)) => ToolExecution::text(output).with_code_mode_value(json!({})),
+            Ok(Err(error)) => ToolExecution::error(error),
+            Err(error) => ToolExecution::error(format!("apply_patch task failed: {error}")),
+        }
     }
 }
 

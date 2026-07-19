@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 base64.workspace = true
 futures-util.workspace = true
 harness-core.workspace = true

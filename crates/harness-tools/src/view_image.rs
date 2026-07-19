@@ -6,8 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    ErasedTool, ErasedToolFuture, ImageDetail, ToolContext, ToolExecution, ToolOutputBody,
-    ToolOutputContent,
+    ImageDetail, Tool, ToolContext, ToolExecution, ToolInput, ToolOutputBody, ToolOutputContent,
 };
 
 pub(super) struct ViewImageHandler {
@@ -20,12 +19,13 @@ impl ViewImageHandler {
     }
 }
 
-impl ErasedTool for ViewImageHandler {
+#[async_trait::async_trait]
+impl Tool for ViewImageHandler {
     fn name(&self) -> &'static str {
         "view_image"
     }
 
-    fn spec(&self) -> ToolDefinition {
+    fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             self.name(),
             "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
@@ -64,60 +64,54 @@ impl ErasedTool for ViewImageHandler {
             }))
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
-        Box::pin(async move {
-            let arguments = match serde_json::from_str::<ViewImageArguments>(&input) {
-                Ok(arguments) => arguments,
-                Err(error) => {
-                    return ToolExecution::error(format!(
-                        "failed to parse view_image arguments: {error}"
-                    ));
-                }
-            };
-            let path = resolve(&self.workspace, Path::new(&arguments.path));
-            match tokio::fs::metadata(&path).await {
-                Ok(metadata) if metadata.is_file() => {}
-                Ok(_) => {
-                    return ToolExecution::error(format!(
-                        "image path `{}` is not a file",
-                        path.display()
-                    ));
-                }
-                Err(error) => {
-                    return ToolExecution::error(format!(
-                        "unable to locate image at `{}`: {error}",
-                        path.display()
-                    ));
-                }
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
+        let arguments = match input.decode_json::<ViewImageArguments>() {
+            Ok(arguments) => arguments,
+            Err(error) => return ToolExecution::error(error.to_string()),
+        };
+        let path = resolve(&self.workspace, Path::new(&arguments.path));
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return ToolExecution::error(format!(
+                    "image path `{}` is not a file",
+                    path.display()
+                ));
             }
-            let bytes = match tokio::fs::read(&path).await {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    return ToolExecution::error(format!(
-                        "unable to read image at `{}`: {error}",
-                        path.display()
-                    ));
-                }
-            };
-            let detail = arguments.detail.unwrap_or(ImageDetailArgument::High).into();
-            // The model-history boundary owns image validation, resizing, and caching.
-            let image_url = format!(
-                "data:application/octet-stream;base64,{}",
-                STANDARD.encode(bytes)
-            );
-            ToolExecution {
-                output: ToolOutputBody::Content(vec![ToolOutputContent::InputImage {
-                    image_url: image_url.clone(),
-                    detail,
-                }]),
-                success: true,
-                code_mode_value: Some(json!({
-                    "image_url": image_url,
-                    "detail": detail,
-                })),
-                metadata: None,
+            Err(error) => {
+                return ToolExecution::error(format!(
+                    "unable to locate image at `{}`: {error}",
+                    path.display()
+                ));
             }
-        })
+        }
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return ToolExecution::error(format!(
+                    "unable to read image at `{}`: {error}",
+                    path.display()
+                ));
+            }
+        };
+        let detail = arguments.detail.unwrap_or(ImageDetailArgument::High).into();
+        // The model-history boundary owns image validation, resizing, and caching.
+        let image_url = format!(
+            "data:application/octet-stream;base64,{}",
+            STANDARD.encode(bytes)
+        );
+        ToolExecution {
+            output: ToolOutputBody::Content(vec![ToolOutputContent::InputImage {
+                image_url: image_url.clone(),
+                detail,
+            }]),
+            success: true,
+            code_mode_value: Some(json!({
+                "image_url": image_url,
+                "detail": detail,
+            })),
+            metadata: None,
+        }
     }
 }
 

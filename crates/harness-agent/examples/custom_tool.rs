@@ -1,61 +1,17 @@
 use eyre::{Result, WrapErr};
-use harness_agent::{Agent, Thinking, Tool, ToolContext, ToolDefinition, ToolExecution, Tools};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use harness_agent::{Agent, Thinking, Tools, tool};
 
-struct Multiply;
-
-#[derive(Deserialize)]
-struct MultiplyInput {
-    left: i64,
-    right: i64,
-}
-
-#[derive(Serialize)]
-struct MultiplyOutput {
-    product: i64,
-}
-
-impl Tool for Multiply {
-    type Input = MultiplyInput;
-
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            "multiply",
-            "Multiplies two signed integers.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "left": { "type": "integer" },
-                    "right": { "type": "integer" }
-                },
-                "required": ["left", "right"],
-                "additionalProperties": false
-            }),
-        )
-        .with_output_schema(json!({
-            "type": "object",
-            "properties": {
-                "product": { "type": "integer" }
-            },
-            "required": ["product"],
-            "additionalProperties": false
-        }))
-    }
-
-    async fn execute(&self, input: MultiplyInput, _context: ToolContext<'_>) -> ToolExecution {
-        match input.left.checked_mul(input.right) {
-            Some(product) => ToolExecution::json(&MultiplyOutput { product }),
-            None => ToolExecution::error("integer multiplication overflowed"),
-        }
-    }
+#[tool(description = "Multiplies two signed integers.")]
+async fn multiply(left: i64, right: i64) -> std::result::Result<i64, &'static str> {
+    left.checked_mul(right)
+        .ok_or("integer multiplication overflowed")
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let api_key = std::env::var("OPENAI_API_KEY").wrap_err("OPENAI_API_KEY is required")?;
     // Registered tools are exposed to code mode as `tools.<definition name>(args)`.
-    let tools = Tools::builder().without_defaults().tool(Multiply).build()?;
+    let tools = Tools::builder().without_defaults().tool(multiply).build()?;
     let (agent, mut events) = Agent::builder(api_key)
         .thinking(Thinking::Low)
         .tools(tools)

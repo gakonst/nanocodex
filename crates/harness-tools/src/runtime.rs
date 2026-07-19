@@ -1,9 +1,11 @@
-use std::{fmt, future::Future, path::PathBuf, pin::Pin, sync::Arc};
+use std::{collections::HashMap, fmt, path::PathBuf, sync::Arc};
 
+use async_trait::async_trait;
 use harness_core::{ImageDetail, ResponseItem, ToolDefinition};
+use schemars::{JsonSchema, r#gen::SchemaSettings};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::{RawValue, to_raw_value};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::{
     apply_patch,
@@ -68,6 +70,17 @@ impl ToolExecution {
         }
     }
 
+    /// Returns a successful multimodal tool result.
+    #[must_use]
+    pub fn content(output: Vec<ToolOutputContent>) -> Self {
+        Self {
+            output: ToolOutputBody::Content(output),
+            success: true,
+            code_mode_value: None,
+            metadata: None,
+        }
+    }
+
     pub(crate) fn value(&self) -> Value {
         if let Some(value) = &self.code_mode_value {
             return value.clone();
@@ -101,8 +114,6 @@ impl ToolExecution {
     }
 }
 
-pub(crate) type ErasedToolFuture<'a> = Pin<Box<dyn Future<Output = ToolExecution> + Send + 'a>>;
-
 #[derive(Clone, Copy)]
 pub struct ToolContext<'a> {
     pub model: &'a str,
@@ -111,73 +122,70 @@ pub struct ToolContext<'a> {
     pub history: &'a [ResponseItem],
 }
 
-/// A typed function tool that can be installed in an agent's tool runtime.
-pub trait Tool: Send + Sync {
-    /// Arguments decoded from the model's JSON function call.
-    type Input: DeserializeOwned + Send + 'static;
+/// Canonical input presented to function and freeform tools.
+pub enum ToolInput {
+    Function(Box<RawValue>),
+    Freeform(String),
+}
 
-    /// Returns the model-visible function definition.
+impl ToolInput {
+    /// Borrows raw JSON function arguments without materializing a value tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for freeform input.
+    pub fn function_json(&self) -> Result<&RawValue, ToolInputError> {
+        match self {
+            Self::Function(input) => Ok(input),
+            Self::Freeform(_) => Err(ToolInputError::ExpectedFunction),
+        }
+    }
+
+    /// Decodes JSON function arguments into a caller-selected type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for freeform input or invalid JSON arguments.
+    pub fn decode_json<T: DeserializeOwned>(&self) -> Result<T, ToolInputError> {
+        serde_json::from_str(self.function_json()?.get()).map_err(ToolInputError::Decode)
+    }
+
+    /// Extracts freeform source text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for JSON function arguments.
+    pub fn into_freeform(self) -> Result<String, ToolInputError> {
+        match self {
+            Self::Freeform(input) => Ok(input),
+            Self::Function(_) => Err(ToolInputError::ExpectedFreeform),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ToolInputError {
+    #[error("expected JSON function arguments")]
+    ExpectedFunction,
+
+    #[error("expected freeform tool input")]
+    ExpectedFreeform,
+
+    #[error("failed to decode tool arguments: {0}")]
+    Decode(#[source] serde_json::Error),
+}
+
+/// A model-visible tool installed in an agent's heterogeneous tool registry.
+#[async_trait]
+pub trait Tool: Send + Sync {
+    /// Returns the registry and model-visible tool name.
+    fn name(&self) -> &'static str;
+
+    /// Returns the model-visible function or freeform definition.
     fn definition(&self) -> ToolDefinition;
 
-    /// Executes one decoded tool call.
-    fn execute<'a>(
-        &'a self,
-        input: Self::Input,
-        context: ToolContext<'a>,
-    ) -> impl Future<Output = ToolExecution> + Send + 'a;
-}
-
-pub(crate) trait ErasedTool: Send + Sync {
-    fn name(&self) -> &str;
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
-    }
-    fn spec(&self) -> ToolDefinition;
-    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ErasedToolFuture<'a>;
-}
-
-struct RegisteredTool<T> {
-    tool: T,
-    definition: ToolDefinition,
-}
-
-impl<T: Tool> RegisteredTool<T> {
-    fn new(tool: T) -> Self {
-        let definition = tool.definition();
-        Self { tool, definition }
-    }
-}
-
-impl<T: Tool> ErasedTool for RegisteredTool<T> {
-    fn name(&self) -> &str {
-        self.definition.name()
-    }
-
-    fn spec(&self) -> ToolDefinition {
-        self.definition.clone()
-    }
-
-    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ErasedToolFuture<'a> {
-        Box::pin(async move {
-            let input = match serde_json::from_str(&input) {
-                Ok(input) => input,
-                Err(error) => {
-                    return ToolExecution::error(format!(
-                        "failed to decode {} arguments: {error}",
-                        self.name()
-                    ));
-                }
-            };
-            self.tool.execute(input, context).await
-        })
-    }
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ToolKind {
-    Function,
-    Freeform,
+    /// Executes one tool call.
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolExecution;
 }
 
 pub struct WebSearchConfig {
@@ -196,7 +204,7 @@ pub struct ImageGenerationConfig {
 pub struct Tools {
     web_search: bool,
     image_generation: bool,
-    registered: Vec<Arc<dyn ErasedTool>>,
+    registered: Vec<Arc<dyn Tool>>,
 }
 
 impl Default for Tools {
@@ -263,8 +271,11 @@ pub enum ToolsBuildError {
     #[error("tool name `{0}` conflicts with an enabled built-in tool")]
     BuiltInName(Box<str>),
 
-    #[error("registered tool `{0}` must use a function definition")]
-    NonFunctionDefinition(Box<str>),
+    #[error("registered tool name `{registered}` does not match definition name `{definition}`")]
+    DefinitionName {
+        registered: Box<str>,
+        definition: Box<str>,
+    },
 }
 
 impl ToolsBuilder {
@@ -288,12 +299,10 @@ impl ToolsBuilder {
         self
     }
 
-    /// Adds a typed function tool to the runtime.
+    /// Adds a function or freeform tool to the runtime.
     #[must_use]
     pub fn tool<T: Tool + 'static>(mut self, tool: T) -> Self {
-        self.tools
-            .registered
-            .push(Arc::new(RegisteredTool::new(tool)));
+        self.tools.registered.push(Arc::new(tool));
         self
     }
 
@@ -301,8 +310,8 @@ impl ToolsBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error for empty, duplicate, non-function, or enabled
-    /// built-in tool definitions.
+    /// Returns an error for empty, inconsistent, duplicate, or enabled built-in
+    /// tool names.
     pub fn build(self) -> Result<Tools, ToolsBuildError> {
         let mut names = Vec::with_capacity(self.tools.registered.len());
         for tool in &self.tools.registered {
@@ -310,8 +319,12 @@ impl ToolsBuilder {
             if name.is_empty() {
                 return Err(ToolsBuildError::EmptyName);
             }
-            if !matches!(tool.spec(), ToolDefinition::Function { .. }) {
-                return Err(ToolsBuildError::NonFunctionDefinition(name.into()));
+            let definition = tool.definition();
+            if definition.name() != name {
+                return Err(ToolsBuildError::DefinitionName {
+                    registered: name.into(),
+                    definition: definition.name().into(),
+                });
             }
             if built_in_name(&self.tools, name) {
                 return Err(ToolsBuildError::BuiltInName(name.into()));
@@ -334,7 +347,7 @@ fn built_in_name(tools: &Tools, name: &str) -> bool {
 }
 
 pub struct ToolRuntime {
-    handlers: Vec<Arc<dyn ErasedTool>>,
+    registry: ToolRegistry,
     code_mode: code_mode::CodeModeRuntime,
     default_shell_name: &'static str,
 }
@@ -348,7 +361,7 @@ impl ToolRuntime {
         let workspace = workspace.into();
         let sessions = Arc::new(ShellSessions::new());
         let default_shell_name = sessions.default_shell_name();
-        let mut handlers: Vec<Arc<dyn ErasedTool>> = vec![
+        let mut handlers: Vec<Arc<dyn Tool>> = vec![
             Arc::new(shell::ExecCommandHandler::new(
                 workspace.clone(),
                 Arc::clone(&sessions),
@@ -367,7 +380,7 @@ impl ToolRuntime {
             )));
         }
         Self {
-            handlers,
+            registry: ToolRegistry::from_ordered(handlers),
             code_mode: code_mode::CodeModeRuntime::new(),
             default_shell_name,
         }
@@ -375,7 +388,7 @@ impl ToolRuntime {
 
     #[must_use]
     pub fn with_tools(mut self, tools: &Tools) -> Self {
-        self.handlers.extend(tools.registered.iter().cloned());
+        self.registry.extend(tools.registered.iter().cloned());
         self
     }
 
@@ -384,7 +397,10 @@ impl ToolRuntime {
     }
 
     pub fn model_specs(&self) -> Vec<ToolDefinition> {
-        vec![code_mode::exec_spec(&self.handlers), code_mode::wait_spec()]
+        vec![
+            code_mode::exec_spec(self.registry.definitions()),
+            code_mode::wait_spec(),
+        ]
     }
 
     pub async fn execute_code(&self, source: &str, context: ToolContext<'_>) -> CodeModeExecution {
@@ -401,23 +417,23 @@ impl ToolRuntime {
         input: Value,
         context: ToolContext<'_>,
     ) -> ToolExecution {
-        let Some(handler) = self.handlers.iter().find(|handler| handler.name() == name) else {
+        let Some((handler, definition)) = self.registry.get(name) else {
             return ToolExecution::error(format!("unsupported nested tool call: {name}"));
         };
-        let input = match handler.kind() {
-            ToolKind::Function if !input.is_object() => {
+        let input = match definition {
+            ToolDefinition::Function { .. } if !input.is_object() => {
                 return ToolExecution::error(format!(
                     "nested function tool {name} requires an object argument"
                 ));
             }
-            ToolKind::Function => match serde_json::to_string(&input) {
-                Ok(input) => input,
+            ToolDefinition::Function { .. } => match to_raw_value(&input) {
+                Ok(input) => ToolInput::Function(input),
                 Err(error) => {
                     return ToolExecution::error(format!("failed to encode {name} input: {error}"));
                 }
             },
-            ToolKind::Freeform => match input.as_str() {
-                Some(input) => input.to_owned(),
+            ToolDefinition::Custom { .. } => match input.as_str() {
+                Some(input) => ToolInput::Freeform(input.to_owned()),
                 None => {
                     return ToolExecution::error(format!(
                         "nested freeform tool {name} requires a string argument"
@@ -429,18 +445,102 @@ impl ToolRuntime {
     }
 
     pub(crate) fn nested_tool_metadata(&self) -> Vec<Value> {
-        self.handlers
-            .iter()
-            .map(|handler| {
-                let spec = handler.spec();
+        self.registry
+            .entries()
+            .map(|(handler, definition)| {
+                let kind = match definition {
+                    ToolDefinition::Function { .. } => "function",
+                    ToolDefinition::Custom { .. } => "freeform",
+                };
                 json!({
                     "name": handler.name(),
-                    "description": spec.description(),
-                    "kind": handler.kind(),
+                    "description": definition.description(),
+                    "kind": kind,
                 })
             })
             .collect()
     }
+}
+
+struct ToolRegistry {
+    ordered: Vec<Arc<dyn Tool>>,
+    definitions: Vec<ToolDefinition>,
+    by_name: HashMap<Box<str>, usize>,
+}
+
+impl ToolRegistry {
+    fn from_ordered(ordered: Vec<Arc<dyn Tool>>) -> Self {
+        let definitions = ordered.iter().map(|tool| tool.definition()).collect();
+        let by_name = ordered
+            .iter()
+            .enumerate()
+            .map(|(index, tool)| (tool.name().into(), index))
+            .collect();
+        Self {
+            ordered,
+            definitions,
+            by_name,
+        }
+    }
+
+    fn extend(&mut self, tools: impl IntoIterator<Item = Arc<dyn Tool>>) {
+        for tool in tools {
+            let index = self.ordered.len();
+            self.by_name.insert(tool.name().into(), index);
+            self.definitions.push(tool.definition());
+            self.ordered.push(tool);
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<(&Arc<dyn Tool>, &ToolDefinition)> {
+        let index = *self.by_name.get(name)?;
+        Some((self.ordered.get(index)?, self.definitions.get(index)?))
+    }
+
+    fn definitions(&self) -> &[ToolDefinition] {
+        &self.definitions
+    }
+
+    fn entries(&self) -> impl Iterator<Item = (&Arc<dyn Tool>, &ToolDefinition)> {
+        self.ordered.iter().zip(&self.definitions)
+    }
+}
+
+/// Produces the compact JSON Schema shape used for macro-generated tools.
+#[doc(hidden)]
+#[must_use]
+pub fn schema_for<T: JsonSchema>() -> Value {
+    let schema = SchemaSettings::draft2019_09()
+        .with(|settings| {
+            settings.inline_subschemas = true;
+            settings.option_add_null_type = false;
+        })
+        .into_generator()
+        .into_root_schema_for::<T>();
+    let Value::Object(mut schema) =
+        serde_json::to_value(schema).expect("a schemars root schema should serialize to an object")
+    else {
+        unreachable!("a schemars root schema should be an object");
+    };
+    let mut tool_schema = Map::new();
+    for key in [
+        "properties",
+        "required",
+        "type",
+        "additionalProperties",
+        "$defs",
+        "definitions",
+        "enum",
+        "const",
+        "anyOf",
+        "oneOf",
+        "allOf",
+    ] {
+        if let Some(value) = schema.remove(key) {
+            tool_schema.insert(key.to_owned(), value);
+        }
+    }
+    Value::Object(tool_schema)
 }
 
 #[cfg(test)]
@@ -450,8 +550,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ImageGenerationConfig, Tool, ToolContext, ToolExecution, ToolOutputBody, ToolRuntime,
-        Tools, WebSearchConfig,
+        ImageGenerationConfig, Tool, ToolContext, ToolExecution, ToolInput, ToolOutputBody,
+        ToolRuntime, Tools, WebSearchConfig,
     };
 
     struct Double;
@@ -461,12 +561,15 @@ mod tests {
         value: i64,
     }
 
+    #[async_trait::async_trait]
     impl Tool for Double {
-        type Input = DoubleInput;
+        fn name(&self) -> &'static str {
+            "double"
+        }
 
         fn definition(&self) -> ToolDefinition {
             ToolDefinition::function(
-                "double",
+                self.name(),
                 "Doubles an integer.",
                 json!({
                     "type": "object",
@@ -477,7 +580,11 @@ mod tests {
             )
         }
 
-        async fn execute(&self, input: DoubleInput, _context: ToolContext<'_>) -> ToolExecution {
+        async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
+            let input = match input.decode_json::<DoubleInput>() {
+                Ok(input) => input,
+                Err(error) => return ToolExecution::error(error.to_string()),
+            };
             ToolExecution::text((input.value * 2).to_string())
         }
     }
@@ -502,9 +609,9 @@ mod tests {
         let enabled = runtime(true);
         assert!(
             enabled
-                .handlers
-                .iter()
-                .any(|handler| handler.name() == "web__run")
+                .registry
+                .entries()
+                .any(|(handler, _)| handler.name() == "web__run")
         );
         let enabled_specs = serde_json::to_value(enabled.model_specs()).unwrap();
         assert!(
@@ -516,9 +623,9 @@ mod tests {
         let disabled = runtime(false);
         assert!(
             disabled
-                .handlers
-                .iter()
-                .all(|handler| handler.name() != "web__run")
+                .registry
+                .entries()
+                .all(|(handler, _)| handler.name() != "web__run")
         );
         let disabled_specs = serde_json::to_value(disabled.model_specs()).unwrap();
         assert!(
@@ -545,14 +652,12 @@ mod tests {
                 ))
         );
 
-        let handler = runtime
-            .handlers
-            .iter()
-            .find(|handler| handler.name() == "double")
-            .unwrap();
+        let (handler, _) = runtime.registry.get("double").unwrap();
         let execution = handler
             .execute(
-                r#"{"value":21}"#.to_owned(),
+                ToolInput::Function(
+                    serde_json::value::to_raw_value(&json!({ "value": 21 })).unwrap(),
+                ),
                 ToolContext {
                     model: "test-model",
                     session_id: "test-session",

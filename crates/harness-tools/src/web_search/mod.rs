@@ -11,7 +11,7 @@ use self::{
     schema::commands_schema,
     wire::{SearchCommands, SearchRequest, SearchResponse, SearchSettings},
 };
-use super::{ErasedTool, ErasedToolFuture, ToolContext, ToolExecution, WebSearchConfig};
+use super::{Tool, ToolContext, ToolExecution, ToolInput, WebSearchConfig};
 
 const DESCRIPTION: &str = include_str!("web_run_description.md");
 const MAX_OUTPUT_TOKENS: u64 = 10_000;
@@ -109,17 +109,22 @@ impl WebSearchHandler {
     }
 }
 
-impl ErasedTool for WebSearchHandler {
+#[async_trait::async_trait]
+impl Tool for WebSearchHandler {
     fn name(&self) -> &'static str {
         "web__run"
     }
 
-    fn spec(&self) -> ToolDefinition {
+    fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(self.name(), DESCRIPTION, commands_schema())
     }
 
-    fn execute<'a>(&'a self, input: String, context: ToolContext<'a>) -> ErasedToolFuture<'a> {
-        Box::pin(async move { self.run(&input, context).await })
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolExecution {
+        let input = match input.function_json() {
+            Ok(input) => input,
+            Err(error) => return ToolExecution::error(error.to_string()),
+        };
+        self.run(input.get(), context).await
     }
 }
 
@@ -143,7 +148,7 @@ mod tests {
         task::JoinHandle,
     };
 
-    use super::{ErasedTool, ToolContext, WebSearchConfig, WebSearchHandler};
+    use super::{Tool, ToolContext, WebSearchConfig, WebSearchHandler};
     use crate::ToolOutputBody;
 
     #[tokio::test]
@@ -271,7 +276,7 @@ mod tests {
             endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
             api_key: "test-key".to_owned(),
         });
-        let spec = serde_json::to_value(handler.spec()).unwrap();
+        let spec = serde_json::to_value(handler.definition()).unwrap();
 
         assert_eq!(spec["name"], "web__run");
         assert_eq!(spec["strict"], false);

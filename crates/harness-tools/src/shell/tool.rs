@@ -4,7 +4,7 @@ use harness_core::ToolDefinition;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{ErasedTool, ErasedToolFuture, ToolContext, ToolExecution};
+use crate::{Tool, ToolContext, ToolExecution, ToolInput};
 
 use super::{ExecCommand, ShellSessions, WriteStdin};
 
@@ -22,12 +22,13 @@ impl ExecCommandHandler {
     }
 }
 
-impl ErasedTool for ExecCommandHandler {
+#[async_trait::async_trait]
+impl Tool for ExecCommandHandler {
     fn name(&self) -> &'static str {
         "exec_command"
     }
 
-    fn spec(&self) -> ToolDefinition {
+    fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             self.name(),
             "Runs a shell command, returning output or a session ID for ongoing interaction. Live sessions are terminated when the agent ends; detach services that must remain running afterward.",
@@ -67,28 +68,22 @@ impl ErasedTool for ExecCommandHandler {
         .with_output_schema(unified_exec_output_schema())
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
-        Box::pin(async move {
-            let arguments = match serde_json::from_str::<ExecCommandArguments>(&input) {
-                Ok(arguments) => arguments,
-                Err(error) => {
-                    return ToolExecution::error(format!(
-                        "failed to parse exec_command arguments: {error}"
-                    ));
-                }
-            };
-            let command = ExecCommand::new(
-                arguments.cmd,
-                arguments.workdir,
-                arguments.shell,
-                arguments.login,
-                arguments.tty,
-                arguments.yield_time_ms,
-                arguments.max_output_tokens,
-            );
-            let result = self.sessions.execute(command, &self.workspace).await;
-            ToolExecution::json(&result)
-        })
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
+        let arguments = match input.decode_json::<ExecCommandArguments>() {
+            Ok(arguments) => arguments,
+            Err(error) => return ToolExecution::error(error.to_string()),
+        };
+        let command = ExecCommand::new(
+            arguments.cmd,
+            arguments.workdir,
+            arguments.shell,
+            arguments.login,
+            arguments.tty,
+            arguments.yield_time_ms,
+            arguments.max_output_tokens,
+        );
+        let result = self.sessions.execute(command, &self.workspace).await;
+        ToolExecution::json(&result)
     }
 }
 
@@ -102,12 +97,13 @@ impl WriteStdinHandler {
     }
 }
 
-impl ErasedTool for WriteStdinHandler {
+#[async_trait::async_trait]
+impl Tool for WriteStdinHandler {
     fn name(&self) -> &'static str {
         "write_stdin"
     }
 
-    fn spec(&self) -> ToolDefinition {
+    fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             self.name(),
             "Writes characters to an existing exec session and returns recent output.",
@@ -138,25 +134,19 @@ impl ErasedTool for WriteStdinHandler {
         .with_output_schema(unified_exec_output_schema())
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
-        Box::pin(async move {
-            let arguments = match serde_json::from_str::<WriteStdinArguments>(&input) {
-                Ok(arguments) => arguments,
-                Err(error) => {
-                    return ToolExecution::error(format!(
-                        "failed to parse write_stdin arguments: {error}"
-                    ));
-                }
-            };
-            let request = WriteStdin::new(
-                arguments.session_id,
-                arguments.chars,
-                arguments.yield_time_ms,
-                arguments.max_output_tokens,
-            );
-            let result = self.sessions.write_stdin(request).await;
-            ToolExecution::json(&result)
-        })
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
+        let arguments = match input.decode_json::<WriteStdinArguments>() {
+            Ok(arguments) => arguments,
+            Err(error) => return ToolExecution::error(error.to_string()),
+        };
+        let request = WriteStdin::new(
+            arguments.session_id,
+            arguments.chars,
+            arguments.yield_time_ms,
+            arguments.max_output_tokens,
+        );
+        let result = self.sessions.write_stdin(request).await;
+        ToolExecution::json(&result)
     }
 }
 
@@ -228,13 +218,13 @@ fn unified_exec_output_schema() -> Value {
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
-    use super::{ErasedTool, ExecCommandHandler};
+    use super::{ExecCommandHandler, Tool};
     use crate::shell::ShellSessions;
 
     #[test]
     fn exec_command_exposes_shell_parameter_and_session_lifecycle() {
         let handler = ExecCommandHandler::new(PathBuf::from("/"), Arc::new(ShellSessions::new()));
-        let spec = serde_json::to_value(handler.spec()).unwrap();
+        let spec = serde_json::to_value(handler.definition()).unwrap();
 
         assert_eq!(
             spec.pointer("/description")

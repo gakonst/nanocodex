@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use super::{ErasedTool, ErasedToolFuture, ToolContext, ToolExecution};
+use super::{Tool, ToolContext, ToolExecution, ToolInput};
 
 pub(super) struct PlanHandler {
     current: Mutex<Option<UpdatePlanArgs>>,
@@ -17,12 +17,13 @@ impl PlanHandler {
     }
 }
 
-impl ErasedTool for PlanHandler {
+#[async_trait::async_trait]
+impl Tool for PlanHandler {
     fn name(&self) -> &'static str {
         "update_plan"
     }
 
-    fn spec(&self) -> ToolDefinition {
+    fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             self.name(),
             "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.\n",
@@ -57,32 +58,26 @@ impl ErasedTool for PlanHandler {
         )
     }
 
-    fn execute<'a>(&'a self, input: String, _context: ToolContext<'a>) -> ErasedToolFuture<'a> {
-        Box::pin(async move {
-            let plan = match serde_json::from_str::<UpdatePlanArgs>(&input) {
-                Ok(plan) => plan,
-                Err(error) => {
-                    return ToolExecution::error(format!(
-                        "failed to parse update_plan arguments: {error}"
-                    ));
-                }
-            };
-            if plan
-                .plan
-                .iter()
-                .filter(|item| matches!(item.status, PlanStatus::InProgress))
-                .count()
-                > 1
-            {
-                return ToolExecution::error("update_plan allows at most one in_progress step");
-            }
-            if plan.plan.iter().any(|item| item.step.trim().is_empty()) {
-                return ToolExecution::error("update_plan steps must not be empty");
-            }
-            let _ = plan.explanation.as_deref();
-            *self.current.lock().await = Some(plan);
-            ToolExecution::text("Plan updated").with_code_mode_value(json!({}))
-        })
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
+        let plan = match input.decode_json::<UpdatePlanArgs>() {
+            Ok(plan) => plan,
+            Err(error) => return ToolExecution::error(error.to_string()),
+        };
+        if plan
+            .plan
+            .iter()
+            .filter(|item| matches!(item.status, PlanStatus::InProgress))
+            .count()
+            > 1
+        {
+            return ToolExecution::error("update_plan allows at most one in_progress step");
+        }
+        if plan.plan.iter().any(|item| item.step.trim().is_empty()) {
+            return ToolExecution::error("update_plan steps must not be empty");
+        }
+        let _ = plan.explanation.as_deref();
+        *self.current.lock().await = Some(plan);
+        ToolExecution::text("Plan updated").with_code_mode_value(json!({}))
     }
 }
 
