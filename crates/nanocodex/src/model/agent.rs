@@ -911,8 +911,7 @@ fn record_model_response(span: &tracing::Span, response: &TurnResult) {
 fn record_response_reasoning(span: &tracing::Span, items: &[ResponseItem]) {
     let mut summaries = Vec::new();
     for item in items {
-        let ResponseItem::Reasoning { summary, .. } = item
-        else {
+        let ResponseItem::Reasoning { summary, .. } = item else {
             continue;
         };
         summaries.extend(summary.iter().map(|summary| match summary {
