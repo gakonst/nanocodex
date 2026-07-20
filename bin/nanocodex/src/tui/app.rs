@@ -386,6 +386,25 @@ impl App {
         self.input.drain(self.cursor..next);
     }
 
+    pub(super) fn backspace_word(&mut self) {
+        let previous = self.previous_word_boundary();
+        if previous == self.cursor {
+            return;
+        }
+        self.detach_history();
+        self.input.drain(previous..self.cursor);
+        self.cursor = previous;
+    }
+
+    pub(super) fn delete_word(&mut self) {
+        let next = self.next_word_boundary();
+        if next == self.cursor {
+            return;
+        }
+        self.detach_history();
+        self.input.drain(self.cursor..next);
+    }
+
     pub(super) fn move_left(&mut self) {
         self.cursor = self.input[..self.cursor]
             .char_indices()
@@ -399,6 +418,14 @@ impl App {
         }
     }
 
+    pub(super) fn move_word_left(&mut self) {
+        self.cursor = self.previous_word_boundary();
+    }
+
+    pub(super) fn move_word_right(&mut self) {
+        self.cursor = self.next_word_boundary();
+    }
+
     pub(super) fn move_home(&mut self) {
         self.cursor = self.input[..self.cursor]
             .rfind('\n')
@@ -409,6 +436,69 @@ impl App {
         self.cursor = self.input[self.cursor..]
             .find('\n')
             .map_or(self.input.len(), |index| self.cursor + index);
+    }
+
+    pub(super) fn move_input_start(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub(super) fn move_input_end(&mut self) {
+        self.cursor = self.input.len();
+    }
+
+    pub(super) fn backspace_to_line_start(&mut self) {
+        let end = self.cursor;
+        self.move_home();
+        if self.cursor == end {
+            return;
+        }
+        self.detach_history();
+        self.input.drain(self.cursor..end);
+    }
+
+    pub(super) fn delete_to_line_end(&mut self) {
+        let start = self.cursor;
+        self.move_end();
+        if self.cursor == start {
+            return;
+        }
+        self.detach_history();
+        self.input.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    fn previous_word_boundary(&self) -> usize {
+        let mut characters = self.input[..self.cursor].char_indices().rev();
+        let mut boundary = self.cursor;
+        for (index, character) in characters.by_ref() {
+            boundary = index;
+            if Self::is_word_character(character) {
+                break;
+            }
+        }
+        for (index, character) in characters {
+            if !Self::is_word_character(character) {
+                break;
+            }
+            boundary = index;
+        }
+        boundary
+    }
+
+    fn next_word_boundary(&self) -> usize {
+        let mut in_word = false;
+        for (offset, character) in self.input[self.cursor..].char_indices() {
+            if Self::is_word_character(character) {
+                in_word = true;
+            } else if in_word {
+                return self.cursor + offset;
+            }
+        }
+        self.input.len()
+    }
+
+    fn is_word_character(character: char) -> bool {
+        character.is_alphanumeric() || character == '_'
     }
 
     pub(super) fn clear_input(&mut self) {

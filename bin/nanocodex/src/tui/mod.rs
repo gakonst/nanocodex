@@ -942,6 +942,41 @@ fn handle_key(
         return Ok(false);
     }
 
+    if key.modifiers.contains(KeyModifiers::SUPER) {
+        match key.code {
+            KeyCode::Left => app.move_home(),
+            KeyCode::Right => app.move_end(),
+            KeyCode::Up => app.move_input_start(),
+            KeyCode::Down => app.move_input_end(),
+            KeyCode::Backspace => app.backspace_to_line_start(),
+            KeyCode::Delete => app.delete_to_line_end(),
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        match key.code {
+            KeyCode::Left => {
+                app.move_word_left();
+                return Ok(false);
+            }
+            KeyCode::Right => {
+                app.move_word_right();
+                return Ok(false);
+            }
+            KeyCode::Backspace => {
+                app.backspace_word();
+                return Ok(false);
+            }
+            KeyCode::Delete => {
+                app.delete_word();
+                return Ok(false);
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Enter
             if key
@@ -1448,5 +1483,58 @@ mod tests {
         ));
         std::fs::create_dir_all(&path)?;
         Ok(path)
+    }
+    #[test]
+    fn alt_and_command_edit_the_composer_by_word_line_and_draft() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.input = "one two\nthree four".to_owned();
+        app.cursor = app.input.len();
+
+        let alt_left = KeyEvent::new(KeyCode::Left, KeyModifiers::ALT);
+        let alt_backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
+        let command_left = KeyEvent::new(KeyCode::Left, KeyModifiers::SUPER);
+        let command_delete = KeyEvent::new(KeyCode::Delete, KeyModifiers::SUPER);
+        let command_up = KeyEvent::new(KeyCode::Up, KeyModifiers::SUPER);
+        let command_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER);
+
+        assert!(!handle_key(alt_left, &mut app, &commands).unwrap());
+        assert_eq!(&app.input[app.cursor..], "four");
+
+        assert!(!handle_key(alt_backspace, &mut app, &commands).unwrap());
+        assert_eq!(app.input, "one two\nfour");
+
+        assert!(!handle_key(command_left, &mut app, &commands).unwrap());
+        assert_eq!(app.cursor, "one two\n".len());
+
+        assert!(!handle_key(command_delete, &mut app, &commands).unwrap());
+        assert_eq!(app.input, "one two\n");
+
+        assert!(!handle_key(command_up, &mut app, &commands).unwrap());
+        assert_eq!(app.cursor, 0);
+        assert!(!handle_key(command_down, &mut app, &commands).unwrap());
+        assert_eq!(app.cursor, app.input.len());
+
+        app.input = "one two\nthree four".to_owned();
+        app.cursor = "one two\n".len();
+        let alt_right = KeyEvent::new(KeyCode::Right, KeyModifiers::ALT);
+        let alt_delete = KeyEvent::new(KeyCode::Delete, KeyModifiers::ALT);
+        let command_right = KeyEvent::new(KeyCode::Right, KeyModifiers::SUPER);
+        let command_backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::SUPER);
+
+        assert!(!handle_key(alt_right, &mut app, &commands).unwrap());
+        assert_eq!(&app.input[..app.cursor], "one two\nthree");
+        assert!(!handle_key(alt_delete, &mut app, &commands).unwrap());
+        assert_eq!(app.input, "one two\nthree");
+
+        assert!(!handle_key(command_left, &mut app, &commands).unwrap());
+        assert!(!handle_key(command_right, &mut app, &commands).unwrap());
+        assert_eq!(app.cursor, app.input.len());
+        assert!(!handle_key(command_backspace, &mut app, &commands).unwrap());
+        assert_eq!(app.input, "one two\n");
+
+        let command_character = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::SUPER);
+        assert!(!handle_key(command_character, &mut app, &commands).unwrap());
+        assert_eq!(app.input, "one two\n");
     }
 }
