@@ -54,6 +54,10 @@ Lifecycle tracing is written to stderr for headless runs and to
 `.nanocodex/logs/tui.log` for the TUI. `--log-format json` selects structured
 local logs, `RUST_LOG` or `--log-filter` controls filtering, and
 `--otel-endpoint http://localhost:4318` exports spans over OTLP/HTTP.
+`OTEL_LEVEL` or `--otel-filter` controls export independently from local logs.
+Run `just otel-up` followed by `just otel-demo` for a local Jaeger waterfall;
+use `just otel-stress` for the deterministic hostile-tool pressure gate. The
+complete walkthrough is in [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
 
 ## Use it as a library
 
@@ -252,6 +256,7 @@ use nanocodex_observability::{LogFormat, ObservabilityBuilder};
 # fn install() -> Result<(), Box<dyn std::error::Error>> {
 let _guard = ObservabilityBuilder::new("my-agent", env!("CARGO_PKG_VERSION"))
     .filter("warn,nanocodex=info,nanocodex_service=info,nanocodex_mcp=info")
+    .otel_filter("warn,nanocodex=info,nanocodex_service=info,nanocodex_mcp=info")
     .format(LogFormat::Json)
     .otlp_endpoint("http://localhost:4318")
     .install()?;
@@ -261,8 +266,10 @@ let _guard = ObservabilityBuilder::new("my-agent", env!("CARGO_PKG_VERSION"))
 
 Keep the returned guard alive for the application lifetime so non-blocking
 formatting and batched trace export are flushed during shutdown. Spans include
-IDs, attempt/replay state, durations, status, token usage, and cache usage, but
-not API keys or full prompt bodies.
+IDs, attempt/replay state, durations, status, token/cache usage, structural
+prompt/tool metadata, process outcomes, and API-visible reasoning summaries.
+Full prompts, Code Mode source, tool argument values, hidden reasoning, and API
+keys are never attached.
 
 ### Embed from Python, Node.js, or a browser Worker
 

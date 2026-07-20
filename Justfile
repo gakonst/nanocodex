@@ -80,6 +80,56 @@ dev-react-example:
 smoke-mcp:
     cargo run --quiet -p nanocodex-examples --bin mcp
 
+# Start the ephemeral localhost Jaeger backend used by the OTLP trace demo.
+otel-up:
+    @docker compose -f docker-compose.otel.yml up --detach
+    @for attempt in {1..50}; do \
+        if curl --fail --silent http://127.0.0.1:16686/ >/dev/null; then exit 0; fi; \
+        if [ "$attempt" -eq 50 ]; then echo "Jaeger did not become ready within 10 seconds" >&2; exit 1; fi; \
+        sleep 0.2; \
+    done
+    @echo "Jaeger UI: http://127.0.0.1:16686"
+
+# Run a tool-using turn and retain events and diagnostic logs independently.
+otel-demo:
+    @test -n "${OPENAI_API_KEY:-}" || { echo "set OPENAI_API_KEY in .env or the environment" >&2; exit 2; }
+    @curl --fail --silent --show-error http://127.0.0.1:16686/ >/dev/null || { echo "run 'just otel-up' first" >&2; exit 2; }
+    @mkdir -p .nanocodex/otel-demo
+    @rm -f .nanocodex/otel-demo/events.jsonl .nanocodex/otel-demo/tracing.jsonl
+    @cargo run --quiet --manifest-path bin/nanocodex/Cargo.toml -- \
+        --otel-endpoint http://127.0.0.1:4318 \
+        --otel-environment local-demo \
+        --log-format json \
+        --log-file .nanocodex/otel-demo/tracing.jsonl \
+        run --thinking=low "Use the available exec tool to run pwd exactly once without modifying anything, then report the path." \
+        > .nanocodex/otel-demo/events.jsonl
+    @jq --compact-output 'select(.type == "assistant.message" or .type == "tool.started" or .type == "tool.result" or .type == "run.completed") | {type, payload}' .nanocodex/otel-demo/events.jsonl
+    @echo "Open http://127.0.0.1:16686 and select service 'nanocodex'."
+
+# Run the deterministic retained-session and hostile-tool observability stress.
+otel-stress turns="32" parallel_calls="16":
+    @curl --fail --silent --show-error http://127.0.0.1:16686/ >/dev/null || { echo "run 'just otel-up' first" >&2; exit 2; }
+    NANOCODEX_STRESS_TURNS="{{turns}}" \
+        NANOCODEX_STRESS_PARALLEL_CALLS="{{parallel_calls}}" \
+        cargo test --locked --manifest-path bin/nanocodex/Cargo.toml \
+        --test observability_stress -- \
+        --ignored --exact retained_turns_and_hostile_tools_preserve_trace_topology \
+        --nocapture --test-threads=1
+
+# Run the identical workload without installing the OTLP layer for comparison.
+otel-stress-baseline turns="32" parallel_calls="16":
+    NANOCODEX_STRESS_EXPORT=false \
+        NANOCODEX_STRESS_TURNS="{{turns}}" \
+        NANOCODEX_STRESS_PARALLEL_CALLS="{{parallel_calls}}" \
+        cargo test --locked --manifest-path bin/nanocodex/Cargo.toml \
+        --test observability_stress -- \
+        --ignored --exact retained_turns_and_hostile_tools_preserve_trace_topology \
+        --nocapture --test-threads=1
+
+# Stop Jaeger and discard its in-memory trace data.
+otel-down:
+    @docker compose -f docker-compose.otel.yml down
+
 # Tight inner loop: native model process with local code mode, no Harbor or Docker.
 run:
     @cargo run --quiet --manifest-path bin/nanocodex/Cargo.toml -- run --thinking=low "Use the available exec tool to run pwd exactly once without modifying anything, then report the path."

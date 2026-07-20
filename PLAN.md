@@ -133,8 +133,10 @@ Outcomes:
 
 1. Define stable tracing spans for agent session, turn, model call, Responses
    attempt, reconnect/backoff, and tool execution. Include IDs, durations,
-   replay mode, error class, token usage, and cache usage; never include secrets
-   or full prompt bodies.
+   replay mode, error class, token/cache usage, structural prompt/tool metadata,
+   process outcomes, and API-visible reasoning summaries. Never attach full
+   prompts, Code Mode source, tool argument values, hidden reasoning, or
+   authentication credentials.
 2. Keep subscriber choice outside the library. The CLI may install a sensible
    stderr subscriber, while embedders can install OpenTelemetry, metrics, or
    their own tracing stack.
