@@ -2,14 +2,14 @@
 
 <h1>Nanocodex</h1>
 
-<p><strong>A fast, library-first Rust agents SDK.</strong></p>
+<p><strong>A blazing-fast, minimal, and extensible reimplementation of Codex.</strong></p>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gakonst/nanocodex/ci.yml?branch=master)][ci]
 [![Crates.io](https://img.shields.io/crates/v/nanocodex.svg)][crates]
 [![Docs.rs](https://img.shields.io/docsrs/nanocodex)][docs]
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)][license]
 
-**[Install](#installation)** | **[Benchmarks](#how-fast)** | **[API](#api)** | **[Examples](examples)**
+**[API](#api)** | **[Install](#installation)** | **[Examples](examples)** | **[Benchmarks](#how-fast)**
 
 [ci]: https://github.com/gakonst/nanocodex/actions/workflows/ci.yml
 [crates]: https://crates.io/crates/nanocodex
@@ -26,106 +26,30 @@ It provides typed turns, tools, events, steering, cancellation, queueing, and
 fast historical forks over the OpenAI Responses WebSocket API—without requiring
 an app server or durable control plane.
 
-## Nanocodex versus Codex
-
-Use Nanocodex when the agent is a component of your Rust application. Use Codex
-when you want the complete product: durable threads, approval UX, broad built-in
-integrations, managed subagents, and a mature TUI and IDE ecosystem.
-
-| | Nanocodex | Codex |
-| --- | --- | --- |
-| Product boundary | Rust library in your process | Application and durable agent runtime |
-| State | One owned in-memory session | Persisted threads and rollouts |
-| Follow-on turns | New input delta on one persistent WebSocket | Full Codex session lifecycle |
-| Historical forks | Exact completed checkpoint; parent keeps running | Durable thread reconstruction |
-| Tools | Code Mode over Rust tools and MCP | Broad built-in tool and integration surface |
-| Middleware | Your concrete Tower stack | Codex-owned runtime policy |
-| Results and events | Typed `TurnResult` plus optional ordered `AgentEvents` | Product-wide rollout/event lifecycle |
-| Orchestration | Model composes application-defined agent tools | Managed agents, task identities, mailboxes, and budgets |
-
-The smaller boundary is the feature. A caller builds an agent, receives
-`(Nanocodex, AgentEvents)`, sends prompts through a cheap cloneable handle, and
-awaits independently owned `TurnResult`s. The CLI, Harbor adapter, Python
-binding, and Rust/WASM binding all consume that same API.
-
-## How Fast?
-
-Our live checkpoint benchmark uses `gpt-5.6-sol`, a deterministic 600-fact
-prefix, ten sequential turns, and concurrent historical forks. Three runs on
-2026-07-20 compared Nanocodex `210ac85` with stock Codex CLI
-`0.145.0-alpha.18`:
-
-| Measurement | Nanocodex | Stock Codex | Difference |
-| --- | ---: | ---: | ---: |
-| Ten sequential turns, median total | 14.78 s | 24.99 s | **1.69x faster** |
-| Warm turn p50, turns 3–10 | 1.304 s | 1.532 s | **1.18x faster** |
-| Historical fork to first answer, p50 | 1.570 s | 6.530 s | **4.16x faster** |
-| Historical fork model time, p50 | 1.291 s | 5.862 s | **4.54x faster** |
-
-**Takeaway: Nanocodex was 1.69x faster across ten turns and 4.16x faster to
-the first historical-fork answer in this checkpoint benchmark.**
-
-A Nanocodex fork sent about 725 bytes of new request data from its stored
-checkpoint. Replaying the same history would send 27–29 KB: a 97.4% reduction.
-On a separate 41-task coding gate, Nanocodex completed 38 tasks with 92.23% of
-input tokens cached, zero Responses retries, and zero WebSocket reconnects.
-
-These are checkpoint-path measurements, not a normalized full-agent quality
-comparison. The Nanocodex arm used a minimal benchmark developer message and no
-production tool definitions; the Codex arm ran the complete stock app-server
-agent. See [`benchmarks/fork_results.md`](benchmarks/fork_results.md) for the
-methodology, cache observations, raw trials, and reproduction commands.
-
-### The tradeoff
-
-Nanocodex currently supports one model family (`gpt-5.6-sol`), one Responses
-WebSocket transport, and caller-defined tools. Sessions and branches live only
-as long as your process. Your application owns sandboxing, permissions,
-durability, and recursive cancellation policy for application-defined child
-agents. Code Mode requires Node.js 12.22 or newer on `PATH`.
-
-That is substantially less product than Codex. It is also much less machinery
-between your code and an agent turn.
-
-## Installation
-
-Most applications need only the top-level crate:
-
-```toml
-[dependencies]
-nanocodex = "0.1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-```
-
-Node.js 12.22 or newer must be available on `PATH` for Code Mode.
-
 ## API
 
-The smallest complete program is deliberately ordinary Rust:
-
 ```rust
-use nanocodex::Nanocodex;
+let (agent, _events) = Nanocodex::new(api_key)?;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = std::env::var("OPENAI_API_KEY")?;
-    let (agent, _) = Nanocodex::new(api_key)?;
+let turn = agent.prompt("Inspect this repository.").await?;       // accepted now
+let _control = turn.control();                                    // optional cloneable control
+turn.steer("Focus on the failing tests.").await?;                 // same active turn
+let checkpoint = turn.result().await?;                            // completed result + checkpoint
 
-    let turn = agent.prompt("Inspect this repository and summarize it.").await?;
-    let result = turn.result().await?;
-    println!("{}", result.final_message);
-    Ok(())
-}
+let _follow_on = agent.prompt("Now propose a fix.").await?.result().await?;
+
+let turn = agent.prompt("Run a long investigation.").await?;
+turn.cancel().await?;                                             // queued or active
+let _cancelled = turn.result().await;                             // Err(TurnCancelled)
+
+let (latest, _events) = agent.fork().await?;                      // latest completed state
+let (historical, _events) = agent.fork_from(&checkpoint).await?;  // exact older state
 ```
 
-`Nanocodex::new` installs the standard instructions, medium thinking, built-in
-tools, persistent WebSocket, and retry/reconnect policy. Dropping the event
-receiver is supported; events then become a no-op.
+`prompt().await` means accepted, not completed. The agent retains conversation
+history, tools, cache identity, response chain, and its WebSocket automatically.
 
 ### Lifecycle and dataflow
-
-`prompt().await` waits only until the driver accepts the command. It returns an
-independently awaitable `Turn`; it does not wait for the model to finish.
 
 ```text
 NanocodexBuilder
@@ -151,20 +75,26 @@ AgentHandle, supplied to tools_factory(...)
        └── fork()   child from latest committed checkpoint
 ```
 
-That is the ownership model. `Nanocodex` controls the conversation, `Turn`
-controls unfinished work, `TurnResult` is an inert completed checkpoint, and
-`AgentEvents` is an optional ordered side channel independent from results.
+That is the complete ownership model. See the runnable
+[`lifecycle.rs`](examples/lifecycle.rs) for all of it in one file.
 
-| Intent | API | Semantics |
-| --- | --- | --- |
-| Submit ordinary input | `agent.prompt(input).await` | Adds one FIFO turn and returns its `Turn` after acceptance |
-| Steer live work | `turn.steer(input).await` | Adds input to that exact active turn at its next safe boundary |
-| Cancel exact work | `turn.cancel().await` | Removes a queued turn or stops an active turn and its subprocesses |
-| Split control ownership | `turn.control()` | Creates a cloneable `TurnControl` for another task |
-| Await completion | `turn.result().await` | Consumes the turn and returns its typed committed result or error |
-| Continue the session | `agent.prompt(input).await` again | Reuses history, tools, socket, cache identity, and response chain |
-| Fork latest state | `agent.fork().await` | Creates an independent agent at the latest completed checkpoint |
-| Fork older state | `agent.fork_from(&result).await` | Creates an independent agent at that exact retained checkpoint |
+## Installation
+
+Most applications need only the top-level crate:
+
+```toml
+[dependencies]
+nanocodex = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+Node.js 12.22 or newer must be available on `PATH` for Code Mode.
+
+## Lifecycle details
+
+`Nanocodex::new` installs the standard instructions, medium thinking, built-in
+tools, persistent WebSocket, and retry/reconnect policy. Dropping the event
+receiver is supported; events then become a no-op.
 
 Callers never pass transcripts, response IDs, tool outputs, or turn IDs back to
 the agent. On a healthy socket the driver sends only the new delta with
@@ -341,6 +271,7 @@ Runnable API tours:
 
 ```sh
 cargo run -p nanocodex-examples --bin minimal
+cargo run -p nanocodex-examples --bin lifecycle
 cargo run -p nanocodex-examples --bin follow-on
 cargo run -p nanocodex-examples --bin custom-tool
 cargo run -p nanocodex-examples --bin mcp
@@ -377,3 +308,64 @@ just prepare-evals  # build and cache benchmark inputs
 just eval           # run the pinned Terminal-Bench suite
 just view           # inspect retained Harbor jobs
 ```
+
+## Nanocodex versus Codex
+
+Use Nanocodex when the agent is a component of your Rust application. Use Codex
+when you want the complete product: durable threads, approval UX, broad built-in
+integrations, managed subagents, and a mature TUI and IDE ecosystem.
+
+| | Nanocodex | Codex |
+| --- | --- | --- |
+| Product boundary | Rust library in your process | Application and durable agent runtime |
+| State | One owned in-memory session | Persisted threads and rollouts |
+| Follow-on turns | New input delta on one persistent WebSocket | Full Codex session lifecycle |
+| Historical forks | Exact completed checkpoint; parent keeps running | Durable thread reconstruction |
+| Tools | Code Mode over Rust tools and MCP | Broad built-in tool and integration surface |
+| Middleware | Your concrete Tower stack | Codex-owned runtime policy |
+| Results and events | Typed `TurnResult` plus optional ordered `AgentEvents` | Product-wide rollout/event lifecycle |
+| Orchestration | Model composes application-defined agent tools | Managed agents, task identities, mailboxes, and budgets |
+
+The smaller boundary is the feature. A caller builds an agent, receives
+`(Nanocodex, AgentEvents)`, sends prompts through a cheap cloneable handle, and
+awaits independently owned `TurnResult`s. The CLI, Harbor adapter, Python
+binding, and Rust/WASM binding all consume that same API.
+
+### How Fast?
+
+Our live checkpoint benchmark uses `gpt-5.6-sol`, a deterministic 600-fact
+prefix, ten sequential turns, and concurrent historical forks. Three runs on
+2026-07-20 compared Nanocodex `210ac85` with stock Codex CLI
+`0.145.0-alpha.18`:
+
+| Measurement | Nanocodex | Stock Codex | Difference |
+| --- | ---: | ---: | ---: |
+| Ten sequential turns, median total | 14.78 s | 24.99 s | **1.69x faster** |
+| Warm turn p50, turns 3–10 | 1.304 s | 1.532 s | **1.18x faster** |
+| Historical fork to first answer, p50 | 1.570 s | 6.530 s | **4.16x faster** |
+| Historical fork model time, p50 | 1.291 s | 5.862 s | **4.54x faster** |
+
+**Takeaway: Nanocodex was 1.69x faster across ten turns and 4.16x faster to
+the first historical-fork answer in this checkpoint benchmark.**
+
+A Nanocodex fork sent about 725 bytes of new request data from its stored
+checkpoint. Replaying the same history would send 27–29 KB: a 97.4% reduction.
+On a separate 41-task coding gate, Nanocodex completed 38 tasks with 92.23% of
+input tokens cached, zero Responses retries, and zero WebSocket reconnects.
+
+These are checkpoint-path measurements, not a normalized full-agent quality
+comparison. The Nanocodex arm used a minimal benchmark developer message and no
+production tool definitions; the Codex arm ran the complete stock app-server
+agent. See [`benchmarks/fork_results.md`](benchmarks/fork_results.md) for the
+methodology, cache observations, raw trials, and reproduction commands.
+
+### The tradeoff
+
+Nanocodex currently supports one model family (`gpt-5.6-sol`), one Responses
+WebSocket transport, and caller-defined tools. Sessions and branches live only
+as long as your process. Your application owns sandboxing, permissions,
+durability, and recursive cancellation policy for application-defined child
+agents. Code Mode requires Node.js 12.22 or newer on `PATH`.
+
+That is substantially less product than Codex. It is also much less machinery
+between your code and an agent turn.

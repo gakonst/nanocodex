@@ -33,6 +33,10 @@ name = "follow-on"
 path = "follow_on.rs"
 
 [[bin]]
+name = "lifecycle"
+path = "lifecycle.rs"
+
+[[bin]]
 name = "custom-tool"
 path = "custom_tool.rs"
 

@@ -2,7 +2,7 @@
 
 All language consumers live at this repository boundary:
 
-- Rust: `minimal.rs`, `follow_on.rs`, `custom_tool.rs`, `subagents.rs`,
+- Rust: `minimal.rs`, `follow_on.rs`, `lifecycle.rs`, `custom_tool.rs`, `subagents.rs`,
   `fork_conversations.rs`, `fork_checkpoint_bench.rs`, and `mcp.rs` are binaries
   in the `nanocodex-examples` package.
 - Python: `python/` uses the native PyO3 binding.
@@ -14,6 +14,7 @@ From the repository root:
 
 ```sh
 cargo run -p nanocodex-examples --bin minimal
+cargo run -p nanocodex-examples --bin lifecycle
 cargo run -p nanocodex-examples --bin fork-conversations
 cargo run -p nanocodex-examples --bin subagents
 cargo run -p nanocodex-examples --bin subagents -- \
