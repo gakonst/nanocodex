@@ -335,6 +335,8 @@ pub struct ResponseCreate<'a> {
     kind: &'static str,
     model: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<&'a str>,
     input: ResponsesInput<'a>,
     tool_choice: &'static str,
@@ -396,6 +398,7 @@ impl<'a> ResponseCreate<'a> {
         Self {
             kind: "response.create",
             model: crate::MODEL,
+            service_tier: config.service_tier_request_value(),
             previous_response_id,
             input,
             tool_choice: "auto",
@@ -482,6 +485,35 @@ mod tests {
     #[test]
     fn thinking_defaults_to_medium() {
         assert_eq!(ModelConfig::default().thinking, Thinking::Medium);
+    }
+
+    #[test]
+    fn service_tier_is_omitted_by_default() {
+        let config = ModelConfig::default();
+        let profile = RequestProfile::new("session", "lineage", Arc::from([]));
+        let request = ResponseCreate::warmup(&config, &profile, None);
+        let request = serde_json::to_value(request).expect("request should serialize");
+
+        assert!(request.get("service_tier").is_none());
+    }
+
+    #[test]
+    fn service_tier_normalizes_fast_and_preserves_server_defined_values() {
+        let profile = RequestProfile::new("session", "lineage", Arc::from([]));
+        for (configured, expected) in [
+            ("fast", "priority"),
+            ("flex", "flex"),
+            ("ultrafast", "ultrafast"),
+        ] {
+            let config = ModelConfig {
+                service_tier: Some(configured.to_owned()),
+                ..ModelConfig::default()
+            };
+            let request = ResponseCreate::warmup(&config, &profile, None);
+            let request = serde_json::to_value(request).expect("request should serialize");
+
+            assert_eq!(request["service_tier"], json!(expected));
+        }
     }
 
     #[test]

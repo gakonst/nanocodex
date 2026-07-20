@@ -183,6 +183,7 @@ impl UserInput {
 pub struct ModelConfig {
     pub auth: OpenAiAuth,
     pub thinking: Thinking,
+    pub service_tier: Option<String>,
     pub websocket_url: String,
     pub api_base_url: String,
     pub system_prompt: Arc<str>,
@@ -200,6 +201,16 @@ impl ModelConfig {
     }
 
     #[must_use]
+    pub fn service_tier_request_value(&self) -> Option<&str> {
+        self.service_tier
+            .as_deref()
+            .map(|service_tier| match service_tier {
+                "fast" => "priority",
+                value => value,
+            })
+    }
+
+    #[must_use]
     pub fn search_endpoint(&self) -> String {
         format!("{}/alpha/search", self.api_base_url.trim_end_matches('/'))
     }
@@ -210,6 +221,7 @@ impl Default for ModelConfig {
         Self {
             auth: OpenAiAuth::api_key(String::new()),
             thinking: Thinking::default(),
+            service_tier: None,
             websocket_url: "wss://api.openai.com/v1/responses".to_owned(),
             api_base_url: "https://api.openai.com/v1".to_owned(),
             system_prompt: SYSTEM_PROMPT.into(),

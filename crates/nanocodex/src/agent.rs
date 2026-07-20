@@ -406,6 +406,15 @@ impl<S> NanocodexBuilder<S> {
         self
     }
 
+    /// Selects the Responses service tier for every model call in this agent.
+    /// `fast` is sent as the API's `priority` tier; other server-defined IDs are
+    /// forwarded unchanged. By default the field is omitted.
+    #[must_use]
+    pub fn service_tier(mut self, service_tier: impl Into<String>) -> Self {
+        self.config.service_tier = Some(service_tier.into());
+        self
+    }
+
     /// Replaces the standard built-in tool selection.
     #[must_use]
     pub fn tools(mut self, tools: Tools) -> Self {
@@ -1175,6 +1184,15 @@ fn validate(config: &ModelConfig, session_id: Option<&str>) -> Result<()> {
     if config.api_base_url.trim().is_empty() {
         return Err(NanocodexError::InvalidRequest(
             "OpenAI API base URL must not be empty".to_owned(),
+        ));
+    }
+    if config
+        .service_tier
+        .as_deref()
+        .is_some_and(|service_tier| service_tier.trim().is_empty())
+    {
+        return Err(NanocodexError::InvalidRequest(
+            "service tier must not be empty".to_owned(),
         ));
     }
     if session_id.is_some_and(|session_id| session_id.trim().is_empty()) {

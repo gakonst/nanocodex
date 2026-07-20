@@ -26,6 +26,7 @@ tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 criterion.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[bench]]
 name = "fork_history"

@@ -581,7 +581,7 @@ const fn format_to_mime(format: ImageFormat) -> &'static str {
 mod tests {
     use std::io::Cursor;
 
-    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use image::{DynamicImage, GenericImageView, ImageFormat, Rgba, RgbaImage};
 
     use super::*;

@@ -21,11 +21,12 @@ struct Nanocodex {
 #[pymethods]
 impl Nanocodex {
     #[new]
-    #[pyo3(signature = (api_key = None, *, auth_file = None, thinking = "medium", workspace = None, instructions = None))]
+    #[pyo3(signature = (api_key = None, *, auth_file = None, thinking = "medium", service_tier = None, workspace = None, instructions = None))]
     fn new(
         api_key: Option<String>,
         auth_file: Option<String>,
         thinking: &str,
+        service_tier: Option<String>,
         workspace: Option<String>,
         instructions: Option<String>,
     ) -> PyResult<(Self, AgentEvents)> {
@@ -46,6 +47,9 @@ impl Nanocodex {
         let (agent, events) = runtime
             .block_on(async move {
                 let mut builder = RustNanocodex::builder(auth).thinking(thinking);
+                if let Some(service_tier) = service_tier {
+                    builder = builder.service_tier(service_tier);
+                }
                 if let Some(workspace) = workspace {
                     builder = builder.workspace(workspace);
                 }

@@ -47,6 +47,14 @@ pub(crate) struct AgentArgs {
     #[arg(long, env = "OPENAI_REASONING_EFFORT", default_value_t)]
     thinking: Thinking,
 
+    /// Responses service tier. `fast` maps to the API's `priority` tier.
+    #[arg(
+        long,
+        env = "OPENAI_SERVICE_TIER",
+        value_parser = NonEmptyStringValueParser::new()
+    )]
+    service_tier: Option<String>,
+
     /// Replace the standard system/developer instructions.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     instructions: Option<String>,
@@ -123,6 +131,11 @@ impl AgentArgs {
             .thinking(self.thinking)
             .workspace(self.cwd)
             .responses(responses);
+        let builder = if let Some(service_tier) = self.service_tier {
+            builder.service_tier(service_tier)
+        } else {
+            builder
+        };
         let builder = if let Some(child_agents) = &child_agents {
             let tools = tools.clone();
             let child_agents = Arc::downgrade(child_agents);
@@ -143,6 +156,26 @@ impl AgentArgs {
             events,
             child_agents,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::AgentArgs;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        agent: AgentArgs,
+    }
+
+    #[test]
+    fn parses_service_tier_flag() {
+        let cli = TestCli::parse_from(["nanocodex", "--service-tier", "fast"]);
+
+        assert_eq!(cli.agent.service_tier.as_deref(), Some("fast"));
     }
 }
 

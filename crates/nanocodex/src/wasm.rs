@@ -25,6 +25,8 @@ struct WasmConfig {
     api_key: String,
     #[serde(default = "default_thinking")]
     thinking: String,
+    #[serde(default)]
+    service_tier: Option<String>,
     #[serde(default = "default_websocket_url")]
     websocket_url: String,
     #[serde(default = "default_api_base_url")]
@@ -65,6 +67,7 @@ impl WasmNanocodex {
         let model_config = Arc::new(ModelConfig {
             auth: nanocodex_core::OpenAiAuth::api_key(config.api_key),
             thinking,
+            service_tier: config.service_tier,
             websocket_url: config.websocket_url,
             api_base_url: config.api_base_url,
             system_prompt: config
@@ -195,6 +198,13 @@ fn validate(config: &WasmConfig) -> Result<(), JsValue> {
         if value.trim().is_empty() {
             return Err(js_error(format!("{name} must not be empty")));
         }
+    }
+    if config
+        .service_tier
+        .as_deref()
+        .is_some_and(|service_tier| service_tier.trim().is_empty())
+    {
+        return Err(js_error("service_tier must not be empty"));
     }
     if config
         .session_id
