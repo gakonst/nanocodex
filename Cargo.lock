@@ -1557,6 +1557,7 @@ dependencies = [
 name = "nanocodex-core"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "serde",
  "serde_json",
  "smallvec",
@@ -1568,11 +1569,18 @@ dependencies = [
 name = "nanocodex-examples"
 version = "0.1.0"
 dependencies = [
+ "dotenvy",
  "eyre",
+ "futures-util",
+ "http",
  "nanocodex",
+ "reqwest 0.12.28",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
+ "tower",
 ]
 
 [[package]]
