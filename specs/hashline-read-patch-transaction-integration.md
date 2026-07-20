@@ -88,6 +88,9 @@ Success means:
   head/tail/before/after inserts, block swaps/deletes/inserts, empty and
   multi-file creation, sectioned existing-file edits, `REM`, `MV` with optional
   line edits, dry run, abort markers, and documented payload forms.
+- The patch request has no redundant target or global creation mode: the complete
+  sectioned program owns every path and independently distinguishes guarded
+  existing-file operations from creates.
 - Stale file, line, range, block, exact-byte, and preview-plan evidence fails
   without beginning a mutation. Hash mismatches tell the model exactly what to
   reread and rebuild.
@@ -159,8 +162,9 @@ Success means:
   rustfmt, focused tests, warnings-denied Clippy, and a clean worktree followed.
   A follow-up update to this spec then used a properly formed routine patch for
   both dry-run and commit successfully.
-- [ ] Close the interactive usability findings before the milestone gate: emit
-  one non-duplicated read representation, preserve complete property guidance
+- [ ] Close the interactive usability findings before the milestone gate: remove
+  the redundant patch-level `path` and global `create` mode, emit one
+  non-duplicated read representation, preserve complete property guidance
   through the exact model-visible declaration path, add field- and
   dialect-specific bounded diagnostics, and explain `commitPreviewed`
   mutation resubmission explicitly.
@@ -405,14 +409,25 @@ Success means:
   Date/Author: 2026-07-20 / Codex
 
 - Decision: close the interactive usability findings without adding another
-  editor or broadening the public mutation schemas. Read returns compact
-  anchored `content` once rather than duplicating it as structured line
-  objects; exact model-visible declarations retain path and grammar guidance;
-  Hashline owns typed internal path/parser/evidence error classes rendered as
-  concise field-specific model diagnostics. Outer orchestration flattening is
-  measured separately.
+  editor or broadening editing capability. Read returns compact anchored
+  `content` once rather than duplicating it as structured line objects; exact
+  model-visible declarations retain path and grammar guidance; Hashline owns
+  typed internal path/parser/evidence error classes rendered as concise
+  field-specific model diagnostics. Outer orchestration flattening is measured
+  separately.
   Rationale: the observed failures were discovery, output, and diagnostic
   failures, not missing editing capability.
+  Date/Author: 2026-07-20 / Codex
+
+- Decision: the remaining greenfield `hashline__patch` request contains only a
+  required complete `patch` program and optional `dry_run`. Every target is
+  explicit in the program: `[path]#HASH` edits an existing file and `[path]`
+  creates a missing file. Section mode is inferred independently, so one patch
+  may mix creates with guarded edits, removals, and moves. There is no top-level
+  default `path` and no global `create` boolean.
+  Rationale: the section header already owns target identity and existence
+  evidence. Repeating a default target and applying one creation mode to the
+  entire program add ambiguity without information.
   Date/Author: 2026-07-20 / Codex
 
 - Decision: `commitPreviewed` continues to require the exact mutation request
@@ -648,13 +663,12 @@ caps are implementation-owned policy, not builder knobs. The result includes:
       "total_lines": 300,
       "truncated": true,
       "next_start_line": 201,
-      "content": "1:1a2b|first line\n...",
-      "lines": [{"n": 1, "hash": "1a2b"}]
+      "content": "1:1a2b|first line\n..."
     }
 
-`content` is the sole carrier of line text. Structured rows carry anchor and
-truncation metadata only. Empty files return null range endpoints, empty content,
-and no line rows. A line that exceeds the serialized budget is truncated at a
+`content` is the sole carrier of line text and compact line anchors. Empty
+files return null range endpoints and empty content. A line that exceeds the
+serialized budget is truncated at a
 UTF-8 boundary and marked without changing the hash of its complete logical
 text. Reads reject missing files, directories, devices, binary/NUL content,
 invalid UTF-8, paths outside the workspace, and unbounded requests.
@@ -677,8 +691,8 @@ Acceptance:
   all representation edge cases.
 - Read output is accepted verbatim by patch parser fixtures and its
   `exactDigest` is accepted verbatim by transaction expected-file fixtures.
-- Read and block outputs remain within 24 KiB serialized excerpt budgets and do
-  not duplicate text in structured rows.
+- Read and block outputs remain within 24 KiB serialized excerpt budgets and
+  return one compact anchored content representation with no second line array.
 - Block anchor output round-trips and rejects stale line or block evidence.
 - Code Mode advertises exact declarations for `hashline__read` and
   `hashline__find_block`, dispatches each once, and still advertises the
@@ -704,28 +718,29 @@ Files and interfaces:
 The model input is a closed function object:
 
     {
-      "path": "default/or/single/path",
       "patch": "[path]#1234abcd\nSWAP 12:1a2b:\n+replacement",
-      "dry_run": false,
-      "create": false
+      "dry_run": false
     }
 
-`path` and `patch` are required; booleans default false. Preserve and test the
-complete grammar selected in Milestone 0, including:
+`patch` is required and `dry_run` defaults false. Every non-abort program is
+fully sectioned: `[path]#HASH` selects an existing file and `[path]` selects
+a missing file to create. Section mode is inferred independently, so one
+program may mix creates and guarded existing-file operations. There is no
+top-level default path or global create mode. Preserve and test the complete
+grammar selected in Milestone 0, including:
 
 - `SWAP` and `DEL` for one line and inclusive anchored ranges;
 - `INS.PRE`, `INS.POST`, `INS.HEAD`, and `INS.TAIL`;
 - `SWAP.BLK`, `DEL.BLK`, `INS.BLK.PRE`, `INS.BLK.POST`, and the documented
   `INS.BLK` alias;
-- required `[path]#HASH` sections for existing files and `[path]` sections with
-  `create=true` for missing files;
-- empty and multi-file creation;
+- required `[path]#HASH` sections for existing files and `[path]` sections for
+  missing files, including empty creation and mixed create/existing programs;
 - sectioned `REM` and `MV <destination>`, with `MV` optionally combined with line
   edits and `REM` required to stand alone;
 - README-style `+` payload rows, compact `|text` forms where documented, bare
   payload rows, pasted/decorated read rows, literal `+`/`-` escapes, recoverable
   bracketed path noise, and `*** Abort` suppression;
-- deterministic rejection of malformed, ambiguous, mixed-mode, duplicate,
+- deterministic rejection of malformed, ambiguous-section-mode, duplicate,
   overlapping, out-of-order, no-op, or limit-exceeding input.
 
 For every existing target, validate the compact file guard and every used line,
@@ -767,6 +782,8 @@ Acceptance:
 - A successful `hashline__read` result feeds a successful
   `hashline__patch`; changing any guarded source content between those calls
   produces a bounded stale error and no write.
+- The generated patch schema requires only `patch`, optionally accepts
+  `dry_run`, and has no top-level `path` or `create` field.
 - Code Mode advertises and dispatches `hashline__patch` with structured JSON
   input/output while the old freeform `apply_patch` declaration and tests remain
   unchanged for A/B diagnosis.
@@ -1040,8 +1057,8 @@ Local interfaces:
   - Failures: stale/ambiguous anchor, unsupported/unknown span, path, or limit.
 
 - `hashline::PatchRequest` / `PreparedPatch`:
-  - Inputs: default path, complete patch string, `create`, `dry_run`, and trusted
-    internal limits.
+  - Inputs: complete self-targeting sectioned patch string, `dry_run`, and trusted
+    internal limits; no default path or global creation mode.
   - Outputs: fully validated ordered prepared mutations, warnings, previews, and
     before/after evidence.
   - Failures: parse, stale guard, conflicting path, invalid edit, no-op, type,
