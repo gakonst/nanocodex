@@ -1,11 +1,32 @@
-# Nanocodex
+<div align="center">
 
-Nanocodex is a small, library-first Rust agents SDK built around the OpenAI
-Responses WebSocket API. It keeps one coding-agent conversation alive in your
-process—with typed turns, tools, events, steering, cancellation, queueing, and
-fast historical forks—without requiring an app server or durable control plane.
+<h1>Nanocodex</h1>
 
-## BLUF: Nanocodex versus Codex
+<p><strong>A fast, library-first Rust agents SDK.</strong></p>
+
+[![CI](https://img.shields.io/github/actions/workflow/status/gakonst/nanocodex/ci.yml?branch=master)][ci]
+[![Crates.io](https://img.shields.io/crates/v/nanocodex.svg)][crates]
+[![Docs.rs](https://img.shields.io/docsrs/nanocodex)][docs]
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)][license]
+
+**[Install](#installation)** | **[Benchmarks](#how-fast)** | **[API](#api)** | **[Examples](examples)**
+
+[ci]: https://github.com/gakonst/nanocodex/actions/workflows/ci.yml
+[crates]: https://crates.io/crates/nanocodex
+[docs]: https://docs.rs/nanocodex
+[license]: LICENSE-MIT
+
+</div>
+
+---
+
+### Nanocodex keeps a complete coding-agent conversation inside your process.
+
+It provides typed turns, tools, events, steering, cancellation, queueing, and
+fast historical forks over the OpenAI Responses WebSocket API—without requiring
+an app server or durable control plane.
+
+## Nanocodex versus Codex
 
 Use Nanocodex when the agent is a component of your Rust application. Use Codex
 when you want the complete product: durable threads, approval UX, broad built-in
@@ -27,7 +48,7 @@ The smaller boundary is the feature. A caller builds an agent, receives
 awaits independently owned `TurnResult`s. The CLI, Harbor adapter, Python
 binding, and Rust/WASM binding all consume that same API.
 
-### Measured checkpoint performance
+## How Fast?
 
 Our live checkpoint benchmark uses `gpt-5.6-sol`, a deterministic 600-fact
 prefix, ten sequential turns, and concurrent historical forks. Three runs on
@@ -40,6 +61,9 @@ prefix, ten sequential turns, and concurrent historical forks. Three runs on
 | Warm turn p50, turns 3–10 | 1.304 s | 1.532 s | **1.18x faster** |
 | Historical fork to first answer, p50 | 1.570 s | 6.530 s | **4.16x faster** |
 | Historical fork model time, p50 | 1.291 s | 5.862 s | **4.54x faster** |
+
+**Takeaway: Nanocodex was 1.69x faster across ten turns and 4.16x faster to
+the first historical-fork answer in this checkpoint benchmark.**
 
 A Nanocodex fork sent about 725 bytes of new request data from its stored
 checkpoint. Replaying the same history would send 27–29 KB: a 97.4% reduction.
@@ -63,7 +87,7 @@ agents. Code Mode requires Node.js 12.22 or newer on `PATH`.
 That is substantially less product than Codex. It is also much less machinery
 between your code and an agent turn.
 
-## The user-facing API
+## Installation
 
 Most applications need only the top-level crate:
 
@@ -72,6 +96,10 @@ Most applications need only the top-level crate:
 nanocodex = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
+
+Node.js 12.22 or newer must be available on `PATH` for Code Mode.
+
+## API
 
 The smallest complete program is deliberately ordinary Rust:
 
@@ -100,41 +128,32 @@ receiver is supported; events then become a no-op.
 independently awaitable `Turn`; it does not wait for the model to finish.
 
 ```text
- NanocodexBuilder
-       │ build()
+NanocodexBuilder
+       │
        ▼
- ┌──────────────────────────────── caller ─────────────────────────────────┐
- │                                                                         │
- │  Nanocodex ── prompt(input) ──► Turn                                    │
- │  cheap, cloneable                  │                                     │
- │  command handle                    ├── steer(input)                      │
- │                                    ├── cancel()                          │
- │                                    └── result().await ──► TurnResult     │
- │                                                               │         │
- │  AgentEvents ◄──── optional ordered events ────────────────────┘         │
- └────────│────────────────────────────────────────────────────────────────┘
-          │ commands                         ▲ results/events
-          ▼                                  │
- ┌──────────────────────── private agent driver ───────────────────────────┐
- │                                                                         │
- │   queued ─────────────► active ─────────────► committed checkpoint       │
- │      │                    │  ▲                         │                  │
- │      │ cancel             │  └─ steer at a safe       ├─ next prompt    │
- │      ▼                    │     model/tool boundary   ├─ fork latest    │
- │  cancelled                ├─ cancel                  └─ fork historical │
- │                           └─ failure                                      │
- │                                                                         │
- │   owns: typed history · response chain · tools · Code Mode runtime       │
- │         shell sessions · Tower service · persistent WebSocket            │
- └───────────────────────────────│─────────────────────────────────────────┘
-                                 ▼
-                  Responses retry/reconnect policy → OpenAI
+ private agent driver ───────────────► AgentEvents
+       ▲                                  side channel
+       │
+ Nanocodex
+ cloneable conversation handle
+       │
+       ├── prompt(...) ──► Turn
+       │                    ├── steer(...)
+       │                    ├── cancel(...)
+       │                    ├── control() ──► cloneable TurnControl
+       │                    └── result() ──► TurnResult
+       │                                         │
+       ├── fork()                                │ checkpoint
+       └── fork_from(&TurnResult) ◄──────────────┘
+
+AgentHandle, supplied to tools_factory(...)
+       ├── spawn()  clean child
+       └── fork()   child from latest committed checkpoint
 ```
 
-Those are runtime lifecycle states, not public generic typestates. The public
-types instead encode ownership: `Turn` is the capability for unfinished work,
-`TurnResult` is an inert completed checkpoint, and `Nanocodex` owns operations
-that create another conversation.
+That is the ownership model. `Nanocodex` controls the conversation, `Turn`
+controls unfinished work, `TurnResult` is an inert completed checkpoint, and
+`AgentEvents` is an optional ordered side channel independent from results.
 
 | Intent | API | Semantics |
 | --- | --- | --- |
@@ -207,16 +226,6 @@ let second = agent
 
 Each completed result is also an opaque historical checkpoint. The mainline can
 keep advancing while multiple branches start from different points:
-
-```text
-                         fork_from(&turn_2)
-                              ┌──► B2 ──► B3
-                              │
- root:  turn_1 ──► turn_2 ──► turn_3 ──► turn_4 ──► ...
-                                      │
-                                      └──► L4 ──► ...
-                                          fork() from latest commit
-```
 
 ```rust
 let turn_2 = agent
