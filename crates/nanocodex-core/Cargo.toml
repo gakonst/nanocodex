@@ -17,5 +17,12 @@ smallvec.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "fork_history"
+harness = false
+
 [lints]
 workspace = true

@@ -35,13 +35,27 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
         result: &mut Result<ResponsesServiceResponse, ResponsesServiceError>,
     ) -> Option<Self::Future> {
         let failure = result.as_ref().err()?;
-        let advice = failure.retry_advice?;
+        let checkpoint_missing =
+            failure.is_checkpoint_missing() && request.previous_response_id().is_some();
+        let advice = failure.retry_advice;
+        if !checkpoint_missing && advice.is_none() {
+            return None;
+        }
         if request.attempt >= request.max_attempts {
             return None;
         }
-        let delay = advice
-            .server_delay
-            .unwrap_or_else(|| retry_delay(request.attempt, request.call_index));
+        let delay = if checkpoint_missing {
+            Duration::ZERO
+        } else {
+            advice
+                .and_then(|advice| advice.server_delay)
+                .unwrap_or_else(|| retry_delay(request.attempt, request.call_index))
+        };
+        let error_class = if checkpoint_missing {
+            "checkpoint_missing"
+        } else {
+            advice.map_or("unknown", |advice| advice.class)
+        };
         let message = failure.source.to_string();
         if let Err(error) = request.observer.emit(
             AgentEventKind::ModelAttemptRetrying,
@@ -52,10 +66,10 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
                 next_attempt: request.attempt + 1,
                 max_attempts: request.max_attempts,
                 failure_phase: failure.phase,
-                error_class: advice.class,
+                error_class,
                 delay_ns: duration_ns(delay),
-                server_requested_delay: advice.server_delay.is_some(),
-                opens_new_socket: true,
+                server_requested_delay: advice.is_some_and(|advice| advice.server_delay.is_some()),
+                opens_new_socket: !checkpoint_missing,
                 replay_mode: "full_history",
                 connection_generation: failure.connection_generation,
                 error: &message,
@@ -79,9 +93,9 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
             model.call_index = request.call_index,
             attempt = request.attempt,
             next_attempt = request.attempt + 1,
-            error.class = advice.class,
+            error.class = error_class,
             delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-            server_requested_delay = advice.server_delay.is_some(),
+            server_requested_delay = advice.is_some_and(|advice| advice.server_delay.is_some()),
             "retrying Responses attempt"
         );
         if !request.prepare_retry() {

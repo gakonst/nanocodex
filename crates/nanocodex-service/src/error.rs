@@ -88,7 +88,7 @@ impl ResponsesError {
     }
 
     #[must_use]
-    pub const fn class(&self) -> &'static str {
+    pub fn class(&self) -> &'static str {
         match self {
             Self::InvalidUrl(_) => "invalid_url",
             Self::InvalidAuthorization(_) => "invalid_authorization",
@@ -106,9 +106,17 @@ impl ResponsesError {
             Self::EncodeRequest(_) => "encode_request",
             Self::InvalidPayload { .. } => "invalid_payload",
             Self::Closed { .. } => "closed",
+            Self::Api { event } if api_error_has_code(event, "previous_response_not_found") => {
+                "checkpoint_missing"
+            }
             Self::Api { .. } => "api",
             Self::InvalidImageRequest { .. } => "invalid_image_request",
         }
+    }
+
+    #[must_use]
+    pub fn is_checkpoint_missing(&self) -> bool {
+        matches!(self, Self::Api { event } if api_error_has_code(event, "previous_response_not_found"))
     }
 }
 
@@ -153,6 +161,23 @@ fn retryable_api_error(event: &str) -> Option<(&'static str, Option<Duration>)> 
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .or_else(|| retry_after_header(&event.headers));
     Some((class, server_delay))
+}
+
+fn api_error_has_code(event: &str, expected: &str) -> bool {
+    let Ok(event) = serde_json::from_str::<ApiErrorEnvelope>(event) else {
+        return false;
+    };
+    let code = event
+        .error
+        .as_ref()
+        .or_else(|| {
+            event
+                .response
+                .as_ref()
+                .and_then(|response| response.error.as_ref())
+        })
+        .and_then(|error| error.code.as_deref());
+    code == Some(expected)
 }
 
 fn retry_after_header(headers: &HashMap<String, RetryAfterValue>) -> Option<Duration> {

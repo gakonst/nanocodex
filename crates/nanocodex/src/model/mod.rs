@@ -11,7 +11,7 @@ mod telemetry;
 
 use telemetry::{
     AssistantMessage, CompactionCompleted, CompactionFailed, CompactionStarted, ModelCallCompleted,
-    ModelCallFailed, ModelCallStarted, RunError, RunStarted, RunStats, ToolCallArguments,
-    ToolCallEvent, ToolResultEvent, WarmupCompleted, WarmupFailed, WarmupStarted, display_endpoint,
-    elapsed_ns, resolve_workspace, terminal_payload,
+    ModelCallFailed, ModelCallStarted, RunError, RunStarted, RunStats, RunSteered,
+    ToolCallArguments, ToolCallEvent, ToolResultEvent, WarmupCompleted, WarmupFailed,
+    WarmupStarted, display_endpoint, elapsed_ns, resolve_workspace, terminal_payload,
 };

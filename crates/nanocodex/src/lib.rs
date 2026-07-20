@@ -10,7 +10,7 @@ mod responses;
 mod wasm;
 
 #[cfg(not(target_family = "wasm"))]
-pub use agent::{Nanocodex, NanocodexBuilder, Turn, TurnResult};
+pub use agent::{AgentHandle, Nanocodex, NanocodexBuilder, Turn, TurnResult};
 #[cfg(not(target_family = "wasm"))]
 pub use async_trait::async_trait;
 pub use error::{AgentError, NanocodexError, ResponsesError, Result};
@@ -33,12 +33,13 @@ pub use nanocodex_service::{
 };
 #[cfg(not(target_family = "wasm"))]
 pub use nanocodex_tools::{
-    DEFAULT_TOOL_OUTPUT_TOKENS, Tool, ToolContext, ToolExecution, ToolInput, ToolInputError,
-    ToolOutputBody, ToolOutputContent, Tools, ToolsBuildError, ToolsBuilder,
+    DEFAULT_TOOL_OUTPUT_TOKENS, Tool, ToolContext, ToolError, ToolExecution, ToolInput,
+    ToolInputError, ToolOutputBody, ToolOutputContent, ToolResult, Tools, ToolsBuildError,
+    ToolsBuilder,
 };
 #[cfg(not(target_family = "wasm"))]
 #[doc(hidden)]
-pub use responses::{LayeredResponses, StandardResponses};
+pub use responses::{FactoryResponses, LayeredResponses, StandardResponses};
 #[cfg(not(target_family = "wasm"))]
 pub use responses::{Responses, ResponsesBuilder};
 #[cfg(not(target_family = "wasm"))]

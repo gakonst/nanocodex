@@ -17,5 +17,5 @@ pub use event::{
     WarmupServerEvent,
 };
 pub use item::ResponseItem;
-pub use request::{RequestProfile, ResponseCreate, ResponsesInput};
+pub use request::{RequestProfile, ResponseCreate, ResponseHistory, ResponsesInput};
 pub use tool::{CustomToolFormat, JsonSchema, JsonValue, ToolDefinition};

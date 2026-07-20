@@ -48,6 +48,8 @@ pub enum AgentEventKind {
     ReasoningSummaryDelta,
     #[serde(rename = "run.started")]
     RunStarted,
+    #[serde(rename = "run.steered")]
+    RunSteered,
     #[serde(rename = "run.error")]
     RunError,
     #[serde(rename = "run.completed")]

@@ -15,8 +15,9 @@ use web_time::Instant;
 
 use super::{
     AssistantMessage, CompactionCompleted, CompactionFailed, CompactionStarted, ModelCallCompleted,
-    ModelCallFailed, ModelCallStarted, RunError, RunStarted, RunStats, ToolCallArguments,
-    ToolCallEvent, ToolResultEvent, WarmupCompleted, WarmupFailed, WarmupStarted,
+    ModelCallFailed, ModelCallStarted, RunError, RunStarted, RunStats, RunSteered,
+    ToolCallArguments, ToolCallEvent, ToolResultEvent, WarmupCompleted, WarmupFailed,
+    WarmupStarted,
     agents_md::load_project_instructions,
     compaction,
     context_manager::ContextManager,
@@ -43,6 +44,24 @@ pub(crate) struct ModelRun<S> {
     server_reasoning_included: bool,
     session: Option<ModelSessionState>,
     tools: Tools,
+    lineage_id: Arc<str>,
+}
+
+pub(crate) struct CompletedModelTurn {
+    pub(crate) final_message: String,
+    pub(crate) checkpoint: ModelCheckpoint,
+}
+
+#[derive(Clone)]
+pub(crate) struct ModelCheckpoint {
+    workspace: String,
+    conversation: ConversationState,
+}
+
+impl ModelCheckpoint {
+    pub(crate) fn workspace(&self) -> &str {
+        &self.workspace
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -62,8 +81,9 @@ struct ModelSessionState {
     conversation: ConversationState,
 }
 
+#[derive(Clone)]
 struct ConversationState {
-    canonical_context: ResponseItem,
+    canonical_context: Arc<ResponseItem>,
     context: ContextManager,
     delta_start: usize,
     previous_response_id: Option<String>,
@@ -78,19 +98,19 @@ impl ConversationState {
                 detail: "task input did not include initial context",
             })?;
         Ok(Self {
-            canonical_context,
+            canonical_context: Arc::new(canonical_context),
             context: ContextManager::new(history),
             delta_start: 0,
             previous_response_id: None,
         })
     }
 
-    fn history(&self) -> &[ResponseItem] {
-        self.context.raw_items()
+    fn flattened_history(&self) -> Vec<ResponseItem> {
+        self.context.flattened_items()
     }
 
     fn clear_delta(&mut self) {
-        self.delta_start = self.context.len();
+        self.delta_start = self.context.tail_len();
     }
 
     fn append(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
@@ -106,12 +126,12 @@ impl ConversationState {
             .active_context_tokens(server_reasoning_included)
     }
 
-    fn shared_history(&self) -> Arc<Vec<ResponseItem>> {
-        self.context.shared_items()
+    fn prompt_history(&self) -> nanocodex_core::responses::ResponseHistory {
+        self.context.prompt_items()
     }
 
-    fn prompt_history(&self) -> Arc<Vec<ResponseItem>> {
-        self.context.prompt_items()
+    fn shared_history(&self) -> nanocodex_core::responses::ResponseHistory {
+        self.context.shared_items()
     }
 
     fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
@@ -125,8 +145,8 @@ impl ConversationState {
         request_prefix: &[ResponseItem],
     ) {
         let history =
-            compaction::install_history(self.context.raw_items(), &canonical_context, item);
-        self.canonical_context = canonical_context;
+            compaction::install_history(&self.context.flattened_items(), &canonical_context, item);
+        self.canonical_context = Arc::new(canonical_context);
         self.context.replace_and_recompute(history, request_prefix);
         self.delta_start = 0;
         self.previous_response_id = None;
@@ -135,6 +155,18 @@ impl ConversationState {
     fn reset_for_full_request(&mut self) {
         self.delta_start = 0;
         self.previous_response_id = None;
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        if self.previous_response_id.is_none() {
+            return Err(AgentError::MalformedResponse {
+                detail: "completed turn did not have a response ID",
+            }
+            .into());
+        }
+        self.context.commit_tail();
+        self.delta_start = 0;
+        Ok(())
     }
 }
 
@@ -145,6 +177,7 @@ impl<S> ModelRun<S> {
         client: ResponsesClient<S>,
         transport_stats: Arc<TransportStats>,
         tools: Tools,
+        lineage_id: Arc<str>,
     ) -> Self {
         Self {
             events,
@@ -156,6 +189,46 @@ impl<S> ModelRun<S> {
             server_reasoning_included: false,
             session: None,
             tools,
+            lineage_id,
+        }
+    }
+
+    pub(crate) fn from_checkpoint(
+        events: EventSink,
+        config: Arc<ModelConfig>,
+        client: ResponsesClient<S>,
+        transport_stats: Arc<TransportStats>,
+        tools: Tools,
+        lineage_id: Arc<str>,
+        checkpoint: ModelCheckpoint,
+    ) -> Self {
+        let runtime = tool_runtime(&checkpoint.workspace, &config, &tools);
+        let factory = ResponsesAttemptFactory::new(
+            request_profile(
+                events.request_id(),
+                &lineage_id,
+                runtime.model_specs(),
+                config.system_prompt(),
+            ),
+            events.clone(),
+            Arc::clone(&transport_stats),
+        );
+        Self {
+            events,
+            config,
+            client,
+            transport_stats,
+            started_at: Instant::now(),
+            stats: RunStats::default(),
+            server_reasoning_included: false,
+            session: Some(ModelSessionState {
+                workspace: checkpoint.workspace,
+                tools: runtime,
+                factory,
+                conversation: checkpoint.conversation,
+            }),
+            tools,
+            lineage_id,
         }
     }
 }
@@ -166,7 +239,11 @@ where
     S::Error: Into<NanocodexError>,
     S::Future: AgentSend,
 {
-    pub(crate) async fn execute(&mut self, task: Prompt) -> Result<String> {
+    pub(crate) async fn execute(
+        &mut self,
+        task: Prompt,
+        steers: tokio::sync::mpsc::Receiver<Prompt>,
+    ) -> Result<CompletedModelTurn> {
         self.started_at = Instant::now();
         self.stats = RunStats::default();
         let transport_before = self.transport_stats.snapshot();
@@ -184,7 +261,7 @@ where
             },
         )?;
 
-        let outcome = self.execute_task(task).await;
+        let outcome = self.execute_task(task, steers).await;
         let elapsed = self.started_at.elapsed();
         match outcome {
             Ok(message) => {
@@ -198,7 +275,11 @@ where
                     AgentEventKind::RunCompleted,
                     terminal_payload("completed", elapsed, &self.config, &self.stats),
                 )?;
-                Ok(message)
+                let checkpoint = self.commit_checkpoint()?;
+                Ok(CompletedModelTurn {
+                    final_message: message,
+                    checkpoint,
+                })
             }
             Err(error) => {
                 let message = error.to_string();
@@ -215,7 +296,11 @@ where
         }
     }
 
-    async fn execute_task(&mut self, task: Prompt) -> Result<String> {
+    async fn execute_task(
+        &mut self,
+        task: Prompt,
+        steers: tokio::sync::mpsc::Receiver<Prompt>,
+    ) -> Result<String> {
         let mut session = if let Some(mut session) = self.session.take() {
             if let Some(requested) = task.workspace.as_deref() {
                 let resolved = match resolve_workspace(Some(requested)) {
@@ -245,24 +330,11 @@ where
         } else {
             let workspace = resolve_workspace(task.workspace.as_deref())?;
             let project_instructions = load_project_instructions(Path::new(&workspace))?;
-            let tools = ToolRuntime::new(
-                &workspace,
-                self.tools.web_search_enabled().then(|| WebSearchConfig {
-                    endpoint: self.config.search_endpoint(),
-                    api_key: self.config.api_key.clone(),
-                }),
-                self.tools
-                    .image_generation_enabled()
-                    .then(|| ImageGenerationConfig {
-                        api_base_url: self.config.api_base_url.clone(),
-                        api_key: self.config.api_key.clone(),
-                        save_root: Path::new(&workspace).to_path_buf(),
-                    }),
-            )
-            .with_tools(&self.tools);
+            let tools = tool_runtime(&workspace, &self.config, &self.tools);
             let factory = ResponsesAttemptFactory::new(
                 request_profile(
                     self.events.request_id(),
+                    &self.lineage_id,
                     tools.model_specs(),
                     self.config.system_prompt(),
                 ),
@@ -293,13 +365,38 @@ where
             }
         };
 
-        let outcome = self.drive_session(&mut session).await;
+        let outcome = self.drive_session(&mut session, steers).await;
         self.session = Some(session);
         outcome
     }
 
-    async fn drive_session(&mut self, session: &mut ModelSessionState) -> Result<String> {
+    fn commit_checkpoint(&mut self) -> Result<ModelCheckpoint> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or(AgentError::InvalidAttemptState {
+                detail: "completed turn did not have a model session",
+            })?;
+        session.conversation.commit()?;
+        Ok(ModelCheckpoint {
+            workspace: session.workspace.clone(),
+            conversation: session.conversation.clone(),
+        })
+    }
+
+    async fn drive_session(
+        &mut self,
+        session: &mut ModelSessionState,
+        mut steers: tokio::sync::mpsc::Receiver<Prompt>,
+    ) -> Result<String> {
+        // Match Codex's ordering: always sample the turn's initial prompt once
+        // before injecting input that arrived while that first request ran.
+        let mut can_drain_steers = false;
         loop {
+            if can_drain_steers {
+                self.drain_steers(&mut session.conversation, &mut steers)
+                    .await?;
+            }
             let call_index = self.stats.model_calls + 1;
             let response = match self
                 .perform_model_call(call_index, &session.conversation, &session.factory)
@@ -328,6 +425,7 @@ where
             session
                 .conversation
                 .append(response.output_items.into_iter().map(strip_item_id));
+            can_drain_steers = true;
 
             if code_calls.is_empty() {
                 if end_turn == Some(false) {
@@ -340,6 +438,12 @@ where
                         session.tools.default_shell_name(),
                     )
                     .await?;
+                    continue;
+                }
+                if !steers.is_empty() {
+                    // The completed response is retained by previous_response_id;
+                    // the next delta contains only newly drained steer messages.
+                    session.conversation.clear_delta();
                     continue;
                 }
                 if let Some(message) = final_message {
@@ -357,13 +461,9 @@ where
 
             session.conversation.clear_delta();
             for call in code_calls {
+                let history = session.conversation.flattened_history();
                 let output = self
-                    .execute_model_tool(
-                        &session.tools,
-                        call_index,
-                        call,
-                        session.conversation.history(),
-                    )
+                    .execute_model_tool(&session.tools, call_index, call, &history)
                     .await?;
                 session.conversation.append(output);
             }
@@ -376,6 +476,30 @@ where
             )
             .await?;
         }
+    }
+
+    async fn drain_steers(
+        &mut self,
+        conversation: &mut ConversationState,
+        steers: &mut tokio::sync::mpsc::Receiver<Prompt>,
+    ) -> Result<()> {
+        while let Ok(steer) = steers.try_recv() {
+            let instruction_bytes = steer.instruction.text_bytes();
+            let user_content = prepare_user_input(&steer.instruction).await;
+            conversation.append([ResponseItem::message(
+                nanocodex_core::MessageRole::User,
+                user_content,
+            )]);
+            self.stats.steers += 1;
+            self.events.emit(
+                AgentEventKind::RunSteered,
+                RunSteered {
+                    steer_index: self.stats.steers,
+                    instruction_bytes,
+                },
+            )?;
+        }
+        Ok(())
     }
 
     async fn execute_model_tool(
@@ -730,7 +854,7 @@ where
     async fn perform_compaction(
         &mut self,
         after_model_call_index: u32,
-        history: Arc<Vec<ResponseItem>>,
+        history: nanocodex_core::responses::ResponseHistory,
         incremental_start: usize,
         previous_response_id: &str,
         active_context_tokens: u64,
@@ -738,9 +862,9 @@ where
         factory: &ResponsesAttemptFactory,
     ) -> Result<(ResponseItem, Option<Usage>)> {
         let trigger = compaction::trigger();
-        let mut history = Arc::unwrap_or_clone(history);
+        let mut history: Vec<_> = history.iter().cloned().collect();
         compaction::trim_tool_outputs_to_fit_context_window(&mut history, active_context_tokens);
-        let history = Arc::new(history);
+        let history = nanocodex_core::responses::ResponseHistory::new(history);
         let started_at = Instant::now();
         self.stats.compactions += 1;
         self.events.emit(
@@ -754,7 +878,7 @@ where
         )?;
         let request = factory.compaction(
             after_model_call_index,
-            Arc::clone(&history),
+            history.clone(),
             history,
             incremental_start,
             previous_response_id,
@@ -931,11 +1055,13 @@ fn strip_item_id(mut item: ResponseItem) -> ResponseItem {
 
 fn request_profile(
     session_id: &str,
+    lineage_id: &str,
     tool_specs: Vec<ToolDefinition>,
     system_prompt: &str,
 ) -> RequestProfile {
     RequestProfile::new(
         session_id,
+        lineage_id,
         Arc::from([
             ResponseItem::additional_tools(tool_specs),
             ResponseItem::message(
@@ -946,6 +1072,24 @@ fn request_profile(
             ),
         ]),
     )
+}
+
+fn tool_runtime(workspace: &str, config: &ModelConfig, tools: &Tools) -> ToolRuntime {
+    ToolRuntime::new(
+        workspace,
+        tools.web_search_enabled().then(|| WebSearchConfig {
+            endpoint: config.search_endpoint(),
+            api_key: config.api_key.clone(),
+        }),
+        tools
+            .image_generation_enabled()
+            .then(|| ImageGenerationConfig {
+                api_base_url: config.api_base_url.clone(),
+                api_key: config.api_key.clone(),
+                save_root: Path::new(workspace).to_path_buf(),
+            }),
+    )
+    .with_tools(tools)
 }
 
 const fn status(success: bool) -> &'static str {

@@ -138,7 +138,7 @@ impl ResponsesService {
                     duration_ns: elapsed_ns(started_at),
                     failure_phase: failure.phase,
                     error_class: failure.error_class(),
-                    retryable: failure.retry_advice.is_some(),
+                    retryable: failure.is_retryable() || failure.is_checkpoint_missing(),
                     connection_generation: failure.connection_generation,
                     error: &message,
                 },
@@ -334,7 +334,7 @@ impl ResponsesService {
         let result = ResponsesSocket::connect(
             &self.config.websocket_url,
             &self.config.api_key,
-            request.profile.prompt_cache_key(),
+            request.profile.session_id(),
         )
         .instrument(connect_span.clone())
         .await;

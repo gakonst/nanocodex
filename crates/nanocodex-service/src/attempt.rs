@@ -5,7 +5,7 @@ use std::sync::{
 
 use nanocodex_core::{
     AgentEventKind, EventError, EventSink, ResponseItem,
-    responses::{RequestProfile, ResponsesInput, WarmupResponse},
+    responses::{RequestProfile, ResponseHistory, ResponsesInput, WarmupResponse},
 };
 use serde::Serialize;
 
@@ -124,8 +124,8 @@ pub struct TransportStatsDelta {
 pub struct ResponsesAttempt {
     pub(crate) kind: ResponsesAttemptKind,
     pub(crate) call_index: Option<u32>,
-    full_history: Arc<Vec<ResponseItem>>,
-    incremental_history: Arc<Vec<ResponseItem>>,
+    full_history: ResponseHistory,
+    incremental_history: ResponseHistory,
     incremental_start: usize,
     tail: Option<ResponseItem>,
     previous_response_id: Option<String>,
@@ -141,8 +141,8 @@ impl ResponsesAttempt {
         Self {
             kind: ResponsesAttemptKind::Warmup,
             call_index: None,
-            full_history: Arc::new(Vec::new()),
-            incremental_history: Arc::new(Vec::new()),
+            full_history: ResponseHistory::default(),
+            incremental_history: ResponseHistory::default(),
             incremental_start: 0,
             tail: None,
             previous_response_id: None,
@@ -156,8 +156,8 @@ impl ResponsesAttempt {
 
     fn generation(
         call_index: u32,
-        full_history: Arc<Vec<ResponseItem>>,
-        incremental_history: Arc<Vec<ResponseItem>>,
+        full_history: ResponseHistory,
+        incremental_history: ResponseHistory,
         incremental_start: usize,
         previous_response_id: Option<&str>,
         profile: Arc<RequestProfile>,
@@ -182,8 +182,8 @@ impl ResponsesAttempt {
     #[allow(clippy::too_many_arguments)]
     fn compaction(
         call_index: u32,
-        full_history: Arc<Vec<ResponseItem>>,
-        incremental_history: Arc<Vec<ResponseItem>>,
+        full_history: ResponseHistory,
+        incremental_history: ResponseHistory,
         incremental_start: usize,
         previous_response_id: &str,
         trigger: ResponseItem,
@@ -211,7 +211,7 @@ impl ResponsesAttempt {
             return ResponsesInput::new(self.profile.prefix(), &[], None);
         }
         if self.full_replay {
-            ResponsesInput::new(
+            ResponsesInput::history(
                 self.profile.prefix(),
                 &self.full_history,
                 self.tail.as_ref(),
@@ -219,7 +219,7 @@ impl ResponsesAttempt {
         } else {
             ResponsesInput::new(
                 &[],
-                &self.incremental_history[self.incremental_start..],
+                &self.incremental_history.tail()[self.incremental_start..],
                 self.tail.as_ref(),
             )
         }
@@ -342,8 +342,8 @@ impl ResponsesAttemptFactory {
     pub fn generation(
         &self,
         call_index: u32,
-        full_history: Arc<Vec<ResponseItem>>,
-        incremental_history: Arc<Vec<ResponseItem>>,
+        full_history: ResponseHistory,
+        incremental_history: ResponseHistory,
         incremental_start: usize,
         previous_response_id: Option<&str>,
     ) -> ResponsesAttempt {
@@ -363,8 +363,8 @@ impl ResponsesAttemptFactory {
     pub fn compaction(
         &self,
         call_index: u32,
-        full_history: Arc<Vec<ResponseItem>>,
-        incremental_history: Arc<Vec<ResponseItem>>,
+        full_history: ResponseHistory,
+        incremental_history: ResponseHistory,
         incremental_start: usize,
         previous_response_id: &str,
         trigger: ResponseItem,

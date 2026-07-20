@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use tokio::{net::TcpListener, time::timeout};
 use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
-use crate::{Nanocodex, Prompt, Responses, Thinking};
+use crate::{
+    AgentError, AgentHandle, Nanocodex, NanocodexError, Prompt, Responses, Thinking, Tools,
+};
 
 #[tokio::test]
 async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> {
@@ -69,7 +71,99 @@ async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> 
 }
 
 #[tokio::test]
-async fn store_false_local_code_mode_round_trip() -> Result<()> {
+async fn steering_is_bounded_fifo_and_joins_at_the_next_model_boundary() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let (first_seen, first_seen_rx) = tokio::sync::oneshot::channel();
+    let (release_first, release_first_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let first = next_json(&mut socket).await?;
+        assert_eq!(first["previous_response_id"], "resp-warmup");
+        assert_eq!(first["input"][1]["content"][0]["text"], "initial task");
+        first_seen
+            .send(())
+            .map_err(|()| eyre!("first-request signal receiver dropped"))?;
+        release_first_rx
+            .await
+            .map_err(|_| eyre!("first-request release sender dropped"))?;
+        send_final(&mut socket, "resp-first").await?;
+
+        let steered = next_json(&mut socket).await?;
+        assert_eq!(steered["previous_response_id"], "resp-first");
+        assert_eq!(steered["input"].as_array().map(Vec::len), Some(8));
+        for index in 0..8 {
+            assert_eq!(steered["input"][index]["role"], "user");
+            assert_eq!(
+                steered["input"][index]["content"][0]["text"],
+                format!("constraint {index}")
+            );
+        }
+        send_final(&mut socket, "resp-steered").await
+    });
+
+    let workspace = temporary_workspace("steer")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, mut events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+    let turn = agent
+        .prompt(Prompt::new("initial task").workspace(workspace.to_string_lossy()))
+        .await?;
+    first_seen_rx
+        .await
+        .map_err(|_| eyre!("first request was not observed"))?;
+    for index in 0..8 {
+        agent.steer(format!("constraint {index}")).await?;
+    }
+    let overflow = agent.steer("constraint 8").await.unwrap_err();
+    assert!(matches!(
+        overflow,
+        NanocodexError::Agent(AgentError::SteerQueueFull)
+    ));
+    release_first
+        .send(())
+        .map_err(|()| eyre!("server release receiver dropped"))?;
+    assert_eq!(turn.result().await?.final_message, "done");
+    drop(agent);
+
+    let mut steered_events = 0;
+    let mut terminal = None;
+    while let Some(event) = events.recv().await {
+        match event.kind {
+            nanocodex_core::AgentEventKind::RunSteered => {
+                steered_events += 1;
+                let payload = event.decode_payload::<Value>()?;
+                assert_eq!(payload["steer_index"], steered_events);
+                assert_eq!(payload["instruction_bytes"], "constraint 0".len());
+            }
+            nanocodex_core::AgentEventKind::RunCompleted => {
+                terminal = Some(event.decode_payload::<Value>()?);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(steered_events, 8);
+    assert_eq!(
+        terminal.as_ref().map(|payload| &payload["steers"]),
+        Some(&json!(8))
+    );
+
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stored_response_local_code_mode_round_trip() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -89,7 +183,7 @@ async fn store_false_local_code_mode_round_trip() -> Result<()> {
 
         let generation = next_json(&mut socket).await?;
         assert_eq!(generation["previous_response_id"], "resp-warmup");
-        assert_eq!(generation["store"], false);
+        assert_eq!(generation["store"], true);
         assert!(generation.get("generate").is_none());
         assert_eq!(generation["input"].as_array().map(Vec::len), Some(2));
         assert_eq!(
@@ -690,7 +784,7 @@ async fn reconnect_drops_previous_response_id_and_replays_full_history() -> Resu
         let mut second = accept_async(stream).await?;
         let replay = next_json(&mut second).await?;
         assert!(replay.get("previous_response_id").is_none());
-        assert_eq!(replay["store"], false);
+        assert_eq!(replay["store"], true);
         assert_eq!(replay["input"].as_array().map(Vec::len), Some(6));
         assert_eq!(replay["input"][0]["type"], "additional_tools");
         assert_eq!(replay["input"][1]["role"], "developer");
@@ -887,8 +981,333 @@ async fn sol_compacts_with_a_trigger_and_installs_the_returned_context() -> Resu
     Ok(())
 }
 
+#[tokio::test]
+async fn historical_fork_runs_while_the_mainline_turn_is_in_flight() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let (root_started, root_started_rx) = tokio::sync::oneshot::channel();
+    let (branch_started, branch_started_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut root = accept_async(stream).await?;
+        let warmup = next_json(&mut root).await?;
+        assert_warmup(&warmup);
+        let lineage = warmup["prompt_cache_key"].clone();
+        let root_session = warmup["client_metadata"]["session_id"].clone();
+        send_warmup(&mut root, "resp-warmup").await?;
+
+        let first = next_json(&mut root).await?;
+        assert_eq!(first["previous_response_id"], "resp-warmup");
+        send_final(&mut root, "resp-first").await?;
+        let second = next_json(&mut root).await?;
+        assert_eq!(second["previous_response_id"], "resp-first");
+        send_final(&mut root, "resp-second").await?;
+
+        let mainline = next_json(&mut root).await?;
+        assert_eq!(mainline["previous_response_id"], "resp-second");
+        root_started
+            .send(())
+            .map_err(|()| eyre!("root signal dropped"))?;
+        let root_task = tokio::spawn(async move {
+            branch_started_rx
+                .await
+                .map_err(|_| eyre!("branch signal dropped"))?;
+            send_final(&mut root, "resp-mainline").await
+        });
+
+        let (stream, _) = listener.accept().await?;
+        let mut branch = accept_async(stream).await?;
+        let fork = next_json(&mut branch).await?;
+        assert_eq!(fork["previous_response_id"], "resp-first");
+        assert_eq!(fork["prompt_cache_key"], lineage);
+        assert_ne!(fork["client_metadata"]["session_id"], root_session);
+        assert_eq!(fork["input"].as_array().map(Vec::len), Some(1));
+        assert_eq!(fork["input"][0]["content"][0]["text"], "fork prompt");
+        branch_started
+            .send(())
+            .map_err(|()| eyre!("branch signal receiver dropped"))?;
+        send_final(&mut branch, "resp-fork").await?;
+        root_task.await??;
+        Result::<()>::Ok(())
+    });
+
+    let workspace = temporary_workspace("historical-fork")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, root_events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+    let first = agent
+        .prompt(Prompt::new("first prompt").workspace(workspace.to_string_lossy()))
+        .await?
+        .result()
+        .await?;
+    agent.prompt("second prompt").await?.result().await?;
+
+    let mainline = agent.prompt("continue mainline").await?;
+    root_started_rx
+        .await
+        .map_err(|_| eyre!("root request was not observed"))?;
+    let (fork, fork_events) = agent.fork_from(&first).await?;
+    let branch = fork.prompt("fork prompt").await?;
+    let (mainline, branch) = tokio::join!(mainline.result(), branch.result());
+    assert_eq!(mainline?.final_message, "done");
+    assert_eq!(branch?.final_message, "done");
+
+    drop((agent, fork, root_events, fork_events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn per_agent_tool_factory_binds_recursive_forks_to_the_invoking_driver() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut root = accept_async(stream).await?;
+        let warmup = next_json(&mut root).await?;
+        let lineage = warmup["prompt_cache_key"].clone();
+        let root_session = warmup["client_metadata"]["session_id"].clone();
+        send_warmup(&mut root, "resp-warmup").await?;
+        let root_turn = next_json(&mut root).await?;
+        assert_eq!(root_turn["previous_response_id"], "resp-warmup");
+        send_final(&mut root, "resp-root").await?;
+
+        let (stream, _) = listener.accept().await?;
+        let mut child = accept_async(stream).await?;
+        let child_turn = next_json(&mut child).await?;
+        let child_session = child_turn["client_metadata"]["session_id"].clone();
+        assert_eq!(child_turn["previous_response_id"], "resp-root");
+        assert_eq!(child_turn["prompt_cache_key"], lineage);
+        assert_ne!(child_session, root_session);
+        send_final(&mut child, "resp-child").await?;
+
+        let (stream, _) = listener.accept().await?;
+        let mut grandchild = accept_async(stream).await?;
+        let grandchild_turn = next_json(&mut grandchild).await?;
+        assert_eq!(grandchild_turn["previous_response_id"], "resp-child");
+        assert_eq!(grandchild_turn["prompt_cache_key"], lineage);
+        assert_ne!(
+            grandchild_turn["client_metadata"]["session_id"],
+            child_session
+        );
+        send_final(&mut grandchild, "resp-grandchild").await
+    });
+
+    let (handles, mut received_handles) = tokio::sync::mpsc::unbounded_channel::<AgentHandle>();
+    let workspace = temporary_workspace("recursive-fork-tools")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (root, root_events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .session_id("model-test")
+        .tools_factory(move |handle| {
+            drop(handles.send(handle));
+            Tools::builder().without_defaults().build()
+        })
+        .build()?;
+    let root_handle = received_handles
+        .recv()
+        .await
+        .ok_or_else(|| eyre!("root tool factory did not receive a fork handle"))?;
+
+    root.prompt(Prompt::new("root turn").workspace(workspace.to_string_lossy()))
+        .await?
+        .result()
+        .await?;
+    let (child, child_events) = root_handle.fork().await?;
+    let child_handle = received_handles
+        .recv()
+        .await
+        .ok_or_else(|| eyre!("child tool factory did not receive a fork handle"))?;
+    child.prompt("child turn").await?.result().await?;
+    let (grandchild, grandchild_events) = child_handle.fork().await?;
+    received_handles
+        .recv()
+        .await
+        .ok_or_else(|| eyre!("grandchild tool factory did not receive a fork handle"))?;
+    grandchild.prompt("grandchild turn").await?.result().await?;
+
+    drop((
+        root,
+        child,
+        grandchild,
+        root_events,
+        child_events,
+        grandchild_events,
+    ));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn clean_spawn_reuses_private_configuration_without_history_or_lineage() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut root = accept_async(stream).await?;
+        let root_warmup = next_json(&mut root).await?;
+        assert_eq!(root_warmup["prompt_cache_key"], "root-lineage");
+        assert!(
+            root_warmup
+                .to_string()
+                .contains("shared private configuration"),
+            "root request omitted the configured system prompt"
+        );
+        send_warmup(&mut root, "resp-root-warmup").await?;
+        let root_turn = next_json(&mut root).await?;
+        assert_eq!(root_turn["previous_response_id"], "resp-root-warmup");
+        send_final(&mut root, "resp-root").await?;
+
+        let (stream, _) = listener.accept().await?;
+        let mut child = accept_async(stream).await?;
+        let child_warmup = next_json(&mut child).await?;
+        let child_session = child_warmup["client_metadata"]["session_id"]
+            .as_str()
+            .ok_or_else(|| eyre!("clean child warmup omitted its session id"))?;
+        assert_ne!(child_session, "root-lineage");
+        assert_eq!(child_warmup["prompt_cache_key"], child_session);
+        assert!(child_warmup.get("previous_response_id").is_none());
+        assert!(
+            child_warmup
+                .to_string()
+                .contains("shared private configuration"),
+            "clean child did not reuse the configured system prompt"
+        );
+        send_warmup(&mut child, "resp-child-warmup").await?;
+        let child_turn = next_json(&mut child).await?;
+        assert_eq!(child_turn["previous_response_id"], "resp-child-warmup");
+        assert_ne!(child_turn["previous_response_id"], "resp-root");
+        send_final(&mut child, "resp-child").await
+    });
+
+    let (handles, mut received_handles) = tokio::sync::mpsc::unbounded_channel::<AgentHandle>();
+    let workspace = temporary_workspace("clean-spawn-tools")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (root, root_events) = Nanocodex::builder("private-test-key")
+        .prompt("shared private configuration")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .session_id("root-lineage")
+        .workspace(&workspace)
+        .tools_factory(move |handle| {
+            drop(handles.send(handle));
+            Tools::builder().without_defaults().build()
+        })
+        .build()?;
+    let root_handle = received_handles
+        .recv()
+        .await
+        .ok_or_else(|| eyre!("root tool factory did not receive an agent handle"))?;
+    root.prompt("root turn").await?.result().await?;
+
+    let (child, child_events) = root_handle.spawn().await?;
+    received_handles
+        .recv()
+        .await
+        .ok_or_else(|| eyre!("clean child tool factory did not receive an agent handle"))?;
+    child.prompt("clean child turn").await?.result().await?;
+
+    drop((root, child, root_events, child_events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut root = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut root).await?);
+        send_warmup(&mut root, "resp-warmup").await?;
+        let first = next_json(&mut root).await?;
+        send_final(&mut root, "resp-first").await?;
+
+        let (stream, _) = listener.accept().await?;
+        let mut branch = accept_async(stream).await?;
+        let checkpoint = next_json(&mut branch).await?;
+        assert_eq!(checkpoint["previous_response_id"], "resp-first");
+        assert_eq!(checkpoint["input"].as_array().map(Vec::len), Some(1));
+        send_json(
+            &mut branch,
+            json!({
+                "type": "error",
+                "error": {
+                    "code": "previous_response_not_found",
+                    "message": "checkpoint expired"
+                }
+            }),
+        )
+        .await?;
+
+        let replay = next_json(&mut branch).await?;
+        assert!(replay.get("previous_response_id").is_none());
+        assert_eq!(replay["store"], true);
+        assert_eq!(replay["input"][0]["type"], "additional_tools");
+        assert_eq!(replay["input"][1]["role"], "developer");
+        let replay_text = replay.to_string();
+        assert!(replay_text.contains("root prompt"));
+        assert!(replay_text.contains("branch after eviction"));
+        assert!(
+            replay["input"]
+                .as_array()
+                .is_some_and(|items| items.len() > 4)
+        );
+        send_final(&mut branch, "resp-replayed").await?;
+        drop((root, first));
+        Result::<()>::Ok(())
+    });
+
+    let workspace = temporary_workspace("checkpoint-miss")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, root_events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+    let first = agent
+        .prompt(Prompt::new("root prompt").workspace(workspace.to_string_lossy()))
+        .await?
+        .result()
+        .await?;
+    let (fork, mut fork_events) = agent.fork_from(&first).await?;
+    let branch = fork.prompt("branch after eviction").await?;
+    assert_eq!(branch.result().await?.final_message, "done");
+
+    drop((agent, fork, root_events));
+    let mut observed_checkpoint_retry = false;
+    while let Some(event) = fork_events.recv().await {
+        if event.kind == nanocodex_core::AgentEventKind::ModelAttemptRetrying {
+            let payload = event.decode_payload::<Value>()?;
+            observed_checkpoint_retry = payload["error_class"] == "checkpoint_missing"
+                && payload["replay_mode"] == "full_history"
+                && payload["opens_new_socket"] == false;
+        }
+    }
+    assert!(observed_checkpoint_retry);
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
 fn assert_warmup(warmup: &Value) {
-    assert_eq!(warmup["store"], false);
+    assert_eq!(warmup["store"], true);
     assert_eq!(warmup["generate"], false);
     assert_eq!(warmup["stream"], true);
     assert_eq!(warmup["parallel_tool_calls"], false);

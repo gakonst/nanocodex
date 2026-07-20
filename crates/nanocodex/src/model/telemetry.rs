@@ -157,6 +157,7 @@ impl UsageTotals {
 #[derive(Default, Serialize)]
 pub(super) struct RunStats {
     pub(super) model_calls: u32,
+    pub(super) steers: u32,
     pub(super) compactions: u32,
     pub(super) tool_calls: u32,
     pub(super) connection_attempts: u32,
@@ -243,6 +244,12 @@ pub(super) struct RunStarted<'a> {
     pub(super) orchestration: &'static str,
     pub(super) websocket_url: &'a str,
     pub(super) workspace: Option<&'a str>,
+    pub(super) instruction_bytes: usize,
+}
+
+#[derive(Serialize)]
+pub(super) struct RunSteered {
+    pub(super) steer_index: u32,
     pub(super) instruction_bytes: usize,
 }
 

@@ -13,6 +13,11 @@ pub struct StandardResponses;
 #[doc(hidden)]
 pub struct LayeredResponses<L>(pub(crate) ServiceBuilder<L>);
 
+/// Deferred caller service factory used to create one independent stack per
+/// conversation branch.
+#[doc(hidden)]
+pub struct FactoryResponses<F>(pub(crate) F);
+
 /// Responses transport configuration with an optional caller-supplied Tower
 /// service stack.
 pub struct Responses<S = StandardResponses> {
@@ -63,6 +68,22 @@ impl ResponsesBuilder<StandardResponses> {
                 websocket_url: self.responses.websocket_url,
                 api_base_url: self.responses.api_base_url,
                 service,
+            },
+        }
+    }
+
+    /// Replaces the standard stack with a factory that constructs one fresh
+    /// caller-composed service for the root and every fork.
+    #[must_use]
+    pub fn service_factory<F, S>(self, factory: F) -> ResponsesBuilder<FactoryResponses<F>>
+    where
+        F: Fn() -> S,
+    {
+        ResponsesBuilder {
+            responses: Responses {
+                websocket_url: self.responses.websocket_url,
+                api_base_url: self.responses.api_base_url,
+                service: FactoryResponses(factory),
             },
         }
     }

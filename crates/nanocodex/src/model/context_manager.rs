@@ -1,7 +1,8 @@
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 use nanocodex_core::{
     ContentItem, FunctionOutputBody, FunctionOutputContent, MessageRole, ResponseItem, Usage,
+    responses::ResponseHistory,
 };
 
 use super::compaction;
@@ -10,8 +11,9 @@ const TOOL_OUTPUT_TOKEN_LIMIT: usize = 12_000;
 
 /// Typed model-visible transcript. The common prompt path shares its backing
 /// allocation; prompt-only repairs allocate only for incomplete call pairs.
+#[derive(Clone)]
 pub(super) struct ContextManager {
-    items: Arc<Vec<ResponseItem>>,
+    items: ResponseHistory,
     last_token_usage: Option<Usage>,
     function_calls: HashSet<Box<str>>,
     function_outputs: HashSet<Box<str>>,
@@ -23,9 +25,8 @@ pub(super) struct ContextManager {
 
 impl ContextManager {
     pub(super) fn new(items: Vec<ResponseItem>) -> Self {
-        let capacity = items.len();
         let mut context = Self {
-            items: Arc::new(Vec::with_capacity(capacity)),
+            items: ResponseHistory::default(),
             last_token_usage: None,
             function_calls: HashSet::new(),
             function_outputs: HashSet::new(),
@@ -38,16 +39,16 @@ impl ContextManager {
         context
     }
 
-    pub(super) fn raw_items(&self) -> &[ResponseItem] {
-        &self.items
+    pub(super) fn flattened_items(&self) -> Vec<ResponseItem> {
+        self.items.iter().cloned().collect()
     }
 
-    pub(super) fn shared_items(&self) -> Arc<Vec<ResponseItem>> {
-        Arc::clone(&self.items)
+    pub(super) fn shared_items(&self) -> ResponseHistory {
+        self.items.clone()
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.items.len()
+    pub(super) fn tail_len(&self) -> usize {
+        self.items.tail().len()
     }
 
     pub(super) fn record_items(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
@@ -57,7 +58,22 @@ impl ContextManager {
             .map(truncate_tool_output)
         {
             self.track_call_id(&item);
-            Arc::make_mut(&mut self.items).push(item);
+            self.items.push(item);
+        }
+    }
+
+    pub(super) fn commit_tail(&mut self) {
+        self.items.commit_tail();
+        if self.function_calls == self.function_outputs
+            && self.custom_calls == self.custom_outputs
+            && self.tool_search_calls == self.tool_search_outputs
+        {
+            self.function_calls.clear();
+            self.function_outputs.clear();
+            self.custom_calls.clear();
+            self.custom_outputs.clear();
+            self.tool_search_calls.clear();
+            self.tool_search_outputs.clear();
         }
     }
 
@@ -66,7 +82,7 @@ impl ContextManager {
         items: Vec<ResponseItem>,
         prefix: &[ResponseItem],
     ) {
-        self.items = Arc::new(items);
+        self.items.replace(items);
         let total_tokens = prefix
             .iter()
             .chain(self.items.iter())
@@ -82,7 +98,8 @@ impl ContextManager {
         self.custom_outputs.clear();
         self.tool_search_calls.clear();
         self.tool_search_outputs.clear();
-        for item in Arc::clone(&self.items).iter() {
+        let tracked: Vec<_> = self.items.iter().cloned().collect();
+        for item in &tracked {
             self.track_call_id(item);
         }
     }
@@ -98,11 +115,7 @@ impl ContextManager {
             .last_token_usage
             .as_ref()
             .map_or(0, |usage| usage.total_tokens);
-        let local_tail = self
-            .items_after_last_model_generated_item()
-            .iter()
-            .map(compaction::estimate_item_tokens)
-            .fold(0, u64::saturating_add);
+        let local_tail = self.items_after_last_model_generated_tokens();
         if server_reasoning_included {
             reported.saturating_add(local_tail)
         } else {
@@ -114,16 +127,16 @@ impl ContextManager {
 
     /// Returns a shared prompt snapshot, allocating a repaired copy only for
     /// missing call outputs or orphan outputs.
-    pub(super) fn prompt_items(&self) -> Arc<Vec<ResponseItem>> {
+    pub(super) fn prompt_items(&self) -> ResponseHistory {
         let needs_repair = self.function_calls != self.function_outputs
             || self.custom_calls != self.custom_outputs
             || self.tool_search_calls != self.tool_search_outputs;
         if !needs_repair {
-            return Arc::clone(&self.items);
+            return self.items.clone();
         }
 
         let mut repaired = Vec::with_capacity(self.items.len() + 2);
-        for item in self.items.iter() {
+        for item in &self.items {
             match item {
                 ResponseItem::FunctionCall { call_id, .. }
                 | ResponseItem::LocalShellCall {
@@ -177,11 +190,11 @@ impl ContextManager {
                 _ => repaired.push(item.clone()),
             }
         }
-        Arc::new(repaired)
+        ResponseHistory::new(repaired)
     }
 
     pub(super) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
-        for item in Arc::make_mut(&mut self.items).iter_mut().rev() {
+        for item in self.items.tail_mut().iter_mut().rev() {
             if item.is_user_message() {
                 return false;
             }
@@ -212,32 +225,36 @@ impl ContextManager {
         false
     }
 
-    fn items_after_last_model_generated_item(&self) -> &[ResponseItem] {
-        let start = self
-            .items
-            .iter()
-            .rposition(is_model_generated_item)
-            .map_or(self.items.len(), |index| index.saturating_add(1));
-        &self.items[start..]
+    fn items_after_last_model_generated_tokens(&self) -> u64 {
+        let mut tokens = 0_u64;
+        for item in &self.items {
+            if is_model_generated_item(item) {
+                tokens = 0;
+            } else {
+                tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
+            }
+        }
+        tokens
     }
 
     fn non_last_reasoning_tokens(&self) -> u64 {
-        let Some(last_user) = self.items.iter().rposition(is_user_turn_boundary) else {
-            return 0;
-        };
-        self.items[..last_user]
-            .iter()
-            .filter(|item| {
-                matches!(
-                    item,
-                    ResponseItem::Reasoning {
-                        encrypted_content: Some(_),
-                        ..
-                    }
-                )
-            })
-            .map(compaction::estimate_item_tokens)
-            .fold(0, u64::saturating_add)
+        let mut reasoning = 0_u64;
+        let mut before_last_user = None;
+        for item in &self.items {
+            if is_user_turn_boundary(item) {
+                before_last_user = Some(reasoning);
+            }
+            if matches!(
+                item,
+                ResponseItem::Reasoning {
+                    encrypted_content: Some(_),
+                    ..
+                }
+            ) {
+                reasoning = reasoning.saturating_add(compaction::estimate_item_tokens(item));
+            }
+        }
+        before_last_user.unwrap_or_default()
     }
 
     fn track_call_id(&mut self, item: &ResponseItem) {
@@ -393,10 +410,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn complete_prompt_reuses_the_history_allocation() {
+    fn complete_prompt_reuses_the_history_without_repair() {
         let context = ContextManager::new(vec![message("hello")]);
         let prompt = context.prompt_items();
-        assert!(Arc::ptr_eq(&context.items, &prompt));
+        assert_eq!(prompt.len(), 1);
     }
 
     #[test]
@@ -412,7 +429,8 @@ mod tests {
         );
         let context = ContextManager::new(vec![call, orphan]);
         let prompt = context.prompt_items();
-        assert_eq!(context.raw_items().len(), 2);
+        let prompt: Vec<_> = prompt.iter().collect();
+        assert_eq!(context.flattened_items().len(), 2);
         assert_eq!(prompt.len(), 2);
         assert!(matches!(
             &prompt[1],
@@ -439,10 +457,11 @@ mod tests {
                 },
             ]),
         )]);
+        let history = context.flattened_items();
         let ResponseItem::CustomToolCallOutput {
             output: FunctionOutputBody::Content(output),
             ..
-        } = &context.raw_items()[0]
+        } = &history[0]
         else {
             panic!("expected content output")
         };
