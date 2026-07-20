@@ -2251,3 +2251,42 @@ fn temporary_workspace(label: &str) -> Result<PathBuf> {
     std::fs::create_dir_all(&path)?;
     Ok(path)
 }
+
+#[tokio::test]
+async fn fast_service_tier_uses_the_canonical_priority_wire_value() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+
+        let warmup = next_json(&mut socket).await?;
+        assert_eq!(warmup["service_tier"], "priority");
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let generation = next_json(&mut socket).await?;
+        assert_eq!(generation["service_tier"], "priority");
+        send_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("fast-service-tier")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, _events) = Nanocodex::builder("test-key")
+        .service_tier("fast")
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+
+    assert_eq!(
+        agent.prompt("hello").await?.result().await?.final_message,
+        "done"
+    );
+    drop(agent);
+
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
