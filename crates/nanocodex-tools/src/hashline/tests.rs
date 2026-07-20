@@ -56,22 +56,18 @@ fn read_anchors_feed_patch_and_stale_guards_fail_without_writing() {
         },
     )
     .expect("read should succeed");
-    assert_eq!(result["lines"][1]["hash"], "f589");
+    assert!(result.get("lines").is_none());
     assert_eq!(result["content"], "1:93c8|alpha\n2:f589|beta");
     let patch = format!(
         "{}\nSWAP 2:{}:\n+bravo",
         result["header"].as_str().expect("header should be text"),
-        result["lines"][1]["hash"]
-            .as_str()
-            .expect("hash should be text")
+        line_hash("beta")
     );
     execute_patch(
         &root,
         &PatchRequest {
-            path: "notes.txt".to_owned(),
             patch: patch.clone(),
             dry_run: false,
-            create: false,
         },
     )
     .expect("anchored patch should succeed");
@@ -82,10 +78,8 @@ fn read_anchors_feed_patch_and_stale_guards_fail_without_writing() {
     let error = execute_patch(
         &root,
         &PatchRequest {
-            path: "notes.txt".to_owned(),
             patch,
             dry_run: false,
-            create: false,
         },
     )
     .expect_err("stale patch should fail");
@@ -158,13 +152,25 @@ fn tool_schemas_explain_relative_paths_and_patch_grammar() {
     let patch_description = patch["parameters"]["properties"]["patch"]["description"]
         .as_str()
         .expect("patch description should be text");
+    assert_eq!(
+        patch["parameters"]["required"],
+        json!(["patch"]),
+        "patch schema should require only the complete program"
+    );
+    let properties = patch["parameters"]["properties"]
+        .as_object()
+        .expect("patch properties should be an object");
+    assert_eq!(properties.len(), 2);
+    assert!(properties.contains_key("patch"));
+    assert!(properties.contains_key("dry_run"));
     for required in [
         "[path]#HASH",
-        "SWAP 12:abcd",
+        "[new.txt]",
+        "SWAP 2:f589",
         "+replacement",
-        "create=true",
         "REM",
         "MV",
+        "workspace-relative",
     ] {
         assert!(
             patch_description.contains(required),
@@ -180,6 +186,16 @@ fn tool_schemas_explain_relative_paths_and_patch_grammar() {
             .expect("transaction root description should be text")
             .contains("Omit or use \".\"")
     );
+    let transaction_description = transaction["description"]
+        .as_str()
+        .expect("transaction description should be text");
+    for required in [
+        "commitPreviewed",
+        "identical mutations",
+        "expectedPlanDigest",
+    ] {
+        assert!(transaction_description.contains(required));
+    }
     for mutation in transaction["parameters"]["properties"]["mutations"]["items"]["oneOf"]
         .as_array()
         .expect("mutation variants should be an array")
@@ -198,6 +214,144 @@ fn tool_schemas_explain_relative_paths_and_patch_grammar() {
 }
 
 #[test]
+fn one_patch_mixes_create_update_move_and_delete_sections() {
+    let root = workspace("mixed-patch");
+    fs::write(root.join("update.txt"), b"old\n").expect("update fixture should write");
+    fs::write(root.join("move.txt"), b"move\n").expect("move fixture should write");
+    fs::write(root.join("delete.txt"), b"delete\n").expect("delete fixture should write");
+    let program = format!(
+        "[update.txt]#{}\nSWAP 1:{}:\n+new\n[new.txt]\nINS.HEAD:\n+created\n[move.txt]#{}\nMV moved.txt\n[delete.txt]#{}\nREM",
+        hash_hex("old\n"),
+        line_hash("old"),
+        hash_hex("move\n"),
+        hash_hex("delete\n")
+    );
+    execute_patch(
+        &root,
+        &PatchRequest {
+            patch: program,
+            dry_run: false,
+        },
+    )
+    .expect("mixed patch should commit");
+    assert_eq!(
+        fs::read(root.join("update.txt")).expect("update should read"),
+        b"new\n"
+    );
+    assert_eq!(
+        fs::read(root.join("new.txt")).expect("create should read"),
+        b"created"
+    );
+    assert_eq!(
+        fs::read(root.join("moved.txt")).expect("move should read"),
+        b"move\n"
+    );
+    assert!(!root.join("move.txt").exists());
+    assert!(!root.join("delete.txt").exists());
+
+    let existing_create = execute_patch(
+        &root,
+        &PatchRequest {
+            patch: "[new.txt]\nINS.TAIL:\n+again".to_owned(),
+            dry_run: true,
+        },
+    )
+    .expect_err("[path] creation should reject an existing target")
+    .to_string();
+    assert!(existing_create.contains("already exists"));
+    let guarded_missing = execute_patch(
+        &root,
+        &PatchRequest {
+            patch: "[missing.txt]#0123abcd\nREM".to_owned(),
+            dry_run: true,
+        },
+    )
+    .expect_err("[path]#HASH should reject a missing target")
+    .to_string();
+    assert!(guarded_missing.contains("missing.txt"));
+    fs::remove_dir_all(root).expect("workspace should be removed");
+}
+
+#[test]
+fn wrong_dialect_and_format_staleness_never_write() {
+    let root = workspace("dialect-format");
+    fs::write(root.join("notes.txt"), b"alpha\nbeta\nomega\n").expect("fixture should write");
+    let before = fs::read(root.join("notes.txt")).expect("fixture should read");
+    let dialect = execute_patch(
+        &root,
+        &PatchRequest {
+            patch: "*** Begin Patch\n*** Update File: notes.txt\n@@\n*** End Patch".to_owned(),
+            dry_run: false,
+        },
+    )
+    .expect_err("apply_patch dialect should fail")
+    .to_string();
+    assert!(dialect.contains("line 1"));
+    assert!(dialect.contains("Hashline"));
+    assert_eq!(
+        fs::read(root.join("notes.txt")).expect("fixture should read"),
+        before
+    );
+
+    let initial = read(
+        &root,
+        &ReadRequest {
+            path: "notes.txt".to_owned(),
+            start_line: None,
+            end_line: None,
+            max_lines: None,
+        },
+    )
+    .expect("initial read should succeed");
+    let stale_program = format!(
+        "{}\nSWAP 2:{}:\n+bravo",
+        initial["header"].as_str().expect("header should be text"),
+        line_hash("beta")
+    );
+    fs::write(root.join("notes.txt"), b"ALPHA\nbeta\nomega\n")
+        .expect("formatter fixture should write");
+    execute_patch(
+        &root,
+        &PatchRequest {
+            patch: stale_program,
+            dry_run: false,
+        },
+    )
+    .expect_err("formatting should stale prior evidence");
+    assert_eq!(
+        fs::read(root.join("notes.txt")).expect("formatted fixture should read"),
+        b"ALPHA\nbeta\nomega\n"
+    );
+    let fresh = read(
+        &root,
+        &ReadRequest {
+            path: "notes.txt".to_owned(),
+            start_line: Some(1),
+            end_line: Some(3),
+            max_lines: Some(3),
+        },
+    )
+    .expect("bounded reread should succeed");
+    execute_patch(
+        &root,
+        &PatchRequest {
+            patch: format!(
+                "{}\nSWAP 2:{}:\n+bravo",
+                fresh["header"].as_str().expect("header should be text"),
+                line_hash("beta")
+            ),
+            dry_run: false,
+        },
+    )
+    .expect("rebuilt patch should succeed");
+    assert_eq!(
+        fs::read(root.join("notes.txt")).expect("result should read"),
+        b"ALPHA\nbravo\nomega\n"
+    );
+    fs::remove_dir_all(root).expect("workspace should be removed");
+}
+
+#[test]
 fn patch_rejections_explain_a_valid_hashline_retry() {
     let root = workspace("patch-errors");
     fs::write(root.join("notes.txt"), b"alpha\n").expect("fixture should write");
@@ -205,15 +359,17 @@ fn patch_rejections_explain_a_valid_hashline_retry() {
     let missing_header = execute_patch(
         &root,
         &PatchRequest {
-            path: "notes.txt".to_owned(),
             patch: format!("SWAP 1:{}:\n+omega", line_hash("alpha")),
             dry_run: true,
-            create: false,
         },
     )
     .expect_err("an existing-file patch without a section header should fail")
     .to_string();
-    for required in ["hashline__read", "#HASH", "SWAP 12:abcd"] {
+    for required in [
+        "Hashline patch program line 1",
+        "[path]#HASH",
+        "Hashline dialect",
+    ] {
         assert!(
             missing_header.contains(required),
             "missing-header error should document {required}"
@@ -233,7 +389,6 @@ fn patch_rejections_explain_a_valid_hashline_retry() {
     let unified_diff = execute_patch(
         &root,
         &PatchRequest {
-            path: "notes.txt".to_owned(),
             patch: format!(
                 "{}\n@@ -1 +1 @@\n-alpha\n+omega",
                 read_result["header"]
@@ -241,7 +396,6 @@ fn patch_rejections_explain_a_valid_hashline_retry() {
                     .expect("header should be text")
             ),
             dry_run: true,
-            create: false,
         },
     )
     .expect_err("unified diff syntax should fail")
@@ -265,6 +419,34 @@ fn patch_rejections_explain_a_valid_hashline_retry() {
     .expect_err("absolute paths should fail")
     .to_string();
     assert!(absolute_path.contains("workspace-relative"));
+    assert!(absolute_path.contains("invalid `path`"));
+
+    let patch_path = execute_patch(
+        &root,
+        &PatchRequest {
+            patch: "[/absolute.txt]\nINS.HEAD:\n+nope".to_owned(),
+            dry_run: false,
+        },
+    )
+    .expect_err("an invalid patch section path should fail")
+    .to_string();
+    assert!(patch_path.contains("invalid `path` at Hashline patch program line 1"));
+    assert!(!root.join("absolute.txt").exists());
+
+    let invalid_root = execute_transaction(
+        &root,
+        &TransactionRequest {
+            action: TransactionAction::Preview,
+            root: Some("/absolute".to_owned()),
+            mutations: vec![FileMutation::Create {
+                path: "created.txt".to_owned(),
+                contents: "nope".to_owned(),
+            }],
+        },
+    )
+    .expect_err("an invalid transaction root should fail")
+    .to_string();
+    assert!(invalid_root.contains("invalid `root`"));
 
     fs::remove_dir_all(root).expect("workspace should be removed");
 }

@@ -337,7 +337,9 @@ fn strip_read_output_payload_prefix(line: &str) -> Option<&str> {
 
 pub(super) fn apply_patch_contamination_message(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
-    if trimmed.starts_with("*** Update File:")
+    if trimmed == "*** Begin Patch"
+        || trimmed == "*** End Patch"
+        || trimmed.starts_with("*** Update File:")
         || trimmed.starts_with("*** Add File:")
         || trimmed.starts_with("*** Delete File:")
         || trimmed.starts_with("*** Move to:")

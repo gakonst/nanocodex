@@ -1,14 +1,11 @@
 use super::hash::line_hash;
 use super::take_bytes_at_char_boundary;
-use serde_json::Value;
-use serde_json::json;
 
 const CONTENT_TRUNCATION_MARKER: &str = "... [content truncated]";
 const SERIALIZED_LINE_FIXED_OVERHEAD: usize = 80;
 
 pub(super) struct HashlineExcerpt {
     pub content: String,
-    pub lines: Vec<Value>,
     pub end_line: Option<usize>,
     pub truncated: bool,
 }
@@ -22,7 +19,6 @@ pub(super) fn build_hashline_excerpt(
     if start_line == 0 || start_line > end_line || start_line > lines.len() {
         return HashlineExcerpt {
             content: String::new(),
-            lines: Vec::new(),
             end_line: None,
             truncated: false,
         };
@@ -30,7 +26,6 @@ pub(super) fn build_hashline_excerpt(
 
     let end_line = end_line.min(lines.len());
     let mut content = Vec::new();
-    let mut rows = Vec::new();
     let mut used_bytes = 0;
     let mut last_line = None;
     let mut truncated = false;
@@ -43,18 +38,16 @@ pub(super) fn build_hashline_excerpt(
         if let Some(cost) =
             serialized_line_cost(line_number, &hash, line, content_truncated, remaining)
         {
-            let (formatted, row) = formatted_line(line_number, &hash, line, content_truncated);
+            let formatted = formatted_line(line_number, &hash, line);
             used_bytes += cost;
             content.push(formatted);
-            rows.push(row);
             last_line = Some(line_number);
             continue;
         }
 
         truncated = true;
-        if let Some((formatted, row)) = fit_truncated_line(line_number, &hash, line, remaining) {
+        if let Some(formatted) = fit_truncated_line(line_number, &hash, line, remaining) {
             content.push(formatted);
-            rows.push(row);
             last_line = Some(line_number);
         }
         break;
@@ -62,7 +55,6 @@ pub(super) fn build_hashline_excerpt(
 
     HashlineExcerpt {
         content: content.join("\n"),
-        lines: rows,
         end_line: last_line,
         truncated: truncated || last_line.is_some_and(|last_line| last_line < end_line),
     }
@@ -82,16 +74,13 @@ fn fit_truncated_line(
     hash: &str,
     line: &str,
     remaining: usize,
-) -> Option<(String, Value)> {
+) -> Option<String> {
     let mut prefix_bytes = line.len().min(remaining / 2);
     loop {
         let prefix = take_bytes_at_char_boundary(line, prefix_bytes);
         let display = format!("{prefix}{CONTENT_TRUNCATION_MARKER}");
-        let content_truncated = true;
-        if serialized_line_cost(line_number, hash, &display, content_truncated, remaining).is_some()
-        {
-            let (formatted, row) = formatted_line(line_number, hash, &display, content_truncated);
-            return Some((formatted, row));
+        if serialized_line_cost(line_number, hash, &display, true, remaining).is_some() {
+            return Some(formatted_line(line_number, hash, &display));
         }
         if prefix_bytes == 0 {
             return None;
@@ -100,20 +89,8 @@ fn fit_truncated_line(
     }
 }
 
-fn formatted_line(
-    line_number: usize,
-    hash: &str,
-    content: &str,
-    content_truncated: bool,
-) -> (String, Value) {
-    let mut row = json!({
-        "n": line_number,
-        "hash": hash,
-    });
-    if content_truncated {
-        row["content_truncated"] = Value::Bool(true);
-    }
-    (format!("{line_number}:{hash}|{content}"), row)
+fn formatted_line(line_number: usize, hash: &str, content: &str) -> String {
+    format!("{line_number}:{hash}|{content}")
 }
 
 fn serialized_line_cost(

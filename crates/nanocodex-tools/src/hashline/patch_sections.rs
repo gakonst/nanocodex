@@ -13,61 +13,32 @@ use super::patch_parser::is_ignorable_patch_line;
 pub(super) struct HashlinePatchSection {
     pub(super) path: String,
     pub(super) expected_hash: Option<String>,
+    pub(super) header_line: usize,
     pub(super) patch: String,
 }
 
-#[derive(Clone, Copy)]
-enum HashlinePatchSectionMode {
-    Standard,
-    Create,
-}
-
 pub(super) fn split_hashline_patch_sections(
-    default_path: &str,
     patch: &str,
 ) -> Result<Vec<HashlinePatchSection>, FunctionCallError> {
-    split_hashline_patch_sections_with_mode(default_path, patch, HashlinePatchSectionMode::Standard)
-}
-
-pub(super) fn split_hashline_patch_sections_for_create(
-    default_path: &str,
-    patch: &str,
-) -> Result<Vec<HashlinePatchSection>, FunctionCallError> {
-    split_hashline_patch_sections_with_mode(default_path, patch, HashlinePatchSectionMode::Create)
-}
-
-fn split_hashline_patch_sections_with_mode(
-    default_path: &str,
-    patch: &str,
-    mode: HashlinePatchSectionMode,
-) -> Result<Vec<HashlinePatchSection>, FunctionCallError> {
-    let mut has_header = false;
-    let mut payload_active = false;
-    for line in patch.lines() {
-        if parse_contextual_patch_file_header(default_path, line, payload_active)?.is_some() {
-            has_header = true;
-            break;
-        }
-        if is_hashline_operation_line(line) {
-            payload_active = hashline_operation_has_payload(line);
-        }
-    }
-    if !has_header {
-        return Ok(vec![HashlinePatchSection {
-            path: default_path.to_string(),
-            expected_hash: None,
-            patch: patch.to_string(),
-        }]);
-    }
-
+    let raw_lines = patch.lines().collect::<Vec<_>>();
     let mut sections = Vec::<HashlinePatchSection>::new();
     let mut current_index = None;
     let mut payload_active = false;
-    for raw_line in patch.lines() {
+    for (line_index, raw_line) in raw_lines.iter().enumerate() {
+        let line_number = line_index + 1;
         let line = raw_line.trim_end_matches('\r');
-        if let Some((path, expected_hash)) =
-            parse_contextual_section_header(default_path, line, payload_active, &sections, mode)?
-        {
+        let next_is_operation = raw_lines[line_index + 1..]
+            .iter()
+            .map(|candidate| candidate.trim_end_matches('\r'))
+            .find(|candidate| !candidate.trim().is_empty())
+            .is_some_and(is_hashline_operation_line);
+        let may_be_header = !payload_active || line.trim().contains("]#") || next_is_operation;
+        let header = if may_be_header {
+            parse_patch_file_header("", line)?
+        } else {
+            None
+        };
+        if let Some((path, expected_hash)) = header {
             let section_index =
                 if let Some(index) = sections.iter().position(|section| section.path == path) {
                     merge_section_hash(&mut sections[index], expected_hash)?;
@@ -76,6 +47,7 @@ fn split_hashline_patch_sections_with_mode(
                     sections.push(HashlinePatchSection {
                         path,
                         expected_hash,
+                        header_line: line_number,
                         patch: String::new(),
                     });
                     sections.len() - 1
@@ -86,15 +58,19 @@ fn split_hashline_patch_sections_with_mode(
         }
 
         let Some(section_index) = current_index else {
+            if let Some(message) = apply_patch_contamination_message(line) {
+                return Err(FunctionCallError::Parser {
+                    line: Some(line_number),
+                    message,
+                });
+            }
             if is_ignorable_patch_line(line) {
                 continue;
             }
-            if let Some(message) = apply_patch_contamination_message(line) {
-                return Err(FunctionCallError::RespondToModel(message));
-            }
-            return Err(FunctionCallError::RespondToModel(format!(
-                "Hashline operation {line:?} appears before the first file section. Reread the target with hashline__read, copy its [path]#HASH header as the first line, then use an operation such as SWAP 12:abcd:\n+replacement."
-            )));
+            return Err(FunctionCallError::Parser {
+                line: Some(line_number),
+                message: "content appears before the first [path] or [path]#HASH section. This tool accepts the Hashline dialect; reread an existing target with hashline__read and copy its header".to_owned(),
+            });
         };
 
         if !sections[section_index].patch.is_empty() {
@@ -274,28 +250,4 @@ pub(super) fn parse_contextual_patch_file_header(
         return Ok(None);
     }
     parse_patch_file_header(target_path, line)
-}
-
-fn parse_contextual_section_header(
-    default_path: &str,
-    line: &str,
-    payload_active: bool,
-    sections: &[HashlinePatchSection],
-    mode: HashlinePatchSectionMode,
-) -> Result<Option<(String, Option<String>)>, FunctionCallError> {
-    if !payload_active {
-        return parse_contextual_patch_file_header(default_path, line, false);
-    }
-    let Some((path, expected_hash)) = parse_patch_file_header(default_path, line)? else {
-        return Ok(None);
-    };
-    if matches!(mode, HashlinePatchSectionMode::Create)
-        || expected_hash.is_some()
-        || path == default_path
-        || sections.iter().any(|section| section.path == path)
-    {
-        Ok(Some((path, expected_hash)))
-    } else {
-        Ok(None)
-    }
 }

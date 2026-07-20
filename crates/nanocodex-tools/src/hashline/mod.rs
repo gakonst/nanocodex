@@ -30,9 +30,7 @@ use patch::{
     hashline_patch_has_line_operations, hashline_patch_is_aborted,
     parse_hashline_patch_file_operation, validate_file_hash,
 };
-use patch_sections::{
-    HashlinePatchSection, split_hashline_patch_sections, split_hashline_patch_sections_for_create,
-};
+use patch_sections::{HashlinePatchSection, split_hashline_patch_sections};
 
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
@@ -44,16 +42,44 @@ const HARD_BLOCK_MAX_LINES: usize = 300;
 const READ_OUTPUT_BYTES: usize = 24 * 1024;
 const BLOCK_OUTPUT_BYTES: usize = 24 * 1024;
 
+const MODEL_ERROR_BYTES: usize = 2 * 1024;
+
 #[derive(Debug)]
 pub(super) enum FunctionCallError {
+    Path {
+        field: &'static str,
+        line: Option<usize>,
+        message: String,
+    },
+    Parser {
+        line: Option<usize>,
+        message: String,
+    },
+    Evidence(String),
     RespondToModel(String),
 }
 
 impl fmt::Display for FunctionCallError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RespondToModel(message) => formatter.write_str(message),
-        }
+        let message = match self {
+            Self::Path {
+                field,
+                line,
+                message,
+            } => line.map_or_else(
+                || format!("invalid `{field}`: {message}"),
+                |line| {
+                    format!("invalid `{field}` at Hashline patch program line {line}: {message}")
+                },
+            ),
+            Self::Parser { line, message } => line.map_or_else(
+                || format!("invalid Hashline patch program: {message}"),
+                |line| format!("invalid Hashline patch program line {line}: {message}"),
+            ),
+            Self::Evidence(message) => format!("stale Hashline evidence: {message}"),
+            Self::RespondToModel(message) => message.clone(),
+        };
+        formatter.write_str(take_bytes_at_char_boundary(&message, MODEL_ERROR_BYTES))
     }
 }
 
@@ -167,7 +193,6 @@ fn read(workspace: &Path, request: &ReadRequest) -> Result<Value, FunctionCallEr
             "truncated": false,
             "next_start_line": null,
             "content": "",
-            "lines": [],
         }));
     }
     let start = request.start_line.unwrap_or(1);
@@ -205,7 +230,6 @@ fn read(workspace: &Path, request: &ReadRequest) -> Result<Value, FunctionCallEr
         "truncated": truncated,
         "next_start_line": next_start,
         "content": excerpt.content,
-        "lines": excerpt.lines,
     }))
 }
 
@@ -249,19 +273,15 @@ fn find_block(workspace: &Path, request: &BlockRequest) -> Result<Value, Functio
         "end_line": end,
         "truncated": excerpt_end < end || excerpt.truncated,
         "content": excerpt.content,
-        "lines": excerpt.lines,
     }))
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PatchRequest {
-    path: String,
     patch: String,
     #[serde(default)]
     dry_run: bool,
-    #[serde(default)]
-    create: bool,
 }
 
 #[derive(Clone)]
@@ -289,11 +309,7 @@ fn execute_patch(workspace: &Path, request: &PatchRequest) -> Result<Value, Func
             json!({"success": true, "operation": "abort", "aborted": true, "dry_run": request.dry_run}),
         );
     }
-    let sections = if request.create {
-        split_hashline_patch_sections_for_create(&request.path, &request.patch)?
-    } else {
-        split_hashline_patch_sections(&request.path, &request.patch)?
-    };
+    let sections = split_hashline_patch_sections(&request.patch)?;
     if sections.len() > MAX_MUTATIONS {
         return model_error(format!(
             "Hashline patch exceeds the {MAX_MUTATIONS}-file limit"
@@ -302,7 +318,7 @@ fn execute_patch(workspace: &Path, request: &PatchRequest) -> Result<Value, Func
     let mut prepared = Vec::with_capacity(sections.len());
     let mut details = Vec::with_capacity(sections.len());
     for section in sections {
-        let mutation = prepare_patch_section(workspace, &section, request.create)?;
+        let mutation = prepare_patch_section(workspace, &section)?;
         details.push(preview_mutation(&mutation)?);
         prepared.push(mutation);
     }
@@ -336,14 +352,10 @@ fn execute_patch(workspace: &Path, request: &PatchRequest) -> Result<Value, Func
 fn prepare_patch_section(
     workspace: &Path,
     section: &HashlinePatchSection,
-    create: bool,
 ) -> Result<PreparedMutation, FunctionCallError> {
-    validate_model_path(&section.path)?;
-    if create {
+    validate_model_path_field(&section.path, "path", Some(section.header_line))?;
+    if section.expected_hash.is_none() {
         ensure_missing(workspace, &section.path)?;
-        if section.expected_hash.is_some() {
-            return model_error("create=true sections cannot include file hashes");
-        }
         let after = if section.patch.trim().is_empty() {
             Vec::new()
         } else {
@@ -357,10 +369,7 @@ fn prepare_patch_section(
     }
     let observed = observe(workspace, &section.path)?;
     let expected = section.expected_hash.as_deref().ok_or_else(|| {
-        FunctionCallError::RespondToModel(format!(
-            "existing-file Hashline patches require a [{}]#HASH section header. Reread the target with hashline__read, copy its header as the first line, then use an operation such as SWAP 12:abcd:\n+replacement.",
-            section.path
-        ))
+        FunctionCallError::RespondToModel("internal Hashline section mode error".to_owned())
     })?;
     validate_file_hash(&section.path, &observed.text, expected)?;
     match parse_hashline_patch_file_operation(&section.patch)? {
@@ -533,6 +542,9 @@ fn execute_transaction(
         ));
     }
     let root_name = request.root.as_deref().unwrap_or(".");
+    if root_name != "." {
+        validate_model_path_field(root_name, "root", None)?;
+    }
     let root = transaction_fs::open_root(workspace, root_name)?;
     transaction_fs::recover_pending(&root)?;
     let mut prepared = prepare_transaction(&root, &request.mutations)?;
@@ -773,17 +785,31 @@ fn observe(root: &Path, model_path: &str) -> Result<Observed, FunctionCallError>
 }
 
 fn validate_model_path(model_path: &str) -> Result<(), FunctionCallError> {
+    validate_model_path_field(model_path, "path", None)
+}
+
+fn validate_model_path_field(
+    model_path: &str,
+    field: &'static str,
+    line: Option<usize>,
+) -> Result<(), FunctionCallError> {
     let path = Path::new(model_path);
     if model_path.is_empty() || path.is_absolute() {
-        return model_error("Hashline paths must be non-empty and workspace-relative");
+        return Err(FunctionCallError::Path {
+            field,
+            line,
+            message: "must be a non-empty workspace-relative path".to_owned(),
+        });
     }
     if path
         .components()
         .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return model_error(format!(
-            "Hashline path {model_path} contains an invalid component"
-        ));
+        return Err(FunctionCallError::Path {
+            field,
+            line,
+            message: format!("{model_path:?} contains an invalid component"),
+        });
     }
     Ok(())
 }
@@ -1050,14 +1076,14 @@ fn mutation_bytes(mutation: &PreparedMutation) -> usize {
 fn validate_exact(path: &str, bytes: &[u8], expected: &str) -> Result<(), FunctionCallError> {
     let actual = exact_digest(bytes);
     if expected.len() != 64 || !expected.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return model_error(format!(
+        return Err(FunctionCallError::Evidence(format!(
             "invalid exactDigest for {path}; expected 64 lowercase hex characters"
-        ));
+        )));
     }
     if actual != expected.to_ascii_lowercase() {
-        return model_error(format!(
-            "exactDigest mismatch for {path}: expected {expected}, found {actual}; reread and rebuild the transaction"
-        ));
+        return Err(FunctionCallError::Evidence(format!(
+            "exactDigest mismatch for {path}; reread and rebuild the transaction"
+        )));
     }
     Ok(())
 }
@@ -1137,28 +1163,20 @@ fn block_definition() -> ToolDefinition {
 fn patch_definition() -> ToolDefinition {
     ToolDefinition::function(
         "hashline__patch",
-        "Apply a complete hash-anchored routine patch. Existing files require [path]#HASH sections copied from hashline__read. Supports line/range/block edits, sectioned creates, REM, MV, and dry runs. Routine multi-file commits are not crash-atomic; use hashline__transaction for recoverable batches.",
+        "Apply a complete, fully sectioned Hashline routine patch. Use [path]#HASH for guarded existing-file edits and [path] to create a missing file; one program may mix create, update, move, and delete sections. Routine commits are not crash-atomic; use hashline__transaction for recoverable batches.",
         json!({
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Workspace-relative default file path. Absolute paths and parent traversal are rejected."
-                },
                 "patch": {
                     "type": "string",
-                    "description": "Complete Hashline program. For an existing file, start with the exact [path]#HASH header returned by hashline__read. Operations include SWAP 12:abcd:\n+replacement, SWAP 12:abcd..=14:ef01:\n+replacement, DEL 12:abcd, INS.PRE 12:abcd:\n+text, INS.POST 12:abcd:\n+text, INS.HEAD:\n+text, INS.TAIL:\n+text, and block forms using a line:hash@blockhash anchor. Prefix every payload line with +. With create=true, use [path] sections without #HASH. REM deletes an existing section; MV destination moves it. Example: [notes.txt]#0123abcd\nSWAP 2:f589:\n+bravo"
+                    "description": "Required complete Hashline program; every non-abort program is fully sectioned. Existing files use [path]#HASH copied from hashline__read. Example: [notes.txt]#0123abcd\nSWAP 2:f589:\n+replacement. Create a missing file with [new.txt]\nINS.HEAD:\n+content. Operations: SWAP line/range, DEL line/range, INS.PRE, INS.POST, INS.HEAD, INS.TAIL, block forms with line:hash@blockhash, REM, and MV destination. Paths are non-empty workspace-relative paths; absolute paths, current-directory components, and parent traversal are rejected."
                 },
                 "dry_run": {
                     "type": "boolean",
                     "description": "Validate and preview every section without writing."
                 },
-                "create": {
-                    "type": "boolean",
-                    "description": "Create missing files from [path] sections without file hashes."
-                }
             },
-            "required": ["path", "patch"],
+            "required": ["patch"],
             "additionalProperties": false
         }),
     )
@@ -1167,20 +1185,20 @@ fn patch_definition() -> ToolDefinition {
 fn transaction_definition() -> ToolDefinition {
     ToolDefinition::function(
         "hashline__transaction",
-        "Preview, immediately commit, or commit only an exact previously previewed bounded multi-file Hashline transaction with retained restart-recovery evidence.",
+        "Preview, immediately commit, or commit an exact previously previewed bounded multi-file Hashline transaction. commitPreviewed requires resubmitting the identical mutations together with the returned expectedPlanDigest; changed files or mutations are rejected. Retains restart-recovery evidence.",
         json!({
             "type": "object",
             "properties": {
                 "action": {"oneOf": [
                     {"type": "object", "properties": {"type": {"const": "preview"}}, "required": ["type"], "additionalProperties": false},
                     {"type": "object", "properties": {"type": {"const": "commit"}}, "required": ["type"], "additionalProperties": false},
-                    {"type": "object", "properties": {"type": {"const": "commitPreviewed"}, "expectedPlanDigest": {"type": "string"}}, "required": ["type", "expectedPlanDigest"], "additionalProperties": false}
+                    {"type": "object", "properties": {"type": {"const": "commitPreviewed"}, "expectedPlanDigest": {"type": "string", "description": "Exact planDigest returned by preview. Resubmit the identical mutations with this digest."}}, "required": ["type", "expectedPlanDigest"], "additionalProperties": false}
                 ]},
                 "root": {
                     "type": "string",
                     "description": "Workspace-relative transaction root directory. Omit or use \".\" for the workspace root; absolute paths and parent traversal are rejected."
                 },
-                "mutations": {"type": "array", "minItems": 1, "maxItems": MAX_MUTATIONS, "items": mutation_schema()}
+                "mutations": {"type": "array", "minItems": 1, "maxItems": MAX_MUTATIONS, "description": "For commitPreviewed, resubmit the exact mutations used for preview without any change.", "items": mutation_schema()}
             },
             "required": ["action", "mutations"],
             "additionalProperties": false

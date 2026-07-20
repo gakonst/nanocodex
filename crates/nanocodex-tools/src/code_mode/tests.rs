@@ -553,9 +553,9 @@ async fn hashline_family_round_trips_through_code_mode() -> Result<()> {
         .execute_code(
             r#"
 const initial = await tools.hashline__read({path: "notes.txt"});
+const betaHash = initial.content.split("\n")[1].split(":")[1].split("|")[0];
 await tools.hashline__patch({
-  path: "notes.txt",
-  patch: `${initial.header}\nSWAP 2:${initial.lines[1].hash}:\n+bravo`
+  patch: `${initial.header}\nSWAP 2:${betaHash}:\n+bravo`
 });
 const observed = await tools.hashline__read({path: "notes.txt"});
 const deleted = await tools.hashline__read({path: "delete.txt"});
@@ -803,6 +803,17 @@ fn model_description_uses_codex_style_declarations() {
     assert!(description.contains("hashline__find_block(args: {"));
     assert!(description.contains("hashline__patch(args: {"));
     assert!(description.contains("hashline__transaction(args: {"));
+    for required in [
+        "workspace-relative",
+        "[notes.txt]#0123abcd",
+        "identical mutations",
+        "expectedPlanDigest",
+    ] {
+        assert!(
+            description.contains(required),
+            "model-visible declaration should preserve {required}"
+        );
+    }
     assert!(!description.contains("apply_patch"));
     assert!(description.contains("exec_command(args: {"));
     assert!(!description.contains("Input schema:"));
