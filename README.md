@@ -2,7 +2,7 @@
 
 <h1>Nanocodex</h1>
 
-<p><strong>A blazing-fast, minimal, and extensible reimplementation of Codex.</strong></p>
+<p><strong>Blazing-fast, minimal, library-first reimplementation of Codex.</strong></p>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gakonst/nanocodex/ci.yml?branch=master)][ci]
 [![Crates.io](https://img.shields.io/crates/v/nanocodex.svg)][crates]
@@ -20,11 +20,10 @@
 
 ---
 
-### Nanocodex keeps a complete coding-agent conversation inside your process.
-
-It provides typed turns, tools, events, steering, cancellation, queueing, and
-fast historical forks over the OpenAI Responses WebSocket API—without requiring
-an app server or durable control plane.
+Nanocodex provides typed turns, tools, events, steering, cancellation, queueing,
+and fast historical forks over the OpenAI Responses WebSocket API. It keeps the
+complete coding-agent conversation inside your process without requiring an app
+server or durable control plane.
 
 ## API
 
