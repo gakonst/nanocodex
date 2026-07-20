@@ -83,6 +83,7 @@ pub enum NanocodexError {
     #[error(transparent)]
     Agent(#[from] AgentError),
 
+    #[cfg(not(target_family = "wasm"))]
     #[error("failed to build tools for an agent driver")]
     Tools(#[from] nanocodex_tools::ToolsBuildError),
 
@@ -98,8 +99,9 @@ impl NanocodexError {
             Self::InvalidRequest(_)
             | Self::Event(_)
             | Self::Agent(_)
-            | Self::Tools(_)
             | Self::ResponsesMiddleware(_) => None,
+            #[cfg(not(target_family = "wasm"))]
+            Self::Tools(_) => None,
         }
     }
 }

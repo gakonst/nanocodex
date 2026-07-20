@@ -70,6 +70,7 @@ impl WasmNanocodex {
                 .map_or_else(|| ModelConfig::default().system_prompt, Arc::from),
         });
         let (events, mut event_stream) = EventSink::channel(session_id);
+        let lineage_id = Arc::<str>::from(events.request_id());
         spawn_local(async move {
             while let Some(event) = event_stream.recv().await {
                 if let Ok(encoded) = serde_json::to_string(&event) {
@@ -86,13 +87,17 @@ impl WasmNanocodex {
             ResponsesClient::new(service),
             transport_stats,
             Tools,
+            lineage_id,
         );
         let (commands, mut receiver) = mpsc::unbounded_channel::<Command>();
         spawn_local(async move {
             while let Some(command) = receiver.recv().await {
+                let (steers, steer_rx) = mpsc::channel(1);
+                drop(steers);
                 let outcome = model
-                    .execute(command.prompt)
+                    .execute(command.prompt, steer_rx)
                     .await
+                    .map(|completed| completed.final_message)
                     .map_err(|error| error.to_string());
                 drop(command.result.send(outcome));
             }

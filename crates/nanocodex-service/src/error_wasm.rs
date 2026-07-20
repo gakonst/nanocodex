@@ -54,7 +54,7 @@ impl ResponsesError {
     }
 
     #[must_use]
-    pub const fn class(&self) -> &'static str {
+    pub fn class(&self) -> &'static str {
         match self {
             Self::Connect { .. } => "handshake",
             Self::Send { .. } => "send",
@@ -66,9 +66,17 @@ impl ResponsesError {
             Self::EncodeRequest(_) => "encode_request",
             Self::InvalidPayload { .. } => "invalid_payload",
             Self::Closed { .. } => "closed",
+            Self::Api { event } if api_error_has_code(event, "previous_response_not_found") => {
+                "checkpoint_missing"
+            }
             Self::Api { .. } => "api",
             Self::InvalidImageRequest { .. } => "invalid_image_request",
         }
+    }
+
+    #[must_use]
+    pub fn is_checkpoint_missing(&self) -> bool {
+        matches!(self, Self::Api { event } if api_error_has_code(event, "previous_response_not_found"))
     }
 }
 
@@ -76,4 +84,41 @@ impl ResponsesError {
 pub struct RetryAdvice {
     pub class: &'static str,
     pub server_delay: Option<Duration>,
+}
+
+fn api_error_has_code(event: &str, expected: &str) -> bool {
+    let Ok(event) = serde_json::from_str::<ApiErrorEnvelope>(event) else {
+        return false;
+    };
+    let code = event
+        .error
+        .as_ref()
+        .or_else(|| {
+            event
+                .response
+                .as_ref()
+                .and_then(|response| response.error.as_ref())
+        })
+        .and_then(|error| error.code.as_deref());
+    code == Some(expected)
+}
+
+#[derive(serde::Deserialize)]
+struct ApiErrorEnvelope {
+    #[serde(default)]
+    error: Option<ApiErrorDetail>,
+    #[serde(default)]
+    response: Option<ApiErrorResponse>,
+}
+
+#[derive(serde::Deserialize)]
+struct ApiErrorResponse {
+    #[serde(default)]
+    error: Option<ApiErrorDetail>,
+}
+
+#[derive(serde::Deserialize)]
+struct ApiErrorDetail {
+    #[serde(default)]
+    code: Option<Box<str>>,
 }
