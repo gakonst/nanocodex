@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tower service stack, code-mode tools, MCP integration, embedded bindings,
   CLI, and observability support.
 - Checksummed maxperf native installers and self-updates, dependency-ordered
-  crates.io publishing, contributor-attributed GitHub release notes, and
-  docs.rs archive validation.
+  crates.io publishing, repo-wide and crate-specific changelogs,
+  contributor-attributed GitHub release notes, and docs.rs archive validation.
 
 ### Bug Fixes
 
@@ -178,6 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Finalize 0.1.0 changelog
 - [release] Update 0.1.0 changelog
 - [release] Refresh 0.1.0 changelog
 - [release] Automate publishing and native updates
