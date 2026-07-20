@@ -82,23 +82,45 @@ pub(crate) async fn receive(
     loop {
         match next_event(socket, events, "generation", call_index, &mut timing).await? {
             ServerEvent::OutputTextDelta { delta } => {
-                events.emit(
+                let payload_bytes = delta.len();
+                let seq = events.emit_with_sequence(
                     AgentEventKind::AssistantDelta,
                     TextDelta {
                         model_call_index: call_index,
                         text: &delta,
                     },
                 )?;
+                tracing::trace!(
+                    target: "nanocodex_stream_timing",
+                    stage = "api_delta_emitted",
+                    request.id = events.request_id(),
+                    event.seq = seq,
+                    event.kind = "assistant.delta",
+                    model.call.index = call_index,
+                    payload.bytes = payload_bytes,
+                    "Responses text delta entered the agent event stream"
+                );
             }
             ServerEvent::ReasoningSummaryTextDelta { delta }
             | ServerEvent::ReasoningSummaryDelta { delta } => {
-                events.emit(
+                let payload_bytes = delta.len();
+                let seq = events.emit_with_sequence(
                     AgentEventKind::ReasoningSummaryDelta,
                     TextDelta {
                         model_call_index: call_index,
                         text: &delta,
                     },
                 )?;
+                tracing::trace!(
+                    target: "nanocodex_stream_timing",
+                    stage = "api_delta_emitted",
+                    request.id = events.request_id(),
+                    event.seq = seq,
+                    event.kind = "reasoning.summary.delta",
+                    model.call.index = call_index,
+                    payload.bytes = payload_bytes,
+                    "Responses reasoning delta entered the agent event stream"
+                );
             }
             ServerEvent::OutputItemDone { item } => done_items.push(item),
             ServerEvent::Completed { mut response } => {

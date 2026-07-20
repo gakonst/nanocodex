@@ -2,12 +2,12 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Conversation, PaneId, ToolStatus, TranscriptItem};
+use super::app::{App, Conversation, PaneId};
 
 pub(super) fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
@@ -101,12 +101,12 @@ fn render_transcript(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let text = transcript_text(conversation, empty_message);
-    let line_count = wrapped_line_count(&text, inner.width);
-    let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
-    let max_scroll = line_count.saturating_sub(usize::from(inner.height));
-    let scroll = max_scroll.saturating_sub(conversation.scroll_from_bottom.min(max_scroll));
-    frame.render_widget(paragraph.scroll((saturating_u16(scroll), 0)), inner);
+    frame.render_widget(
+        conversation
+            .transcript
+            .widget(conversation.scroll_from_bottom, empty_message),
+        inner,
+    );
 }
 
 fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -151,7 +151,9 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let conversation = app.active_conversation();
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let state = if conversation.running {
+    let state = if app.cancel_confirmation_active() {
+        "Stop Agent Turn — Esc again to confirm".to_owned()
+    } else if conversation.running {
         format!(
             "{} {}",
             spinner[app.frame % spinner.len()],
@@ -174,9 +176,9 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     };
     let help = if app.btw.is_some() {
-        "  BackTab switch · Enter send/steer · Tab queue · /cancel stop · /close dismiss · Ctrl+C quit"
+        "  BackTab switch · Enter send/steer · Tab queue · Esc Esc stop · /close dismiss · Ctrl+C quit"
     } else {
-        "  /btw <question> side fork · Enter send/steer · Tab queue · /cancel stop · Ctrl+C quit"
+        "  /btw <question> side fork · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit"
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -236,75 +238,6 @@ fn prompt_preview(prompt: &str) -> String {
     preview
 }
 
-fn transcript_text(conversation: &Conversation, empty_message: &'static str) -> Text<'static> {
-    if conversation.transcript.is_empty() {
-        return Text::from(vec![
-            Line::raw(""),
-            Line::styled(
-                format!("  {empty_message}"),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]);
-    }
-
-    let mut lines = Vec::new();
-    for item in &conversation.transcript {
-        match item {
-            TranscriptItem::User(message) => {
-                lines.push(Line::styled(
-                    "› You",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                push_body(&mut lines, message, Style::default().fg(Color::White));
-            }
-            TranscriptItem::Assistant(message) => {
-                lines.push(Line::styled(
-                    "● Nanocodex",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                push_body(&mut lines, message, Style::default().fg(Color::White));
-            }
-            TranscriptItem::Tool {
-                name,
-                arguments,
-                status,
-                ..
-            } => {
-                let (icon, color) = match status {
-                    ToolStatus::Running => ("◌", Color::Yellow),
-                    ToolStatus::Completed => ("✓", Color::Green),
-                    ToolStatus::Failed => ("✗", Color::Red),
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{icon} {name}"), Style::default().fg(color)),
-                    Span::styled(
-                        format!("  {arguments}"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
-            }
-            TranscriptItem::Error(message) => {
-                lines.push(Line::styled(
-                    format!("✗ {message}"),
-                    Style::default().fg(Color::Red),
-                ));
-            }
-        }
-        lines.push(Line::raw(""));
-    }
-    Text::from(lines)
-}
-
-fn push_body(lines: &mut Vec<Line<'static>>, body: &str, style: Style) {
-    for line in body.split('\n') {
-        lines.push(Line::styled(format!("  {line}"), style));
-    }
-}
-
 fn composer_height(input: &str, width: u16) -> u16 {
     let width = usize::from(width.max(1));
     let rows = input
@@ -335,17 +268,16 @@ fn saturating_u16(value: usize) -> u16 {
     u16::try_from(value).unwrap_or(u16::MAX)
 }
 
-fn wrapped_line_count(text: &Text<'_>, width: u16) -> usize {
-    let width = usize::from(width.max(1));
-    text.lines
-        .iter()
-        .map(|line| line.width().div_ceil(width).max(1))
-        .sum()
-}
-
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend};
+    use std::io;
+
+    use ratatui::{
+        Terminal,
+        backend::{Backend, ClearType, TestBackend, WindowSize},
+        buffer::Cell,
+        layout::{Position, Rect, Size},
+    };
 
     use super::render;
     use crate::tui::app::App;
@@ -384,5 +316,138 @@ mod tests {
         assert!(rendered.contains("use the database implementation"));
         assert!(rendered.contains("⏳ next"));
         assert!(rendered.contains("write a final benchmark summary"));
+    }
+
+    #[test]
+    fn empty_main_layout_snapshot() {
+        let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
+        let app = App::new("/workspace".into());
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        assert_eq!(
+            terminal.backend().to_string(),
+            concat!(
+                "\" nanocodex   /workspace                         \"\n",
+                "\"┌ Main ────────────────────────────────────────┐\"\n",
+                "\"│                                              │\"\n",
+                "\"│  Ask Nanocodex to inspect, edit, run, or     │\"\n",
+                "\"│explain this workspace.                       │\"\n",
+                "\"│                                              │\"\n",
+                "\"│                                              │\"\n",
+                "\"└──────────────────────────────────────────────┘\"\n",
+                "\"┌ Message → Main ──────────────────────────────┐\"\n",
+                "\"│                                              │\"\n",
+                "\"└──────────────────────────────────────────────┘\"\n",
+                "\" Ready  /btw <question> side fork · Enter send/s\"\n",
+            )
+        );
+    }
+
+    #[test]
+    fn cursor_tracks_multiline_unicode_input_exactly() {
+        let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.input = "ab\n界c".to_owned();
+        app.cursor = app.input.len();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(4, 9));
+    }
+
+    #[test]
+    fn resize_reflows_layout_and_repositions_cursor() {
+        let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.input = "abc".to_owned();
+        app.cursor = app.input.len();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        terminal.backend_mut().resize(32, 10);
+        terminal.autoresize().unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        assert_eq!(terminal.backend().buffer().area, Rect::new(0, 0, 32, 10));
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(4, 7));
+    }
+
+    #[test]
+    fn ratatui_draws_only_changed_cells_after_the_first_frame() {
+        let backend = CountingBackend::new(48, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new("/workspace".into());
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(terminal.backend().draw_counts[0] > 0);
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert_eq!(terminal.backend().draw_counts[1], 0);
+
+        app.input.push('x');
+        app.cursor = app.input.len();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert_eq!(terminal.backend().draw_counts[2], 1);
+    }
+
+    struct CountingBackend {
+        inner: TestBackend,
+        draw_counts: Vec<usize>,
+    }
+
+    impl CountingBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                inner: TestBackend::new(width, height),
+                draw_counts: Vec::new(),
+            }
+        }
+    }
+
+    impl Backend for CountingBackend {
+        fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            let content = content.collect::<Vec<_>>();
+            self.draw_counts.push(content.len());
+            self.inner.draw(content.into_iter())
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            self.inner.hide_cursor()
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.inner.show_cursor()
+        }
+
+        fn get_cursor_position(&mut self) -> io::Result<Position> {
+            self.inner.get_cursor_position()
+        }
+
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+            self.inner.set_cursor_position(position)
+        }
+
+        fn clear(&mut self) -> io::Result<()> {
+            self.inner.clear()
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+            self.inner.clear_region(clear_type)
+        }
+
+        fn size(&self) -> io::Result<Size> {
+            self.inner.size()
+        }
+
+        fn window_size(&mut self) -> io::Result<WindowSize> {
+            self.inner.window_size()
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
     }
 }

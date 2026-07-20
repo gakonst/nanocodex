@@ -195,6 +195,23 @@ impl EventSink {
     ///
     /// Returns an error when the payload cannot be converted to JSON.
     pub fn emit<P: Serialize>(&self, kind: AgentEventKind, payload: P) -> Result<(), EventError> {
+        self.emit_with_sequence(kind, payload).map(|_| ())
+    }
+
+    /// Emits an event and returns its session-monotonic sequence number.
+    ///
+    /// This is intended for transport telemetry that must correlate the point
+    /// of emission with a downstream consumer without retaining payload data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the payload cannot be converted to JSON.
+    #[doc(hidden)]
+    pub fn emit_with_sequence<P: Serialize>(
+        &self,
+        kind: AgentEventKind,
+        payload: P,
+    ) -> Result<u64, EventError> {
         let payload = to_raw_value(&payload).map_err(EventError::Encode)?;
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         drop(self.sender.send(AgentEvent {
@@ -204,7 +221,7 @@ impl EventSink {
             kind,
             payload,
         }));
-        Ok(())
+        Ok(seq)
     }
 }
 

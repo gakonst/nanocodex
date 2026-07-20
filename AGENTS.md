@@ -142,6 +142,28 @@
   public-example checks. Benchmark performance claims on representative retained
   traces, not synthetic microbenchmarks alone.
 
+## TUI performance
+
+- Develop the Ratatui consumer against replayed, representative workloads, not
+  visual intuition alone. Treat retained Codex rollout traces and the longest
+  available Amp thread exports as the primary corpus. Codex traces provide
+  event ordering, streaming bursts, tool/reasoning interleaving, and timing;
+  Amp threads provide mature interactive transcript shapes, long messages, and
+  long-session behavior. Discover candidates with `amp threads list
+  --include-archived --json` and read selected payloads with `amp threads export
+  <thread-id>`.
+- Derive deterministic sanitized fixtures or structural workload summaries from
+  those traces. Never commit raw Codex traces, full prompts, tool arguments,
+  secrets, or user content to the repository.
+- Give every TUI phase a measured baseline and an explicit regression gate for
+  the costs it changes: state-update throughput, frame construction and layout,
+  rendered frame count, changed-cell/output volume, allocations or retained
+  memory, input-to-frame latency, and resize behavior as applicable.
+- Use focused synthetic cases only to isolate a demonstrated cost or correctness
+  boundary. Validate claimed wins by replaying representative trace-derived
+  sessions at multiple terminal sizes, including streaming and long-history
+  tails.
+
 ## Current non-goals
 
 - No app server, JSON-RPC daemon, provider abstraction, approval subsystem,

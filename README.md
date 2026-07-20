@@ -296,6 +296,20 @@ completed turn, `/btw <question>` opens a fast latest-checkpoint fork in a
 vertical pane while the mainline continues. The headless `nanocodex run`
 adapter emits flushed JSONL for scripts and Harbor.
 
+To measure streaming cadence without recording response text, enable the shared
+transport/TUI timing target and JSON logs:
+
+```sh
+nanocodex --log-format json \
+  --log-filter 'warn,nanocodex=info,nanocodex_service=info,nanocodex_stream_timing=trace'
+```
+
+The TUI log at `.nanocodex/logs/tui.log` then correlates each event's request ID
+and sequence across `api_delta_emitted`, `tui_event_received`,
+`tui_event_applied`, and `frame_presented`. Frame records include coalesced delta
+count, payload byte count, render time, and first/last-event-to-presentation
+latency; prompt and response bodies are never logged.
+
 The workspace also contains thin [Python](bindings/python),
 [Node](examples/node), and [browser Worker](examples/react-vite) consumers.
 Architecture and current work are tracked in [`PLAN.md`](PLAN.md); benchmark

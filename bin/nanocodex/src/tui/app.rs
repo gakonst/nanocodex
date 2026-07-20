@@ -1,30 +1,18 @@
-use std::{collections::VecDeque, path::PathBuf};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use nanocodex::{AgentEvent, AgentEventKind};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::transcript::{ToolStatus, Transcript, TranscriptItem};
+
 const MAX_REASONING_STATUS_CHARS: usize = 160;
 const MAX_TOOL_ARGUMENT_CHARS: usize = 180;
-
-pub(super) enum TranscriptItem {
-    User(String),
-    Assistant(String),
-    Tool {
-        call_id: String,
-        name: String,
-        arguments: String,
-        status: ToolStatus,
-    },
-    Error(String),
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum ToolStatus {
-    Running,
-    Completed,
-    Failed,
-}
+const CANCEL_CONFIRMATION_WINDOW: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PaneId {
@@ -33,7 +21,7 @@ pub(super) enum PaneId {
 }
 
 pub(super) struct Conversation {
-    pub(super) transcript: Vec<TranscriptItem>,
+    pub(super) transcript: Transcript,
     pub(super) pending_turns: usize,
     pub(super) running: bool,
     pub(super) status: String,
@@ -47,7 +35,7 @@ pub(super) struct Conversation {
 impl Conversation {
     fn new(status: impl Into<String>) -> Self {
         Self {
-            transcript: Vec::new(),
+            transcript: Transcript::default(),
             pending_turns: 0,
             running: false,
             status: status.into(),
@@ -160,13 +148,7 @@ impl Conversation {
                     } else {
                         ToolStatus::Failed
                     };
-                    if let Some(TranscriptItem::Tool {
-                        status: current, ..
-                    }) = self.transcript.iter_mut().rev().find(|item| {
-                        matches!(item, TranscriptItem::Tool { call_id, .. } if call_id == &payload.call_id)
-                    }) {
-                        *current = status;
-                    }
+                    self.transcript.set_tool_status(&payload.call_id, status);
                     "Working".clone_into(&mut self.status);
                 }
             }
@@ -209,11 +191,7 @@ impl Conversation {
     fn push_assistant_delta(&mut self, delta: &str) {
         let append_to_current = self.streamed_this_turn;
         self.streamed_this_turn = true;
-        if append_to_current
-            && let Some(TranscriptItem::Assistant(message)) = self.transcript.last_mut()
-        {
-            message.push_str(delta);
-        } else {
+        if !append_to_current || !self.transcript.append_assistant_delta(delta) {
             self.transcript
                 .push(TranscriptItem::Assistant(delta.to_owned()));
         }
@@ -237,6 +215,13 @@ pub(super) struct App {
     history_cursor: Option<usize>,
     history_draft: String,
     next_btw_id: u64,
+    cancel_confirmation: Option<CancelConfirmation>,
+}
+
+#[derive(Clone, Copy)]
+struct CancelConfirmation {
+    target: PaneId,
+    expires_at: Instant,
 }
 
 impl App {
@@ -253,6 +238,7 @@ impl App {
             history_cursor: None,
             history_draft: String::new(),
             next_btw_id: 1,
+            cancel_confirmation: None,
         }
     }
 
@@ -325,6 +311,36 @@ impl App {
         self.cursor = 0;
         self.history_cursor = None;
         self.history_draft.clear();
+    }
+
+    /// Implements Amp's two-stage interrupt gesture. The first Escape arms a
+    /// target-scoped confirmation; the second within one second confirms it.
+    /// Draft input is preserved while a turn is running.
+    pub(super) fn handle_escape(&mut self, now: Instant) -> Option<PaneId> {
+        let target = self.focus;
+        if !self.is_running(target) {
+            self.cancel_confirmation = None;
+            self.clear_input();
+            return None;
+        }
+
+        if self.cancel_confirmation.is_some_and(|confirmation| {
+            confirmation.target == target && now <= confirmation.expires_at
+        }) {
+            self.cancel_confirmation = None;
+            return Some(target);
+        }
+
+        self.cancel_confirmation = Some(CancelConfirmation {
+            target,
+            expires_at: now + CANCEL_CONFIRMATION_WINDOW,
+        });
+        None
+    }
+
+    pub(super) fn cancel_confirmation_active(&self) -> bool {
+        self.cancel_confirmation
+            .is_some_and(|confirmation| confirmation.target == self.focus)
     }
 
     pub(super) fn previous_history(&mut self) {
@@ -414,6 +430,12 @@ impl App {
 
     pub(super) fn close_btw(&mut self, id: u64) {
         if self.btw_id() == Some(id) {
+            if self
+                .cancel_confirmation
+                .is_some_and(|confirmation| confirmation.target == PaneId::Btw(id))
+            {
+                self.cancel_confirmation = None;
+            }
             self.btw = None;
             self.focus = PaneId::Main;
         }
@@ -475,6 +497,12 @@ impl App {
     }
 
     pub(super) fn cancel_pending(&mut self, target: PaneId) {
+        if self
+            .cancel_confirmation
+            .is_some_and(|confirmation| confirmation.target == target)
+        {
+            self.cancel_confirmation = None;
+        }
         if let Some(conversation) = self.conversation_mut(target) {
             "Cancelling".clone_into(&mut conversation.status);
         }
@@ -517,8 +545,19 @@ impl App {
     }
 
     pub(super) fn on_agent_event(&mut self, target: PaneId, event: &AgentEvent) -> bool {
-        self.conversation_mut(target)
-            .is_some_and(|conversation| conversation.on_agent_event(event))
+        let updated = self
+            .conversation_mut(target)
+            .is_some_and(|conversation| conversation.on_agent_event(event));
+        if matches!(
+            event.kind,
+            AgentEventKind::RunCompleted | AgentEventKind::RunFailed
+        ) && self
+            .cancel_confirmation
+            .is_some_and(|confirmation| confirmation.target == target)
+        {
+            self.cancel_confirmation = None;
+        }
+        updated
     }
 
     pub(super) fn scroll_up(&mut self, rows: usize) {
@@ -535,6 +574,7 @@ impl App {
 
     pub(super) fn on_tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+        self.expire_cancel_confirmation(Instant::now());
     }
 
     pub(super) fn active_conversation(&self) -> &Conversation {
@@ -566,6 +606,15 @@ impl App {
     fn detach_history(&mut self) {
         self.history_cursor = None;
         self.history_draft.clear();
+    }
+
+    fn expire_cancel_confirmation(&mut self, now: Instant) {
+        if self
+            .cancel_confirmation
+            .is_some_and(|confirmation| confirmation.expires_at < now)
+        {
+            self.cancel_confirmation = None;
+        }
     }
 }
 
@@ -626,6 +675,8 @@ fn reasoning_tail(reasoning: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::{App, PaneId};
 
     #[test]
@@ -704,5 +755,41 @@ mod tests {
 
         assert!(app.main.running);
         assert_eq!(app.main.status, "Thinking");
+    }
+
+    #[test]
+    fn escape_requires_confirmation_and_preserves_the_draft() {
+        let now = Instant::now();
+        let mut app = App::new(".".into());
+        app.main.running = true;
+        app.input = "keep this draft".to_owned();
+        app.cursor = app.input.len();
+
+        assert_eq!(app.handle_escape(now), None);
+        assert!(app.cancel_confirmation_active());
+        assert_eq!(app.input, "keep this draft");
+
+        assert_eq!(
+            app.handle_escape(now + Duration::from_millis(999)),
+            Some(PaneId::Main)
+        );
+        assert!(!app.cancel_confirmation_active());
+        assert_eq!(app.input, "keep this draft");
+    }
+
+    #[test]
+    fn expired_escape_confirmation_rearms_instead_of_cancelling() {
+        let now = Instant::now();
+        let mut app = App::new(".".into());
+        app.main.running = true;
+
+        assert_eq!(app.handle_escape(now), None);
+        app.expire_cancel_confirmation(now + Duration::from_millis(1_001));
+        assert!(!app.cancel_confirmation_active());
+        assert_eq!(
+            app.handle_escape(now + Duration::from_millis(1_002)),
+            None
+        );
+        assert!(app.cancel_confirmation_active());
     }
 }

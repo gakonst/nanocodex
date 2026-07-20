@@ -1598,6 +1598,7 @@ name = "nanocodex-bin"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "criterion",
  "crossterm",
  "dotenvy",
  "eyre",
@@ -1613,6 +1614,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
  "unicode-width 0.2.0",
 ]
 

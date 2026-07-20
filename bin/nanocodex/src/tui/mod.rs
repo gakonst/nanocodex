@@ -1,8 +1,14 @@
 mod app;
+mod scheduler;
+mod telemetry;
 mod terminal;
+mod transcript;
 mod view;
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
@@ -12,12 +18,15 @@ use futures_util::StreamExt;
 use nanocodex::{AgentEvent, AgentEvents, Nanocodex, NanocodexError, TurnControl};
 use tokio::{
     sync::mpsc,
-    time::{MissedTickBehavior, interval},
+    time::{MissedTickBehavior, interval, sleep_until},
 };
 
 use self::{
-    app::{App, PaneId, TranscriptItem},
+    app::{App, PaneId},
+    scheduler::{RenderScheduler, STREAM_FRAME_INTERVAL},
+    telemetry::StreamTelemetry,
     terminal::TerminalSession,
+    transcript::TranscriptItem,
 };
 use crate::config::AgentArgs;
 
@@ -110,6 +119,92 @@ enum TerminalAction {
     Quit,
 }
 
+enum UiAction {
+    Terminal(Event),
+    Agent(AgentEvent),
+    AgentStreamClosed,
+    Worker(WorkerEvent),
+    WorkerStopped,
+    Tick,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RedrawPriority {
+    Immediate,
+    Streaming,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UiUpdate {
+    Redraw(RedrawPriority),
+    Ignore,
+    Quit,
+}
+
+struct UiModel {
+    app: App,
+    agent_events_open: bool,
+    worker_updates_open: bool,
+}
+
+impl UiModel {
+    fn new(app: App) -> Self {
+        Self {
+            app,
+            agent_events_open: true,
+            worker_updates_open: true,
+        }
+    }
+
+    fn update(
+        &mut self,
+        action: UiAction,
+        commands: &mpsc::UnboundedSender<WorkerCommand>,
+    ) -> Result<UiUpdate> {
+        match action {
+            UiAction::Terminal(event) => {
+                match handle_terminal_event(event, &mut self.app, commands)? {
+                    TerminalAction::Redraw => Ok(UiUpdate::Redraw(RedrawPriority::Immediate)),
+                    TerminalAction::Ignore => Ok(UiUpdate::Ignore),
+                    TerminalAction::Quit => Ok(UiUpdate::Quit),
+                }
+            }
+            UiAction::Agent(event) => {
+                if self.app.on_agent_event(PaneId::Main, &event) {
+                    Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
+                } else {
+                    Ok(UiUpdate::Ignore)
+                }
+            }
+            UiAction::AgentStreamClosed => {
+                self.app.main.transcript.push(TranscriptItem::Error(
+                    "agent event stream closed".to_owned(),
+                ));
+                self.app.main.running = false;
+                "Agent stopped".clone_into(&mut self.app.main.status);
+                self.agent_events_open = false;
+                Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
+            }
+            UiAction::Worker(update) => {
+                handle_worker_update(&mut self.app, update);
+                Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
+            }
+            UiAction::WorkerStopped => {
+                self.app
+                    .main
+                    .transcript
+                    .push(TranscriptItem::Error("agent worker stopped".to_owned()));
+                self.worker_updates_open = false;
+                Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
+            }
+            UiAction::Tick => {
+                self.app.on_tick();
+                Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum SubmitIntent {
     Immediate,
@@ -141,64 +236,95 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
     let mut input_events = EventStream::new();
     let mut ticker = interval(Duration::from_millis(80));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut app = App::new(cwd);
-    let mut agent_events_open = true;
-    let mut needs_draw = true;
+    let mut ui = UiModel::new(App::new(cwd));
+    let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
+    let mut stream_telemetry = StreamTelemetry::default();
 
     if let Some(prompt) = initial_prompt {
-        app.input = prompt;
-        app.cursor = app.input.len();
-        submit(&mut app, &worker_tx, SubmitIntent::Immediate)?;
+        ui.app.input = prompt;
+        ui.app.cursor = ui.app.input.len();
+        submit(&mut ui.app, &worker_tx, SubmitIntent::Immediate)?;
     }
 
     loop {
-        if needs_draw {
-            terminal
-                .terminal()
-                .draw(|frame| view::render(frame, &app))?;
-            needs_draw = false;
+        let now = Instant::now();
+        if scheduler.is_due(now) {
+            let render_started = Instant::now();
+            terminal.draw(|frame| view::render(frame, &ui.app))?;
+            let presented_at = Instant::now();
+            scheduler.presented(presented_at);
+            stream_telemetry.frame_presented(render_started, presented_at);
         }
+
+        let render_deadline = scheduler.deadline();
         tokio::select! {
+            () = async {
+                if let Some(deadline) = render_deadline {
+                    sleep_until(deadline.into()).await;
+                }
+            }, if render_deadline.is_some() => {}
             event = input_events.next() => {
                 let event = event.transpose()?.ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "terminal input closed")
                 })?;
-                match handle_terminal_event(event, &mut app, &worker_tx)? {
-                    TerminalAction::Redraw => needs_draw = true,
-                    TerminalAction::Ignore => {}
-                    TerminalAction::Quit => return Ok(()),
+                if apply_update(
+                    ui.update(UiAction::Terminal(event), &worker_tx)?,
+                    &mut scheduler,
+                ) {
+                    return Ok(());
                 }
             }
-            event = agent_events.recv(), if agent_events_open => {
-                let Some(event) = event else {
-                    app.main.transcript.push(TranscriptItem::Error(
-                        "agent event stream closed".to_owned(),
-                    ));
-                    app.main.running = false;
-                    "Agent stopped".clone_into(&mut app.main.status);
-                    agent_events_open = false;
-                    needs_draw = true;
-                    continue;
-                };
-                needs_draw |= app.on_agent_event(PaneId::Main, &event);
+            event = agent_events.recv(), if ui.agent_events_open => {
+                let received = event.as_ref().and_then(StreamTelemetry::event_received);
+                let action = event.map_or(UiAction::AgentStreamClosed, UiAction::Agent);
+                let update = ui.update(action, &worker_tx)?;
+                if let Some(received) = received {
+                    stream_telemetry.event_applied(
+                        received,
+                        matches!(update, UiUpdate::Redraw(RedrawPriority::Streaming)),
+                    );
+                }
+                if apply_update(update, &mut scheduler) {
+                    return Ok(());
+                }
             }
-            update = update_rx.recv() => {
-                let Some(update) = update else {
-                    app.main.transcript.push(TranscriptItem::Error(
-                        "agent worker stopped".to_owned(),
-                    ));
-                    needs_draw = true;
-                    continue;
-                };
-                handle_worker_update(&mut app, update);
-                needs_draw = true;
+            update = update_rx.recv(), if ui.worker_updates_open => {
+                let received = update.as_ref().and_then(|update| match update {
+                    WorkerEvent::BtwAgentEvent { event, .. } => {
+                        StreamTelemetry::event_received(event)
+                    }
+                    _ => None,
+                });
+                let action = update.map_or(UiAction::WorkerStopped, UiAction::Worker);
+                let update = ui.update(action, &worker_tx)?;
+                if let Some(received) = received {
+                    stream_telemetry.event_applied(
+                        received,
+                        matches!(update, UiUpdate::Redraw(RedrawPriority::Streaming)),
+                    );
+                }
+                if apply_update(update, &mut scheduler) {
+                    return Ok(());
+                }
             }
-            _ = ticker.tick(), if app.main.running || app.btw.as_ref().is_some_and(|btw| btw.conversation.running) => {
-                app.on_tick();
-                needs_draw = true;
+            _ = ticker.tick(), if ui.app.main.running || ui.app.btw.as_ref().is_some_and(|btw| btw.conversation.running) => {
+                if apply_update(ui.update(UiAction::Tick, &worker_tx)?, &mut scheduler) {
+                    return Ok(());
+                }
             }
         }
     }
+}
+
+fn apply_update(update: UiUpdate, scheduler: &mut RenderScheduler) -> bool {
+    let now = Instant::now();
+    match update {
+        UiUpdate::Redraw(RedrawPriority::Immediate) => scheduler.request_immediate(now),
+        UiUpdate::Redraw(RedrawPriority::Streaming) => scheduler.request_streaming(now),
+        UiUpdate::Ignore => {}
+        UiUpdate::Quit => return true,
+    }
+    false
 }
 
 fn handle_worker_update(app: &mut App, update: WorkerEvent) {
@@ -624,7 +750,13 @@ fn handle_key(
         KeyCode::Down => app.next_history(),
         KeyCode::PageUp => app.scroll_up(12),
         KeyCode::PageDown => app.scroll_down(12),
-        KeyCode::Esc => app.clear_input(),
+        KeyCode::Esc if key.kind == KeyEventKind::Repeat => {}
+        KeyCode::Esc => {
+            if let Some(target) = app.handle_escape(Instant::now()) {
+                app.cancel_pending(target);
+                send_command(commands, WorkerCommand::Cancel { target })?;
+            }
+        }
         KeyCode::Tab if app.has_input() => submit(app, commands, SubmitIntent::Queue)?,
         KeyCode::Tab | KeyCode::BackTab => app.toggle_focus(),
         KeyCode::Insert
@@ -727,7 +859,14 @@ fn classify_submission(input: String) -> Submission {
 
 #[cfg(test)]
 mod tests {
-    use super::{BTW_BOUNDARY, Submission, classify_submission, prepare_btw_prompt};
+    use crossterm::event::Event;
+    use tokio::sync::mpsc;
+
+    use super::{
+        BTW_BOUNDARY, RedrawPriority, Submission, UiAction, UiModel, UiUpdate, classify_submission,
+        prepare_btw_prompt,
+    };
+    use crate::tui::app::App;
 
     #[test]
     fn parses_tui_commands_without_capturing_similar_prompts() {
@@ -764,5 +903,26 @@ mod tests {
             prepare_btw_prompt(&mut first, "follow-up".to_owned()),
             "follow-up"
         );
+    }
+
+    #[test]
+    fn all_event_sources_cross_the_ui_action_boundary() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut ui = UiModel::new(App::new("/workspace".into()));
+
+        assert_eq!(
+            ui.update(UiAction::Terminal(Event::Resize(100, 40)), &commands)
+                .unwrap(),
+            UiUpdate::Redraw(RedrawPriority::Immediate)
+        );
+        assert_eq!(
+            ui.update(UiAction::Tick, &commands).unwrap(),
+            UiUpdate::Redraw(RedrawPriority::Streaming)
+        );
+        assert_eq!(
+            ui.update(UiAction::WorkerStopped, &commands).unwrap(),
+            UiUpdate::Redraw(RedrawPriority::Streaming)
+        );
+        assert!(!ui.worker_updates_open);
     }
 }

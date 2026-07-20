@@ -26,10 +26,16 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 tokio-tungstenite.workspace = true
+
+[[bench]]
+name = "tui_render"
+harness = false
 
 [[bin]]
 name = "nanocodex"
