@@ -20,10 +20,11 @@ pub(super) enum TranscriptItem {
     Error(String),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ToolStatus {
     Running,
     Completed,
+    Cancelled,
     Failed,
 }
 
@@ -284,6 +285,7 @@ fn tool_style(status: ToolStatus) -> (&'static str, Color) {
     match status {
         ToolStatus::Running => ("◌", Color::Yellow),
         ToolStatus::Completed => ("✓", Color::Green),
+        ToolStatus::Cancelled => ("■", Color::Yellow),
         ToolStatus::Failed => ("✗", Color::Red),
     }
 }
@@ -294,9 +296,14 @@ fn saturating_u16(value: usize) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{Terminal, backend::TestBackend, layout::Rect, widgets::Widget};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Color, widgets::Widget};
 
-    use super::{Transcript, TranscriptItem};
+    use super::{ToolStatus, Transcript, TranscriptItem, tool_style};
+
+    #[test]
+    fn cancelled_tools_have_a_distinct_neutral_terminal_style() {
+        assert_eq!(tool_style(ToolStatus::Cancelled), ("■", Color::Yellow));
+    }
 
     #[test]
     fn assistant_deltas_update_only_the_tail_entry() {

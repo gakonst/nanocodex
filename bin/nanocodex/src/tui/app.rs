@@ -143,10 +143,10 @@ impl Conversation {
             }
             AgentEventKind::ToolResult => {
                 if let Ok(payload) = event.decode_payload::<ToolResultPayload>() {
-                    let status = if payload.status == "completed" {
-                        ToolStatus::Completed
-                    } else {
-                        ToolStatus::Failed
+                    let status = match payload.status.as_str() {
+                        "completed" => ToolStatus::Completed,
+                        "cancelled" => ToolStatus::Cancelled,
+                        _ => ToolStatus::Failed,
                     };
                     self.transcript.set_tool_status(&payload.call_id, status);
                     "Working".clone_into(&mut self.status);
