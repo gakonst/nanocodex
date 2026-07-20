@@ -101,16 +101,7 @@ async fn retained_turns_and_hostile_tools_preserve_trace_topology() -> Result<()
     if export_traces {
         let traces = wait_for_traces(&jaeger_url, session_id, turns).await?;
         validate_traces(&traces, turns, parallel_calls)?;
-        let encoded_traces = serde_json::to_string(&traces)?;
-        assert!(!encoded_traces.contains(PROMPT_SENTINEL));
-        assert!(encoded_traces.contains(REASONING_SENTINEL));
-        assert!(!encoded_traces.contains(REASONING_CONTENT_SENTINEL));
-        assert!(!encoded_traces.contains("turn-0-call-"));
-        assert!(encoded_traces.contains("assistant.output.bytes"));
-        assert!(encoded_traces.contains("model.input.bytes"));
-        assert!(encoded_traces.contains("model.output.bytes"));
-        assert!(encoded_traces.contains("tool.arguments.bytes"));
-        assert!(!encoded_traces.contains(API_KEY_SENTINEL));
+        validate_trace_content(&traces)?;
     }
     std::fs::remove_dir_all(workspace)?;
     eprintln!(
@@ -336,12 +327,13 @@ fn validate_traces(traces: &[Value], turns: usize, parallel_calls: usize) -> Res
                 assert!(has_tag_key(span, "host.reused"));
                 assert!(has_tag_key(span, "host.wait_ns"));
             }
-            if operation == "tool.execute" && has_tag(span, "tool.name", "exec_command") {
-                if has_tag_key(span, "shell.session.id") {
-                    yielded_exec_spans += 1;
-                    assert!(has_tag_key(span, "process.running"));
-                    assert!(has_tag_key(span, "tool.output.bytes"));
-                }
+            if operation == "tool.execute"
+                && has_tag(span, "tool.name", "exec_command")
+                && has_tag_key(span, "shell.session.id")
+            {
+                yielded_exec_spans += 1;
+                assert!(has_tag_key(span, "process.running"));
+                assert!(has_tag_key(span, "tool.output.bytes"));
             }
             if operation == "tool.execute" && has_tag(span, "tool.name", "write_stdin") {
                 write_stdin_spans += 1;
@@ -383,6 +375,20 @@ fn validate_traces(traces: &[Value], turns: usize, parallel_calls: usize) -> Res
         error_spans >= turns * 4,
         "expected at least four error spans per turn, saw {error_spans}"
     );
+    Ok(())
+}
+
+fn validate_trace_content(traces: &[Value]) -> Result<()> {
+    let encoded = serde_json::to_string(traces)?;
+    assert!(!encoded.contains(PROMPT_SENTINEL));
+    assert!(encoded.contains(REASONING_SENTINEL));
+    assert!(!encoded.contains(REASONING_CONTENT_SENTINEL));
+    assert!(!encoded.contains("turn-0-call-"));
+    assert!(encoded.contains("assistant.output.bytes"));
+    assert!(encoded.contains("model.input.bytes"));
+    assert!(encoded.contains("model.output.bytes"));
+    assert!(encoded.contains("tool.arguments.bytes"));
+    assert!(!encoded.contains(API_KEY_SENTINEL));
     Ok(())
 }
 
