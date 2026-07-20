@@ -9,11 +9,14 @@ use serde_json::{Map, Value, json};
 use tracing::{Instrument, info, info_span};
 
 use crate::{
-    apply_patch,
     code_mode::{self, CodeModeExecution},
     image_generation, plan,
     shell::{self, ShellSessions},
     view_image, web_search,
+    hashline::{HashlineHandler, HashlineToolKind},
+};
+
+
 };
 
 pub const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 10_000;
@@ -507,7 +510,14 @@ impl ToolsBuilder {
 fn built_in_name(tools: &Tools, name: &str) -> bool {
     matches!(
         name,
-        "exec_command" | "write_stdin" | "update_plan" | "apply_patch" | "view_image"
+        "exec_command"
+            | "write_stdin"
+            | "update_plan"
+            | "hashline__read"
+            | "hashline__find_block"
+            | "hashline__patch"
+            | "hashline__transaction"
+            | "view_image"
     ) || (tools.web_search && name == "web__run")
         || (tools.image_generation && name == "image_gen__imagegen")
 }
@@ -543,7 +553,22 @@ impl ToolRuntime {
             )),
             Arc::new(shell::WriteStdinHandler::new(Arc::clone(&sessions))),
             Arc::new(plan::PlanHandler::new()),
-            Arc::new(apply_patch::ApplyPatchHandler::new(workspace.clone())),
+            Arc::new(HashlineHandler::new(
+                workspace.clone(),
+                HashlineToolKind::Read,
+            )),
+            Arc::new(HashlineHandler::new(
+                workspace.clone(),
+                HashlineToolKind::FindBlock,
+            )),
+            Arc::new(HashlineHandler::new(
+                workspace.clone(),
+                HashlineToolKind::Patch,
+            )),
+            Arc::new(HashlineHandler::new(
+                workspace.clone(),
+                HashlineToolKind::Transaction,
+            )),
             Arc::new(view_image::ViewImageHandler::new(workspace)),
         ];
         if let Some(web_search) = web_search {

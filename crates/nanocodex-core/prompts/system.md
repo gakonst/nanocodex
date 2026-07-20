@@ -91,7 +91,7 @@ Usually skip visuals for single facts, one-step actions, simple edits, basic ins
 
 ## File editing constraints
 
-Use `apply_patch` for local file edits. Do not create or edit files with `cat` or other shell write tricks. Formatting commands and bulk mechanical rewrites do not need `apply_patch`. Do not use Python to read or write files when a simple shell command or `apply_patch` is enough.
+Use `hashline__read` to obtain current anchors, `hashline__patch` for routine local file edits, and `hashline__transaction` for reviewed recoverable batches. Do not create or edit files with shell write tricks. Formatting commands and bulk mechanical rewrites do not need Hashline. Do not use Python to read or write files when a Hashline tool is enough.
 
 You may find yourself working in a dirty worktree. Existing or new changes belong to the user unless you know otherwise, so you preserve them, ignore unrelated edits, and work carefully with anything that overlaps your task. If you cannot work around them you escalate to the user.
 

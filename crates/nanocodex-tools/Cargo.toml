@@ -32,8 +32,10 @@ portable-pty.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
 sha1.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+xxhash-rust.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true

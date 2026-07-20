@@ -39,7 +39,7 @@ nanocodex-tools = { version = "0.1.0", path = "crates/nanocodex-tools" }
 image = { version = "0.25.9", default-features = false, features = ["gif", "jpeg", "png", "pnm", "webp"] }
 iana-time-zone = "0.1.64"
 js-sys = "0.3.82"
-nix = { version = "0.30.1", default-features = false, features = ["process", "signal", "user"] }
+nix = { version = "0.30.1", default-features = false, features = ["fs", "process", "signal", "user"] }
 portable-pty = "0.9.0"
 opentelemetry = { version = "0.31.0", features = ["trace"] }
 opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-client", "reqwest-rustls-webpki-roots", "trace"] }
@@ -60,6 +60,7 @@ serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 sha1 = "0.11.0"
 sha2 = "0.10.9"
+xxhash-rust = { version = "0.8.15", features = ["xxh3", "xxh32"] }
 simd-json = "=0.15.1"
 smallvec = { version = "1.15.1", features = ["serde"] }
 sonic-rs = "0.5.8"

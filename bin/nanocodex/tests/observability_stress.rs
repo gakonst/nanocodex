@@ -94,7 +94,7 @@ async fn retained_turns_and_hostile_tools_preserve_trace_topology() -> Result<()
         turns * (parallel_calls + 1)
     );
     assert_eq!(
-        event_count(&events, "tool.result", Some("apply_patch")),
+        event_count(&events, "tool.result", Some("hashline__patch")),
         turns
     );
     assert!(
@@ -393,7 +393,7 @@ const successful = await Promise.all(Array.from({{ length: {parallel_calls} }}, 
 ));
 const failures = await Promise.allSettled([
   tools[remote]({{ message: "__fail__" }}),
-  tools.apply_patch("definitely not a patch"),
+  tools.hashline__patch({{ path: "missing.txt", patch: "definitely not a patch" }}),
   tools.exec_command({{ cmd: "exit 23", login: false }}),
   tools.exec_command({{ cmd: "yes x | head -c 65536", login: false, max_output_tokens: 256 }})
 ]);

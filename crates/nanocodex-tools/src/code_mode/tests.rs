@@ -542,14 +542,31 @@ text("done");
 }
 
 #[tokio::test]
-async fn freeform_apply_patch_accepts_a_string() -> Result<()> {
-    let workspace = temporary_workspace("freeform-apply-patch")?;
+async fn hashline_family_round_trips_through_code_mode() -> Result<()> {
+    let workspace = temporary_workspace("hashline-family")?;
+    std::fs::write(workspace.join("notes.txt"), "alpha\nbeta\n")?;
     let tools = test_tools(&workspace);
     let history = Vec::new();
     let execution = tools
         .execute_code(
             r#"
-await tools.apply_patch("*** Begin Patch\n*** Add File: created.txt\n+created by patch\n*** End Patch");
+const initial = await tools.hashline__read({path: "notes.txt"});
+await tools.hashline__patch({
+  path: "notes.txt",
+  patch: `${initial.header}\nSWAP 2:${initial.lines[1].hash}:\n+bravo`
+});
+const observed = await tools.hashline__read({path: "notes.txt"});
+const mutations = [{
+  type: "update",
+  path: "notes.txt",
+  expected: {exactDigest: observed.exactDigest},
+  edits: [{type: "replaceAll", contents: "final\n"}]
+}];
+const preview = await tools.hashline__transaction({action: {type: "preview"}, mutations});
+await tools.hashline__transaction({
+  action: {type: "commitPreviewed", expectedPlanDigest: preview.planDigest},
+  mutations
+});
 text("done");
 "#,
             test_context(&history),
@@ -557,22 +574,29 @@ text("done");
         .await;
 
     assert!(execution.success, "{}", execution_output(&execution));
-    assert_eq!(execution.nested_calls.len(), 1);
+    assert_eq!(execution.nested_calls.len(), 5);
     assert_eq!(
-        execution.nested_calls[0].input,
-        Value::String(
-            "*** Begin Patch\n*** Add File: created.txt\n+created by patch\n*** End Patch"
-                .to_owned()
-        )
+        execution
+            .nested_calls
+            .iter()
+            .map(|call| call.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "hashline__read",
+            "hashline__patch",
+            "hashline__read",
+            "hashline__transaction",
+            "hashline__transaction"
+        ]
     );
     assert_eq!(
-        std::fs::read_to_string(workspace.join("created.txt"))?,
-        "created by patch\n"
+        std::fs::read_to_string(workspace.join("notes.txt"))?,
+        "final\n"
     );
+    assert!(!workspace.join(".nanocodex/hashline-transactions").exists());
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
-
 #[tokio::test]
 async fn exec_pragma_and_wait_limit_direct_output() -> Result<()> {
     let workspace = temporary_workspace("code-output-limits")?;
@@ -748,7 +772,11 @@ fn model_description_uses_codex_style_declarations() {
         .expect("exec should have a description");
     assert!(description.contains("// @exec:"));
     assert!(description.contains("must be a base64-encoded `data:` URL"));
-    assert!(description.contains("apply_patch(input: string): Promise<unknown>"));
+    assert!(description.contains("hashline__read(args: {"));
+    assert!(description.contains("hashline__find_block(args: {"));
+    assert!(description.contains("hashline__patch(args: {"));
+    assert!(description.contains("hashline__transaction(args: {"));
+    assert!(!description.contains("apply_patch"));
     assert!(description.contains("exec_command(args: {"));
     assert!(!description.contains("Input schema:"));
     assert_eq!(
