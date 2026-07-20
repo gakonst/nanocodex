@@ -1,8 +1,8 @@
 use std::{path::Path, sync::Arc};
 
 use nanocodex_core::{
-    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ReasoningSummary, ResponseItem,
-    ToolDefinition, Usage, responses::RequestProfile,
+    AgentEventKind, EventSink, MODEL, MessagePhase, ModelConfig, Prompt, ReasoningSummary,
+    ResponseItem, ToolDefinition, Usage, responses::RequestProfile,
 };
 use nanocodex_service::{
     CodeCall, CodeCallKind, ResponsesAttempt, ResponsesAttemptFactory, ResponsesClient,
@@ -320,7 +320,10 @@ where
             Ok(message) => {
                 self.events.emit(
                     AgentEventKind::AssistantMessage,
-                    AssistantMessage { text: &message },
+                    AssistantMessage {
+                        text: &message,
+                        phase: MessagePhase::FinalAnswer,
+                    },
                 )?;
                 self.stats
                     .apply_transport(self.transport_stats.since(transport_before));

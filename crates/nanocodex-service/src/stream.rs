@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use nanocodex_core::{
-    AgentEventKind, ContentItem, EventSink, ResponseItem,
+    AgentEventKind, ContentItem, EventSink, MessagePhase, MessageRole, ResponseItem,
     responses::{ServerEvent, Usage},
 };
 use serde::Serialize;
@@ -49,6 +51,21 @@ pub enum CodeCallKind {
 }
 
 #[derive(Serialize)]
+struct AssistantTextDelta<'a> {
+    model_call_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<MessagePhase>,
+    text: &'a str,
+}
+
+struct AssistantStreamItem {
+    item_id: Option<Box<str>>,
+    phase: Option<MessagePhase>,
+}
+
+#[derive(Serialize)]
 struct TextDelta<'a> {
     model_call_index: u32,
     text: &'a str,
@@ -77,16 +94,38 @@ pub(crate) async fn receive(
     started_at: Instant,
 ) -> Result<TurnResult, ResponsesServiceError> {
     let mut done_items = Vec::with_capacity(2);
+    let mut assistant_items = HashMap::new();
     let mut timing = StreamTiming::new(started_at);
 
     loop {
         match next_event(socket, events, "generation", call_index, &mut timing).await? {
-            ServerEvent::OutputTextDelta { delta } => {
+            ServerEvent::OutputItemAdded { output_index, item } => {
+                let Some(output_index) = output_index else {
+                    continue;
+                };
+                let ResponseItem::Message {
+                    id,
+                    role: MessageRole::Assistant,
+                    phase,
+                    ..
+                } = item
+                else {
+                    continue;
+                };
+                assistant_items.insert(output_index, AssistantStreamItem { item_id: id, phase });
+            }
+            ServerEvent::OutputTextDelta {
+                output_index,
+                delta,
+            } => {
                 let payload_bytes = delta.len();
+                let item = output_index.and_then(|index| assistant_items.get(&index));
                 let seq = events.emit_with_sequence(
                     AgentEventKind::AssistantDelta,
-                    TextDelta {
+                    AssistantTextDelta {
                         model_call_index: call_index,
+                        item_id: item.and_then(|item| item.item_id.as_deref()),
+                        phase: item.and_then(|item| item.phase),
                         text: &delta,
                     },
                 )?;
@@ -218,6 +257,7 @@ async fn next_event(
         ServerEvent::OutputTextDelta { .. }
             | ServerEvent::ReasoningSummaryTextDelta { .. }
             | ServerEvent::ReasoningSummaryDelta { .. }
+            | ServerEvent::OutputItemAdded { .. }
             | ServerEvent::OutputItemDone { .. }
     ) {
         timing.first_output_ns.get_or_insert(elapsed);

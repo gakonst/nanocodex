@@ -70,6 +70,109 @@ async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> 
 }
 
 #[tokio::test]
+async fn assistant_events_preserve_commentary_and_final_answer_phases() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let initial = next_json(&mut socket).await?;
+        assert_eq!(initial["previous_response_id"], "resp-warmup");
+        let commentary = send_assistant_output(
+            &mut socket,
+            0,
+            "msg-commentary",
+            "commentary",
+            "I’ll verify.",
+        )
+        .await?;
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-commentary",
+                &[
+                    commentary,
+                    json!({
+                        "id": "call-item",
+                        "type": "custom_tool_call",
+                        "call_id": "call-exec",
+                        "name": "exec",
+                        "input": "text(\"observed\");"
+                    }),
+                ],
+            ),
+        )
+        .await?;
+
+        let continuation = next_json(&mut socket).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-commentary");
+        let final_answer =
+            send_assistant_output(&mut socket, 0, "msg-final", "final_answer", "Done.").await?;
+        send_json(
+            &mut socket,
+            completed_response("resp-final", &[final_answer]),
+        )
+        .await
+    });
+
+    let workspace = temporary_workspace("assistant-phases")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, mut events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+    let turn = agent.prompt("check the live state").await?;
+    assert_eq!(turn.result().await?.final_message, "Done.");
+    drop(agent);
+
+    let mut deltas = Vec::new();
+    let mut final_message = None;
+    while let Some(event) = events.recv().await {
+        match event.kind {
+            nanocodex_core::AgentEventKind::AssistantDelta => {
+                deltas.push(event.decode_payload::<Value>()?);
+            }
+            nanocodex_core::AgentEventKind::AssistantMessage => {
+                final_message = Some(event.decode_payload::<Value>()?);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        deltas,
+        [
+            json!({
+                "model_call_index": 1,
+                "item_id": "msg-commentary",
+                "phase": "commentary",
+                "text": "I’ll verify."
+            }),
+            json!({
+                "model_call_index": 2,
+                "item_id": "msg-final",
+                "phase": "final_answer",
+                "text": "Done."
+            })
+        ]
+    );
+    assert_eq!(
+        final_message,
+        Some(json!({ "text": "Done.", "phase": "final_answer" }))
+    );
+
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn steering_is_bounded_fifo_and_joins_at_the_next_model_boundary() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
@@ -1485,6 +1588,62 @@ where
         ),
     )
     .await
+}
+
+async fn send_assistant_output<S>(
+    socket: &mut WebSocketStream<S>,
+    output_index: u32,
+    item_id: &str,
+    phase: &str,
+    text: &str,
+) -> Result<Value>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let completed = json!({
+        "id": item_id,
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "phase": phase,
+        "content": [{ "type": "output_text", "text": text }]
+    });
+    send_json(
+        socket,
+        json!({
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {
+                "id": item_id,
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+                "phase": phase,
+                "content": []
+            }
+        }),
+    )
+    .await?;
+    send_json(
+        socket,
+        json!({
+            "type": "response.output_text.delta",
+            "output_index": output_index,
+            "content_index": 0,
+            "delta": text
+        }),
+    )
+    .await?;
+    send_json(
+        socket,
+        json!({
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": completed.clone()
+        }),
+    )
+    .await?;
+    Ok(completed)
 }
 
 fn completed_response(response_id: &str, output: &[Value]) -> Value {

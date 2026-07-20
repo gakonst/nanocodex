@@ -36,8 +36,18 @@ pub struct OutputTokenDetails {
 pub enum ServerEvent {
     #[serde(rename = "response.created")]
     Created,
+    #[serde(rename = "response.output_item.added")]
+    OutputItemAdded {
+        #[serde(default)]
+        output_index: Option<u32>,
+        item: ResponseItem,
+    },
     #[serde(rename = "response.output_text.delta")]
-    OutputTextDelta { delta: String },
+    OutputTextDelta {
+        #[serde(default)]
+        output_index: Option<u32>,
+        delta: String,
+    },
     #[serde(rename = "response.reasoning_summary_text.delta")]
     ReasoningSummaryTextDelta { delta: String },
     #[serde(rename = "response.reasoning_summary.delta")]
