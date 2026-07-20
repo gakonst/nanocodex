@@ -28,6 +28,7 @@ pub(super) struct Conversation {
     pub(super) scroll_from_bottom: usize,
     streamed_this_turn: bool,
     reasoning: String,
+    pending_run_error: Option<String>,
     pub(super) queued_prompts: VecDeque<String>,
     pub(super) pending_steers: VecDeque<String>,
 }
@@ -42,6 +43,7 @@ impl Conversation {
             scroll_from_bottom: 0,
             streamed_this_turn: false,
             reasoning: String::new(),
+            pending_run_error: None,
             queued_prompts: VecDeque::new(),
             pending_steers: VecDeque::new(),
         }
@@ -105,6 +107,7 @@ impl Conversation {
                 self.running = true;
                 self.streamed_this_turn = false;
                 self.reasoning.clear();
+                self.pending_run_error = None;
                 "Thinking".clone_into(&mut self.status);
             }
             AgentEventKind::RunSteered => {
@@ -154,19 +157,18 @@ impl Conversation {
             }
             AgentEventKind::RunError => {
                 if let Ok(payload) = event.decode_payload::<ErrorPayload>() {
-                    self.transcript.push(TranscriptItem::Error(payload.message));
+                    self.pending_run_error = Some(payload.message);
                 }
             }
             AgentEventKind::RunCompleted => {
+                if let Some(error) = self.pending_run_error.take() {
+                    self.transcript.push(TranscriptItem::Error(error));
+                }
                 self.running = false;
                 "Ready".clone_into(&mut self.status);
             }
             AgentEventKind::RunFailed => {
-                self.running = false;
-                self.status = match event.decode_payload::<TerminalPayload>() {
-                    Ok(payload) if payload.status == "cancelled" => "Cancelled".to_owned(),
-                    _ => "Turn failed".to_owned(),
-                };
+                self.run_failed(event);
             }
             AgentEventKind::ApiEvent
             | AgentEventKind::ModelWarmupStarted
@@ -186,6 +188,22 @@ impl Conversation {
             | AgentEventKind::ModelConnectionFailed => return false,
         }
         true
+    }
+
+    fn run_failed(&mut self, event: &AgentEvent) {
+        self.running = false;
+        let cancelled = event
+            .decode_payload::<TerminalPayload>()
+            .is_ok_and(|payload| payload.status == "cancelled");
+        if cancelled {
+            self.pending_run_error = None;
+            "Cancelled".clone_into(&mut self.status);
+        } else {
+            if let Some(error) = self.pending_run_error.take() {
+                self.transcript.push(TranscriptItem::Error(error));
+            }
+            "Turn failed".clone_into(&mut self.status);
+        }
     }
 
     fn push_assistant_delta(&mut self, delta: &str) {
@@ -677,7 +695,21 @@ fn reasoning_tail(reasoning: &str) -> String {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use nanocodex::{AgentEvent, AgentEventKind};
+    use serde_json::{Value, json};
+
     use super::{App, PaneId};
+
+    fn event(kind: AgentEventKind, payload: &Value) -> AgentEvent {
+        serde_json::from_value(json!({
+            "protocol_version": 1,
+            "request_id": "test",
+            "seq": 1,
+            "type": kind,
+            "payload": payload,
+        }))
+        .unwrap()
+    }
 
     #[test]
     fn btw_conversation_isolated_and_focus_toggles() {
@@ -755,6 +787,36 @@ mod tests {
 
         assert!(app.main.running);
         assert_eq!(app.main.status, "Thinking");
+    }
+
+    #[test]
+    fn cancelled_turn_is_terminal_without_rendering_a_generic_error() {
+        let mut app = App::new(".".into());
+        assert!(app.queue_prompt(PaneId::Main, "run it".to_owned()));
+        app.main.on_agent_event(&event(
+            AgentEventKind::RunStarted,
+            &json!({ "status": "started" }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({ "call_id": "call-1", "tool": "exec", "arguments": "sleep 30" }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolResult,
+            &json!({ "call_id": "call-1", "status": "cancelled" }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::RunError,
+            &json!({ "message": "turn cancelled" }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::RunFailed,
+            &json!({ "status": "cancelled" }),
+        ));
+
+        assert!(!app.main.running);
+        assert_eq!(app.main.status, "Cancelled");
+        assert_eq!(app.main.transcript.len(), 2);
     }
 
     #[test]

@@ -39,6 +39,11 @@ impl Transcript {
         self.entries.is_empty()
     }
 
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     pub(super) fn push(&mut self, item: TranscriptItem) {
         self.entries.push(TranscriptEntry::new(item));
     }
