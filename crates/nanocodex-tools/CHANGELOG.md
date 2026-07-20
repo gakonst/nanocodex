@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Add per-crate changelogs
 - [release] Automate publishing and native updates
 
 ### Refactor

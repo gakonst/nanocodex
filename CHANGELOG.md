@@ -73,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Sharpen repository positioning
 - Add complete agent lifecycle example
 - Streamline readme presentation
 - Center readme on public agent lifecycle
@@ -178,6 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Add per-crate changelogs
 - [release] Finalize 0.1.0 changelog
 - [release] Update 0.1.0 changelog
 - [release] Refresh 0.1.0 changelog
