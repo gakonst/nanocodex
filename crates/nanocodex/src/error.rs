@@ -9,7 +9,7 @@ pub enum NanocodexError {
     #[error("invalid task request: {0}")]
     InvalidRequest(String),
 
-    #[error("failed to resolve task workspace {path}")]
+    #[error("failed to resolve task workspace {path}: {source}")]
     ResolveWorkspace {
         path: PathBuf,
         #[source]
@@ -25,7 +25,7 @@ pub enum NanocodexError {
     #[error("an active agent session cannot change workspace from {current} to {requested}")]
     WorkspaceChanged { current: String, requested: String },
 
-    #[error("failed to read project instructions from {path}")]
+    #[error("failed to read project instructions from {path}: {source}")]
     ReadProjectInstructions {
         path: PathBuf,
         #[source]
@@ -75,15 +75,18 @@ pub enum NanocodexError {
     ResponsesService(#[from] nanocodex_service::ResponsesServiceError),
 
     #[cfg(not(target_family = "wasm"))]
-    #[error("failed to build tools for an agent driver")]
+    #[error("failed to build tools for an agent driver: {0}")]
     Tools(#[from] nanocodex_tools::ToolsBuildError),
 
-    #[error("Responses service middleware failed")]
+    #[error("Responses service middleware failed: {0}")]
     ResponsesMiddleware(#[from] tower::BoxError),
 }
 
 impl NanocodexError {
-    pub(crate) fn responses_error(&self) -> Option<&ResponsesError> {
+    /// Returns the underlying Responses transport/API error, including when a
+    /// caller-provided Tower middleware boxed the standard service error.
+    #[must_use]
+    pub fn responses_error(&self) -> Option<&ResponsesError> {
         match self {
             Self::Responses(error) => return Some(error),
             Self::ResponsesService(error) => return error.responses_error(),
@@ -112,13 +115,30 @@ mod tests {
     use nanocodex_service::ResponsesServiceError;
 
     #[test]
-    fn responses_classification_survives_middleware_boxing() {
+    fn responses_classification_covers_every_service_boundary() {
+        let direct = NanocodexError::Responses(ResponsesError::UnexpectedEnd);
+        assert!(matches!(
+            direct.responses_error(),
+            Some(ResponsesError::UnexpectedEnd)
+        ));
+
+        let service = NanocodexError::ResponsesService(ResponsesServiceError::from(
+            ResponsesError::UnexpectedEnd,
+        ));
+        assert!(matches!(
+            service.responses_error(),
+            Some(ResponsesError::UnexpectedEnd)
+        ));
+
         let service = ResponsesServiceError::from(ResponsesError::UnexpectedEnd);
         let error = NanocodexError::ResponsesMiddleware(Box::new(service));
-
         assert!(matches!(
             error.responses_error(),
             Some(ResponsesError::UnexpectedEnd)
         ));
+        assert_eq!(
+            error.to_string(),
+            "Responses service middleware failed: Responses WebSocket closed without a close frame"
+        );
     }
 }

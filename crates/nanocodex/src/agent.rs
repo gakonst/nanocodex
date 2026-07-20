@@ -119,16 +119,12 @@ impl TurnControl {
                 "steer instruction must not be empty".to_owned(),
             ));
         }
-        let (result, receiver) = oneshot::channel();
-        self.commands
-            .send(Command::Steer {
-                key: self.key,
-                prompt,
-                result,
-            })
-            .await
-            .map_err(|_| NanocodexError::AgentStopped)?;
-        receiver.await.map_err(|_| NanocodexError::AgentStopped)?
+        request_command(&self.commands, |result| Command::Steer {
+            key: self.key,
+            prompt,
+            result,
+        })
+        .await
     }
 
     /// Cancels the targeted unfinished turn.
@@ -138,15 +134,11 @@ impl TurnControl {
     /// Returns an error when the turn has already finished or if the driver
     /// stops.
     pub async fn cancel(&self) -> Result<()> {
-        let (result, receiver) = oneshot::channel();
-        self.commands
-            .send(Command::Cancel {
-                key: self.key,
-                result,
-            })
-            .await
-            .map_err(|_| NanocodexError::AgentStopped)?;
-        receiver.await.map_err(|_| NanocodexError::AgentStopped)?
+        request_command(&self.commands, |result| Command::Cancel {
+            key: self.key,
+            result,
+        })
+        .await
     }
 }
 
@@ -363,18 +355,20 @@ async fn request_fork(
     commands: &mpsc::Sender<Command>,
     checkpoint: Option<Arc<CommittedCheckpoint>>,
 ) -> Result<(Nanocodex, AgentEvents)> {
-    let (result, receiver) = oneshot::channel();
-    commands
-        .send(Command::Fork { checkpoint, result })
-        .await
-        .map_err(|_| NanocodexError::AgentStopped)?;
-    receiver.await.map_err(|_| NanocodexError::AgentStopped)?
+    request_command(commands, |result| Command::Fork { checkpoint, result }).await
 }
 
 async fn request_spawn(commands: &mpsc::Sender<Command>) -> Result<(Nanocodex, AgentEvents)> {
+    request_command(commands, |result| Command::Spawn { result }).await
+}
+
+async fn request_command<T>(
+    commands: &mpsc::Sender<Command>,
+    command: impl FnOnce(oneshot::Sender<Result<T>>) -> Command,
+) -> Result<T> {
     let (result, receiver) = oneshot::channel();
     commands
-        .send(Command::Spawn { result })
+        .send(command(result))
         .await
         .map_err(|_| NanocodexError::AgentStopped)?;
     receiver.await.map_err(|_| NanocodexError::AgentStopped)?
