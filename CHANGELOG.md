@@ -5,18 +5,6 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-- Renamed persistent builder configuration to `instructions(...)`, made custom
-  Responses services factory-only, and extended exact-turn cancellation to
-  queued as well as active turns. Workspace policy now belongs exclusively to
-  the agent builder, prompts contain only user input, and ignored `Turn` handles
-  produce a compiler warning because dropping one does not cancel its work.
-- Flattened lifecycle failures into `NanocodexError`, so callers match variants
-  such as `TurnCancelled` directly, and exposed Responses failure
-  classification through caller-provided Tower middleware with
-  `NanocodexError::responses_error()`.
-
 ## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-20
 
 ### Highlights
@@ -30,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- [cli] Select one command configuration
+- [service] Own proxy-aware WebSocket connector
+- [service] Honor SSL_CERT_FILE for WebSockets
 - [wasm] Align checkpoint turn handling
 - [ci] Allow pinned WebSocket forks
 - [service] Honor proxy settings for WebSockets
@@ -82,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Add complete agent lifecycle example
+- Streamline readme presentation
+- Center readme on public agent lifecycle
+- Document the lifecycle API design
 - Lead README with Codex comparison
 - Fix Harbor spelling
 - [eval] Start Rust runner design log
@@ -137,6 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- [cli] Add steerable queues and cancellation
+- [agent] Add controllable conversation lifecycle
 - [cli] Add steerable queues, btw forks, and subagents
 - [agent] Add checkpoint forks and active-turn steering
 - [web] Add commit navigation rail
@@ -181,6 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Automate publishing and native updates
 - Defer Windows test coverage
 - Update repository identity
 - Sync Codex Sol base instructions
@@ -262,10 +260,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- [tui] Coalesce streaming renders
 - Cache guarded texlive verifier setup
 
 ### Refactor
 
+- [agent] Simplify error propagation
+- [agent] Flatten the public error surface
 - [tools] Return typed handler results
 - Rename project to nanocodex
 - Expose pending turn results
