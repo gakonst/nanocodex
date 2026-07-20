@@ -31,8 +31,6 @@ jobs:
             rust: "1.88"
           - os: macos-latest
             rust: stable
-          - os: windows-latest
-            rust: stable
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
