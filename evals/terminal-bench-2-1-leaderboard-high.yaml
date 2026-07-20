@@ -14,6 +14,10 @@ agents:
       effort: high
       web_search: false
       subagents: false
+      # Code Mode requires Node. Canonical TB 2.1 images are Debian/Ubuntu
+      # derivatives but do not preinstall it, so provision this agent runtime
+      # during Harbor's ordinary agent-install phase.
+      install_node: true
 
 datasets:
   - name: terminal-bench/terminal-bench-2-1
