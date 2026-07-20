@@ -25,6 +25,7 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "proce
 unicode-width.workspace = true
 
 [dev-dependencies]
+reqwest.workspace = true
 tokio-tungstenite.workspace = true
 
 [[bin]]

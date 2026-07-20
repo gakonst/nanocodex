@@ -106,6 +106,7 @@ impl ImageGenerationHandler {
             success: true,
             code_mode_value: Some(code_mode_value),
             metadata: None,
+            process_trace: None,
         }
     }
 

@@ -138,7 +138,10 @@ impl DynamicToolProvider for Mcp {
             let state = Arc::clone(&self.state);
             let span = info_span!(
                 target: "nanocodex_mcp",
+                parent: None,
                 "mcp.server_start",
+                otel.kind = "client",
+                otel.status_code = tracing::field::Empty,
                 mcp.server = %name,
                 status = tracing::field::Empty,
                 tool.count = tracing::field::Empty,
@@ -167,6 +170,10 @@ impl DynamicToolProvider for Mcp {
                         } else {
                             "failed"
                         },
+                    );
+                    current.record(
+                        "otel.status_code",
+                        if result.is_ok() { "OK" } else { "ERROR" },
                     );
                     if let Ok(tools) = &result {
                         current.record("tool.count", tools.len());
@@ -198,13 +205,25 @@ impl DynamicToolProvider for Mcp {
                 "MCP tool {name} requires an object argument"
             )));
         };
+        let argument_bytes = serde_json::to_vec(&arguments).map_or(0, |encoded| encoded.len());
+        let argument_keys = arguments
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(",");
+        let argument_count = arguments.len();
         let params =
             CallToolRequestParams::new(entry.remote_name.clone()).with_arguments(arguments);
         let span = info_span!(
             target: "nanocodex_mcp",
             "mcp.tool_call",
+            otel.kind = "client",
+            otel.status_code = tracing::field::Empty,
             mcp.server = %entry.server_name,
             mcp.tool = %entry.remote_name,
+            mcp.arguments.bytes = argument_bytes,
+            mcp.arguments.keys = argument_keys,
+            mcp.arguments.count = argument_count,
             status = tracing::field::Empty,
         );
         let result = match tokio::time::timeout(
@@ -216,6 +235,7 @@ impl DynamicToolProvider for Mcp {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
                 span.record("status", "failed");
+                span.record("otel.status_code", "ERROR");
                 return Some(ToolExecution::error(format!(
                     "MCP tool {}/{} failed: {error}",
                     entry.server_name, entry.remote_name
@@ -223,6 +243,7 @@ impl DynamicToolProvider for Mcp {
             }
             Err(_) => {
                 span.record("status", "timeout");
+                span.record("otel.status_code", "ERROR");
                 return Some(ToolExecution::error(format!(
                     "MCP tool {}/{} exceeded {:.1} seconds",
                     entry.server_name,
@@ -233,9 +254,12 @@ impl DynamicToolProvider for Mcp {
         };
         let success = !result.is_error.unwrap_or(false);
         span.record("status", if success { "completed" } else { "failed" });
+        span.record("otel.status_code", if success { "OK" } else { "ERROR" });
         let value = match serde_json::to_value(result) {
             Ok(value) => value,
             Err(error) => {
+                span.record("status", "failed");
+                span.record("otel.status_code", "ERROR");
                 return Some(ToolExecution::error(format!(
                     "failed to encode MCP tool result: {error}"
                 )));

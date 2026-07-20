@@ -42,6 +42,15 @@ pub struct ToolExecution {
     pub success: bool,
     pub(crate) code_mode_value: Option<Value>,
     pub metadata: Option<Box<RawValue>>,
+    pub(crate) process_trace: Option<ProcessTrace>,
+}
+
+pub(crate) struct ProcessTrace {
+    exit_code: Option<i32>,
+    session_id: Option<i64>,
+    original_token_count: Option<usize>,
+    output_bytes: usize,
+    wall_time_seconds: f64,
 }
 
 impl ToolExecution {
@@ -52,6 +61,7 @@ impl ToolExecution {
             success: true,
             code_mode_value: None,
             metadata: None,
+            process_trace: None,
         }
     }
 
@@ -62,6 +72,7 @@ impl ToolExecution {
             success: false,
             code_mode_value: None,
             metadata: None,
+            process_trace: None,
         }
     }
 
@@ -83,6 +94,7 @@ impl ToolExecution {
                 success,
                 code_mode_value: Some(output),
                 metadata: None,
+                process_trace: None,
             },
             Err(error) => Self::error(format!("failed to encode tool result: {error}")),
         }
@@ -96,6 +108,7 @@ impl ToolExecution {
             success: true,
             code_mode_value: None,
             metadata: None,
+            process_trace: None,
         }
     }
 
@@ -128,6 +141,24 @@ impl ToolExecution {
                 self.success = false;
             }
         }
+        self
+    }
+
+    pub(crate) fn with_process_trace(
+        mut self,
+        exit_code: Option<i32>,
+        session_id: Option<i64>,
+        original_token_count: Option<usize>,
+        output_bytes: usize,
+        wall_time_seconds: f64,
+    ) -> Self {
+        self.process_trace = Some(ProcessTrace {
+            exit_code,
+            session_id,
+            original_token_count,
+            output_bytes,
+            wall_time_seconds,
+        });
         self
     }
 }
@@ -495,12 +526,47 @@ impl ToolRegistry {
         input: Value,
         context: ToolContext<'_>,
     ) -> ToolExecution {
+        let arguments_bytes = serde_json::to_vec(&input).map_or(0, |encoded| encoded.len());
+        let arguments_kind = match &input {
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+        };
+        let arguments_count = input.as_object().map_or_else(
+            || input.as_array().map_or(1, Vec::len),
+            serde_json::Map::len,
+        );
+        let argument_keys = input
+            .as_object()
+            .map(|object| {
+                object
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
         let span = info_span!(
             target: "nanocodex_tools",
             "tool.execute",
+            otel.kind = "internal",
+            otel.status_code = tracing::field::Empty,
             tool.name = name,
             session.id = context.session_id,
             tool.call_id = context.call_id,
+            tool.arguments.bytes = arguments_bytes,
+            tool.arguments.kind = arguments_kind,
+            tool.arguments.count = arguments_count,
+            tool.arguments.keys = argument_keys,
+            process.exit.code = tracing::field::Empty,
+            process.running = tracing::field::Empty,
+            process.wall_time_ms = tracing::field::Empty,
+            shell.session.id = tracing::field::Empty,
+            tool.output.bytes = tracing::field::Empty,
+            tool.output.original_tokens = tracing::field::Empty,
             status = tracing::field::Empty,
             duration_ns = tracing::field::Empty,
         );
@@ -518,9 +584,27 @@ impl ToolRegistry {
             },
         );
         span.record(
+            "otel.status_code",
+            if execution.success { "OK" } else { "ERROR" },
+        );
+        span.record(
             "duration_ns",
             u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
         );
+        if let Some(process) = &execution.process_trace {
+            if let Some(exit_code) = process.exit_code {
+                span.record("process.exit.code", exit_code);
+            }
+            span.record("process.running", process.session_id.is_some());
+            span.record("process.wall_time_ms", process.wall_time_seconds * 1_000.0);
+            if let Some(session_id) = process.session_id {
+                span.record("shell.session.id", session_id);
+            }
+            span.record("tool.output.bytes", process.output_bytes);
+            if let Some(original_token_count) = process.original_token_count {
+                span.record("tool.output.original_tokens", original_token_count);
+            }
+        }
         execution
     }
 

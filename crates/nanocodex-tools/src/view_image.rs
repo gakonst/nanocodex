@@ -111,6 +111,7 @@ impl Tool for ViewImageHandler {
                 "detail": detail,
             })),
             metadata: None,
+            process_trace: None,
         }
     }
 }

@@ -1,8 +1,8 @@
 use std::{path::Path, sync::Arc};
 
 use nanocodex_core::{
-    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, ToolDefinition, Usage,
-    responses::RequestProfile,
+    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ReasoningSummary, ResponseItem,
+    ToolDefinition, Usage, responses::RequestProfile,
 };
 use nanocodex_service::{
     CodeCall, CodeCallKind, ResponsesAttempt, ResponsesAttemptFactory, ResponsesClient,
@@ -430,8 +430,11 @@ where
         let tool_span = info_span!(
             target: "nanocodex",
             "tool.call",
+            otel.kind = "internal",
+            otel.status_code = tracing::field::Empty,
             tool.name = %call.name,
             tool.call_id = %call.call_id,
+            tool.arguments.bytes = call.input.len(),
             model.call_index = call_index,
             status = tracing::field::Empty,
             duration_ns = tracing::field::Empty,
@@ -447,14 +450,8 @@ where
         .await;
         prepare_output_images(&mut execution.output).await;
         let duration_ns = elapsed_ns(started_at);
-        tool_span.record(
-            "status",
-            if execution.success {
-                "completed"
-            } else {
-                "failed"
-            },
-        );
+        tool_span.record("status", status(execution.success));
+        tool_span.record("otel.status_code", otel_status(execution.success));
         tool_span.record("duration_ns", duration_ns);
         self.stats.tool_wall_duration_ns += duration_ns;
         for nested in &execution.nested_calls {
@@ -569,7 +566,10 @@ where
         let span = info_span!(
             target: "nanocodex",
             "model.warmup",
+            otel.kind = "internal",
+            otel.status_code = tracing::field::Empty,
             model = MODEL,
+            system_prompt.bytes = self.config.system_prompt().len(),
             status = tracing::field::Empty,
             duration_ns = tracing::field::Empty,
         );
@@ -582,6 +582,7 @@ where
             Ok(success) => success,
             Err(error) => {
                 span.record("status", "failed");
+                span.record("otel.status_code", "ERROR");
                 span.record("duration_ns", elapsed_ns(started_at));
                 return self.warmup_failed(started_at, error.into());
             }
@@ -590,6 +591,8 @@ where
         let connection_generation = success.connection_generation();
         self.server_reasoning_included |= success.server_reasoning_included();
         let ResponsesOutput::Warmup(response) = success.into_output() else {
+            span.record("status", "failed");
+            span.record("otel.status_code", "ERROR");
             return Err(AgentError::InvalidAttemptState {
                 detail: "warmup returned a non-warmup response",
             }
@@ -597,6 +600,7 @@ where
         };
         let duration_ns = elapsed_ns(started_at);
         span.record("status", "completed");
+        span.record("otel.status_code", "OK");
         span.record("duration_ns", duration_ns);
         self.stats.warmup_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
@@ -655,22 +659,18 @@ where
             conversation.delta_start,
             previous_response_id,
         );
-        let span = info_span!(
-            target: "nanocodex",
-            "model.call",
-            model = MODEL,
-            model.call_index = call_index,
-            previous_response = previous_response_id.is_some(),
-            status = tracing::field::Empty,
-            duration_ns = tracing::field::Empty,
-            input_tokens = tracing::field::Empty,
-            cached_input_tokens = tracing::field::Empty,
-            output_tokens = tracing::field::Empty,
+        let (input_item_count, input_bytes) = trace_model_input(&request);
+        let span = model_call_span(
+            call_index,
+            previous_response_id.is_some(),
+            input_item_count,
+            input_bytes,
         );
         let success = match self.client.execute(request).instrument(span.clone()).await {
             Ok(success) => success,
             Err(error) => {
                 span.record("status", "failed");
+                span.record("otel.status_code", "ERROR");
                 span.record("duration_ns", elapsed_ns(started_at));
                 return self.model_call_failed(call_index, started_at, error.into());
             }
@@ -679,13 +679,17 @@ where
         let connection_generation = success.connection_generation();
         self.server_reasoning_included |= success.server_reasoning_included();
         let ResponsesOutput::Generation(response) = success.into_output() else {
+            span.record("status", "failed");
+            span.record("otel.status_code", "ERROR");
             return Err(AgentError::InvalidAttemptState {
                 detail: "generation returned a non-generation response",
             }
             .into());
         };
         let duration_ns = elapsed_ns(started_at);
+        record_model_response(&span, &response);
         span.record("status", "completed");
+        span.record("otel.status_code", "OK");
         span.record("duration_ns", duration_ns);
         if let Some(usage) = &response.usage {
             span.record("input_tokens", usage.input_tokens);
@@ -847,6 +851,80 @@ fn unsupported_tool_message(call: &CodeCall) -> Option<String> {
     })
 }
 
+fn trace_model_input(request: &ResponsesAttempt) -> (usize, usize) {
+    let item_count = request.input_item_count();
+    let items = request.input_items().collect::<Vec<_>>();
+    let bytes = serde_json::to_vec(&items).map_or(0, |encoded| encoded.len());
+    (item_count, bytes)
+}
+
+fn model_call_span(
+    call_index: u32,
+    previous_response: bool,
+    input_item_count: usize,
+    input_bytes: usize,
+) -> tracing::Span {
+    info_span!(
+        target: "nanocodex",
+        "model.call",
+        otel.kind = "internal",
+        otel.status_code = tracing::field::Empty,
+        model = MODEL,
+        model.call_index = call_index,
+        previous_response,
+        model.input.item_count = input_item_count,
+        model.input.bytes = input_bytes,
+        model.response.id = tracing::field::Empty,
+        model.response.status = tracing::field::Empty,
+        model.response.end_turn = tracing::field::Empty,
+        model.output.item_count = tracing::field::Empty,
+        model.output.bytes = tracing::field::Empty,
+        model.tool_call_count = tracing::field::Empty,
+        assistant.output.bytes = tracing::field::Empty,
+        status = tracing::field::Empty,
+        duration_ns = tracing::field::Empty,
+        input_tokens = tracing::field::Empty,
+        cached_input_tokens = tracing::field::Empty,
+        output_tokens = tracing::field::Empty,
+        reasoning.summary_count = tracing::field::Empty,
+        reasoning.summary = tracing::field::Empty,
+    )
+}
+
+fn record_model_response(span: &tracing::Span, response: &TurnResult) {
+    span.record("model.response.id", response.id.as_str());
+    span.record("model.response.status", response.status.as_str());
+    if let Some(end_turn) = response.end_turn {
+        span.record("model.response.end_turn", end_turn);
+    }
+    span.record("model.output.item_count", response.output_items.len());
+    span.record("model.tool_call_count", response.code_calls.len());
+    let output_bytes =
+        serde_json::to_vec(&response.output_items).map_or(0, |encoded| encoded.len());
+    span.record("model.output.bytes", output_bytes);
+    if let Some(message) = &response.final_message {
+        span.record("assistant.output.bytes", message.len());
+    }
+    record_response_reasoning(span, &response.output_items);
+}
+
+fn record_response_reasoning(span: &tracing::Span, items: &[ResponseItem]) {
+    let mut summaries = Vec::new();
+    for item in items {
+        let ResponseItem::Reasoning { summary, .. } = item
+        else {
+            continue;
+        };
+        summaries.extend(summary.iter().map(|summary| match summary {
+            ReasoningSummary::SummaryText { text } => text.as_ref(),
+        }));
+    }
+    span.record("reasoning.summary_count", summaries.len());
+    if !summaries.is_empty() {
+        span.record("reasoning.summary", summaries.join("\n\n"));
+    }
+}
+
 fn strip_item_id(mut item: ResponseItem) -> ResponseItem {
     item.strip_id();
     item
@@ -873,6 +951,10 @@ fn request_profile(
 
 const fn status(success: bool) -> &'static str {
     if success { "completed" } else { "failed" }
+}
+
+const fn otel_status(success: bool) -> &'static str {
+    if success { "OK" } else { "ERROR" }
 }
 
 #[cfg(test)]

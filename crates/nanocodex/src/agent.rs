@@ -264,14 +264,9 @@ where
     ///
     /// Returns an infrastructure error while receiving or starting a command.
     async fn run(mut self) -> Result<()> {
-        let session_span = info_span!(
-            target: "nanocodex",
-            "agent.session",
-            session.id = self.events.request_id(),
-            model = nanocodex_core::MODEL,
-            thinking = self.config.thinking.as_str(),
-        );
         self.tools.start_providers();
+        let session_id = self.events.request_id().to_owned();
+        let thinking = self.config.thinking;
         let mut model = ModelRun::new(
             self.events,
             self.config,
@@ -284,8 +279,13 @@ where
             turn_index += 1;
             let turn_span = info_span!(
                 target: "nanocodex",
-                parent: &session_span,
+                parent: None,
                 "agent.turn",
+                otel.kind = "internal",
+                otel.status_code = tracing::field::Empty,
+                session.id = session_id.as_str(),
+                model = nanocodex_core::MODEL,
+                thinking = thinking.as_str(),
                 turn.index = turn_index,
                 prompt.bytes = prompt.instruction.text_bytes(),
                 status = tracing::field::Empty,
@@ -302,6 +302,10 @@ where
                 } else {
                     "failed"
                 },
+            );
+            turn_span.record(
+                "otel.status_code",
+                if outcome.is_ok() { "OK" } else { "ERROR" },
             );
             drop(result.send(outcome));
         }

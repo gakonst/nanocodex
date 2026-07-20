@@ -115,6 +115,10 @@ impl ResponsesService {
                 "failed"
             },
         );
+        tracing::Span::current().record(
+            "otel.status_code",
+            if result.is_ok() { "OK" } else { "ERROR" },
+        );
         tracing::Span::current().record("duration_ns", elapsed_ns(started_at));
         connection.capture_turn_state();
         if let Err(failure) = &result {
@@ -320,6 +324,8 @@ impl ResponsesService {
         let connect_span = info_span!(
             target: "nanocodex_service",
             "responses.connect",
+            otel.kind = "client",
+            otel.status_code = tracing::field::Empty,
             purpose = ?purpose,
             connection.generation = generation,
             status = tracing::field::Empty,
@@ -340,6 +346,10 @@ impl ResponsesService {
             } else {
                 "failed"
             },
+        );
+        connect_span.record(
+            "otel.status_code",
+            if result.is_ok() { "OK" } else { "ERROR" },
         );
         connect_span.record("duration_ns", duration_ns(elapsed));
         request
@@ -389,14 +399,20 @@ impl Service<ResponsesAttempt> for ResponsesService {
 
     fn call(&mut self, request: ResponsesAttempt) -> Self::Future {
         let service = self.clone();
+        let input_item_count = request.input_item_count();
+        let input_bytes = serde_json::to_vec(&request.input()).map_or(0, |encoded| encoded.len());
         let span = info_span!(
             target: "nanocodex_service",
             "responses.attempt",
+            otel.kind = "client",
+            otel.status_code = tracing::field::Empty,
             phase = request.kind.phase(),
             model.call_index = request.call_index,
             attempt = request.attempt,
             max_attempts = request.max_attempts,
             replay.mode = request.replay_mode(),
+            model.input.item_count = input_item_count,
+            model.input.bytes = input_bytes,
             status = tracing::field::Empty,
             duration_ns = tracing::field::Empty,
         );

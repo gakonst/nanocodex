@@ -83,7 +83,7 @@ impl Tool for ExecCommandHandler {
             arguments.max_output_tokens,
         );
         let result = self.sessions.execute(command, &self.workspace).await;
-        ToolExecution::json(&result)
+        shell_execution(&result)
     }
 }
 
@@ -146,8 +146,18 @@ impl Tool for WriteStdinHandler {
             arguments.max_output_tokens,
         );
         let result = self.sessions.write_stdin(request).await;
-        ToolExecution::json(&result)
+        shell_execution(&result)
     }
+}
+
+fn shell_execution(result: &super::ExecCommandResult) -> ToolExecution {
+    ToolExecution::json(&result).with_process_trace(
+        result.exit_code,
+        result.session_id,
+        result.original_token_count,
+        result.output.len(),
+        result.wall_time_seconds,
+    )
 }
 
 #[derive(Deserialize)]

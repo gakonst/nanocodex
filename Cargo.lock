@@ -1545,6 +1545,7 @@ dependencies = [
  "nanocodex",
  "nanocodex-observability",
  "ratatui",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
@@ -1611,7 +1612,9 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "reqwest 0.12.28",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-opentelemetry",
@@ -1674,6 +1677,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
@@ -1845,6 +1849,8 @@ dependencies = [
  "percent-encoding",
  "rand 0.9.5",
  "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

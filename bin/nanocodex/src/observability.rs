@@ -19,6 +19,16 @@ pub(crate) struct ObservabilityArgs {
     )]
     log_filter: String,
 
+    /// Tracing filter applied only to exported OpenTelemetry spans.
+    #[arg(
+        long,
+        global = true,
+        env = "OTEL_LEVEL",
+        default_value = DEFAULT_FILTER,
+        value_parser = NonEmptyStringValueParser::new()
+    )]
+    otel_filter: String,
+
     /// Local tracing output format.
     #[arg(
         long,
@@ -75,6 +85,7 @@ impl ObservabilityArgs {
         );
         let mut builder = ObservabilityBuilder::new("nanocodex", env!("CARGO_PKG_VERSION"))
             .filter(self.log_filter)
+            .otel_filter(self.otel_filter)
             .format(self.log_format.into())
             .output(output)
             .environment(self.otel_environment);
