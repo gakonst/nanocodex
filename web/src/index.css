@@ -2271,11 +2271,12 @@ html[data-theme="dark"] .button--medium:focus-visible {
 }
 
 .commits-workspace {
-  grid-template-columns: minmax(0, 1fr);
+  position: relative;
+  grid-template-columns: 320px minmax(0, 1fr);
   grid-template-rows: 44px minmax(0, 1fr);
   grid-template-areas:
-    "header"
-    "viewer";
+    "sidebar header"
+    "sidebar viewer";
   overscroll-behavior: contain;
   contain: strict;
 }
@@ -2346,6 +2347,230 @@ html[data-theme="dark"] .button--medium:focus-visible {
 .mobile-tree-toggle,
 .workspace-backdrop {
   display: none;
+}
+
+.commit-sidebar {
+  grid-area: sidebar;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface-subtle);
+  border-right: 1px solid var(--border-soft);
+}
+
+.commit-sidebar-header {
+  display: flex;
+  flex: 0 0 62px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.commit-sidebar-header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.commit-sidebar-header strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.commit-sidebar-header > div > span {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.commit-sidebar-header > div > span svg {
+  width: 10px;
+  height: 10px;
+}
+
+.commit-sidebar-header .icon-button {
+  position: relative;
+  display: flex;
+  gap: 5px;
+  width: auto;
+  padding-inline: 8px;
+  background: var(--surface-raised);
+}
+
+.commit-sidebar-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.mobile-drawer-close {
+  display: none;
+}
+
+.commit-sidebar-header kbd {
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 9px;
+}
+
+.commit-scope-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-soft);
+  scrollbar-width: none;
+}
+
+.commit-scope-tabs button {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 7px;
+  color: var(--text-muted);
+  background: transparent;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+
+.commit-scope-tabs button:hover,
+.commit-scope-tabs button:focus-visible,
+.commit-scope-tabs button.is-active {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.commit-scope-tabs button span {
+  font-size: 9px;
+}
+
+.commit-query {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 9px;
+}
+
+.commit-query span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-query button {
+  padding: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.commit-query svg {
+  width: 11px;
+  height: 11px;
+}
+
+.commit-list {
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.commit-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-height: 108px;
+  padding: 14px 34px 14px 12px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+
+.commit-row:hover,
+.commit-row:focus-visible {
+  background: var(--surface-hover);
+}
+
+.commit-row.is-selected {
+  background: var(--surface-raised);
+  box-shadow: inset 2px 0 0 var(--text);
+}
+
+.commit-meta {
+  display: flex;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.commit-row strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.commit-row:hover strong,
+.commit-row:focus-visible strong {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.commit-byline {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-chevron {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  color: var(--text-muted);
+  transform: translateY(-50%);
+}
+
+.empty-state {
+  padding: 20px 12px;
+  color: var(--text-muted);
+}
+
+.empty-state button {
+  padding: 8px 0;
+  color: var(--text);
+  text-decoration: underline;
+  background: transparent;
+  cursor: pointer;
 }
 
 .commit-stream-toolbar {
@@ -2666,6 +2891,22 @@ html[data-theme="dark"] .button--medium:focus-visible {
     display: block;
   }
 
+  .commit-sidebar {
+    position: absolute;
+    z-index: 22;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(320px, 88vw);
+    max-height: none;
+    border-right: 1px solid var(--border);
+    box-shadow: 18px 0 50px rgba(0, 0, 0, 0.14);
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(-105%);
+    transition: transform 160ms ease, visibility 0s linear 160ms;
+  }
+
   .code-tree-panel {
     position: absolute;
     z-index: 22;
@@ -2683,14 +2924,16 @@ html[data-theme="dark"] .button--medium:focus-visible {
     transition: transform 160ms ease, visibility 0s linear 160ms;
   }
 
-  .code-tree-panel.is-mobile-open {
+  .code-tree-panel.is-mobile-open,
+  .commit-sidebar.is-mobile-open {
     visibility: visible;
     pointer-events: auto;
     transform: translateX(0);
     transition-delay: 0s;
   }
 
-  .code-workspace > .workspace-backdrop {
+  .code-workspace > .workspace-backdrop,
+  .commits-workspace > .workspace-backdrop {
     position: absolute;
     z-index: 21;
     inset: 0;
@@ -2701,7 +2944,8 @@ html[data-theme="dark"] .button--medium:focus-visible {
     cursor: pointer;
   }
 
-  .code-workspace > .workspace-backdrop.is-visible {
+  .code-workspace > .workspace-backdrop.is-visible,
+  .commits-workspace > .workspace-backdrop.is-visible {
     display: block;
   }
 
@@ -2728,6 +2972,27 @@ html[data-theme="dark"] .button--medium:focus-visible {
   }
 
   .mobile-tree-toggle svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .commit-sidebar-header .icon-button,
+  .commit-scope-tabs button {
+    min-height: 36px;
+  }
+
+  .mobile-drawer-close {
+    display: grid;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background: var(--surface-raised);
+    border-radius: var(--radius-small);
+    cursor: pointer;
+    place-items: center;
+  }
+
+  .mobile-drawer-close svg {
     width: 13px;
     height: 13px;
   }

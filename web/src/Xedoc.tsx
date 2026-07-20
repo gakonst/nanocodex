@@ -3,6 +3,7 @@
 import {
   ArrowUpRight,
   ChevronRight,
+  GitBranch,
   GitPullRequest,
   Moon,
   Search,
@@ -19,6 +20,7 @@ import {
   useState,
 } from "react";
 import type { CodeBrowserHandle } from "./CodeBrowser";
+import type { CommitCodeStreamHandle } from "./CommitCodeStream";
 import harborSummaryData from "./data/harbor-summary.json";
 import repositoryData from "./data/harness-repository.json";
 import type { EvalComparison } from "./Harbor";
@@ -38,6 +40,7 @@ const CommitCodeStream = lazy(() =>
 );
 
 export type Theme = "light" | "dark";
+type Scope = "all" | "eval" | "fix" | "docs" | "perf";
 type ProposalState = "ready" | "submitting" | "payment-required";
 type Surface =
   | "home"
@@ -109,6 +112,47 @@ const snapshot = repositoryData as RepositorySnapshot;
 const evalComparison = (
   harborSummaryData as { comparison: EvalComparison | null }
 ).comparison;
+const scopes: Array<{ id: Scope; label: string }> = [
+  { id: "all", label: "All commits" },
+  { id: "eval", label: "Eval" },
+  { id: "fix", label: "Fix" },
+  { id: "docs", label: "Docs" },
+  { id: "perf", label: "Perf" },
+];
+
+const dateFormatter = new Intl.DateTimeFormat("en", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+const relativeFormatter = new Intl.RelativeTimeFormat("en", {
+  numeric: "auto",
+});
+
+function relativeDate(value: string) {
+  const milliseconds = new Date(value).getTime() - Date.now();
+  const hours = Math.round(milliseconds / 3_600_000);
+  if (Math.abs(hours) < 24) return relativeFormatter.format(hours, "hour");
+  const days = Math.round(milliseconds / 86_400_000);
+  if (Math.abs(days) < 30) return relativeFormatter.format(days, "day");
+  return dateFormatter.format(new Date(value));
+}
+
+function subjectScope(subject: string) {
+  const prefix = subject.split(":", 1)[0].toLowerCase();
+  return scopes.some(({ id }) => id === prefix) ? (prefix as Scope) : "other";
+}
+
+function scopeCount(scope: Scope) {
+  if (scope === "all") return snapshot.commits.length;
+  return snapshot.commits.filter(
+    (commit) => subjectScope(commit.subject) === scope
+  ).length;
+}
+
 function commitSearchScore(commit: HarnessCommit, query: string) {
   const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!tokens.length) return 0;
@@ -226,19 +270,36 @@ export function Xedoc() {
     }
     return "home";
   });
+  const [scope, setScope] = useState<Scope>("all");
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [selectedHash, setSelectedHash] = useState(snapshot.repository.head);
   const [proposalOpen, setProposalOpen] = useState(false);
   const [proposalState, setProposalState] = useState<ProposalState>("ready");
   const [proposalTitle, setProposalTitle] = useState("");
+  const [commitRailOpen, setCommitRailOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const headerCenterRef = useRef<HTMLDivElement>(null);
   const codeBrowserRef = useRef<CodeBrowserHandle>(null);
+  const commitStreamRef = useRef<CommitCodeStreamHandle>(null);
 
   const selected =
     snapshot.commits.find((commit) => commit.hash === selectedHash) ??
     snapshot.commits[0];
+
+  const filteredCommits = useMemo(() => {
+    const matches = snapshot.commits
+      .filter(
+        (commit) => scope === "all" || subjectScope(commit.subject) === scope
+      )
+      .map((commit) => ({ commit, score: commitSearchScore(commit, query) }))
+      .filter(
+        (match): match is { commit: HarnessCommit; score: number } =>
+          match.score !== null
+      );
+    if (query.trim()) matches.sort((left, right) => right.score - left.score);
+    return matches.map((match) => match.commit);
+  }, [query, scope]);
 
   const searchResults = useMemo(
     () =>
@@ -328,6 +389,7 @@ export function Xedoc() {
       if (event.key === "Escape") {
         setSearchOpen(false);
         setProposalOpen(false);
+        setCommitRailOpen(false);
         codeBrowserRef.current?.closeSearches();
         return;
       }
@@ -377,9 +439,14 @@ export function Xedoc() {
   }, [surface]);
 
   const selectCommit = (commit: HarnessCommit) => {
+    const index = snapshot.commits.findIndex(
+      (candidate) => candidate.hash === commit.hash
+    );
     setSelectedHash(commit.hash);
     setSearchOpen(false);
+    setCommitRailOpen(false);
     setQuery("");
+    if (index >= 0) commitStreamRef.current?.scrollToCommit(index);
   };
 
   const submitProposal = async () => {
@@ -630,9 +697,132 @@ export function Xedoc() {
               className="commits-workspace"
               aria-label="Repository commits"
             >
+              <button
+                className={
+                  commitRailOpen
+                    ? "workspace-backdrop is-visible"
+                    : "workspace-backdrop"
+                }
+                type="button"
+                aria-label="Close commit list"
+                onClick={() => setCommitRailOpen(false)}
+              />
+              <aside
+                className={
+                  commitRailOpen
+                    ? "commit-sidebar is-mobile-open"
+                    : "commit-sidebar"
+                }
+                aria-labelledby="history-title"
+              >
+                <header className="commit-sidebar-header">
+                  <div>
+                    <strong id="history-title">Jump to commit</strong>
+                    <span>
+                      <GitBranch aria-hidden="true" />{" "}
+                      {snapshot.repository.branch} · {snapshot.commits.length}
+                    </span>
+                  </div>
+                  <nav
+                    className="commit-sidebar-actions"
+                    aria-label="Commit index actions"
+                  >
+                    <button
+                      className="icon-button"
+                      type="button"
+                      onClick={() => setSearchOpen(true)}
+                    >
+                      <Search aria-hidden="true" />
+                      <span className="sr-only">Find commits</span>
+                      <kbd>F</kbd>
+                    </button>
+                    <button
+                      className="mobile-drawer-close"
+                      type="button"
+                      onClick={() => setCommitRailOpen(false)}
+                      aria-label="Close commit index"
+                    >
+                      <X aria-hidden="true" />
+                    </button>
+                  </nav>
+                </header>
+
+                <nav
+                  className="commit-scope-tabs"
+                  aria-label="Quick jump scopes"
+                >
+                  {scopes.map((item) => (
+                    <button
+                      className={scope === item.id ? "is-active" : ""}
+                      type="button"
+                      key={item.id}
+                      onClick={() => setScope(item.id)}
+                    >
+                      {item.label} <span>{scopeCount(item.id)}</span>
+                    </button>
+                  ))}
+                </nav>
+
+                {query ? (
+                  <div className="commit-query">
+                    <span>
+                      {filteredCommits.length} matches for “{query}”
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setQuery("")}
+                      aria-label="Clear commit search"
+                    >
+                      <X aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : null}
+
+                <div className="commit-list">
+                  {filteredCommits.length ? (
+                    filteredCommits.map((commit) => {
+                      const isSelected = commit.hash === selected.hash;
+                      return (
+                        <button
+                          className={
+                            isSelected ? "commit-row is-selected" : "commit-row"
+                          }
+                          type="button"
+                          key={commit.hash}
+                          aria-current={isSelected ? "location" : undefined}
+                          onClick={() => selectCommit(commit)}
+                        >
+                          <span className="commit-meta">
+                            <span>{commit.shortHash}</span>
+                            <span>{relativeDate(commit.authoredAt)}</span>
+                          </span>
+                          <strong>{commit.subject}</strong>
+                          <span className="commit-byline">
+                            {commit.author} · {commit.stats.files} file
+                            {commit.stats.files === 1 ? "" : "s"}
+                          </span>
+                          <ChevronRight
+                            className="commit-chevron"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="empty-state">
+                      <p>No commits match this filter.</p>
+                      <button type="button" onClick={() => setQuery("")}>
+                        Clear search
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </aside>
               <Suspense fallback={null}>
                 <CommitCodeStream
+                  ref={commitStreamRef}
                   commits={snapshot.commits}
+                  onOpenCommitRail={() => setCommitRailOpen(true)}
                   patchUrl={snapshot.commitPatchUrl}
                   theme={theme}
                 />

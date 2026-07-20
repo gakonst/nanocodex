@@ -1,16 +1,19 @@
 import type { DiffIndicators } from "@pierre/diffs";
-import { type CodeViewHandle, useStableCallback } from "@pierre/diffs/react";
+import type { CodeViewHandle } from "@pierre/diffs/react";
 import {
   ChevronsDownUp,
   ChevronsUpDown,
   Columns2,
+  PanelLeft,
   Rows3,
   Settings2,
 } from "lucide-react";
 import {
+  forwardRef,
   memo,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useRef,
   useState,
 } from "react";
@@ -28,18 +31,30 @@ import type { HarnessCommit, Theme } from "./Xedoc";
 
 type CommitCodeStreamProps = {
   commits: HarnessCommit[];
+  onOpenCommitRail?: () => void;
   patchUrl: string;
   theme: Theme;
 };
 
-const CommitCodeStreamComponent = function CommitCodeStream({
-  commits,
-  patchUrl,
-  theme,
-}: CommitCodeStreamProps) {
+export type CommitCodeStreamHandle = {
+  scrollToCommit(index: number): void;
+};
+
+function commitItemId(commit: HarnessCommit): string {
+  return `commit:${commit.hash}`;
+}
+
+const CommitCodeStreamComponent = forwardRef<
+  CommitCodeStreamHandle,
+  CommitCodeStreamProps
+>(function CommitCodeStream(
+  { commits, onOpenCommitRail, patchUrl, theme },
+  forwardedRef,
+) {
   const renderer = usePierreRenderer();
   const scrollRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<CodeViewHandle<undefined> | null>(null);
+  const pendingJumpRef = useRef<number | null>(null);
   const [diffStyle, setDiffStyle] = useState<"split" | "unified">("split");
   const [collapseMode, setCollapseMode] = useState<
     "expanded" | "collapsed"
@@ -91,6 +106,35 @@ const CommitCodeStreamComponent = function CommitCodeStream({
     setOverflow(checked ? "wrap" : "scroll");
   }, []);
 
+  const scrollToCommit = useCallback(
+    (index: number) => {
+      const commit = commits[index];
+      if (commit == null) return;
+
+      const viewer = viewerRef.current;
+      const itemId = commitItemId(commit);
+      if (viewer == null || viewer.getItem(itemId) == null) {
+        pendingJumpRef.current = index;
+        return;
+      }
+
+      pendingJumpRef.current = null;
+      viewer.scrollTo({ type: "item", id: itemId, align: "start" });
+    },
+    [commits],
+  );
+
+  useImperativeHandle(
+    forwardedRef,
+    () => ({ scrollToCommit }),
+    [scrollToCommit],
+  );
+
+  useEffect(() => {
+    if (loadState !== "ready" || pendingJumpRef.current == null) return;
+    scrollToCommit(pendingJumpRef.current);
+  }, [loadState, scrollToCommit]);
+
   const viewerAvailable =
     renderer.ready &&
     (loadState === "ready" ||
@@ -108,6 +152,7 @@ const CommitCodeStreamComponent = function CommitCodeStream({
         showBackgrounds={showBackgrounds}
         onDiffIndicatorsChange={setDiffIndicators}
         onLineNumbersChange={setLineNumbers}
+        onOpenCommitRail={onOpenCommitRail}
         onShowBackgroundsChange={setShowBackgrounds}
         onToggleCollapseMode={handleToggleCollapseMode}
         onToggleDiffStyle={handleToggleDiffStyle}
@@ -138,7 +183,7 @@ const CommitCodeStreamComponent = function CommitCodeStream({
       ) : null}
     </>
   );
-};
+});
 
 interface CommitStreamToolbarProps {
   collapseMode: "expanded" | "collapsed";
@@ -150,6 +195,7 @@ interface CommitStreamToolbarProps {
   showBackgrounds: boolean;
   onDiffIndicatorsChange(value: DiffIndicators): void;
   onLineNumbersChange(checked: boolean): void;
+  onOpenCommitRail?: () => void;
   onShowBackgroundsChange(checked: boolean): void;
   onToggleCollapseMode(): void;
   onToggleDiffStyle(): void;
@@ -166,6 +212,7 @@ const CommitStreamToolbar = memo(function CommitStreamToolbar({
   showBackgrounds,
   onDiffIndicatorsChange,
   onLineNumbersChange,
+  onOpenCommitRail,
   onShowBackgroundsChange,
   onToggleCollapseMode,
   onToggleDiffStyle,
@@ -174,6 +221,16 @@ const CommitStreamToolbar = memo(function CommitStreamToolbar({
   return (
     <header className="commit-stream-toolbar">
       <div className="commit-toolbar-title">
+        {onOpenCommitRail ? (
+          <button
+            className="mobile-tree-toggle"
+            type="button"
+            onClick={onOpenCommitRail}
+            aria-label="Open commit index"
+          >
+            <PanelLeft aria-hidden="true" />
+          </button>
+        ) : null}
         <strong>All commits</strong>
         <span>{commitCount}</span>
       </div>
