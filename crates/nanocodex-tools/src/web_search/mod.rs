@@ -14,7 +14,7 @@ use self::{
     schema::commands_schema,
     wire::{SearchCommands, SearchRequest, SearchResponse, SearchSettings},
 };
-use super::{Tool, ToolContext, ToolExecution, ToolInput, WebSearchConfig};
+use super::{Tool, ToolContext, ToolExecution, ToolInput, ToolResult, WebSearchConfig};
 
 const DESCRIPTION: &str = include_str!("web_run_description.md");
 const ERROR_BODY_LIMIT: usize = 4_096;
@@ -207,12 +207,9 @@ impl Tool for WebSearchHandler {
         ToolDefinition::function(self.name(), DESCRIPTION, commands_schema())
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolExecution {
-        let input = match input.function_json() {
-            Ok(input) => input,
-            Err(error) => return ToolExecution::error(error.to_string()),
-        };
-        self.run(input.get(), context).await
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        let input = input.function_json()?;
+        Ok(self.run(input.get(), context).await)
     }
 }
 

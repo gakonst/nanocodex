@@ -6,7 +6,7 @@ use std::{
 use nanocodex_core::{CustomToolFormat, ToolDefinition};
 use serde_json::json;
 
-use super::{Tool, ToolContext, ToolExecution, ToolInput};
+use super::{Tool, ToolContext, ToolExecution, ToolInput, ToolResult};
 
 mod parser;
 mod seek_sequence;
@@ -40,17 +40,16 @@ impl Tool for ApplyPatchHandler {
         )
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
-        let input = match input.into_freeform() {
-            Ok(input) => input,
-            Err(error) => return ToolExecution::error(error.to_string()),
-        };
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        let input = input.into_freeform()?;
         let workspace = self.workspace.clone();
-        match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {
-            Ok(Ok(output)) => ToolExecution::text(output).with_code_mode_value(json!({})),
-            Ok(Err(error)) => ToolExecution::error(error),
-            Err(error) => ToolExecution::error(format!("apply_patch task failed: {error}")),
-        }
+        Ok(
+            match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {
+                Ok(Ok(output)) => ToolExecution::text(output).with_code_mode_value(json!({})),
+                Ok(Err(error)) => ToolExecution::error(error),
+                Err(error) => ToolExecution::error(format!("apply_patch task failed: {error}")),
+            },
+        )
     }
 }
 

@@ -7,6 +7,7 @@ use serde_json::json;
 
 use super::{
     ImageDetail, Tool, ToolContext, ToolExecution, ToolInput, ToolOutputBody, ToolOutputContent,
+    ToolResult,
 };
 
 pub(super) struct ViewImageHandler {
@@ -64,34 +65,31 @@ impl Tool for ViewImageHandler {
             }))
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
-        let arguments = match input.decode_json::<ViewImageArguments>() {
-            Ok(arguments) => arguments,
-            Err(error) => return ToolExecution::error(error.to_string()),
-        };
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        let arguments = input.decode_json::<ViewImageArguments>()?;
         let path = resolve(&self.workspace, Path::new(&arguments.path));
         match tokio::fs::metadata(&path).await {
             Ok(metadata) if metadata.is_file() => {}
             Ok(_) => {
-                return ToolExecution::error(format!(
+                return Ok(ToolExecution::error(format!(
                     "image path `{}` is not a file",
                     path.display()
-                ));
+                )));
             }
             Err(error) => {
-                return ToolExecution::error(format!(
+                return Ok(ToolExecution::error(format!(
                     "unable to locate image at `{}`: {error}",
                     path.display()
-                ));
+                )));
             }
         }
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
             Err(error) => {
-                return ToolExecution::error(format!(
+                return Ok(ToolExecution::error(format!(
                     "unable to read image at `{}`: {error}",
                     path.display()
-                ));
+                )));
             }
         };
         let detail = arguments.detail.unwrap_or(ImageDetailArgument::High).into();
@@ -100,7 +98,7 @@ impl Tool for ViewImageHandler {
             "data:application/octet-stream;base64,{}",
             STANDARD.encode(bytes)
         );
-        ToolExecution {
+        Ok(ToolExecution {
             output: ToolOutputBody::Content(vec![ToolOutputContent::InputImage {
                 image_url: image_url.clone(),
                 detail,
@@ -112,7 +110,7 @@ impl Tool for ViewImageHandler {
             })),
             metadata: None,
             process_trace: None,
-        }
+        })
     }
 }
 

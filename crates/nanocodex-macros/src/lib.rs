@@ -93,14 +93,13 @@ fn expand_tool(
                 &self,
                 input: #nanocodex::ToolInput,
                 _context: #nanocodex::ToolContext<'_>,
-            ) -> #nanocodex::ToolExecution {
-                let input = match input.decode_json::<#input_ident>() {
-                    Ok(input) => input,
-                    Err(error) => return #nanocodex::ToolExecution::error(error.to_string()),
-                };
+            ) -> #nanocodex::ToolResult {
+                let input = input.decode_json::<#input_ident>()?;
                 match #handler_ident(#(#calls),*).await {
-                    Ok(output) => #nanocodex::ToolExecution::json(&output),
-                    Err(error) => #nanocodex::ToolExecution::error(error.to_string()),
+                    Ok(output) => Ok(#nanocodex::ToolExecution::json(&output)),
+                    Err(error) => Err(
+                        ::std::io::Error::other(error.to_string()).into()
+                    ),
                 }
             }
         }

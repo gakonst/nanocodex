@@ -29,10 +29,28 @@ async fn macro_generates_schema_and_executes_through_public_tool_trait() {
                 output_token_budget: nanocodex::DEFAULT_TOOL_OUTPUT_TOKENS,
             },
         )
-        .await;
+        .await
+        .unwrap();
     assert!(execution.success);
     assert_eq!(
         serde_json::to_value(execution.output).unwrap(),
         Value::String("42".into())
     );
+
+    let overflow = add
+        .execute(
+            ToolInput::Function(to_raw_value(&json!({ "left": i64::MAX, "right": 1 })).unwrap()),
+            ToolContext {
+                model: "test-model",
+                session_id: "test-session",
+                call_id: "overflow-call",
+                history: &[],
+                output_token_budget: nanocodex::DEFAULT_TOOL_OUTPUT_TOKENS,
+            },
+        )
+        .await;
+    let Err(error) = overflow else {
+        panic!("overflowing tool call unexpectedly succeeded");
+    };
+    assert_eq!(error.to_string(), "integer addition overflowed");
 }

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::{
     ImageDetail, ImageGenerationConfig, Tool, ToolContext, ToolExecution, ToolInput,
-    ToolOutputBody, ToolOutputContent, image::load_for_prompt_data_url,
+    ToolOutputBody, ToolOutputContent, ToolResult, image::load_for_prompt_data_url,
 };
 
 const DESCRIPTION: &str = include_str!("imagegen_description.md");
@@ -172,12 +172,9 @@ impl Tool for ImageGenerationHandler {
         )
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolExecution {
-        let input = match input.function_json() {
-            Ok(input) => input,
-            Err(error) => return ToolExecution::error(error.to_string()),
-        };
-        self.run(input.get(), context).await
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        let input = input.function_json()?;
+        Ok(self.run(input.get(), context).await)
     }
 }
 

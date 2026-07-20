@@ -16,7 +16,9 @@ use std::{
 use async_trait::async_trait;
 use catalog::{ProviderState, ToolEntry};
 use nanocodex_core::ToolDefinition;
-use nanocodex_tools::{DynamicToolProvider, Tool, ToolContext, ToolExecution, ToolInput};
+use nanocodex_tools::{
+    DynamicToolProvider, Tool, ToolContext, ToolExecution, ToolInput, ToolResult,
+};
 use rmcp::model::CallToolRequestParams;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -317,15 +319,12 @@ impl Tool for McpSearch {
         )
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
-        let input = match input.decode_json::<SearchInput>() {
-            Ok(input) => input,
-            Err(error) => return ToolExecution::error(error.to_string()),
-        };
-        match self.state.search(&input.query, input.limit).await {
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        let input = input.decode_json::<SearchInput>()?;
+        Ok(match self.state.search(&input.query, input.limit).await {
             Ok(result) => ToolExecution::json(&result),
             Err(error) => ToolExecution::error(error),
-        }
+        })
     }
 }
 
@@ -452,7 +451,8 @@ mod tests {
                 ToolInput::Function(to_raw_value(&json!({ "query": "echo message" })).unwrap()),
                 context,
             )
-            .await;
+            .await
+            .unwrap();
         assert!(search.success);
         assert!(matches!(
             &search.output,
@@ -513,7 +513,8 @@ mod tests {
                 ),
                 context,
             )
-            .await;
+            .await
+            .unwrap();
         assert!(search.success);
         let names = mcp
             .available_definitions()
@@ -565,7 +566,8 @@ mod tests {
                     ToolInput::Function(to_raw_value(&json!({ "query": "echo message" })).unwrap()),
                     context,
                 )
-                .await;
+                .await
+                .unwrap();
             assert!(result.success);
         }
         eprintln!("10k repeated searches: {:?}", started.elapsed());

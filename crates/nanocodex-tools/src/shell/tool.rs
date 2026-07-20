@@ -4,7 +4,7 @@ use nanocodex_core::ToolDefinition;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{Tool, ToolContext, ToolExecution, ToolInput};
+use crate::{Tool, ToolContext, ToolExecution, ToolInput, ToolResult};
 
 use super::{ExecCommand, ShellSessions, WriteStdin};
 
@@ -68,11 +68,8 @@ impl Tool for ExecCommandHandler {
         .with_output_schema(unified_exec_output_schema())
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
-        let arguments = match input.decode_json::<ExecCommandArguments>() {
-            Ok(arguments) => arguments,
-            Err(error) => return ToolExecution::error(error.to_string()),
-        };
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        let arguments = input.decode_json::<ExecCommandArguments>()?;
         let command = ExecCommand::new(
             arguments.cmd,
             arguments.workdir,
@@ -83,7 +80,7 @@ impl Tool for ExecCommandHandler {
             arguments.max_output_tokens,
         );
         let result = self.sessions.execute(command, &self.workspace).await;
-        shell_execution(&result)
+        Ok(shell_execution(&result))
     }
 }
 
@@ -134,11 +131,8 @@ impl Tool for WriteStdinHandler {
         .with_output_schema(unified_exec_output_schema())
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
-        let arguments = match input.decode_json::<WriteStdinArguments>() {
-            Ok(arguments) => arguments,
-            Err(error) => return ToolExecution::error(error.to_string()),
-        };
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        let arguments = input.decode_json::<WriteStdinArguments>()?;
         let request = WriteStdin::new(
             arguments.session_id,
             arguments.chars,
@@ -146,7 +140,7 @@ impl Tool for WriteStdinHandler {
             arguments.max_output_tokens,
         );
         let result = self.sessions.write_stdin(request).await;
-        shell_execution(&result)
+        Ok(shell_execution(&result))
     }
 }
 

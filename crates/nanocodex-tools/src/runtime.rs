@@ -53,6 +53,16 @@ pub(crate) struct ProcessTrace {
     wall_time_seconds: f64,
 }
 
+/// Error returned by an application-defined tool handler.
+pub type ToolError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Result returned by [`Tool::execute`].
+///
+/// The runtime converts an error into a failed model-visible tool result so the
+/// model can recover. Return `Ok(ToolExecution)` with `success: false` only when
+/// preserving a structured failure payload from a remote tool protocol.
+pub type ToolResult = std::result::Result<ToolExecution, ToolError>;
+
 impl ToolExecution {
     #[must_use]
     pub fn text(output: impl Into<String>) -> Self {
@@ -235,7 +245,7 @@ pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 
     /// Executes one tool call.
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolExecution;
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult;
 }
 
 /// A lazily populated family of Code Mode tools.
@@ -317,6 +327,13 @@ impl Tools {
     #[must_use]
     pub fn builder() -> ToolsBuilder {
         ToolsBuilder::default()
+    }
+
+    /// Resumes configuring this tool selection while preserving its built-ins,
+    /// registered tools, and dynamic providers.
+    #[must_use]
+    pub fn into_builder(self) -> ToolsBuilder {
+        ToolsBuilder { tools: self }
     }
 
     /// Returns whether the standard web-search tool is enabled.
@@ -643,7 +660,10 @@ impl ToolRegistry {
                 }
             },
         };
-        handler.execute(input, context).await
+        match handler.execute(input, context).await {
+            Ok(execution) => execution,
+            Err(error) => ToolExecution::error(error.to_string()),
+        }
     }
 
     pub(crate) fn nested_tool_metadata(&self) -> Vec<Value> {
@@ -760,10 +780,12 @@ mod tests {
 
     use super::{
         DEFAULT_TOOL_OUTPUT_TOKENS, DynamicToolProvider, ImageGenerationConfig, Tool, ToolContext,
-        ToolExecution, ToolInput, ToolOutputBody, ToolRuntime, Tools, WebSearchConfig,
+        ToolExecution, ToolInput, ToolOutputBody, ToolResult, ToolRuntime, Tools, WebSearchConfig,
     };
 
     struct Double;
+
+    struct Fails;
 
     struct Search {
         activated: Arc<AtomicBool>,
@@ -798,12 +820,28 @@ mod tests {
             )
         }
 
-        async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
-            let input = match input.decode_json::<DoubleInput>() {
-                Ok(input) => input,
-                Err(error) => return ToolExecution::error(error.to_string()),
-            };
-            ToolExecution::text((input.value * 2).to_string())
+        async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+            let input = input.decode_json::<DoubleInput>()?;
+            Ok(ToolExecution::text((input.value * 2).to_string()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for Fails {
+        fn name(&self) -> &'static str {
+            "fails"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition::function(
+                self.name(),
+                "Always fails.",
+                json!({ "type": "object", "properties": {} }),
+            )
+        }
+
+        async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+            Err(std::io::Error::other("intentional handler failure").into())
         }
     }
 
@@ -826,9 +864,12 @@ mod tests {
             )
         }
 
-        async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
+        async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
             self.activated.store(true, Ordering::Release);
-            ToolExecution::from_json(json!({ "name": "deferred_echo" }), true)
+            Ok(ToolExecution::from_json(
+                json!({ "name": "deferred_echo" }),
+                true,
+            ))
         }
     }
 
@@ -946,12 +987,43 @@ mod tests {
                     output_token_budget: DEFAULT_TOOL_OUTPUT_TOKENS,
                 },
             )
-            .await;
+            .await
+            .unwrap();
         assert!(execution.success);
         let ToolOutputBody::Text(output) = execution.output else {
             panic!("expected text output");
         };
         assert_eq!(output, "42");
+    }
+
+    #[tokio::test]
+    async fn handler_errors_become_failed_model_visible_results() {
+        let tools = Tools::builder()
+            .without_defaults()
+            .tool(Fails)
+            .build()
+            .unwrap();
+        let runtime = ToolRuntime::new(".", None, None).with_tools(&tools);
+        let execution = runtime
+            .registry
+            .execute_nested(
+                "fails",
+                json!({}),
+                ToolContext {
+                    model: "test-model",
+                    session_id: "test-session",
+                    call_id: "test-call",
+                    history: &[],
+                    output_token_budget: DEFAULT_TOOL_OUTPUT_TOKENS,
+                },
+            )
+            .await;
+
+        assert!(!execution.success);
+        assert!(matches!(
+            execution.output,
+            ToolOutputBody::Text(output) if output == "intentional handler failure"
+        ));
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use super::{Tool, ToolContext, ToolExecution, ToolInput};
+use super::{Tool, ToolContext, ToolExecution, ToolInput, ToolResult};
 
 pub(super) struct PlanHandler {
     current: Mutex<Option<UpdatePlanArgs>>,
@@ -58,11 +58,8 @@ impl Tool for PlanHandler {
         )
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolExecution {
-        let plan = match input.decode_json::<UpdatePlanArgs>() {
-            Ok(plan) => plan,
-            Err(error) => return ToolExecution::error(error.to_string()),
-        };
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        let plan = input.decode_json::<UpdatePlanArgs>()?;
         if plan
             .plan
             .iter()
@@ -70,14 +67,16 @@ impl Tool for PlanHandler {
             .count()
             > 1
         {
-            return ToolExecution::error("update_plan allows at most one in_progress step");
+            return Ok(ToolExecution::error(
+                "update_plan allows at most one in_progress step",
+            ));
         }
         if plan.plan.iter().any(|item| item.step.trim().is_empty()) {
-            return ToolExecution::error("update_plan steps must not be empty");
+            return Ok(ToolExecution::error("update_plan steps must not be empty"));
         }
         let _ = plan.explanation.as_deref();
         *self.current.lock().await = Some(plan);
-        ToolExecution::text("Plan updated").with_code_mode_value(json!({}))
+        Ok(ToolExecution::text("Plan updated").with_code_mode_value(json!({})))
     }
 }
 
