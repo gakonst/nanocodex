@@ -159,6 +159,14 @@ Success means:
   rustfmt, focused tests, warnings-denied Clippy, and a clean worktree followed.
   A follow-up update to this spec then used a properly formed routine patch for
   both dry-run and commit successfully.
+- [ ] Close the interactive usability findings before the milestone gate: emit
+  one non-duplicated read representation, preserve complete property guidance
+  through the exact model-visible declaration path, add field- and
+  dialect-specific bounded diagnostics, and explain `commitPreviewed`
+  mutation resubmission explicitly.
+- [ ] Add an edit/format/reread regression trajectory proving that external
+  formatting makes prior anchors stale, stale mutation fails without a write,
+  and a bounded reread supplies fresh evidence for the next edit.
 - [ ] Run focused, workspace, example, native smoke, recovery, Harbor, and full
   milestone validation; inspect and record exact retained evidence here.
 - [ ] Complete outcomes, adopted source provenance, residual platform risks,
@@ -281,6 +289,17 @@ Success means:
   inside `Promise.all` hid successful sibling results. The last behavior
   belongs to the orchestration wrapper rather than the Hashline core.
 
+- Observation: `commitPreviewed` names only `expectedPlanDigest` in its action
+  variant while the enclosing transaction request still requires `mutations`.
+  The digest safely binds the rebuilt plan, but the short action description
+  did not make exact mutation resubmission apparent.
+
+- Observation: running rustfmt after a successful edit correctly changes exact
+  bytes, file digest, and affected anchors. A later anchored edit therefore
+  requires a reread. This is expected stale-evidence behavior, but it is a
+  frequent edit/format/edit path and was not represented in the interactive
+  guidance.
+
 - Observation: Rustix exposes the required descriptor-relative Linux calls,
   `openat2` resolution policy, filesystem inspection, inode flags, locking, and
   sync operations through safe APIs. The completed capability therefore keeps
@@ -383,6 +402,32 @@ Success means:
   symlink escapes fail before observation or mutation.
   Rationale: Nanocodex owns one local workspace and does not need Codex
   environment IDs, remote filesystem RPC, or provider abstractions.
+  Date/Author: 2026-07-20 / Codex
+
+- Decision: close the interactive usability findings without adding another
+  editor or broadening the public mutation schemas. Read returns compact
+  anchored `content` once rather than duplicating it as structured line
+  objects; exact model-visible declarations retain path and grammar guidance;
+  Hashline owns typed internal path/parser/evidence error classes rendered as
+  concise field-specific model diagnostics. Outer orchestration flattening is
+  measured separately.
+  Rationale: the observed failures were discovery, output, and diagnostic
+  failures, not missing editing capability.
+  Date/Author: 2026-07-20 / Codex
+
+- Decision: `commitPreviewed` continues to require the exact mutation request
+  together with `expectedPlanDigest`, and guidance states that requirement
+  directly.
+  Rationale: rebuilding and digest-checking the same plan preserves the current
+  stateless tool boundary and detects changed files or changed mutations.
+  Date/Author: 2026-07-20 / Codex
+
+- Decision: formatting and other external byte changes remain ordinary stale
+  evidence. Hashline does not refresh or reinterpret anchors implicitly; the
+  failed result identifies stale evidence and the caller rereads before
+  rebuilding the edit.
+  Rationale: implicit refresh would weaken the observed-state guard that makes
+  line edits safe.
   Date/Author: 2026-07-20 / Codex
 
 - Decision: preserve `unsafe_code = "forbid"`. Adapt durable Linux primitives
@@ -860,7 +905,8 @@ Tool guidance must connect the family:
   evidence;
 - use patch for routine edits and transaction for reviewed/high-risk batches;
 - copy `exactDigest` from read into transaction expected files;
-- prefer transaction preview plus `commitPreviewed` when a plan is reviewed;
+- prefer transaction preview plus `commitPreviewed` when a plan is reviewed,
+  resupplying the exact mutations with the returned `expectedPlanDigest`;
 - use `replaceAll` when exact bytes are known but no suitable line anchors are
   available;
 - do not claim patch crash recovery, transaction database isolation, or a shell
@@ -874,6 +920,13 @@ Acceptance:
   evidence, previews a mixed transaction, and commits the returned plan digest.
   Each nested invocation is recorded once and every returned value is bounded
   structured JSON.
+- Read results contain one compact anchored content representation plus
+  structural metadata; they do not duplicate every line as structured objects.
+- Exact Code Mode declarations retain workspace-relative path rules, a complete
+  routine-patch example, and the exact `commitPreviewed` resubmission contract.
+- Wrong-dialect patch sentinels, invalid `path` versus `root`, stale anchors,
+  and stale exact digests have distinct bounded diagnostics naming the failing
+  field or program line; tests assert no write.
 - `expectedPlanDigest` and any canonically verified compatibility alias decode,
   while generated schema advertises only camelCase.
 - Invalid JSON, unknown fields, invalid digest widths, stale evidence,
@@ -933,6 +986,8 @@ Acceptance:
 - Native smoke and all four retained Harbor jobs have inspected evidence; at
   least one successful read/patch trajectory and one successful transaction
   trajectory are retained.
+- A retained edit/format/edit trajectory proves stale rejection after formatting,
+  bounded reread, successful rebuilt mutation, and no unrelated byte changes.
 - No trajectory can call the removed tool, and benchmark tasks/verifiers remain
   byte-for-byte unchanged.
 
