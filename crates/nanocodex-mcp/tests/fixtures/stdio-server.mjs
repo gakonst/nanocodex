@@ -37,13 +37,17 @@ lines.on("line", (line) => {
     });
   } else if (request.method === "tools/call") {
     const message = request.params.arguments?.message;
+    const failed = message === "__fail__";
     send({
       jsonrpc: "2.0",
       id: request.id,
       result: {
-        content: [{ type: "text", text: `fixture:${message}` }],
+        content: [{
+          type: "text",
+          text: failed ? "fixture:synthetic failure" : `fixture:${message}`,
+        }],
         structuredContent: { echoed: message },
-        isError: false,
+        isError: failed,
       },
     });
   }
