@@ -171,6 +171,11 @@ that this removes all 55 wait-selection model calls without delaying ordinary
    emitted only `result.output`. Code Mode now appends a resume notice when a
    live nested session is not otherwise present in cell output, while avoiding
    a duplicate notice when the script emits the complete result.
+7. Nested calls that completed after an outer cell yield kept the original
+   `exec` tracing-span parent but were emitted as public tool events under the
+   later `wait` call and model-call index. Nested call IDs now carry their
+   original exec parent through the background cell, and the agent retains the
+   corresponding model-call index so tracing and JSONL lineage agree.
 
 ## Remaining boundaries
 

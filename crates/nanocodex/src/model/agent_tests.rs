@@ -889,7 +889,7 @@ async fn yielded_exec_cell_continues_through_direct_wait_tool() -> Result<()> {
                     "type": "custom_tool_call",
                     "call_id": "call-exec",
                     "name": "exec",
-                    "input": "text(\"before\"); await yield_control(); await new Promise((resolve) => setTimeout(resolve, 10)); text(\"after\");"
+                    "input": "text(\"before\"); await yield_control(); const result = await tools.exec_command({cmd: \"printf after\", login: false}); text(result.output);"
                 })],
             ),
         )
@@ -931,6 +931,14 @@ async fn yielded_exec_cell_continues_through_direct_wait_tool() -> Result<()> {
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
     assert!(output.contains("\"tool\":\"wait\""));
+    let nested_call = output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| {
+            event["type"] == "tool.call" && event["payload"]["call_id"] == "call-exec/code-1"
+        })
+        .ok_or_else(|| eyre!("nested call did not retain its original exec lineage"))?;
+    assert_eq!(nested_call["payload"]["model_call_index"], 1);
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

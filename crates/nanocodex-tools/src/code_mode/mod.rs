@@ -1228,7 +1228,7 @@ async fn execute_nested_call(
     context: &OwnedToolContext,
 ) -> CompletedNestedCall {
     let started_at = Instant::now();
-    let call_id = format!("code-{id}");
+    let call_id = format!("{}/code-{id}", context.call_id);
     let context = context.borrowed();
     let execution = tools
         .execute_nested(

@@ -118,7 +118,10 @@ text({ first: first.exit_code, second: second.exit_code });
         .await;
 
     assert!(execution.success);
-    assert_eq!(call_ids(&execution.nested_calls), ["code-1", "code-2"]);
+    assert_eq!(
+        call_ids(&execution.nested_calls),
+        ["call-exec/code-1", "call-exec/code-2"]
+    );
     let result = serde_json::from_str::<Value>(emitted_text(&execution)?)?;
     assert_eq!(result, serde_json::json!({ "first": 0, "second": 0 }));
     std::fs::remove_dir_all(workspace)?;

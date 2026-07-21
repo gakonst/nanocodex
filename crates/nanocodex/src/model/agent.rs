@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use nanocodex_core::{
     AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, ToolDefinition, Usage,
@@ -46,6 +46,7 @@ pub(crate) struct ModelRun<S> {
     session: Option<ModelSessionState>,
     active_tools: Option<ToolRuntimeControl>,
     active_tool_call: Option<ActiveToolCall>,
+    tool_call_indices: HashMap<Box<str>, u32>,
     tools: Tools,
     lineage_id: Arc<str>,
 }
@@ -213,6 +214,7 @@ impl<S> ModelRun<S> {
             session: None,
             active_tools: None,
             active_tool_call: None,
+            tool_call_indices: HashMap::new(),
             tools,
             lineage_id,
         }
@@ -256,6 +258,7 @@ impl<S> ModelRun<S> {
             }),
             active_tools: Some(active_tools),
             active_tool_call: None,
+            tool_call_indices: HashMap::new(),
             tools,
             lineage_id,
         }
@@ -678,6 +681,8 @@ where
         call: CodeCall,
         history: Option<Arc<Vec<ResponseItem>>>,
     ) -> Result<Vec<ResponseItem>> {
+        self.tool_call_indices
+            .insert(call.call_id.clone().into_boxed_str(), call_index);
         let arguments = if call.name == "exec" {
             ToolCallArguments::Text(&call.input)
         } else {
@@ -827,7 +832,17 @@ where
         parent_call_id: &str,
         call: &NestedToolCall,
     ) -> Result<()> {
-        let call_id = format!("{parent_call_id}/{}", call.call_id);
+        let embedded_parent = call.call_id.rsplit_once("/code-").map(|(parent, _)| parent);
+        let original_parent = embedded_parent.unwrap_or(parent_call_id);
+        let call_id = embedded_parent.map_or_else(
+            || format!("{parent_call_id}/{}", call.call_id),
+            |_| call.call_id.clone(),
+        );
+        let call_index = self
+            .tool_call_indices
+            .get(original_parent)
+            .copied()
+            .unwrap_or(call_index);
         self.events.emit(
             AgentEventKind::ToolCall,
             ToolCallEvent {
