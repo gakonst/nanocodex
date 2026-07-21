@@ -396,6 +396,7 @@ async fn request_command<T>(
 }
 
 /// Builder for a running agent with deferred Responses service composition.
+#[derive(Clone)]
 pub struct NanocodexBuilder<S = StandardResponses> {
     config: ModelConfig,
     tools: ToolsConfiguration,
@@ -1290,6 +1291,46 @@ mod tests {
             .build()
             .unwrap();
         drop(events);
+    }
+
+    #[test]
+    fn builder_variants_are_cloneable() {
+        let standard = Nanocodex::builder("test");
+        drop(standard.clone());
+
+        let layered = Nanocodex::builder("test").responses(
+            Responses::builder()
+                .layer(TimeoutLayer::new(Duration::from_secs(30)))
+                .build(),
+        );
+        drop(layered.clone());
+
+        let factory = Nanocodex::builder("test")
+            .responses(Responses::builder().service(|| NeverCalled).build());
+        drop(factory.clone());
+    }
+
+    #[tokio::test]
+    async fn cloned_builders_create_distinct_agents() {
+        let service_builds = Arc::new(AtomicU64::new(0));
+        let factory_builds = Arc::clone(&service_builds);
+        let builder = Nanocodex::builder("test").responses(
+            Responses::builder()
+                .service(move || {
+                    factory_builds.fetch_add(1, Ordering::Relaxed);
+                    NeverCalled
+                })
+                .build(),
+        );
+
+        let (first, first_events) = builder.clone().build().unwrap();
+        let (second, second_events) = builder.build().unwrap();
+
+        assert_eq!(service_builds.load(Ordering::Relaxed), 2);
+        assert!(!first.commands.same_channel(&second.commands));
+        assert_ne!(first.lineage_id, second.lineage_id);
+        assert_ne!(first_events.request_id(), second_events.request_id());
+        drop((first, first_events, second, second_events));
     }
 
     #[tokio::test]

@@ -11,15 +11,18 @@ pub struct StandardResponses;
 /// Deferred Tower layers applied to the standard Responses service when the
 /// agent is built.
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct LayeredResponses<L>(pub(crate) ServiceBuilder<L>);
 
 /// Deferred caller service factory used to create one independent stack per
 /// conversation branch.
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct FactoryResponses<F>(pub(crate) F);
 
 /// Responses transport configuration with standard or caller-supplied Tower
 /// service factory policy.
+#[derive(Clone)]
 pub struct Responses<S = StandardResponses> {
     pub(crate) websocket_url: Option<String>,
     pub(crate) api_base_url: Option<String>,
