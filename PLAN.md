@@ -375,23 +375,23 @@ the formal parity checkpoint below.
 
 Delivery order:
 
-1. [ ] Preserve restorable metadata across update, delete rollback, move, and
+1. [x] Preserve restorable metadata across update, delete rollback, move, and
    restart recovery. At minimum, executable and permission bits must survive
    replacement; test metadata before and after both commit and rollback.
-2. [ ] Move complete before/after file contents out of the JSON manifest into
+2. [x] Move complete before/after file contents out of the JSON manifest into
    bounded, owner-only staged and backup artifacts. Keep the journal structural,
    digest-bound, and free of user file bodies; reserve the required storage
    before the first visible mutation.
-3. [ ] Add an explicit durable transaction state machine covering preparation,
+3. [x] Add an explicit durable transaction state machine covering preparation,
    commit, reverse-order rollback, recovery-required, cleanup, and completion.
    A live apply failure must attempt rollback in the same call. Restart recovery
    must distinguish a committed transaction from one that must roll back.
-4. [ ] Isolate recovery entries so one malformed or externally disturbed
+4. [x] Isolate recovery entries so one malformed or externally disturbed
    transaction retains its evidence without starving independent valid
    transactions. Reject duplicate transaction IDs, bind every artifact and
    journal to the selected root and transaction identity, and leave a bounded
    terminal receipt until cleanup is durably complete.
-5. [ ] Move blocking filesystem work off async executor threads and evaluate
+5. [x] Move blocking filesystem work off async executor threads and evaluate
    waiting versus immediate-conflict lock policy with a concrete embedded
    consumer. Keep workspace-relative paths, fail-closed filesystem negotiation,
    and the existing public Hashline schemas unchanged unless evidence requires

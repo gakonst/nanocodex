@@ -141,17 +141,17 @@ Success means:
   and subprocess fault injection across every durable create/update/delete/move
   transition. Overlapping cross-process parents conflict while disjoint parents
   proceed independently.
-- [ ] Preserve executable and permission metadata across commit, rollback, move,
+- [x] (2026-07-21) Preserve executable and permission metadata across commit,
   and restart recovery.
-- [ ] Replace manifest-embedded before/after file bodies with bounded owner-only
+- [x] (2026-07-21) Replace manifest-embedded before/after file bodies with bounded owner-only
   staged and backup artifacts reserved before visible mutation.
-- [ ] Add explicit preparation, commit, rollback, recovery-required, cleanup,
+- [x] (2026-07-21) Add explicit preparation, commit, rollback, recovery-required, cleanup,
   and completion states; perform immediate reverse rollback on live failures
   and distinguish committed recovery from rollback recovery.
-- [ ] Isolate malformed or externally disturbed recovery entries, reject
+- [x] (2026-07-21) Isolate malformed or externally disturbed recovery entries, reject
   duplicate transaction reservations, bind every artifact to root and
   transaction identity, and retain bounded terminal evidence through cleanup.
-- [ ] Move blocking filesystem work off async executor threads and evaluate
+- [x] (2026-07-21) Move blocking filesystem work off async executor threads and evaluate
   waiting versus immediate-conflict locks with an embedded consumer.
 - [x] (2026-07-20) Remove `apply_patch` after deterministic replacement tests;
   delete its parser, grammar, handler, registrations, and tests.
@@ -162,19 +162,27 @@ Success means:
   rustfmt, focused tests, warnings-denied Clippy, and a clean worktree followed.
   A follow-up update to this spec then used a properly formed routine patch for
   both dry-run and commit successfully.
-- [ ] Close the interactive usability findings before the milestone gate: remove
+- [x] (2026-07-21) Close the interactive usability findings before the milestone gate: remove
   the redundant patch-level `path` and global `create` mode, emit one
   non-duplicated read representation, preserve complete property guidance
   through the exact model-visible declaration path, add field- and
   dialect-specific bounded diagnostics, and explain `commitPreviewed`
   mutation resubmission explicitly.
-- [ ] Add an edit/format/reread regression trajectory proving that external
+- [x] (2026-07-21) Add an edit/format/reread regression trajectory proving that external
   formatting makes prior anchors stale, stale mutation fails without a write,
   and a bounded reread supplies fresh evidence for the next edit.
-- [ ] Run focused, workspace, example, native smoke, recovery, Harbor, and full
-  milestone validation; inspect and record exact retained evidence here.
-- [ ] Complete outcomes, adopted source provenance, residual platform risks,
-  PR, commit, rollback, and rollout records.
+- [x] (2026-07-21) Complete transaction semantics hardening with metadata-bound
+  plan evidence, owner-only external artifacts, body-free manifests, explicit
+  terminal outcomes, immediate best-effort reverse rollback, isolated recovery,
+  duplicate reservations, root/transaction artifact identity, 64 retained
+  terminal receipts, 8 KiB model output, a 48-point forward/commit interruption
+  matrix, and a 37-point reverse-rollback/cleanup interruption matrix.
+- [x] (2026-07-21) Run focused recovery, crate, workspace, public-example,
+  packaging, and docs validation; inspect and record exact evidence below.
+- [ ] Run credential-dependent native smoke, focused Harbor holdout, and full
+  milestone evaluation. These remain blocked because `OPENAI_API_KEY` is absent.
+- [ ] Complete live model outcomes, residual evaluation risks, PR, rollback, and
+  rollout records after credentials are available.
 
 ## Surprises & Discoveries
 
@@ -317,6 +325,13 @@ Success means:
   smoke, historical baseline, focused trials, and `just eval` cannot make an
   authenticated model call until the user supplies that credential.
 
+- Observation: an unpublished rollback journal temporary can reuse the same
+  deterministic name during recovery. Recovery must remove stale .next entries
+  before processing authoritative journals or a stale directory snapshot can
+  report a false missing-file error after successful convergence.
+  Evidence: the reverse-rollback subprocess matrix at
+  rolling-back-journal-file-sync.
+
 ## Decision Log
 
 - Decision: deliver full Hashline read, block-anchor, patch, and transaction
@@ -352,6 +367,14 @@ Success means:
   Rationale: patch can copy compact anchors verbatim, and transaction can copy
   exact-byte SHA-256 evidence verbatim, with no shell hash detour.
   Date/Author: 2026-07-20 / Codex
+
+- Decision: retain immediate-conflict participating-parent locks rather than
+  waiting inside the SDK.
+  Rationale: an embedded agent needs bounded prompt latency and can choose its
+  own retry/deadline policy; disjoint parents still proceed concurrently.
+  Blocking filesystem work runs through spawn_blocking, and a current-thread
+  embedded-consumer test proves unrelated executor work advances.
+  Date/Author: 2026-07-21 / Codex
 
 - Decision: share a private exact-text document model, hashing functions, path
   validation, hard limits, prepared mutation types, and preview formatting
@@ -487,26 +510,30 @@ Success means:
   patch behavior, durable transactions, staged `apply_patch` removal, and model
   adoption evidence.
   The canonical source review and baseline implementation are complete.
-  Remaining: transaction semantics hardening plus live baseline and
-  model/evaluation evidence.
+  Transaction semantics hardening is complete. Live baseline and
+  model/evaluation evidence remain credential-blocked.
 
 - Outcome: the native runtime now advertises the flat `hashline__read`,
   `hashline__find_block`, `hashline__patch`, and `hashline__transaction` family
   with closed schemas and no `apply_patch`. A deterministic Code Mode test
   dispatches read, patch, refreshed reads, a mixed create/update/delete/move
-  preview, and commitPreviewed in one cell and verifies final bytes and sidecar
-  cleanup. Canonical parser behavior preserves
-  BOM, mixed line endings, final-newline shape, compact anchors, block anchors,
-  sectioned file operations, and bounded previews.
-  Descriptor-relative traversal, disjoint coordination, and a 35-point mixed
-  mutation subprocess fault matrix now pass. The next hardening slice preserves
-  metadata, separates staged/backup bodies from structural journals, adds
-  explicit commit/rollback states with immediate live rollback, isolates
-  recovery entries, and removes blocking filesystem work from async executor
-  threads. Live baseline, native smoke, Harbor, and configured evaluation gates
-  remain blocked on an API key.
-  Implementation commit: `15ef6a6` (`feat(tools): integrate native hashline
-  editing`) plus `0aff4fa` (`feat(hashline): harden recoverable transactions`).
+  preview, and commitPreviewed in one cell and verifies final bytes and retained
+  terminal receipt.
+
+- Outcome: transaction plans bind file metadata; structural manifests retain no
+  file bodies; staged and backup artifacts are owner-only and identity-bound;
+  explicit durable states distinguish commit, rollback, recovery, cleanup, and
+  terminal outcomes. Immediate failures attempt reverse rollback, restart
+  recovery isolates malformed or externally disturbed entries, duplicate IDs are
+  reserved, terminal receipts are capped at 64, and model-visible output is
+  bounded to 8 KiB. Blocking filesystem work runs outside async executor threads.
+  The 48-point forward/commit and 37-point reverse/cleanup subprocess matrices
+  preserve bytes and modes across create, update, delete, and move interruption.
+  Live baseline, native smoke, Harbor, and configured evaluation gates remain
+  blocked on an API key.
+  Implementation commits: `15ef6a6` (native integration), `0aff4fa` (initial
+  durable transactions), `888088d` (greenfield read/patch contract), and
+  `69a1383` (transaction recovery hardening).
 
 - Outcome: consumer commit `f6afb79` is the first retained hands-on editing
   trajectory recorded after integration. It completed through read plus typed
@@ -890,8 +917,10 @@ Acceptance:
   fresh runtime, invokes recovery, and proves convergence and cleanup.
 - Overlapping cross-runtime transactions serialize or return typed conflict;
   disjoint transactions do not require shared mutable global state.
-- Successful and recovered operations remove owned staging, backup,
-  reservation, journal, and empty sidecar directories.
+- Successful and recovered operations remove owned staging, backup, temporary,
+  and in-progress journal artifacts and empty directories. They retain only the
+  bounded terminal receipt and matching reservation required for duplicate-ID
+  rejection.
 - Non-Linux compile checks instantiate complete capability traits and return
   `Unsupported` without conditional test holes.
 - Workspace Clippy with warnings denied still enforces
@@ -975,8 +1004,8 @@ Run a disposable native CLI smoke that:
    anchors;
 2. creates, updates, moves, and deletes files through one previewed transaction;
 3. verifies exact bytes and Git diff;
-4. leaves no transaction sidecar, temporary file, backup, or empty created
-   parent directory after cleanup;
+4. leaves no transient journal, temporary file, backup, or empty created parent
+   directory after cleanup, while retaining the bounded terminal receipt;
 5. emits contractual JSONL on stdout and diagnostics only on stderr.
 
 Run frozen focused Harbor trials on:
@@ -1156,7 +1185,7 @@ Expected implementation evidence, to be replaced with exact outputs:
     hashline__patch dry_run: complete preview, no filesystem changes
     hashline__patch commit: refreshed bounded anchors
     hashline__transaction preview: planDigest=<64 lowercase hex>, no writes
-    hashline__transaction commitPreviewed: outcome=committed, sidecar removed
+    hashline__transaction commitPreviewed: outcome=committed, terminal receipt retained
     unsupported: durable Hashline transactions require proven Linux filesystem semantics
     Harbor evidence is not available in this draft
 
@@ -1202,8 +1231,8 @@ Manual/runtime validation:
    the exact Git diff and bounded refreshed output.
 5. Copy `exactDigest` from read into a mixed transaction, preview it, externally
    change one input, and prove `commitPreviewed` rejects the changed plan.
-6. Preview again, commit, verify exact bytes, and prove all transaction artifacts
-   are gone.
+6. Preview again, commit, verify exact bytes, prove transient transaction artifacts
+   are gone, and inspect the bounded terminal receipt.
 7. Terminate the deterministic transaction harness at each durable transition,
    start a fresh runtime, trigger recovery, and prove declared convergence.
 
@@ -1389,17 +1418,19 @@ Initial planning state:
     Nanocodex unsafe lint: unsafe_code = "forbid"
     Native implementation commit: 15ef6a6
     Durable filesystem commit: 0aff4fa
-    Deterministic Hashline tests: 12 direct + 1 Code Mode family round trip passed
-    Durable fault matrix: 35 subprocess interruption points passed
-    nanocodex-tools tests: 65 passed, 2 ignored subprocess helpers
-    Workspace tests: 167 passed, 5 ignored manual/isolated/helper tests
-    Harbor adapter tests: 34 passed
-    Workspace all-target Clippy: passed with warnings denied
-    Public examples: compiled as workspace test targets
-    Hashline unsafe/libc scan: no matches
+    Greenfield read/patch contract commit: 888088d
+    Transaction recovery hardening commit: 69a1383
+    Durable fault matrices: 48 forward/commit + 37 reverse/cleanup points passed
+    nanocodex-tools tests: 75 passed, 3 ignored subprocess helpers
+    nanocodex-tools warnings-denied all-target/all-feature Clippy: passed
+    cargo fmt --all -- --check: passed
+    cargo clippy --workspace --all-targets --all-features -- -D warnings: passed
+    cargo test --workspace: passed
+    cargo check --workspace --all-targets: passed, including public examples
     just check: passed
-    just release-check 0.1.0: passed, including packaged docs
-    nanocodex-tools archive: NOTICE and transaction_fs.rs present
+    just release-check 0.1.0: passed, including package and docs checks
+    Credential-dependent native smoke, Harbor, and full eval: not run;
+      OPENAI_API_KEY absent
 
 Do not replace missing source/eval evidence with estimates. Update this section
 with exact source HEAD/classification, deterministic test counts, retained job
