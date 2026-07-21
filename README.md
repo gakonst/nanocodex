@@ -150,6 +150,12 @@ the agent. On a healthy socket the driver sends only the new delta with
 `previous_response_id`. After reconnecting it drops that ID and transparently
 replays its authoritative typed history.
 
+The Responses path encodes each wire request once and rejects common
+non-metadata frames before attempting metadata decoding. Every streamed attempt
+records request and response bytes, encode/send and socket-wait time, parsing,
+public-event emission, typed decoding, and time to first event/output as
+structural tracing fields.
+
 ### Queue, steer, cancel
 
 Every `prompt` is an ordinary queued turn. Steering is explicit because it has
@@ -298,10 +304,19 @@ schema. `Tools::builder()` accepts generated or manual `Tool` implementations;
 normally sees only Code Mode and its wait operation, then composes nested tools
 with generated JavaScript, including loops, conditionals, and `Promise.all`.
 
+Code Mode prewarms one persistent Node host alongside the first model call and
+reuses it for the session. Cells receive one shared owned history snapshot;
+resumed waits do not copy history they cannot read. A nested shell request can
+extend the default outer-cell yield deadline while an explicit `@exec` deadline
+still wins. Live shell session IDs remain visible for later `write_stdin`
+calls, and stdout/stderr drains share one bounded completion deadline.
+
 `AgentEvents` is an optional ordered stream independent of `TurnResult`. A TUI,
 server, notebook, or binding can consume all events, select a subset, or drop
 the receiver without changing prompt/result behavior. Libraries emit diagnostic
-`tracing` spans but never install a global subscriber.
+`tracing` spans but never install a global subscriber. Nested tools that finish
+after a yielded cell retain their original Code Mode and model-call lineage, so
+the public event stream and trace hierarchy agree.
 
 Lifecycle failures are direct `NanocodexError` variants. Common control flow can
 match `TurnCancelled` or `TurnNotSteerable`; transport and API details remain
@@ -404,6 +419,18 @@ awaits independently owned `TurnResult`s. The CLI, Harbor adapter, Python
 binding, and Rust/WASM binding all consume that same API.
 
 ### How Fast?
+
+Focused local profiling also covers the ordinary streaming and tool path. On an
+M1 Max, prewarming the retained Node host reduced first-cell host latency from
+301 ms to 1.7–2.7 ms and complete top-level Code Mode time from 312 ms to 11–13
+ms across three trials. On a retained 41-task workload, model generation and
+caller-requested subprocesses accounted for 99.864% of summed run time; the
+unattributed local remainder was 0.136%. These are diagnostic measurements, not
+model-service speed guarantees. See
+[`single_prompt_profile_2026-07-20.md`](benchmarks/single_prompt_profile_2026-07-20.md)
+and
+[`long_prompt_profile_2026-07-20.md`](benchmarks/long_prompt_profile_2026-07-20.md)
+for methodology and reproduction commands.
 
 Our live checkpoint benchmark uses `gpt-5.6-sol`, a deterministic 600-fact
 prefix, ten sequential turns, and concurrent historical forks. Three runs on
