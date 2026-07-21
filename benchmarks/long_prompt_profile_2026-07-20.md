@@ -157,6 +157,15 @@ that this removes all 55 wait-selection model calls without delaying ordinary
    open could therefore add four seconds after its shell had already exited.
    Both drains now share one deadline; the focused background-process
    regression completes in 2.13 seconds instead of waiting two full periods.
+5. Every top-level Code Mode call flattened the segmented conversation and
+   then deep-cloned that complete snapshot again into its background cell.
+   Resumed `wait` calls repeated both copies even though waiting never reads
+   history. The agent now moves one shared owned snapshot into a new cell and
+   gives `wait` an empty borrowed history. With 512-byte representative items,
+   the focused benchmark reduced 100 items from 16.0 to 8.2 us, 1,000 items
+   from 180.0 to 92.0 us, and 10,000 items from 2.05 to 0.98 ms. This remains
+   small beside API and subprocess time, but it removes linear duplicate work
+   from the long-session tool boundary.
 
 ## Remaining boundaries
 
@@ -194,6 +203,9 @@ libraries or bypassing Tower.
 NANOCODEX_BENCH_EVENTS=/path/to/retained/agent/events.jsonl \
   cargo bench --locked -p nanocodex-service --bench tower_responses \
   'retained_response_event_pipeline|responses_request_encoding' -- --noplot
+
+cargo bench --locked -p nanocodex-core --bench fork_history \
+  code_mode_history_snapshot -- --noplot
 
 target/profiling/nanocodex run \
   --thinking low \

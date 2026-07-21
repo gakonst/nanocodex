@@ -17,11 +17,10 @@ use tokio::{
 };
 use tracing::{Instrument, info_span};
 
-use nanocodex_core::ResponseItem;
 use serde_json::value::RawValue;
 
 use super::{ToolContext, ToolOutputBody, ToolOutputContent};
-use crate::runtime::ToolRegistry;
+use crate::runtime::{OwnedToolContext, ToolRegistry};
 use protocol::{read_protocol_line, write_json_line};
 pub(crate) use spec::{exec_spec, wait_spec};
 
@@ -85,14 +84,6 @@ struct LiveCell {
     updates: mpsc::UnboundedReceiver<CellUpdate>,
     terminate: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
-}
-
-struct OwnedToolContext {
-    model: String,
-    session_id: String,
-    call_id: String,
-    history: Vec<ResponseItem>,
-    output_token_budget: usize,
 }
 
 enum CellUpdate {
@@ -258,7 +249,7 @@ impl CodeModeRuntime {
         &self,
         source: &str,
         tools: Arc<ToolRegistry>,
-        context: ToolContext<'_>,
+        context: OwnedToolContext,
     ) -> CodeModeExecution {
         let started_at = Instant::now();
         let span = info_span!(
@@ -303,7 +294,7 @@ impl CodeModeRuntime {
         &self,
         source: &str,
         tools: Arc<ToolRegistry>,
-        context: ToolContext<'_>,
+        context: OwnedToolContext,
         started_at: Instant,
     ) -> CodeModeExecution {
         let source = match parse_exec_source(source) {
@@ -316,10 +307,7 @@ impl CodeModeRuntime {
             .max(1);
         let extend_for_nested_calls = source.yield_time_ms.is_none();
         tracing::Span::current().record("output.max_tokens", output_token_budget);
-        let context = ToolContext {
-            output_token_budget,
-            ..context
-        };
+        let context = context.with_output_token_budget(output_token_budget);
         let cell_id = self.cells.lock().await.allocate_cell_id();
         tracing::Span::current().record("cell.id", cell_id);
         let stored = self.stored.lock().await.clone();
@@ -327,7 +315,7 @@ impl CodeModeRuntime {
             cell_id,
             source.code,
             tools,
-            OwnedToolContext::from(context),
+            context,
             stored,
             Arc::clone(&self.stored),
             Arc::clone(&self.host),
@@ -552,28 +540,6 @@ impl CellRegistry {
         let cell_id = self.next_cell_id;
         self.next_cell_id = self.next_cell_id.saturating_add(1);
         cell_id
-    }
-}
-
-impl OwnedToolContext {
-    fn from(context: ToolContext<'_>) -> Self {
-        Self {
-            model: context.model.to_owned(),
-            session_id: context.session_id.to_owned(),
-            call_id: context.call_id.to_owned(),
-            history: context.history.to_vec(),
-            output_token_budget: context.output_token_budget,
-        }
-    }
-
-    fn borrowed(&self) -> ToolContext<'_> {
-        ToolContext {
-            model: &self.model,
-            session_id: &self.session_id,
-            call_id: &self.call_id,
-            history: &self.history,
-            output_token_budget: self.output_token_budget,
-        }
     }
 }
 

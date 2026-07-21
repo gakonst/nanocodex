@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use js_sys::Promise;
 use nanocodex_core::{
@@ -55,6 +55,44 @@ pub struct ToolContext<'a> {
     pub call_id: &'a str,
     pub history: &'a [ResponseItem],
     pub output_token_budget: usize,
+}
+
+#[doc(hidden)]
+pub struct OwnedToolContext {
+    model: String,
+    session_id: String,
+    call_id: String,
+    history: Arc<Vec<ResponseItem>>,
+    output_token_budget: usize,
+}
+
+impl OwnedToolContext {
+    #[must_use]
+    pub fn new(
+        model: impl Into<String>,
+        session_id: impl Into<String>,
+        call_id: impl Into<String>,
+        history: Arc<Vec<ResponseItem>>,
+        output_token_budget: usize,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            session_id: session_id.into(),
+            call_id: call_id.into(),
+            history,
+            output_token_budget,
+        }
+    }
+
+    fn borrowed(&self) -> ToolContext<'_> {
+        ToolContext {
+            model: &self.model,
+            session_id: &self.session_id,
+            call_id: &self.call_id,
+            history: self.history.as_slice(),
+            output_token_budget: self.output_token_budget,
+        }
+    }
 }
 
 pub struct CodeModeExecution {
@@ -204,6 +242,15 @@ impl ToolRuntime {
                 "JavaScript code-mode host returned invalid JSON: {error}"
             )),
         }
+    }
+
+    #[doc(hidden)]
+    pub async fn execute_code_owned(
+        &self,
+        source: &str,
+        context: OwnedToolContext,
+    ) -> CodeModeExecution {
+        self.execute_code(source, context.borrowed()).await
     }
 
     #[expect(

@@ -113,10 +113,45 @@ fn benchmark_incremental_suffix(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_code_mode_history_snapshot(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("code_mode_history_snapshot");
+    for item_count in [100_usize, 1_000, 10_000] {
+        group.throughput(Throughput::Elements(
+            u64::try_from(item_count).expect("benchmark sizes fit in u64"),
+        ));
+        let mut history = ResponseHistory::new((0..item_count).map(history_item).collect());
+        history.commit_tail();
+
+        group.bench_with_input(
+            BenchmarkId::new("flatten_then_deep_clone", item_count),
+            &history,
+            |bencher, history| {
+                bencher.iter(|| {
+                    let flattened = history.iter().cloned().collect::<Vec<_>>();
+                    let owned_cell = flattened.clone();
+                    black_box((flattened, owned_cell));
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("flatten_into_shared_owner", item_count),
+            &history,
+            |bencher, history| {
+                bencher.iter(|| {
+                    let owned_cell = Arc::new(history.iter().cloned().collect::<Vec<_>>());
+                    black_box(owned_cell);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_fork_append,
     benchmark_active_boundary_snapshot,
-    benchmark_incremental_suffix
+    benchmark_incremental_suffix,
+    benchmark_code_mode_history_snapshot
 );
 criterion_main!(benches);

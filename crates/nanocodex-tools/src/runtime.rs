@@ -45,6 +45,61 @@ pub struct ToolExecution {
     pub(crate) process_trace: Option<ProcessTrace>,
 }
 
+/// Owned context used when a Code Mode cell may outlive the model tool call
+/// that started it.
+#[doc(hidden)]
+pub struct OwnedToolContext {
+    pub(crate) model: String,
+    pub(crate) session_id: String,
+    pub(crate) call_id: String,
+    pub(crate) history: Arc<Vec<ResponseItem>>,
+    pub(crate) output_token_budget: usize,
+}
+
+impl OwnedToolContext {
+    #[must_use]
+    pub fn new(
+        model: impl Into<String>,
+        session_id: impl Into<String>,
+        call_id: impl Into<String>,
+        history: Arc<Vec<ResponseItem>>,
+        output_token_budget: usize,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            session_id: session_id.into(),
+            call_id: call_id.into(),
+            history,
+            output_token_budget,
+        }
+    }
+
+    pub(crate) fn from_borrowed(context: ToolContext<'_>) -> Self {
+        Self::new(
+            context.model,
+            context.session_id,
+            context.call_id,
+            Arc::new(context.history.to_vec()),
+            context.output_token_budget,
+        )
+    }
+
+    pub(crate) fn borrowed(&self) -> ToolContext<'_> {
+        ToolContext {
+            model: &self.model,
+            session_id: &self.session_id,
+            call_id: &self.call_id,
+            history: self.history.as_slice(),
+            output_token_budget: self.output_token_budget,
+        }
+    }
+
+    pub(crate) fn with_output_token_budget(mut self, output_token_budget: usize) -> Self {
+        self.output_token_budget = output_token_budget;
+        self
+    }
+}
+
 pub(crate) struct ProcessTrace {
     exit_code: Option<i32>,
     session_id: Option<i64>,
@@ -538,6 +593,22 @@ impl ToolRuntime {
     }
 
     pub async fn execute_code(&self, source: &str, context: ToolContext<'_>) -> CodeModeExecution {
+        self.code_mode
+            .execute(
+                source,
+                Arc::clone(&self.registry),
+                OwnedToolContext::from_borrowed(context),
+            )
+            .await
+    }
+
+    /// Executes Code Mode without copying an already-owned history snapshot.
+    #[doc(hidden)]
+    pub async fn execute_code_owned(
+        &self,
+        source: &str,
+        context: OwnedToolContext,
+    ) -> CodeModeExecution {
         self.code_mode
             .execute(source, Arc::clone(&self.registry), context)
             .await

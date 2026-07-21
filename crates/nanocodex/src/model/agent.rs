@@ -30,8 +30,9 @@ use super::{
 };
 use crate::{NanocodexError, Result};
 use nanocodex_tools::{
-    ImageGenerationConfig, NestedToolCall, ToolContext, ToolOutputBody, ToolRuntime,
-    ToolRuntimeControl, Tools, WebSearchConfig, prepare_output_images, prepare_user_input,
+    ImageGenerationConfig, NestedToolCall, OwnedToolContext, ToolContext, ToolOutputBody,
+    ToolRuntime, ToolRuntimeControl, Tools, WebSearchConfig, prepare_output_images,
+    prepare_user_input,
 };
 
 pub(crate) struct ModelRun<S> {
@@ -620,9 +621,10 @@ where
 
             session.conversation.clear_delta();
             for call in code_calls {
-                let history = session.conversation.flattened_history();
+                let history = (call.name == "exec")
+                    .then(|| Arc::new(session.conversation.flattened_history()));
                 let output = self
-                    .execute_model_tool(&session.tools, call_index, call, &history)
+                    .execute_model_tool(&session.tools, call_index, call, history)
                     .await?;
                 session.conversation.append(output);
             }
@@ -674,7 +676,7 @@ where
         tools: &ToolRuntime,
         call_index: u32,
         call: CodeCall,
-        history: &[ResponseItem],
+        history: Option<Arc<Vec<ResponseItem>>>,
     ) -> Result<Vec<ResponseItem>> {
         let arguments = if call.name == "exec" {
             ToolCallArguments::Text(&call.input)
@@ -710,25 +712,28 @@ where
                 CodeCallKind::Function => function_tool_output(call.call_id, output),
             }]);
         }
+        let owned_context = owned_code_context(&call, history, self.events.request_id())?;
         let started_at = self.track_active_tool_call(&call);
-        let context = ToolContext {
-            model: MODEL,
-            session_id: self.events.request_id(),
-            call_id: &call.call_id,
-            history,
-            output_token_budget: nanocodex_tools::DEFAULT_TOOL_OUTPUT_TOKENS,
-        };
         let tool_span = model_tool_span(&call, call_index);
         record_span_content(&tool_span, "tool.arguments", &call.input);
-        let mut execution = async {
-            if call.name == "exec" {
-                tools.execute_code(&call.input, context).await
-            } else {
-                tools.wait_for_code(&call.input, context).await
-            }
-        }
-        .instrument(tool_span.clone())
-        .await;
+        let mut execution = if let Some(context) = owned_context {
+            tools
+                .execute_code_owned(&call.input, context)
+                .instrument(tool_span.clone())
+                .await
+        } else {
+            let context = ToolContext {
+                model: MODEL,
+                session_id: self.events.request_id(),
+                call_id: &call.call_id,
+                history: &[],
+                output_token_budget: nanocodex_tools::DEFAULT_TOOL_OUTPUT_TOKENS,
+            };
+            tools
+                .wait_for_code(&call.input, context)
+                .instrument(tool_span.clone())
+                .await
+        };
         prepare_output_images(&mut execution.output).await;
         if let Ok(content) = serde_json::to_string(&execution.output) {
             record_span_content(&tool_span, "tool.output", &content);
@@ -1197,6 +1202,26 @@ fn model_tool_span(call: &CodeCall, call_index: u32) -> tracing::Span {
         status = tracing::field::Empty,
         duration_ns = tracing::field::Empty,
     )
+}
+
+fn owned_code_context(
+    call: &CodeCall,
+    history: Option<Arc<Vec<ResponseItem>>>,
+    session_id: &str,
+) -> Result<Option<OwnedToolContext>> {
+    if call.name != "exec" {
+        return Ok(None);
+    }
+    let history = history.ok_or(NanocodexError::MalformedResponse {
+        detail: "exec call did not have an owned history snapshot",
+    })?;
+    Ok(Some(OwnedToolContext::new(
+        MODEL,
+        session_id,
+        &call.call_id,
+        history,
+        nanocodex_tools::DEFAULT_TOOL_OUTPUT_TOKENS,
+    )))
 }
 
 fn record_span_content(span: &tracing::Span, kind: &'static str, content: &str) {
