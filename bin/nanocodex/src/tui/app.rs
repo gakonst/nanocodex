@@ -18,6 +18,8 @@ const CANCEL_CONFIRMATION_WINDOW: Duration = Duration::from_secs(1);
 
 struct PendingScrollAnchor {
     width: u16,
+    viewport_height: u16,
+    height_before_capped: usize,
     changed_tail: Option<(usize, usize)>,
     new_entries_start: Option<usize>,
 }
@@ -59,7 +61,9 @@ pub(super) struct Conversation {
     pub(super) status: String,
     pub(super) scroll_from_bottom: usize,
     pub(super) has_unseen_output: bool,
+    smooth_scroll_from_bottom: usize,
     viewport_width: Option<u16>,
+    viewport_height: Option<u16>,
     pending_scroll_anchor: Option<PendingScrollAnchor>,
     streamed_this_turn: bool,
     reasoning: String,
@@ -81,7 +85,9 @@ impl Conversation {
             status: status.into(),
             scroll_from_bottom: 0,
             has_unseen_output: false,
+            smooth_scroll_from_bottom: 0,
             viewport_width: None,
+            viewport_height: None,
             pending_scroll_anchor: None,
             streamed_this_turn: false,
             reasoning: String::new(),
@@ -329,10 +335,10 @@ impl Conversation {
         }
     }
 
-    pub(super) fn settle_viewport(&mut self, width: u16) {
-        if let Some(pending) = self.pending_scroll_anchor.take()
-            && self.scroll_from_bottom > 0
-        {
+    pub(super) fn settle_viewport(&mut self, width: u16, height: u16) {
+        let viewport_changed =
+            self.viewport_width != Some(width) || self.viewport_height != Some(height);
+        if let Some(pending) = self.pending_scroll_anchor.take() {
             let changed_tail_rows = pending.changed_tail.map_or(0, |(index, before)| {
                 self.transcript
                     .height_at(index, pending.width)
@@ -342,12 +348,81 @@ impl Conversation {
             let new_entry_rows = pending
                 .new_entries_start
                 .map_or(0, |first| self.transcript.height_from(first, pending.width));
-            self.scroll_from_bottom = self
-                .scroll_from_bottom
-                .saturating_add(changed_tail_rows)
-                .saturating_add(new_entry_rows);
+            if self.scroll_from_bottom > 0 {
+                self.scroll_from_bottom = self
+                    .scroll_from_bottom
+                    .saturating_add(changed_tail_rows)
+                    .saturating_add(new_entry_rows);
+            } else if self.selected_user.is_none()
+                && pending.width == width
+                && pending.viewport_height == height
+            {
+                let viewport_shift = pending
+                    .height_before_capped
+                    .saturating_add(changed_tail_rows)
+                    .saturating_add(new_entry_rows)
+                    .saturating_sub(usize::from(height));
+                self.queue_smooth_scroll(viewport_shift, height);
+            }
         }
         self.viewport_width = Some(width);
+        self.viewport_height = Some(height);
+        if viewport_changed {
+            self.clamp_scroll();
+        }
+    }
+
+    fn scroll_up(&mut self, rows: usize) {
+        self.scroll_from_bottom = self
+            .scroll_from_bottom
+            .saturating_add(self.smooth_scroll_from_bottom)
+            .saturating_add(rows);
+        self.smooth_scroll_from_bottom = 0;
+        self.clamp_scroll();
+    }
+
+    fn scroll_down(&mut self, rows: usize) {
+        self.scroll_from_bottom = self
+            .scroll_from_bottom
+            .saturating_add(self.smooth_scroll_from_bottom);
+        self.smooth_scroll_from_bottom = 0;
+        self.clamp_scroll();
+        self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(rows);
+    }
+
+    pub(super) fn display_scroll_from_bottom(&self) -> usize {
+        self.scroll_from_bottom
+            .saturating_add(self.smooth_scroll_from_bottom)
+    }
+
+    fn queue_smooth_scroll(&mut self, rows: usize, viewport_height: u16) {
+        if rows == 0 {
+            return;
+        }
+        let was_animating = self.smooth_scroll_from_bottom > 0;
+        self.smooth_scroll_from_bottom = self
+            .smooth_scroll_from_bottom
+            .saturating_add(rows)
+            .min(usize::from(viewport_height));
+        if !was_animating {
+            self.smooth_scroll_from_bottom = self.smooth_scroll_from_bottom.saturating_sub(1);
+        }
+    }
+
+    fn advance_smooth_scroll(&mut self) {
+        self.smooth_scroll_from_bottom = self.smooth_scroll_from_bottom.saturating_sub(1);
+    }
+
+    fn smooth_scroll_pending(&self) -> bool {
+        self.smooth_scroll_from_bottom > 0
+    }
+
+    fn clamp_scroll(&mut self) {
+        if let (Some(width), Some(height)) = (self.viewport_width, self.viewport_height) {
+            self.scroll_from_bottom =
+                self.transcript
+                    .clamp_scroll_from_bottom(self.scroll_from_bottom, width, height);
+        }
     }
 
     fn select_older_user(&mut self) {
@@ -373,10 +448,7 @@ impl Conversation {
     }
 
     fn note_tail_will_change(&mut self) {
-        if self.scroll_from_bottom == 0 && self.selected_user.is_none() {
-            return;
-        }
-        self.has_unseen_output = true;
+        self.has_unseen_output |= self.scroll_from_bottom > 0 || self.selected_user.is_some();
         if self.selected_user.is_some() {
             return;
         }
@@ -392,23 +464,28 @@ impl Conversation {
             .transcript
             .tail_height(width)
             .map(|height| (self.transcript.len().saturating_sub(1), height));
-        let pending = self
-            .pending_scroll_anchor
-            .get_or_insert(PendingScrollAnchor {
+        if self.pending_scroll_anchor.is_none() {
+            let viewport_height = self.viewport_height.unwrap_or(0);
+            self.pending_scroll_anchor = Some(PendingScrollAnchor {
                 width,
+                viewport_height,
+                height_before_capped: self
+                    .transcript
+                    .height_up_to(width, usize::from(viewport_height)),
                 changed_tail: None,
                 new_entries_start: None,
             });
+        }
+        let Some(pending) = self.pending_scroll_anchor.as_mut() else {
+            return;
+        };
         if pending.new_entries_start.is_none() && pending.changed_tail.is_none() {
             pending.changed_tail = changed_tail;
         }
     }
 
     fn note_new_entry(&mut self) {
-        if self.scroll_from_bottom == 0 && self.selected_user.is_none() {
-            return;
-        }
-        self.has_unseen_output = true;
+        self.has_unseen_output |= self.scroll_from_bottom > 0 || self.selected_user.is_some();
         if self.selected_user.is_some() {
             return;
         }
@@ -416,13 +493,21 @@ impl Conversation {
             return;
         };
         let first = self.transcript.len();
-        let pending = self
-            .pending_scroll_anchor
-            .get_or_insert(PendingScrollAnchor {
+        if self.pending_scroll_anchor.is_none() {
+            let viewport_height = self.viewport_height.unwrap_or(0);
+            self.pending_scroll_anchor = Some(PendingScrollAnchor {
                 width,
+                viewport_height,
+                height_before_capped: self
+                    .transcript
+                    .height_up_to(width, usize::from(viewport_height)),
                 changed_tail: None,
                 new_entries_start: None,
             });
+        }
+        let Some(pending) = self.pending_scroll_anchor.as_mut() else {
+            return;
+        };
         pending.new_entries_start.get_or_insert(first);
     }
 
@@ -435,6 +520,7 @@ impl Conversation {
     fn jump_to_bottom(&mut self) {
         self.selected_user = None;
         self.scroll_from_bottom = 0;
+        self.smooth_scroll_from_bottom = 0;
         self.has_unseen_output = false;
         self.pending_scroll_anchor = None;
     }
@@ -938,14 +1024,11 @@ impl App {
 
     pub(super) fn start_historical_edit(&mut self) -> bool {
         if self.focus != PaneId::Main
-            || self.main.running
-            || self.main.pending_turns > 0
             || self.btw.is_some()
             || self.historical_editor.is_some()
             || self.pending_historical_edit.is_some()
         {
-            "Finish the main turn and close /btw before editing history"
-                .clone_into(&mut self.main.status);
+            "Close /btw before editing history".clone_into(&mut self.main.status);
             return false;
         }
         let Some(transcript_index) = self.main.selected_user else {
@@ -972,7 +1055,9 @@ impl App {
             transcript_index,
             composer_draft,
         });
-        "Editing selected prompt".clone_into(&mut self.main.status);
+        if !self.main.running {
+            "Editing selected prompt".clone_into(&mut self.main.status);
+        }
         true
     }
 
@@ -982,7 +1067,9 @@ impl App {
         };
         self.restore_composer_draft(editor.composer_draft);
         self.main.jump_to_bottom();
-        "Ready".clone_into(&mut self.main.status);
+        if !self.main.running {
+            "Ready".clone_into(&mut self.main.status);
+        }
     }
 
     pub(super) fn commit_historical_edit(&mut self) -> Option<HistoricalEditRequest> {
@@ -1008,7 +1095,9 @@ impl App {
             prompt: editor.prompt_id,
         };
         self.pending_historical_edit = Some(pending);
-        "Forking before selected prompt".clone_into(&mut self.main.status);
+        if !self.main.running {
+            "Forking before selected prompt".clone_into(&mut self.main.status);
+        }
         Some(request)
     }
 
@@ -1026,7 +1115,9 @@ impl App {
         })?;
         let branch = self.main.fork_before(pending.transcript_index);
         let mut previous = std::mem::replace(&mut self.main, branch);
-        "Ready".clone_into(&mut previous.status);
+        if !previous.running {
+            "Ready".clone_into(&mut previous.status);
+        }
         let draft = self.capture_composer_draft();
         self.main_branches.push(MainBranchPane {
             id: self.main_branch_id,
@@ -1443,9 +1534,32 @@ impl App {
         !self.input.chars().all(char::is_whitespace)
     }
 
-    pub(super) fn turn_finished(&mut self, target: PaneId, error: Option<String>) {
-        if let Some(conversation) = self.conversation_mut(target) {
-            conversation.turn_finished(error);
+    pub(super) fn turn_finished(
+        &mut self,
+        target: PaneId,
+        main_branch_id: Option<u64>,
+        error: Option<String>,
+    ) {
+        match target {
+            PaneId::Main => {
+                let branch_id = main_branch_id.unwrap_or(self.main_branch_id);
+                let conversation = if self.main_branch_id == branch_id {
+                    Some(&mut self.main)
+                } else {
+                    self.main_branches
+                        .iter_mut()
+                        .find(|branch| branch.id == branch_id)
+                        .map(|branch| &mut branch.conversation)
+                };
+                if let Some(conversation) = conversation {
+                    conversation.turn_finished(error);
+                }
+            }
+            PaneId::Btw(_) => {
+                if let Some(conversation) = self.conversation_mut(target) {
+                    conversation.turn_finished(error);
+                }
+            }
         }
     }
 
@@ -1495,13 +1609,13 @@ impl App {
 
     pub(super) fn scroll_up(&mut self, rows: usize) {
         if let Some(conversation) = self.conversation_mut(self.focus) {
-            conversation.scroll_from_bottom = conversation.scroll_from_bottom.saturating_add(rows);
+            conversation.scroll_up(rows);
         }
     }
 
     pub(super) fn scroll_down(&mut self, rows: usize) {
         if let Some(conversation) = self.conversation_mut(self.focus) {
-            conversation.scroll_from_bottom = conversation.scroll_from_bottom.saturating_sub(rows);
+            conversation.scroll_down(rows);
             if conversation.scroll_from_bottom == 0 {
                 conversation.has_unseen_output = false;
             }
@@ -1517,6 +1631,21 @@ impl App {
     pub(super) fn on_tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
         self.expire_cancel_confirmation(Instant::now());
+    }
+
+    pub(super) fn advance_smooth_scroll(&mut self) {
+        self.main.advance_smooth_scroll();
+        if let Some(btw) = &mut self.btw {
+            btw.conversation.advance_smooth_scroll();
+        }
+    }
+
+    pub(super) fn smooth_scroll_pending(&self) -> bool {
+        self.main.smooth_scroll_pending()
+            || self
+                .btw
+                .as_ref()
+                .is_some_and(|btw| btw.conversation.smooth_scroll_pending())
     }
 
     pub(super) fn active_conversation(&self) -> &Conversation {
@@ -1672,7 +1801,7 @@ mod tests {
         app.toggle_focus();
         assert_eq!(app.focus, PaneId::Btw(id));
         assert!(app.btw_busy());
-        app.turn_finished(PaneId::Btw(id), None);
+        app.turn_finished(PaneId::Btw(id), None, None);
         assert!(!app.btw_busy());
         app.close_btw(id);
         assert_eq!(app.focus, PaneId::Main);
@@ -1682,12 +1811,13 @@ mod tests {
     #[test]
     fn streamed_wrap_growth_preserves_a_scrolled_view_and_marks_output_unseen() {
         let mut app = App::new(".".into());
-        app.main.settle_viewport(20);
+        app.main.settle_viewport(20, 6);
         for index in 0..8 {
             app.main
                 .push_output(TranscriptItem::User(format!("earlier message {index}")));
         }
         app.main.push_assistant_delta("streaming tail");
+        app.main.settle_viewport(20, 6);
         app.main.scroll_from_bottom = 5;
 
         let area = Rect::new(0, 0, 20, 6);
@@ -1701,7 +1831,7 @@ mod tests {
         app.main.push_assistant_delta(
             " with enough additional words to wrap onto several newly visible rows",
         );
-        app.main.settle_viewport(20);
+        app.main.settle_viewport(20, 6);
 
         let mut after = Buffer::empty(area);
         app.main
@@ -1717,8 +1847,12 @@ mod tests {
     fn new_entries_anchor_only_the_conversation_that_receives_them() {
         let mut app = App::new(".".into());
         let btw_id = app.begin_btw();
-        app.main.settle_viewport(40);
-        app.btw.as_mut().unwrap().conversation.settle_viewport(40);
+        app.main.settle_viewport(40, 10);
+        app.btw
+            .as_mut()
+            .unwrap()
+            .conversation
+            .settle_viewport(40, 10);
         app.main.scroll_from_bottom = 9;
         app.btw.as_mut().unwrap().conversation.scroll_from_bottom = 7;
 
@@ -1729,7 +1863,11 @@ mod tests {
                 &json!({ "call_id": "side-1", "tool": "exec", "arguments": "pwd" }),
             ),
         );
-        app.btw.as_mut().unwrap().conversation.settle_viewport(40);
+        app.btw
+            .as_mut()
+            .unwrap()
+            .conversation
+            .settle_viewport(40, 10);
 
         assert_eq!(app.main.scroll_from_bottom, 9);
         assert!(!app.main.has_unseen_output);
@@ -1756,6 +1894,87 @@ mod tests {
         app.jump_to_bottom();
         assert_eq!(app.main.scroll_from_bottom, 0);
         assert!(!app.main.has_unseen_output);
+    }
+
+    #[test]
+    fn repeated_scroll_up_clamps_without_hidden_overscroll() {
+        let mut app = App::new(".".into());
+        for index in 0..12 {
+            app.main
+                .push_output(TranscriptItem::User(format!("message {index}")));
+        }
+        app.main.settle_viewport(20, 6);
+        let limit = app.main.transcript.max_scroll_from_bottom(20, 6);
+
+        for _ in 0..100 {
+            app.scroll_up(3);
+        }
+        assert_eq!(app.main.scroll_from_bottom, limit);
+
+        app.scroll_down(3);
+        assert_eq!(
+            app.main.scroll_from_bottom,
+            limit.saturating_sub(3),
+            "scrolling down should move immediately after reaching the top",
+        );
+    }
+
+    #[test]
+    fn follow_bottom_only_animates_after_content_overflows_the_viewport() {
+        let mut app = App::new(".".into());
+        app.main.settle_viewport(20, 6);
+
+        app.main.push_assistant_delta("one\ntwo\nthree");
+        app.main.settle_viewport(20, 6);
+        assert_eq!(app.main.display_scroll_from_bottom(), 0);
+        assert!(!app.smooth_scroll_pending());
+
+        app.main.push_assistant_delta("\nfour\nfive\nsix");
+        app.main.settle_viewport(20, 6);
+        let first_frame_scroll = app.main.display_scroll_from_bottom();
+        assert!(first_frame_scroll > 0);
+        assert!(app.smooth_scroll_pending());
+
+        app.advance_smooth_scroll();
+        assert_eq!(
+            app.main.display_scroll_from_bottom(),
+            first_frame_scroll - 1
+        );
+    }
+
+    #[test]
+    fn follow_bottom_catch_up_is_bounded_to_one_viewport() {
+        let mut app = App::new(".".into());
+        app.main.settle_viewport(20, 6);
+        app.main.push_assistant_delta("one\ntwo\nthree");
+        app.main.settle_viewport(20, 6);
+
+        app.main
+            .push_assistant_delta(&format!("\n{}", "new row\n".repeat(100)));
+        app.main.settle_viewport(20, 6);
+
+        assert!(app.main.display_scroll_from_bottom() > 0);
+        assert!(app.main.display_scroll_from_bottom() < 6);
+    }
+
+    #[test]
+    fn manual_scroll_takes_over_from_the_current_animated_position() {
+        let mut app = App::new(".".into());
+        app.main.settle_viewport(20, 6);
+        app.main.push_assistant_delta("one\ntwo\nthree");
+        app.main.settle_viewport(20, 6);
+        app.main.push_assistant_delta("\nfour\nfive\nsix");
+        app.main.settle_viewport(20, 6);
+        let animated_position = app.main.display_scroll_from_bottom();
+        let max_scroll = app.main.transcript.max_scroll_from_bottom(20, 6);
+
+        app.scroll_up(3);
+
+        assert_eq!(
+            app.main.scroll_from_bottom,
+            animated_position.saturating_add(3).min(max_scroll)
+        );
+        assert_eq!(app.main.smooth_scroll_from_bottom, 0);
     }
 
     #[test]
@@ -1895,6 +2114,38 @@ mod tests {
     }
 
     #[test]
+    fn historical_edit_archives_a_running_source_without_misrouting_its_completion() {
+        let mut app = App::new(".".into());
+        app.main
+            .transcript
+            .push_editable_user("prompt still running".to_owned(), 41);
+        app.main.running = true;
+        app.main.pending_turns = 1;
+        app.main.status = "Thinking".to_owned();
+
+        app.move_up();
+        assert!(app.start_historical_edit());
+        app.replace_input("revised prompt".to_owned());
+        let request = app.commit_historical_edit().unwrap();
+        let _ = app.main_branch_opened(
+            request.new_branch,
+            request.source_branch,
+            request.prompt,
+            Arc::from("branch-session"),
+        );
+
+        let source = &app.main_branches[0].conversation;
+        assert!(source.running);
+        assert_eq!(source.pending_turns, 1);
+        assert_eq!(source.status, "Thinking");
+
+        app.main.pending_turns = 1;
+        app.turn_finished(PaneId::Main, Some(0), None);
+        assert_eq!(app.main.pending_turns, 1);
+        assert_eq!(app.main_branches[0].conversation.pending_turns, 0);
+    }
+
+    #[test]
     fn branch_previews_follow_depth_first_tree_order() {
         let mut app = App::new(".".into());
         app.main
@@ -1984,15 +2235,20 @@ mod tests {
     #[test]
     fn resize_retains_tail_distance_and_uses_the_new_width_for_later_growth() {
         let mut app = App::new(".".into());
-        app.main.settle_viewport(40);
+        for index in 0..8 {
+            app.main
+                .push_output(TranscriptItem::User(format!("earlier message {index}")));
+        }
+        app.main.settle_viewport(40, 6);
         app.main.push_assistant_delta("short tail");
+        app.main.settle_viewport(40, 6);
         app.main.scroll_from_bottom = 6;
 
-        app.main.settle_viewport(10);
+        app.main.settle_viewport(10, 6);
         assert_eq!(app.main.scroll_from_bottom, 6);
         app.main
             .push_assistant_delta(" plus enough text to wrap at the narrower width");
-        app.main.settle_viewport(10);
+        app.main.settle_viewport(10, 6);
 
         assert!(app.main.scroll_from_bottom > 6);
         assert!(app.main.has_unseen_output);

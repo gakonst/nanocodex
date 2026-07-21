@@ -43,7 +43,7 @@ that may affect the current run, while `Tab` creates a later queued turn.
 | `Ctrl+W` | Delete the previous word. |
 | `Ctrl+U` / `Ctrl+K` | Delete to the start/end of the logical line; at a line boundary, delete the adjacent newline. |
 | `Ctrl+G` | Open the current draft as Markdown in `$VISUAL`, falling back to `$EDITOR`, then replace the composer with the saved text. |
-| `e` while a prior prompt is selected | Replace that user-message row with a bordered inline editor while preserving the surrounding transcript and the current composer draft. `Enter` forks immediately before the prompt and sends the revision on the new branch; `Esc` cancels, clears selection, and restores composer focus. `Shift+Enter` inserts a newline and `Ctrl+G` edits the inline buffer in `$VISUAL`/`$EDITOR`. |
+| `e` while a prior prompt is selected | Replace that user-message row with a bordered inline editor while preserving the surrounding transcript and the current composer draft, including while its branch is still running. `Enter` forks immediately before the prompt and sends the revision on the new branch; the original completion continues on its retained branch. `Esc` cancels, clears selection, and restores composer focus. `Shift+Enter` inserts a newline and `Ctrl+G` edits the inline buffer in `$VISUAL`/`$EDITOR`. |
 | `Ctrl+Alt+Up` / `Ctrl+Alt+Down` | Cycle through retained main branches. Each branch preserves its transcript and composer draft. |
 | `Ctrl+Alt+B` | Toggle the right-side branch tree. Parent/child connectors and nesting show fork topology; `Up`/`Down` or `j`/`k` instantly preview and switch in depth-first tree order, and `Esc` closes it. During a running turn the preview still changes immediately and the agent switch follows when the turn becomes idle. |
 | Terminal paste | Insert literal pasted text at the cursor after normalizing CRLF and CR to LF. |
@@ -106,6 +106,9 @@ Unknown slash-prefixed input is sent to the model as an ordinary prompt.
 - Resize retains the current wrapped-row distance from the tail; later output
   is measured at the new pane width. This avoids a full-history reflow solely
   to manufacture a semantic resize anchor.
+- Manual scroll offsets are clamped to the transcript's actual wrapped height
+  at the current viewport size. Repeated wheel or page input at the oldest row
+  therefore cannot accumulate invisible overscroll that must later be unwound.
 - Terminal setup uses synchronized updates, bracketed paste, mouse capture, and
   enhanced keyboard reporting where supported. Restoration is drop- and
   panic-safe.
@@ -158,6 +161,8 @@ The Criterion suite in `bin/nanocodex/benches/tui_render.rs` measures:
 - a streaming delta appended to a 2 KiB assistant tail;
 - a 128-delta burst applied while scrolled, its coalesced anchor settlement,
   and the complete anchored frame at `120x40`;
+- a 128-row follow-bottom burst, one smooth viewport step, and draining the
+  bounded animation backlog at `120x40`;
 - repeated rendering of a 100 KiB multiline composer draft at `120x40`; and
 - selection of every retained user prompt and the first selected-history frame
   at `120x40`.
@@ -219,9 +224,10 @@ their agent, transcript, and composer draft. On the 2026-07-21 retained-shape
 gate, creating the visible fork prefix took 2.82 µs for `codex_long` and 1.69 µs
 for `amp_long`; switching branches took 0.50 µs and 0.31 µs respectively. The
 right-side tree navigator frame takes 0.307 ms and 0.257 ms. A
-wire-level regression test proves that editing the second prompt sends only its
-replacement with the first response as `previous_response_id`, while the parent
-branch remains independently selectable. The header renders a compact
+wire-level regression test proves that editing the still-running second prompt
+sends only its replacement with the first response as `previous_response_id`,
+while the original completion continues on the independently selectable parent
+branch. The header renders a compact
 `child←parent` graph and marks the active node with `*`.
 
 Run it with:
@@ -316,10 +322,11 @@ choice; `Defer` is intentionally outside the next slice.
 | ID | Priority | Candidate | Evidence and acceptance boundary |
 | --- | --- | --- | --- |
 | `TUI-PERF-01` | Done | Add a long-history height/index strategy. | Bottom-up traversal is benchmarked on both representative shapes, scrolled and unscrolled, with alternating-width resize invalidation. The retained-history walk and sum are no longer on the normal tail-render path. |
-| `TUI-SCROLL-01` | Done | Preserve reading position while output streams. | Wrapped growth and new entries are coalesced into the pane's bottom-relative offset. The title marks unseen output; `Ctrl+End` and reaching the tail clear it. Tests cover wrap growth, resize, and main/`/btw` isolation. |
+| `TUI-SCROLL-01` | Done | Preserve reading position while output streams. | Wrapped growth and new entries are coalesced into the pane's bottom-relative offset. The title marks unseen output; `Ctrl+End` and reaching the tail clear it. Scroll input and resize clamp at the real wrapped extent without retaining hidden overscroll. Tests cover wrap growth, resize, clamping, and main/`/btw` isolation. |
 | `TUI-STREAM-01` | Deferred | Make streaming versus sealed transcript entries explicit. | The raw-string prototype reduced isolated update work but did not produce a reproducible end-to-end frame win, while adding per-frame materialization. Re-evaluate with canonical raw source as part of `TUI-RENDER-01`. |
+| `TUI-SMOOTH-01` | Done | Smooth follow-bottom movement once streaming output fills the viewport. | Keep agent events and canonical transcript updates immediate, but retain the prior visual bottom while newly wrapped rows arrive and advance it by one row per render. Initial viewport fill is unchanged, manual scroll takes over from the currently displayed position, and deep bursts cap catch-up at one viewport so presentation cannot lag without bound. |
 | `TUI-COMPOSER-01` | Done | Make multiline editing a reliable daily-driver surface. | `Ctrl+G` safely yields stdin and terminal ownership to `$VISUAL`/`$EDITOR`; readline keys work; rendering and Up/Down share one visual-row map. The 100 KiB composer frame is benchmarked and exact wrap boundaries are regression-tested. |
-| `TUI-BRANCH-01` | Done | Make transcript edit create an Amp-style historical branch. | Up at the composer boundary selects prior completed user turns inline without wrapping or clearing a running response. `e` replaces the selected row with an inline editor; submit forks and sends only after the new branch opens. Abandoned branch agents, transcripts, and drafts remain available. `Ctrl+Alt+B` opens the measured right-side depth-first branch tree; moving its selection immediately changes the transcript preview and switches the idle agent without an Enter confirmation. `Ctrl+Alt+Up/Down` retains fast cycling. |
+| `TUI-BRANCH-01` | Done | Make transcript edit create an Amp-style historical branch. | Up at the composer boundary selects prior user turns inline without wrapping or clearing a running response. `e` replaces the selected row with an inline editor; submit may fork while the source completion continues on its retained branch and sends only after the new branch opens. Abandoned branch agents, transcripts, and drafts remain available. `Ctrl+Alt+B` opens the measured right-side depth-first branch tree; moving its selection immediately changes the transcript preview and switches the idle agent without an Enter confirmation. `Ctrl+Alt+Up/Down` retains fast cycling. |
 | `TUI-PASTE-01` | Evaluate | Handle paste bursts and very large drafts deliberately. | Preserve pasted bytes after newline normalization, keep the UI responsive, and decide whether the composer shows a compact placeholder for unusually large pastes. Do not silently truncate. |
 | `TUI-RENDER-01` | Evaluate | Render assistant Markdown and useful tables. | Preserve selectable/copyable source and deterministic reflow. Benchmark long messages and avoid turning presentation into a new transcript contract. |
 | `TUI-TOOL-01` | Evaluate | Improve tool-call presentation. | Explore collapsed/expanded arguments and results, duration, and clearer status without hiding failures or changing event semantics. |
@@ -339,9 +346,11 @@ choice; `Defer` is intentionally outside the next slice.
 4. [x] Implement and benchmark `TUI-COMPOSER-01`.
 5. [x] Complete checkpoint-backed edit/branch switching and its compact,
    measured branch navigator in `TUI-BRANCH-01`.
-6. Choose one interaction slice from paste, Markdown, tool presentation, or
+6. [x] Smooth follow-bottom viewport movement without delaying canonical agent
+   events or initial viewport fill in `TUI-SMOOTH-01`.
+7. Choose one interaction slice from paste, Markdown, tool presentation, or
    notifications based on representative-session evidence.
-7. Revisit multiple `/btw` panes only after the single-pane lifecycle and
+8. Revisit multiple `/btw` panes only after the single-pane lifecycle and
    cleanup behavior are unambiguous.
 
 ## Source map

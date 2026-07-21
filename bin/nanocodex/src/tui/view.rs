@@ -220,12 +220,13 @@ fn render_transcript(
             Color::DarkGray
         }));
     let inner = block.inner(area);
-    conversation.settle_viewport(inner.width);
+    conversation.settle_viewport(inner.width, inner.height);
+    let scroll_from_bottom = conversation.display_scroll_from_bottom();
     frame.render_widget(block, area);
 
     frame.render_widget(
         conversation.transcript.widget(
-            conversation.scroll_from_bottom,
+            scroll_from_bottom,
             conversation.selected_user,
             inline_edit,
             empty_message,
@@ -235,7 +236,7 @@ fn render_transcript(
     if let Some(edit) = inline_edit
         && let Some(position) = conversation.transcript.inline_edit_cursor(
             inner,
-            conversation.scroll_from_bottom,
+            scroll_from_bottom,
             conversation.selected_user,
             edit,
         )

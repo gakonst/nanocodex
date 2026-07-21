@@ -282,7 +282,7 @@ mod tui {
                     app
                 },
                 |mut app| {
-                    app.main.settle_viewport(118);
+                    app.main.settle_viewport(118, 33);
                     black_box(app);
                 },
                 BatchSize::SmallInput,
@@ -307,6 +307,90 @@ mod tui {
                         .draw(|frame| view::render(frame, &mut app))
                         .expect("anchored scroll benchmark frame should render");
                     black_box(app.main.scroll_from_bottom);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.finish();
+    }
+
+    pub(super) fn smooth_follow_benchmark(criterion: &mut Criterion) {
+        const DELTAS: usize = 128;
+
+        fn following_app() -> App {
+            let mut app = App::new("/workspace/nanocodex".into());
+            for index in 0..50 {
+                app.main
+                    .transcript
+                    .push(TranscriptItem::User(sized_text(160, index)));
+            }
+            app.main.push_assistant_delta(&sized_text(2_048, 51));
+            app.main.settle_viewport(118, 38);
+            app
+        }
+
+        fn queued_animation() -> (App, Terminal<TestBackend>) {
+            let mut app = following_app();
+            let mut terminal = Terminal::new(TestBackend::new(120, 40))
+                .expect("smooth-follow benchmark terminal should initialize");
+            terminal
+                .draw(|frame| view::render(frame, &mut app))
+                .expect("initial smooth-follow frame should render");
+            for _ in 0..DELTAS {
+                app.main.push_assistant_delta("\nstreamed viewport row");
+            }
+            terminal
+                .draw(|frame| view::render(frame, &mut app))
+                .expect("burst smooth-follow frame should render");
+            assert!(app.smooth_scroll_pending());
+            (app, terminal)
+        }
+
+        let mut group = criterion.benchmark_group("tui_smooth_follow");
+        group.sample_size(30);
+        group.throughput(Throughput::Elements(DELTAS as u64));
+        group.bench_function("settle_128_new_rows/118_columns", |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut app = following_app();
+                    for _ in 0..DELTAS {
+                        app.main.push_assistant_delta("\nstreamed viewport row");
+                    }
+                    app
+                },
+                |mut app| {
+                    app.main.settle_viewport(118, 38);
+                    black_box(app.main.display_scroll_from_bottom());
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("animate_one_row/120x40", |bencher| {
+            bencher.iter_batched(
+                queued_animation,
+                |(mut app, mut terminal)| {
+                    app.advance_smooth_scroll();
+                    terminal
+                        .draw(|frame| view::render(frame, &mut app))
+                        .expect("smooth-follow animation frame should render");
+                    black_box(app.main.display_scroll_from_bottom());
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("drain_bounded_backlog/120x40", |bencher| {
+            bencher.iter_batched(
+                queued_animation,
+                |(mut app, mut terminal)| {
+                    let mut frames = 0_u64;
+                    while app.smooth_scroll_pending() {
+                        app.advance_smooth_scroll();
+                        terminal
+                            .draw(|frame| view::render(frame, &mut app))
+                            .expect("smooth-follow animation frame should render");
+                        frames += 1;
+                    }
+                    black_box(frames);
                 },
                 BatchSize::SmallInput,
             );
@@ -566,6 +650,7 @@ criterion_group!(
     tui::resize_benchmarks,
     tui::transcript_update_benchmark,
     tui::scroll_anchor_benchmark,
+    tui::smooth_follow_benchmark,
     tui::stream_telemetry_benchmark,
     tui::first_frame_benchmarks,
     tui::composer_benchmarks,

@@ -40,10 +40,21 @@ pub(super) enum ToolStatus {
     Failed,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(super) struct Transcript {
     entries: Vec<Arc<TranscriptEntry>>,
     editable_users: Vec<usize>,
+    cached_total_height: AtomicU64,
+}
+
+impl Clone for Transcript {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            editable_users: self.editable_users.clone(),
+            cached_total_height: AtomicU64::new(self.cached_total_height.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 impl Transcript {
@@ -58,6 +69,7 @@ impl Transcript {
 
     pub(super) fn push(&mut self, item: TranscriptItem) {
         self.entries.push(Arc::new(TranscriptEntry::new(item)));
+        self.invalidate_total_height();
     }
 
     pub(super) fn push_editable_user(&mut self, message: String, prompt_id: u64) {
@@ -65,12 +77,18 @@ impl Transcript {
         entry.prompt_id = Some(prompt_id);
         self.editable_users.push(self.entries.len());
         self.entries.push(Arc::new(entry));
+        self.invalidate_total_height();
     }
 
     pub(super) fn append_assistant_delta(&mut self, delta: &str) -> bool {
-        self.entries
+        let appended = self
+            .entries
             .last_mut()
-            .is_some_and(|entry| Arc::make_mut(entry).append_assistant_delta(delta))
+            .is_some_and(|entry| Arc::make_mut(entry).append_assistant_delta(delta));
+        if appended {
+            self.invalidate_total_height();
+        }
+        appended
     }
 
     pub(super) fn tail_is_assistant(&self) -> bool {
@@ -88,10 +106,49 @@ impl Transcript {
     }
 
     pub(super) fn height_from(&self, first: usize, width: u16) -> usize {
+        if first == 0 {
+            return self.total_height(width);
+        }
         self.entries[first..]
             .iter()
             .map(|entry| entry.height(width))
             .sum()
+    }
+
+    #[cfg(test)]
+    pub(super) fn max_scroll_from_bottom(&self, width: u16, viewport_height: u16) -> usize {
+        self.total_height(width)
+            .saturating_sub(usize::from(viewport_height))
+    }
+
+    pub(super) fn clamp_scroll_from_bottom(
+        &self,
+        scroll_from_bottom: usize,
+        width: u16,
+        viewport_height: u16,
+    ) -> usize {
+        let viewport_height = usize::from(viewport_height);
+        let needed_height = scroll_from_bottom.saturating_add(viewport_height);
+        let available_height = self.height_up_to(width, needed_height);
+        if available_height >= needed_height {
+            scroll_from_bottom
+        } else {
+            scroll_from_bottom.min(available_height.saturating_sub(viewport_height))
+        }
+    }
+
+    pub(super) fn height_up_to(&self, width: u16, limit: usize) -> usize {
+        if limit == 0 {
+            return 0;
+        }
+        let mut height = 0_usize;
+        for entry in self.entries.iter().rev() {
+            height = height.saturating_add(entry.height(width));
+            if height >= limit {
+                return limit;
+            }
+        }
+        height
     }
 
     pub(super) fn previous_user(&self, before: Option<usize>) -> Option<usize> {
@@ -131,6 +188,7 @@ impl Transcript {
             editable_users: self.editable_users
                 [..self.editable_users.partition_point(|i| *i < end)]
                 .to_vec(),
+            cached_total_height: AtomicU64::new(0),
         }
     }
 
@@ -141,7 +199,30 @@ impl Transcript {
             )
         {
             Arc::make_mut(entry).set_tool_status(status);
+            self.invalidate_total_height();
         }
+    }
+
+    fn total_height(&self, width: u16) -> usize {
+        let cached = self.cached_total_height.load(Ordering::Relaxed);
+        if cached != 0 && cached >> 48 == u64::from(width) {
+            return usize::try_from(cached & ((1_u64 << 48) - 1)).unwrap_or(usize::MAX);
+        }
+        let height = self
+            .entries
+            .iter()
+            .map(|entry| entry.height(width))
+            .sum::<usize>();
+        let encoded = (u64::from(width) << 48)
+            | u64::try_from(height)
+                .unwrap_or((1_u64 << 48) - 1)
+                .min((1_u64 << 48) - 1);
+        self.cached_total_height.store(encoded, Ordering::Relaxed);
+        height
+    }
+
+    fn invalidate_total_height(&self) {
+        self.cached_total_height.store(0, Ordering::Relaxed);
     }
 
     pub(super) fn widget<'a>(

@@ -91,6 +91,7 @@ enum WorkerEvent {
     },
     TurnFinished {
         target: PaneId,
+        main_branch_id: Option<u64>,
         error: Option<String>,
     },
     SteerAdmitted {
@@ -189,6 +190,7 @@ struct SteerRequest {
 struct TurnTarget<'a> {
     session_id: &'a str,
     pane: PaneId,
+    main_branch_id: Option<u64>,
 }
 
 impl BtwWorker {
@@ -343,14 +345,12 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
 
     loop {
         view_telemetry.observe(&ui.app);
-        let now = Instant::now();
-        if scheduler.is_due(now) {
-            let render_started = Instant::now();
-            let draw_metrics = terminal.draw(|frame| view::render(frame, &mut ui.app))?;
-            let presented_at = Instant::now();
-            scheduler.presented(presented_at);
-            stream_telemetry.frame_presented(render_started, presented_at, draw_metrics, &ui.app);
-        }
+        render_due_frame(
+            &mut ui,
+            &mut terminal,
+            &mut scheduler,
+            &mut stream_telemetry,
+        )?;
 
         let render_deadline = scheduler.deadline();
         tokio::select! {
@@ -419,6 +419,27 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
     }
 }
 
+fn render_due_frame(
+    ui: &mut UiModel,
+    terminal: &mut TerminalSession,
+    scheduler: &mut RenderScheduler,
+    stream_telemetry: &mut StreamTelemetry,
+) -> Result<()> {
+    if !scheduler.is_due(Instant::now()) {
+        return Ok(());
+    }
+    ui.app.advance_smooth_scroll();
+    let render_started = Instant::now();
+    let draw_metrics = terminal.draw(|frame| view::render(frame, &mut ui.app))?;
+    let presented_at = Instant::now();
+    scheduler.presented(presented_at);
+    stream_telemetry.frame_presented(render_started, presented_at, draw_metrics, &ui.app);
+    if ui.app.smooth_scroll_pending() {
+        scheduler.request_streaming(presented_at);
+    }
+    Ok(())
+}
+
 fn worker_event_received(
     update: &WorkerEvent,
     telemetry: &StreamTelemetry,
@@ -485,8 +506,12 @@ fn handle_worker_update(
     commands: &mpsc::UnboundedSender<WorkerCommand>,
 ) -> Result<()> {
     match update {
-        WorkerEvent::TurnFinished { target, error } => {
-            app.turn_finished(target, error);
+        WorkerEvent::TurnFinished {
+            target,
+            main_branch_id,
+            error,
+        } => {
+            app.turn_finished(target, main_branch_id, error);
             request_navigated_branch_switch(app, commands)?;
         }
         WorkerEvent::TurnTraceStarted { .. } | WorkerEvent::TurnTraceRejected { .. } => {}
@@ -638,6 +663,7 @@ impl AgentWorker {
                     TurnTarget {
                         session_id: &self.main.request_id,
                         pane: target,
+                        main_branch_id: Some(self.main.id),
                     },
                     prompt_id,
                     prompt,
@@ -655,6 +681,7 @@ impl AgentWorker {
                 let Some(branch) = self.btw.as_mut().filter(|branch| branch.id == id) else {
                     drop(self.updates.send(WorkerEvent::TurnFinished {
                         target,
+                        main_branch_id: None,
                         error: Some("BTW branch is not available".to_owned()),
                     }));
                     return;
@@ -665,6 +692,7 @@ impl AgentWorker {
                     TurnTarget {
                         session_id: &branch.request_id,
                         pane: target,
+                        main_branch_id: None,
                     },
                     prompt_id,
                     prompt,
@@ -689,6 +717,7 @@ impl AgentWorker {
                     TurnTarget {
                         session_id: &self.main.request_id,
                         pane: target,
+                        main_branch_id: Some(self.main.id),
                     },
                     SteerRequest {
                         id: steer_id,
@@ -715,6 +744,7 @@ impl AgentWorker {
                     TurnTarget {
                         session_id: &branch.request_id,
                         pane: target,
+                        main_branch_id: None,
                     },
                     SteerRequest {
                         id: steer_id,
@@ -802,6 +832,7 @@ impl AgentWorker {
                         TurnTarget {
                             session_id: &branch.request_id,
                             pane: PaneId::Btw(id),
+                            main_branch_id: None,
                         },
                         prompt_id,
                         prompt,
@@ -828,10 +859,10 @@ impl AgentWorker {
     }
 
     async fn edit_historical(&mut self, source_branch_id: u64, new_branch_id: u64, prompt_id: u64) {
-        if self.main.id != source_branch_id || !self.main.turns.is_empty() || self.btw.is_some() {
+        if self.main.id != source_branch_id || self.btw.is_some() {
             drop(self.updates.send(WorkerEvent::MainBranchOpenFailed {
                 id: new_branch_id,
-                error: "finish the main turn and close /btw before editing history".to_owned(),
+                error: "close /btw before editing history".to_owned(),
             }));
             return;
         }
@@ -847,19 +878,6 @@ impl AgentWorker {
             }));
             return;
         };
-        if !self
-            .main
-            .results
-            .iter()
-            .any(|(completed_id, _)| *completed_id == prompt_id)
-        {
-            drop(self.updates.send(WorkerEvent::MainBranchOpenFailed {
-                id: new_branch_id,
-                error: "the selected prompt has not completed yet".to_owned(),
-            }));
-            return;
-        }
-
         let parent = self.main.prompt_order[..position]
             .iter()
             .rev()
@@ -954,11 +972,22 @@ impl AgentWorker {
     }
 
     fn finish_turn(&mut self, finished: FinishedTurn) {
+        let main_branch_id = finished.main_branch_id;
         match finished.target {
             PaneId::Main => {
-                remove_finished(&mut self.main.turns, finished.id);
-                if let Some(result) = finished.result {
-                    self.main.results.push((finished.prompt_id, result));
+                let branch_id = main_branch_id.unwrap_or(self.main.id);
+                let branch = if self.main.id == branch_id {
+                    Some(&mut self.main)
+                } else {
+                    self.archived_main
+                        .iter_mut()
+                        .find(|branch| branch.id == branch_id)
+                };
+                if let Some(branch) = branch {
+                    remove_finished(&mut branch.turns, finished.id);
+                    if let Some(result) = finished.result {
+                        branch.results.push((finished.prompt_id, result));
+                    }
                 }
             }
             PaneId::Btw(id) => {
@@ -969,6 +998,7 @@ impl AgentWorker {
         }
         drop(self.updates.send(WorkerEvent::TurnFinished {
             target: finished.target,
+            main_branch_id,
             error: finished.error,
         }));
     }
@@ -1025,6 +1055,7 @@ async fn start_turn(
                     drop(finished.send(FinishedTurn {
                         id,
                         target: target.pane,
+                        main_branch_id: target.main_branch_id,
                         prompt_id,
                         result,
                         error,
@@ -1052,6 +1083,7 @@ async fn start_turn(
             );
             drop(updates.send(WorkerEvent::TurnFinished {
                 target: target.pane,
+                main_branch_id: target.main_branch_id,
                 error: Some(error.to_string()),
             }));
             None
@@ -1192,6 +1224,7 @@ async fn cancel_turn(
 struct FinishedTurn {
     id: u64,
     target: PaneId,
+    main_branch_id: Option<u64>,
     prompt_id: u64,
     result: Option<TurnResult>,
     error: Option<String>,
@@ -2002,6 +2035,7 @@ mod tests {
     -> eyre::Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("ws://{}", listener.local_addr()?);
+        let (second_seen, second_seen_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await?;
             let mut root = accept_async(stream).await?;
@@ -2022,7 +2056,9 @@ mod tests {
             let second = next_ws_json(&mut root).await?;
             assert_eq!(second["previous_response_id"], "resp-first");
             assert!(second.to_string().contains("second prompt"));
-            send_completed(&mut root, "resp-second", "second answer").await?;
+            second_seen
+                .send(())
+                .map_err(|()| eyre::eyre!("second-request signal receiver dropped"))?;
 
             let (stream, _) = listener.accept().await?;
             let mut branch = accept_async(stream).await?;
@@ -2033,7 +2069,8 @@ mod tests {
                 edited["input"][0]["content"][0]["text"],
                 "revised second prompt"
             );
-            send_completed(&mut branch, "resp-edited", "edited answer").await
+            send_completed(&mut branch, "resp-edited", "edited answer").await?;
+            send_completed(&mut root, "resp-second", "second answer").await
         });
 
         let workspace = temporary_workspace("tui-historical-edit")?;
@@ -2054,29 +2091,36 @@ mod tests {
             updates,
         );
 
-        for (prompt_id, prompt) in [(1, "first prompt"), (2, "second prompt")] {
-            commands.send(WorkerCommand::Prompt {
-                target: PaneId::Main,
-                prompt_id,
-                prompt: prompt.to_owned(),
-            })?;
-        }
+        commands.send(WorkerCommand::Prompt {
+            target: PaneId::Main,
+            prompt_id: 1,
+            prompt: "first prompt".to_owned(),
+        })?;
         timeout(Duration::from_secs(5), async {
-            let mut finished = 0;
-            while finished < 2 {
+            loop {
                 if matches!(
                     update_rx.recv().await,
                     Some(WorkerEvent::TurnFinished {
                         target: PaneId::Main,
+                        main_branch_id: Some(0),
                         error: None,
                     })
                 ) {
-                    finished += 1;
+                    break;
                 }
             }
         })
         .await
-        .map_err(|_| eyre::eyre!("root turns did not finish"))?;
+        .map_err(|_| eyre::eyre!("first root turn did not finish"))?;
+
+        commands.send(WorkerCommand::Prompt {
+            target: PaneId::Main,
+            prompt_id: 2,
+            prompt: "second prompt".to_owned(),
+        })?;
+        timeout(Duration::from_secs(5), second_seen_rx)
+            .await
+            .map_err(|_| eyre::eyre!("second root turn did not start"))??;
 
         commands.send(WorkerCommand::EditHistorical {
             source_branch_id: 0,
@@ -2107,20 +2151,29 @@ mod tests {
             prompt: "revised second prompt".to_owned(),
         })?;
         timeout(Duration::from_secs(5), async {
+            let mut parent_finished = false;
+            let mut branch_finished = false;
             loop {
-                if matches!(
-                    update_rx.recv().await,
+                match update_rx.recv().await {
                     Some(WorkerEvent::TurnFinished {
                         target: PaneId::Main,
+                        main_branch_id: Some(0),
                         error: None,
-                    })
-                ) {
+                    }) => parent_finished = true,
+                    Some(WorkerEvent::TurnFinished {
+                        target: PaneId::Main,
+                        main_branch_id: Some(1),
+                        error: None,
+                    }) => branch_finished = true,
+                    _ => {}
+                }
+                if parent_finished && branch_finished {
                     break;
                 }
             }
         })
         .await
-        .map_err(|_| eyre::eyre!("edited branch turn did not finish"))?;
+        .map_err(|_| eyre::eyre!("concurrent parent and edited branch turns did not finish"))?;
 
         commands.send(WorkerCommand::SwitchMainBranch { id: 0 })?;
         timeout(Duration::from_secs(5), async {
