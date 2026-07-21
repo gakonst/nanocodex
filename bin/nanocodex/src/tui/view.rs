@@ -2,16 +2,36 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Paragraph},
 };
-use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Conversation, PaneId};
+use super::{
+    app::{App, Conversation, PaneId},
+    composer::ComposerLayout,
+    transcript::InlineEdit,
+};
 
-pub(super) fn render(frame: &mut Frame<'_>, app: &App) {
+pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
-    let composer_height = composer_height(&app.input, area.width.saturating_sub(4));
+    let composer_width = if app.historical_editor_active() {
+        area.width.saturating_sub(4).max(1)
+    } else {
+        area.width.saturating_sub(2).max(1)
+    };
+    app.set_composer_width(composer_width);
+    let composer_layout = ComposerLayout::new(&app.input, composer_width);
+    let composer_height = if app.historical_editor_active() || app.branch_navigator_active() {
+        3
+    } else {
+        composer_height(&composer_layout)
+    };
+    let cursor = composer_layout.cursor_position(&app.input, app.cursor);
+    app.settle_composer_viewport(
+        cursor.row,
+        composer_layout.row_count(),
+        usize::from(composer_height.saturating_sub(2)),
+    );
     let pending_height = pending_height(app);
     let [
         header_area,
@@ -29,43 +49,66 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &App) {
     .areas(area);
 
     render_header(frame, app, header_area);
-    if let Some(btw) = &app.btw {
+    let historical_editor_index = app.historical_editor_index();
+    let inline_edit = historical_editor_index.map(|index| InlineEdit {
+        index,
+        input: app.input.as_str(),
+        cursor: app.cursor,
+    });
+    if let Some(btw) = &mut app.btw {
         let [main_area, btw_area] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(transcript_area);
         render_transcript(
             frame,
-            &app.main,
+            &mut app.main,
             main_area,
             " Main ",
             app.focus == PaneId::Main,
+            inline_edit,
             "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
         );
         render_transcript(
             frame,
-            &btw.conversation,
+            &mut btw.conversation,
             btw_area,
             " BTW · forked context ",
             app.focus == PaneId::Btw(btw.id),
+            None,
             "Ask a quick side question without interrupting the main thread.",
         );
+    } else if app.branch_navigator_active() {
+        let [main_area, navigator_area] =
+            Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
+                .areas(transcript_area);
+        render_transcript(
+            frame,
+            &mut app.main,
+            main_area,
+            " Main ",
+            true,
+            inline_edit,
+            "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
+        );
+        render_branch_navigator(frame, app, navigator_area);
     } else {
         render_transcript(
             frame,
-            &app.main,
+            &mut app.main,
             transcript_area,
             " Main ",
             true,
+            inline_edit,
             "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
         );
     }
     render_pending(frame, app, pending_area);
-    render_composer(frame, app, composer_area);
+    render_composer(frame, app, composer_area, &composer_layout);
     render_footer(frame, app, footer_area);
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let title = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             " nanocodex ",
             Style::default()
@@ -78,18 +121,91 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
             app.cwd.display().to_string(),
             Style::default().fg(Color::DarkGray),
         ),
-    ]);
+    ];
+    let graph = app.main_branch_graph();
+    if graph != "0*" {
+        spans.push(Span::styled(
+            format!("  branches {graph} · Ctrl+Alt+B browse · Ctrl+Alt+↑/↓ cycle"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    let title = Line::from(spans);
     frame.render_widget(Paragraph::new(title), area);
+}
+
+fn render_branch_navigator(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let title = if app.main.running || app.main.pending_turns > 0 {
+        " Branches · preview only while running "
+    } else {
+        " Branches · ↑/↓ preview · Enter switch "
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let previews = app.branch_previews();
+    let capacity = (usize::from(inner.height) / 3).max(1);
+    let selected = previews
+        .iter()
+        .position(|preview| preview.selected)
+        .unwrap_or(0);
+    let start = selected
+        .saturating_sub(capacity / 2)
+        .min(previews.len().saturating_sub(capacity));
+    let mut lines = Vec::new();
+    for preview in previews.iter().skip(start).take(capacity) {
+        let active = if preview.active { " current" } else { "" };
+        let marker = if preview.selected { "›" } else { " " };
+        let node = if preview.active { "●" } else { "○" };
+        let header_style = if preview.selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if preview.active {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::styled(
+            format!(
+                "{marker} {}{node} branch {}{active}",
+                preview.tree_prefix, preview.id
+            ),
+            header_style,
+        ));
+        lines.push(Line::styled(
+            format!(
+                "  {}{}",
+                "  ".repeat(preview.depth),
+                preview
+                    .prompt
+                    .map_or("(branch point)".to_owned(), prompt_preview)
+            ),
+            Style::default().fg(Color::DarkGray),
+        ));
+        lines.push(Line::raw(""));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_transcript(
     frame: &mut Frame<'_>,
-    conversation: &Conversation,
+    conversation: &mut Conversation,
     area: Rect,
     title: &'static str,
     focused: bool,
+    inline_edit: Option<InlineEdit<'_>>,
     empty_message: &'static str,
 ) {
+    let title = if conversation.has_unseen_output {
+        format!("{title}↓ New output · Ctrl+End ")
+    } else {
+        title.to_owned()
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -99,23 +215,41 @@ fn render_transcript(
             Color::DarkGray
         }));
     let inner = block.inner(area);
+    conversation.settle_viewport(inner.width);
     frame.render_widget(block, area);
 
     frame.render_widget(
-        conversation
-            .transcript
-            .widget(conversation.scroll_from_bottom, empty_message),
+        conversation.transcript.widget(
+            conversation.scroll_from_bottom,
+            conversation.selected_user,
+            inline_edit,
+            empty_message,
+        ),
         inner,
     );
+    if let Some(edit) = inline_edit
+        && let Some(position) = conversation.transcript.inline_edit_cursor(
+            inner,
+            conversation.scroll_from_bottom,
+            conversation.selected_user,
+            edit,
+        )
+    {
+        frame.set_cursor_position(position);
+    }
 }
 
-fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &ComposerLayout) {
     let conversation = app.active_conversation();
     let target = match app.focus {
         PaneId::Main => "Main",
         PaneId::Btw(_) => "BTW",
     };
-    let title = if conversation.running {
+    let title = if app.historical_editor_active() {
+        " Message composer · editing history inline above ".to_owned()
+    } else if app.branch_navigator_active() {
+        " Message composer · browsing branches ".to_owned()
+    } else if conversation.running {
         format!(" Message → {target} (Enter steers · Tab queues) ")
     } else {
         format!(" Message → {target} ")
@@ -130,28 +264,49 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let (cursor_row, cursor_column) = composer_cursor(app, inner.width.max(1));
-    let vertical_scroll = cursor_row.saturating_sub(inner.height.saturating_sub(1));
-    frame.render_widget(
-        Paragraph::new(app.input.as_str())
-            .wrap(Wrap { trim: false })
-            .scroll((vertical_scroll, 0)),
-        inner,
-    );
+    if app.historical_editor_active() || app.branch_navigator_active() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                " draft preserved ",
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+    let cursor = layout.cursor_position(&app.input, app.cursor);
+    let vertical_scroll = app.composer_scroll();
+    let visible_end = vertical_scroll.saturating_add(usize::from(inner.height));
+    let lines = (vertical_scroll..visible_end)
+        .filter_map(|row| layout.row(row))
+        .map(|range| Line::raw(&app.input[range.clone()]))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+
+    if app.transcript_selection_active() || app.branch_navigator_active() {
+        return;
+    }
 
     let x = inner
         .x
-        .saturating_add(cursor_column.min(inner.width.saturating_sub(1)));
+        .saturating_add(saturating_u16(cursor.column).min(inner.width.saturating_sub(1)));
     let y = inner
         .y
-        .saturating_add(cursor_row.saturating_sub(vertical_scroll));
+        .saturating_add(saturating_u16(cursor.row.saturating_sub(vertical_scroll)));
     frame.set_cursor_position(Position::new(x, y));
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let conversation = app.active_conversation();
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let state = if app.cancel_confirmation_active() {
+    let state = if app.branch_navigator_active() {
+        "Branches — ↑/↓ or j/k preview · Enter switch · Esc close".to_owned()
+    } else if app.historical_editor_active() {
+        "Editing history — Enter fork/send · Shift+Enter newline · Esc cancel · Ctrl+G $EDITOR"
+            .to_owned()
+    } else if app.transcript_selection_active() {
+        "History — ↑/↓ navigate · e fork-edit · Esc return".to_owned()
+    } else if app.cancel_confirmation_active() {
         "Stop Agent Turn — Esc again to confirm".to_owned()
     } else if conversation.running {
         format!(
@@ -286,30 +441,10 @@ fn prompt_preview(prompt: &str) -> String {
     preview
 }
 
-fn composer_height(input: &str, width: u16) -> u16 {
-    let width = usize::from(width.max(1));
-    let rows = input
-        .split('\n')
-        .map(|line| UnicodeWidthStr::width(line).div_ceil(width).max(1))
-        .sum::<usize>();
-    saturating_u16(rows).clamp(1, 7).saturating_add(2)
-}
-
-fn composer_cursor(app: &App, width: u16) -> (u16, u16) {
-    let width = usize::from(width.max(1));
-    let before = &app.input[..app.cursor];
-    let mut row = 0_usize;
-    let mut lines = before.split('\n').peekable();
-    while let Some(line) = lines.next() {
-        let columns = UnicodeWidthStr::width(line);
-        if lines.peek().is_some() {
-            row = row.saturating_add(columns / width + 1);
-        } else {
-            row = row.saturating_add(columns / width);
-            return (saturating_u16(row), saturating_u16(columns % width));
-        }
-    }
-    (0, 0)
+fn composer_height(layout: &ComposerLayout) -> u16 {
+    saturating_u16(layout.row_count())
+        .clamp(1, 7)
+        .saturating_add(2)
 }
 
 fn saturating_u16(value: usize) -> u16 {
@@ -335,7 +470,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         let mut app = App::new("/workspace".into());
         app.begin_btw();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Main"));
         assert!(rendered.contains("BTW · forked context"));
@@ -355,12 +490,15 @@ mod tests {
             )
             .unwrap();
         app.steer_admitted(crate::tui::app::PaneId::Main, steer_id);
-        assert!(app.queue_prompt(
-            crate::tui::app::PaneId::Main,
-            "write a final benchmark summary".to_owned()
-        ));
+        assert!(
+            app.queue_prompt(
+                crate::tui::app::PaneId::Main,
+                "write a final benchmark summary".to_owned()
+            )
+            .is_some()
+        );
 
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Enter steers · Tab queues"));
         assert!(rendered.contains("Pending input"));
@@ -368,6 +506,56 @@ mod tests {
         assert!(rendered.contains("use the database implementation"));
         assert!(rendered.contains("⏳ queued"));
         assert!(rendered.contains("write a final benchmark summary"));
+    }
+
+    #[test]
+    fn selecting_history_during_a_running_response_keeps_transcript_context_visible() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.main
+            .transcript
+            .push_editable_user("active prompt".to_owned(), 1);
+        app.main.push_assistant_delta(
+            "streaming answer\nline two\nline three\nline four\nline five\nline six",
+        );
+        app.main.running = true;
+        app.move_up();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("active prompt"));
+        assert!(rendered.contains("streaming answer"));
+        assert!(rendered.contains("line six"));
+    }
+
+    #[test]
+    fn branch_navigator_renders_prompt_previews_beside_the_transcript() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.main
+            .transcript
+            .push_editable_user("root branch prompt".to_owned(), 1);
+        app.move_up();
+        assert!(app.start_historical_edit());
+        app.replace_input("revised branch prompt".to_owned());
+        let request = app.commit_historical_edit().unwrap();
+        let _ = app.main_branch_opened(
+            request.new_branch,
+            request.source_branch,
+            request.prompt,
+            std::sync::Arc::from("branch-session"),
+        );
+        app.main
+            .transcript
+            .push_editable_user("revised branch prompt".to_owned(), 2);
+        assert!(app.toggle_branch_navigator());
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Branches · ↑/↓ preview"));
+        assert!(rendered.contains("root branch prompt"));
+        assert!(rendered.contains("revised branch prompt"));
+        assert!(rendered.contains("└─● branch 1 current"));
     }
 
     #[test]
@@ -383,12 +571,15 @@ mod tests {
             )
             .unwrap();
         app.steer_admitted(crate::tui::app::PaneId::Main, steer_id);
-        assert!(app.queue_prompt(
-            crate::tui::app::PaneId::Btw(btw_id),
-            "queued BTW follow-up".to_owned(),
-        ));
+        assert!(
+            app.queue_prompt(
+                crate::tui::app::PaneId::Btw(btw_id),
+                "queued BTW follow-up".to_owned(),
+            )
+            .is_some()
+        );
 
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Main pending input"));
         assert!(rendered.contains("BTW pending input"));
@@ -399,11 +590,25 @@ mod tests {
     }
 
     #[test]
+    fn unseen_output_is_indicated_only_on_its_conversation() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut app = App::new("/workspace".into());
+        let btw_id = app.begin_btw();
+        app.main.has_unseen_output = true;
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Main ↓ New output · Ctrl+End"));
+        assert!(!rendered.contains("BTW · forked context ↓ New output"));
+        assert_eq!(app.focus, crate::tui::app::PaneId::Btw(btw_id));
+    }
+
+    #[test]
     fn empty_main_layout_snapshot() {
         let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
-        let app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into());
 
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         assert_eq!(
             terminal.backend().to_string(),
@@ -431,9 +636,52 @@ mod tests {
         app.input = "ab\n界c".to_owned();
         app.cursor = app.input.len();
 
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(4, 9));
+    }
+
+    #[test]
+    fn cursor_at_an_exact_wrap_boundary_uses_the_next_visual_row() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.input = "123456789012345678".to_owned();
+        app.cursor = app.input.len();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1, 7));
+    }
+
+    #[test]
+    fn multiline_cursor_moves_before_the_viewport_scrolls() {
+        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.input = (0..10)
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.cursor = app.input.len();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let bottom = terminal.get_cursor_position().unwrap();
+        app.move_up();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        assert_eq!(terminal.get_cursor_position().unwrap().y, bottom.y - 1);
+        assert_eq!(app.composer_scroll(), 3);
+
+        for _ in 0..5 {
+            app.move_up();
+            terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        }
+        let top = terminal.get_cursor_position().unwrap().y;
+        assert_eq!(app.composer_scroll(), 3);
+
+        app.move_up();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert_eq!(terminal.get_cursor_position().unwrap().y, top);
+        assert_eq!(app.composer_scroll(), 2);
     }
 
     #[test]
@@ -442,11 +690,11 @@ mod tests {
         let mut app = App::new("/workspace".into());
         app.input = "abc".to_owned();
         app.cursor = app.input.len();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         terminal.backend_mut().resize(32, 10);
         terminal.autoresize().unwrap();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
 
         assert_eq!(terminal.backend().buffer().area, Rect::new(0, 0, 32, 10));
         assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(4, 7));
@@ -458,15 +706,15 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new("/workspace".into());
 
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         assert!(terminal.backend().draw_counts[0] > 0);
 
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         assert_eq!(terminal.backend().draw_counts[1], 0);
 
         app.input.push('x');
         app.cursor = app.input.len();
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
         assert_eq!(terminal.backend().draw_counts[2], 1);
     }
 

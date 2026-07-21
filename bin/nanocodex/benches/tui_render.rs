@@ -16,6 +16,11 @@ mod tui {
     }
 
     #[allow(dead_code, unused_imports)]
+    mod composer {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/composer.rs"));
+    }
+
+    #[allow(dead_code, unused_imports)]
     mod app {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/app.rs"));
     }
@@ -121,10 +126,13 @@ mod tui {
 
         for index in 0..turns {
             if index < shape.user_messages {
-                app.main.transcript.push(TranscriptItem::User(sized_text(
-                    distribute(shape.user_chars, shape.user_messages, index),
-                    index,
-                )));
+                app.main.transcript.push_editable_user(
+                    sized_text(
+                        distribute(shape.user_chars, shape.user_messages, index),
+                        index,
+                    ),
+                    index as u64 + 1,
+                );
             }
             if index < shape.assistant_messages {
                 app.main
@@ -158,29 +166,58 @@ mod tui {
         for shape in TRACE_SHAPES {
             let item_count = shape.user_messages + shape.assistant_messages + shape.tool_calls;
             group.throughput(Throughput::Elements(item_count as u64));
-            for (width, height) in TERMINAL_SIZES {
-                let mut app = trace_app(shape);
-                let mut terminal = Terminal::new(TestBackend::new(width, height))
-                    .expect("trace benchmark terminal should initialize");
-                terminal
-                    .draw(|frame| view::render(frame, &app))
-                    .expect("initial trace benchmark frame should render");
+            for (scroll_name, scroll_from_bottom) in [("tail", 0), ("scrolled_4k", 4_000)] {
+                for (width, height) in TERMINAL_SIZES {
+                    let mut app = trace_app(shape);
+                    app.main.scroll_from_bottom = scroll_from_bottom;
+                    let mut terminal = Terminal::new(TestBackend::new(width, height))
+                        .expect("trace benchmark terminal should initialize");
+                    terminal
+                        .draw(|frame| view::render(frame, &mut app))
+                        .expect("initial trace benchmark frame should render");
 
-                group.bench_with_input(
-                    BenchmarkId::new(shape.name, format!("{width}x{height}")),
-                    &(width, height),
-                    |bencher, _| {
-                        bencher.iter(|| {
-                            // Invalidate the streaming tail's wrapped-height cache without
-                            // growing the fixture across Criterion iterations.
-                            assert!(app.main.transcript.append_assistant_delta(""));
-                            terminal
-                                .draw(|frame| view::render(frame, &app))
-                                .expect("trace benchmark frame should render");
-                        });
-                    },
-                );
+                    group.bench_with_input(
+                        BenchmarkId::new(shape.name, format!("{scroll_name}/{width}x{height}")),
+                        &(width, height),
+                        |bencher, _| {
+                            bencher.iter(|| {
+                                // Invalidate the streaming tail's wrapped-height cache without
+                                // growing the fixture across Criterion iterations.
+                                assert!(app.main.transcript.append_assistant_delta(""));
+                                terminal
+                                    .draw(|frame| view::render(frame, &mut app))
+                                    .expect("trace benchmark frame should render");
+                            });
+                        },
+                    );
+                }
             }
+        }
+        group.finish();
+    }
+
+    pub(super) fn resize_benchmarks(criterion: &mut Criterion) {
+        let mut group = criterion.benchmark_group("tui_trace_resize");
+        for shape in TRACE_SHAPES {
+            let item_count = shape.user_messages + shape.assistant_messages + shape.tool_calls;
+            group.throughput(Throughput::Elements(item_count as u64));
+            group.bench_function(BenchmarkId::new(shape.name, "80x24_to_200x60"), |bencher| {
+                let mut app = trace_app(shape);
+                let mut terminal = Terminal::new(TestBackend::new(80, 24))
+                    .expect("resize benchmark terminal should initialize");
+                let mut large = true;
+                bencher.iter(|| {
+                    let (width, height) = if large { (200, 60) } else { (80, 24) };
+                    large = !large;
+                    terminal.backend_mut().resize(width, height);
+                    terminal
+                        .autoresize()
+                        .expect("resize benchmark terminal should autoresize");
+                    terminal
+                        .draw(|frame| view::render(frame, &mut app))
+                        .expect("resized trace benchmark frame should render");
+                });
+            });
         }
         group.finish();
     }
@@ -200,6 +237,81 @@ mod tui {
                 BatchSize::SmallInput,
             );
         });
+    }
+
+    pub(super) fn scroll_anchor_benchmark(criterion: &mut Criterion) {
+        const DELTAS: usize = 128;
+        fn scrolled_app() -> App {
+            let mut app = App::new("/workspace/nanocodex".into());
+            for index in 0..50 {
+                app.main
+                    .transcript
+                    .push(TranscriptItem::User(sized_text(160, index)));
+            }
+            app.main.push_assistant_delta(&sized_text(2_048, 51));
+            let mut terminal = Terminal::new(TestBackend::new(120, 40))
+                .expect("scroll benchmark terminal should initialize");
+            terminal
+                .draw(|frame| view::render(frame, &mut app))
+                .expect("initial scroll benchmark frame should render");
+            app.main.scroll_from_bottom = 100;
+            app
+        }
+
+        let mut group = criterion.benchmark_group("tui_scroll_anchor");
+        group.throughput(Throughput::Elements(DELTAS as u64));
+        group.bench_function("apply_128_deltas_scrolled", |bencher| {
+            bencher.iter_batched(
+                scrolled_app,
+                |mut app| {
+                    for _ in 0..DELTAS {
+                        app.main.push_assistant_delta(black_box(" streamed delta"));
+                    }
+                    black_box(app);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("settle_128_deltas_scrolled/118_columns", |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut app = scrolled_app();
+                    for _ in 0..DELTAS {
+                        app.main.push_assistant_delta(" streamed delta");
+                    }
+                    app
+                },
+                |mut app| {
+                    app.main.settle_viewport(118);
+                    black_box(app);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("coalesced_128_deltas_scrolled/120x40", |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut app = scrolled_app();
+                    let mut terminal = Terminal::new(TestBackend::new(120, 40))
+                        .expect("scroll benchmark terminal should initialize");
+                    terminal
+                        .draw(|frame| view::render(frame, &mut app))
+                        .expect("initial scroll benchmark frame should render");
+                    (app, terminal)
+                },
+                |(mut app, mut terminal)| {
+                    for _ in 0..DELTAS {
+                        app.main.push_assistant_delta(black_box(" streamed delta"));
+                    }
+                    terminal
+                        .draw(|frame| view::render(frame, &mut app))
+                        .expect("anchored scroll benchmark frame should render");
+                    black_box(app.main.scroll_from_bottom);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.finish();
     }
 
     pub(super) fn stream_telemetry_benchmark(criterion: &mut Criterion) {
@@ -258,9 +370,9 @@ mod tui {
                             .expect("trace benchmark terminal should initialize");
                         (app, terminal)
                     },
-                    |(app, mut terminal)| {
+                    |(mut app, mut terminal)| {
                         terminal
-                            .draw(|frame| view::render(frame, &app))
+                            .draw(|frame| view::render(frame, &mut app))
                             .expect("first trace benchmark frame should render");
                     },
                     BatchSize::LargeInput,
@@ -269,13 +381,194 @@ mod tui {
         }
         group.finish();
     }
+
+    pub(super) fn composer_benchmarks(criterion: &mut Criterion) {
+        criterion.bench_function("tui_composer_render/multiline_100k/120x40", |bencher| {
+            let mut app = App::new("/workspace/nanocodex".into());
+            app.input = sized_text(100 * 1_024, 7);
+            app.cursor = app.input.len();
+            let mut terminal = Terminal::new(TestBackend::new(120, 40))
+                .expect("composer benchmark terminal should initialize");
+            terminal
+                .draw(|frame| view::render(frame, &mut app))
+                .expect("initial composer benchmark frame should render");
+            bencher.iter(|| {
+                terminal
+                    .draw(|frame| view::render(frame, &mut app))
+                    .expect("composer benchmark frame should render");
+            });
+        });
+    }
+
+    pub(super) fn history_navigation_benchmarks(criterion: &mut Criterion) {
+        let mut group = criterion.benchmark_group("tui_history_navigation");
+        for shape in TRACE_SHAPES {
+            group.throughput(Throughput::Elements(shape.user_messages as u64));
+            group.bench_function(
+                BenchmarkId::new(shape.name, "select_all_prompts"),
+                |bencher| {
+                    bencher.iter_batched(
+                        || trace_app(shape),
+                        |mut app| {
+                            for _ in 0..shape.user_messages {
+                                app.move_up();
+                            }
+                            black_box(app)
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+            group.bench_function(
+                BenchmarkId::new(shape.name, "select_latest_and_render/120x40"),
+                |bencher| {
+                    bencher.iter_batched(
+                        || {
+                            let app = trace_app(shape);
+                            let terminal = Terminal::new(TestBackend::new(120, 40))
+                                .expect("history benchmark terminal should initialize");
+                            (app, terminal)
+                        },
+                        |(mut app, mut terminal)| {
+                            app.move_up();
+                            terminal
+                                .draw(|frame| view::render(frame, &mut app))
+                                .expect("selected history frame should render");
+                            black_box((app, terminal))
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+            group.bench_function(
+                BenchmarkId::new(shape.name, "edit_latest_and_render/120x40"),
+                |bencher| {
+                    bencher.iter_batched(
+                        || {
+                            let mut app = trace_app(shape);
+                            app.move_up();
+                            assert!(app.start_historical_edit());
+                            let terminal = Terminal::new(TestBackend::new(120, 40))
+                                .expect("inline edit benchmark terminal should initialize");
+                            (app, terminal)
+                        },
+                        |(mut app, mut terminal)| {
+                            terminal
+                                .draw(|frame| view::render(frame, &mut app))
+                                .expect("inline history editor frame should render");
+                            black_box((app, terminal))
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+        group.finish();
+    }
+
+    pub(super) fn branch_state_benchmarks(criterion: &mut Criterion) {
+        let mut group = criterion.benchmark_group("tui_branch_state");
+        for shape in TRACE_SHAPES {
+            group.bench_function(
+                BenchmarkId::new(shape.name, "fork_visible_prefix"),
+                |bencher| {
+                    bencher.iter_batched(
+                        || {
+                            let mut app = trace_app(shape);
+                            app.move_up();
+                            assert!(app.start_historical_edit());
+                            app
+                        },
+                        |mut app| {
+                            let request = app
+                                .commit_historical_edit()
+                                .expect("trace prompt should be editable");
+                            let prompt = app.main_branch_opened(
+                                request.new_branch,
+                                request.source_branch,
+                                request.prompt,
+                                Arc::from("benchmark-branch"),
+                            );
+                            black_box((app, prompt))
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+            group.bench_function(BenchmarkId::new(shape.name, "switch_branch"), |bencher| {
+                bencher.iter_batched(
+                    || {
+                        let mut app = trace_app(shape);
+                        app.move_up();
+                        assert!(app.start_historical_edit());
+                        let request = app
+                            .commit_historical_edit()
+                            .expect("trace prompt should be editable");
+                        let _ = app.main_branch_opened(
+                            request.new_branch,
+                            request.source_branch,
+                            request.prompt,
+                            Arc::from("benchmark-branch"),
+                        );
+                        app
+                    },
+                    |mut app| {
+                        let id = app
+                            .cycle_main_branch(-1)
+                            .expect("parent branch should be retained");
+                        app.main_branch_switched(id, Arc::from("benchmark-parent"));
+                        black_box(app)
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+            group.bench_function(
+                BenchmarkId::new(shape.name, "render_navigator/120x40"),
+                |bencher| {
+                    bencher.iter_batched(
+                        || {
+                            let mut app = trace_app(shape);
+                            app.move_up();
+                            assert!(app.start_historical_edit());
+                            let request = app
+                                .commit_historical_edit()
+                                .expect("trace prompt should be editable");
+                            let _ = app.main_branch_opened(
+                                request.new_branch,
+                                request.source_branch,
+                                request.prompt,
+                                Arc::from("benchmark-branch"),
+                            );
+                            assert!(app.toggle_branch_navigator());
+                            let terminal = Terminal::new(TestBackend::new(120, 40))
+                                .expect("branch navigator terminal should initialize");
+                            (app, terminal)
+                        },
+                        |(mut app, mut terminal)| {
+                            terminal
+                                .draw(|frame| view::render(frame, &mut app))
+                                .expect("branch navigator frame should render");
+                            black_box((app, terminal))
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+        group.finish();
+    }
 }
 
 criterion_group!(
     benches,
     tui::render_benchmarks,
+    tui::resize_benchmarks,
     tui::transcript_update_benchmark,
+    tui::scroll_anchor_benchmark,
     tui::stream_telemetry_benchmark,
-    tui::first_frame_benchmarks
+    tui::first_frame_benchmarks,
+    tui::composer_benchmarks,
+    tui::history_navigation_benchmarks,
+    tui::branch_state_benchmarks
 );
 criterion_main!(benches);

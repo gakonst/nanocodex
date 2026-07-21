@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -9,11 +9,18 @@ use nanocodex::{AgentEvent, AgentEventKind};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::composer::ComposerLayout;
 use super::transcript::{ToolStatus, Transcript, TranscriptItem};
 
 const MAX_REASONING_STATUS_CHARS: usize = 160;
 const MAX_TOOL_ARGUMENT_CHARS: usize = 180;
 const CANCEL_CONFIRMATION_WINDOW: Duration = Duration::from_secs(1);
+
+struct PendingScrollAnchor {
+    width: u16,
+    changed_tail: Option<(usize, usize)>,
+    new_entries_start: Option<usize>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum PaneId {
@@ -46,14 +53,19 @@ impl PendingSteer {
 
 pub(super) struct Conversation {
     pub(super) transcript: Transcript,
+    pub(super) selected_user: Option<usize>,
     pub(super) pending_turns: usize,
     pub(super) running: bool,
     pub(super) status: String,
     pub(super) scroll_from_bottom: usize,
+    pub(super) has_unseen_output: bool,
+    viewport_width: Option<u16>,
+    pending_scroll_anchor: Option<PendingScrollAnchor>,
     streamed_this_turn: bool,
     reasoning: String,
     pending_run_error: Option<String>,
     pub(super) queued_prompts: VecDeque<String>,
+    queued_prompt_ids: VecDeque<u64>,
     pub(super) pending_steers: VecDeque<PendingSteer>,
     run_generation: u64,
     applied_steer_runs_waiting_for_ack: VecDeque<u64>,
@@ -63,29 +75,41 @@ impl Conversation {
     fn new(status: impl Into<String>) -> Self {
         Self {
             transcript: Transcript::default(),
+            selected_user: None,
             pending_turns: 0,
             running: false,
             status: status.into(),
             scroll_from_bottom: 0,
+            has_unseen_output: false,
+            viewport_width: None,
+            pending_scroll_anchor: None,
             streamed_this_turn: false,
             reasoning: String::new(),
             pending_run_error: None,
             queued_prompts: VecDeque::new(),
+            queued_prompt_ids: VecDeque::new(),
             pending_steers: VecDeque::new(),
             run_generation: 0,
             applied_steer_runs_waiting_for_ack: VecDeque::new(),
         }
     }
 
-    fn queue_prompt(&mut self, prompt: String) {
+    fn fork_before(&self, transcript_index: usize) -> Self {
+        let mut branch = Self::new("Ready");
+        branch.transcript = self.transcript.prefix_before(transcript_index);
+        branch
+    }
+
+    fn queue_prompt(&mut self, id: u64, prompt: String) {
         self.queued_prompts.push_back(prompt);
+        self.queued_prompt_ids.push_back(id);
         self.pending_turns += 1;
         self.status = if self.running {
             "Prompt queued".to_owned()
         } else {
             "Starting".to_owned()
         };
-        self.scroll_from_bottom = 0;
+        self.jump_to_bottom();
     }
 
     fn queue_steer(&mut self, id: u64, prompt: String) {
@@ -96,7 +120,7 @@ impl Conversation {
             state: PendingSteerState::Submitting,
         });
         "Submitting steer".clone_into(&mut self.status);
-        self.scroll_from_bottom = 0;
+        self.jump_to_bottom();
     }
 
     fn steer_admitted(&mut self, id: u64) {
@@ -116,13 +140,13 @@ impl Conversation {
 
     fn steer_queued(&mut self, id: u64, prompt: String) {
         self.remove_pending_steer(id);
-        self.queue_prompt(prompt);
+        self.queue_prompt(id, prompt);
         self.reconcile_applied_steers();
     }
 
     fn steer_failed(&mut self, id: u64, error: String) {
         self.remove_pending_steer(id);
-        self.transcript.push(TranscriptItem::Error(error));
+        self.push_output(TranscriptItem::Error(error));
         self.reconcile_applied_steers();
         self.status = if self.running {
             "Working".to_owned()
@@ -134,15 +158,19 @@ impl Conversation {
     fn turn_finished(&mut self, error: Option<String>) {
         self.pending_turns = self.pending_turns.saturating_sub(1);
         if let Some(error) = error {
-            self.transcript.push(TranscriptItem::Error(error));
+            self.push_output(TranscriptItem::Error(error));
         }
     }
 
     fn on_agent_event(&mut self, event: &AgentEvent) -> bool {
         match event.kind {
             AgentEventKind::RunStarted => {
-                if let Some(prompt) = self.queued_prompts.pop_front() {
-                    self.transcript.push(TranscriptItem::User(prompt));
+                if let (Some(prompt), Some(prompt_id)) = (
+                    self.queued_prompts.pop_front(),
+                    self.queued_prompt_ids.pop_front(),
+                ) {
+                    self.note_new_entry();
+                    self.transcript.push_editable_user(prompt, prompt_id);
                 }
                 self.running = true;
                 self.run_generation = self.run_generation.saturating_add(1);
@@ -166,8 +194,7 @@ impl Conversation {
                 if let Ok(payload) = event.decode_payload::<TextPayload>()
                     && !self.streamed_this_turn
                 {
-                    self.transcript
-                        .push(TranscriptItem::Assistant(payload.text));
+                    self.push_output(TranscriptItem::Assistant(payload.text));
                 }
             }
             AgentEventKind::ReasoningSummaryDelta => {
@@ -180,7 +207,7 @@ impl Conversation {
                 if let Ok(payload) = event.decode_payload::<ToolCallPayload>() {
                     let arguments = compact_arguments(&payload.arguments);
                     self.status = format!("Running {}", payload.tool);
-                    self.transcript.push(TranscriptItem::Tool {
+                    self.push_output(TranscriptItem::Tool {
                         call_id: payload.call_id,
                         name: payload.tool,
                         arguments,
@@ -196,6 +223,7 @@ impl Conversation {
                         _ => ToolStatus::Failed,
                     };
                     self.transcript.set_tool_status(&payload.call_id, status);
+                    self.note_unseen_output();
                     "Working".clone_into(&mut self.status);
                 }
             }
@@ -206,7 +234,7 @@ impl Conversation {
             }
             AgentEventKind::RunCompleted => {
                 if let Some(error) = self.pending_run_error.take() {
-                    self.transcript.push(TranscriptItem::Error(error));
+                    self.push_output(TranscriptItem::Error(error));
                 }
                 self.running = false;
                 self.reconcile_applied_steers();
@@ -246,7 +274,7 @@ impl Conversation {
             "Cancelled".clone_into(&mut self.status);
         } else {
             if let Some(error) = self.pending_run_error.take() {
-                self.transcript.push(TranscriptItem::Error(error));
+                self.push_output(TranscriptItem::Error(error));
             }
             "Turn failed".clone_into(&mut self.status);
         }
@@ -271,7 +299,7 @@ impl Conversation {
             let Some(steer) = self.pending_steers.remove(index) else {
                 break;
             };
-            self.transcript.push(TranscriptItem::User(steer.prompt));
+            self.push_output(TranscriptItem::User(steer.prompt));
             let _ = self.applied_steer_runs_waiting_for_ack.pop_front();
             applied += 1;
         }
@@ -290,13 +318,125 @@ impl Conversation {
         }
     }
 
-    fn push_assistant_delta(&mut self, delta: &str) {
+    pub(super) fn push_assistant_delta(&mut self, delta: &str) {
         let append_to_current = self.streamed_this_turn;
         self.streamed_this_turn = true;
-        if !append_to_current || !self.transcript.append_assistant_delta(delta) {
-            self.transcript
-                .push(TranscriptItem::Assistant(delta.to_owned()));
+        if append_to_current && self.transcript.tail_is_assistant() {
+            self.note_tail_will_change();
+            let _ = self.transcript.append_assistant_delta(delta);
+        } else {
+            self.push_output(TranscriptItem::Assistant(delta.to_owned()));
         }
+    }
+
+    pub(super) fn settle_viewport(&mut self, width: u16) {
+        if let Some(pending) = self.pending_scroll_anchor.take()
+            && self.scroll_from_bottom > 0
+        {
+            let changed_tail_rows = pending.changed_tail.map_or(0, |(index, before)| {
+                self.transcript
+                    .height_at(index, pending.width)
+                    .unwrap_or(before)
+                    .saturating_sub(before)
+            });
+            let new_entry_rows = pending
+                .new_entries_start
+                .map_or(0, |first| self.transcript.height_from(first, pending.width));
+            self.scroll_from_bottom = self
+                .scroll_from_bottom
+                .saturating_add(changed_tail_rows)
+                .saturating_add(new_entry_rows);
+        }
+        self.viewport_width = Some(width);
+    }
+
+    fn select_older_user(&mut self) {
+        if let Some(index) = self.transcript.previous_user(self.selected_user) {
+            self.selected_user = Some(index);
+        }
+    }
+
+    fn select_newer_user_or_composer(&mut self) {
+        let Some(selected) = self.selected_user else {
+            return;
+        };
+        if let Some(index) = self.transcript.next_user(selected) {
+            self.selected_user = Some(index);
+        } else {
+            self.jump_to_bottom();
+        }
+    }
+
+    pub(super) fn push_output(&mut self, item: TranscriptItem) {
+        self.note_new_entry();
+        self.transcript.push(item);
+    }
+
+    fn note_tail_will_change(&mut self) {
+        if self.scroll_from_bottom == 0 && self.selected_user.is_none() {
+            return;
+        }
+        self.has_unseen_output = true;
+        if self.selected_user.is_some() {
+            return;
+        }
+        let Some(width) = self.viewport_width else {
+            return;
+        };
+        if self.pending_scroll_anchor.as_ref().is_some_and(|pending| {
+            pending.new_entries_start.is_some() || pending.changed_tail.is_some()
+        }) {
+            return;
+        }
+        let changed_tail = self
+            .transcript
+            .tail_height(width)
+            .map(|height| (self.transcript.len().saturating_sub(1), height));
+        let pending = self
+            .pending_scroll_anchor
+            .get_or_insert(PendingScrollAnchor {
+                width,
+                changed_tail: None,
+                new_entries_start: None,
+            });
+        if pending.new_entries_start.is_none() && pending.changed_tail.is_none() {
+            pending.changed_tail = changed_tail;
+        }
+    }
+
+    fn note_new_entry(&mut self) {
+        if self.scroll_from_bottom == 0 && self.selected_user.is_none() {
+            return;
+        }
+        self.has_unseen_output = true;
+        if self.selected_user.is_some() {
+            return;
+        }
+        let Some(width) = self.viewport_width else {
+            return;
+        };
+        let first = self.transcript.len();
+        let pending = self
+            .pending_scroll_anchor
+            .get_or_insert(PendingScrollAnchor {
+                width,
+                changed_tail: None,
+                new_entries_start: None,
+            });
+        pending.new_entries_start.get_or_insert(first);
+    }
+
+    fn note_unseen_output(&mut self) {
+        if self.scroll_from_bottom > 0 || self.selected_user.is_some() {
+            self.has_unseen_output = true;
+        }
+    }
+
+    fn jump_to_bottom(&mut self) {
+        self.selected_user = None;
+        self.scroll_from_bottom = 0;
+        self.has_unseen_output = false;
+        self.pending_scroll_anchor = None;
     }
 }
 
@@ -306,19 +446,150 @@ pub(super) struct BtwPane {
     pub(super) conversation: Conversation,
 }
 
+struct MainBranchPane {
+    id: u64,
+    parent_id: Option<u64>,
+    conversation: Conversation,
+    draft: ComposerDraft,
+}
+
+struct ComposerDraft {
+    input: String,
+    cursor: usize,
+    scroll: usize,
+    preferred_column: Option<usize>,
+}
+
+struct HistoricalEditor {
+    source_branch_id: u64,
+    prompt_id: u64,
+    transcript_index: usize,
+    composer_draft: ComposerDraft,
+}
+
+struct PendingHistoricalEdit {
+    source_branch_id: u64,
+    new_branch_id: u64,
+    prompt_id: u64,
+    transcript_index: usize,
+    prompt: String,
+}
+
+pub(super) struct HistoricalEditRequest {
+    pub(super) source_branch: u64,
+    pub(super) new_branch: u64,
+    pub(super) prompt: u64,
+}
+
+pub(super) struct BranchPreview<'a> {
+    pub(super) id: u64,
+    pub(super) parent_id: Option<u64>,
+    pub(super) active: bool,
+    pub(super) selected: bool,
+    pub(super) prompt: Option<&'a str>,
+    pub(super) tree_prefix: String,
+    pub(super) depth: usize,
+}
+
+fn tree_ordered_previews(mut previews: Vec<BranchPreview<'_>>) -> Vec<BranchPreview<'_>> {
+    let nodes = previews
+        .iter()
+        .map(|preview| (preview.id, preview.parent_id))
+        .collect::<Vec<_>>();
+    let ids = nodes.iter().map(|(id, _)| *id).collect::<HashSet<_>>();
+    let mut roots = nodes
+        .iter()
+        .filter(|(_, parent)| parent.is_none_or(|parent| !ids.contains(&parent)))
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    roots.sort_unstable();
+
+    let mut ordered = Vec::with_capacity(nodes.len());
+    let mut visited = HashSet::with_capacity(nodes.len());
+    let mut guides = Vec::new();
+    for root in roots {
+        append_branch_tree(root, &nodes, &mut guides, None, &mut visited, &mut ordered);
+    }
+    for (id, _) in &nodes {
+        append_branch_tree(*id, &nodes, &mut guides, None, &mut visited, &mut ordered);
+    }
+
+    ordered
+        .into_iter()
+        .filter_map(|(id, prefix, depth)| {
+            let position = previews.iter().position(|preview| preview.id == id)?;
+            let mut preview = previews.remove(position);
+            preview.tree_prefix = prefix;
+            preview.depth = depth;
+            Some(preview)
+        })
+        .collect()
+}
+
+fn append_branch_tree(
+    id: u64,
+    nodes: &[(u64, Option<u64>)],
+    guides: &mut Vec<bool>,
+    connector_is_last: Option<bool>,
+    visited: &mut HashSet<u64>,
+    ordered: &mut Vec<(u64, String, usize)>,
+) {
+    if !visited.insert(id) {
+        return;
+    }
+    let mut prefix = guides
+        .iter()
+        .map(|has_more| if *has_more { "│ " } else { "  " })
+        .collect::<String>();
+    if let Some(is_last) = connector_is_last {
+        prefix.push_str(if is_last { "└─" } else { "├─" });
+    }
+    let depth = guides.len() + usize::from(connector_is_last.is_some());
+    ordered.push((id, prefix, depth));
+
+    let pushed_guide = if let Some(is_last) = connector_is_last {
+        guides.push(!is_last);
+        true
+    } else {
+        false
+    };
+    let mut children = nodes
+        .iter()
+        .filter(|(_, parent)| *parent == Some(id))
+        .map(|(child, _)| *child)
+        .collect::<Vec<_>>();
+    children.sort_unstable();
+    let last = children.len().saturating_sub(1);
+    for (index, child) in children.into_iter().enumerate() {
+        append_branch_tree(child, nodes, guides, Some(index == last), visited, ordered);
+    }
+    if pushed_guide {
+        let _ = guides.pop();
+    }
+}
+
 pub(super) struct App {
     pub(super) cwd: PathBuf,
     pub(super) main: Conversation,
+    main_branch_id: u64,
+    main_branch_parent_id: Option<u64>,
+    main_branch_request_id: Option<Arc<str>>,
+    main_branches: Vec<MainBranchPane>,
+    historical_editor: Option<HistoricalEditor>,
+    pending_historical_edit: Option<PendingHistoricalEdit>,
+    pending_branch_switch: Option<u64>,
+    branch_navigator: Option<u64>,
     pub(super) btw: Option<BtwPane>,
     pub(super) focus: PaneId,
     pub(super) input: String,
     pub(super) cursor: usize,
     pub(super) frame: usize,
-    history: Vec<String>,
-    history_cursor: Option<usize>,
-    history_draft: String,
+    composer_width: u16,
+    composer_scroll: usize,
+    preferred_column: Option<usize>,
     next_btw_id: u64,
-    next_steer_id: u64,
+    next_main_branch_id: u64,
+    next_input_id: u64,
     cancel_confirmation: Option<CancelConfirmation>,
 }
 
@@ -333,50 +604,62 @@ impl App {
         Self {
             cwd,
             main: Conversation::new("Ready"),
+            main_branch_id: 0,
+            main_branch_parent_id: None,
+            main_branch_request_id: None,
+            main_branches: Vec::new(),
+            historical_editor: None,
+            pending_historical_edit: None,
+            pending_branch_switch: None,
+            branch_navigator: None,
             btw: None,
             focus: PaneId::Main,
             input: String::new(),
             cursor: 0,
             frame: 0,
-            history: Vec::new(),
-            history_cursor: None,
-            history_draft: String::new(),
+            composer_width: 80,
+            composer_scroll: 0,
+            preferred_column: None,
             next_btw_id: 1,
-            next_steer_id: 1,
+            next_main_branch_id: 1,
+            next_input_id: 1,
             cancel_confirmation: None,
         }
     }
 
     pub(super) fn insert_char(&mut self, character: char) {
-        self.detach_history();
+        self.prepare_composer_edit();
         self.input.insert(self.cursor, character);
         self.cursor += character.len_utf8();
+        self.preferred_column = None;
     }
 
     pub(super) fn insert_str(&mut self, text: &str) {
-        self.detach_history();
+        self.prepare_composer_edit();
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
+        self.preferred_column = None;
     }
 
     pub(super) fn backspace(&mut self) {
         if self.cursor == 0 {
             return;
         }
-        self.detach_history();
+        self.prepare_composer_edit();
         let previous = self.input[..self.cursor]
             .char_indices()
             .next_back()
             .map_or(0, |(index, _)| index);
         self.input.drain(previous..self.cursor);
         self.cursor = previous;
+        self.preferred_column = None;
     }
 
     pub(super) fn delete(&mut self) {
         if self.cursor == self.input.len() {
             return;
         }
-        self.detach_history();
+        self.prepare_composer_edit();
         let next = self.input[self.cursor..]
             .chars()
             .next()
@@ -384,6 +667,7 @@ impl App {
                 self.cursor + character.len_utf8()
             });
         self.input.drain(self.cursor..next);
+        self.preferred_column = None;
     }
 
     pub(super) fn move_left(&mut self) {
@@ -391,31 +675,212 @@ impl App {
             .char_indices()
             .next_back()
             .map_or(0, |(index, _)| index);
+        self.preferred_column = None;
     }
 
     pub(super) fn move_right(&mut self) {
         if let Some(character) = self.input[self.cursor..].chars().next() {
             self.cursor += character.len_utf8();
         }
+        self.preferred_column = None;
+    }
+
+    pub(super) fn move_word_left(&mut self) {
+        let mut cursor = self.cursor;
+        while let Some((index, character)) = self.input[..cursor].char_indices().next_back() {
+            if !character.is_whitespace() {
+                break;
+            }
+            cursor = index;
+        }
+        while let Some((index, character)) = self.input[..cursor].char_indices().next_back() {
+            if character.is_whitespace() {
+                break;
+            }
+            cursor = index;
+        }
+        self.cursor = cursor;
+        self.preferred_column = None;
+    }
+
+    pub(super) fn move_word_right(&mut self) {
+        let mut cursor = self.cursor;
+        while let Some(character) = self.input[cursor..].chars().next() {
+            if character.is_whitespace() {
+                break;
+            }
+            cursor += character.len_utf8();
+        }
+        while let Some(character) = self.input[cursor..].chars().next() {
+            if !character.is_whitespace() {
+                break;
+            }
+            cursor += character.len_utf8();
+        }
+        self.cursor = cursor;
+        self.preferred_column = None;
     }
 
     pub(super) fn move_home(&mut self) {
         self.cursor = self.input[..self.cursor]
             .rfind('\n')
             .map_or(0, |index| index + 1);
+        self.preferred_column = None;
     }
 
     pub(super) fn move_end(&mut self) {
         self.cursor = self.input[self.cursor..]
             .find('\n')
             .map_or(self.input.len(), |index| self.cursor + index);
+        self.preferred_column = None;
+    }
+
+    pub(super) fn move_up(&mut self) {
+        let focus = self.focus;
+        if let Some(conversation) = self.conversation_mut(focus)
+            && conversation.selected_user.is_some()
+        {
+            conversation.select_older_user();
+            return;
+        }
+        if !self.move_vertical(-1)
+            && let Some(conversation) = self.conversation_mut(focus)
+        {
+            conversation.select_older_user();
+        }
+    }
+
+    pub(super) fn move_down(&mut self) {
+        let focus = self.focus;
+        if let Some(conversation) = self.conversation_mut(focus)
+            && conversation.selected_user.is_some()
+        {
+            conversation.select_newer_user_or_composer();
+            return;
+        }
+        let _ = self.move_vertical(1);
+    }
+
+    pub(super) fn move_inline_editor_up(&mut self) {
+        let _ = self.move_vertical(-1);
+    }
+
+    pub(super) fn move_inline_editor_down(&mut self) {
+        let _ = self.move_vertical(1);
+    }
+
+    fn move_vertical(&mut self, direction: isize) -> bool {
+        let layout = ComposerLayout::new(&self.input, self.composer_width);
+        let position = layout.cursor_position(&self.input, self.cursor);
+        let Some(target_row) = position.row.checked_add_signed(direction) else {
+            return false;
+        };
+        if target_row >= layout.row_count() {
+            return false;
+        }
+        let column = self.preferred_column.unwrap_or(position.column);
+        self.cursor = layout.byte_at_column(&self.input, target_row, column);
+        self.preferred_column = Some(column);
+        true
+    }
+
+    pub(super) fn delete_word_before_cursor(&mut self) {
+        let mut start = self.cursor;
+        while let Some((index, character)) = self.input[..start].char_indices().next_back() {
+            if !character.is_whitespace() {
+                break;
+            }
+            start = index;
+        }
+        while let Some((index, character)) = self.input[..start].char_indices().next_back() {
+            if character.is_whitespace() {
+                break;
+            }
+            start = index;
+        }
+        if start != self.cursor {
+            self.prepare_composer_edit();
+            self.input.drain(start..self.cursor);
+            self.cursor = start;
+            self.preferred_column = None;
+        }
+    }
+
+    pub(super) fn delete_to_line_start(&mut self) {
+        let line_start = self.input[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let start = if line_start == self.cursor && line_start > 0 {
+            line_start - 1
+        } else {
+            line_start
+        };
+        if start != self.cursor {
+            self.prepare_composer_edit();
+            self.input.drain(start..self.cursor);
+            self.cursor = start;
+            self.preferred_column = None;
+        }
+    }
+
+    pub(super) fn delete_to_line_end(&mut self) {
+        let line_end = self.input[self.cursor..]
+            .find('\n')
+            .map_or(self.input.len(), |index| self.cursor + index);
+        let end = if line_end == self.cursor && line_end < self.input.len() {
+            line_end + 1
+        } else {
+            line_end
+        };
+        if end != self.cursor {
+            self.prepare_composer_edit();
+            self.input.drain(self.cursor..end);
+            self.preferred_column = None;
+        }
+    }
+
+    pub(super) fn set_composer_width(&mut self, width: u16) {
+        self.composer_width = width.max(1);
+    }
+
+    pub(super) fn settle_composer_viewport(
+        &mut self,
+        cursor_row: usize,
+        row_count: usize,
+        viewport_height: usize,
+    ) {
+        let viewport_height = viewport_height.max(1);
+        self.composer_scroll = self
+            .composer_scroll
+            .min(row_count.saturating_sub(viewport_height));
+        if cursor_row < self.composer_scroll {
+            self.composer_scroll = cursor_row;
+        } else if cursor_row >= self.composer_scroll.saturating_add(viewport_height) {
+            self.composer_scroll = cursor_row.saturating_add(1).saturating_sub(viewport_height);
+        }
+    }
+
+    pub(super) fn composer_scroll(&self) -> usize {
+        self.composer_scroll
+    }
+
+    pub(super) fn replace_input(&mut self, input: String) {
+        self.prepare_composer_edit();
+        self.input = input;
+        self.cursor = self.input.len();
+        self.preferred_column = None;
+    }
+
+    pub(super) fn editor_failed(&mut self, error: impl std::fmt::Display) {
+        if let Some(conversation) = self.conversation_mut(self.focus) {
+            conversation.status = format!("Editor failed: {error}");
+        }
     }
 
     pub(super) fn clear_input(&mut self) {
         self.input.clear();
         self.cursor = 0;
-        self.history_cursor = None;
-        self.history_draft.clear();
+        self.preferred_column = None;
     }
 
     /// Implements Amp's two-stage interrupt gesture. The first Escape arms a
@@ -448,46 +913,366 @@ impl App {
             .is_some_and(|confirmation| confirmation.target == self.focus)
     }
 
-    pub(super) fn previous_history(&mut self) {
-        if self.history.is_empty() || self.input.contains('\n') {
-            return;
-        }
-        let index = if let Some(index) = self.history_cursor {
-            index.saturating_sub(1)
-        } else {
-            self.history_draft.clone_from(&self.input);
-            self.history.len() - 1
-        };
-        self.history_cursor = Some(index);
-        self.input.clone_from(&self.history[index]);
-        self.cursor = self.input.len();
-    }
-
-    pub(super) fn next_history(&mut self) {
-        let Some(index) = self.history_cursor else {
-            return;
-        };
-        if index + 1 < self.history.len() {
-            self.history_cursor = Some(index + 1);
-            self.input.clone_from(&self.history[index + 1]);
-        } else {
-            self.history_cursor = None;
-            self.input.clone_from(&self.history_draft);
-            self.history_draft.clear();
-        }
-        self.cursor = self.input.len();
-    }
-
     pub(super) fn take_submission(&mut self) -> Option<String> {
         if self.input.chars().all(char::is_whitespace) {
             return None;
         }
         self.cursor = 0;
         let prompt = std::mem::take(&mut self.input);
-        self.history.push(prompt.clone());
-        self.history_cursor = None;
-        self.history_draft.clear();
         Some(prompt)
+    }
+
+    pub(super) fn transcript_selection_active(&self) -> bool {
+        self.active_conversation().selected_user.is_some()
+    }
+
+    pub(super) fn historical_editor_index(&self) -> Option<usize> {
+        self.historical_editor
+            .as_ref()
+            .map(|editor| editor.transcript_index)
+    }
+
+    pub(super) fn historical_editor_active(&self) -> bool {
+        self.historical_editor.is_some()
+    }
+
+    pub(super) fn start_historical_edit(&mut self) -> bool {
+        if self.focus != PaneId::Main
+            || self.main.running
+            || self.main.pending_turns > 0
+            || self.btw.is_some()
+            || self.historical_editor.is_some()
+            || self.pending_historical_edit.is_some()
+        {
+            "Finish the main turn and close /btw before editing history"
+                .clone_into(&mut self.main.status);
+            return false;
+        }
+        let Some(transcript_index) = self.main.selected_user else {
+            return false;
+        };
+        let Some((prompt_id, prompt)) = self
+            .main
+            .transcript
+            .user_edit_target(transcript_index)
+            .map(|(id, prompt)| (id, prompt.to_owned()))
+        else {
+            return false;
+        };
+        let composer_draft = self.capture_composer_draft();
+        self.restore_composer_draft(ComposerDraft {
+            cursor: prompt.len(),
+            input: prompt,
+            scroll: 0,
+            preferred_column: None,
+        });
+        self.historical_editor = Some(HistoricalEditor {
+            source_branch_id: self.main_branch_id,
+            prompt_id,
+            transcript_index,
+            composer_draft,
+        });
+        "Editing selected prompt".clone_into(&mut self.main.status);
+        true
+    }
+
+    pub(super) fn cancel_historical_edit(&mut self) {
+        let Some(editor) = self.historical_editor.take() else {
+            return;
+        };
+        self.restore_composer_draft(editor.composer_draft);
+        self.main.jump_to_bottom();
+        "Ready".clone_into(&mut self.main.status);
+    }
+
+    pub(super) fn commit_historical_edit(&mut self) -> Option<HistoricalEditRequest> {
+        if self.input.chars().all(char::is_whitespace) {
+            "Historical prompt cannot be empty".clone_into(&mut self.main.status);
+            return None;
+        }
+        let editor = self.historical_editor.take()?;
+        let prompt = self.input.trim().to_owned();
+        self.restore_composer_draft(editor.composer_draft);
+        let new_branch_id = self.next_main_branch_id;
+        self.next_main_branch_id = self.next_main_branch_id.saturating_add(1);
+        let pending = PendingHistoricalEdit {
+            source_branch_id: editor.source_branch_id,
+            new_branch_id,
+            prompt_id: editor.prompt_id,
+            transcript_index: editor.transcript_index,
+            prompt,
+        };
+        let request = HistoricalEditRequest {
+            source_branch: pending.source_branch_id,
+            new_branch: new_branch_id,
+            prompt: editor.prompt_id,
+        };
+        self.pending_historical_edit = Some(pending);
+        "Forking before selected prompt".clone_into(&mut self.main.status);
+        Some(request)
+    }
+
+    pub(super) fn main_branch_opened(
+        &mut self,
+        id: u64,
+        parent_id: u64,
+        prompt_id: u64,
+        request_id: Arc<str>,
+    ) -> Option<String> {
+        let pending = self.pending_historical_edit.take().filter(|pending| {
+            pending.new_branch_id == id
+                && pending.source_branch_id == parent_id
+                && pending.prompt_id == prompt_id
+        })?;
+        let branch = self.main.fork_before(pending.transcript_index);
+        let mut previous = std::mem::replace(&mut self.main, branch);
+        "Ready".clone_into(&mut previous.status);
+        let draft = self.capture_composer_draft();
+        self.main_branches.push(MainBranchPane {
+            id: self.main_branch_id,
+            parent_id: self.main_branch_parent_id,
+            conversation: previous,
+            draft,
+        });
+        self.main_branch_id = id;
+        self.main_branch_parent_id = Some(parent_id);
+        self.main_branch_request_id = Some(request_id);
+        self.restore_composer_draft(ComposerDraft {
+            cursor: 0,
+            input: String::new(),
+            scroll: 0,
+            preferred_column: None,
+        });
+        self.main.jump_to_bottom();
+        Some(pending.prompt)
+    }
+
+    pub(super) fn main_branch_open_failed(&mut self, id: u64, error: &str) {
+        if self
+            .pending_historical_edit
+            .as_ref()
+            .is_some_and(|pending| pending.new_branch_id == id)
+        {
+            let Some(pending) = self.pending_historical_edit.take() else {
+                return;
+            };
+            let composer_draft = self.capture_composer_draft();
+            self.restore_composer_draft(ComposerDraft {
+                cursor: pending.prompt.len(),
+                input: pending.prompt,
+                scroll: 0,
+                preferred_column: None,
+            });
+            self.historical_editor = Some(HistoricalEditor {
+                source_branch_id: pending.source_branch_id,
+                prompt_id: pending.prompt_id,
+                transcript_index: pending.transcript_index,
+                composer_draft,
+            });
+            self.main.status = format!("Historical edit failed: {error}");
+        }
+    }
+
+    pub(super) fn cycle_main_branch(&mut self, direction: isize) -> Option<u64> {
+        let ids = self
+            .branch_previews()
+            .into_iter()
+            .map(|preview| preview.id)
+            .collect::<Vec<_>>();
+        let position = ids.iter().position(|id| *id == self.main_branch_id)?;
+        let target = (position.cast_signed() + direction)
+            .rem_euclid(ids.len().cast_signed())
+            .cast_unsigned();
+        let id = *ids.get(target)?;
+        self.request_main_branch_switch(id)
+    }
+
+    pub(super) fn toggle_branch_navigator(&mut self) -> bool {
+        if self.branch_navigator.is_some() {
+            self.branch_navigator = None;
+            return true;
+        }
+        if self.focus != PaneId::Main
+            || self.btw.is_some()
+            || self.historical_editor.is_some()
+            || self.main_branches.is_empty()
+        {
+            return false;
+        }
+        self.main.selected_user = None;
+        self.branch_navigator = Some(self.main_branch_id);
+        true
+    }
+
+    pub(super) fn branch_navigator_active(&self) -> bool {
+        self.branch_navigator.is_some()
+    }
+
+    pub(super) fn move_branch_navigator(&mut self, direction: isize) {
+        let Some(selected) = self.branch_navigator else {
+            return;
+        };
+        let ids = self.main_branch_ids();
+        let Some(position) = ids.iter().position(|id| *id == selected) else {
+            return;
+        };
+        let target = (position.cast_signed() + direction)
+            .rem_euclid(ids.len().cast_signed())
+            .cast_unsigned();
+        self.branch_navigator = ids.get(target).copied();
+    }
+
+    pub(super) fn switch_to_navigated_branch(&mut self) -> Option<u64> {
+        let id = self.branch_navigator?;
+        if id == self.main_branch_id {
+            return None;
+        }
+        self.request_main_branch_switch(id)
+    }
+
+    pub(super) fn close_branch_navigator(&mut self) {
+        self.branch_navigator = None;
+    }
+
+    pub(super) fn branch_previews(&self) -> Vec<BranchPreview<'_>> {
+        let selected = self.branch_navigator;
+        let mut previews = self
+            .main_branches
+            .iter()
+            .map(|branch| BranchPreview {
+                id: branch.id,
+                parent_id: branch.parent_id,
+                active: false,
+                selected: selected == Some(branch.id),
+                prompt: branch.conversation.transcript.latest_user_message(),
+                tree_prefix: String::new(),
+                depth: 0,
+            })
+            .chain(std::iter::once(BranchPreview {
+                id: self.main_branch_id,
+                parent_id: self.main_branch_parent_id,
+                active: true,
+                selected: selected == Some(self.main_branch_id),
+                prompt: self.main.transcript.latest_user_message(),
+                tree_prefix: String::new(),
+                depth: 0,
+            }))
+            .collect::<Vec<_>>();
+        previews.sort_unstable_by_key(|preview| preview.id);
+        tree_ordered_previews(previews)
+    }
+
+    fn main_branch_ids(&self) -> Vec<u64> {
+        let mut ids = self
+            .main_branches
+            .iter()
+            .map(|branch| branch.id)
+            .chain(std::iter::once(self.main_branch_id))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn request_main_branch_switch(&mut self, id: u64) -> Option<u64> {
+        if id == self.main_branch_id
+            || self.focus != PaneId::Main
+            || self.main.running
+            || self.main.pending_turns > 0
+            || self.btw.is_some()
+            || self.historical_editor.is_some()
+            || self.pending_branch_switch.is_some()
+        {
+            return None;
+        }
+        self.pending_branch_switch = Some(id);
+        self.main.status = format!("Switching to branch {id}");
+        Some(id)
+    }
+
+    pub(super) fn main_branch_switched(&mut self, id: u64, request_id: Arc<str>) {
+        if self.pending_branch_switch != Some(id) {
+            return;
+        }
+        self.pending_branch_switch = None;
+        let Some(position) = self.main_branches.iter().position(|branch| branch.id == id) else {
+            return;
+        };
+        let requested = self.main_branches.swap_remove(position);
+        let mut previous = std::mem::replace(&mut self.main, requested.conversation);
+        "Ready".clone_into(&mut previous.status);
+        let previous_draft = self.capture_composer_draft();
+        self.restore_composer_draft(requested.draft);
+        self.main_branches.push(MainBranchPane {
+            id: self.main_branch_id,
+            parent_id: self.main_branch_parent_id,
+            conversation: previous,
+            draft: previous_draft,
+        });
+        self.main_branch_id = requested.id;
+        self.main_branch_parent_id = requested.parent_id;
+        self.main_branch_request_id = Some(request_id);
+        if self.branch_navigator.is_some() {
+            self.branch_navigator = Some(id);
+        }
+        self.main.jump_to_bottom();
+    }
+
+    fn capture_composer_draft(&self) -> ComposerDraft {
+        ComposerDraft {
+            input: self.input.clone(),
+            cursor: self.cursor,
+            scroll: self.composer_scroll,
+            preferred_column: self.preferred_column,
+        }
+    }
+
+    fn restore_composer_draft(&mut self, draft: ComposerDraft) {
+        self.input = draft.input;
+        self.cursor = draft.cursor.min(self.input.len());
+        self.composer_scroll = draft.scroll;
+        self.preferred_column = draft.preferred_column;
+    }
+
+    pub(super) fn main_branch_switch_failed(&mut self, id: u64, error: &str) {
+        if self.pending_branch_switch == Some(id) {
+            self.pending_branch_switch = None;
+            self.main.status = format!("Branch switch failed: {error}");
+        }
+    }
+
+    pub(super) fn main_branch_request_id(&self) -> Option<&str> {
+        self.main_branch_request_id.as_deref()
+    }
+
+    pub(super) fn main_branch_graph(&self) -> String {
+        let mut branches = self
+            .main_branches
+            .iter()
+            .map(|branch| (branch.id, branch.parent_id))
+            .chain(std::iter::once((
+                self.main_branch_id,
+                self.main_branch_parent_id,
+            )))
+            .collect::<Vec<_>>();
+        branches.sort_unstable_by_key(|(id, _)| *id);
+        branches
+            .into_iter()
+            .map(|(id, parent)| {
+                let active = if id == self.main_branch_id { "*" } else { "" };
+                parent.map_or_else(
+                    || format!("{id}{active}"),
+                    |parent| format!("{id}{active}←{parent}"),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    pub(super) fn dismiss_transcript_selection(&mut self) {
+        let focus = self.focus;
+        if let Some(conversation) = self.conversation_mut(focus) {
+            conversation.jump_to_bottom();
+        }
     }
 
     pub(super) fn begin_btw(&mut self) -> u64 {
@@ -514,7 +1299,7 @@ impl App {
 
     pub(super) fn reject_btw_close_while_busy(&mut self) {
         if let Some(btw) = self.btw.as_mut() {
-            btw.conversation.transcript.push(TranscriptItem::Error(
+            btw.conversation.push_output(TranscriptItem::Error(
                 "BTW has an active or queued turn; wait for it to finish before /close".to_owned(),
             ));
             "BTW still running".clone_into(&mut btw.conversation.status);
@@ -560,9 +1345,10 @@ impl App {
 
     pub(super) fn btw_failed(&mut self, id: u64, error: String) {
         if let Some(conversation) = self.conversation_mut(PaneId::Btw(id)) {
-            conversation.transcript.push(TranscriptItem::Error(error));
+            conversation.push_output(TranscriptItem::Error(error));
             conversation.pending_turns = 0;
             conversation.queued_prompts.clear();
+            conversation.queued_prompt_ids.clear();
             conversation.pending_steers.clear();
             conversation.applied_steer_runs_waiting_for_ack.clear();
             conversation.running = false;
@@ -570,18 +1356,18 @@ impl App {
         }
     }
 
-    pub(super) fn queue_prompt(&mut self, target: PaneId, prompt: String) -> bool {
-        let Some(conversation) = self.conversation_mut(target) else {
-            return false;
-        };
-        conversation.queue_prompt(prompt);
-        true
+    pub(super) fn queue_prompt(&mut self, target: PaneId, prompt: String) -> Option<u64> {
+        let id = self.next_input_id;
+        self.next_input_id = self.next_input_id.saturating_add(1);
+        let conversation = self.conversation_mut(target)?;
+        conversation.queue_prompt(id, prompt);
+        Some(id)
     }
 
     pub(super) fn queue_steer(&mut self, target: PaneId, prompt: String) -> Option<u64> {
         self.conversation(target)?;
-        let id = self.next_steer_id;
-        self.next_steer_id = self.next_steer_id.saturating_add(1);
+        let id = self.next_input_id;
+        self.next_input_id = self.next_input_id.saturating_add(1);
         self.conversation_mut(target)?.queue_steer(id, prompt);
         Some(id)
     }
@@ -628,7 +1414,7 @@ impl App {
 
     pub(super) fn cancel_failed(&mut self, target: PaneId, error: String) {
         if let Some(conversation) = self.conversation_mut(target) {
-            conversation.transcript.push(TranscriptItem::Error(error));
+            conversation.push_output(TranscriptItem::Error(error));
             conversation.status = if conversation.running {
                 "Working".to_owned()
             } else {
@@ -668,6 +1454,34 @@ impl App {
         updated
     }
 
+    pub(super) fn on_main_agent_event(&mut self, branch_id: u64, event: &AgentEvent) -> bool {
+        if self.main_branch_id == branch_id {
+            return self.on_agent_event(PaneId::Main, event);
+        }
+        self.main_branches
+            .iter_mut()
+            .find(|branch| branch.id == branch_id)
+            .is_some_and(|branch| branch.conversation.on_agent_event(event))
+    }
+
+    pub(super) fn main_branch_event_stream_closed(&mut self, branch_id: u64) {
+        let conversation = if self.main_branch_id == branch_id {
+            Some(&mut self.main)
+        } else {
+            self.main_branches
+                .iter_mut()
+                .find(|branch| branch.id == branch_id)
+                .map(|branch| &mut branch.conversation)
+        };
+        if let Some(conversation) = conversation {
+            conversation.push_output(TranscriptItem::Error(
+                "branch event stream closed".to_owned(),
+            ));
+            conversation.running = false;
+            "Agent stopped".clone_into(&mut conversation.status);
+        }
+    }
+
     pub(super) fn scroll_up(&mut self, rows: usize) {
         if let Some(conversation) = self.conversation_mut(self.focus) {
             conversation.scroll_from_bottom = conversation.scroll_from_bottom.saturating_add(rows);
@@ -677,6 +1491,15 @@ impl App {
     pub(super) fn scroll_down(&mut self, rows: usize) {
         if let Some(conversation) = self.conversation_mut(self.focus) {
             conversation.scroll_from_bottom = conversation.scroll_from_bottom.saturating_sub(rows);
+            if conversation.scroll_from_bottom == 0 {
+                conversation.has_unseen_output = false;
+            }
+        }
+    }
+
+    pub(super) fn jump_to_bottom(&mut self) {
+        if let Some(conversation) = self.conversation_mut(self.focus) {
+            conversation.jump_to_bottom();
         }
     }
 
@@ -697,11 +1520,9 @@ impl App {
 
     pub(super) fn push_active_error(&mut self, error: impl Into<String>) {
         if let Some(conversation) = self.conversation_mut(self.focus) {
-            conversation
-                .transcript
-                .push(TranscriptItem::Error(error.into()));
+            conversation.push_output(TranscriptItem::Error(error.into()));
             "Trace unavailable".clone_into(&mut conversation.status);
-            conversation.scroll_from_bottom = 0;
+            conversation.jump_to_bottom();
         }
     }
 
@@ -727,9 +1548,10 @@ impl App {
         }
     }
 
-    fn detach_history(&mut self) {
-        self.history_cursor = None;
-        self.history_draft.clear();
+    fn prepare_composer_edit(&mut self) {
+        if self.historical_editor.is_none() && self.transcript_selection_active() {
+            self.dismiss_transcript_selection();
+        }
     }
 
     fn expire_cancel_confirmation(&mut self, now: Instant) {
@@ -799,12 +1621,17 @@ fn reasoning_tail(reasoning: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     use nanocodex::{AgentEvent, AgentEventKind};
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     use serde_json::{Value, json};
 
     use super::{App, PaneId};
+    use crate::tui::transcript::TranscriptItem;
 
     fn event(kind: AgentEventKind, payload: &Value) -> AgentEvent {
         serde_json::from_value(json!({
@@ -823,7 +1650,10 @@ mod tests {
         assert_eq!(app.focus, PaneId::Main);
         let id = app.begin_btw();
         assert_eq!(app.focus, PaneId::Btw(id));
-        assert!(app.queue_prompt(PaneId::Btw(id), "side question".to_owned()));
+        assert!(
+            app.queue_prompt(PaneId::Btw(id), "side question".to_owned())
+                .is_some()
+        );
         assert_eq!(app.main.pending_turns, 0);
         assert_eq!(app.btw.as_ref().unwrap().conversation.pending_turns, 1);
         app.toggle_focus();
@@ -836,6 +1666,325 @@ mod tests {
         app.close_btw(id);
         assert_eq!(app.focus, PaneId::Main);
         assert!(app.btw.is_none());
+    }
+
+    #[test]
+    fn streamed_wrap_growth_preserves_a_scrolled_view_and_marks_output_unseen() {
+        let mut app = App::new(".".into());
+        app.main.settle_viewport(20);
+        for index in 0..8 {
+            app.main
+                .push_output(TranscriptItem::User(format!("earlier message {index}")));
+        }
+        app.main.push_assistant_delta("streaming tail");
+        app.main.scroll_from_bottom = 5;
+
+        let area = Rect::new(0, 0, 20, 6);
+        let mut before = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(app.main.scroll_from_bottom, None, None, "empty")
+            .render(area, &mut before);
+        let old_offset = app.main.scroll_from_bottom;
+
+        app.main.push_assistant_delta(
+            " with enough additional words to wrap onto several newly visible rows",
+        );
+        app.main.settle_viewport(20);
+
+        let mut after = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(app.main.scroll_from_bottom, None, None, "empty")
+            .render(area, &mut after);
+        assert!(app.main.scroll_from_bottom > old_offset);
+        assert!(app.main.has_unseen_output);
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn new_entries_anchor_only_the_conversation_that_receives_them() {
+        let mut app = App::new(".".into());
+        let btw_id = app.begin_btw();
+        app.main.settle_viewport(40);
+        app.btw.as_mut().unwrap().conversation.settle_viewport(40);
+        app.main.scroll_from_bottom = 9;
+        app.btw.as_mut().unwrap().conversation.scroll_from_bottom = 7;
+
+        app.on_agent_event(
+            PaneId::Btw(btw_id),
+            &event(
+                AgentEventKind::ToolCall,
+                &json!({ "call_id": "side-1", "tool": "exec", "arguments": "pwd" }),
+            ),
+        );
+        app.btw.as_mut().unwrap().conversation.settle_viewport(40);
+
+        assert_eq!(app.main.scroll_from_bottom, 9);
+        assert!(!app.main.has_unseen_output);
+        let btw = &app.btw.as_ref().unwrap().conversation;
+        assert!(btw.scroll_from_bottom > 7);
+        assert!(btw.has_unseen_output);
+    }
+
+    #[test]
+    fn page_down_and_jump_to_bottom_clear_unseen_output_at_the_tail() {
+        let mut app = App::new(".".into());
+        app.main.scroll_from_bottom = 15;
+        app.main.has_unseen_output = true;
+
+        app.scroll_down(12);
+        assert_eq!(app.main.scroll_from_bottom, 3);
+        assert!(app.main.has_unseen_output);
+        app.scroll_down(12);
+        assert_eq!(app.main.scroll_from_bottom, 0);
+        assert!(!app.main.has_unseen_output);
+
+        app.main.scroll_from_bottom = 4;
+        app.main.has_unseen_output = true;
+        app.jump_to_bottom();
+        assert_eq!(app.main.scroll_from_bottom, 0);
+        assert!(!app.main.has_unseen_output);
+    }
+
+    #[test]
+    fn vertical_motion_uses_visual_rows_and_preserves_the_preferred_column() {
+        let mut app = App::new(".".into());
+        app.input = "012345\nxy\nabcdef".to_owned();
+        app.cursor = 4;
+        app.set_composer_width(20);
+
+        app.move_down();
+        assert_eq!(app.cursor, 9);
+        app.move_down();
+        assert_eq!(app.cursor, 14);
+        app.move_up();
+        assert_eq!(app.cursor, 9);
+        app.move_up();
+        assert_eq!(app.cursor, 4);
+
+        app.replace_input("abcdefghij".to_owned());
+        app.cursor = 2;
+        app.set_composer_width(4);
+        app.move_down();
+        assert_eq!(app.cursor, 6);
+    }
+
+    #[test]
+    fn transcript_history_starts_above_the_first_visual_row_without_replacing_the_draft() {
+        let mut app = App::new(".".into());
+        app.main
+            .transcript
+            .push_editable_user("older prompt".to_owned(), 1);
+        app.main
+            .transcript
+            .push(TranscriptItem::Assistant("older answer".to_owned()));
+        app.main
+            .transcript
+            .push_editable_user("newer prompt".to_owned(), 2);
+        app.main
+            .transcript
+            .push(TranscriptItem::Assistant("newer answer".to_owned()));
+        app.main
+            .transcript
+            .push(TranscriptItem::User("applied steer".to_owned()));
+        app.main
+            .transcript
+            .push(TranscriptItem::Assistant("steer answer".to_owned()));
+        app.input = "first row\nsecond row".to_owned();
+        app.cursor = app.input.len();
+        app.set_composer_width(20);
+
+        app.move_up();
+        assert_eq!(app.input, "first row\nsecond row");
+        assert_eq!(app.cursor, "first row".len());
+        assert!(!app.transcript_selection_active());
+
+        app.move_up();
+        assert_eq!(app.input, "first row\nsecond row");
+        assert_eq!(
+            app.main
+                .transcript
+                .user_message(app.main.selected_user.unwrap()),
+            Some("newer prompt")
+        );
+
+        app.move_up();
+        assert_eq!(
+            app.main
+                .transcript
+                .user_message(app.main.selected_user.unwrap()),
+            Some("older prompt")
+        );
+        let oldest = app.main.selected_user;
+        app.move_up();
+        assert_eq!(app.main.selected_user, oldest, "history must not wrap");
+
+        app.move_down();
+        assert_eq!(
+            app.main
+                .transcript
+                .user_message(app.main.selected_user.unwrap()),
+            Some("newer prompt")
+        );
+        app.move_down();
+        assert!(!app.transcript_selection_active());
+        assert_eq!(app.input, "first row\nsecond row");
+        assert_eq!(app.cursor, "first row".len());
+    }
+
+    #[test]
+    fn historical_edit_switches_to_a_prefixed_branch_and_preserves_branch_drafts() {
+        let mut app = App::new(".".into());
+        app.main
+            .transcript
+            .push(TranscriptItem::Assistant("inherited answer".to_owned()));
+        app.main
+            .transcript
+            .push_editable_user("prompt to revise".to_owned(), 41);
+        app.main
+            .transcript
+            .push(TranscriptItem::Assistant("abandoned answer".to_owned()));
+        app.input = "unsent draft".to_owned();
+
+        app.move_up();
+        assert!(app.transcript_selection_active());
+        assert!(app.start_historical_edit());
+        assert_eq!(app.input, "prompt to revise");
+        assert_eq!(app.cursor, app.input.len());
+        assert!(app.historical_editor_active());
+        app.replace_input("revised prompt".to_owned());
+        let request = app.commit_historical_edit().unwrap();
+        let prompt = app
+            .main_branch_opened(
+                request.new_branch,
+                request.source_branch,
+                request.prompt,
+                Arc::from("branch-session"),
+            )
+            .unwrap();
+
+        assert_eq!(prompt, "revised prompt");
+        assert!(app.input.is_empty());
+        assert!(!app.transcript_selection_active());
+        assert_eq!(app.main.transcript.len(), 1);
+        assert_eq!(app.main_branch_id, 1);
+        assert_eq!(app.main_branch_graph(), "0 1*←0");
+        assert_eq!(app.main.scroll_from_bottom, 0);
+
+        app.replace_input("branch draft".to_owned());
+        assert_eq!(app.cycle_main_branch(1), Some(0));
+        app.main_branch_switched(0, Arc::from("root-session"));
+        assert_eq!(app.input, "unsent draft");
+        assert_eq!(app.main_branch_graph(), "0* 1←0");
+
+        assert_eq!(app.cycle_main_branch(1), Some(1));
+        app.main_branch_switched(1, Arc::from("branch-session"));
+        assert_eq!(app.input, "branch draft");
+    }
+
+    #[test]
+    fn branch_previews_follow_depth_first_tree_order() {
+        let mut app = App::new(".".into());
+        app.main
+            .transcript
+            .push_editable_user("root prompt".to_owned(), 41);
+
+        app.move_up();
+        assert!(app.start_historical_edit());
+        let first = app.commit_historical_edit().unwrap();
+        let _ = app.main_branch_opened(
+            first.new_branch,
+            first.source_branch,
+            first.prompt,
+            Arc::from("branch-1"),
+        );
+
+        assert_eq!(app.cycle_main_branch(1), Some(0));
+        app.main_branch_switched(0, Arc::from("root"));
+        app.move_up();
+        assert!(app.start_historical_edit());
+        let sibling = app.commit_historical_edit().unwrap();
+        let _ = app.main_branch_opened(
+            sibling.new_branch,
+            sibling.source_branch,
+            sibling.prompt,
+            Arc::from("branch-2"),
+        );
+
+        assert_eq!(app.cycle_main_branch(-1), Some(1));
+        app.main_branch_switched(1, Arc::from("branch-1"));
+        app.main
+            .transcript
+            .push_editable_user("nested prompt".to_owned(), 42);
+        app.move_up();
+        assert!(app.start_historical_edit());
+        let nested = app.commit_historical_edit().unwrap();
+        let _ = app.main_branch_opened(
+            nested.new_branch,
+            nested.source_branch,
+            nested.prompt,
+            Arc::from("branch-3"),
+        );
+
+        assert!(app.toggle_branch_navigator());
+        let previews = app.branch_previews();
+        assert_eq!(
+            previews
+                .iter()
+                .map(|preview| preview.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 3, 2]
+        );
+        assert_eq!(previews[0].tree_prefix, "");
+        assert_eq!(previews[1].tree_prefix, "├─");
+        assert_eq!(previews[2].tree_prefix, "│ └─");
+        assert_eq!(previews[3].tree_prefix, "└─");
+    }
+
+    #[test]
+    fn readline_deletions_edit_only_the_expected_span() {
+        let mut app = App::new(".".into());
+        app.input = "alpha beta  \ngamma delta".to_owned();
+        app.cursor = "alpha beta  \ngamma".len();
+
+        app.delete_word_before_cursor();
+        assert_eq!(app.input, "alpha beta  \n delta");
+        assert_eq!(app.cursor, "alpha beta  \n".len());
+
+        app.cursor = "alpha beta".len();
+        app.delete_to_line_start();
+        assert_eq!(app.input, "  \n delta");
+        assert_eq!(app.cursor, 0);
+
+        app.delete_to_line_end();
+        assert_eq!(app.input, "\n delta");
+
+        app.delete_to_line_end();
+        assert_eq!(app.input, " delta");
+
+        app.input = "first\nsecond".to_owned();
+        app.cursor = "first\n".len();
+        app.delete_to_line_start();
+        assert_eq!(app.input, "firstsecond");
+        assert_eq!(app.cursor, "first".len());
+    }
+
+    #[test]
+    fn resize_retains_tail_distance_and_uses_the_new_width_for_later_growth() {
+        let mut app = App::new(".".into());
+        app.main.settle_viewport(40);
+        app.main.push_assistant_delta("short tail");
+        app.main.scroll_from_bottom = 6;
+
+        app.main.settle_viewport(10);
+        assert_eq!(app.main.scroll_from_bottom, 6);
+        app.main
+            .push_assistant_delta(" plus enough text to wrap at the narrower width");
+        app.main.settle_viewport(10);
+
+        assert!(app.main.scroll_from_bottom > 6);
+        assert!(app.main.has_unseen_output);
     }
 
     #[test]
@@ -857,7 +2006,10 @@ mod tests {
         let steer_id = app
             .queue_steer(PaneId::Main, "narrow the search".to_owned())
             .unwrap();
-        assert!(app.queue_prompt(PaneId::Main, "then summarize".to_owned()));
+        assert!(
+            app.queue_prompt(PaneId::Main, "then summarize".to_owned())
+                .is_some()
+        );
         assert_eq!(app.main.pending_steers.len(), 1);
         assert_eq!(app.main.queued_prompts.len(), 1);
         assert_eq!(app.main.pending_turns, 1);
@@ -933,7 +2085,10 @@ mod tests {
     #[test]
     fn cancelled_turn_is_terminal_without_rendering_a_generic_error() {
         let mut app = App::new(".".into());
-        assert!(app.queue_prompt(PaneId::Main, "run it".to_owned()));
+        assert!(
+            app.queue_prompt(PaneId::Main, "run it".to_owned())
+                .is_some()
+        );
         app.main.on_agent_event(&event(
             AgentEventKind::RunStarted,
             &json!({ "status": "started" }),

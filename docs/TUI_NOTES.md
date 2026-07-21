@@ -34,11 +34,18 @@ that may affect the current run, while `Tab` creates a later queued turn.
 | Input | Current behavior |
 | --- | --- |
 | `Left` / `Right` | Move the cursor by one Unicode scalar. |
+| `Up` / `Ctrl+P`, `Down` / `Ctrl+N` | Move by one visual composer row, preserving the preferred display column across short and wrapped lines. Moving above the first visual row enters non-wrapping transcript prompt selection without replacing the draft; Down past the newest selected prompt returns to the composer. |
 | `Home` / `Ctrl+A` | Move to the start of the current input line. |
 | `End` / `Ctrl+E` | Move to the end of the current input line. |
 | `Backspace` / `Delete` | Delete before/under the cursor. |
-| `Up` / `Ctrl+P` | Select the previous submitted draft. History navigation is disabled for multiline input. |
-| `Down` / `Ctrl+N` | Select the next submitted draft, then restore the draft that preceded history navigation. |
+| `Ctrl+B` / `Ctrl+F` | Move left/right by one Unicode scalar. |
+| `Alt+B` / `Ctrl+Left`, `Alt+F` / `Ctrl+Right` | Move backward/forward by one word. `Alt+Left` and `Alt+Right` are accepted too. |
+| `Ctrl+W` | Delete the previous word. |
+| `Ctrl+U` / `Ctrl+K` | Delete to the start/end of the logical line; at a line boundary, delete the adjacent newline. |
+| `Ctrl+G` | Open the current draft as Markdown in `$VISUAL`, falling back to `$EDITOR`, then replace the composer with the saved text. |
+| `e` while a prior prompt is selected | Replace that user-message row with a bordered inline editor while preserving the surrounding transcript and the current composer draft. `Enter` forks immediately before the prompt and sends the revision on the new branch; `Esc` cancels, clears selection, and restores composer focus. `Shift+Enter` inserts a newline and `Ctrl+G` edits the inline buffer in `$VISUAL`/`$EDITOR`. |
+| `Ctrl+Alt+Up` / `Ctrl+Alt+Down` | Cycle through retained main branches. Each branch preserves its transcript and composer draft. |
+| `Ctrl+Alt+B` | Toggle the right-side branch tree. Parent/child connectors and nesting show fork topology; `Up`/`Down` or `j`/`k` navigate in depth-first tree order without switching, `Enter` switches when the main turn is idle, and `Esc` closes it. |
 | Terminal paste | Insert literal pasted text at the cursor after normalizing CRLF and CR to LF. |
 
 ### Transcript navigation
@@ -47,6 +54,7 @@ that may affect the current run, while `Tab` creates a later queued turn.
 | --- | --- |
 | `PageUp` / `PageDown` | Scroll the focused transcript by 12 rows. |
 | Mouse wheel | Scroll the focused transcript by 3 rows. |
+| `Ctrl+End` | Jump the focused transcript to the newest output. |
 
 ### Slash commands
 
@@ -72,10 +80,32 @@ Unknown slash-prefixed input is sent to the model as an ordinary prompt.
   cancelled, and failed calls.
 - Wrapped entry height is cached for the current terminal width. A width change
   recomputes it.
-- Rendering clips entry paragraphs to the visible viewport. Ratatui's buffer
-  diff then writes only changed cells.
+- Rendering finds the visible window from the newest entry backward, then clips
+  only those entry paragraphs. Tail work is proportional to visible rows and a
+  deliberate reading offset rather than complete retained history. Ratatui's
+  buffer diff then writes only changed cells.
 - Main and `/btw` conversations own independent transcripts, queues, statuses,
   and scroll offsets. The composer targets whichever pane has focus.
+- Composer measurement, rendering, cursor placement, and vertical motion use
+  one hard-wrapped display-row map. This keeps exact-width boundaries and wide
+  Unicode characters consistent instead of asking Ratatui to apply a second,
+  different word-wrap policy. The composer retains its visual-row viewport:
+  cursor motion moves within the box first, and content scrolls only when the
+  cursor crosses its top or bottom edge.
+- External editing follows the reviewed Codex lifecycle: resolve the editor to
+  argv, seed a temporary `.md` file, drop the terminal event reader, restore
+  normal terminal modes while the editor owns stdin, and recreate the reader
+  after the TUI resumes. The child receives `NANOCODEX_EXTERNAL_EDITOR=1` so
+  editor configuration can suppress project-oriented startup UI for the
+  temporary draft. A launch or editor failure preserves the draft.
+- A scrolled pane captures the cached wrapped height of a changing tail once
+  per frame burst. The next render adds only the coalesced wrapped-row growth
+  to its bottom-relative offset, so streamed text and new entries do not move
+  the reading window. The pane title marks unseen output until `Ctrl+End` or
+  scrolling back to the tail. Main and `/btw` anchoring state is independent.
+- Resize retains the current wrapped-row distance from the tail; later output
+  is measured at the new pane width. This avoids a full-history reflow solely
+  to manufacture a semantic resize anchor.
 - Terminal setup uses synchronized updates, bracketed paste, mouse capture, and
   enhanced keyboard reporting where supported. Restoration is drop- and
   panic-safe.
@@ -121,9 +151,78 @@ or other user content were retained.
 
 The Criterion suite in `bin/nanocodex/benches/tui_render.rs` measures:
 
-- steady trace rendering at `80x24`, `120x40`, and `200x60`;
-- first-frame construction at `120x40`; and
-- a streaming delta appended to a 2 KiB assistant tail.
+- tail and 4,000-row-scrolled trace rendering at `80x24`, `120x40`, and
+  `200x60`;
+- alternating `80x24`/`200x60` resize reflow;
+- first-frame construction at `120x40`;
+- a streaming delta appended to a 2 KiB assistant tail;
+- a 128-delta burst applied while scrolled, its coalesced anchor settlement,
+  and the complete anchored frame at `120x40`;
+- repeated rendering of a 100 KiB multiline composer draft at `120x40`; and
+- selection of every retained user prompt and the first selected-history frame
+  at `120x40`.
+
+`TUI-PERF-01` replaced the complete oldest-first height sum and walk with a
+bottom-up visible-window search. On the 2026-07-21 development-machine run,
+`codex_long` tail frames improved from 0.46–1.07 ms to 0.19–0.54 ms across the
+three sizes; `amp_long` tail frames improved from 0.23–0.60 ms to 0.19–0.54 ms.
+The 4,000-row cases were unchanged or faster. Alternating-width resize reflow
+dropped from 35.30 ms to 0.96 ms for `codex_long` and from 16.65 ms to 0.49 ms
+for `amp_long`. A deterministic equivalence test compares the optimized window
+against the former complete-height algorithm across widths, heights, offsets,
+wrapping, and over-scroll clamping.
+
+`TUI-SCROLL-01` adds only affected-tail/new-entry height work. On the 2026-07-21
+development-machine run, 128 deltas applied to a cached 2 KiB scrolled tail in
+8.70 µs, their one coalesced wrapped-height settlement took 126.50 µs, and the
+complete anchored `120x40` frame took 343.14 µs. Deterministic tests preserve
+the rendered reading window across wrap growth and cover new entries, resize,
+main/`/btw` isolation, unseen-output clearing, and the explicit jump action.
+
+`TUI-STREAM-01` was evaluated but not implemented. A benchmark-only prototype
+compared the current incrementally maintained styled tail with raw-string
+accumulation followed by one allocation-bearing materialization per frame.
+Although 128 raw appends were faster in isolation (0.734 µs versus 3.610 µs),
+the repeated end-to-end update-and-render result was 414.43 µs versus 417.34 µs
+for the current representation, a statistically insignificant difference.
+Finalized entries already stop invalidating because only the active assistant
+tail is mutable. Explicit sealed/raw state is therefore deferred; canonical raw
+assistant source remains a prerequisite to design and benchmark with the
+Markdown rendering slice rather than an independently justified abstraction.
+
+`TUI-COMPOSER-01` unified composer measurement, drawing, cursor placement, and
+visual-row motion behind one display-row layout, and added the focused readline
+bindings plus `Ctrl+G` external editing. On the 2026-07-21 development-machine
+run, the 100 KiB multiline `120x40` frame improved from a 3.53 ms baseline mean
+to 0.56 ms (84% faster). Deterministic tests cover logical and wrapped vertical
+motion, preferred-column restoration, exact wrap boundaries, wide characters,
+line/word deletion, editor argv parsing, and the temporary-file round trip. The
+retained-viewport follow-up measured 0.30 ms on the same gate, so edge-triggered
+composer scrolling introduced no frame-time regression.
+
+Prompt selection stays virtualized by semantic entry rather than converting the
+selection into a bottom-relative row offset. The discarded offset prototype
+took 32.72 ms to select and render the latest prompt in `codex_long` and 3.58 ms
+in `amp_long` because it cold-reflowed the intervening transcript. The earlier
+direct-entry implementation reached 0.30 ms and 0.28 ms but incorrectly cleared
+the context above the selected row. Preserving the existing viewport when the
+row is visible and revealing it with one row of padding otherwise measures
+0.365 ms and 0.356 ms. Rendering the bordered inline editor measures 0.363 ms
+and 0.353 ms. Traversing all retained prompts takes 2.15 µs for `codex_long`
+(78 prompts) and 0.86 µs for `amp_long` (38 prompts).
+
+`TUI-BRANCH-01` retains opaque completed `TurnResult`s in the TUI worker and
+uses `fork_from` with the result immediately before the selected prompt. Editing
+the first prompt uses a clean sibling because no earlier checkpoint exists.
+Transcript prefixes share immutable entry allocations; abandoned branches keep
+their agent, transcript, and composer draft. On the 2026-07-21 retained-shape
+gate, creating the visible fork prefix took 2.82 µs for `codex_long` and 1.69 µs
+for `amp_long`; switching branches took 0.50 µs and 0.31 µs respectively. The
+right-side tree navigator frame takes 0.307 ms and 0.257 ms. A
+wire-level regression test proves that editing the second prompt sends only its
+replacement with the first response as `previous_response_id`, while the parent
+branch remains independently selectable. The header renders a compact
+`child←parent` graph and marks the active node with `*`.
 
 Run it with:
 
@@ -187,6 +286,10 @@ requires classifying every later upstream commit.
 
 Relevant reference areas under `~/github/openai/codex/codex-rs/tui/src`:
 
+- `external_editor.rs` and `app/input.rs`: parse `$VISUAL`/`$EDITOR`, round-trip
+  a temporary Markdown file, and run the editor with the terminal restored.
+- `bottom_pane/textarea.rs` and `keymap.rs`: keep wrapped-row ranges shared by
+  rendering/cursor motion and provide the standard readline bindings.
 - `app/agent_message_consolidation.rs`: consolidate transient streamed cells
   into canonical finalized message source while preserving resize re-rendering.
 - `app/resize_reflow.rs`: explicit reflow state and resize behavior.
@@ -212,9 +315,11 @@ choice; `Defer` is intentionally outside the next slice.
 
 | ID | Priority | Candidate | Evidence and acceptance boundary |
 | --- | --- | --- | --- |
-| `TUI-PERF-01` | Now | Add a long-history height/index strategy. | Rendering clips visible entries but still sums every entry and walks from the oldest on every frame. Compare a width-keyed cumulative index or bottom-up tail traversal on both representative shapes, scrolled and unscrolled, including resize invalidation. |
-| `TUI-SCROLL-01` | Now | Preserve reading position while output streams. | New output should not drag a user who has scrolled upward back to the tail. Show that unseen output exists and provide an explicit jump-to-bottom path. Define anchoring across wrapped-height changes and resize. |
-| `TUI-STREAM-01` | Evaluate | Make streaming versus sealed transcript entries explicit. | Finalization should stop invalidating old content and should retain canonical source suitable for resize/re-render. Measure allocations and streaming-tail frame time before adding abstraction. |
+| `TUI-PERF-01` | Done | Add a long-history height/index strategy. | Bottom-up traversal is benchmarked on both representative shapes, scrolled and unscrolled, with alternating-width resize invalidation. The retained-history walk and sum are no longer on the normal tail-render path. |
+| `TUI-SCROLL-01` | Done | Preserve reading position while output streams. | Wrapped growth and new entries are coalesced into the pane's bottom-relative offset. The title marks unseen output; `Ctrl+End` and reaching the tail clear it. Tests cover wrap growth, resize, and main/`/btw` isolation. |
+| `TUI-STREAM-01` | Deferred | Make streaming versus sealed transcript entries explicit. | The raw-string prototype reduced isolated update work but did not produce a reproducible end-to-end frame win, while adding per-frame materialization. Re-evaluate with canonical raw source as part of `TUI-RENDER-01`. |
+| `TUI-COMPOSER-01` | Done | Make multiline editing a reliable daily-driver surface. | `Ctrl+G` safely yields stdin and terminal ownership to `$VISUAL`/`$EDITOR`; readline keys work; rendering and Up/Down share one visual-row map. The 100 KiB composer frame is benchmarked and exact wrap boundaries are regression-tested. |
+| `TUI-BRANCH-01` | Done | Make transcript edit create an Amp-style historical branch. | Up at the composer boundary selects prior completed user turns inline without wrapping or clearing a running response. `e` replaces the selected row with an inline editor; submit forks and sends only after the new branch opens. Abandoned branch agents, transcripts, and drafts remain available. `Ctrl+Alt+B` opens the measured right-side depth-first branch tree; `Ctrl+Alt+Up/Down` retains fast cycling. |
 | `TUI-PASTE-01` | Evaluate | Handle paste bursts and very large drafts deliberately. | Preserve pasted bytes after newline normalization, keep the UI responsive, and decide whether the composer shows a compact placeholder for unusually large pastes. Do not silently truncate. |
 | `TUI-RENDER-01` | Evaluate | Render assistant Markdown and useful tables. | Preserve selectable/copyable source and deterministic reflow. Benchmark long messages and avoid turning presentation into a new transcript contract. |
 | `TUI-TOOL-01` | Evaluate | Improve tool-call presentation. | Explore collapsed/expanded arguments and results, duration, and clearer status without hiding failures or changing event semantics. |
@@ -226,18 +331,24 @@ choice; `Defer` is intentionally outside the next slice.
 
 ## Suggested order
 
-1. Baseline and implement `TUI-PERF-01`.
-2. Specify scroll anchoring and unseen-output behavior in `TUI-SCROLL-01`.
-3. Evaluate `TUI-STREAM-01` alongside those measurements; implement only if it
-   removes demonstrated invalidation or allocation cost.
-4. Choose one interaction slice from paste, Markdown, tool presentation, or
+1. [x] Baseline and implement `TUI-PERF-01`.
+2. [x] Specify and implement scroll anchoring and unseen-output behavior in
+   `TUI-SCROLL-01`.
+3. [x] Evaluate `TUI-STREAM-01`; defer explicit sealed entries because the
+   benchmark did not demonstrate an end-to-end win.
+4. [x] Implement and benchmark `TUI-COMPOSER-01`.
+5. [x] Complete checkpoint-backed edit/branch switching and its compact,
+   measured branch navigator in `TUI-BRANCH-01`.
+6. Choose one interaction slice from paste, Markdown, tool presentation, or
    notifications based on representative-session evidence.
-5. Revisit multiple `/btw` panes only after the single-pane lifecycle and
+7. Revisit multiple `/btw` panes only after the single-pane lifecycle and
    cleanup behavior are unambiguous.
 
 ## Source map
 
 - Current input behavior: `bin/nanocodex/src/tui/mod.rs`
+- Composer display rows: `bin/nanocodex/src/tui/composer.rs`
+- External editor round trip: `bin/nanocodex/src/tui/external_editor.rs`
 - TUI state and Amp Escape invariant: `bin/nanocodex/src/tui/app.rs`
 - Transcript rendering and height cache: `bin/nanocodex/src/tui/transcript.rs`
 - Layout and footer help: `bin/nanocodex/src/tui/view.rs`

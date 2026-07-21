@@ -61,11 +61,13 @@ serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 sha1 = "0.11.0"
 sha2 = "0.10.9"
+shlex = "2.0.1"
 simd-json = "=0.15.1"
 smallvec = { version = "1.15.1", features = ["serde"] }
 sonic-rs = "0.5.8"
 syn = { version = "2.0.119", features = ["full"] }
 thiserror = "2.0.17"
+tempfile = "3.27.0"
 tokio = "1.48.0"
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tower = { version = "0.5.2", features = ["limit", "load-shed", "retry", "timeout", "util"] }

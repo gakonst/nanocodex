@@ -49,6 +49,7 @@ struct MeasuredBackend<B> {
 pub(super) struct TerminalSession {
     terminal: TuiTerminal,
     output_bytes: Rc<CounterCell<u64>>,
+    active: bool,
 }
 
 static INSTALL_PANIC_HOOK: Once = Once::new();
@@ -142,25 +143,11 @@ impl TerminalSession {
             ));
         }
         install_panic_hook();
-        TERMINAL_ACTIVE.store(true, Ordering::Release);
         let mut restore = RestoreOnDrop { armed: true };
         enable_raw_mode()?;
         let mut output = stdout();
-        execute!(
-            output,
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture,
-            Hide
-        )?;
-        drop(execute!(
-            output,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-            )
-        ));
+        activate_commands(&mut output)?;
+        TERMINAL_ACTIVE.store(true, Ordering::Release);
         let output_bytes = Rc::new(CounterCell::new(0));
         let writer = ByteCountingWriter {
             inner: output,
@@ -174,6 +161,7 @@ impl TerminalSession {
         Ok(Self {
             terminal,
             output_bytes,
+            active: true,
         })
     }
 
@@ -189,12 +177,39 @@ impl TerminalSession {
             output_bytes: self.output_bytes.get().saturating_sub(bytes_before),
         })
     }
+
+    pub(super) fn suspend(&mut self) -> io::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.terminal.show_cursor()?;
+        restore(self.terminal.backend_mut());
+        self.active = false;
+        Ok(())
+    }
+
+    pub(super) fn resume(&mut self) -> io::Result<()> {
+        if self.active {
+            return Ok(());
+        }
+        let mut restore = RestoreOnDrop { armed: true };
+        enable_raw_mode()?;
+        activate_commands(self.terminal.backend_mut())?;
+        TERMINAL_ACTIVE.store(true, Ordering::Release);
+        self.terminal.clear()?;
+        self.terminal.autoresize()?;
+        restore.armed = false;
+        self.active = true;
+        Ok(())
+    }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        drop(self.terminal.show_cursor());
-        restore(self.terminal.backend_mut());
+        if self.active {
+            drop(self.terminal.show_cursor());
+            restore(self.terminal.backend_mut());
+        }
     }
 }
 
@@ -222,6 +237,25 @@ fn restore_commands(output: &mut impl io::Write) {
         DisableBracketedPaste,
         LeaveAlternateScreen
     ));
+}
+
+fn activate_commands(output: &mut impl io::Write) -> io::Result<()> {
+    execute!(
+        output,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture,
+        Hide
+    )?;
+    drop(execute!(
+        output,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    ));
+    Ok(())
 }
 
 fn begin_synchronized_update(output: &mut impl Write) -> io::Result<()> {

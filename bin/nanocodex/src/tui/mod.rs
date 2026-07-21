@@ -1,4 +1,6 @@
 mod app;
+mod composer;
+mod external_editor;
 mod scheduler;
 mod telemetry;
 mod terminal;
@@ -17,7 +19,9 @@ use crossterm::event::{
 };
 use eyre::{Result, WrapErr};
 use futures_util::StreamExt;
-use nanocodex::{AgentEvent, AgentEvents, Nanocodex, NanocodexError, TimedAgentEvent, TurnControl};
+use nanocodex::{
+    AgentEvent, AgentEvents, Nanocodex, NanocodexError, TimedAgentEvent, TurnControl, TurnResult,
+};
 use tokio::{
     sync::mpsc,
     time::{MissedTickBehavior, interval, sleep_until},
@@ -46,6 +50,7 @@ const JAEGER_UI_URL_ENV: &str = "NANOCODEX_JAEGER_UI_URL";
 enum WorkerCommand {
     Prompt {
         target: PaneId,
+        prompt_id: u64,
         prompt: String,
     },
     Steer {
@@ -58,9 +63,18 @@ enum WorkerCommand {
     },
     OpenBtw {
         id: u64,
+        prompt_id: Option<u64>,
         prompt: Option<String>,
     },
     CloseBtw {
+        id: u64,
+    },
+    EditHistorical {
+        source_branch_id: u64,
+        new_branch_id: u64,
+        prompt_id: u64,
+    },
+    SwitchMainBranch {
         id: u64,
     },
 }
@@ -115,6 +129,40 @@ enum WorkerEvent {
     BtwEventStreamClosed {
         id: u64,
     },
+    MainBranchOpened {
+        id: u64,
+        parent_id: u64,
+        prompt_id: u64,
+        request_id: Arc<str>,
+    },
+    MainBranchOpenFailed {
+        id: u64,
+        error: String,
+    },
+    MainBranchSwitched {
+        id: u64,
+        request_id: Arc<str>,
+    },
+    MainBranchSwitchFailed {
+        id: u64,
+        error: String,
+    },
+    MainBranchAgentEvent {
+        id: u64,
+        event: TimedAgentEvent,
+    },
+    MainBranchEventStreamClosed {
+        id: u64,
+    },
+}
+
+struct MainWorkerBranch {
+    id: u64,
+    request_id: Arc<str>,
+    agent: Nanocodex,
+    turns: VecDeque<TrackedTurn>,
+    prompt_order: Vec<u64>,
+    results: Vec<(u64, TurnResult)>,
 }
 
 struct BtwWorker {
@@ -127,6 +175,7 @@ struct BtwWorker {
 
 struct TrackedTurn {
     id: u64,
+    prompt_id: u64,
     control: TurnControl,
     span: tracing::Span,
 }
@@ -157,10 +206,12 @@ fn prepare_btw_prompt(first_prompt: &mut bool, prompt: String) -> String {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TerminalAction {
     Redraw,
     Ignore,
     Quit,
+    ExternalEditor,
 }
 
 enum UiAction {
@@ -183,6 +234,7 @@ enum UiUpdate {
     Redraw(RedrawPriority),
     Ignore,
     Quit,
+    ExternalEditor,
 }
 
 struct UiModel {
@@ -214,33 +266,29 @@ impl UiModel {
                     TerminalAction::Redraw => Ok(UiUpdate::Redraw(RedrawPriority::Immediate)),
                     TerminalAction::Ignore => Ok(UiUpdate::Ignore),
                     TerminalAction::Quit => Ok(UiUpdate::Quit),
+                    TerminalAction::ExternalEditor => Ok(UiUpdate::ExternalEditor),
                 }
             }
             UiAction::Agent(event) => {
-                if self.app.on_agent_event(PaneId::Main, &event) {
+                if self.app.on_main_agent_event(0, &event) {
                     Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
                 } else {
                     Ok(UiUpdate::Ignore)
                 }
             }
             UiAction::AgentStreamClosed => {
-                self.app.main.transcript.push(TranscriptItem::Error(
-                    "agent event stream closed".to_owned(),
-                ));
-                self.app.main.running = false;
-                "Agent stopped".clone_into(&mut self.app.main.status);
+                self.app.main_branch_event_stream_closed(0);
                 self.agent_events_open = false;
                 Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
             }
             UiAction::Worker(update) => {
-                handle_worker_update(&mut self.app, update);
+                handle_worker_update(&mut self.app, update, commands)?;
                 Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
             }
             UiAction::WorkerStopped => {
                 self.app
                     .main
-                    .transcript
-                    .push(TranscriptItem::Error("agent worker stopped".to_owned()));
+                    .push_output(TranscriptItem::Error("agent worker stopped".to_owned()));
                 self.worker_updates_open = false;
                 Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
             }
@@ -283,8 +331,7 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
 
     let mut terminal = TerminalSession::enter().wrap_err("failed to initialize the terminal")?;
     let mut input_events = EventStream::new();
-    let mut ticker = interval(Duration::from_millis(80));
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut ticker = ui_ticker();
     let mut ui = UiModel::new(App::new(cwd), Arc::clone(&root_session_id));
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut stream_telemetry = StreamTelemetry::default();
@@ -297,7 +344,7 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
         let now = Instant::now();
         if scheduler.is_due(now) {
             let render_started = Instant::now();
-            let draw_metrics = terminal.draw(|frame| view::render(frame, &ui.app))?;
+            let draw_metrics = terminal.draw(|frame| view::render(frame, &mut ui.app))?;
             let presented_at = Instant::now();
             scheduler.presented(presented_at);
             stream_telemetry.frame_presented(render_started, presented_at, draw_metrics, &ui.app);
@@ -314,10 +361,11 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
                 let event = event.transpose()?.ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "terminal input closed")
                 })?;
-                if apply_update(
-                    ui.update(UiAction::Terminal(event), &worker_tx)?,
-                    &mut scheduler,
-                ) {
+                let update = ui.update(UiAction::Terminal(event), &worker_tx)?;
+                if update == UiUpdate::ExternalEditor {
+                    input_events = run_external_editor(input_events, &mut terminal, &mut ui.app).await?;
+                    scheduler.request_immediate(Instant::now());
+                } else if apply_update(update, &mut scheduler) {
                     return Ok(());
                 }
             }
@@ -345,12 +393,9 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
                 }) {
                     continue;
                 }
-                let received = update.as_ref().and_then(|update| match update {
-                    WorkerEvent::BtwAgentEvent { id, event } => {
-                        Some(stream_telemetry.event_received(PaneId::Btw(*id), event))
-                    }
-                    _ => None,
-                });
+                let received = update
+                    .as_ref()
+                    .and_then(|update| worker_event_received(update, &stream_telemetry));
                 let action = update.map_or(UiAction::WorkerStopped, UiAction::Worker);
                 let update = ui.update(action, &worker_tx)?;
                 if let Some(received) = received {
@@ -370,6 +415,27 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
             }
         }
     }
+}
+
+fn worker_event_received(
+    update: &WorkerEvent,
+    telemetry: &StreamTelemetry,
+) -> Option<telemetry::ReceivedEvent> {
+    match update {
+        WorkerEvent::BtwAgentEvent { id, event } => {
+            Some(telemetry.event_received(PaneId::Btw(*id), event))
+        }
+        WorkerEvent::MainBranchAgentEvent { event, .. } => {
+            Some(telemetry.event_received(PaneId::Main, event))
+        }
+        _ => None,
+    }
+}
+
+fn ui_ticker() -> tokio::time::Interval {
+    let mut ticker = interval(Duration::from_millis(80));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    ticker
 }
 
 fn handle_worker_telemetry(update: &WorkerEvent, telemetry: &mut StreamTelemetry) -> bool {
@@ -405,13 +471,17 @@ fn apply_update(update: UiUpdate, scheduler: &mut RenderScheduler) -> bool {
     match update {
         UiUpdate::Redraw(RedrawPriority::Immediate) => scheduler.request_immediate(now),
         UiUpdate::Redraw(RedrawPriority::Streaming) => scheduler.request_streaming(now),
-        UiUpdate::Ignore => {}
+        UiUpdate::Ignore | UiUpdate::ExternalEditor => {}
         UiUpdate::Quit => return true,
     }
     false
 }
 
-fn handle_worker_update(app: &mut App, update: WorkerEvent) {
+fn handle_worker_update(
+    app: &mut App,
+    update: WorkerEvent,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<()> {
     match update {
         WorkerEvent::TurnFinished { target, error } => app.turn_finished(target, error),
         WorkerEvent::TurnTraceStarted { .. } | WorkerEvent::TurnTraceRejected { .. } => {}
@@ -432,7 +502,45 @@ fn handle_worker_update(app: &mut App, update: WorkerEvent) {
                 app.btw_failed(id, "BTW event stream closed".to_owned());
             }
         }
+        WorkerEvent::MainBranchOpened {
+            id,
+            parent_id,
+            prompt_id,
+            request_id,
+        } => {
+            if let Some(prompt) = app.main_branch_opened(id, parent_id, prompt_id, request_id) {
+                let prompt_id =
+                    app.queue_prompt(PaneId::Main, prompt.clone())
+                        .ok_or_else(|| {
+                            eyre::eyre!("historical branch disappeared before submission")
+                        })?;
+                send_command(
+                    commands,
+                    WorkerCommand::Prompt {
+                        target: PaneId::Main,
+                        prompt_id,
+                        prompt,
+                    },
+                )?;
+            }
+        }
+        WorkerEvent::MainBranchOpenFailed { id, error } => {
+            app.main_branch_open_failed(id, &error);
+        }
+        WorkerEvent::MainBranchSwitched { id, request_id } => {
+            app.main_branch_switched(id, request_id);
+        }
+        WorkerEvent::MainBranchSwitchFailed { id, error } => {
+            app.main_branch_switch_failed(id, &error);
+        }
+        WorkerEvent::MainBranchAgentEvent { id, event } => {
+            let _ = app.on_main_agent_event(id, &event.event);
+        }
+        WorkerEvent::MainBranchEventStreamClosed { id } => {
+            app.main_branch_event_stream_closed(id);
+        }
     }
+    Ok(())
 }
 
 fn spawn_agent_worker(
@@ -444,9 +552,15 @@ fn spawn_agent_worker(
     tokio::spawn(async move {
         let (finished_tx, mut finished_rx) = mpsc::unbounded_channel::<FinishedTurn>();
         let mut worker = AgentWorker {
-            root,
-            root_session_id,
-            main_turns: VecDeque::new(),
+            main: MainWorkerBranch {
+                id: 0,
+                request_id: root_session_id,
+                agent: root,
+                turns: VecDeque::new(),
+                prompt_order: Vec::new(),
+                results: Vec::new(),
+            },
+            archived_main: Vec::new(),
             next_turn_id: 1,
             btw: None,
             finished: finished_tx,
@@ -469,9 +583,8 @@ fn spawn_agent_worker(
 }
 
 struct AgentWorker {
-    root: Nanocodex,
-    root_session_id: Arc<str>,
-    main_turns: VecDeque<TrackedTurn>,
+    main: MainWorkerBranch,
+    archived_main: Vec<MainWorkerBranch>,
     next_turn_id: u64,
     btw: Option<BtwWorker>,
     finished: mpsc::UnboundedSender<FinishedTurn>,
@@ -481,27 +594,45 @@ struct AgentWorker {
 impl AgentWorker {
     async fn handle_command(&mut self, command: WorkerCommand) {
         match command {
-            WorkerCommand::Prompt { target, prompt } => self.prompt(target, prompt).await,
+            WorkerCommand::Prompt {
+                target,
+                prompt_id,
+                prompt,
+            } => self.prompt(target, prompt_id, prompt).await,
             WorkerCommand::Steer { target, id, prompt } => self.steer(target, id, prompt).await,
             WorkerCommand::Cancel { target } => self.cancel(target).await,
-            WorkerCommand::OpenBtw { id, prompt } => self.open_btw(id, prompt).await,
+            WorkerCommand::OpenBtw {
+                id,
+                prompt_id,
+                prompt,
+            } => self.open_btw(id, prompt_id, prompt).await,
             WorkerCommand::CloseBtw { id } => {
                 if self.btw.as_ref().is_some_and(|branch| branch.id == id) {
                     self.btw = None;
                 }
             }
+            WorkerCommand::EditHistorical {
+                source_branch_id,
+                new_branch_id,
+                prompt_id,
+            } => {
+                self.edit_historical(source_branch_id, new_branch_id, prompt_id)
+                    .await;
+            }
+            WorkerCommand::SwitchMainBranch { id } => self.switch_main_branch(id),
         }
     }
 
-    async fn prompt(&mut self, target: PaneId, prompt: String) {
+    async fn prompt(&mut self, target: PaneId, prompt_id: u64, prompt: String) {
         match target {
             PaneId::Main => {
                 if let Some(turn) = start_turn(
-                    &self.root,
+                    &self.main.agent,
                     TurnTarget {
-                        session_id: &self.root_session_id,
+                        session_id: &self.main.request_id,
                         pane: target,
                     },
+                    prompt_id,
                     prompt,
                     &mut self.next_turn_id,
                     &self.finished,
@@ -509,7 +640,8 @@ impl AgentWorker {
                 )
                 .await
                 {
-                    self.main_turns.push_back(turn);
+                    self.main.prompt_order.push(prompt_id);
+                    self.main.turns.push_back(turn);
                 }
             }
             PaneId::Btw(id) => {
@@ -527,6 +659,7 @@ impl AgentWorker {
                         session_id: &branch.request_id,
                         pane: target,
                     },
+                    prompt_id,
                     prompt,
                     &mut self.next_turn_id,
                     &self.finished,
@@ -544,10 +677,10 @@ impl AgentWorker {
         let turn = match target {
             PaneId::Main => {
                 steer_turn(
-                    &self.root,
-                    &self.main_turns,
+                    &self.main.agent,
+                    &self.main.turns,
                     TurnTarget {
-                        session_id: &self.root_session_id,
+                        session_id: &self.main.request_id,
                         pane: target,
                     },
                     SteerRequest {
@@ -589,7 +722,10 @@ impl AgentWorker {
         };
         if let Some(turn) = turn {
             match target {
-                PaneId::Main => self.main_turns.push_back(turn),
+                PaneId::Main => {
+                    self.main.prompt_order.push(turn.prompt_id);
+                    self.main.turns.push_back(turn);
+                }
                 PaneId::Btw(branch_id) => {
                     if let Some(branch) = self.btw.as_mut().filter(|branch| branch.id == branch_id)
                     {
@@ -602,7 +738,7 @@ impl AgentWorker {
 
     async fn cancel(&self, target: PaneId) {
         let (turns, session_id) = match target {
-            PaneId::Main => (Some(&self.main_turns), self.root_session_id.as_ref()),
+            PaneId::Main => (Some(&self.main.turns), self.main.request_id.as_ref()),
             PaneId::Btw(id) => self
                 .btw
                 .as_ref()
@@ -614,7 +750,7 @@ impl AgentWorker {
         cancel_turn(turns, session_id, target, &self.updates).await;
     }
 
-    async fn open_btw(&mut self, id: u64, prompt: Option<String>) {
+    async fn open_btw(&mut self, id: u64, prompt_id: Option<u64>, prompt: Option<String>) {
         self.btw = None;
         let span = info_span!(
             target: "nanocodex",
@@ -622,12 +758,12 @@ impl AgentWorker {
             "tui.btw.open",
             otel.kind = "internal",
             otel.status_code = tracing::field::Empty,
-            session.id = self.root_session_id.as_ref(),
+            session.id = self.main.request_id.as_ref(),
             tui.btw.id = id,
             tui.btw.session_id = tracing::field::Empty,
             status = tracing::field::Empty,
         );
-        match self.root.fork().instrument(span.clone()).await {
+        match self.main.agent.fork().instrument(span.clone()).await {
             Ok((agent, events)) => {
                 let request_id = Arc::<str>::from(events.request_id());
                 span.record("tui.btw.session_id", request_id.as_ref());
@@ -647,12 +783,20 @@ impl AgentWorker {
                 };
                 if let Some(prompt) = prompt {
                     let prompt = branch.prepare_prompt(prompt);
+                    let Some(prompt_id) = prompt_id else {
+                        drop(self.updates.send(WorkerEvent::BtwOpenFailed {
+                            id,
+                            error: "BTW prompt identity was unavailable".to_owned(),
+                        }));
+                        return;
+                    };
                     if let Some(turn) = start_turn(
                         &branch.agent,
                         TurnTarget {
                             session_id: &branch.request_id,
                             pane: PaneId::Btw(id),
                         },
+                        prompt_id,
                         prompt,
                         &mut self.next_turn_id,
                         &self.finished,
@@ -676,9 +820,140 @@ impl AgentWorker {
         }
     }
 
+    async fn edit_historical(&mut self, source_branch_id: u64, new_branch_id: u64, prompt_id: u64) {
+        if self.main.id != source_branch_id || !self.main.turns.is_empty() || self.btw.is_some() {
+            drop(self.updates.send(WorkerEvent::MainBranchOpenFailed {
+                id: new_branch_id,
+                error: "finish the main turn and close /btw before editing history".to_owned(),
+            }));
+            return;
+        }
+        let Some(position) = self
+            .main
+            .prompt_order
+            .iter()
+            .position(|candidate| *candidate == prompt_id)
+        else {
+            drop(self.updates.send(WorkerEvent::MainBranchOpenFailed {
+                id: new_branch_id,
+                error: "the selected prompt is not associated with this branch".to_owned(),
+            }));
+            return;
+        };
+        if !self
+            .main
+            .results
+            .iter()
+            .any(|(completed_id, _)| *completed_id == prompt_id)
+        {
+            drop(self.updates.send(WorkerEvent::MainBranchOpenFailed {
+                id: new_branch_id,
+                error: "the selected prompt has not completed yet".to_owned(),
+            }));
+            return;
+        }
+
+        let parent = self.main.prompt_order[..position]
+            .iter()
+            .rev()
+            .find_map(|candidate| {
+                self.main
+                    .results
+                    .iter()
+                    .find(|(completed_id, _)| completed_id == candidate)
+                    .map(|(_, result)| result.clone())
+            });
+        let fork = if let Some(parent) = parent.as_ref() {
+            self.main.agent.fork_from(parent).await
+        } else {
+            self.main.agent.spawn().await
+        };
+        let (agent, events) = match fork {
+            Ok(branch) => branch,
+            Err(error) => {
+                drop(self.updates.send(WorkerEvent::MainBranchOpenFailed {
+                    id: new_branch_id,
+                    error: error.to_string(),
+                }));
+                return;
+            }
+        };
+
+        let request_id = Arc::<str>::from(events.request_id());
+        let inherited_ids = &self.main.prompt_order[..position];
+        let inherited_results = self
+            .main
+            .results
+            .iter()
+            .filter(|(completed_id, _)| inherited_ids.contains(completed_id))
+            .cloned()
+            .collect();
+        let branch = MainWorkerBranch {
+            id: new_branch_id,
+            request_id: Arc::clone(&request_id),
+            agent,
+            turns: VecDeque::new(),
+            prompt_order: inherited_ids.to_vec(),
+            results: inherited_results,
+        };
+        let parent_id = self.main.id;
+        let previous = std::mem::replace(&mut self.main, branch);
+        self.archived_main.push(previous);
+        forward_main_branch_events(new_branch_id, events, self.updates.clone());
+        drop(self.updates.send(WorkerEvent::MainBranchOpened {
+            id: new_branch_id,
+            parent_id,
+            prompt_id,
+            request_id,
+        }));
+    }
+
+    fn switch_main_branch(&mut self, id: u64) {
+        if self.main.id == id {
+            drop(self.updates.send(WorkerEvent::MainBranchSwitched {
+                id,
+                request_id: Arc::clone(&self.main.request_id),
+            }));
+            return;
+        }
+        if !self.main.turns.is_empty() || self.btw.is_some() {
+            drop(self.updates.send(WorkerEvent::MainBranchSwitchFailed {
+                id,
+                error: "finish the main turn and close /btw before switching branches".to_owned(),
+            }));
+            return;
+        }
+        let Some(position) = self.archived_main.iter().position(|branch| branch.id == id) else {
+            drop(self.updates.send(WorkerEvent::MainBranchSwitchFailed {
+                id,
+                error: "the requested branch is no longer available".to_owned(),
+            }));
+            return;
+        };
+        if !self.archived_main[position].turns.is_empty() {
+            drop(self.updates.send(WorkerEvent::MainBranchSwitchFailed {
+                id,
+                error: "the requested branch still has an active turn".to_owned(),
+            }));
+            return;
+        }
+        let requested = self.archived_main.swap_remove(position);
+        let previous = std::mem::replace(&mut self.main, requested);
+        self.archived_main.push(previous);
+        drop(self.updates.send(WorkerEvent::MainBranchSwitched {
+            id,
+            request_id: Arc::clone(&self.main.request_id),
+        }));
+    }
+
     fn finish_turn(&mut self, finished: FinishedTurn) {
         match finished.target {
-            PaneId::Main => remove_finished(&mut self.main_turns, finished.id),
+            PaneId::Main => {
+                remove_finished(&mut self.main.turns, finished.id);
+                if let Some(result) = finished.result {
+                    self.main.results.push((finished.prompt_id, result));
+                }
+            }
             PaneId::Btw(id) => {
                 if let Some(branch) = self.btw.as_mut().filter(|branch| branch.id == id) {
                     remove_finished(&mut branch.turns, finished.id);
@@ -695,6 +970,7 @@ impl AgentWorker {
 async fn start_turn(
     agent: &Nanocodex,
     target: TurnTarget<'_>,
+    prompt_id: u64,
     prompt: String,
     next_turn_id: &mut u64,
     finished: &mpsc::UnboundedSender<FinishedTurn>,
@@ -728,10 +1004,10 @@ async fn start_turn(
             let task_span = span.clone();
             tokio::spawn(
                 async move {
-                    let (error, status, otel_status) = match turn.result().await {
-                        Ok(_) => (None, "completed", "OK"),
-                        Err(NanocodexError::TurnCancelled) => (None, "cancelled", "ERROR"),
-                        Err(error) => (Some(error.to_string()), "failed", "ERROR"),
+                    let (result, error, status, otel_status) = match turn.result().await {
+                        Ok(result) => (Some(result), None, "completed", "OK"),
+                        Err(NanocodexError::TurnCancelled) => (None, None, "cancelled", "ERROR"),
+                        Err(error) => (None, Some(error.to_string()), "failed", "ERROR"),
                     };
                     task_span.record("status", status);
                     task_span.record("otel.status_code", otel_status);
@@ -742,12 +1018,19 @@ async fn start_turn(
                     drop(finished.send(FinishedTurn {
                         id,
                         target: target.pane,
+                        prompt_id,
+                        result,
                         error,
                     }));
                 }
                 .instrument(span.clone()),
             );
-            Some(TrackedTurn { id, control, span })
+            Some(TrackedTurn {
+                id,
+                prompt_id,
+                control,
+                span,
+            })
         }
         Err(error) => {
             drop(updates.send(WorkerEvent::TurnTraceRejected {
@@ -838,6 +1121,7 @@ async fn steer_turn(
     start_turn(
         agent,
         target,
+        request.id,
         request.prompt,
         next_turn_id,
         finished,
@@ -901,6 +1185,8 @@ async fn cancel_turn(
 struct FinishedTurn {
     id: u64,
     target: PaneId,
+    prompt_id: u64,
+    result: Option<TurnResult>,
     error: Option<String>,
 }
 
@@ -928,6 +1214,24 @@ fn forward_btw_events(
     });
 }
 
+fn forward_main_branch_events(
+    id: u64,
+    mut events: AgentEvents,
+    updates: mpsc::UnboundedSender<WorkerEvent>,
+) {
+    tokio::spawn(async move {
+        while let Some(event) = events.recv_timed().await {
+            if updates
+                .send(WorkerEvent::MainBranchAgentEvent { id, event })
+                .is_err()
+            {
+                return;
+            }
+        }
+        drop(updates.send(WorkerEvent::MainBranchEventStreamClosed { id }));
+    });
+}
+
 fn handle_terminal_event(
     event: Event,
     app: &mut App,
@@ -936,11 +1240,7 @@ fn handle_terminal_event(
 ) -> Result<TerminalAction> {
     match event {
         Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-            if handle_key(key, app, root_session_id, commands)? {
-                Ok(TerminalAction::Quit)
-            } else {
-                Ok(TerminalAction::Redraw)
-            }
+            handle_key(key, app, root_session_id, commands)
         }
         Event::Paste(text) => {
             app.insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -967,19 +1267,55 @@ fn handle_key(
     app: &mut App,
     root_session_id: &str,
     commands: &mpsc::UnboundedSender<WorkerCommand>,
-) -> Result<bool> {
+) -> Result<TerminalAction> {
+    if let Some(action) = handle_inline_historical_editor_key(key, app, commands)? {
+        return Ok(action);
+    }
+
+    if let Some(action) = handle_global_navigation_key(key, app, commands)? {
+        return Ok(action);
+    }
+
+    if let Some(action) = handle_branch_navigator_key(key, app, commands)? {
+        return Ok(action);
+    }
+
+    if let Some(action) = handle_transcript_selection_key(key, app) {
+        return Ok(action);
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
-            KeyCode::Char('c') => return Ok(true),
-            KeyCode::Char('d') if app.input.is_empty() => return Ok(true),
+            KeyCode::Char('c') => return Ok(TerminalAction::Quit),
+            KeyCode::Char('g') => return Ok(TerminalAction::ExternalEditor),
+            KeyCode::Char('d') if app.input.is_empty() => return Ok(TerminalAction::Quit),
+            KeyCode::Char('d') => app.delete(),
+            KeyCode::Char('h') => app.backspace(),
             KeyCode::Char('j') => app.insert_char('\n'),
             KeyCode::Char('a') => app.move_home(),
             KeyCode::Char('e') => app.move_end(),
-            KeyCode::Char('p') => app.previous_history(),
-            KeyCode::Char('n') => app.next_history(),
+            KeyCode::Char('b') => app.move_left(),
+            KeyCode::Char('f') => app.move_right(),
+            KeyCode::Char('p') => app.move_up(),
+            KeyCode::Char('n') => app.move_down(),
+            KeyCode::Char('w') => app.delete_word_before_cursor(),
+            KeyCode::Char('u') => app.delete_to_line_start(),
+            KeyCode::Char('k') => app.delete_to_line_end(),
+            KeyCode::Left => app.move_word_left(),
+            KeyCode::Right => app.move_word_right(),
+            KeyCode::End => app.jump_to_bottom(),
             _ => {}
         }
-        return Ok(false);
+        return Ok(TerminalAction::Redraw);
+    }
+
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        match key.code {
+            KeyCode::Char('b') | KeyCode::Left => app.move_word_left(),
+            KeyCode::Char('f') | KeyCode::Right => app.move_word_right(),
+            _ => {}
+        }
+        return Ok(TerminalAction::Redraw);
     }
 
     match key.code {
@@ -998,8 +1334,8 @@ fn handle_key(
         KeyCode::Right => app.move_right(),
         KeyCode::Home => app.move_home(),
         KeyCode::End => app.move_end(),
-        KeyCode::Up => app.previous_history(),
-        KeyCode::Down => app.next_history(),
+        KeyCode::Up => app.move_up(),
+        KeyCode::Down => app.move_down(),
         KeyCode::PageUp => app.scroll_up(12),
         KeyCode::PageDown => app.scroll_down(12),
         KeyCode::Esc if key.kind == KeyEventKind::Repeat => {}
@@ -1026,7 +1362,194 @@ fn handle_key(
         | KeyCode::Media(_)
         | KeyCode::Modifier(_) => {}
     }
-    Ok(false)
+    Ok(TerminalAction::Redraw)
+}
+
+fn handle_global_navigation_key(
+    key: KeyEvent,
+    app: &mut App,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<Option<TerminalAction>> {
+    if !key
+        .modifiers
+        .contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return Ok(None);
+    }
+    if matches!(key.code, KeyCode::Char('b')) {
+        let _ = app.toggle_branch_navigator();
+        return Ok(Some(TerminalAction::Redraw));
+    }
+    let direction = match key.code {
+        KeyCode::Up => Some(-1),
+        KeyCode::Down => Some(1),
+        _ => None,
+    };
+    let Some(direction) = direction else {
+        return Ok(None);
+    };
+    if let Some(id) = app.cycle_main_branch(direction) {
+        send_command(commands, WorkerCommand::SwitchMainBranch { id })?;
+    }
+    Ok(Some(TerminalAction::Redraw))
+}
+
+fn handle_branch_navigator_key(
+    key: KeyEvent,
+    app: &mut App,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<Option<TerminalAction>> {
+    if !app.branch_navigator_active() {
+        return Ok(None);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Ok(Some(TerminalAction::Quit));
+    }
+    if key.modifiers.is_empty() {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => app.move_branch_navigator(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.move_branch_navigator(1),
+            KeyCode::Enter => {
+                if let Some(id) = app.switch_to_navigated_branch() {
+                    send_command(commands, WorkerCommand::SwitchMainBranch { id })?;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => app.close_branch_navigator(),
+            _ => {}
+        }
+    }
+    Ok(Some(TerminalAction::Redraw))
+}
+
+fn handle_transcript_selection_key(key: KeyEvent, app: &mut App) -> Option<TerminalAction> {
+    if !app.transcript_selection_active() {
+        return None;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') => return Some(TerminalAction::Quit),
+            KeyCode::Char('p') => app.move_up(),
+            KeyCode::Char('n') => app.move_down(),
+            _ => {}
+        }
+    } else if key.modifiers.is_empty() {
+        match key.code {
+            KeyCode::Up => app.move_up(),
+            KeyCode::Down => app.move_down(),
+            KeyCode::Char('e') => {
+                let _ = app.start_historical_edit();
+            }
+            KeyCode::Esc => app.dismiss_transcript_selection(),
+            _ => {}
+        }
+    }
+    Some(TerminalAction::Redraw)
+}
+
+fn request_historical_edit(
+    app: &mut App,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<()> {
+    let Some(request) = app.commit_historical_edit() else {
+        return Ok(());
+    };
+    send_command(
+        commands,
+        WorkerCommand::EditHistorical {
+            source_branch_id: request.source_branch,
+            new_branch_id: request.new_branch,
+            prompt_id: request.prompt,
+        },
+    )
+}
+
+fn handle_inline_historical_editor_key(
+    key: KeyEvent,
+    app: &mut App,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<Option<TerminalAction>> {
+    if !app.historical_editor_active() {
+        return Ok(None);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') => return Ok(Some(TerminalAction::Quit)),
+            KeyCode::Char('g') => return Ok(Some(TerminalAction::ExternalEditor)),
+            KeyCode::Char('d') => app.delete(),
+            KeyCode::Char('h') => app.backspace(),
+            KeyCode::Char('j') => app.insert_char('\n'),
+            KeyCode::Char('a') => app.move_home(),
+            KeyCode::Char('e') => app.move_end(),
+            KeyCode::Char('b') => app.move_left(),
+            KeyCode::Char('f') => app.move_right(),
+            KeyCode::Char('p') => app.move_inline_editor_up(),
+            KeyCode::Char('n') => app.move_inline_editor_down(),
+            KeyCode::Char('w') => app.delete_word_before_cursor(),
+            KeyCode::Char('u') => app.delete_to_line_start(),
+            KeyCode::Char('k') => app.delete_to_line_end(),
+            KeyCode::Left => app.move_word_left(),
+            KeyCode::Right => app.move_word_right(),
+            _ => {}
+        }
+        return Ok(Some(TerminalAction::Redraw));
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        match key.code {
+            KeyCode::Enter => app.insert_char('\n'),
+            KeyCode::Char('b') | KeyCode::Left => app.move_word_left(),
+            KeyCode::Char('f') | KeyCode::Right => app.move_word_right(),
+            _ => {}
+        }
+        return Ok(Some(TerminalAction::Redraw));
+    }
+
+    match key.code {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => app.insert_char('\n'),
+        KeyCode::Enter => request_historical_edit(app, commands)?,
+        KeyCode::Char(character) => app.insert_char(character),
+        KeyCode::Backspace => app.backspace(),
+        KeyCode::Delete => app.delete(),
+        KeyCode::Left => app.move_left(),
+        KeyCode::Right => app.move_right(),
+        KeyCode::Home => app.move_home(),
+        KeyCode::End => app.move_end(),
+        KeyCode::Up => app.move_inline_editor_up(),
+        KeyCode::Down => app.move_inline_editor_down(),
+        KeyCode::Esc => app.cancel_historical_edit(),
+        _ => {}
+    }
+    Ok(Some(TerminalAction::Redraw))
+}
+
+async fn edit_in_external_editor(terminal: &mut TerminalSession, app: &mut App) -> Result<()> {
+    let editor = match external_editor::resolve_editor_command() {
+        Ok(editor) => editor,
+        Err(error) => {
+            app.editor_failed(error);
+            return Ok(());
+        }
+    };
+
+    terminal.suspend()?;
+    let editor_result = external_editor::edit(&app.input, &editor, &app.cwd).await;
+    let resume_result = terminal.resume();
+    resume_result?;
+
+    match editor_result {
+        Ok(input) => app.replace_input(input.trim_end().to_owned()),
+        Err(error) => app.editor_failed(error),
+    }
+    Ok(())
+}
+
+async fn run_external_editor(
+    input_events: EventStream,
+    terminal: &mut TerminalSession,
+    app: &mut App,
+) -> Result<EventStream> {
+    drop(input_events);
+    edit_in_external_editor(terminal, app).await?;
+    Ok(EventStream::new())
 }
 
 fn submit(
@@ -1045,8 +1568,15 @@ fn submit(
                 if let Some(id) = app.queue_steer(target, prompt.clone()) {
                     send_command(commands, WorkerCommand::Steer { target, id, prompt })?;
                 }
-            } else if app.queue_prompt(target, prompt.clone()) {
-                send_command(commands, WorkerCommand::Prompt { target, prompt })?;
+            } else if let Some(prompt_id) = app.queue_prompt(target, prompt.clone()) {
+                send_command(
+                    commands,
+                    WorkerCommand::Prompt {
+                        target,
+                        prompt_id,
+                        prompt,
+                    },
+                )?;
             }
         }
         Submission::Btw(prompt) => {
@@ -1054,16 +1584,30 @@ fn submit(
                 app.focus_btw();
                 if let Some(prompt) = prompt {
                     let target = PaneId::Btw(id);
-                    if app.queue_prompt(target, prompt.clone()) {
-                        send_command(commands, WorkerCommand::Prompt { target, prompt })?;
+                    if let Some(prompt_id) = app.queue_prompt(target, prompt.clone()) {
+                        send_command(
+                            commands,
+                            WorkerCommand::Prompt {
+                                target,
+                                prompt_id,
+                                prompt,
+                            },
+                        )?;
                     }
                 }
             } else {
                 let id = app.begin_btw();
-                if let Some(prompt) = prompt.as_ref() {
-                    let _ = app.queue_prompt(PaneId::Btw(id), prompt.clone());
-                }
-                send_command(commands, WorkerCommand::OpenBtw { id, prompt })?;
+                let prompt_id = prompt
+                    .as_ref()
+                    .and_then(|prompt| app.queue_prompt(PaneId::Btw(id), prompt.clone()));
+                send_command(
+                    commands,
+                    WorkerCommand::OpenBtw {
+                        id,
+                        prompt_id,
+                        prompt,
+                    },
+                )?;
             }
         }
         Submission::CloseBtw => {
@@ -1127,7 +1671,7 @@ fn classify_submission(input: String) -> Submission {
 
 fn active_session_id<'a>(app: &'a App, root_session_id: &'a str) -> Option<&'a str> {
     match app.focus {
-        PaneId::Main => Some(root_session_id),
+        PaneId::Main => app.main_branch_request_id().or(Some(root_session_id)),
         PaneId::Btw(id) => app
             .btw
             .as_ref()
@@ -1185,7 +1729,7 @@ fn browser_command(url: &str) -> Command {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::{path::PathBuf, sync::Arc, time::Duration};
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use futures_util::{SinkExt, StreamExt};
@@ -1195,8 +1739,8 @@ mod tests {
     use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
     use super::{
-        BTW_BOUNDARY, PaneId, RedrawPriority, Submission, UiAction, UiModel, UiUpdate,
-        WorkerCommand, WorkerEvent, active_session_id, classify_submission, handle_key,
+        BTW_BOUNDARY, PaneId, RedrawPriority, Submission, TerminalAction, UiAction, UiModel,
+        UiUpdate, WorkerCommand, WorkerEvent, active_session_id, classify_submission, handle_key,
         prepare_btw_prompt, session_trace_url, spawn_agent_worker,
     };
     use crate::tui::app::App;
@@ -1231,6 +1775,30 @@ mod tests {
             classify_submission("/trace-this".to_owned()),
             Submission::Prompt("/trace-this".to_owned())
         );
+    }
+
+    #[test]
+    fn control_end_jumps_the_focused_transcript_to_the_tail() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        let btw_id = app.begin_btw();
+        app.main.scroll_from_bottom = 11;
+        app.main.has_unseen_output = true;
+        app.btw.as_mut().unwrap().conversation.scroll_from_bottom = 8;
+        app.btw.as_mut().unwrap().conversation.has_unseen_output = true;
+
+        let key = KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL);
+        assert_eq!(
+            handle_key(key, &mut app, "main-session", &commands).unwrap(),
+            TerminalAction::Redraw
+        );
+
+        assert_eq!(app.main.scroll_from_bottom, 11);
+        assert!(app.main.has_unseen_output);
+        let btw = &app.btw.as_ref().unwrap().conversation;
+        assert_eq!(btw.scroll_from_bottom, 0);
+        assert!(!btw.has_unseen_output);
+        assert_eq!(app.focus, PaneId::Btw(btw_id));
     }
 
     #[test]
@@ -1298,6 +1866,7 @@ mod tests {
         assert!(!ui.worker_updates_open);
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn tui_worker_steer_becomes_a_user_item_at_the_next_model_boundary() -> eyre::Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -1359,6 +1928,7 @@ mod tests {
 
         commands.send(WorkerCommand::Prompt {
             target: PaneId::Main,
+            prompt_id: 1,
             prompt: "initial task".to_owned(),
         })?;
         first_seen_rx.await?;
@@ -1407,6 +1977,155 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn historical_edit_forks_before_the_selected_prompt_and_keeps_the_parent_branch()
+    -> eyre::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("ws://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut root = accept_async(stream).await?;
+            let warmup = next_ws_json(&mut root).await?;
+            assert_eq!(warmup["generate"], false);
+            send_ws_json(
+                &mut root,
+                json!({
+                    "type": "response.completed",
+                    "response": { "id": "resp-warmup", "usage": null }
+                }),
+            )
+            .await?;
+
+            let first = next_ws_json(&mut root).await?;
+            assert!(first.to_string().contains("first prompt"));
+            send_completed(&mut root, "resp-first", "first answer").await?;
+            let second = next_ws_json(&mut root).await?;
+            assert_eq!(second["previous_response_id"], "resp-first");
+            assert!(second.to_string().contains("second prompt"));
+            send_completed(&mut root, "resp-second", "second answer").await?;
+
+            let (stream, _) = listener.accept().await?;
+            let mut branch = accept_async(stream).await?;
+            let edited = next_ws_json(&mut branch).await?;
+            assert_eq!(edited["previous_response_id"], "resp-first");
+            assert_eq!(edited["input"].as_array().map(Vec::len), Some(1));
+            assert_eq!(
+                edited["input"][0]["content"][0]["text"],
+                "revised second prompt"
+            );
+            send_completed(&mut branch, "resp-edited", "edited answer").await
+        });
+
+        let workspace = temporary_workspace("tui-historical-edit")?;
+        let responses = Responses::builder().websocket_url(endpoint).build();
+        let (agent, mut events) = Nanocodex::builder("test-key")
+            .thinking(Thinking::Low)
+            .workspace(&workspace)
+            .responses(responses)
+            .session_id("tui-historical-edit-test")
+            .build()?;
+        let event_drain = tokio::spawn(async move { while events.recv().await.is_some() {} });
+        let (commands, worker_rx) = mpsc::unbounded_channel();
+        let (updates, mut update_rx) = mpsc::unbounded_channel();
+        spawn_agent_worker(
+            agent,
+            std::sync::Arc::from("tui-historical-edit-test"),
+            worker_rx,
+            updates,
+        );
+
+        for (prompt_id, prompt) in [(1, "first prompt"), (2, "second prompt")] {
+            commands.send(WorkerCommand::Prompt {
+                target: PaneId::Main,
+                prompt_id,
+                prompt: prompt.to_owned(),
+            })?;
+        }
+        timeout(Duration::from_secs(5), async {
+            let mut finished = 0;
+            while finished < 2 {
+                if matches!(
+                    update_rx.recv().await,
+                    Some(WorkerEvent::TurnFinished {
+                        target: PaneId::Main,
+                        error: None,
+                    })
+                ) {
+                    finished += 1;
+                }
+            }
+        })
+        .await
+        .map_err(|_| eyre::eyre!("root turns did not finish"))?;
+
+        commands.send(WorkerCommand::EditHistorical {
+            source_branch_id: 0,
+            new_branch_id: 1,
+            prompt_id: 2,
+        })?;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    update_rx.recv().await,
+                    Some(WorkerEvent::MainBranchOpened {
+                        id: 1,
+                        parent_id: 0,
+                        prompt_id: 2,
+                        ..
+                    })
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .map_err(|_| eyre::eyre!("historical branch did not open"))?;
+
+        commands.send(WorkerCommand::Prompt {
+            target: PaneId::Main,
+            prompt_id: 3,
+            prompt: "revised second prompt".to_owned(),
+        })?;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    update_rx.recv().await,
+                    Some(WorkerEvent::TurnFinished {
+                        target: PaneId::Main,
+                        error: None,
+                    })
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .map_err(|_| eyre::eyre!("edited branch turn did not finish"))?;
+
+        commands.send(WorkerCommand::SwitchMainBranch { id: 0 })?;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    update_rx.recv().await,
+                    Some(WorkerEvent::MainBranchSwitched { id: 0, .. })
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .map_err(|_| eyre::eyre!("parent branch was not retained"))?;
+
+        drop(commands);
+        timeout(Duration::from_secs(5), server)
+            .await
+            .map_err(|_| eyre::eyre!("mock Responses server did not finish"))???;
+        event_drain.abort();
+        std::fs::remove_dir_all(workspace)?;
+        Ok(())
+    }
+
     #[test]
     fn second_escape_sends_cancel_for_the_focused_turn() {
         let (commands, mut worker) = mpsc::unbounded_channel();
@@ -1416,9 +2135,15 @@ mod tests {
         app.cursor = app.input.len();
         let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
 
-        assert!(!handle_key(escape, &mut app, "main-session", &commands).unwrap());
+        assert_eq!(
+            handle_key(escape, &mut app, "main-session", &commands).unwrap(),
+            TerminalAction::Redraw
+        );
         assert!(worker.try_recv().is_err());
-        assert!(!handle_key(escape, &mut app, "main-session", &commands).unwrap());
+        assert_eq!(
+            handle_key(escape, &mut app, "main-session", &commands).unwrap(),
+            TerminalAction::Redraw
+        );
         assert!(matches!(
             worker.try_recv(),
             Ok(WorkerCommand::Cancel {
@@ -1426,6 +2151,262 @@ mod tests {
             })
         ));
         assert_eq!(app.input, "preserved draft");
+    }
+
+    #[test]
+    fn control_g_requests_the_external_editor_without_changing_the_draft() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.input = "multiline\ndraft".to_owned();
+        app.cursor = 4;
+        let key = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
+
+        assert_eq!(
+            handle_key(key, &mut app, "main-session", &commands).unwrap(),
+            TerminalAction::ExternalEditor
+        );
+        assert_eq!(app.input, "multiline\ndraft");
+        assert_eq!(app.cursor, 4);
+    }
+
+    #[test]
+    fn e_edits_the_selected_prompt_inline_before_requesting_a_fork() {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.main
+            .transcript
+            .push_editable_user("earlier prompt".to_owned(), 17);
+        app.input = "current draft".to_owned();
+
+        assert_eq!(
+            handle_key(
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                &mut app,
+                "main-session",
+                &commands,
+            )
+            .unwrap(),
+            TerminalAction::Redraw
+        );
+        assert!(app.transcript_selection_active());
+
+        assert_eq!(
+            handle_key(
+                KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+                &mut app,
+                "main-session",
+                &commands,
+            )
+            .unwrap(),
+            TerminalAction::Redraw
+        );
+        assert_eq!(app.input, "earlier prompt");
+        assert!(app.historical_editor_active());
+        assert!(worker.try_recv().is_err());
+
+        app.replace_input("revised prompt".to_owned());
+        assert_eq!(
+            handle_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &mut app,
+                "main-session",
+                &commands,
+            )
+            .unwrap(),
+            TerminalAction::Redraw
+        );
+        assert_eq!(app.input, "current draft");
+        assert!(!app.historical_editor_active());
+        assert!(matches!(
+            worker.try_recv(),
+            Ok(WorkerCommand::EditHistorical {
+                source_branch_id: 0,
+                new_branch_id: 1,
+                prompt_id: 17,
+            })
+        ));
+    }
+
+    #[test]
+    fn escape_cancels_inline_history_edit_and_restores_the_composer_draft() {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.main
+            .transcript
+            .push_editable_user("earlier prompt".to_owned(), 17);
+        app.input = "preserved draft".to_owned();
+        app.cursor = app.input.len();
+        app.move_up();
+        assert!(app.start_historical_edit());
+        app.replace_input("discard this revision".to_owned());
+
+        assert_eq!(
+            handle_key(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                &mut app,
+                "main-session",
+                &commands,
+            )
+            .unwrap(),
+            TerminalAction::Redraw
+        );
+        assert_eq!(app.input, "preserved draft");
+        assert_eq!(app.cursor, app.input.len());
+        assert!(!app.historical_editor_active());
+        assert!(!app.transcript_selection_active());
+        assert!(worker.try_recv().is_err());
+    }
+
+    #[test]
+    fn opened_historical_branch_submits_the_inline_revision() {
+        let mut app = App::new("/workspace".into());
+        app.main
+            .transcript
+            .push_editable_user("earlier prompt".to_owned(), 17);
+        app.move_up();
+        assert!(app.start_historical_edit());
+        app.replace_input("revised prompt".to_owned());
+        let request = app
+            .commit_historical_edit()
+            .expect("inline edit should request a branch");
+        let mut ui = UiModel::new(app, Arc::from("root-session"));
+        let (commands, mut worker) = mpsc::unbounded_channel();
+
+        assert_eq!(
+            ui.update(
+                UiAction::Worker(WorkerEvent::MainBranchOpened {
+                    id: request.new_branch,
+                    parent_id: request.source_branch,
+                    prompt_id: request.prompt,
+                    request_id: Arc::from("branch-session"),
+                }),
+                &commands,
+            )
+            .unwrap(),
+            UiUpdate::Redraw(RedrawPriority::Streaming)
+        );
+        assert!(matches!(
+            worker.try_recv(),
+            Ok(WorkerCommand::Prompt {
+                target: PaneId::Main,
+                prompt_id: 1,
+                prompt,
+            }) if prompt == "revised prompt"
+        ));
+        assert!(ui.app.input.is_empty());
+        assert_eq!(ui.app.main_branch_graph(), "0 1*←0");
+    }
+
+    #[test]
+    fn control_alt_arrows_request_branch_navigation() {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.main
+            .transcript
+            .push_editable_user("earlier prompt".to_owned(), 17);
+        app.move_up();
+        assert!(app.start_historical_edit());
+        let request = app
+            .commit_historical_edit()
+            .expect("inline editor should commit");
+        let _ = app.main_branch_opened(
+            request.new_branch,
+            request.source_branch,
+            request.prompt,
+            std::sync::Arc::from("branch-session"),
+        );
+
+        let key = KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(
+            handle_key(key, &mut app, "root-session", &commands).unwrap(),
+            TerminalAction::Redraw
+        );
+        assert!(matches!(
+            worker.try_recv(),
+            Ok(WorkerCommand::SwitchMainBranch { id: 0 })
+        ));
+    }
+
+    #[test]
+    fn branch_navigator_previews_before_switching() -> eyre::Result<()> {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.main
+            .transcript
+            .push_editable_user("root prompt".to_owned(), 17);
+        app.move_up();
+        assert!(app.start_historical_edit());
+        app.replace_input("branch prompt".to_owned());
+        let request = app.commit_historical_edit().unwrap();
+        let _ = app.main_branch_opened(
+            request.new_branch,
+            request.source_branch,
+            request.prompt,
+            Arc::from("branch-session"),
+        );
+        app.main
+            .transcript
+            .push_editable_user("branch prompt".to_owned(), 18);
+
+        assert_eq!(
+            handle_key(
+                KeyEvent::new(
+                    KeyCode::Char('b'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ),
+                &mut app,
+                "root-session",
+                &commands,
+            )
+            .unwrap(),
+            TerminalAction::Redraw
+        );
+        assert!(app.branch_navigator_active());
+        assert!(worker.try_recv().is_err());
+
+        let _ = handle_key(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            &mut app,
+            "root-session",
+            &commands,
+        )?;
+        assert_eq!(
+            app.branch_previews()
+                .into_iter()
+                .find(|preview| preview.selected)
+                .map(|preview| preview.id),
+            Some(0)
+        );
+        let _ = handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+            "root-session",
+            &commands,
+        )?;
+        assert!(matches!(
+            worker.try_recv(),
+            Ok(WorkerCommand::SwitchMainBranch { id: 0 })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn readline_control_keys_are_dispatched_to_the_composer() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.input = "one two".to_owned();
+        app.cursor = app.input.len();
+
+        for character in ['w', 'a', 'k'] {
+            let key = KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL);
+            assert_eq!(
+                handle_key(key, &mut app, "main-session", &commands).unwrap(),
+                TerminalAction::Redraw
+            );
+        }
+
+        assert!(app.input.is_empty());
+        assert_eq!(app.cursor, 0);
     }
 
     async fn next_ws_json<S>(socket: &mut WebSocketStream<S>) -> eyre::Result<Value>
