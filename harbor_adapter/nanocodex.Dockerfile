@@ -22,6 +22,7 @@ COPY examples/Cargo.toml examples/Cargo.toml
 # Keep dependency compilation in a manifest-only layer. Source-only edits reuse
 # this layer, while the cache mounts retain Cargo downloads and target outputs.
 RUN mkdir bin/nanocodex/src \
+        bin/nanocodex/benches \
         bindings/python/src \
         bindings/wasm/src \
         crates/nanocodex/src \
@@ -34,6 +35,7 @@ RUN mkdir bin/nanocodex/src \
         crates/nanocodex-service/benches \
         crates/nanocodex-tools/src && \
     printf 'fn main() {}\n' > bin/nanocodex/src/main.rs && \
+    printf 'fn main() {}\n' > bin/nanocodex/benches/tui_render.rs && \
     printf '\n' > bindings/python/src/lib.rs && \
     printf '\n' > bindings/wasm/src/lib.rs && \
     printf '\n' > crates/nanocodex/src/lib.rs && \
