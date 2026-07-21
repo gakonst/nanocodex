@@ -4,7 +4,7 @@ use std::{
 };
 
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
-use eyre::{Result, eyre};
+use eyre::{Result, WrapErr, eyre};
 use nanocodex::{AgentEvents, Nanocodex, OpenAiAuth, Responses, Thinking, Tools};
 
 use crate::mcp::McpArgs;
@@ -22,18 +22,9 @@ pub(crate) struct ConfiguredAgent {
     reason = "independent CLI feature toggles are not one state machine"
 )]
 pub(crate) struct AgentArgs {
-    /// `OpenAI` API key. Prefer `OPENAI_API_KEY` or the repository `.env` file.
-    #[arg(
-        long,
-        env = "OPENAI_API_KEY",
-        hide_env_values = true,
-        value_parser = NonEmptyStringValueParser::new()
-    )]
+    /// Explicit `OpenAI` API key override. Otherwise login or `OPENAI_API_KEY` is used.
+    #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     api_key: Option<String>,
-
-    /// Force the stored `ChatGPT` OAuth session even when an API key is available.
-    #[arg(long, env = "NANOCODEX_CHATGPT", default_value_t = false)]
-    chatgpt: bool,
 
     /// Override the shared Codex `auth.json` credential file.
     #[arg(long, env = "NANOCODEX_AUTH_FILE")]
@@ -96,13 +87,7 @@ impl AgentArgs {
     }
 
     pub(crate) fn build(self) -> Result<ConfiguredAgent> {
-        let auth = if self.chatgpt {
-            load_subscription_auth(self.auth_file)?
-        } else if let Some(api_key) = self.api_key {
-            OpenAiAuth::api_key(api_key)
-        } else {
-            load_subscription_auth(self.auth_file)?
-        };
+        let auth = select_auth(self.api_key, self.auth_file, environment_api_key()?)?;
         let mut responses = Responses::builder();
         if let Some(websocket_url) = self.websocket_url {
             responses = responses.websocket_url(websocket_url);
@@ -146,9 +131,43 @@ impl AgentArgs {
     }
 }
 
-fn load_subscription_auth(auth_file: Option<PathBuf>) -> Result<OpenAiAuth> {
+fn select_auth(
+    explicit_api_key: Option<String>,
+    auth_file: Option<PathBuf>,
+    environment_api_key: Option<String>,
+) -> Result<OpenAiAuth> {
+    if let Some(api_key) = explicit_api_key {
+        return Ok(OpenAiAuth::api_key(api_key));
+    }
     let auth_file = auth_file.unwrap_or(default_auth_file()?);
-    nanocodex::load_chatgpt_auth(&auth_file).map_err(|error| {
+    match auth_file.try_exists() {
+        Ok(true) => load_subscription_auth(&auth_file),
+        Ok(false) => environment_api_key.map_or_else(
+            || load_subscription_auth(&auth_file),
+            |api_key| Ok(OpenAiAuth::api_key(api_key)),
+        ),
+        Err(error) => Err(error).wrap_err_with(|| {
+            format!(
+                "could not inspect ChatGPT authorization at {}",
+                auth_file.display()
+            )
+        }),
+    }
+}
+
+fn environment_api_key() -> Result<Option<String>> {
+    match std::env::var("OPENAI_API_KEY") {
+        Ok(api_key) if api_key.trim().is_empty() => Ok(None),
+        Ok(api_key) => Ok(Some(api_key)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error @ std::env::VarError::NotUnicode(_)) => {
+            Err(error).wrap_err("OPENAI_API_KEY is not valid Unicode")
+        }
+    }
+}
+
+fn load_subscription_auth(auth_file: &Path) -> Result<OpenAiAuth> {
+    nanocodex::load_chatgpt_auth(auth_file).map_err(|error| {
         eyre!(
             "ChatGPT authorization could not be loaded from {}: {error}. Run `nanocodex auth login`",
             auth_file.display()
@@ -169,4 +188,90 @@ pub(crate) fn default_auth_file() -> Result<PathBuf> {
             eyre!("home directory is unavailable; pass --auth-file or NANOCODEX_AUTH_FILE")
         })?;
     Ok(PathBuf::from(home).join(".codex/auth.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use nanocodex::OpenAiAuthMode;
+
+    use super::select_auth;
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    fn auth_file() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "nanocodex-cli-auth-selection-{}-{}.json",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn explicit_api_key_overrides_automatic_auth_selection() {
+        let auth = select_auth(
+            Some("explicit-key".into()),
+            Some(auth_file()),
+            Some("environment-key".into()),
+        )
+        .unwrap();
+
+        assert_eq!(auth.mode(), OpenAiAuthMode::ApiKey);
+    }
+
+    #[test]
+    fn environment_key_is_the_fallback_when_no_login_exists() {
+        let auth = select_auth(None, Some(auth_file()), Some("environment-key".into())).unwrap();
+
+        assert_eq!(auth.mode(), OpenAiAuthMode::ApiKey);
+    }
+
+    #[test]
+    fn stored_login_is_selected_without_a_mode_flag() {
+        let auth_file = auth_file();
+        let id_token = concat!(
+            "header.",
+            "eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1",
+            "dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC10ZXN0IiwiY2hhdGdwdF9wbGFu",
+            "X3R5cGUiOiJwbHVzIn19",
+            ".signature"
+        );
+        let document = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": id_token,
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "account_id": "account-test"
+            }
+        });
+        std::fs::write(&auth_file, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        let auth = select_auth(
+            None,
+            Some(auth_file.clone()),
+            Some("environment-key".into()),
+        )
+        .unwrap();
+
+        assert_eq!(auth.mode(), OpenAiAuthMode::ChatGpt);
+        std::fs::remove_file(auth_file).unwrap();
+    }
+
+    #[test]
+    fn an_existing_login_store_precedes_the_environment_key() {
+        let auth_file = auth_file();
+        std::fs::write(&auth_file, b"{}").unwrap();
+
+        let error = select_auth(
+            None,
+            Some(auth_file.clone()),
+            Some("environment-key".into()),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("no ChatGPT tokens"));
+        std::fs::remove_file(auth_file).unwrap();
+    }
 }

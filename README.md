@@ -114,13 +114,14 @@ logged in, no separate Nanocodex login is required:
 ```sh
 nanocodex auth login
 nanocodex auth status
-nanocodex --chatgpt
+nanocodex
 ```
 
-`OPENAI_API_KEY` or `--api-key` takes precedence by default; `--chatgpt` (or
-`NANOCODEX_CHATGPT=true`) explicitly selects the subscription session. Override
-the credential file with `NANOCODEX_AUTH_FILE` or `--auth-file`. `nanocodex auth
-logout` removes the shared file and therefore logs both Codex and Nanocodex out.
+After login, plain `nanocodex` and `nanocodex run` prefer the stored subscription
+session. An explicit `--api-key` overrides it; `OPENAI_API_KEY` is the fallback
+when no stored login exists. Override the credential file with
+`NANOCODEX_AUTH_FILE` or `--auth-file`. `nanocodex auth logout` removes the
+shared file and therefore logs both Codex and Nanocodex out.
 
 Library consumers own their login UX and can reuse the same managed session:
 
@@ -325,8 +326,13 @@ edit:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gakonst/nanocodex/master/install | bash
-export OPENAI_API_KEY=...
+
+# Log in once with the same subscription store Codex uses.
+nanocodex auth login
 nanocodex
+
+# Or use an API key when no subscription login is stored.
+OPENAI_API_KEY=... nanocodex
 ```
 
 The TUI retains one session across prompts. Enter submits, Tab explicitly queues
