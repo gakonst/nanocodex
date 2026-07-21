@@ -12,7 +12,6 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.
 - You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
 - `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 10000 ms.
-- When awaiting long nested calls that need no intermediate model action, set `yield_time_ms` high enough for them to finish so repeated model-driven polling is unnecessary.
 - `max_output_tokens` sets the token budget for direct `exec` results. Defaults to 10000 tokens.
 
 - Global helpers:

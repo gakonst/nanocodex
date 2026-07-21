@@ -40,14 +40,6 @@ RUN_METRIC_FIELDS = (
     "tool_wall_duration_ns",
 )
 USAGE_METRIC_FIELDS = ("cache_write_input_tokens", "reasoning_output_tokens")
-USAGE_TOTAL_FIELDS = (
-    "input_tokens",
-    "cached_input_tokens",
-    "cache_write_input_tokens",
-    "output_tokens",
-    "reasoning_output_tokens",
-    "total_tokens",
-)
 
 
 def _cli_tools_install_command(*, install_node: bool) -> str:
@@ -98,7 +90,6 @@ class NanocodexAgent(BaseInstalledAgent):
         effort: str = "low",
         web_search: bool = True,
         subagents: bool = False,
-        completion_audit: bool = False,
         install_node: bool = False,
         system_prompt_path: str | Path | None = None,
         agents_md_path: str | Path | None = None,
@@ -122,7 +113,6 @@ class NanocodexAgent(BaseInstalledAgent):
         self._effort = effort
         self._web_search = web_search
         self._subagents = subagents
-        self._completion_audit = completion_audit
         self._install_node = install_node
         self._system_prompt_path = self._resolve_context_file(
             system_prompt_path, "system prompt"
@@ -249,7 +239,7 @@ class NanocodexAgent(BaseInstalledAgent):
             print(result.stderr, end="", file=sys.stderr, flush=True)
 
     def _run_arguments(self, prompt: str) -> list[str]:
-        arguments = [
+        return [
             self._BINARY,
             "run",
             "--thinking",
@@ -258,11 +248,9 @@ class NanocodexAgent(BaseInstalledAgent):
             str(self._web_search).lower(),
             "--subagents",
             str(getattr(self, "_subagents", False)).lower(),
+            "--",
+            prompt,
         ]
-        if getattr(self, "_completion_audit", False):
-            arguments.append("--completion-audit")
-        arguments.extend(("--", prompt))
-        return arguments
 
     def _classify_exec_error(self, command: str, result: Any) -> Exception:
         # BaseInstalledAgent classifies and raises before returning a nonzero
@@ -315,22 +303,14 @@ class NanocodexAgent(BaseInstalledAgent):
         self._verify_model_context(events)
 
         terminals = [event for event in events if event["type"] in TERMINAL_EVENTS]
-        expected_terminals = (
-            2 if getattr(self, "_completion_audit", False) else 1
-        )
-        if len(terminals) != expected_terminals:
-            expected = (
-                "exactly one terminal event"
-                if expected_terminals == 1
-                else f"exactly {expected_terminals} terminal events"
-            )
+        if len(terminals) != 1:
             raise RuntimeError(
-                f"expected {expected}, found {len(terminals)}"
+                f"expected exactly one terminal event, found {len(terminals)}"
             )
-        terminal = terminals[-1]
+        terminal = terminals[0]
         if terminal["seq"] != events[-1]["seq"]:
             raise RuntimeError("the terminal event must be the final event")
-        terminal_payload = self._aggregate_terminal_payload(terminals)
+        terminal_payload = terminal["payload"]
         model_calls = terminal_payload.get("model_calls", 0)
         tool_calls = sum(event["type"] == "tool.call" for event in events)
         usage = terminal_payload.get("usage")
@@ -406,7 +386,6 @@ class NanocodexAgent(BaseInstalledAgent):
                     extra={
                         "terminal_event_type": terminal["type"],
                         "terminal_payload": terminal_payload,
-                        "completion_audit": expected_terminals == 2,
                     },
                 ),
             ],
@@ -421,7 +400,6 @@ class NanocodexAgent(BaseInstalledAgent):
                     "model_calls": model_calls,
                     "tool_calls": tool_calls,
                     "duration_ns": terminal_payload.get("duration_ns"),
-                    "completion_audit": expected_terminals == 2,
                     **runtime_metrics,
                 },
             ),
@@ -437,7 +415,6 @@ class NanocodexAgent(BaseInstalledAgent):
         context.metadata = {
             "protocol_version": PROTOCOL_VERSION,
             "terminal_event_type": terminal["type"],
-            "completion_audit": expected_terminals == 2,
             "model_calls": model_calls,
             "tool_calls": tool_calls,
             "model": terminal_payload.get("model"),
@@ -450,35 +427,6 @@ class NanocodexAgent(BaseInstalledAgent):
             "last_response_id": terminal_payload.get("last_response_id"),
             "cost_status": terminal_payload.get("cost_status"),
         }
-
-    @classmethod
-    def _aggregate_terminal_payload(
-        cls, terminals: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        payloads = [terminal["payload"] for terminal in terminals]
-        aggregate = dict(payloads[-1])
-        for field in ("model_calls", "duration_ms", "duration_ns", *RUN_METRIC_FIELDS):
-            values = [cls._optional_int(payload.get(field)) for payload in payloads]
-            present = [value for value in values if value is not None]
-            aggregate[field] = sum(present) if present else None
-        for field in ("usage", "warmup_usage"):
-            maps = [
-                value
-                for payload in payloads
-                if isinstance((value := payload.get(field)), dict)
-            ]
-            aggregate[field] = {
-                metric: sum(
-                    value
-                    for mapping in maps
-                    if (value := cls._optional_int(mapping.get(metric))) is not None
-                )
-                for metric in USAGE_TOTAL_FIELDS
-            }
-        costs = [cls._optional_float(payload.get("cost_usd")) for payload in payloads]
-        present_costs = [cost for cost in costs if cost is not None]
-        aggregate["cost_usd"] = sum(present_costs) if present_costs else None
-        return aggregate
 
     def _verify_model_context(self, events: list[dict[str, Any]]) -> None:
         system_prompt_path = getattr(self, "_system_prompt_path", None)

@@ -324,3 +324,48 @@ The next fixture must kill the runner after every durable transition and at
 random output chunks, restart it, and prove exactly one terminal attempt, at
 most one committed verifier result, byte-identical captured streams, no leaked
 descendants, and deterministic exported accounting.
+
+### 2026-07-21 — Abandon benchmark-specific agent tuning
+
+We removed the merged completion-audit path and discarded the unmerged
+execution-feedback experiment. Their useful evidence is retained here; their
+code, prompt changes, and one-off lifecycle/subagent candidate configs are
+deliberately discarded. Frozen baselines, stock-Codex controls, and ordinary
+Terminal-Bench runner configs remain available as measurement infrastructure.
+
+Evidence:
+
+- The frozen four-task Terminal-Bench 2.1 high-effort baseline, with web search,
+  subagents, and completion audit disabled, passed 13/20 attempts in 8m15s. Its
+  seven failures were semantic task errors: one incomplete Git webserver
+  cleanup, three incorrect DNA melting-temperature results, one wrong KV field,
+  and two wrong MTEB/HumanEval selections. They were not refusals, malformed
+  streams, lost exit codes, or reconnect failures.
+- A second model-driven completion audit reached 16/20, but took 16m22s and
+  consumed 6.98M input tokens versus 3.01M for the unaudited run. The extra pass
+  was therefore a costly retry strategy, not a generally useful runtime
+  invariant.
+- An execution-feedback prototype made non-zero nested commands explicit,
+  exposed structured cell outcomes, added a Code Mode assertion helper, and
+  rejected finalization with live cells or sessions. Its deterministic tests
+  passed, but it did not establish benchmark lift before being abandoned.
+- The attempted identical Daytona rerun at 20-way concurrency made zero model
+  calls: all 20 trials hit Harbor's 360-second agent-setup timeout. A ten-way
+  retry was manually cancelled when this experiment was ended. These jobs are
+  infrastructure evidence only and must not be reported as agent scores:
+  `tb21-daytona-runtime-assert-noaudit-k5-20260721` and
+  `tb21-daytona-runtime-assert-noaudit-k5-r2-20260721`.
+
+Decision:
+
+- No completion-audit prompt, benchmark-specific assertion instruction,
+  evaluator-specific task guidance, subagent escalation, custom finalization
+  gate, or non-Codex shell-tool shape belongs in the default agent merely to
+  raise Terminal-Bench scores.
+- Keep fixes only when they follow from the public SDK/runtime contract and are
+  justified independently of a benchmark: exact command results, bounded
+  output, cancellation and descendant cleanup, durable event publication, and
+  faithful Codex-compatible tool schemas.
+- Treat Terminal-Bench as a release measurement, not the product-design loop.
+  Future comparisons start from released product behavior and separate agent
+  execution from image, sandbox, setup, verifier, and scheduler time.

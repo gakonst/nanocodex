@@ -110,10 +110,10 @@ impl ChildKind {
     const fn description(self) -> &'static str {
         match self {
             Self::Spawn => {
-                "Starts a reusable clean-room child agent without the invoking agent's conversation history, runs its first task, and returns its agent_id and report. Use this for an independent check that should not inherit the parent's assumptions. For difficult tasks, delegate early enough to use the report; independent children may run concurrently. Child turns may take minutes, so await them in a Code Mode cell with a sufficiently long exec yield instead of repeated polling. The child may inspect the shared workspace but is instructed not to modify it."
+                "Starts a reusable clean-room child agent without the invoking agent's conversation history, runs its first task, and returns its agent_id and report. The child may inspect the shared workspace but is instructed not to modify it."
             }
             Self::Fork => {
-                "Starts a reusable read-only child agent from the invoking agent's latest safe model boundary, runs its first task, and returns its agent_id and report. During an active turn this includes the current prompt and all work completed before the latest model call. Use this when the child should inherit the task and established context. For difficult tasks, delegate early enough to use the report; independent children may run concurrently. Child turns may take minutes, so await them in a Code Mode cell with a sufficiently long exec yield instead of repeated polling."
+                "Starts a reusable read-only child agent from the invoking agent's latest safe model boundary, runs its first task, and returns its agent_id and report. During an active turn this includes the current prompt and all work completed before the latest model call."
             }
         }
     }
