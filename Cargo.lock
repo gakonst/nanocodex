@@ -833,6 +833,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1028,7 +1034,7 @@ checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash",
+ "foldhash 0.1.5",
 ]
 
 [[package]]
@@ -1036,6 +1042,11 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "heck"
@@ -1176,12 +1187,13 @@ dependencies = [
 
 [[package]]
 name = "icu_collections"
-version = "2.1.1"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c6b649701667bbe825c3b7e6388cb521c23d88644678e83c0c4d0a621a34b43"
+checksum = "2984d1cd16c883d7935b9e07e44071dca8d917fd52ecc02c04d5fa0b5a3f191c"
 dependencies = [
  "displaydoc",
  "potential_utf",
+ "utf8_iter",
  "yoke",
  "zerofrom",
  "zerovec",
@@ -1189,9 +1201,9 @@ dependencies = [
 
 [[package]]
 name = "icu_locale_core"
-version = "2.1.1"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edba7861004dd3714265b4db54a3c390e880ab658fec5f7db895fae2046b5bb6"
+checksum = "92219b62b3e2b4d88ac5119f8904c10f8f61bf7e95b640d25ba3075e6cac2c29"
 dependencies = [
  "displaydoc",
  "litemap",
@@ -1202,9 +1214,9 @@ dependencies = [
 
 [[package]]
 name = "icu_normalizer"
-version = "2.1.1"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f6c8828b67bf8908d82127b2054ea1b4427ff0230ee9141c54251934ab1b599"
+checksum = "c56e5ee99d6e3d33bd91c5d85458b6005a22140021cc324cea84dd0e72cff3b4"
 dependencies = [
  "icu_collections",
  "icu_normalizer_data",
@@ -1216,15 +1228,15 @@ dependencies = [
 
 [[package]]
 name = "icu_normalizer_data"
-version = "2.1.1"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7aedcccd01fc5fe81e6b489c15b247b8b0690feb23304303a9e560f37efc560a"
+checksum = "da3be0ae77ea334f4da67c12f149704f19f81d1adf7c51cf482943e84a2bad38"
 
 [[package]]
 name = "icu_properties"
-version = "2.1.2"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "020bfc02fe870ec3a66d93e677ccca0562506e5872c650f893269e08615d74ec"
+checksum = "bee3b67d0ea5c2cca5003417989af8996f8604e34fb9ddf96208a033901e70de"
 dependencies = [
  "icu_collections",
  "icu_locale_core",
@@ -1236,15 +1248,15 @@ dependencies = [
 
 [[package]]
 name = "icu_properties_data"
-version = "2.1.2"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "616c294cf8d725c6afcd8f55abc17c56464ef6211f9ed59cccffe534129c77af"
+checksum = "8e2bbb201e0c04f7b4b3e14382af113e17ba4f63e2c9d2ee626b720cbce54a14"
 
 [[package]]
 name = "icu_provider"
-version = "2.1.1"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85962cf0ce02e1e0a629cc34e7ca3e373ce20dda4c4d7294bbd0bf1fdb59e614"
+checksum = "139c4cf31c8b5f33d7e199446eff9c1e02decfc2f0eec2c8d71f65befa45b421"
 dependencies = [
  "displaydoc",
  "icu_locale_core",
@@ -1751,6 +1763,7 @@ dependencies = [
  "nix 0.30.1",
  "portable-pty",
  "reqwest 0.12.28",
+ "rquickjs",
  "schemars",
  "serde",
  "serde_json",
@@ -2472,6 +2485,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "relative-path"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "rend"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2620,6 +2642,35 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce6b626d30ecbedaaf8097a04982bc3b081f958f5bdf9b8796be4ac00ee48bb"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9334dd11023d5ae6c751f64496510a576208802ed1d022ef94afa7639c2c55e"
+dependencies = [
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eef73520804cf5aa4876097ac5733058d628c769eba9678e0f4dba5a4ef79703"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -3238,7 +3289,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

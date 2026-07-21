@@ -51,6 +51,7 @@ proc-macro2 = "1.0.106"
 quote = "1.0.46"
 ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+rquickjs = "0.12.1"
 rmcp = { version = "1.8.0", default-features = false, features = ["client", "reqwest-tls-no-provider", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std"] }
 schemars = "0.8.22"

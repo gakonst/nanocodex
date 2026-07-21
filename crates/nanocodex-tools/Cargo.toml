@@ -30,6 +30,7 @@ futures-util.workspace = true
 image.workspace = true
 portable-pty.workspace = true
 reqwest.workspace = true
+rquickjs.workspace = true
 schemars.workspace = true
 sha1.workspace = true
 thiserror.workspace = true

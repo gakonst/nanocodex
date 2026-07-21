@@ -1,16 +1,14 @@
 mod description;
+mod embedded;
 mod output;
-mod protocol;
 mod spec;
 
-use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Instant};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::{
-    io::BufReader,
-    process::{Child, ChildStdin, ChildStdout, Command},
     sync::{Mutex, mpsc, oneshot},
     task::JoinHandle,
     time::Duration,
@@ -21,10 +19,9 @@ use serde_json::value::RawValue;
 
 use super::{ToolContext, ToolOutputBody, ToolOutputContent};
 use crate::runtime::{OwnedToolContext, ToolRegistry};
-use protocol::{read_protocol_line, write_json_line};
+use embedded::EmbeddedHost;
 pub(crate) use spec::{exec_spec, wait_spec};
 
-const RUNTIME: &str = include_str!("runtime.js");
 const INITIAL_YIELD: Duration = if cfg!(test) {
     Duration::from_secs(30)
 } else {
@@ -37,40 +34,64 @@ const EXEC_PRAGMA_PREFIX: &str = "// @exec:";
 pub(crate) struct CodeModeRuntime {
     cells: Arc<Mutex<CellRegistry>>,
     stored: Arc<Mutex<HashMap<String, Value>>>,
-    host: Arc<Mutex<SharedNodeHost>>,
+    host: Arc<Mutex<SharedJsHost>>,
 }
 
 #[derive(Clone)]
 pub(crate) struct CodeModeControl {
     cells: Arc<Mutex<CellRegistry>>,
-    host: Arc<Mutex<SharedNodeHost>>,
+    host: Arc<Mutex<SharedJsHost>>,
 }
 
-struct SharedNodeHost {
-    workspace: PathBuf,
-    host: Option<NodeHost>,
+struct SharedJsHost {
+    host: Option<EmbeddedHost>,
 }
 
-impl SharedNodeHost {
-    fn prewarmed(workspace: PathBuf) -> Self {
-        // Tool runtimes may be constructed outside an entered Tokio runtime.
-        // Preserve lazy startup for those callers and as a retry path when the
-        // eager process spawn fails.
-        let host = tokio::runtime::Handle::try_current().ok().and_then(|_| {
-            match NodeHost::spawn(&workspace) {
-                Ok(host) => Some(host),
-                Err(error) => {
-                    tracing::warn!(
-                        target: "nanocodex_tools",
-                        %error,
-                        "code mode host prewarm failed; the first cell will retry"
-                    );
-                    None
-                }
+impl SharedJsHost {
+    fn prewarmed() -> Self {
+        let host = match spawn_host() {
+            Ok(host) => Some(host),
+            Err(error) => {
+                tracing::warn!(
+                    target: "nanocodex_tools",
+                    %error,
+                    "embedded QuickJS code mode prewarm failed; the first cell will retry"
+                );
+                None
             }
-        });
-        Self { workspace, host }
+        };
+        Self { host }
     }
+}
+
+fn spawn_host() -> Result<EmbeddedHost, String> {
+    let started_at = Instant::now();
+    let span = info_span!(
+        target: "nanocodex_tools",
+        "code_mode.host_spawn",
+        otel.kind = "internal",
+        otel.status_code = tracing::field::Empty,
+        status = tracing::field::Empty,
+        duration_ns = tracing::field::Empty,
+    );
+    let result = span.in_scope(EmbeddedHost::spawn);
+    span.record(
+        "status",
+        if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        },
+    );
+    span.record(
+        "otel.status_code",
+        if result.is_ok() { "OK" } else { "ERROR" },
+    );
+    span.record(
+        "duration_ns",
+        u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
+    );
+    result
 }
 
 struct CellRegistry {
@@ -109,12 +130,6 @@ enum CellUpdate {
     HostFailed(String),
 }
 
-struct NodeHost {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-}
-
 pub struct CodeModeExecution {
     pub output: ToolOutputBody,
     pub success: bool,
@@ -137,28 +152,6 @@ pub struct NestedToolCall {
     pub metadata: Option<Box<RawValue>>,
 }
 
-#[derive(Serialize)]
-struct ExecuteMessage<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    cell_id: u64,
-    source: &'a str,
-    tools: Vec<Value>,
-    stored: HashMap<String, Value>,
-}
-
-#[derive(Serialize)]
-struct ToolResultMessage {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    cell_id: u64,
-    id: u64,
-    value: Value,
-    success: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
 enum RuntimeEvent {
     ToolCall {
         cell_id: u64,
@@ -172,22 +165,17 @@ enum RuntimeEvent {
     },
     Yielded {
         cell_id: u64,
-        #[serde(default)]
         content: Vec<ToolOutputContent>,
     },
     Done {
         cell_id: u64,
-        #[serde(default)]
         content: Vec<ToolOutputContent>,
-        #[serde(default)]
         stored: HashMap<String, Value>,
     },
     Error {
         cell_id: u64,
         message: String,
-        #[serde(default)]
         content: Vec<ToolOutputContent>,
-        #[serde(default)]
         stored: HashMap<String, Value>,
     },
 }
@@ -227,14 +215,14 @@ struct HostFailure {
 }
 
 impl CodeModeRuntime {
-    pub(super) fn new(workspace: PathBuf) -> Self {
+    pub(super) fn new(_workspace: PathBuf) -> Self {
         Self {
             cells: Arc::new(Mutex::new(CellRegistry {
                 next_cell_id: 1,
                 live_cells: HashMap::new(),
             })),
             stored: Arc::new(Mutex::new(HashMap::new())),
-            host: Arc::new(Mutex::new(SharedNodeHost::prewarmed(workspace))),
+            host: Arc::new(Mutex::new(SharedJsHost::prewarmed())),
         }
     }
 
@@ -552,7 +540,7 @@ impl LiveCell {
         context: OwnedToolContext,
         stored: HashMap<String, Value>,
         shared_stored: Arc<Mutex<HashMap<String, Value>>>,
-        host: Arc<Mutex<SharedNodeHost>>,
+        host: Arc<Mutex<SharedJsHost>>,
         output_token_budget: usize,
     ) -> Self {
         let (updates_tx, updates) = mpsc::unbounded_channel();
@@ -616,7 +604,7 @@ impl Drop for LiveCell {
         }
         if let Some(task) = self.task.take() {
             // The detached actor observes `terminate` and shuts down the shared
-            // host. Aborting here could leave JavaScript running in a process
+            // host. Aborting here could leave JavaScript running in an isolate
             // that a later cell is about to reuse.
             drop(task);
         }
@@ -855,86 +843,7 @@ fn text_exposes_session_id(text: &str, session_id: i64) -> bool {
     })
 }
 
-impl NodeHost {
-    fn spawn(workspace: &std::path::Path) -> Result<Self, String> {
-        let started_at = Instant::now();
-        let span = info_span!(
-            target: "nanocodex_tools",
-            "code_mode.host_spawn",
-            otel.kind = "internal",
-            otel.status_code = tracing::field::Empty,
-            status = tracing::field::Empty,
-            duration_ns = tracing::field::Empty,
-        );
-        let result = span.in_scope(|| Self::spawn_inner(workspace));
-        span.record(
-            "status",
-            if result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            },
-        );
-        span.record(
-            "otel.status_code",
-            if result.is_ok() { "OK" } else { "ERROR" },
-        );
-        span.record(
-            "duration_ns",
-            u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
-        );
-        result
-    }
-
-    fn spawn_inner(workspace: &std::path::Path) -> Result<Self, String> {
-        let mut child = Command::new("node")
-            .args(["--input-type=module", "--eval", RUNTIME])
-            .current_dir(workspace)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("failed to start local Node.js code-mode host: {error}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Node code-mode host stdin was unavailable".to_owned())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "Node code-mode host stdout was unavailable".to_owned())?;
-        Ok(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
-        })
-    }
-
-    async fn start_cell(
-        &mut self,
-        cell_id: u64,
-        source: &str,
-        stored: HashMap<String, Value>,
-        tools: &ToolRegistry,
-    ) -> Result<(), HostFailure> {
-        let request = ExecuteMessage {
-            kind: "execute",
-            cell_id,
-            source,
-            tools: tools.nested_tool_metadata(),
-            stored,
-        };
-        write_json_line(&mut self.stdin, &request)
-            .await
-            .map_err(|error| {
-                HostFailure::new(format!(
-                    "failed to initialize local code-mode cell: {error}"
-                ))
-            })?;
-        Ok(())
-    }
-
+impl EmbeddedHost {
     async fn drive_cell(
         &mut self,
         cell_id: u64,
@@ -954,11 +863,11 @@ impl NodeHost {
                         continue;
                     };
                     let id = completed.id;
-                    let call = self.send_completed_call(cell_id, completed).await?;
+                    let call = self.send_completed_call(cell_id, completed)?;
                     let _ = updates.send(CellUpdate::NestedCall { id, call });
                 }
                 event = self.read_event() => {
-                    let event = event?;
+                    let event = event.map_err(HostFailure::new)?;
                     event_count = event_count.saturating_add(1);
                     if event_count == 1 {
                         tracing::Span::current().record(
@@ -1027,51 +936,19 @@ impl NodeHost {
         }
     }
 
-    async fn read_event(&mut self) -> Result<RuntimeEvent, HostFailure> {
-        let line = match read_protocol_line(&mut self.stdout).await {
-            Ok(Some(line)) => line,
-            Ok(None) => {
-                let status = self.child.wait().await;
-                return Err(HostFailure::new(format!(
-                    "local code-mode host ended before a result: {status:?}"
-                )));
-            }
-            Err(error) => {
-                return Err(HostFailure::new(format!(
-                    "failed to read local code-mode host: {error}"
-                )));
-            }
-        };
-        serde_json::from_slice::<RuntimeEvent>(&line).map_err(|error| {
-            HostFailure::new(format!(
-                "local code-mode host emitted invalid JSON: {error}"
-            ))
-        })
-    }
-
-    async fn send_completed_call(
+    fn send_completed_call(
         &mut self,
         cell_id: u64,
         completed: CompletedNestedCall,
     ) -> Result<NestedToolCall, HostFailure> {
-        let response = ToolResultMessage {
-            kind: "tool_result",
+        self.send_tool_result(
             cell_id,
-            id: completed.id,
-            value: completed.value,
-            success: completed.call.success,
-        };
-        write_json_line(&mut self.stdin, &response)
-            .await
-            .map_err(|error| {
-                HostFailure::new(format!("failed to return a nested tool result: {error}"))
-            })?;
+            completed.id,
+            completed.value,
+            completed.call.success,
+        )
+        .map_err(HostFailure::new)?;
         Ok(completed.call)
-    }
-
-    async fn terminate(&mut self) {
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
     }
 }
 
@@ -1096,7 +973,7 @@ fn nested_tool_yield_after(name: &str, input: &Value) -> Option<Duration> {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_cell_actor(
-    shared_host: Arc<Mutex<SharedNodeHost>>,
+    shared_host: Arc<Mutex<SharedJsHost>>,
     cell_id: u64,
     source: String,
     tools: Arc<ToolRegistry>,
@@ -1117,7 +994,7 @@ async fn run_cell_actor(
     tracing::Span::current().record("host.reused", reused);
     let mut host = match shared_host.host.take() {
         Some(host) => host,
-        None => match NodeHost::spawn(&shared_host.workspace) {
+        None => match spawn_host() {
             Ok(host) => host,
             Err(message) => {
                 tracing::Span::current().record("status", "failed");
@@ -1132,8 +1009,8 @@ async fn run_cell_actor(
         },
     };
     let run = async {
-        host.start_cell(cell_id, &source, stored, tools.as_ref())
-            .await?;
+        host.start_cell(cell_id, &source, stored, tools.nested_tool_metadata())
+            .map_err(HostFailure::new)?;
         host.drive_cell(
             cell_id,
             &context.call_id,

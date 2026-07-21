@@ -1349,7 +1349,7 @@ async fn sol_compacts_with_a_trigger_and_installs_the_returned_context() -> Resu
                     "type": "custom_tool_call",
                     "call_id": "call-exec",
                     "name": "exec",
-                    "input": "require(\"node:fs\").writeFileSync(\"AGENTS.md\", \"fresh compacted instructions\"); text(\"tool completed\")"
+                    "input": "await tools.apply_patch(\"*** Begin Patch\\n*** Add File: AGENTS.md\\n+fresh compacted instructions\\n*** End Patch\"); text(\"tool completed\")"
                 })],
                 372_001,
             ),
