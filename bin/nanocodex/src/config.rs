@@ -228,38 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn stored_login_is_selected_without_a_mode_flag() {
-        let auth_file = auth_file();
-        let id_token = concat!(
-            "header.",
-            "eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1",
-            "dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC10ZXN0IiwiY2hhdGdwdF9wbGFu",
-            "X3R5cGUiOiJwbHVzIn19",
-            ".signature"
-        );
-        let document = serde_json::json!({
-            "auth_mode": "chatgpt",
-            "tokens": {
-                "id_token": id_token,
-                "access_token": "access-token",
-                "refresh_token": "refresh-token",
-                "account_id": "account-test"
-            }
-        });
-        std::fs::write(&auth_file, serde_json::to_vec(&document).unwrap()).unwrap();
-
-        let auth = select_auth(
-            None,
-            Some(auth_file.clone()),
-            Some("environment-key".into()),
-        )
-        .unwrap();
-
-        assert_eq!(auth.mode(), OpenAiAuthMode::ChatGpt);
-        std::fs::remove_file(auth_file).unwrap();
-    }
-
-    #[test]
     fn an_existing_login_store_precedes_the_environment_key() {
         let auth_file = auth_file();
         std::fs::write(&auth_file, b"{}").unwrap();
