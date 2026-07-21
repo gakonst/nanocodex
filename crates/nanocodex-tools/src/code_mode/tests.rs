@@ -11,8 +11,8 @@ use super::{
 use crate::{ToolContext, ToolOutputBody, ToolOutputContent, ToolRuntime, WebSearchConfig};
 
 #[tokio::test]
-async fn prewarms_node_host_when_runtime_is_available() -> Result<()> {
-    let workspace = temporary_workspace("prewarmed-node-host")?;
+async fn prewarms_embedded_quickjs_host() -> Result<()> {
+    let workspace = temporary_workspace("prewarmed-quickjs-host")?;
     let runtime = super::CodeModeRuntime::new(workspace.clone());
 
     assert!(runtime.host.lock().await.host.is_some());
@@ -23,18 +23,103 @@ async fn prewarms_node_host_when_runtime_is_available() -> Result<()> {
 }
 
 #[tokio::test]
-async fn reuses_one_node_host_across_cells() -> Result<()> {
-    let workspace = temporary_workspace("persistent-node-host")?;
+async fn execution_globals_do_not_leak_across_quickjs_contexts() -> Result<()> {
+    let workspace = temporary_workspace("isolated-quickjs-contexts")?;
     let tools = test_tools(&workspace);
     let history = Vec::new();
     let context = test_context(&history);
 
-    let first = tools.execute_code("text(process.pid)", context).await;
-    let second = tools.execute_code("text(process.pid)", context).await;
+    let source = r"
+const previous = globalThis.__nanocodexContextGeneration;
+globalThis.__nanocodexContextGeneration = (previous || 0) + 1;
+text({ previous: previous ?? null, current: globalThis.__nanocodexContextGeneration });
+";
+    let first = tools.execute_code(source, context).await;
+    let second = tools.execute_code(source, context).await;
 
     assert!(first.success);
     assert!(second.success);
-    assert_eq!(emitted_text(&first)?, emitted_text(&second)?);
+    assert_eq!(emitted_text(&first)?, r#"{"previous":null,"current":1}"#);
+    assert_eq!(emitted_text(&second)?, r#"{"previous":null,"current":1}"#);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn execution_prototype_mutations_do_not_leak_across_quickjs_contexts() -> Result<()> {
+    let workspace = temporary_workspace("isolated-quickjs-prototypes")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+
+    let first = tools
+        .execute_code(
+            r#"
+Object.prototype.__nanocodexPoisoned = "yes";
+text(({}).__nanocodexPoisoned);
+"#,
+            test_context(&history),
+        )
+        .await;
+    let second = tools
+        .execute_code(
+            r#"text(({}).__nanocodexPoisoned ?? "clean");"#,
+            test_context(&history),
+        )
+        .await;
+
+    assert!(first.success, "{}", execution_output(&first));
+    assert!(second.success, "{}", execution_output(&second));
+    assert_eq!(emitted_text(&first)?, "yes");
+    assert_eq!(emitted_text(&second)?, "clean");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn execution_local_bindings_do_not_leak_across_quickjs_calls() -> Result<()> {
+    let workspace = temporary_workspace("scoped-quickjs-bindings")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let context = test_context(&history);
+
+    let source = r"
+const executionLocal = 1;
+text(executionLocal);
+";
+    let first = tools.execute_code(source, context).await;
+    let second = tools.execute_code(source, context).await;
+
+    assert!(first.success, "{}", execution_output(&first));
+    assert!(second.success, "{}", execution_output(&second));
+    assert_eq!(emitted_text(&first)?, "1");
+    assert_eq!(emitted_text(&second)?, "1");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn embedded_quickjs_does_not_expose_node_or_host_callback_globals() -> Result<()> {
+    let workspace = temporary_workspace("embedded-quickjs-globals")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r"
+text({
+  process: typeof process,
+  require: typeof require,
+  hostCallback: typeof __nanocodexTool,
+});
+",
+            test_context(&history),
+        )
+        .await;
+
+    assert!(execution.success, "{}", execution_output(&execution));
+    assert_eq!(
+        emitted_text(&execution)?,
+        r#"{"process":"undefined","require":"undefined","hostCallback":"undefined"}"#
+    );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -503,6 +588,63 @@ await new Promise(() => {});
     assert!(!missing.success);
     assert!(execution_output(&missing).contains("exec cell 1 was not found"));
 
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancellation_interrupts_busy_javascript_and_recreates_the_host() -> Result<()> {
+    let workspace = temporary_workspace("cancelled-busy-cell")?;
+    let tools = test_tools(&workspace);
+    let control = tools.control();
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r"
+await yield_control();
+while (true) {}
+",
+            test_context(&history),
+        )
+        .await;
+    assert!(execution_output(&execution).contains("Script running with cell ID 1"));
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), control.cancel()).await?;
+    let recovered = tools
+        .execute_code(r#"text("recovered")"#, test_context(&history))
+        .await;
+
+    assert!(recovered.success, "{}", execution_output(&recovered));
+    assert_eq!(emitted_text(&recovered)?, "recovered");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancellation_drops_pending_tool_promises_before_recreating_the_host() -> Result<()> {
+    let workspace = temporary_workspace("cancelled-pending-tool")?;
+    let tools = test_tools(&workspace);
+    let control = tools.control();
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"// @exec: {"yield_time_ms": 10}
+await tools.exec_command({ cmd: "sleep 5", login: false });
+"#,
+            test_context(&history),
+        )
+        .await;
+    assert!(execution_output(&execution).contains("Script running with cell ID 1"));
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), control.cancel()).await?;
+    let recovered = tools
+        .execute_code(r#"text("recovered")"#, test_context(&history))
+        .await;
+
+    assert!(recovered.success, "{}", execution_output(&recovered));
+    assert_eq!(emitted_text(&recovered)?, "recovered");
+    tools.control().cancel().await;
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

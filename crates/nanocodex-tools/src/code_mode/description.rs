@@ -4,11 +4,11 @@ use nanocodex_core::JsonSchema;
 use serde_json::Value;
 
 const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose tool calls
-- Evaluates the provided JavaScript in a fresh local Node.js host. Yielded cells keep running independently until completion or termination.
+- Evaluates the provided JavaScript in a fresh QuickJS context on a prewarmed embedded runtime. Yielded cells keep running independently until completion or termination.
 - All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`.
 - Nested tool methods take either a string or an object as their input argument.
 - Nested tools return either an object or a string, based on the description.
-- Normal Node.js capabilities are available, including `process`, `require`, dynamic `import()`, the file system, and the network.
+- Node.js globals and modules such as `process`, `require`, and dynamic `import()` are unavailable. Use the provided tools for file-system, process, and network access.
 - Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.
 - You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
 - `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 10000 ms.

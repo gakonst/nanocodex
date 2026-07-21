@@ -1076,7 +1076,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registered_tool_is_described_and_receives_typed_input() {
+    async fn registered_tool_is_described_and_callable_from_code_mode() {
         let tools = Tools::builder()
             .without_defaults()
             .tool(Double)
@@ -1092,12 +1092,12 @@ mod tests {
                 ))
         );
 
-        let (handler, _) = runtime.registry.get("double").unwrap();
-        let execution = handler
-            .execute(
-                ToolInput::Function(
-                    serde_json::value::to_raw_value(&json!({ "value": 21 })).unwrap(),
-                ),
+        let execution = runtime
+            .execute_code(
+                r"
+const result = await tools.double({ value: 21 });
+text(result);
+",
                 ToolContext {
                     model: "test-model",
                     session_id: "test-session",
@@ -1106,13 +1106,22 @@ mod tests {
                     output_token_budget: DEFAULT_TOOL_OUTPUT_TOKENS,
                 },
             )
-            .await
-            .unwrap();
+            .await;
         assert!(execution.success);
-        let ToolOutputBody::Text(output) = execution.output else {
-            panic!("expected text output");
+        assert_eq!(execution.nested_calls.len(), 1);
+        assert_eq!(execution.nested_calls[0].name, "double");
+        assert_eq!(execution.nested_calls[0].input, json!({ "value": 21 }));
+        let ToolOutputBody::Content(content) = execution.output else {
+            panic!("expected content output");
         };
-        assert_eq!(output, "42");
+        assert_eq!(
+            serde_json::to_value(content)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .last(),
+            Some(&json!({ "type": "input_text", "text": "42" }))
+        );
     }
 
     #[tokio::test]
