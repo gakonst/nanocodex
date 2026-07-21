@@ -194,6 +194,7 @@ pub(crate) fn default_auth_file() -> Result<PathBuf> {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use clap::CommandFactory;
     use nanocodex::OpenAiAuthMode;
 
     use super::select_auth;
@@ -206,6 +207,17 @@ mod tests {
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn subagents_are_opt_in() {
+        let command = crate::Cli::command();
+        let subagents = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "subagents")
+            .expect("the CLI should expose the subagents argument");
+
+        assert_eq!(subagents.get_default_values(), ["false"]);
     }
 
     #[test]

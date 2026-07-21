@@ -86,6 +86,7 @@ class WebSearchContractTests(unittest.TestCase):
 
         agent._web_search = True
         agent._subagents = False
+        agent._completion_audit = False
         self.assertEqual(
             agent._run_arguments("test prompt")[-6:],
             ["--web-search", "true", "--subagents", "false", "--", "test prompt"],
@@ -98,12 +99,28 @@ class WebSearchContractTests(unittest.TestCase):
             ["--web-search", "false", "--subagents", "true", "--", "test prompt"],
         )
 
+        agent._subagents = False
+        agent._completion_audit = True
+        self.assertEqual(
+            agent._run_arguments("test prompt")[-7:],
+            [
+                "--web-search",
+                "false",
+                "--subagents",
+                "false",
+                "--completion-audit",
+                "--",
+                "test prompt",
+            ],
+        )
+
     def test_run_arguments_protect_a_prompt_that_starts_with_a_hyphen(self) -> None:
         agent = object.__new__(NanocodexAgent)
         agent._model = "test-model"
         agent._effort = "low"
         agent._web_search = False
         agent._subagents = False
+        agent._completion_audit = False
 
         self.assertEqual(
             agent._run_arguments("- benchmark instruction")[-2:],
@@ -828,6 +845,62 @@ class InterruptedRunContractTests(unittest.TestCase):
                 NanocodexAgent._read_jsonl(path)
 
             self.assertLess(time.monotonic() - started, 0.5)
+
+
+class CompletionAuditContractTests(unittest.TestCase):
+    def test_terminal_metrics_cover_both_same_session_turns(self) -> None:
+        terminals = [
+            {
+                "payload": {
+                    "model_calls": 3,
+                    "duration_ms": 100,
+                    "duration_ns": 100_000_000,
+                    "model_duration_ns": 80_000_000,
+                    "usage": {
+                        "input_tokens": 1000,
+                        "cached_input_tokens": 800,
+                        "output_tokens": 100,
+                        "total_tokens": 1100,
+                    },
+                    "warmup_usage": {
+                        "input_tokens": 50,
+                        "total_tokens": 50,
+                    },
+                    "cost_usd": 0.25,
+                    "last_response_id": "draft",
+                }
+            },
+            {
+                "payload": {
+                    "model_calls": 2,
+                    "duration_ms": 40,
+                    "duration_ns": 40_000_000,
+                    "model_duration_ns": 30_000_000,
+                    "usage": {
+                        "input_tokens": 700,
+                        "cached_input_tokens": 650,
+                        "output_tokens": 60,
+                        "total_tokens": 760,
+                    },
+                    "warmup_usage": {},
+                    "cost_usd": 0.10,
+                    "last_response_id": "audited",
+                }
+            },
+        ]
+
+        aggregate = NanocodexAgent._aggregate_terminal_payload(terminals)
+
+        self.assertEqual(aggregate["model_calls"], 5)
+        self.assertEqual(aggregate["duration_ms"], 140)
+        self.assertEqual(aggregate["duration_ns"], 140_000_000)
+        self.assertEqual(aggregate["model_duration_ns"], 110_000_000)
+        self.assertEqual(aggregate["usage"]["input_tokens"], 1700)
+        self.assertEqual(aggregate["usage"]["cached_input_tokens"], 1450)
+        self.assertEqual(aggregate["usage"]["output_tokens"], 160)
+        self.assertEqual(aggregate["warmup_usage"]["input_tokens"], 50)
+        self.assertAlmostEqual(aggregate["cost_usd"], 0.35)
+        self.assertEqual(aggregate["last_response_id"], "audited")
 
 
 class RunCancellationContractTests(unittest.IsolatedAsyncioTestCase):

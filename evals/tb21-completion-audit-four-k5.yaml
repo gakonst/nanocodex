@@ -1,0 +1,32 @@
+# Focused same-session completion-audit diagnostic. Tasks and verifiers remain
+# canonical; web search and subagents are deliberately absent.
+jobs_dir: .nanocodex/harbor/jobs
+
+agents:
+  - import_path: harbor_adapter.agent:NanocodexAgent
+    model_name: openai/gpt-5.6-sol
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    kwargs:
+      binary_path: .nanocodex/installed/daytona-amd64/nanocodex
+      effort: high
+      web_search: false
+      subagents: false
+      completion_audit: true
+      install_node: true
+      system_prompt_path: crates/nanocodex-core/prompts/system.md
+
+datasets:
+  - name: terminal-bench/terminal-bench-2-1
+    ref: sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
+    task_names:
+      - terminal-bench/mteb-retrieve
+      - terminal-bench/configure-git-webserver
+      - terminal-bench/dna-insert
+      - terminal-bench/kv-store-grpc
+
+environment:
+  type: daytona
+
+n_attempts: 5
+n_concurrent_trials: 20
