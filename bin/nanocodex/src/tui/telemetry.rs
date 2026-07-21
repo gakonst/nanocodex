@@ -287,7 +287,7 @@ pub(super) fn elapsed_ns(start: Instant, end: Instant) -> u64 {
 mod tests {
     use std::{path::PathBuf, sync::Arc, time::Instant};
 
-    use nanocodex::AgentEventKind;
+    use nanocodex::{AgentEventKind, Thinking};
 
     use crate::tui::app::{App, PaneId};
 
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn coalesced_events_are_consumed_by_one_presented_frame() {
         let mut telemetry = StreamTelemetry::default();
-        let app = App::new(PathBuf::from("."));
+        let app = App::new(PathBuf::from("."), Thinking::Medium);
         for seq in 1..=3 {
             telemetry.event_applied(
                 ReceivedEvent {
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn view_state_tracks_btw_lifecycle_focus_and_session_mapping() {
-        let mut app = App::new(PathBuf::from("."));
+        let mut app = App::new(PathBuf::from("."), Thinking::Medium);
         let mut telemetry = ViewTelemetry::new(Arc::from("main-session"));
 
         telemetry.observe(&app);

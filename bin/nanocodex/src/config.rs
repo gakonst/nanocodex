@@ -14,6 +14,7 @@ pub(crate) struct ConfiguredAgent {
     pub(crate) handle: Nanocodex,
     pub(crate) events: AgentEvents,
     pub(crate) child_agents: Option<Arc<ChildAgents>>,
+    pub(crate) thinking: Thinking,
 }
 
 #[derive(Args)]
@@ -104,6 +105,7 @@ impl AgentArgs {
     }
 
     pub(crate) fn build(self) -> Result<ConfiguredAgent> {
+        let thinking = self.thinking;
         let auth = if self.chatgpt {
             load_subscription_auth(self.auth_file)?
         } else if let Some(api_key) = self.api_key {
@@ -128,7 +130,7 @@ impl AgentArgs {
         let tools = tools.build()?;
         let child_agents = self.subagents.then(|| Arc::new(ChildAgents::default()));
         let builder = Nanocodex::builder(auth)
-            .thinking(self.thinking)
+            .thinking(thinking)
             .workspace(self.cwd)
             .responses(responses);
         let builder = if let Some(service_tier) = self.service_tier {
@@ -155,6 +157,7 @@ impl AgentArgs {
             handle,
             events,
             child_agents,
+            thinking,
         })
     }
 }

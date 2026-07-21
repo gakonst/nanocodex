@@ -10,13 +10,10 @@ use tracing::{Instrument, info, info_span};
 
 use crate::{
     code_mode::{self, CodeModeExecution},
+    hashline::{HashlineHandler, HashlineToolKind},
     image_generation, plan,
     shell::{self, ShellSessions},
     view_image, web_search,
-    hashline::{HashlineHandler, HashlineToolKind},
-};
-
-
 };
 
 pub const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 10_000;

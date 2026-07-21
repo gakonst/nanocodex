@@ -4,6 +4,7 @@ mod tui {
     use std::hint::black_box;
 
     use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
+    use nanocodex::Thinking;
     use ratatui::{Terminal, backend::TestBackend};
 
     #[allow(dead_code, unused_imports)]
@@ -100,7 +101,7 @@ mod tui {
     }
 
     fn trace_app(shape: TraceShape) -> App {
-        let mut app = App::new("/workspace/nanocodex".into());
+        let mut app = App::new("/workspace/nanocodex".into(), Thinking::Medium);
         let turns = shape
             .user_messages
             .max(shape.assistant_messages)

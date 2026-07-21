@@ -1,12 +1,10 @@
 #![cfg_attr(target_family = "wasm", allow(clippy::module_name_repetitions))]
 
 #[cfg(not(target_family = "wasm"))]
-mod hashline;
-#[cfg(not(target_family = "wasm"))]
 mod code_mode;
-
 #[cfg(not(target_family = "wasm"))]
 mod hashline;
+
 #[cfg(not(target_family = "wasm"))]
 mod image;
 #[cfg(not(target_family = "wasm"))]

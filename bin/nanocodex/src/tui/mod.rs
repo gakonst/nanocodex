@@ -264,6 +264,7 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
         .canonicalize()
         .wrap_err("failed to resolve the working directory")?;
     let configured = config.build()?;
+    let thinking = configured.thinking;
     let agent = configured.handle;
     let mut agent_events = configured.events;
     let root_session_id = Arc::<str>::from(agent_events.request_id());
@@ -276,7 +277,7 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
     let mut input_events = EventStream::new();
     let mut ticker = interval(Duration::from_millis(80));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut ui = UiModel::new(App::new(cwd), Arc::clone(&root_session_id));
+    let mut ui = UiModel::new(App::new(cwd, thinking), Arc::clone(&root_session_id));
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut stream_telemetry = StreamTelemetry::default();
     let mut view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));
@@ -1230,7 +1231,7 @@ mod tests {
 
     #[test]
     fn jaeger_search_targets_the_focused_session_and_encodes_its_tag() {
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
         assert_eq!(
             active_session_id(&app, "main-session"),
             Some("main-session")
@@ -1273,7 +1274,7 @@ mod tests {
     fn all_event_sources_cross_the_ui_action_boundary() {
         let (commands, _worker) = mpsc::unbounded_channel();
         let mut ui = UiModel::new(
-            App::new("/workspace".into()),
+            App::new("/workspace".into(), Thinking::Medium),
             std::sync::Arc::from("main-session"),
         );
 
@@ -1405,7 +1406,7 @@ mod tests {
     #[test]
     fn second_escape_sends_cancel_for_the_focused_turn() {
         let (commands, mut worker) = mpsc::unbounded_channel();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
         app.main.running = true;
         app.input = "preserved draft".to_owned();
         app.cursor = app.input.len();
@@ -1487,7 +1488,7 @@ mod tests {
     #[test]
     fn alt_and_command_edit_the_composer_by_word_line_and_draft() {
         let (commands, _worker) = mpsc::unbounded_channel();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
         app.input = "one two\nthree four".to_owned();
         app.cursor = app.input.len();
 
@@ -1498,21 +1499,21 @@ mod tests {
         let command_up = KeyEvent::new(KeyCode::Up, KeyModifiers::SUPER);
         let command_down = KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER);
 
-        assert!(!handle_key(alt_left, &mut app, &commands).unwrap());
+        assert!(!handle_key(alt_left, &mut app, "main-session", &commands).unwrap());
         assert_eq!(&app.input[app.cursor..], "four");
 
-        assert!(!handle_key(alt_backspace, &mut app, &commands).unwrap());
+        assert!(!handle_key(alt_backspace, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.input, "one two\nfour");
 
-        assert!(!handle_key(command_left, &mut app, &commands).unwrap());
+        assert!(!handle_key(command_left, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.cursor, "one two\n".len());
 
-        assert!(!handle_key(command_delete, &mut app, &commands).unwrap());
+        assert!(!handle_key(command_delete, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.input, "one two\n");
 
-        assert!(!handle_key(command_up, &mut app, &commands).unwrap());
+        assert!(!handle_key(command_up, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.cursor, 0);
-        assert!(!handle_key(command_down, &mut app, &commands).unwrap());
+        assert!(!handle_key(command_down, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.cursor, app.input.len());
 
         app.input = "one two\nthree four".to_owned();
@@ -1522,19 +1523,19 @@ mod tests {
         let command_right = KeyEvent::new(KeyCode::Right, KeyModifiers::SUPER);
         let command_backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::SUPER);
 
-        assert!(!handle_key(alt_right, &mut app, &commands).unwrap());
+        assert!(!handle_key(alt_right, &mut app, "main-session", &commands).unwrap());
         assert_eq!(&app.input[..app.cursor], "one two\nthree");
-        assert!(!handle_key(alt_delete, &mut app, &commands).unwrap());
+        assert!(!handle_key(alt_delete, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.input, "one two\nthree");
 
-        assert!(!handle_key(command_left, &mut app, &commands).unwrap());
-        assert!(!handle_key(command_right, &mut app, &commands).unwrap());
+        assert!(!handle_key(command_left, &mut app, "main-session", &commands).unwrap());
+        assert!(!handle_key(command_right, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.cursor, app.input.len());
-        assert!(!handle_key(command_backspace, &mut app, &commands).unwrap());
+        assert!(!handle_key(command_backspace, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.input, "one two\n");
 
         let command_character = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::SUPER);
-        assert!(!handle_key(command_character, &mut app, &commands).unwrap());
+        assert!(!handle_key(command_character, &mut app, "main-session", &commands).unwrap());
         assert_eq!(app.input, "one two\n");
     }
 }

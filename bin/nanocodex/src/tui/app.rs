@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nanocodex::{AgentEvent, AgentEventKind};
+use nanocodex::{AgentEvent, AgentEventKind, Thinking};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -308,6 +308,7 @@ pub(super) struct BtwPane {
 
 pub(super) struct App {
     pub(super) cwd: PathBuf,
+    pub(super) thinking: Thinking,
     pub(super) main: Conversation,
     pub(super) btw: Option<BtwPane>,
     pub(super) focus: PaneId,
@@ -329,9 +330,10 @@ struct CancelConfirmation {
 }
 
 impl App {
-    pub(super) fn new(cwd: PathBuf) -> Self {
+    pub(super) fn new(cwd: PathBuf, thinking: Thinking) -> Self {
         Self {
             cwd,
+            thinking,
             main: Conversation::new("Ready"),
             btw: None,
             focus: PaneId::Main,
@@ -891,7 +893,7 @@ fn reasoning_tail(reasoning: &str) -> String {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use nanocodex::{AgentEvent, AgentEventKind};
+    use nanocodex::{AgentEvent, AgentEventKind, Thinking};
     use serde_json::{Value, json};
 
     use super::{App, PaneId};
@@ -909,7 +911,7 @@ mod tests {
 
     #[test]
     fn btw_conversation_isolated_and_focus_toggles() {
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         assert_eq!(app.focus, PaneId::Main);
         let id = app.begin_btw();
         assert_eq!(app.focus, PaneId::Btw(id));
@@ -930,7 +932,7 @@ mod tests {
 
     #[test]
     fn stale_btw_updates_do_not_reach_a_reopened_pane() {
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         let first = app.begin_btw();
         app.close_btw(first);
         let second = app.begin_btw();
@@ -941,7 +943,7 @@ mod tests {
 
     #[test]
     fn accepted_steers_and_queued_turns_have_distinct_lifecycles() {
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         app.main.running = true;
 
         let steer_id = app
@@ -970,7 +972,7 @@ mod tests {
 
     #[test]
     fn run_steered_waits_for_a_racing_queue_ack_before_promoting_input() {
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         app.main.running = true;
         let steer_id = app
             .queue_steer(PaneId::Main, "race-safe steer".to_owned())
@@ -991,7 +993,7 @@ mod tests {
 
     #[test]
     fn steer_rejected_after_turn_completion_becomes_the_next_turn() {
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         app.main.running = true;
         let steer_id = app
             .queue_steer(PaneId::Main, "one more constraint".to_owned())
@@ -1010,7 +1012,7 @@ mod tests {
 
     #[test]
     fn late_cancel_ack_does_not_overwrite_the_next_turn_state() {
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         app.main.running = true;
         "Thinking".clone_into(&mut app.main.status);
 
@@ -1022,7 +1024,7 @@ mod tests {
 
     #[test]
     fn cancelled_turn_is_terminal_without_rendering_a_generic_error() {
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         assert!(app.queue_prompt(PaneId::Main, "run it".to_owned()));
         app.main.on_agent_event(&event(
             AgentEventKind::RunStarted,
@@ -1052,7 +1054,7 @@ mod tests {
 
     #[test]
     fn reasoning_summary_deltas_are_visible_while_the_turn_is_running() {
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         app.main.on_agent_event(&event(
             AgentEventKind::RunStarted,
             &json!({ "status": "started" }),
@@ -1069,7 +1071,7 @@ mod tests {
     #[test]
     fn escape_requires_confirmation_and_preserves_the_draft() {
         let now = Instant::now();
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         app.main.running = true;
         app.input = "keep this draft".to_owned();
         app.cursor = app.input.len();
@@ -1089,7 +1091,7 @@ mod tests {
     #[test]
     fn expired_escape_confirmation_rearms_instead_of_cancelling() {
         let now = Instant::now();
-        let mut app = App::new(".".into());
+        let mut app = App::new(".".into(), Thinking::Medium);
         app.main.running = true;
 
         assert_eq!(app.handle_escape(now), None);

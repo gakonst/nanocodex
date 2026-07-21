@@ -178,9 +178,15 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     };
     let help = if app.btw.is_some() {
-        "  BackTab switch · /trace inspect · /close dismiss · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit"
+        format!(
+            "  Thinking: {} · BackTab switch · /trace inspect · /close dismiss · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit",
+            app.thinking
+        )
     } else {
-        "  /btw <question> side fork · /trace inspect · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit"
+        format!(
+            "  Thinking: {} · /btw <question> side fork · /trace inspect · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit",
+            app.thinking
+        )
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -320,6 +326,8 @@ fn saturating_u16(value: usize) -> u16 {
 mod tests {
     use std::io;
 
+    use nanocodex::Thinking;
+
     use ratatui::{
         Terminal,
         backend::{Backend, ClearType, TestBackend, WindowSize},
@@ -333,7 +341,7 @@ mod tests {
     #[test]
     fn btw_renders_as_a_side_by_side_focused_pane() {
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
         app.begin_btw();
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = terminal.backend().to_string();
@@ -346,7 +354,7 @@ mod tests {
     #[test]
     fn active_turn_renders_steers_separately_from_queued_follow_ups() {
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
         app.main.running = true;
         let steer_id = app
             .queue_steer(
@@ -373,7 +381,7 @@ mod tests {
     #[test]
     fn btw_focus_keeps_main_steers_visible_in_their_own_pending_pane() {
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
         app.main.running = true;
         let btw_id = app.begin_btw();
         let steer_id = app
@@ -401,7 +409,7 @@ mod tests {
     #[test]
     fn empty_main_layout_snapshot() {
         let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
-        let app = App::new("/workspace".into());
+        let app = App::new("/workspace".into(), Thinking::Medium);
 
         terminal.draw(|frame| render(frame, &app)).unwrap();
 
@@ -419,15 +427,27 @@ mod tests {
                 "\"┌ Message → Main ──────────────────────────────┐\"\n",
                 "\"│                                              │\"\n",
                 "\"└──────────────────────────────────────────────┘\"\n",
-                "\" Ready  /btw <question> side fork · /trace inspe\"\n",
+                "\" Ready  Thinking: medium · /btw <question> side \"\n",
             )
         );
     }
 
     #[test]
+    fn footer_renders_the_active_thinking_level_with_shortcuts() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        let app = App::new("/workspace".into(), Thinking::Xhigh);
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Thinking: xhigh · /btw <question> side fork"));
+        assert!(rendered.contains("Enter send/steer · Tab queue"));
+    }
+
+    #[test]
     fn cursor_tracks_multiline_unicode_input_exactly() {
         let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
         app.input = "ab\n界c".to_owned();
         app.cursor = app.input.len();
 
@@ -439,7 +459,7 @@ mod tests {
     #[test]
     fn resize_reflows_layout_and_repositions_cursor() {
         let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
         app.input = "abc".to_owned();
         app.cursor = app.input.len();
         terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -456,7 +476,7 @@ mod tests {
     fn ratatui_draws_only_changed_cells_after_the_first_frame() {
         let backend = CountingBackend::new(48, 12);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into(), Thinking::Medium);
 
         terminal.draw(|frame| render(frame, &app)).unwrap();
         assert!(terminal.backend().draw_counts[0] > 0);
