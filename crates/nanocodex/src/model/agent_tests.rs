@@ -1992,6 +1992,66 @@ async fn historical_fork_runs_while_the_mainline_turn_is_in_flight() -> Result<(
 }
 
 #[tokio::test]
+async fn fork_executes_tools_in_its_fresh_runtime() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut root = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut root).await?);
+        send_warmup(&mut root, "resp-warmup").await?;
+        let root_turn = next_json(&mut root).await?;
+        assert_eq!(root_turn["previous_response_id"], "resp-warmup");
+        send_final(&mut root, "resp-root").await?;
+
+        let (stream, _) = listener.accept().await?;
+        let mut branch = accept_async(stream).await?;
+        let branch_turn = next_json(&mut branch).await?;
+        assert_eq!(branch_turn["previous_response_id"], "resp-root");
+        send_json(
+            &mut branch,
+            completed_response(
+                "resp-branch-tool",
+                &[json!({
+                    "type": "custom_tool_call",
+                    "call_id": "call-branch-exec",
+                    "name": "exec",
+                    "input": "const result = await tools.exec_command({cmd: \"printf branch-tool > btw-tool.txt\"}); text(result.output);"
+                })],
+            ),
+        )
+        .await?;
+        let continuation = next_json(&mut branch).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-branch-tool");
+        assert_eq!(continuation["input"][0]["type"], "custom_tool_call_output");
+        send_final(&mut branch, "resp-branch-final").await
+    });
+
+    let workspace = temporary_workspace("fork-tool-runtime")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, root_events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+    agent.prompt("root prompt").await?.result().await?;
+    let (fork, fork_events) = agent.fork().await?;
+    fork.prompt("use a tool").await?.result().await?;
+
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("btw-tool.txt"))?,
+        "branch-tool"
+    );
+    drop((agent, fork, root_events, fork_events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn per_agent_tool_factory_binds_recursive_forks_to_the_invoking_driver() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);

@@ -37,6 +37,8 @@ const BTW_BOUNDARY: &str = r"You are answering an ephemeral BTW side question.
 Treat inherited conversation history only as reference context. Do not resume or complete an
 earlier task. Answer only the question after this boundary. Do not modify the workspace unless
 that side question explicitly requests a mutation.
+The side fork has a fresh tool runtime. Do not reuse shell session IDs or Code Mode cell IDs from
+inherited history; start any tool work needed for the side question in this fork.
 
 BTW question:
 ";
@@ -1260,6 +1262,7 @@ mod tests {
     #[test]
     fn side_boundary_wraps_only_the_first_btw_prompt() {
         let mut first = true;
+        assert!(BTW_BOUNDARY.contains("fresh tool runtime"));
         assert_eq!(
             prepare_btw_prompt(&mut first, "first".to_owned()),
             format!("{BTW_BOUNDARY}first")
