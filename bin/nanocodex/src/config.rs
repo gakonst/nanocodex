@@ -22,11 +22,11 @@ pub(crate) struct ConfiguredAgent {
     reason = "independent CLI feature toggles are not one state machine"
 )]
 pub(crate) struct AgentArgs {
-    /// Explicit `OpenAI` API key override. Otherwise login or `OPENAI_API_KEY` is used.
+    /// Explicit `OpenAI` API key override. Otherwise `OPENAI_API_KEY` is preferred.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     api_key: Option<String>,
 
-    /// Override the shared Codex `auth.json` credential file.
+    /// Explicitly use `ChatGPT` authorization from this credential file.
     #[arg(long, env = "NANOCODEX_AUTH_FILE")]
     auth_file: Option<PathBuf>,
 
@@ -139,20 +139,13 @@ fn select_auth(
     if let Some(api_key) = explicit_api_key {
         return Ok(OpenAiAuth::api_key(api_key));
     }
-    let auth_file = auth_file.unwrap_or(default_auth_file()?);
-    match auth_file.try_exists() {
-        Ok(true) => load_subscription_auth(&auth_file),
-        Ok(false) => environment_api_key.map_or_else(
-            || load_subscription_auth(&auth_file),
-            |api_key| Ok(OpenAiAuth::api_key(api_key)),
-        ),
-        Err(error) => Err(error).wrap_err_with(|| {
-            format!(
-                "could not inspect ChatGPT authorization at {}",
-                auth_file.display()
-            )
-        }),
+    if let Some(auth_file) = auth_file {
+        return load_subscription_auth(&auth_file);
     }
+    if let Some(api_key) = environment_api_key {
+        return Ok(OpenAiAuth::api_key(api_key));
+    }
+    load_subscription_auth(&default_auth_file()?)
 }
 
 fn environment_api_key() -> Result<Option<String>> {
@@ -233,14 +226,14 @@ mod tests {
     }
 
     #[test]
-    fn environment_key_is_the_fallback_when_no_login_exists() {
-        let auth = select_auth(None, Some(auth_file()), Some("environment-key".into())).unwrap();
+    fn environment_key_is_the_automatic_default() {
+        let auth = select_auth(None, None, Some("environment-key".into())).unwrap();
 
         assert_eq!(auth.mode(), OpenAiAuthMode::ApiKey);
     }
 
     #[test]
-    fn an_existing_login_store_precedes_the_environment_key() {
+    fn explicit_auth_file_precedes_the_environment_key() {
         let auth_file = auth_file();
         std::fs::write(&auth_file, b"{}").unwrap();
 

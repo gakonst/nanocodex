@@ -132,9 +132,11 @@ Socket tasks and mutable driver details stay private.
   localhost callback. The CLI owns browser UX and `login`, `status`, and
   `logout`; the library owns token parsing, redacted snapshots, persistence,
   refresh, and recovery.
-- The CLI defaults to Codex's `$CODEX_HOME/auth.json` (normally
-  `~/.codex/auth.json`), so an existing Codex login is immediately reusable.
-  Explicit auth-file paths remain available for isolated embedders.
+- The CLI prefers `OPENAI_API_KEY`, including the repository `.env` loaded by
+  direct runs. Without a key it falls back to Codex's `$CODEX_HOME/auth.json`
+  (normally `~/.codex/auth.json`), so an existing Codex login remains reusable.
+  An explicit auth-file path selects ChatGPT authorization even when a key is
+  available and remains available for isolated embedders.
 - ChatGPT mode selects the Codex backend endpoints and sends the bearer,
   `ChatGPT-Account-ID`, and optional FedRAMP header. Refresh is proactive near
   expiry and reactive once after a 401. Rotating refresh tokens are serialized,
