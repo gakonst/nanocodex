@@ -40,6 +40,9 @@ commit_preprocessors = [
     { pattern = '#(\d+)', replace = "[#$1](https://github.com/gakonst/nanocodex/issues/$1)" },
 ]
 commit_parsers = [
+    { message = "^Add ChatGPT subscription authentication", group = "Features" },
+    { message = "^Emit completed assistant items", group = "Bug Fixes" },
+    { message = "^Preserve assistant message phases", group = "Bug Fixes" },
     { message = "^[Ff]eat", group = "Features" },
     { message = "^[Ff]ix", group = "Bug Fixes" },
     { message = "^[Dd]oc", group = "Documentation" },

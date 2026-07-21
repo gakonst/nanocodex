@@ -5,19 +5,27 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-20
+## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-21
 
 ### Highlights
 
-- Initial library-first Nanocodex SDK, persistent Responses WebSocket client,
-  Tower service stack, code-mode tools, MCP integration, embedded bindings,
-  CLI, and observability support.
+- Initial library-first Nanocodex SDK with API-key and ChatGPT subscription
+  authentication, a persistent Responses WebSocket client, Tower service stack,
+  code-mode tools, MCP integration, embedded bindings, CLI, and observability.
 - Checksummed maxperf native installers and self-updates, dependency-ordered
   crates.io publishing, repo-wide and crate-specific changelogs,
   contributor-attributed GitHub release notes, and docs.rs archive validation.
 
 ### Bug Fixes
 
+- [observability] Retain yielded tool lineage
+- [tools] Preserve live shell session ids
+- [tui] Reconcile pending steer state
+- [harbor] Provision portable CLI tools
+- [tui] Suppress cancellation error rows
+- [tui] Distinguish cancelled tools
+- Emit completed assistant items from Responses ([#4](https://github.com/gakonst/nanocodex/issues/4))
+- Preserve assistant message phases in events ([#3](https://github.com/gakonst/nanocodex/issues/3))
 - [cli] Select one command configuration
 - [service] Own proxy-aware WebSocket connector
 - [service] Honor SSL_CERT_FILE for WebSockets
@@ -73,6 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- [tui] Record research and keybindings
+- Simplify configuration section
+- Move example comments above code
 - Sharpen repository positioning
 - Add complete agent lifecycle example
 - Streamline readme presentation
@@ -133,6 +144,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- Add ChatGPT subscription authentication
+- [observability] Export full-fidelity agent traces
+- [agent] Checkpoint active turn boundaries
+- [core] Expose event stream request IDs
 - [cli] Add steerable queues and cancellation
 - [agent] Add controllable conversation lifecycle
 - [cli] Add steerable queues, btw forks, and subagents
@@ -179,6 +194,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.1.0 changelogs
 - [release] Add per-crate changelogs
 - [release] Finalize 0.1.0 changelog
 - [release] Update 0.1.0 changelog
@@ -191,6 +207,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- Add stateful paired parity harness
 - Add reproducible Codex parity workload
 - Pin leaderboard Terminal-Bench 2.1 configuration
 - Compare checkpoint forks with transcript replay
@@ -266,6 +283,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- [tools] Share code mode history snapshots
+- [shell] Share process drain grace deadline
+- [tools] Align nested shell yield deadlines
+- [service] Profile and trim response hot path
+- [tools] Prewarm code mode node host
+- [core] Iterate incremental history suffixes
 - [tui] Coalesce streaming renders
 - Cache guarded texlive verifier setup
 

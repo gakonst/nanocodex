@@ -5,21 +5,31 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-20
+## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-21
+
+### Bug Fixes
+
+- Preserve assistant message phases in events ([#3](https://github.com/gakonst/nanocodex/issues/3))
 
 ### Features
 
+- Add ChatGPT subscription authentication
+- [observability] Export full-fidelity agent traces
+- [core] Expose event stream request IDs
 - [agent] Add controllable conversation lifecycle
 - [agent] Add checkpoint forks and active-turn steering
 - Add MCP observability and release automation
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.1.0 changelogs
 - [release] Add per-crate changelogs
 - [release] Automate publishing and native updates
 
 ### Performance
 
+- [tools] Share code mode history snapshots
+- [core] Iterate incremental history suffixes
 - [tui] Coalesce streaming renders
 
 ### Refactor

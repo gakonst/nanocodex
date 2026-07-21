@@ -5,10 +5,13 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-20
+## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-21
 
 ### Bug Fixes
 
+- [observability] Retain yielded tool lineage
+- Emit completed assistant items from Responses ([#4](https://github.com/gakonst/nanocodex/issues/4))
+- Preserve assistant message phases in events ([#3](https://github.com/gakonst/nanocodex/issues/3))
 - [wasm] Align checkpoint turn handling
 - [observability] Satisfy rustfmt
 
@@ -19,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- Add ChatGPT subscription authentication
+- [observability] Export full-fidelity agent traces
+- [agent] Checkpoint active turn boundaries
 - [agent] Add controllable conversation lifecycle
 - [agent] Add checkpoint forks and active-turn steering
 - [observability] Add end-to-end OTLP tracing
@@ -28,12 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.1.0 changelogs
 - [release] Add per-crate changelogs
 - [release] Automate publishing and native updates
 
 ### Other
 
 - Compose subagents with unified events
+
+### Performance
+
+- [tools] Share code mode history snapshots
 
 ### Refactor
 
