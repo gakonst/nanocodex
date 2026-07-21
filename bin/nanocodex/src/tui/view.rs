@@ -179,12 +179,12 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     let help = if app.btw.is_some() {
         format!(
-            "  Thinking: {} · BackTab switch · /trace inspect · /close dismiss · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit",
+            "  Thinking: {} · BackTab switch · /trace inspect · /close dismiss · Enter send/steer · Tab queue · Esc×2 stop · Ctrl+C quit",
             app.thinking
         )
     } else {
         format!(
-            "  Thinking: {} · /btw <question> side fork · /trace inspect · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit",
+            "  Thinking: {} · /btw <question> side fork · /trace inspect · Enter send/steer · Tab queue · Esc×2 stop · Ctrl+C quit",
             app.thinking
         )
     };
