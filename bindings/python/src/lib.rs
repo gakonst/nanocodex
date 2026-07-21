@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex};
 
-use nanocodex::{AgentEvents as RustAgentEvents, Nanocodex as RustNanocodex, Thinking};
+use nanocodex::{
+    AgentEvents as RustAgentEvents, Nanocodex as RustNanocodex, OpenAiAuth, Thinking,
+    load_chatgpt_auth,
+};
 use pyo3::{
     Bound, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
@@ -18,18 +21,31 @@ struct Nanocodex {
 #[pymethods]
 impl Nanocodex {
     #[new]
-    #[pyo3(signature = (api_key, *, thinking = "medium", workspace = None, instructions = None))]
+    #[pyo3(signature = (api_key = None, *, auth_file = None, thinking = "medium", workspace = None, instructions = None))]
     fn new(
-        api_key: String,
+        api_key: Option<String>,
+        auth_file: Option<String>,
         thinking: &str,
         workspace: Option<String>,
         instructions: Option<String>,
     ) -> PyResult<(Self, AgentEvents)> {
+        let auth = match (api_key, auth_file) {
+            (Some(api_key), None) => OpenAiAuth::api_key(api_key),
+            (None, Some(auth_file)) => load_chatgpt_auth(auth_file).map_err(runtime_error)?,
+            (Some(_), Some(_)) => {
+                return Err(PyValueError::new_err(
+                    "pass either api_key or auth_file, not both",
+                ));
+            }
+            (None, None) => {
+                return Err(PyValueError::new_err("api_key or auth_file is required"));
+            }
+        };
         let thinking = parse_thinking(thinking)?;
         let runtime = build_runtime()?;
         let (agent, events) = runtime
             .block_on(async move {
-                let mut builder = RustNanocodex::builder(api_key).thinking(thinking);
+                let mut builder = RustNanocodex::builder(auth).thinking(thinking);
                 if let Some(workspace) = workspace {
                     builder = builder.workspace(workspace);
                 }

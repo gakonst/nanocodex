@@ -27,7 +27,7 @@ async fn generation_uses_codex_images_request_and_persists_result() -> Result<()
     let (api_base_url, server) = spawn_image_server().await?;
     let handler = ImageGenerationHandler::new(ImageGenerationConfig {
         api_base_url,
-        api_key: "test-key".to_owned(),
+        auth: nanocodex_core::OpenAiAuth::api_key("test-key"),
         save_root: workspace.clone(),
     });
     let history = Vec::new();
@@ -163,7 +163,7 @@ async fn edit_accepts_original_local_images_and_recent_conversation_images() -> 
 fn exposes_codex_imagegen_shape() {
     let handler = ImageGenerationHandler::new(ImageGenerationConfig {
         api_base_url: "http://127.0.0.1:1/v1".to_owned(),
-        api_key: "test-key".to_owned(),
+        auth: nanocodex_core::OpenAiAuth::api_key("test-key"),
         save_root: PathBuf::from("/tmp/nanocodex-imagegen-test"),
     });
     let spec = serde_json::to_value(handler.definition()).unwrap();

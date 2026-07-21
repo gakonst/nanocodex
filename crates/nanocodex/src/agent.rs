@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use nanocodex_core::{AgentEvents, EventSink, ModelConfig, Prompt, Thinking};
+use nanocodex_core::{AgentEvents, EventSink, ModelConfig, OpenAiAuth, Prompt, Thinking};
 use nanocodex_service::{
     DefaultResponsesService, ResponsesAttempt, ResponsesClient, ResponsesService,
     ResponsesServiceResponse, TransportStats,
@@ -262,16 +262,16 @@ impl Nanocodex {
     ///
     /// # Errors
     ///
-    /// Returns an error when the API key is empty or no Tokio runtime is active.
-    pub fn new(api_key: impl Into<String>) -> Result<(Self, AgentEvents)> {
-        Self::builder(api_key).build()
+    /// Returns an error when authorization is unavailable or no Tokio runtime is active.
+    pub fn new(auth: impl Into<OpenAiAuth>) -> Result<(Self, AgentEvents)> {
+        Self::builder(auth).build()
     }
 
     /// Starts configuring an agent with sensible defaults.
     #[must_use]
-    pub fn builder(api_key: impl Into<String>) -> NanocodexBuilder {
+    pub fn builder(auth: impl Into<OpenAiAuth>) -> NanocodexBuilder {
         let config = ModelConfig {
-            api_key: api_key.into(),
+            auth: auth.into(),
             ..ModelConfig::default()
         };
         NanocodexBuilder {
@@ -1151,16 +1151,22 @@ where
 }
 
 fn configure<S>(config: &mut ModelConfig, responses: &Responses<S>) {
-    config.websocket_url.clone_from(&responses.websocket_url);
-    config.api_base_url.clone_from(&responses.api_base_url);
+    let mode = config.auth.mode();
+    config.websocket_url = responses
+        .websocket_url
+        .clone()
+        .unwrap_or_else(|| mode.default_websocket_url().to_owned());
+    config.api_base_url = responses
+        .api_base_url
+        .clone()
+        .unwrap_or_else(|| mode.default_api_base_url().to_owned());
 }
 
 fn validate(config: &ModelConfig, session_id: Option<&str>) -> Result<()> {
-    if config.api_key.trim().is_empty() {
-        return Err(NanocodexError::InvalidRequest(
-            "OpenAI API key must not be empty".to_owned(),
-        ));
-    }
+    config
+        .auth
+        .validate()
+        .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
     if config.websocket_url.trim().is_empty() {
         return Err(NanocodexError::InvalidRequest(
             "Responses WebSocket URL must not be empty".to_owned(),

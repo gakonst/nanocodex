@@ -1,3 +1,4 @@
+mod auth;
 mod config;
 mod mcp;
 mod observability;
@@ -36,6 +37,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Manage `ChatGPT` subscription login.
+    Auth(auth::Auth),
     /// Run one prompt and stream JSONL events to stdout.
     Run(Box<RunCommand>),
     /// Update this executable to the latest GitHub release.
@@ -62,6 +65,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
+        Some(Command::Auth(command)) => command.run().await,
         Some(Command::Run(command)) => {
             let _observability = command.observability.install(false, command.agent.cwd())?;
             command.run.run(command.agent).await

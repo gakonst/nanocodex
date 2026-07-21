@@ -13,7 +13,11 @@ const EVENT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = connect)]
-    fn host_connect(endpoint: &str, api_key: &str, session_id: &str) -> Result<Promise, JsValue>;
+    fn host_connect(
+        endpoint: &str,
+        bearer_token: &str,
+        session_id: &str,
+    ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = send)]
     fn host_send(handle: u32, message: &str) -> Result<Promise, JsValue>;
@@ -97,10 +101,10 @@ impl EncodedRequest {
 impl ResponsesSocket {
     pub(crate) async fn connect(
         endpoint: &str,
-        api_key: &str,
+        auth: &nanocodex_core::OpenAiAuthSnapshot,
         session_id: &str,
     ) -> Result<(Self, ConnectionMetadata), ResponsesError> {
-        let promise = host_connect(endpoint, api_key, session_id).map_err(|error| {
+        let promise = host_connect(endpoint, auth.bearer(), session_id).map_err(|error| {
             ResponsesError::Connect {
                 detail: js_error(&error),
             }

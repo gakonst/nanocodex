@@ -97,6 +97,47 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 Node.js 12.22 or newer must be available on `PATH` for Code Mode.
 
+### Authentication
+
+Native applications can use either an `OpenAI` API key or a `ChatGPT`
+subscription. Existing API-key construction remains unchanged:
+
+```rust
+let (agent, events) = Nanocodex::new(api_key)?;
+```
+
+For a `ChatGPT` subscription, the bundled CLI performs an authorization-code
+OAuth login with PKCE and reuses Codex's credential file at
+`$CODEX_HOME/auth.json`, or `~/.codex/auth.json` by default. If Codex is already
+logged in, no separate Nanocodex login is required:
+
+```sh
+nanocodex auth login
+nanocodex auth status
+nanocodex --chatgpt
+```
+
+`OPENAI_API_KEY` or `--api-key` takes precedence by default; `--chatgpt` (or
+`NANOCODEX_CHATGPT=true`) explicitly selects the subscription session. Override
+the credential file with `NANOCODEX_AUTH_FILE` or `--auth-file`. `nanocodex auth
+logout` removes the shared file and therefore logs both Codex and Nanocodex out.
+
+Library consumers own their login UX and can reuse the same managed session:
+
+```rust
+use nanocodex::{Nanocodex, load_chatgpt_auth};
+
+let auth = load_chatgpt_auth("/path/to/.codex/auth.json")?;
+let (agent, events) = Nanocodex::new(auth)?;
+```
+
+The shared authorization handle selects the matching Responses endpoints,
+attaches the account and FedRAMP routing headers, refreshes shortly before JWT
+expiry, reloads credentials rotated by another process, and retries one rejected
+request after a serialized refresh. Forks and built-in HTTP tools share that
+same rotating session. Browser/WASM embeddings continue to receive an
+already-authorized WebSocket from the host and never own refresh tokens.
+
 ## Lifecycle details
 
 `Nanocodex::new` installs the standard instructions, medium thinking, built-in

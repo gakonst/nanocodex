@@ -5,8 +5,10 @@ use std::{
     task::{Context, Poll},
 };
 
+#[cfg(not(target_family = "wasm"))]
+use nanocodex_core::OpenAiAuthMode;
 use nanocodex_core::{
-    AgentEventKind, ModelConfig,
+    AgentEventKind, ModelConfig, OpenAiAuthSnapshot,
     responses::{ResponseCreate, WarmupResponse, WarmupServerEvent},
 };
 use tokio::sync::Mutex;
@@ -354,13 +356,10 @@ impl ResponsesService {
             status = tracing::field::Empty,
             duration_ns = tracing::field::Empty,
         );
-        let result = ResponsesSocket::connect(
-            &self.config.websocket_url,
-            &self.config.api_key,
-            request.profile.session_id(),
-        )
-        .instrument(connect_span.clone())
-        .await;
+        let result = self
+            .connect_with_auth_recovery(request.profile.session_id())
+            .instrument(connect_span.clone())
+            .await;
         let elapsed = started_at.elapsed();
         connect_span.record(
             "status",
@@ -408,6 +407,49 @@ impl ResponsesService {
             attempt,
             duration_ns: duration_ns(elapsed),
         })
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn connect_with_auth_recovery(
+        &self,
+        session_id: &str,
+    ) -> Result<(ResponsesSocket, ConnectionMetadata), ResponsesError> {
+        let auth = self.auth_snapshot().await?;
+        match ResponsesSocket::connect(&self.config.websocket_url, &auth, session_id).await {
+            Err(ResponsesError::HandshakeRejected { status: 401, .. })
+                if auth.mode() == OpenAiAuthMode::ChatGpt =>
+            {
+                self.config
+                    .auth
+                    .recover_unauthorized(&auth)
+                    .await
+                    .map_err(|error| ResponsesError::Authorization {
+                        detail: error.to_string(),
+                    })?;
+                let refreshed = self.auth_snapshot().await?;
+                ResponsesSocket::connect(&self.config.websocket_url, &refreshed, session_id).await
+            }
+            result => result,
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    async fn connect_with_auth_recovery(
+        &self,
+        session_id: &str,
+    ) -> Result<(ResponsesSocket, ConnectionMetadata), ResponsesError> {
+        let auth = self.auth_snapshot().await?;
+        ResponsesSocket::connect(&self.config.websocket_url, &auth, session_id).await
+    }
+
+    async fn auth_snapshot(&self) -> Result<OpenAiAuthSnapshot, ResponsesError> {
+        self.config
+            .auth
+            .snapshot()
+            .await
+            .map_err(|error| ResponsesError::Authorization {
+                detail: error.to_string(),
+            })
     }
 }
 

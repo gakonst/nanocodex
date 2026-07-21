@@ -9,6 +9,8 @@ use tokio_tungstenite::tungstenite::{
 /// Errors produced by the `OpenAI` Responses WebSocket transport.
 #[derive(Debug, thiserror::Error)]
 pub enum ResponsesError {
+    #[error("failed to resolve OpenAI authorization: {detail}")]
+    Authorization { detail: String },
     #[error("invalid Responses WebSocket URL")]
     InvalidUrl(#[source] WebSocketError),
     #[error("invalid OpenAI authorization header")]
@@ -90,6 +92,7 @@ impl ResponsesError {
     #[must_use]
     pub fn class(&self) -> &'static str {
         match self {
+            Self::Authorization { .. } => "authorization",
             Self::InvalidUrl(_) => "invalid_url",
             Self::InvalidAuthorization(_) => "invalid_authorization",
             Self::InvalidSessionId(_) => "invalid_session_id",

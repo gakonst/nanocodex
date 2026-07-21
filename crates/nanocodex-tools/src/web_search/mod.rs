@@ -4,8 +4,8 @@ mod wire;
 
 use std::time::Duration;
 
-use nanocodex_core::ToolDefinition;
-use reqwest::header::USER_AGENT;
+use nanocodex_core::{OpenAiAuth, OpenAiAuthMode, OpenAiAuthSnapshot, ToolDefinition};
+use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
@@ -26,7 +26,7 @@ const RETRY_DELAY: Duration = Duration::from_millis(200);
 pub(super) struct WebSearchHandler {
     client: reqwest::Client,
     endpoint: String,
-    api_key: String,
+    auth: OpenAiAuth,
 }
 
 impl WebSearchHandler {
@@ -34,7 +34,7 @@ impl WebSearchHandler {
         Self {
             client: reqwest::Client::new(),
             endpoint: config.endpoint,
-            api_key: config.api_key,
+            auth: config.auth,
         }
     }
 
@@ -176,24 +176,74 @@ impl WebSearchHandler {
         &self,
         request: &SearchRequest<'_>,
     ) -> Result<(reqwest::StatusCode, Vec<u8>), RequestFailure> {
-        let response = self
+        let auth = self
+            .auth
+            .snapshot()
+            .await
+            .map_err(|error| auth_failure(&error))?;
+        let response = self.send_authorized(request, &auth).await?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && auth.mode() == OpenAiAuthMode::ChatGpt
+        {
+            self.auth
+                .recover_unauthorized(&auth)
+                .await
+                .map_err(|error| auth_failure(&error))?;
+            let refreshed = self
+                .auth
+                .snapshot()
+                .await
+                .map_err(|error| auth_failure(&error))?;
+            return self
+                .read_response(self.send_authorized(request, &refreshed).await?)
+                .await;
+        }
+        self.read_response(response).await
+    }
+
+    async fn send_authorized(
+        &self,
+        body: &SearchRequest<'_>,
+        auth: &OpenAiAuthSnapshot,
+    ) -> Result<reqwest::Response, RequestFailure> {
+        let mut request = self
             .client
             .post(&self.endpoint)
             .header(USER_AGENT, concat!("nanocodex/", env!("CARGO_PKG_VERSION")))
-            .bearer_auth(&self.api_key)
-            .json(request)
+            .header(AUTHORIZATION, format!("Bearer {}", auth.bearer()));
+        if let Some(account_id) = auth.account_id() {
+            request = request.header("ChatGPT-Account-ID", account_id);
+        }
+        if auth.is_fedramp() {
+            request = request.header("X-OpenAI-Fedramp", "true");
+        }
+        request
+            .json(body)
             .send()
             .await
             .map_err(|error| RequestFailure {
                 message: format!("standalone web search request failed: {error}"),
                 retryable: true,
-            })?;
+            })
+    }
+
+    async fn read_response(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), RequestFailure> {
         let status = response.status();
         let body = read_response_body(response).await.map_err(|mut failure| {
             failure.retryable |= status.is_server_error();
             failure
         })?;
         Ok((status, body))
+    }
+}
+
+fn auth_failure(error: &nanocodex_core::OpenAiAuthError) -> RequestFailure {
+    RequestFailure {
+        message: error.to_string(),
+        retryable: false,
     }
 }
 
@@ -276,7 +326,13 @@ fn has_semantic_error(output: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{future::ready, sync::Arc};
+
     use eyre::{Result, eyre};
+    use nanocodex_core::{
+        OpenAiAuth, OpenAiAuthError, OpenAiAuthFuture, OpenAiAuthMode, OpenAiAuthSnapshot,
+        OpenAiAuthSource,
+    };
     use serde_json::{Value, json};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -292,7 +348,7 @@ mod tests {
         let (endpoint, server) = spawn_search_server().await?;
         let handler = WebSearchHandler::new(WebSearchConfig {
             endpoint,
-            api_key: "test-key".to_owned(),
+            auth: subscription_auth(),
         });
         let history = serde_json::from_value::<Vec<nanocodex_core::ResponseItem>>(json!([
             json!({
@@ -376,11 +432,15 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await?;
             let (headers, body) = read_http_request(&mut stream).await?;
-            if !headers
-                .to_ascii_lowercase()
-                .contains("authorization: bearer test-key")
-            {
+            let headers = headers.to_ascii_lowercase();
+            if !headers.contains("authorization: bearer subscription-token") {
                 return Err(eyre!("search request did not contain bearer auth"));
+            }
+            if !headers.contains("chatgpt-account-id: account-test") {
+                return Err(eyre!("search request did not contain the account ID"));
+            }
+            if !headers.contains("x-openai-fedramp: true") {
+                return Err(eyre!("search request did not contain FedRAMP routing"));
             }
             let response = serde_json::to_vec(&json!({
                 "encrypted_output": "ciphertext",
@@ -407,11 +467,43 @@ mod tests {
         Ok((endpoint, server))
     }
 
+    struct StaticSubscriptionAuth;
+
+    impl OpenAiAuthSource for StaticSubscriptionAuth {
+        fn validate(&self) -> std::result::Result<(), OpenAiAuthError> {
+            Ok(())
+        }
+
+        fn snapshot(
+            &self,
+        ) -> OpenAiAuthFuture<'_, std::result::Result<OpenAiAuthSnapshot, OpenAiAuthError>>
+        {
+            Box::pin(ready(Ok(OpenAiAuthSnapshot::new(
+                OpenAiAuthMode::ChatGpt,
+                "subscription-token",
+                Some("account-test"),
+                true,
+                1,
+            ))))
+        }
+
+        fn recover_unauthorized(
+            &self,
+            _rejected: &OpenAiAuthSnapshot,
+        ) -> OpenAiAuthFuture<'_, std::result::Result<(), OpenAiAuthError>> {
+            Box::pin(ready(Ok(())))
+        }
+    }
+
+    fn subscription_auth() -> OpenAiAuth {
+        OpenAiAuth::managed_chatgpt(Arc::new(StaticSubscriptionAuth))
+    }
+
     #[test]
     fn exposes_codex_web_run_schema_and_description() {
         let handler = WebSearchHandler::new(WebSearchConfig {
             endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
-            api_key: "test-key".to_owned(),
+            auth: nanocodex_core::OpenAiAuth::api_key("test-key"),
         });
         let spec = serde_json::to_value(handler.definition()).unwrap();
 

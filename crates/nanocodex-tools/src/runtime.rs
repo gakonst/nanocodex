@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
-use nanocodex_core::{ImageDetail, ResponseItem, ToolDefinition};
+use nanocodex_core::{ImageDetail, OpenAiAuth, ResponseItem, ToolDefinition};
 use schemars::{JsonSchema, r#gen::SchemaSettings};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::{RawValue, to_raw_value};
@@ -330,12 +330,12 @@ pub trait DynamicToolProvider: Send + Sync {
 
 pub struct WebSearchConfig {
     pub endpoint: String,
-    pub api_key: String,
+    pub auth: OpenAiAuth,
 }
 
 pub struct ImageGenerationConfig {
     pub api_base_url: String,
-    pub api_key: String,
+    pub auth: OpenAiAuth,
     pub save_root: PathBuf,
 }
 
@@ -893,7 +893,7 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use nanocodex_core::ToolDefinition;
+    use nanocodex_core::{OpenAiAuth, ToolDefinition};
     use serde::Deserialize;
     use serde_json::json;
 
@@ -1034,11 +1034,11 @@ mod tests {
             ".",
             web_search.then(|| WebSearchConfig {
                 endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
-                api_key: "test-key".to_owned(),
+                auth: OpenAiAuth::api_key("test-key"),
             }),
             Some(ImageGenerationConfig {
                 api_base_url: "http://127.0.0.1:1/v1".to_owned(),
-                api_key: "test-key".to_owned(),
+                auth: OpenAiAuth::api_key("test-key"),
                 save_root: std::env::temp_dir().join("nanocodex-test-images"),
             }),
         )

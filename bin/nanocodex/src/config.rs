@@ -5,7 +5,7 @@ use std::{
 
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::{Result, eyre};
-use nanocodex::{AgentEvents, Nanocodex, Responses, Thinking, Tools};
+use nanocodex::{AgentEvents, Nanocodex, OpenAiAuth, Responses, Thinking, Tools};
 
 use crate::mcp::McpArgs;
 use crate::subagents::{self, ChildAgents};
@@ -17,6 +17,10 @@ pub(crate) struct ConfiguredAgent {
 }
 
 #[derive(Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent CLI feature toggles are not one state machine"
+)]
 pub(crate) struct AgentArgs {
     /// `OpenAI` API key. Prefer `OPENAI_API_KEY` or the repository `.env` file.
     #[arg(
@@ -26,6 +30,14 @@ pub(crate) struct AgentArgs {
         value_parser = NonEmptyStringValueParser::new()
     )]
     api_key: Option<String>,
+
+    /// Force the stored `ChatGPT` OAuth session even when an API key is available.
+    #[arg(long, env = "NANOCODEX_CHATGPT", default_value_t = false)]
+    chatgpt: bool,
+
+    /// Override the shared Codex `auth.json` credential file.
+    #[arg(long, env = "NANOCODEX_AUTH_FILE")]
+    auth_file: Option<PathBuf>,
 
     /// Working directory exposed to the coding tools.
     #[arg(long, default_value = ".")]
@@ -67,20 +79,12 @@ pub(crate) struct AgentArgs {
     subagents: bool,
 
     /// Responses API WebSocket endpoint.
-    #[arg(
-        long,
-        env = "OPENAI_RESPONSES_WEBSOCKET_URL",
-        default_value = "wss://api.openai.com/v1/responses"
-    )]
-    websocket_url: String,
+    #[arg(long, env = "OPENAI_RESPONSES_WEBSOCKET_URL")]
+    websocket_url: Option<String>,
 
     /// `OpenAI` HTTP API base used by standalone web search.
-    #[arg(
-        long,
-        env = "OPENAI_API_BASE_URL",
-        default_value = "https://api.openai.com/v1"
-    )]
-    api_base_url: String,
+    #[arg(long, env = "OPENAI_API_BASE_URL")]
+    api_base_url: Option<String>,
 
     #[command(flatten)]
     mcp: McpArgs,
@@ -92,13 +96,21 @@ impl AgentArgs {
     }
 
     pub(crate) fn build(self) -> Result<ConfiguredAgent> {
-        let api_key = self
-            .api_key
-            .ok_or_else(|| eyre!("--api-key or OPENAI_API_KEY is required"))?;
-        let responses = Responses::builder()
-            .websocket_url(self.websocket_url)
-            .api_base_url(self.api_base_url)
-            .build();
+        let auth = if self.chatgpt {
+            load_subscription_auth(self.auth_file)?
+        } else if let Some(api_key) = self.api_key {
+            OpenAiAuth::api_key(api_key)
+        } else {
+            load_subscription_auth(self.auth_file)?
+        };
+        let mut responses = Responses::builder();
+        if let Some(websocket_url) = self.websocket_url {
+            responses = responses.websocket_url(websocket_url);
+        }
+        if let Some(api_base_url) = self.api_base_url {
+            responses = responses.api_base_url(api_base_url);
+        }
+        let responses = responses.build();
         let mut tools = Tools::builder()
             .web_search(self.web_search)
             .image_generation(self.image_generation);
@@ -107,7 +119,7 @@ impl AgentArgs {
         }
         let tools = tools.build()?;
         let child_agents = self.subagents.then(|| Arc::new(ChildAgents::default()));
-        let builder = Nanocodex::builder(api_key)
+        let builder = Nanocodex::builder(auth)
             .thinking(self.thinking)
             .workspace(self.cwd)
             .responses(responses);
@@ -132,4 +144,29 @@ impl AgentArgs {
             child_agents,
         })
     }
+}
+
+fn load_subscription_auth(auth_file: Option<PathBuf>) -> Result<OpenAiAuth> {
+    let auth_file = auth_file.unwrap_or(default_auth_file()?);
+    nanocodex::load_chatgpt_auth(&auth_file).map_err(|error| {
+        eyre!(
+            "ChatGPT authorization could not be loaded from {}: {error}. Run `nanocodex auth login`",
+            auth_file.display()
+        )
+    })
+}
+
+pub(crate) fn default_auth_file() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("NANOCODEX_AUTH_FILE") {
+        return Ok(PathBuf::from(path));
+    }
+    if let Some(path) = std::env::var_os("CODEX_HOME").filter(|path| !path.is_empty()) {
+        return Ok(PathBuf::from(path).join("auth.json"));
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| {
+            eyre!("home directory is unavailable; pass --auth-file or NANOCODEX_AUTH_FILE")
+        })?;
+    Ok(PathBuf::from(home).join(".codex/auth.json"))
 }

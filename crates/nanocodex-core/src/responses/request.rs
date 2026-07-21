@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn prompt_cache_key_is_stable_across_the_session() {
         let config = ModelConfig {
-            api_key: "test-key".to_owned(),
+            auth: crate::OpenAiAuth::api_key("test-key"),
             thinking: Thinking::Low,
             ..ModelConfig::default()
         };

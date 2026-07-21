@@ -1,3 +1,4 @@
+mod auth;
 mod events;
 pub mod responses;
 
@@ -5,6 +6,10 @@ use std::{fmt, path::PathBuf, str::FromStr, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
+pub use auth::{
+    OpenAiAuth, OpenAiAuthError, OpenAiAuthFuture, OpenAiAuthMode, OpenAiAuthSnapshot,
+    OpenAiAuthSource,
+};
 pub use events::{AgentEvent, AgentEventKind, AgentEvents, EventError, EventSink};
 pub use responses::{
     AgentMessageContent, ContentItem, CustomToolFormat, FunctionOutputBody, FunctionOutputContent,
@@ -176,7 +181,7 @@ impl UserInput {
 /// OpenAI-specific settings for the deliberately single-provider nanocodex.
 #[derive(Clone)]
 pub struct ModelConfig {
-    pub api_key: String,
+    pub auth: OpenAiAuth,
     pub thinking: Thinking,
     pub websocket_url: String,
     pub api_base_url: String,
@@ -203,7 +208,7 @@ impl ModelConfig {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
+            auth: OpenAiAuth::api_key(String::new()),
             thinking: Thinking::default(),
             websocket_url: "wss://api.openai.com/v1/responses".to_owned(),
             api_base_url: "https://api.openai.com/v1".to_owned(),

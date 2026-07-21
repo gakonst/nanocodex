@@ -5,9 +5,10 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use nanocodex_core::{
-    ContentItem, FunctionOutputBody, FunctionOutputContent, ResponseItem, ToolDefinition,
+    ContentItem, FunctionOutputBody, FunctionOutputContent, OpenAiAuth, OpenAiAuthMode,
+    OpenAiAuthSnapshot, ResponseItem, ToolDefinition,
 };
-use reqwest::header::USER_AGENT;
+use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -26,7 +27,7 @@ pub(super) struct ImageGenerationHandler {
     client: reqwest::Client,
     generation_endpoint: String,
     edit_endpoint: String,
-    api_key: String,
+    auth: OpenAiAuth,
     save_root: PathBuf,
 }
 
@@ -37,7 +38,7 @@ impl ImageGenerationHandler {
             client: reqwest::Client::new(),
             generation_endpoint: format!("{api_base_url}/images/generations"),
             edit_endpoint: format!("{api_base_url}/images/edits"),
-            api_key: config.api_key,
+            auth: config.auth,
             save_root: config.save_root,
         }
     }
@@ -116,15 +117,28 @@ impl ImageGenerationHandler {
         request: &R,
         operation: &str,
     ) -> Result<ImageResponse, String> {
-        let response = self
-            .client
-            .post(endpoint)
-            .header(USER_AGENT, concat!("nanocodex/", env!("CARGO_PKG_VERSION")))
-            .bearer_auth(&self.api_key)
-            .json(request)
-            .send()
+        let auth = self
+            .auth
+            .snapshot()
             .await
-            .map_err(|error| format!("{operation} request failed: {error}"))?;
+            .map_err(|error| error.to_string())?;
+        let response = self.send_authorized(endpoint, request, &auth).await?;
+        let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && auth.mode() == OpenAiAuthMode::ChatGpt
+        {
+            self.auth
+                .recover_unauthorized(&auth)
+                .await
+                .map_err(|error| error.to_string())?;
+            let refreshed = self
+                .auth
+                .snapshot()
+                .await
+                .map_err(|error| error.to_string())?;
+            self.send_authorized(endpoint, request, &refreshed).await?
+        } else {
+            response
+        };
         let status = response.status();
         let body = response
             .bytes()
@@ -138,6 +152,30 @@ impl ImageGenerationHandler {
         }
         serde_json::from_slice(&body)
             .map_err(|error| format!("failed to decode {operation} response: {error}"))
+    }
+
+    async fn send_authorized<R: Serialize + ?Sized>(
+        &self,
+        endpoint: &str,
+        body: &R,
+        auth: &OpenAiAuthSnapshot,
+    ) -> Result<reqwest::Response, String> {
+        let mut request = self
+            .client
+            .post(endpoint)
+            .header(USER_AGENT, concat!("nanocodex/", env!("CARGO_PKG_VERSION")))
+            .header(AUTHORIZATION, format!("Bearer {}", auth.bearer()));
+        if let Some(account_id) = auth.account_id() {
+            request = request.header("ChatGPT-Account-ID", account_id);
+        }
+        if auth.is_fedramp() {
+            request = request.header("X-OpenAI-Fedramp", "true");
+        }
+        request
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| format!("image request failed: {error}"))
     }
 }
 

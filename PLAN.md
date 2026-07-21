@@ -14,8 +14,9 @@ transport to their users.
 
 ## Product contract
 
-- The primary entry point is `Nanocodex::new(api_key)` or
-  `Nanocodex::builder(api_key)`.
+- The primary entry point is `Nanocodex::new(auth)` or
+  `Nanocodex::builder(auth)`. A string remains the short API-key path; native
+  callers may instead pass a managed ChatGPT OAuth authorization.
 - `build()` returns `(Nanocodex, AgentEvents)`: a cheap cloneable command handle
   and one optional ordered event receiver.
 - `agent.prompt(...)` accepts a user turn and returns an independently awaitable
@@ -121,6 +122,26 @@ Socket tasks and mutable driver details stay private.
   leaves its authorized WebSocket boundary to the embedding application.
 - Application-defined subagents remain an example-level tool composition, with
   optional host-side event multiplexing rather than a core scheduler.
+
+### 5. Native ChatGPT subscription authentication: complete
+
+- `OpenAiAuth` is one shared capability across the Responses WebSocket,
+  standalone search, image generation, child agents, and forks. API-key callers
+  remain source-compatible.
+- Native ChatGPT OAuth uses authorization-code PKCE with a state-checked
+  localhost callback. The CLI owns browser UX and `login`, `status`, and
+  `logout`; the library owns token parsing, redacted snapshots, persistence,
+  refresh, and recovery.
+- The CLI defaults to Codex's `$CODEX_HOME/auth.json` (normally
+  `~/.codex/auth.json`), so an existing Codex login is immediately reusable.
+  Explicit auth-file paths remain available for isolated embedders.
+- ChatGPT mode selects the Codex backend endpoints and sends the bearer,
+  `ChatGPT-Account-ID`, and optional FedRAMP header. Refresh is proactive near
+  expiry and reactive once after a 401. Rotating refresh tokens are serialized,
+  atomically persisted with owner-only permissions on Unix, and reloaded from disk
+  before reuse. A changed account is never adopted by a running agent.
+- Browser/WASM remains host-authorized. It does not persist OAuth credentials or
+  introduce an SDK-owned relay/app-server boundary.
 
 ## Active roadmap
 

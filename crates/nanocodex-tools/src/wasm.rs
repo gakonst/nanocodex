@@ -139,12 +139,12 @@ struct HostNotification {
 
 pub struct WebSearchConfig {
     pub endpoint: String,
-    pub api_key: String,
+    pub auth: nanocodex_core::OpenAiAuth,
 }
 
 pub struct ImageGenerationConfig {
     pub api_base_url: String,
-    pub api_key: String,
+    pub auth: nanocodex_core::OpenAiAuth,
     pub save_root: PathBuf,
 }
 

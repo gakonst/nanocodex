@@ -63,7 +63,7 @@ impl WasmNanocodex {
         let thinking = config.thinking.parse::<Thinking>().map_err(js_error)?;
         let session_id = config.session_id.unwrap_or_else(new_session_id);
         let model_config = Arc::new(ModelConfig {
-            api_key: config.api_key,
+            auth: nanocodex_core::OpenAiAuth::api_key(config.api_key),
             thinking,
             websocket_url: config.websocket_url,
             api_base_url: config.api_base_url,

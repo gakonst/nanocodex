@@ -17,6 +17,13 @@ releases the GIL, so applications can consume it from a normal Python thread.
 The Rust runtime, tools, transport, retries, history, and event ordering stay
 inside the extension; no app server or per-tool Python bridge is involved.
 
+Pass an API key positionally, or use native subscription credentials created by
+`nanocodex auth login`:
+
+```python
+agent, events = Nanocodex(auth_file="/path/to/.codex/auth.json")
+```
+
 Runnable consumers live together at the repository boundary under
 [`examples/python`](../../examples/python): `follow_on.py` demonstrates retained
 conversation state and `events.py` consumes the ordered event receiver.

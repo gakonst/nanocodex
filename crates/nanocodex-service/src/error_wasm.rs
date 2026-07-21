@@ -3,6 +3,8 @@ use std::time::Duration;
 /// Errors produced by the host-backed Responses WebSocket transport.
 #[derive(Debug, thiserror::Error)]
 pub enum ResponsesError {
+    #[error("failed to resolve OpenAI authorization: {detail}")]
+    Authorization { detail: String },
     #[error("failed to connect to the Responses WebSocket: {detail}")]
     Connect { detail: String },
     #[error("failed to send a Responses WebSocket frame: {detail}")]
@@ -37,6 +39,7 @@ impl ResponsesError {
     #[must_use]
     pub fn retry_advice(&self) -> Option<RetryAdvice> {
         let class = match self {
+            Self::Authorization { .. } => return None,
             Self::Connect { .. } => "handshake_transport",
             Self::Send {
                 reconnectable: true,
@@ -56,6 +59,7 @@ impl ResponsesError {
     #[must_use]
     pub fn class(&self) -> &'static str {
         match self {
+            Self::Authorization { .. } => "authorization",
             Self::Connect { .. } => "handshake",
             Self::Send { .. } => "send",
             Self::Receive(_) => "receive",

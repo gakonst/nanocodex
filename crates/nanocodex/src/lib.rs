@@ -2,6 +2,8 @@ extern crate self as nanocodex;
 
 #[cfg(not(target_family = "wasm"))]
 mod agent;
+#[cfg(not(target_family = "wasm"))]
+mod auth;
 mod error;
 mod model;
 #[cfg(not(target_family = "wasm"))]
@@ -13,15 +15,21 @@ mod wasm;
 pub use agent::{AgentHandle, Nanocodex, NanocodexBuilder, Turn, TurnControl, TurnResult};
 #[cfg(not(target_family = "wasm"))]
 pub use async_trait::async_trait;
+#[cfg(not(target_family = "wasm"))]
+pub use auth::{
+    ChatGptAuthError, ChatGptAuthStatus, ChatGptLogin, chatgpt_auth_status, load_chatgpt_auth,
+    logout_chatgpt,
+};
 pub use error::{NanocodexError, ResponsesError, Result};
 pub use nanocodex_core::responses::RequestProfile;
 pub use nanocodex_core::{
     AgentEvent, AgentEventKind, AgentEvents, AgentMessageContent, ContentItem, CustomToolFormat,
     FunctionOutputBody, FunctionOutputContent, ImageDetail, InternalMessageMetadata, ItemStatus,
     JsonSchema, JsonValue, LocalShellAction, LocalShellExecAction, LocalShellStatus, MODEL,
-    MessagePhase, MessageRole, OutputTextAnnotation, OutputTextLogprob, OutputTextTopLogprob,
-    Prompt, PromptInput, ReasoningContent, ReasoningSummary, ResponseItem, Thinking, ToolCaller,
-    ToolDefinition, Usage, UserInput, WebSearchAction,
+    MessagePhase, MessageRole, OpenAiAuth, OpenAiAuthError, OpenAiAuthMode, OutputTextAnnotation,
+    OutputTextLogprob, OutputTextTopLogprob, Prompt, PromptInput, ReasoningContent,
+    ReasoningSummary, ResponseItem, Thinking, ToolCaller, ToolDefinition, Usage, UserInput,
+    WebSearchAction,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use nanocodex_macros::tool;

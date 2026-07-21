@@ -16,6 +16,7 @@ use tokio_tungstenite::{
 };
 
 use crate::{ResponsesError, connector::connect_async};
+use nanocodex_core::OpenAiAuthSnapshot;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -92,18 +93,29 @@ impl ResponsesSocket {
     /// Returns an error for invalid configuration, timeout, or handshake failure.
     pub(crate) async fn connect(
         endpoint: &str,
-        api_key: &str,
+        auth: &OpenAiAuthSnapshot,
         session_id: &str,
     ) -> Result<(Self, ConnectionMetadata), ResponsesError> {
         ensure_crypto_provider();
         let mut request = endpoint
             .into_client_request()
             .map_err(ResponsesError::InvalidUrl)?;
-        let authorization = HeaderValue::from_str(&format!("Bearer {api_key}"))
+        let authorization = HeaderValue::from_str(&format!("Bearer {}", auth.bearer()))
             .map_err(ResponsesError::InvalidAuthorization)?;
         request
             .headers_mut()
             .insert(header::AUTHORIZATION, authorization);
+        if let Some(account_id) = auth.account_id() {
+            request.headers_mut().insert(
+                "ChatGPT-Account-ID",
+                HeaderValue::from_str(account_id).map_err(ResponsesError::InvalidAuthorization)?,
+            );
+        }
+        if auth.is_fedramp() {
+            request
+                .headers_mut()
+                .insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
+        }
         request.headers_mut().insert(
             "OpenAI-Beta",
             HeaderValue::from_static(RESPONSES_WEBSOCKETS_BETA),
@@ -562,7 +574,10 @@ mod tests {
             return Ok(());
         }
         let endpoint = env::var("NANOCODEX_HTTP_PROXY_TEST_ENDPOINT")?;
-        let result = ResponsesSocket::connect(&endpoint, "test-key", "session-proxy").await;
+        let auth = nanocodex_core::OpenAiAuth::api_key("test-key")
+            .snapshot()
+            .await?;
+        let result = ResponsesSocket::connect(&endpoint, &auth, "session-proxy").await;
         let expected_rejection = env::var("NANOCODEX_HTTP_PROXY_TEST_EXPECT_REJECTION")
             .ok()
             .map(|status| status.parse::<u16>())
@@ -589,6 +604,27 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await?;
             let mut socket = accept_hdr_async(stream, |request: &Request, response| {
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("Bearer subscription-token")
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("ChatGPT-Account-ID")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("account-test")
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("X-OpenAI-Fedramp")
+                        .and_then(|v| v.to_str().ok()),
+                    Some("true")
+                );
                 assert_eq!(
                     request
                         .headers()
@@ -641,8 +677,14 @@ mod tests {
         });
 
         let endpoint = format!("ws://{address}");
-        let (mut socket, _) =
-            ResponsesSocket::connect(&endpoint, "test-key", "session-test").await?;
+        let auth = nanocodex_core::OpenAiAuthSnapshot::new(
+            nanocodex_core::OpenAiAuthMode::ChatGpt,
+            "subscription-token",
+            Some("account-test"),
+            true,
+            1,
+        );
+        let (mut socket, _) = ResponsesSocket::connect(&endpoint, &auth, "session-test").await?;
 
         server.await??;
         let text = socket.next_text().await?;

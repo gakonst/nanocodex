@@ -1359,13 +1359,13 @@ fn tool_runtime(workspace: &str, config: &ModelConfig, tools: &Tools) -> ToolRun
         workspace,
         tools.web_search_enabled().then(|| WebSearchConfig {
             endpoint: config.search_endpoint(),
-            api_key: config.api_key.clone(),
+            auth: config.auth.clone(),
         }),
         tools
             .image_generation_enabled()
             .then(|| ImageGenerationConfig {
                 api_base_url: config.api_base_url.clone(),
-                api_key: config.api_key.clone(),
+                auth: config.auth.clone(),
                 save_root: Path::new(workspace).to_path_buf(),
             }),
     )

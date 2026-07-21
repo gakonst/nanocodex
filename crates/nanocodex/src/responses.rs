@@ -21,16 +21,16 @@ pub struct FactoryResponses<F>(pub(crate) F);
 /// Responses transport configuration with standard or caller-supplied Tower
 /// service factory policy.
 pub struct Responses<S = StandardResponses> {
-    pub(crate) websocket_url: String,
-    pub(crate) api_base_url: String,
+    pub(crate) websocket_url: Option<String>,
+    pub(crate) api_base_url: Option<String>,
     pub(crate) service: S,
 }
 
 impl Default for Responses<StandardResponses> {
     fn default() -> Self {
         Self {
-            websocket_url: "wss://api.openai.com/v1/responses".to_owned(),
-            api_base_url: "https://api.openai.com/v1".to_owned(),
+            websocket_url: None,
+            api_base_url: None,
             service: StandardResponses,
         }
     }
@@ -99,13 +99,13 @@ pub struct ResponsesBuilder<S> {
 impl<S> ResponsesBuilder<S> {
     #[must_use]
     pub fn websocket_url(mut self, url: impl Into<String>) -> Self {
-        self.responses.websocket_url = url.into();
+        self.responses.websocket_url = Some(url.into());
         self
     }
 
     #[must_use]
     pub fn api_base_url(mut self, url: impl Into<String>) -> Self {
-        self.responses.api_base_url = url.into();
+        self.responses.api_base_url = Some(url.into());
         self
     }
 
