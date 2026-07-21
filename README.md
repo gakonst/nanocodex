@@ -9,7 +9,7 @@
 [![Docs.rs](https://img.shields.io/docsrs/nanocodex)][docs]
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)][license]
 
-**[API](#api)** | **[Install](#installation)** | **[Examples](examples)** | **[Benchmarks](#how-fast)**
+**[Install](#installation)** | **[Thesis](#model-and-harness-co-design)** | **[Why Code Mode?](#why-code-mode)** | **[API](#api)** | **[Examples](examples)** | **[Benchmarks](#how-fast)**
 
 [ci]: https://github.com/gakonst/nanocodex/actions/workflows/ci.yml
 [crates]: https://crates.io/crates/nanocodex
@@ -20,10 +20,113 @@
 
 ---
 
-Nanocodex provides typed turns, tools, events, steering, cancellation, queueing,
-and fast historical forks over the OpenAI Responses WebSocket API. It keeps the
-complete coding-agent conversation inside your process without requiring an app
-server or durable control plane.
+Nanocodex is a Code Mode-first Rust agents SDK. It provides typed turns, tools,
+events, steering, cancellation, queueing, and fast historical forks over the
+OpenAI Responses WebSocket API. It keeps the complete coding-agent conversation
+inside your process without requiring an app server or durable control plane.
+
+## Installation
+
+Install the daily-driver CLI on macOS or Linux:
+
+```sh
+curl -fsSL https://nanocodex.paradigm.xyz | bash
+```
+
+Add the library to a Rust project:
+
+```sh
+cargo add nanocodex
+```
+
+Or add it directly to `Cargo.toml`:
+
+```toml
+[dependencies]
+nanocodex = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+Node.js 12.22 or newer must be available on `PATH` for Code Mode.
+
+## Model and harness co-design
+
+Nanocodex starts from a simple thesis: **the model and its harness are one
+system**. A coding model is not an interchangeable completion engine floating
+above an arbitrary tool loop. Its effective capabilities depend on the exact
+instructions, tool contracts, response shapes, history ordering, continuation
+semantics, cache identity, streaming behavior, and failure recovery that
+surround it. Change the harness and you change the agent.
+
+That is why Nanocodex begins with how Codex actually works. We inspect the
+concrete Codex implementation, identify the model-facing invariants and
+operational behavior it relies on, and adapt them rather than designing a
+provider-neutral agent abstraction from first principles. Typed Responses
+items, stable prompt prefixes, incremental conversation continuation, complete
+history replay, tool-call ordering, WebSocket lifecycle, cancellation, and
+subprocess cleanup are parts of the behavioral contract, not incidental
+plumbing.
+
+The adaptation is as important as the fidelity. Nanocodex keeps the pieces that
+shape model behavior, then recasts them for a headless, library-first product:
+one owned driver instead of an app server, typed results and optional events
+instead of a durable rollout control plane, caller-defined tools instead of a
+product-wide integration catalog, and generated Code Mode orchestration instead
+of a generic workflow or multi-agent scheduler. Codex is the evidence and the
+behavioral reference; Nanocodex chooses the smaller API boundary.
+
+This also means agent quality and performance belong to the **model–harness
+pair**. We evaluate the complete path—prompt, tools, transport, caching,
+execution, and recovery—because a model-only comparison would miss the system
+we are actually building.
+
+## Why Code Mode?
+
+Most tool-calling agents expose a flat catalog and return to the model between
+operations. Nanocodex instead presents caller-defined Rust tools and MCP tools
+as typed JavaScript functions behind one Code Mode entrypoint. The model can
+write a small program that uses loops, conditions, data transformations, and
+`Promise.all`, so related tool work can be composed inside one cell without a
+model round trip between every operation.
+
+This keeps the model-facing surface small while the application keeps normal
+Rust ownership. Tool implementations, credentials, retry policy, and mutable
+state stay outside the generated program. Code Mode runs cells on a prewarmed,
+session-persistent Node host and gives the model explicit controls for yielding,
+resuming long work, and bounding returned output.
+
+Subagents make that composition especially useful. An application can expose
+`AgentHandle::spawn()` as a clean-room worker, `AgentHandle::fork()` as a worker
+with the latest safe conversation context, and another tool for follow-up turns
+on a retained child. Code Mode can then generate the orchestration topology for
+the task instead of selecting a hard-coded workflow DAG:
+
+```js
+const [independent, contextual] = await Promise.all([
+  tools.spawn_agent({
+    role: "reviewer",
+    task: "Find assumptions the parent may have missed."
+  }),
+  tools.fork_agent({
+    role: "investigator",
+    task: "Trace the suspected regression using our existing context."
+  })
+]);
+
+const followUp = await tools.prompt_agent({
+  agent_id: independent.agent_id,
+  task: `Challenge this conclusion:\n\n${contextual.report}`
+});
+
+text({ independent, contextual, followUp });
+```
+
+That allows dynamic fan-out, fan-in, independent checks, contextual branches,
+and targeted follow-ups while Nanocodex core remains one owned agent lifecycle
+rather than a generic multi-agent scheduler. The bundled CLI exposes this
+example surface with `nanocodex --subagents true`; library consumers define the
+tools and policy themselves. See [`subagents.rs`](examples/subagents.rs) for the
+complete implementation.
 
 ## API
 
@@ -84,18 +187,6 @@ AgentHandle, supplied to tools_factory(...)
 
 That is the complete ownership model. See the runnable
 [`lifecycle.rs`](examples/lifecycle.rs) for all of it in one file.
-
-## Installation
-
-Most applications need only the top-level crate:
-
-```toml
-[dependencies]
-nanocodex = "0.1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-```
-
-Node.js 12.22 or newer must be available on `PATH` for Code Mode.
 
 ### Authentication
 
@@ -241,10 +332,42 @@ let (mainline, historical, latest) = tokio::try_join!(
 )?;
 ```
 
-Forks contain only committed work. Each child gets a new driver, WebSocket,
-response chain, service stack, and tool runtime. Immutable typed history and
-cache lineage are shared. If a provider checkpoint has expired, Nanocodex
-replays committed history once and then returns to incremental requests.
+#### Why checkpoint forks are efficient
+
+Every Nanocodex `response.create` request sets `store: true`. Once a response
+completes, the API can retain it as a checkpoint; Nanocodex keeps its response
+ID private inside the completed `TurnResult`. The next healthy model call sends
+that ID as `previous_response_id` plus only the new delta—the user message,
+steer, or tool output added since the stored response—not the transcript again.
+
+The same mechanism makes a historical fork cheap:
+
+```text
+prewarm       input: stable instructions/tools, store: true   → prefix response
+root turn A   previous_response_id: prefix, input: A delta    → response A
+root turn B   previous_response_id: A, input: B delta         → response B
+fork from A   previous_response_id: A, input: branch delta    → branch response
+```
+
+The root remains attached to response B and continues independently. The fork
+gets its own driver, WebSocket, response chain, service stack, and tool runtime,
+but its first request references response A and uploads only the branch delta.
+Locally, immutable typed-history segments and stable cache lineage are shared,
+so constructing the branch does not copy the retained conversation either.
+The API still evaluates the complete logical context—and token usage reflects
+that context—even though the request payload carries only the delta.
+
+Stored responses are an optimization, not the source of truth. Nanocodex keeps
+complete client-owned typed history for every checkpoint. If the provider no
+longer has a response ID, the retry drops `previous_response_id`, replays that
+committed history once, and then resumes delta-only requests from the new stored
+response. Partial or failed responses are never committed or used as fork
+points.
+
+In the retained checkpoint benchmark, three concurrent branch requests sent
+2,175 bytes instead of an equivalent 84,612-byte full replay—a 97.4% payload
+reduction. See [`benchmarks/fork_results.md`](benchmarks/fork_results.md) for the
+live methodology, cache observations, and raw trials.
 
 See [`fork_conversations.rs`](examples/fork_conversations.rs) for a complete
 ten-checkpoint example with parallel historical forks and a caller-defined
@@ -340,7 +463,7 @@ Install the daily-driver CLI and start it in the workspace the agent should
 edit:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gakonst/nanocodex/master/install | bash
+curl -fsSL https://nanocodex.paradigm.xyz | bash
 
 # Log in once with the same subscription store Codex uses.
 nanocodex auth login

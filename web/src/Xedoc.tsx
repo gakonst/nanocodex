@@ -251,7 +251,7 @@ const homeEvalMetrics = evalComparison
   : [];
 
 const installCommand =
-  "curl -fsSL https://raw.githubusercontent.com/gakonst/nanocodex/master/install | bash";
+  "curl -fsSL https://nanocodex.paradigm.xyz | bash";
 
 export function Xedoc() {
   const [theme, setTheme] = useState<Theme>(() => {
