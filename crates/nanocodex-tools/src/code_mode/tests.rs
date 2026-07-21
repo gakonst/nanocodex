@@ -620,7 +620,19 @@ text("done");
         std::fs::read_to_string(workspace.join("moved.txt"))?,
         "moved\n"
     );
-    assert!(!workspace.join(".nanocodex/hashline-transactions").exists());
+    let receipts = std::fs::read_dir(workspace.join(".nanocodex/hashline-transactions"))?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(receipts.len(), 2);
+    assert!(
+        receipts
+            .iter()
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+    );
+    assert!(
+        receipts
+            .iter()
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "reserve"))
+    );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

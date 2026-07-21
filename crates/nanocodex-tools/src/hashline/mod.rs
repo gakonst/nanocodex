@@ -5,7 +5,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-use base64::Engine as _;
 use nanocodex_core::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -284,22 +283,47 @@ struct PatchRequest {
     dry_run: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct FileMetadata {
+    mode: Option<u32>,
+}
+
+impl FileMetadata {
+    fn from_std(metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            Self {
+                mode: Some(metadata.mode() & 0o7777),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            Self { mode: None }
+        }
+    }
+}
+
 #[derive(Clone)]
 enum PreparedMutation {
     Write {
         path: String,
         before: Option<Vec<u8>>,
         after: Vec<u8>,
+        metadata: Option<FileMetadata>,
     },
     Delete {
         path: String,
         before: Vec<u8>,
+        metadata: FileMetadata,
     },
     Move {
         source: String,
         destination: String,
         before: Vec<u8>,
         after: Vec<u8>,
+        metadata: FileMetadata,
     },
 }
 
@@ -365,6 +389,7 @@ fn prepare_patch_section(
             path: section.path.clone(),
             before: None,
             after,
+            metadata: None,
         });
     }
     let observed = observe(workspace, &section.path)?;
@@ -376,6 +401,7 @@ fn prepare_patch_section(
         Some(HashlinePatchFileOperation::Remove) => Ok(PreparedMutation::Delete {
             path: section.path.clone(),
             before: observed.bytes,
+            metadata: observed.metadata,
         }),
         Some(HashlinePatchFileOperation::Rename { new_path }) => {
             validate_model_path(&new_path)?;
@@ -390,6 +416,7 @@ fn prepare_patch_section(
                 destination: new_path,
                 before: observed.bytes,
                 after,
+                metadata: observed.metadata,
             })
         }
         None => {
@@ -399,6 +426,7 @@ fn prepare_patch_section(
                 path: section.path.clone(),
                 before: Some(observed.bytes),
                 after,
+                metadata: Some(observed.metadata),
             })
         }
     }
@@ -410,6 +438,7 @@ fn preview_mutation(mutation: &PreparedMutation) -> Result<Value, FunctionCallEr
             path,
             before,
             after,
+            ..
         } => {
             let old = before
                 .as_deref()
@@ -427,7 +456,7 @@ fn preview_mutation(mutation: &PreparedMutation) -> Result<Value, FunctionCallEr
                 "preview": preview,
             }))
         }
-        PreparedMutation::Delete { path, before } => Ok(json!({
+        PreparedMutation::Delete { path, before, .. } => Ok(json!({
             "path": path,
             "operation": "delete",
             "old_exact_digest": exact_digest(before),
@@ -437,6 +466,7 @@ fn preview_mutation(mutation: &PreparedMutation) -> Result<Value, FunctionCallEr
             destination,
             before,
             after,
+            ..
         } => Ok(json!({
             "path": source,
             "new_path": destination,
@@ -446,6 +476,34 @@ fn preview_mutation(mutation: &PreparedMutation) -> Result<Value, FunctionCallEr
             "new_hash": hash_hex(str_from_bytes(after)?),
         })),
     }
+}
+
+fn bound_transaction_previews(
+    previews: Vec<Value>,
+) -> Result<(Vec<Value>, bool), FunctionCallError> {
+    const PREVIEW_BUDGET: usize = 6 * 1024;
+    let total = previews.len();
+    let mut bounded = Vec::new();
+    let mut used = 2usize;
+    let mut removed_preview = false;
+    for mut preview in previews {
+        let mut encoded = serde_json::to_vec(&preview)
+            .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+        if used.saturating_add(encoded.len()).saturating_add(1) > PREVIEW_BUDGET {
+            if let Some(object) = preview.as_object_mut() {
+                removed_preview |= object.remove("preview").is_some();
+            }
+            encoded = serde_json::to_vec(&preview)
+                .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+        }
+        if used.saturating_add(encoded.len()).saturating_add(1) > PREVIEW_BUDGET {
+            break;
+        }
+        used = used.saturating_add(encoded.len()).saturating_add(1);
+        bounded.push(preview);
+    }
+    let truncated = removed_preview || bounded.len() != total;
+    Ok((bounded, truncated))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -578,12 +636,13 @@ fn execute_transaction(
         .iter()
         .map(preview_mutation)
         .collect::<Result<Vec<_>, _>>()?;
+    let (previews, preview_truncated) = bound_transaction_previews(previews)?;
     if matches!(request.action, TransactionAction::Preview) {
         return Ok(json!({
             "outcome": "previewed",
             "planDigest": plan_digest,
             "mutations": previews,
-            "preview_truncated": false,
+            "preview_truncated": preview_truncated,
         }));
     }
     let transaction_id = plan_digest.clone();
@@ -599,6 +658,7 @@ fn execute_transaction(
                 "transactionId": transaction_id,
                 "planDigest": plan_digest,
                 "mutations": previews,
+                "preview_truncated": preview_truncated,
             }))
         }
         Err(error) => Err(error),
@@ -620,6 +680,7 @@ fn prepare_transaction(
                     path: path.clone(),
                     before: None,
                     after: contents.as_bytes().to_vec(),
+                    metadata: None,
                 }
             }
             FileMutation::Update {
@@ -634,6 +695,7 @@ fn prepare_transaction(
                     path: path.clone(),
                     before: Some(observed.bytes),
                     after,
+                    metadata: Some(observed.metadata),
                 }
             }
             FileMutation::Delete { path, expected } => {
@@ -642,6 +704,7 @@ fn prepare_transaction(
                 PreparedMutation::Delete {
                     path: path.clone(),
                     before: observed.bytes,
+                    metadata: observed.metadata,
                 }
             }
             FileMutation::Move {
@@ -664,6 +727,7 @@ fn prepare_transaction(
                     destination: destination.clone(),
                     before: observed.bytes,
                     after,
+                    metadata: observed.metadata,
                 }
             }
         };
@@ -749,6 +813,7 @@ fn append_payload(patch: &mut String, lines: &[String]) -> Result<(), FunctionCa
 struct Observed {
     bytes: Vec<u8>,
     text: String,
+    metadata: FileMetadata,
 }
 
 fn observe(root: &Path, model_path: &str) -> Result<Observed, FunctionCallError> {
@@ -781,7 +846,12 @@ fn observe(root: &Path, model_path: &str) -> Result<Observed, FunctionCallError>
     let text = String::from_utf8(bytes.clone()).map_err(|_| {
         FunctionCallError::RespondToModel(format!("Hashline path {model_path} is not valid UTF-8"))
     })?;
-    Ok(Observed { bytes, text })
+    let metadata = FileMetadata::from_std(&metadata);
+    Ok(Observed {
+        bytes,
+        text,
+        metadata,
+    })
 }
 
 fn validate_model_path(model_path: &str) -> Result<(), FunctionCallError> {
@@ -925,15 +995,16 @@ fn apply_one(root: &Path, mutation: &PreparedMutation) -> Result<(), FunctionCal
             path,
             before,
             after,
+            metadata,
         } => {
             if let Some(expected) = before {
                 validate_exact(path, &observe(root, path)?.bytes, &exact_digest(expected))?;
             } else {
                 ensure_missing(root, path)?;
             }
-            atomic_write(root, path, after, before.is_none())
+            atomic_write(root, path, after, before.is_none(), metadata.as_ref())
         }
-        PreparedMutation::Delete { path, before } => {
+        PreparedMutation::Delete { path, before, .. } => {
             validate_exact(path, &observe(root, path)?.bytes, &exact_digest(before))?;
             let target = resolve_existing(root, path)?;
             fs::remove_file(&target).map_err(|error| io_error("delete", &target, error))?;
@@ -944,10 +1015,11 @@ fn apply_one(root: &Path, mutation: &PreparedMutation) -> Result<(), FunctionCal
             destination,
             before,
             after,
+            metadata,
         } => {
             validate_exact(source, &observe(root, source)?.bytes, &exact_digest(before))?;
             ensure_missing(root, destination)?;
-            atomic_write(root, destination, after, true)?;
+            atomic_write(root, destination, after, true, Some(metadata))?;
             let source_path = resolve_existing(root, source)?;
             fs::remove_file(&source_path)
                 .map_err(|error| io_error("remove move source", &source_path, error))?;
@@ -961,8 +1033,9 @@ fn rollback_one(root: &Path, mutation: &PreparedMutation) -> Result<(), Function
         PreparedMutation::Write {
             path,
             before: Some(before),
+            metadata,
             ..
-        } => atomic_write(root, path, before, false),
+        } => atomic_write(root, path, before, false, metadata.as_ref()),
         PreparedMutation::Write {
             path, before: None, ..
         } => {
@@ -971,11 +1044,16 @@ fn rollback_one(root: &Path, mutation: &PreparedMutation) -> Result<(), Function
                 .map_err(|error| io_error("rollback create", &target, error))?;
             sync_parent(&target)
         }
-        PreparedMutation::Delete { path, before } => atomic_write(root, path, before, true),
+        PreparedMutation::Delete {
+            path,
+            before,
+            metadata,
+        } => atomic_write(root, path, before, true, Some(metadata)),
         PreparedMutation::Move {
             source,
             destination,
             before,
+            metadata,
             ..
         } => {
             if let Ok(target) = resolve_existing(root, destination) {
@@ -983,7 +1061,7 @@ fn rollback_one(root: &Path, mutation: &PreparedMutation) -> Result<(), Function
                     .map_err(|error| io_error("rollback move destination", &target, error))?;
                 sync_parent(&target)?;
             }
-            atomic_write(root, source, before, true)
+            atomic_write(root, source, before, true, Some(metadata))
         }
     }
 }
@@ -993,6 +1071,7 @@ fn atomic_write(
     model_path: &str,
     contents: &[u8],
     create_parents: bool,
+    metadata: Option<&FileMetadata>,
 ) -> Result<(), FunctionCallError> {
     let target = resolve_destination(root, model_path, create_parents)?;
     let parent = target
@@ -1005,8 +1084,15 @@ fn atomic_write(
     ));
     let mut file =
         File::create(&temporary).map_err(|error| io_error("stage", &temporary, error))?;
-    if let Ok(metadata) = fs::metadata(&target) {
-        file.set_permissions(metadata.permissions())
+    if let Some(mode) = metadata.and_then(|metadata| metadata.mode) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(fs::Permissions::from_mode(mode))
+                .map_err(|error| io_error("preserve permissions", &temporary, error))?;
+        }
+    } else if let Ok(existing) = fs::metadata(&target) {
+        file.set_permissions(existing.permissions())
             .map_err(|error| io_error("preserve permissions", &temporary, error))?;
     }
     file.write_all(contents)
@@ -1038,26 +1124,32 @@ fn prepared_digests(prepared: &[PreparedMutation]) -> Vec<Value> {
                 path,
                 before,
                 after,
+                metadata,
             } => json!([
                 "write",
                 path,
                 before.as_deref().map(exact_digest),
-                exact_digest(after)
+                exact_digest(after),
+                metadata
             ]),
-            PreparedMutation::Delete { path, before } => {
-                json!(["delete", path, exact_digest(before)])
-            }
+            PreparedMutation::Delete {
+                path,
+                before,
+                metadata,
+            } => json!(["delete", path, exact_digest(before), metadata]),
             PreparedMutation::Move {
                 source,
                 destination,
                 before,
                 after,
+                metadata,
             } => json!([
                 "move",
                 source,
                 destination,
                 exact_digest(before),
-                exact_digest(after)
+                exact_digest(after),
+                metadata
             ]),
         })
         .collect()
@@ -1090,18 +1182,6 @@ fn validate_exact(path: &str, bytes: &[u8], expected: &str) -> Result<(), Functi
 
 fn exact_digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-fn encode_bytes(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn decode_bytes(encoded: &str) -> Result<Vec<u8>, FunctionCallError> {
-    base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|error| {
-            FunctionCallError::RespondToModel(format!("invalid recovery evidence: {error}"))
-        })
 }
 
 fn str_from_bytes(bytes: &[u8]) -> Result<&str, FunctionCallError> {
