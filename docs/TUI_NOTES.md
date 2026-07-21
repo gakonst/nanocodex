@@ -45,7 +45,7 @@ that may affect the current run, while `Tab` creates a later queued turn.
 | `Ctrl+G` | Open the current draft as Markdown in `$VISUAL`, falling back to `$EDITOR`, then replace the composer with the saved text. |
 | `e` while a prior prompt is selected | Replace that user-message row with a bordered inline editor while preserving the surrounding transcript and the current composer draft. `Enter` forks immediately before the prompt and sends the revision on the new branch; `Esc` cancels, clears selection, and restores composer focus. `Shift+Enter` inserts a newline and `Ctrl+G` edits the inline buffer in `$VISUAL`/`$EDITOR`. |
 | `Ctrl+Alt+Up` / `Ctrl+Alt+Down` | Cycle through retained main branches. Each branch preserves its transcript and composer draft. |
-| `Ctrl+Alt+B` | Toggle the right-side branch tree. Parent/child connectors and nesting show fork topology; `Up`/`Down` or `j`/`k` navigate in depth-first tree order without switching, `Enter` switches when the main turn is idle, and `Esc` closes it. |
+| `Ctrl+Alt+B` | Toggle the right-side branch tree. Parent/child connectors and nesting show fork topology; `Up`/`Down` or `j`/`k` instantly preview and switch in depth-first tree order, and `Esc` closes it. During a running turn the preview still changes immediately and the agent switch follows when the turn becomes idle. |
 | Terminal paste | Insert literal pasted text at the cursor after normalizing CRLF and CR to LF. |
 
 ### Transcript navigation

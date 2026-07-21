@@ -483,7 +483,10 @@ fn handle_worker_update(
     commands: &mpsc::UnboundedSender<WorkerCommand>,
 ) -> Result<()> {
     match update {
-        WorkerEvent::TurnFinished { target, error } => app.turn_finished(target, error),
+        WorkerEvent::TurnFinished { target, error } => {
+            app.turn_finished(target, error);
+            request_navigated_branch_switch(app, commands)?;
+        }
         WorkerEvent::TurnTraceStarted { .. } | WorkerEvent::TurnTraceRejected { .. } => {}
         WorkerEvent::SteerAdmitted { target, id } => app.steer_admitted(target, id),
         WorkerEvent::SteerQueued { target, id, prompt } => {
@@ -529,6 +532,7 @@ fn handle_worker_update(
         }
         WorkerEvent::MainBranchSwitched { id, request_id } => {
             app.main_branch_switched(id, request_id);
+            request_navigated_branch_switch(app, commands)?;
         }
         WorkerEvent::MainBranchSwitchFailed { id, error } => {
             app.main_branch_switch_failed(id, &error);
@@ -1407,18 +1411,30 @@ fn handle_branch_navigator_key(
     }
     if key.modifiers.is_empty() {
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => app.move_branch_navigator(-1),
-            KeyCode::Down | KeyCode::Char('j') => app.move_branch_navigator(1),
-            KeyCode::Enter => {
-                if let Some(id) = app.switch_to_navigated_branch() {
-                    send_command(commands, WorkerCommand::SwitchMainBranch { id })?;
-                }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.move_branch_navigator(-1);
+                request_navigated_branch_switch(app, commands)?;
             }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.move_branch_navigator(1);
+                request_navigated_branch_switch(app, commands)?;
+            }
+            KeyCode::Enter => request_navigated_branch_switch(app, commands)?,
             KeyCode::Esc | KeyCode::Char('q') => app.close_branch_navigator(),
             _ => {}
         }
     }
     Ok(Some(TerminalAction::Redraw))
+}
+
+fn request_navigated_branch_switch(
+    app: &mut App,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<()> {
+    if let Some(id) = app.switch_to_navigated_branch() {
+        send_command(commands, WorkerCommand::SwitchMainBranch { id })?;
+    }
+    Ok(())
 }
 
 fn handle_transcript_selection_key(key: KeyEvent, app: &mut App) -> Option<TerminalAction> {
@@ -2328,7 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_navigator_previews_before_switching() -> eyre::Result<()> {
+    fn branch_navigator_switches_as_selection_moves() -> eyre::Result<()> {
         let (commands, mut worker) = mpsc::unbounded_channel();
         let mut app = App::new("/workspace".into());
         app.main
@@ -2377,12 +2393,6 @@ mod tests {
                 .map(|preview| preview.id),
             Some(0)
         );
-        let _ = handle_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut app,
-            "root-session",
-            &commands,
-        )?;
         assert!(matches!(
             worker.try_recv(),
             Ok(WorkerCommand::SwitchMainBranch { id: 0 })

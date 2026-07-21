@@ -81,15 +81,20 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
         let [main_area, navigator_area] =
             Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
                 .areas(transcript_area);
-        render_transcript(
-            frame,
-            &mut app.main,
-            main_area,
-            " Main ",
-            true,
-            inline_edit,
-            "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
-        );
+        let selected = app.branch_navigator_selected_id().unwrap_or_default();
+        let title = format!(" Branch {selected} preview ");
+        {
+            let conversation = app.branch_navigator_conversation_mut();
+            render_transcript(
+                frame,
+                conversation,
+                main_area,
+                &title,
+                true,
+                None,
+                "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
+            );
+        }
         render_branch_navigator(frame, app, navigator_area);
     } else {
         render_transcript(
@@ -135,9 +140,9 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn render_branch_navigator(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let title = if app.main.running || app.main.pending_turns > 0 {
-        " Branches · preview only while running "
+        " Branch tree · live preview; switch when idle "
     } else {
-        " Branches · ↑/↓ preview · Enter switch "
+        " Branch tree · moving switches "
     };
     let block = Block::default()
         .title(title)
@@ -196,7 +201,7 @@ fn render_transcript(
     frame: &mut Frame<'_>,
     conversation: &mut Conversation,
     area: Rect,
-    title: &'static str,
+    title: &str,
     focused: bool,
     inline_edit: Option<InlineEdit<'_>>,
     empty_message: &'static str,
@@ -300,7 +305,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let conversation = app.active_conversation();
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let state = if app.branch_navigator_active() {
-        "Branches — ↑/↓ or j/k preview · Enter switch · Esc close".to_owned()
+        "Branches — ↑/↓ or j/k switch + preview · Esc close".to_owned()
     } else if app.historical_editor_active() {
         "Editing history — Enter fork/send · Shift+Enter newline · Esc cancel · Ctrl+G $EDITOR"
             .to_owned()
@@ -549,12 +554,15 @@ mod tests {
             .transcript
             .push_editable_user("revised branch prompt".to_owned(), 2);
         assert!(app.toggle_branch_navigator());
+        app.move_branch_navigator(-1);
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Branches · ↑/↓ preview"));
+        assert!(rendered.contains("Branch tree · moving switches"));
+        assert!(rendered.contains("Branch 0 preview"));
         assert!(rendered.contains("root branch prompt"));
         assert!(rendered.contains("revised branch prompt"));
+        assert!(rendered.contains("› ○ branch 0"));
         assert!(rendered.contains("└─● branch 1 current"));
     }
 

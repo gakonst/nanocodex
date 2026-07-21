@@ -1112,7 +1112,11 @@ impl App {
         let Some(selected) = self.branch_navigator else {
             return;
         };
-        let ids = self.main_branch_ids();
+        let ids = self
+            .branch_previews()
+            .into_iter()
+            .map(|preview| preview.id)
+            .collect::<Vec<_>>();
         let Some(position) = ids.iter().position(|id| *id == selected) else {
             return;
         };
@@ -1120,6 +1124,27 @@ impl App {
             .rem_euclid(ids.len().cast_signed())
             .cast_unsigned();
         self.branch_navigator = ids.get(target).copied();
+    }
+
+    pub(super) fn branch_navigator_selected_id(&self) -> Option<u64> {
+        self.branch_navigator
+    }
+
+    pub(super) fn branch_navigator_conversation_mut(&mut self) -> &mut Conversation {
+        let Some(selected) = self.branch_navigator else {
+            return &mut self.main;
+        };
+        if selected == self.main_branch_id {
+            return &mut self.main;
+        }
+        let Some(position) = self
+            .main_branches
+            .iter()
+            .position(|branch| branch.id == selected)
+        else {
+            return &mut self.main;
+        };
+        &mut self.main_branches[position].conversation
     }
 
     pub(super) fn switch_to_navigated_branch(&mut self) -> Option<u64> {
@@ -1162,17 +1187,6 @@ impl App {
         tree_ordered_previews(previews)
     }
 
-    fn main_branch_ids(&self) -> Vec<u64> {
-        let mut ids = self
-            .main_branches
-            .iter()
-            .map(|branch| branch.id)
-            .chain(std::iter::once(self.main_branch_id))
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids
-    }
-
     fn request_main_branch_switch(&mut self, id: u64) -> Option<u64> {
         if id == self.main_branch_id
             || self.focus != PaneId::Main
@@ -1211,9 +1225,6 @@ impl App {
         self.main_branch_id = requested.id;
         self.main_branch_parent_id = requested.parent_id;
         self.main_branch_request_id = Some(request_id);
-        if self.branch_navigator.is_some() {
-            self.branch_navigator = Some(id);
-        }
         self.main.jump_to_bottom();
     }
 

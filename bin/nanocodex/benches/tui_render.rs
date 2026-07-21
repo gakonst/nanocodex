@@ -540,6 +540,7 @@ mod tui {
                                 Arc::from("benchmark-branch"),
                             );
                             assert!(app.toggle_branch_navigator());
+                            app.move_branch_navigator(-1);
                             let terminal = Terminal::new(TestBackend::new(120, 40))
                                 .expect("branch navigator terminal should initialize");
                             (app, terminal)
