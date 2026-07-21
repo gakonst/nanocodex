@@ -59,12 +59,18 @@ fn read_anchors_feed_patch_and_stale_guards_fail_without_writing() {
     )
     .expect("read should succeed");
     assert!(result.get("lines").is_none());
+    assert!(result.get("header").is_none());
     assert_eq!(result["content"], "1:93c8|alpha\n2:f589|beta");
-    let patch = format!(
-        "{}\nSWAP 2:{}:\n+bravo",
-        result["header"].as_str().expect("header should be text"),
-        line_hash("beta")
+    let patch_header = result["patchHeader"]
+        .as_str()
+        .expect("patch header should be text");
+    assert_eq!(
+        patch_header,
+        format!("[notes.txt]#{}", result["hash"].as_str().unwrap())
     );
+    assert_eq!(result["hash"].as_str().map(str::len), Some(8));
+    assert_eq!(result["exactDigest"].as_str().map(str::len), Some(64));
+    let patch = format!("{patch_header}\nSWAP 2:{}:\n+bravo", line_hash("beta"));
     execute_patch(
         &root,
         &PatchRequest {
@@ -90,6 +96,59 @@ fn read_anchors_feed_patch_and_stale_guards_fail_without_writing() {
         fs::read(root.join("notes.txt")).expect("file should read"),
         b"alpha\r\nbravo\r\n"
     );
+    fs::remove_dir_all(root).expect("workspace should be removed");
+}
+
+#[test]
+fn split_patch_input_previews_applies_and_rejects_ambiguous_shapes() {
+    let root = workspace("split-patch");
+    fs::write(root.join("notes.txt"), b"alpha\nbeta\n").expect("fixture should write");
+    let observed = read(
+        &root,
+        &ReadRequest {
+            path: "notes.txt".to_owned(),
+            start_line: None,
+            end_line: None,
+            max_lines: None,
+        },
+    )
+    .expect("read should succeed");
+    let header = observed["patchHeader"]
+        .as_str()
+        .expect("patch header should be text");
+    let operations = format!("SWAP 2:{}:\n+bravo", line_hash("beta"));
+    let dry_run = super::decode_patch_request(
+        &json!({"header": header, "operations": operations, "dry_run": true}).to_string(),
+    )
+    .expect("split dry-run input should decode");
+    execute_patch(&root, &dry_run).expect("split dry-run should preview");
+    assert_eq!(
+        fs::read(root.join("notes.txt")).expect("fixture should read"),
+        b"alpha\nbeta\n"
+    );
+    let apply = super::decode_patch_request(
+        &json!({"header": header, "operations": operations}).to_string(),
+    )
+    .expect("split apply input should decode");
+    execute_patch(&root, &apply).expect("split apply should succeed");
+    assert_eq!(
+        fs::read(root.join("notes.txt")).expect("result should read"),
+        b"alpha\nbravo\n"
+    );
+
+    for rejected in [
+        json!({}),
+        json!({"header": header}),
+        json!({"operations": operations}),
+        json!({"patch": "ABORT", "header": header, "operations": operations}),
+        json!({"header": format!("{header}\n[other.txt]"), "operations": "INS.HEAD:\n+x"}),
+        json!({"header": header, "operations": "[other.txt]\nINS.HEAD:\n+x"}),
+    ] {
+        assert!(
+            super::decode_patch_request(&rejected.to_string()).is_err(),
+            "ambiguous or multi-file split input should fail"
+        );
+    }
     fs::remove_dir_all(root).expect("workspace should be removed");
 }
 
@@ -143,6 +202,12 @@ fn tool_schemas_explain_relative_paths_and_patch_grammar() {
     let read =
         serde_json::to_value(super::read_definition()).expect("read definition should serialize");
     assert!(
+        read["description"]
+            .as_str()
+            .expect("read description should be text")
+            .contains("patchHeader")
+    );
+    assert!(
         read["parameters"]["properties"]["path"]["description"]
             .as_str()
             .expect("read path description should be text")
@@ -151,32 +216,41 @@ fn tool_schemas_explain_relative_paths_and_patch_grammar() {
 
     let patch =
         serde_json::to_value(super::patch_definition()).expect("patch definition should serialize");
-    let patch_description = patch["parameters"]["properties"]["patch"]["description"]
-        .as_str()
-        .expect("patch description should be text");
-    assert_eq!(
-        patch["parameters"]["required"],
-        json!(["patch"]),
-        "patch schema should require only the complete program"
-    );
     let properties = patch["parameters"]["properties"]
         .as_object()
         .expect("patch properties should be an object");
-    assert_eq!(properties.len(), 2);
-    assert!(properties.contains_key("patch"));
-    assert!(properties.contains_key("dry_run"));
+    assert_eq!(properties.len(), 4);
+    for property in ["patch", "header", "operations", "dry_run"] {
+        assert!(properties.contains_key(property));
+    }
+    assert_eq!(
+        patch["parameters"]["oneOf"],
+        json!([
+            {
+                "required": ["patch"],
+                "not": {"anyOf": [
+                    {"required": ["header"]},
+                    {"required": ["operations"]}
+                ]}
+            },
+            {
+                "required": ["header", "operations"],
+                "not": {"required": ["patch"]}
+            }
+        ])
+    );
+    let patch_contract = patch.to_string();
     for required in [
+        "patchHeader",
         "[path]#HASH",
-        "[new.txt]",
-        "SWAP 2:f589",
-        "+replacement",
+        "SWAP",
         "REM",
         "MV",
-        "workspace-relative",
+        "fully sectioned",
     ] {
         assert!(
-            patch_description.contains(required),
-            "patch description should document {required}"
+            patch_contract.contains(required),
+            "patch schema should document {required}"
         );
     }
 
@@ -307,7 +381,9 @@ fn wrong_dialect_and_format_staleness_never_write() {
     .expect("initial read should succeed");
     let stale_program = format!(
         "{}\nSWAP 2:{}:\n+bravo",
-        initial["header"].as_str().expect("header should be text"),
+        initial["patchHeader"]
+            .as_str()
+            .expect("patch header should be text"),
         line_hash("beta")
     );
     fs::write(root.join("notes.txt"), b"ALPHA\nbeta\nomega\n")
@@ -339,7 +415,9 @@ fn wrong_dialect_and_format_staleness_never_write() {
         &PatchRequest {
             patch: format!(
                 "{}\nSWAP 2:{}:\n+bravo",
-                fresh["header"].as_str().expect("header should be text"),
+                fresh["patchHeader"]
+                    .as_str()
+                    .expect("patch header should be text"),
                 line_hash("beta")
             ),
             dry_run: false,
@@ -393,9 +471,9 @@ fn patch_rejections_explain_a_valid_hashline_retry() {
         &PatchRequest {
             patch: format!(
                 "{}\n@@ -1 +1 @@\n-alpha\n+omega",
-                read_result["header"]
+                read_result["patchHeader"]
                     .as_str()
-                    .expect("header should be text")
+                    .expect("patch header should be text")
             ),
             dry_run: true,
         },

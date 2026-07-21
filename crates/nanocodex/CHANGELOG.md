@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- [tools] Dispatch standalone native Hashline calls
 - Add ChatGPT subscription authentication
 - [observability] Export full-fidelity agent traces
 - [agent] Checkpoint active turn boundaries

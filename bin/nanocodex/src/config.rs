@@ -162,26 +162,6 @@ impl AgentArgs {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use clap::Parser;
-
-    use super::AgentArgs;
-
-    #[derive(Parser)]
-    struct TestCli {
-        #[command(flatten)]
-        agent: AgentArgs,
-    }
-
-    #[test]
-    fn parses_service_tier_flag() {
-        let cli = TestCli::parse_from(["nanocodex", "--service-tier", "fast"]);
-
-        assert_eq!(cli.agent.service_tier.as_deref(), Some("fast"));
-    }
-}
-
 fn load_subscription_auth(auth_file: Option<PathBuf>) -> Result<OpenAiAuth> {
     let auth_file = auth_file.unwrap_or(default_auth_file()?);
     nanocodex::load_chatgpt_auth(&auth_file).map_err(|error| {
@@ -205,4 +185,24 @@ pub(crate) fn default_auth_file() -> Result<PathBuf> {
             eyre!("home directory is unavailable; pass --auth-file or NANOCODEX_AUTH_FILE")
         })?;
     Ok(PathBuf::from(home).join(".codex/auth.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::AgentArgs;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        agent: AgentArgs,
+    }
+
+    #[test]
+    fn parses_service_tier_flag() {
+        let cli = TestCli::parse_from(["nanocodex", "--service-tier", "fast"]);
+
+        assert_eq!(cli.agent.service_tier.as_deref(), Some("fast"));
+    }
 }

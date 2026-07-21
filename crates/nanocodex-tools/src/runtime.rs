@@ -17,6 +17,12 @@ use crate::{
 };
 
 pub const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 10_000;
+const HASHLINE_TOOL_NAMES: [&str; 4] = [
+    "hashline__read",
+    "hashline__find_block",
+    "hashline__patch",
+    "hashline__transaction",
+];
 
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
@@ -344,6 +350,7 @@ pub struct ImageGenerationConfig {
 pub struct Tools {
     web_search: bool,
     image_generation: bool,
+    hashline: bool,
     registered: Vec<Arc<dyn Tool>>,
     providers: Vec<Arc<dyn DynamicToolProvider>>,
 }
@@ -353,6 +360,7 @@ impl Default for Tools {
         Self {
             web_search: true,
             image_generation: true,
+            hashline: true,
             registered: Vec::new(),
             providers: Vec::new(),
         }
@@ -365,6 +373,7 @@ impl fmt::Debug for Tools {
             .debug_struct("Tools")
             .field("web_search", &self.web_search)
             .field("image_generation", &self.image_generation)
+            .field("hashline", &self.hashline)
             .field(
                 "registered",
                 &self
@@ -401,6 +410,12 @@ impl Tools {
     #[must_use]
     pub const fn image_generation_enabled(&self) -> bool {
         self.image_generation
+    }
+
+    /// Returns whether standalone Hashline tools are enabled.
+    #[must_use]
+    pub const fn hashline_enabled(&self) -> bool {
+        self.hashline
     }
 
     /// Starts all dynamic providers without waiting for their handshakes.
@@ -441,6 +456,7 @@ impl ToolsBuilder {
     pub fn without_defaults(mut self) -> Self {
         self.tools.web_search = false;
         self.tools.image_generation = false;
+        self.tools.hashline = false;
         self
     }
 
@@ -453,6 +469,13 @@ impl ToolsBuilder {
     #[must_use]
     pub fn image_generation(mut self, enabled: bool) -> Self {
         self.tools.image_generation = enabled;
+        self
+    }
+
+    /// Enables direct model calls to the native Hashline tool family.
+    #[must_use]
+    pub fn hashline(mut self, enabled: bool) -> Self {
+        self.tools.hashline = enabled;
         self
     }
 
@@ -524,6 +547,7 @@ pub struct ToolRuntime {
     code_mode: code_mode::CodeModeRuntime,
     sessions: Arc<ShellSessions>,
     default_shell_name: &'static str,
+    standalone_hashline: bool,
 }
 
 #[doc(hidden)]
@@ -581,6 +605,7 @@ impl ToolRuntime {
             code_mode: code_mode::CodeModeRuntime::new(code_mode_workspace),
             sessions,
             default_shell_name,
+            standalone_hashline: false,
         }
     }
 
@@ -589,6 +614,7 @@ impl ToolRuntime {
         let registry = Arc::make_mut(&mut self.registry);
         registry.extend(tools.registered.iter().cloned());
         registry.providers.extend(tools.providers.iter().cloned());
+        self.standalone_hashline = tools.hashline;
         self
     }
 
@@ -608,10 +634,41 @@ impl ToolRuntime {
 
     #[must_use]
     pub fn model_specs(&self) -> Vec<ToolDefinition> {
-        vec![
+        let mut specs = vec![
             code_mode::exec_spec(self.registry.definitions()),
             code_mode::wait_spec(),
-        ]
+        ];
+        if self.standalone_hashline {
+            specs.extend(HASHLINE_TOOL_NAMES.iter().filter_map(|name| {
+                self.registry
+                    .get(name)
+                    .map(|(_, definition)| definition.clone())
+            }));
+        }
+        specs
+    }
+
+    #[must_use]
+    pub fn supports_direct(&self, name: &str) -> bool {
+        self.standalone_hashline && HASHLINE_TOOL_NAMES.contains(&name)
+    }
+
+    pub async fn execute_direct(
+        &self,
+        name: &str,
+        input: &str,
+        context: ToolContext<'_>,
+    ) -> ToolExecution {
+        if !self.supports_direct(name) {
+            return ToolExecution::error(format!("unsupported direct tool call: {name}"));
+        }
+        let input = match serde_json::from_str(input) {
+            Ok(input) => input,
+            Err(error) => {
+                return ToolExecution::error(format!("invalid JSON arguments for {name}: {error}"));
+            }
+        };
+        self.registry.execute_nested(name, input, context).await
     }
 
     pub async fn execute_code(&self, source: &str, context: ToolContext<'_>) -> CodeModeExecution {
@@ -921,12 +978,15 @@ mod tests {
 
     use super::{
         DEFAULT_TOOL_OUTPUT_TOKENS, DynamicToolProvider, ImageGenerationConfig, Tool, ToolContext,
-        ToolExecution, ToolInput, ToolOutputBody, ToolResult, ToolRuntime, Tools, WebSearchConfig,
+        ToolExecution, ToolInput, ToolOutputBody, ToolResult, ToolRuntime, Tools, ToolsBuildError,
+        WebSearchConfig,
     };
 
     struct Double;
 
     struct Fails;
+
+    struct ReservedHashline;
 
     struct Search {
         activated: Arc<AtomicBool>,
@@ -983,6 +1043,25 @@ mod tests {
 
         async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
             Err(std::io::Error::other("intentional handler failure").into())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for ReservedHashline {
+        fn name(&self) -> &'static str {
+            "hashline__read"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition::function(
+                self.name(),
+                "Conflicts with a reserved native tool.",
+                json!({"type": "object", "properties": {}}),
+            )
+        }
+
+        async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+            Ok(ToolExecution::text("unused"))
         }
     }
 
@@ -1211,5 +1290,178 @@ text(result.value);
                 .last(),
             Some(&json!({ "type": "input_text", "text": "21" }))
         );
+    }
+    #[test]
+    fn standalone_hashline_policy_controls_stable_model_specs_and_collisions() {
+        let defaults = Tools::builder().build().unwrap();
+        let runtime = ToolRuntime::new(".", None, None).with_tools(&defaults);
+        assert_eq!(
+            runtime
+                .model_specs()
+                .iter()
+                .map(ToolDefinition::name)
+                .collect::<Vec<_>>(),
+            vec![
+                "exec",
+                "wait",
+                "hashline__read",
+                "hashline__find_block",
+                "hashline__patch",
+                "hashline__transaction",
+            ]
+        );
+
+        let empty = Tools::builder().without_defaults().build().unwrap();
+        let runtime = ToolRuntime::new(".", None, None).with_tools(&empty);
+        let specs = runtime.model_specs();
+        assert_eq!(
+            specs.iter().map(ToolDefinition::name).collect::<Vec<_>>(),
+            vec!["exec", "wait"]
+        );
+        assert!(specs[0].description().contains("hashline__read(args: {"));
+
+        let enabled = Tools::builder()
+            .without_defaults()
+            .hashline(true)
+            .build()
+            .unwrap();
+        assert_eq!(
+            ToolRuntime::new(".", None, None)
+                .with_tools(&enabled)
+                .model_specs()
+                .len(),
+            6
+        );
+        let disabled = Tools::builder().hashline(false).build().unwrap();
+        assert_eq!(
+            ToolRuntime::new(".", None, None)
+                .with_tools(&disabled)
+                .model_specs()
+                .len(),
+            2
+        );
+
+        let error = Tools::builder()
+            .tool(ReservedHashline)
+            .build()
+            .expect_err("reserved Hashline names must fail deterministically");
+        assert!(matches!(
+            error,
+            ToolsBuildError::BuiltInName(name) if name.as_ref() == "hashline__read"
+        ));
+    }
+
+    fn standalone_hashline_workspace() -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!(
+            "nanocodex-standalone-hashline-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("notes.txt"), b"alpha\nbeta\n").unwrap();
+        workspace
+    }
+
+    #[tokio::test]
+    async fn standalone_hashline_round_trip_matches_nested_handlers() {
+        let workspace = standalone_hashline_workspace();
+        let tools = Tools::builder().build().unwrap();
+        let runtime = ToolRuntime::new(&workspace, None, None).with_tools(&tools);
+        let context = ToolContext {
+            model: "test-model",
+            session_id: "test-session",
+            call_id: "test-call",
+            history: &[],
+            output_token_budget: DEFAULT_TOOL_OUTPUT_TOKENS,
+        };
+
+        let direct = runtime
+            .execute_direct("hashline__read", r#"{"path":"notes.txt"}"#, context)
+            .await;
+        let nested = runtime
+            .registry
+            .execute_nested("hashline__read", json!({"path": "notes.txt"}), context)
+            .await;
+        assert!(direct.success && nested.success);
+        let ToolOutputBody::Text(direct_read) = direct.output else {
+            panic!("direct read should return text");
+        };
+        let ToolOutputBody::Text(nested_read) = nested.output else {
+            panic!("nested read should return text");
+        };
+        assert_eq!(direct_read, nested_read);
+        let read: serde_json::Value = serde_json::from_str(&direct_read).unwrap();
+        let header = read["patchHeader"].as_str().unwrap();
+        let split_patch = json!({
+            "header": header,
+            "operations": "SWAP 2:f589:\n+bravo"
+        });
+        let dry_run = runtime
+            .execute_direct(
+                "hashline__patch",
+                &json!({
+                    "header": header,
+                    "operations": "SWAP 2:f589:\n+bravo",
+                    "dry_run": true
+                })
+                .to_string(),
+                context,
+            )
+            .await;
+        assert!(dry_run.success);
+        assert_eq!(
+            std::fs::read(workspace.join("notes.txt")).unwrap(),
+            b"alpha\nbeta\n"
+        );
+        let applied = runtime
+            .execute_direct("hashline__patch", &split_patch.to_string(), context)
+            .await;
+        assert!(applied.success);
+        assert_eq!(
+            std::fs::read(workspace.join("notes.txt")).unwrap(),
+            b"alpha\nbravo\n"
+        );
+
+        let block = runtime
+            .execute_direct(
+                "hashline__find_block",
+                r#"{"path":"notes.txt","anchor":"1:93c8"}"#,
+                context,
+            )
+            .await;
+        assert!(block.success);
+        let transaction = runtime
+            .execute_direct(
+                "hashline__transaction",
+                r#"{"action":{"type":"preview"},"mutations":[{"type":"create","path":"new.txt","contents":"new\n"}]}"#,
+                context,
+            )
+            .await;
+        assert!(transaction.success);
+
+        std::fs::write(workspace.join("notes.txt"), b"external\n").unwrap();
+        let direct_stale = runtime
+            .execute_direct("hashline__patch", &split_patch.to_string(), context)
+            .await;
+        let nested_stale = runtime
+            .registry
+            .execute_nested("hashline__patch", split_patch, context)
+            .await;
+        assert!(!direct_stale.success && !nested_stale.success);
+        let ToolOutputBody::Text(direct_error) = direct_stale.output else {
+            panic!("direct stale result should be text");
+        };
+        let ToolOutputBody::Text(nested_error) = nested_stale.output else {
+            panic!("nested stale result should be text");
+        };
+        assert_eq!(direct_error, nested_error);
+        assert_eq!(
+            std::fs::read(workspace.join("notes.txt")).unwrap(),
+            b"external\n"
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 }

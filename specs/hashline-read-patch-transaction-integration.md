@@ -684,7 +684,7 @@ caps are implementation-owned policy, not builder knobs. The result includes:
       "path": "relative/path",
       "hash": "8-hex-logical-file-guard",
       "exactDigest": "64-hex-exact-byte-sha256",
-      "header": "[relative/path]#1234abcd",
+      "patchHeader": "[relative/path]#1234abcd",
       "start_line": 1,
       "end_line": 200,
       "total_lines": 300,
@@ -742,19 +742,31 @@ Files and interfaces:
   `hashline__patch`.
 - parser, representation, path, race, rollback, direct-tool, and Code Mode tests.
 
-The model input is a closed function object:
+The model input is a closed function object with two exclusive forms. The
+fully sectioned form remains available for multi-file programs:
 
     {
       "patch": "[path]#1234abcd\nSWAP 12:1a2b:\n+replacement",
       "dry_run": false
     }
 
-`patch` is required and `dry_run` defaults false. Every non-abort program is
+The direct single-file form accepts the copy-ready `patchHeader` returned by
+`hashline__read` separately from the operation text:
+
+    {
+      "header": "[path]#1234abcd",
+      "operations": "SWAP 12:1a2b:\n+replacement",
+      "dry_run": false
+    }
+
+`dry_run` defaults false. Exactly one of `patch` or the
+`header`/`operations` pair is accepted. The split form must normalize to
+exactly one section; multi-file edits use `patch`. Every non-abort program is
 fully sectioned: `[path]#HASH` selects an existing file and `[path]` selects
 a missing file to create. Section mode is inferred independently, so one
-program may mix creates and guarded existing-file operations. There is no
-top-level default path or global create mode. Preserve and test the complete
-grammar selected in Milestone 0, including:
+multi-file program may mix creates and guarded existing-file operations. There
+is no top-level default path or global create mode. Preserve and test the
+complete grammar selected in Milestone 0, including:
 
 - `SWAP` and `DEL` for one line and inclusive anchored ranges;
 - `INS.PRE`, `INS.POST`, `INS.HEAD`, and `INS.TAIL`;

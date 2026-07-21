@@ -606,6 +606,31 @@ mod tests {
         }
     }
 
+    fn assert_subscription_headers(request: &Request) {
+        for (name, expected) in [
+            ("authorization", "Bearer subscription-token"),
+            ("ChatGPT-Account-ID", "account-test"),
+            ("X-OpenAI-Fedramp", "true"),
+            ("session-id", "session-test"),
+            ("thread-id", "session-test"),
+            ("x-client-request-id", "session-test"),
+            ("OpenAI-Beta", "responses_websockets=2026-02-06"),
+            ("x-openai-internal-codex-responses-lite", "true"),
+            ("originator", "codex_cli_rs"),
+            ("version", "0.1337.0"),
+            ("user-agent", "codex_cli_rs/0.1337.0 (nanocodex/0.1.0)"),
+        ] {
+            assert_eq!(
+                request
+                    .headers()
+                    .get(name)
+                    .and_then(|value| value.to_str().ok()),
+                Some(expected),
+                "unexpected {name} header"
+            );
+        }
+    }
+
     #[tokio::test]
     #[allow(
         clippy::result_large_err,
@@ -619,83 +644,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await?;
             let mut socket = accept_hdr_async(stream, |request: &Request, response| {
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("authorization")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("Bearer subscription-token")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("ChatGPT-Account-ID")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("account-test")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("X-OpenAI-Fedramp")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("true")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("session-id")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("session-test")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("thread-id")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("session-test")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("x-client-request-id")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("session-test")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("OpenAI-Beta")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("responses_websockets=2026-02-06")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("x-openai-internal-codex-responses-lite")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("true")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("originator")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("codex_cli_rs")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("version")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("0.1337.0")
-                );
-                assert_eq!(
-                    request
-                        .headers()
-                        .get("user-agent")
-                        .and_then(|v| v.to_str().ok()),
-                    Some("codex_cli_rs/0.1337.0 (nanocodex/0.1.0)")
-                );
+                assert_subscription_headers(request);
                 Ok(response)
             })
             .await?;

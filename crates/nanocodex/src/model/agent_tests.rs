@@ -738,6 +738,182 @@ async fn unsupported_direct_tools_return_failed_results_to_the_model() -> Result
     Ok(())
 }
 
+fn assert_direct_hashline_events(output: &str) -> Result<()> {
+    let events = output
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let find_event = |event_type: &str, call_id: &str| {
+        events
+            .iter()
+            .position(|event| event["type"] == event_type && event["payload"]["call_id"] == call_id)
+    };
+    let call_index = find_event("tool.call", "call-hashline")
+        .ok_or_else(|| eyre!("direct Hashline call event was not emitted"))?;
+    let result_index = find_event("tool.result", "call-hashline")
+        .ok_or_else(|| eyre!("direct Hashline result event was not emitted"))?;
+    let stale_call_index = find_event("tool.call", "call-hashline-stale")
+        .ok_or_else(|| eyre!("stale Hashline call event was not emitted"))?;
+    let stale_result_index = find_event("tool.result", "call-hashline-stale")
+        .ok_or_else(|| eyre!("stale Hashline result event was not emitted"))?;
+    let terminal_index = events
+        .iter()
+        .position(|event| event["type"] == "run.completed")
+        .ok_or_else(|| eyre!("terminal event was not emitted"))?;
+    assert!(
+        call_index < result_index
+            && result_index < stale_call_index
+            && stale_call_index < stale_result_index
+            && stale_result_index < terminal_index
+    );
+    assert_eq!(
+        events[call_index]["payload"],
+        json!({
+            "call_id": "call-hashline",
+            "tool": "hashline__patch",
+            "arguments": {
+                "header": "[direct.txt]",
+                "operations": "INS.HEAD:\n+created"
+            },
+            "model_call_index": 1
+        })
+    );
+    let result = &events[result_index]["payload"];
+    assert_eq!(result["call_id"], "call-hashline");
+    assert_eq!(result["tool"], "hashline__patch");
+    assert_eq!(result["status"], "completed");
+    assert!(result.get("metadata").is_none());
+    let result_body: Value = serde_json::from_str(
+        result["result"]
+            .as_str()
+            .ok_or_else(|| eyre!("direct Hashline event result was not text"))?,
+    )?;
+    assert_eq!(result_body["success"], true);
+    assert_eq!(result_body["dry_run"], false);
+    assert_eq!(
+        events[stale_call_index]["payload"],
+        json!({
+            "call_id": "call-hashline-stale",
+            "tool": "hashline__patch",
+            "arguments": {
+                "header": "[direct.txt]#00000000",
+                "operations": "INS.TAIL:\n+again"
+            },
+            "model_call_index": 2
+        })
+    );
+    let stale_result = &events[stale_result_index]["payload"];
+    assert_eq!(stale_result["tool"], "hashline__patch");
+    assert_eq!(stale_result["status"], "failed");
+    assert!(stale_result.get("metadata").is_none());
+    assert!(
+        stale_result["result"]
+            .as_str()
+            .is_some_and(|result| result.contains("file hash mismatch"))
+    );
+    let stats = &events[terminal_index]["payload"];
+    assert_eq!(stats["tool_calls"], 2);
+    let work = stats["tool_work_duration_ns"]
+        .as_u64()
+        .ok_or_else(|| eyre!("tool work duration was not an integer"))?;
+    let wall = stats["tool_wall_duration_ns"]
+        .as_u64()
+        .ok_or_else(|| eyre!("tool wall duration was not an integer"))?;
+    assert!(work > 0);
+    assert_eq!(work, wall);
+    Ok(())
+}
+
+#[tokio::test]
+async fn standalone_hashline_function_call_mutates_and_returns_typed_output() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        let warmup = next_json(&mut socket).await?;
+        assert_warmup(&warmup);
+        assert_eq!(
+            warmup["input"][0]["tools"]
+                .as_array()
+                .ok_or_else(|| eyre!("warmup tools were not an array"))?
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec![
+                "exec",
+                "wait",
+                "hashline__read",
+                "hashline__find_block",
+                "hashline__patch",
+                "hashline__transaction",
+            ]
+        );
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let generation = next_json(&mut socket).await?;
+        assert_eq!(generation["previous_response_id"], "resp-warmup");
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-hashline",
+                &[json!({
+                    "type": "function_call",
+                    "call_id": "call-hashline",
+                    "name": "hashline__patch",
+                    "arguments": "{\"header\":\"[direct.txt]\",\"operations\":\"INS.HEAD:\\n+created\"}"
+                })],
+            ),
+        )
+        .await?;
+
+        let continuation = next_json(&mut socket).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-hashline");
+        assert_eq!(continuation["input"].as_array().map(Vec::len), Some(1));
+        assert_eq!(continuation["input"][0]["type"], "function_call_output");
+        assert_eq!(continuation["input"][0]["call_id"], "call-hashline");
+        let output = continuation["input"][0]["output"]
+            .as_str()
+            .ok_or_else(|| eyre!("Hashline output was not text"))?;
+        let output: Value = serde_json::from_str(output)?;
+        assert_eq!(output["success"], true);
+        assert_eq!(output["dry_run"], false);
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-stale",
+                &[json!({
+                    "type": "function_call",
+                    "call_id": "call-hashline-stale",
+                    "name": "hashline__patch",
+                    "arguments": "{\"header\":\"[direct.txt]#00000000\",\"operations\":\"INS.TAIL:\\n+again\"}"
+                })],
+            ),
+        )
+        .await?;
+        let failed = next_json(&mut socket).await?;
+        assert_eq!(failed["previous_response_id"], "resp-stale");
+        assert_eq!(failed["input"][0]["type"], "function_call_output");
+        assert_eq!(failed["input"][0]["call_id"], "call-hashline-stale");
+        assert!(
+            failed["input"][0]["output"]
+                .as_str()
+                .is_some_and(|output| output.contains("file hash mismatch"))
+        );
+        send_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("standalone-hashline")?;
+    let output = run_model(&endpoint, &workspace, "create a file directly").await?;
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    assert_eq!(std::fs::read(workspace.join("direct.txt"))?, b"created");
+    assert_direct_hashline_events(&output)?;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn code_mode_notify_adds_a_named_exec_output_to_the_next_request() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;

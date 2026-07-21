@@ -683,6 +683,103 @@ where
     ) -> Result<Vec<ResponseItem>> {
         self.tool_call_indices
             .insert(call.call_id.clone().into_boxed_str(), call_index);
+        self.emit_model_tool_call(call_index, &call)?;
+        self.stats.tool_calls += 1;
+        if let Some(message) = unsupported_tool_message(tools, &call) {
+            return self.unsupported_model_tool_result(call, message);
+        }
+        let owned_context = owned_code_context(&call, history, self.events.request_id())?;
+        let started_at = self.track_active_tool_call(&call);
+        let tool_span = model_tool_span(&call, call_index);
+        record_span_content(&tool_span, "tool.arguments", &call.input);
+        let (mut output, success, nested_calls, notifications, metadata, direct_work) =
+            if let Some(context) = owned_context {
+                let execution = tools
+                    .execute_code_owned(&call.input, context)
+                    .instrument(tool_span.clone())
+                    .await;
+                (
+                    execution.output,
+                    execution.success,
+                    execution.nested_calls,
+                    execution.notifications,
+                    None,
+                    false,
+                )
+            } else {
+                let context = ToolContext {
+                    model: MODEL,
+                    session_id: self.events.request_id(),
+                    call_id: &call.call_id,
+                    history: &[],
+                    output_token_budget: nanocodex_tools::DEFAULT_TOOL_OUTPUT_TOKENS,
+                };
+                if call.name == "wait" {
+                    let execution = tools
+                        .wait_for_code(&call.input, context)
+                        .instrument(tool_span.clone())
+                        .await;
+                    (
+                        execution.output,
+                        execution.success,
+                        execution.nested_calls,
+                        execution.notifications,
+                        None,
+                        false,
+                    )
+                } else {
+                    let execution = tools
+                        .execute_direct(&call.name, &call.input, context)
+                        .instrument(tool_span.clone())
+                        .await;
+                    (
+                        execution.output,
+                        execution.success,
+                        Vec::new(),
+                        Vec::new(),
+                        execution.metadata,
+                        true,
+                    )
+                }
+            };
+        prepare_output_images(&mut output).await;
+        if let Ok(content) = serde_json::to_string(&output) {
+            record_span_content(&tool_span, "tool.output", &content);
+        }
+        self.active_tool_call = None;
+        let duration_ns = elapsed_ns(started_at);
+        tool_span.record("status", status(success));
+        tool_span.record("otel.status_code", otel_status(success));
+        tool_span.record("duration_ns", duration_ns);
+        self.stats.tool_wall_duration_ns += duration_ns;
+        if direct_work {
+            self.stats.tool_work_duration_ns += duration_ns;
+        }
+        for nested in &nested_calls {
+            self.emit_nested_tool(call_index, &call.call_id, nested)?;
+        }
+        self.emit_model_tool_result(
+            &call,
+            status(success),
+            duration_ns,
+            &output,
+            metadata.as_deref(),
+        )?;
+        let output = match call.kind {
+            CodeCallKind::Custom => custom_tool_output(call.call_id.clone(), output),
+            CodeCallKind::Function => function_tool_output(call.call_id.clone(), output),
+        };
+        let mut outputs = Vec::with_capacity(notifications.len() + 1);
+        outputs.push(output);
+        outputs.extend(
+            notifications.into_iter().map(|notification| {
+                custom_tool_notification(notification.call_id, notification.text)
+            }),
+        );
+        Ok(outputs)
+    }
+
+    fn emit_model_tool_call(&self, call_index: u32, call: &CodeCall) -> Result<()> {
         let arguments = if call.name == "exec" {
             ToolCallArguments::Text(&call.input)
         } else {
@@ -698,83 +795,42 @@ where
                 model_call_index: call_index,
             },
         )?;
-        self.stats.tool_calls += 1;
-        if let Some(message) = unsupported_tool_message(&call) {
-            let output = ToolOutputBody::Text(message);
-            self.events.emit(
-                AgentEventKind::ToolResult,
-                ToolResultEvent {
-                    call_id: &call.call_id,
-                    tool: &call.name,
-                    status: "failed",
-                    duration_ns: 0,
-                    result: &output,
-                    metadata: None,
-                },
-            )?;
-            return Ok(vec![match call.kind {
-                CodeCallKind::Custom => custom_tool_output(call.call_id, output),
-                CodeCallKind::Function => function_tool_output(call.call_id, output),
-            }]);
-        }
-        let owned_context = owned_code_context(&call, history, self.events.request_id())?;
-        let started_at = self.track_active_tool_call(&call);
-        let tool_span = model_tool_span(&call, call_index);
-        record_span_content(&tool_span, "tool.arguments", &call.input);
-        let mut execution = if let Some(context) = owned_context {
-            tools
-                .execute_code_owned(&call.input, context)
-                .instrument(tool_span.clone())
-                .await
-        } else {
-            let context = ToolContext {
-                model: MODEL,
-                session_id: self.events.request_id(),
-                call_id: &call.call_id,
-                history: &[],
-                output_token_budget: nanocodex_tools::DEFAULT_TOOL_OUTPUT_TOKENS,
-            };
-            tools
-                .wait_for_code(&call.input, context)
-                .instrument(tool_span.clone())
-                .await
-        };
-        prepare_output_images(&mut execution.output).await;
-        if let Ok(content) = serde_json::to_string(&execution.output) {
-            record_span_content(&tool_span, "tool.output", &content);
-        }
-        self.active_tool_call = None;
-        let duration_ns = elapsed_ns(started_at);
-        tool_span.record("status", status(execution.success));
-        tool_span.record("otel.status_code", otel_status(execution.success));
-        tool_span.record("duration_ns", duration_ns);
-        self.stats.tool_wall_duration_ns += duration_ns;
-        for nested in &execution.nested_calls {
-            self.emit_nested_tool(call_index, &call.call_id, nested)?;
-        }
+        Ok(())
+    }
+
+    fn unsupported_model_tool_result(
+        &self,
+        call: CodeCall,
+        message: String,
+    ) -> Result<Vec<ResponseItem>> {
+        let output = ToolOutputBody::Text(message);
+        self.emit_model_tool_result(&call, "failed", 0, &output, None)?;
+        Ok(vec![match call.kind {
+            CodeCallKind::Custom => custom_tool_output(call.call_id, output),
+            CodeCallKind::Function => function_tool_output(call.call_id, output),
+        }])
+    }
+
+    fn emit_model_tool_result(
+        &self,
+        call: &CodeCall,
+        status: &'static str,
+        duration_ns: u64,
+        output: &ToolOutputBody,
+        metadata: Option<&RawValue>,
+    ) -> Result<()> {
         self.events.emit(
             AgentEventKind::ToolResult,
             ToolResultEvent {
                 call_id: &call.call_id,
                 tool: &call.name,
-                status: status(execution.success),
+                status,
                 duration_ns,
-                result: &execution.output,
-                metadata: None,
+                result: output,
+                metadata,
             },
         )?;
-        let output = match call.kind {
-            CodeCallKind::Custom => custom_tool_output(call.call_id.clone(), execution.output),
-            CodeCallKind::Function => function_tool_output(call.call_id.clone(), execution.output),
-        };
-        let mut outputs = Vec::with_capacity(execution.notifications.len() + 1);
-        outputs.push(output);
-        outputs.extend(
-            execution.notifications.into_iter().map(|notification| {
-                custom_tool_notification(notification.call_id, notification.text)
-            }),
-        );
-        Ok(outputs)
+        Ok(())
     }
 
     fn track_active_tool_call(&mut self, call: &CodeCall) -> Instant {
@@ -1185,8 +1241,11 @@ where
     }
 }
 
-fn unsupported_tool_message(call: &CodeCall) -> Option<String> {
-    if call.namespace.is_none() && matches!(call.name.as_str(), "exec" | "wait") {
+fn unsupported_tool_message(tools: &ToolRuntime, call: &CodeCall) -> Option<String> {
+    let supported = call.namespace.is_none()
+        && (matches!(call.name.as_str(), "exec" | "wait")
+            || (matches!(&call.kind, CodeCallKind::Function) && tools.supports_direct(&call.name)));
+    if supported {
         return None;
     }
     let qualified_name = format!("{}{}", call.namespace.as_deref().unwrap_or(""), call.name);

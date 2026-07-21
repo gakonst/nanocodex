@@ -555,7 +555,8 @@ async fn hashline_family_round_trips_through_code_mode() -> Result<()> {
 const initial = await tools.hashline__read({path: "notes.txt"});
 const betaHash = initial.content.split("\n")[1].split(":")[1].split("|")[0];
 await tools.hashline__patch({
-  patch: `${initial.header}\nSWAP 2:${betaHash}:\n+bravo`
+  header: initial.patchHeader,
+  operations: `SWAP 2:${betaHash}:\n+bravo`
 });
 const observed = await tools.hashline__read({path: "notes.txt"});
 const deleted = await tools.hashline__read({path: "delete.txt"});
@@ -817,7 +818,9 @@ fn model_description_uses_codex_style_declarations() {
     assert!(description.contains("hashline__transaction(args: {"));
     for required in [
         "workspace-relative",
-        "[notes.txt]#0123abcd",
+        "patchHeader",
+        "header",
+        "operations",
         "identical mutations",
         "expectedPlanDigest",
     ] {

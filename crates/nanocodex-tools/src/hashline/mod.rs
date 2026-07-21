@@ -156,7 +156,7 @@ fn execute(
     match kind {
         HashlineToolKind::Read => read(workspace, &decode(raw)?),
         HashlineToolKind::FindBlock => find_block(workspace, &decode(raw)?),
-        HashlineToolKind::Patch => execute_patch(workspace, &decode(raw)?),
+        HashlineToolKind::Patch => execute_patch(workspace, &decode_patch_request(raw)?),
         HashlineToolKind::Transaction => execute_transaction(workspace, &decode(raw)?),
     }
 }
@@ -181,11 +181,13 @@ fn read(workspace: &Path, request: &ReadRequest) -> Result<Value, FunctionCallEr
     let normalized = normalize_file_text(&observed.text);
     let lines = split_lines_preserve(&normalized);
     if lines.is_empty() {
+        let file_hash = hash_hex(&observed.text);
+        let patch_header = format!("[{}]#{file_hash}", request.path);
         return Ok(json!({
             "path": request.path,
-            "hash": hash_hex(&observed.text),
+            "hash": file_hash,
             "exactDigest": exact_digest(&observed.bytes),
-            "header": format!("[{}]#{}", request.path, hash_hex(&observed.text)),
+            "patchHeader": patch_header,
             "start_line": null,
             "end_line": null,
             "total_lines": 0,
@@ -218,11 +220,12 @@ fn read(workspace: &Path, request: &ReadRequest) -> Result<Value, FunctionCallEr
         excerpt.truncated || returned_end.is_some_and(|line| line < requested_end.min(lines.len()));
     let next_start = truncated.then(|| returned_end.map_or(start, |line| line + 1));
     let file_hash = hash_hex(&observed.text);
+    let patch_header = format!("[{}]#{file_hash}", request.path);
     Ok(json!({
         "path": request.path,
         "hash": file_hash,
         "exactDigest": exact_digest(&observed.bytes),
-        "header": format!("[{}]#{file_hash}", request.path),
+        "patchHeader": patch_header,
         "start_line": start,
         "end_line": returned_end,
         "total_lines": lines.len(),
@@ -277,10 +280,43 @@ fn find_block(workspace: &Path, request: &BlockRequest) -> Result<Value, Functio
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PatchRequest {
-    patch: String,
+struct PatchRequestWire {
+    patch: Option<String>,
+    header: Option<String>,
+    operations: Option<String>,
     #[serde(default)]
     dry_run: bool,
+}
+
+struct PatchRequest {
+    patch: String,
+    dry_run: bool,
+}
+
+fn decode_patch_request(raw: &str) -> Result<PatchRequest, FunctionCallError> {
+    let request: PatchRequestWire = decode(raw)?;
+    let patch = match (request.patch, request.header, request.operations) {
+        (Some(patch), None, None) => patch,
+        (None, Some(header), Some(operations)) => {
+            if header.contains(['\r', '\n']) {
+                return model_error("`header` must be one complete Hashline section header");
+            }
+            let patch = format!("{header}\n{operations}");
+            let sections = split_hashline_patch_sections(&patch)?;
+            if sections.len() != 1 {
+                return model_error("`header` and `operations` must describe exactly one file");
+            }
+            patch
+        }
+        (Some(_), _, _) => {
+            return model_error("`patch` cannot be combined with `header` or `operations`");
+        }
+        _ => return model_error("provide either `patch` or both `header` and `operations`"),
+    };
+    Ok(PatchRequest {
+        patch,
+        dry_run: request.dry_run,
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1202,7 +1238,7 @@ fn model_error<T>(message: impl Into<String>) -> Result<T, FunctionCallError> {
 fn read_definition() -> ToolDefinition {
     ToolDefinition::function(
         "hashline__read",
-        "Read a bounded UTF-8 file range with compact file/line anchors and an exact-byte SHA-256 digest.",
+        "Read a bounded UTF-8 file range with compact file/line anchors, an unambiguous copy-ready patchHeader, and a distinct exact-byte SHA-256 digest.",
         json!({
             "type": "object",
             "properties": {
@@ -1243,20 +1279,40 @@ fn block_definition() -> ToolDefinition {
 fn patch_definition() -> ToolDefinition {
     ToolDefinition::function(
         "hashline__patch",
-        "Apply a complete, fully sectioned Hashline routine patch. Use [path]#HASH for guarded existing-file edits and [path] to create a missing file; one program may mix create, update, move, and delete sections. Routine commits are not crash-atomic; use hashline__transaction for recoverable batches.",
+        "Apply a complete Hashline routine patch. For a direct single-file edit, pass hashline__read.patchHeader as header plus the operations separately. For multi-file edits, pass a fully sectioned patch program. Routine commits are not crash-atomic; use hashline__transaction for recoverable batches.",
         json!({
             "type": "object",
             "properties": {
                 "patch": {
                     "type": "string",
-                    "description": "Required complete Hashline program; every non-abort program is fully sectioned. Existing files use [path]#HASH copied from hashline__read. Example: [notes.txt]#0123abcd\nSWAP 2:f589:\n+replacement. Create a missing file with [new.txt]\nINS.HEAD:\n+content. Operations: SWAP line/range, DEL line/range, INS.PRE, INS.POST, INS.HEAD, INS.TAIL, block forms with line:hash@blockhash, REM, and MV destination. Paths are non-empty workspace-relative paths; absolute paths, current-directory components, and parent traversal are rejected."
+                    "description": "Complete fully sectioned Hashline program for one or more files. Existing files use [path]#HASH copied from hashline__read.patchHeader; missing files use [path]."
+                },
+                "header": {
+                    "type": "string",
+                    "description": "Complete copy-ready single-file section header from hashline__read.patchHeader."
+                },
+                "operations": {
+                    "type": "string",
+                    "description": "Single-file Hashline operations placed after header: SWAP, DEL, INS.PRE, INS.POST, INS.HEAD, INS.TAIL, block forms, REM, or MV."
                 },
                 "dry_run": {
                     "type": "boolean",
                     "description": "Validate and preview every section without writing."
                 },
             },
-            "required": ["patch"],
+            "oneOf": [
+                {
+                    "required": ["patch"],
+                    "not": {"anyOf": [
+                        {"required": ["header"]},
+                        {"required": ["operations"]}
+                    ]}
+                },
+                {
+                    "required": ["header", "operations"],
+                    "not": {"required": ["patch"]}
+                }
+            ],
             "additionalProperties": false
         }),
     )

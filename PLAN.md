@@ -414,7 +414,7 @@ Gate:
   Harbor holdout when credentials are available; reserve the full eval for the
   completed hardening milestone.
 
-#### 4.2 Standalone Hashline tool ergonomics (planned)
+#### 4.2 Standalone Hashline tool ergonomics (complete)
 
 Expose `hashline__read`, `hashline__find_block`, `hashline__patch`, and
 `hashline__transaction` as direct model-callable tools alongside their Code
@@ -424,18 +424,18 @@ do not add a second parser, mutation owner, or compatibility adapter.
 
 Delivery order:
 
-1. [ ] Register the four existing Hashline handlers in the normal heterogeneous
+1. [x] Register the four existing Hashline handlers in the normal heterogeneous
    tool registry with an explicit builder policy. Keep Code Mode registration
    available for orchestration, and reject duplicate names deterministically.
-2. [ ] Make `hashline__read` return one unambiguous, copy-ready patch header and
+2. [x] Make `hashline__read` return one unambiguous, copy-ready patch header and
    describe it as the value accepted by `hashline__patch`. Visually and
    structurally distinguish the 8-character Hashline file hash from the exact
    byte digest used by transaction mutations.
-3. [ ] Add a direct single-file patch input that accepts the complete header
+3. [x] Add a direct single-file patch input that accepts the complete header
    separately from its operations, while retaining the fully sectioned patch
    program for multi-file edits. Both forms must normalize into the same
    guarded patch request and preserve dry-run semantics.
-4. [ ] Add deterministic direct-call, schema, conflict, dry-run/apply, telemetry,
+4. [x] Add deterministic direct-call, schema, conflict, dry-run/apply, telemetry,
    and nested-versus-standalone parity tests. Exercise a routine edit without a
    JavaScript wrapper and prove stale evidence fails identically on both
    surfaces.
@@ -450,6 +450,17 @@ Gate:
   green. Run a focused native smoke when credentials are available and inspect
   the exact tool calls to confirm the model chooses the direct path for a
   routine edit while Code Mode remains available for orchestration.
+
+Evidence:
+
+- `just check` passes formatting, warnings-denied workspace Clippy, all Rust
+  workspace and documentation tests, Harbor adapter tests, Python compilation,
+  public examples, and both retained eval configuration checks.
+- Deterministic runtime and WebSocket tests cover stable declarations, direct
+  read/find/patch/transaction dispatch, split-input preview and apply, stale
+  parity with Code Mode, real mutation, contractual events, and shared tracing.
+- The focused native smoke remains pending because `OPENAI_API_KEY` is not
+  available in this workspace.
 
 ## Performance policy
 
