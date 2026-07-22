@@ -3,7 +3,7 @@
 All language consumers live at this repository boundary:
 
 - Rust: `minimal.rs`, `follow_on.rs`, `lifecycle.rs`, `custom_tool.rs`, `subagents.rs`,
-  `fork_conversations.rs`, `fork_checkpoint_bench.rs`, and `mcp.rs` are binaries
+  `resume.rs`, `fork_conversations.rs`, `fork_checkpoint_bench.rs`, and `mcp.rs` are binaries
   in the `nanocodex-examples` package.
 - Python: `python/` uses the native PyO3 binding.
 - Node.js: `node/` uses the shared Rust/WASM package with a Node WebSocket host.

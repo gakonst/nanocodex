@@ -15,7 +15,9 @@ mod rollout;
 mod wasm;
 
 #[cfg(not(target_family = "wasm"))]
-pub use agent::{AgentHandle, Nanocodex, NanocodexBuilder, Turn, TurnControl, TurnResult};
+pub use agent::{
+    AgentHandle, Nanocodex, NanocodexBuilder, SessionSnapshot, Turn, TurnControl, TurnResult,
+};
 #[cfg(not(target_family = "wasm"))]
 pub use async_trait::async_trait;
 #[cfg(not(target_family = "wasm"))]

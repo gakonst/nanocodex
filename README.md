@@ -21,10 +21,10 @@
 ---
 
 Nanocodex is a Code Mode-first Rust agents SDK. It provides typed turns, tools,
-events, steering, cancellation, queueing, and fast historical forks over the
-OpenAI Responses API. It supports persistent WebSocket and HTTPS/SSE transports
-while keeping the complete coding-agent conversation inside your process,
-without requiring an app server or durable control plane.
+events, steering, cancellation, queueing, durable session snapshots, and fast
+historical forks over the OpenAI Responses API. It supports persistent WebSocket
+and HTTPS/SSE transports while keeping the complete coding-agent conversation
+inside your process, without requiring an app server or durable control plane.
 
 ## Installation
 
@@ -166,10 +166,21 @@ let _cancelled = turn.result().await;
 let (latest, _events) = agent.fork().await?;
 // Fork from the exact older state.
 let (historical, _events) = agent.fork_from(&checkpoint).await?;
+
+// The application owns snapshot storage and retention.
+let stored = serde_json::to_vec(&checkpoint.snapshot())?;
+drop(agent);
+let snapshot = serde_json::from_slice(&stored)?;
+let (resumed, _events) = Nanocodex::builder(api_key)
+    .resume(snapshot)
+    .build()?;
 ```
 
 `prompt().await` means accepted, not completed. The agent retains conversation
 history, tools, cache identity, response chain, and its WebSocket automatically.
+Snapshots contain the complete unredacted conversation and must be protected
+like the prompts and tool data they preserve. Resuming creates fresh runtime
+resources while retaining authoritative typed history and cache lineage.
 
 GPT-5.6 Pro is selected independently from reasoning effort; it does not use a
 different model slug. All six effort levels are available in either mode:

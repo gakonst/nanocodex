@@ -41,6 +41,13 @@ impl RequestProfile {
     pub fn prefix(&self) -> &[ResponseItem] {
         &self.prefix
     }
+
+    /// Shares the byte-stable request prefix with an internal checkpoint.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn shared_prefix(&self) -> Arc<[ResponseItem]> {
+        Arc::clone(&self.prefix)
+    }
 }
 
 /// Persistent, immutable-segment Responses history.

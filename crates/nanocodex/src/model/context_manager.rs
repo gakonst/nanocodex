@@ -260,6 +260,47 @@ impl ContextManager {
     }
 }
 
+pub(super) fn has_well_formed_tool_calls(items: &[ResponseItem]) -> bool {
+    let mut function_calls = HashSet::new();
+    let mut function_outputs = HashSet::new();
+    let mut custom_calls = HashSet::new();
+    let mut custom_outputs = HashSet::new();
+    let mut search_calls = HashSet::new();
+    let mut search_outputs = HashSet::new();
+    for item in items {
+        let valid = match item {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::LocalShellCall {
+                call_id: Some(call_id),
+                ..
+            } => function_calls.insert(call_id.as_ref()),
+            ResponseItem::FunctionCallOutput { call_id, .. } => {
+                function_calls.contains(call_id.as_ref())
+                    && function_outputs.insert(call_id.as_ref())
+            }
+            ResponseItem::CustomToolCall { call_id, .. } => custom_calls.insert(call_id.as_ref()),
+            ResponseItem::CustomToolCallOutput { call_id, .. } => {
+                custom_calls.contains(call_id.as_ref()) && custom_outputs.insert(call_id.as_ref())
+            }
+            ResponseItem::ToolSearchCall {
+                call_id: Some(call_id),
+                ..
+            } => search_calls.insert(call_id.as_ref()),
+            ResponseItem::ToolSearchOutput {
+                call_id: Some(call_id),
+                ..
+            } => search_calls.contains(call_id.as_ref()) && search_outputs.insert(call_id.as_ref()),
+            _ => true,
+        };
+        if !valid {
+            return false;
+        }
+    }
+    function_calls == function_outputs
+        && custom_calls == custom_outputs
+        && search_calls == search_outputs
+}
+
 fn is_model_generated_item(item: &ResponseItem) -> bool {
     matches!(
         item,

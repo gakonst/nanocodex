@@ -8,15 +8,16 @@ use std::{
     },
 };
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use nanocodex_core::{
-    AgentEvents, EventSink, ModelConfig, OpenAiAuth, OpenAiAuthMode, Prompt, ReasoningMode,
-    ResponsesHistory, ResponsesTransport, Thinking,
+    AgentEvents, EventSink, MODEL, MessageRole, ModelConfig, OpenAiAuth, OpenAiAuthMode, Prompt,
+    ReasoningMode, ResponseItem, ResponsesHistory, ResponsesTransport, Thinking,
 };
 use nanocodex_service::{
     DefaultResponsesService, ResponsesAttempt, ResponsesClient, ResponsesService,
     ResponsesServiceResponse, TransportStats,
 };
-use nanocodex_tools::{Tools, ToolsBuildError};
+use nanocodex_tools::{ToolRuntime, Tools, ToolsBuildError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tower::Service;
 use tracing::{Instrument, error, info, info_span};
@@ -25,7 +26,10 @@ use crate::prompt_cache::{ModelPromptCache, SharedPromptCache};
 use crate::{
     NanocodexError, Result,
     model::{
-        agent::{CompletedModelTurn, ModelCheckpoint, ModelRun, ModelTurnOutcome},
+        agent::{
+            CompletedModelTurn, ModelCheckpoint, ModelRun, ModelTurnOutcome,
+            validated_resume_runtime,
+        },
         load_global_instructions,
     },
     responses::{FactoryResponses, LayeredResponses, Responses, StandardResponses},
@@ -38,6 +42,8 @@ const STEER_CAPACITY: usize = 8;
 type ServiceFactory<S> = Arc<dyn Fn() -> S + Send + Sync>;
 type ToolsFactory =
     Arc<dyn Fn(AgentHandle) -> std::result::Result<Tools, ToolsBuildError> + Send + Sync>;
+
+const SESSION_SNAPSHOT_VERSION: u32 = 1;
 
 #[derive(Clone)]
 enum ToolsConfiguration {
@@ -161,6 +167,32 @@ pub struct TurnResult {
     checkpoint: Arc<CommittedCheckpoint>,
 }
 
+impl TurnResult {
+    /// Copies this completed boundary into a serializable, caller-owned session snapshot.
+    ///
+    /// The snapshot contains the complete unredacted model-visible conversation,
+    /// including reasoning payloads and tool inputs and outputs. Applications are
+    /// responsible for protecting and retaining serialized snapshots appropriately.
+    #[must_use]
+    pub fn snapshot(&self) -> SessionSnapshot {
+        SessionSnapshot {
+            version: SESSION_SNAPSHOT_VERSION,
+            model: MODEL.to_owned(),
+            lineage_id: self.checkpoint.lineage_id.to_string(),
+            prompt_cache_key: self.checkpoint.model.prompt_cache_key().to_owned(),
+            workspace: self.checkpoint.model.workspace().to_owned(),
+            request_prefix: self.checkpoint.model.request_prefix().to_vec(),
+            canonical_context: self.checkpoint.model.canonical_context().clone(),
+            history: self.checkpoint.model.snapshot_history(),
+            continuation: self
+                .checkpoint
+                .model
+                .previous_response_id()
+                .map(|id| SessionContinuation(id.to_owned())),
+        }
+    }
+}
+
 impl fmt::Debug for TurnResult {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -174,6 +206,143 @@ impl fmt::Debug for TurnResult {
 struct CommittedCheckpoint {
     lineage_id: Arc<str>,
     model: ModelCheckpoint,
+}
+
+/// Versioned, serializable state for resuming a completed session boundary.
+///
+/// Its fields are intentionally private: callers may persist or transfer the
+/// value, but Nanocodex remains responsible for interpreting model history and
+/// opaque transport continuation state. Resuming requires the same model
+/// instructions and tool definitions used to create the snapshot.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub struct SessionSnapshot {
+    version: u32,
+    model: String,
+    lineage_id: String,
+    prompt_cache_key: String,
+    workspace: String,
+    request_prefix: Vec<ResponseItem>,
+    canonical_context: ResponseItem,
+    history: Vec<ResponseItem>,
+    #[serde(rename = "checkpoint")]
+    continuation: Option<SessionContinuation>,
+}
+
+#[derive(Clone)]
+struct SessionContinuation(String);
+
+impl serde::Serialize for SessionContinuation {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&URL_SAFE_NO_PAD.encode(self.0.as_bytes()))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SessionContinuation {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = <String as serde::Deserialize>::deserialize(deserializer)?;
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(serde::de::Error::custom)?;
+        let value = String::from_utf8(decoded).map_err(serde::de::Error::custom)?;
+        Ok(Self(value))
+    }
+}
+
+impl fmt::Debug for SessionSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SessionSnapshot")
+            .field("version", &self.version)
+            .field("model", &self.model)
+            .field("history_items", &self.history.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl SessionSnapshot {
+    /// Snapshot format version understood by this Nanocodex release.
+    #[must_use]
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+
+    fn into_checkpoint(self) -> Result<(Arc<str>, Arc<str>, ModelCheckpoint)> {
+        if self.version != SESSION_SNAPSHOT_VERSION {
+            return Err(NanocodexError::InvalidSessionSnapshot(format!(
+                "unsupported format version {}; expected {SESSION_SNAPSHOT_VERSION}",
+                self.version
+            )));
+        }
+        if self.model != MODEL {
+            return Err(NanocodexError::InvalidSessionSnapshot(format!(
+                "snapshot model {} is incompatible with {MODEL}",
+                self.model
+            )));
+        }
+        if self.lineage_id.trim().is_empty() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "cache lineage must not be empty".to_owned(),
+            ));
+        }
+        if self.prompt_cache_key.trim().is_empty() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "prompt cache key must not be empty".to_owned(),
+            ));
+        }
+        if self.workspace.trim().is_empty() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "workspace must not be empty".to_owned(),
+            ));
+        }
+        if self.request_prefix.is_empty() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "request prefix must not be empty".to_owned(),
+            ));
+        }
+        if !matches!(
+            self.request_prefix.as_slice(),
+            [
+                ResponseItem::AdditionalTools {
+                    role: MessageRole::Developer,
+                    ..
+                },
+                ResponseItem::Message {
+                    role: MessageRole::Developer,
+                    ..
+                }
+            ]
+        ) {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "request prefix does not match the supported model contract".to_owned(),
+            ));
+        }
+        if self
+            .continuation
+            .as_ref()
+            .is_some_and(|continuation| continuation.0.is_empty())
+        {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "transport continuation must not be empty".to_owned(),
+            ));
+        }
+        let lineage_id = Arc::<str>::from(self.lineage_id);
+        let prompt_cache_key = Arc::<str>::from(self.prompt_cache_key);
+        let checkpoint = ModelCheckpoint::resume(
+            self.workspace,
+            Arc::from(self.request_prefix),
+            Arc::clone(&prompt_cache_key),
+            self.canonical_context,
+            self.history,
+            self.continuation.map(|continuation| continuation.0),
+        )?;
+        Ok((lineage_id, prompt_cache_key, checkpoint))
+    }
 }
 
 enum Command {
@@ -292,6 +461,22 @@ impl Nanocodex {
         Self::builder(auth).build()
     }
 
+    /// Resumes a completed session snapshot with the standard configuration.
+    ///
+    /// Use [`Self::builder`] with [`NanocodexBuilder::resume`] when restoring
+    /// custom tools, middleware, or other application policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authorization, the snapshot, its workspace, or
+    /// the restored standard model/tool profile is invalid.
+    pub fn resume(
+        auth: impl Into<OpenAiAuth>,
+        snapshot: SessionSnapshot,
+    ) -> Result<(Self, AgentEvents)> {
+        Self::builder(auth).resume(snapshot).build()
+    }
+
     /// Starts configuring an agent with sensible defaults.
     #[must_use]
     pub fn builder(auth: impl Into<OpenAiAuth>) -> NanocodexBuilder {
@@ -306,6 +491,7 @@ impl Nanocodex {
             session_id: None,
             prompt_cache: PromptCacheConfig::default(),
             codex: CodexCompatibility::default(),
+            resume: None,
             responses: Responses::default(),
         }
     }
@@ -498,6 +684,7 @@ pub struct NanocodexBuilder<S = StandardResponses> {
     session_id: Option<String>,
     prompt_cache: PromptCacheConfig,
     codex: CodexCompatibility,
+    resume: Option<SessionSnapshot>,
     responses: Responses<S>,
 }
 
@@ -623,6 +810,19 @@ impl<S> NanocodexBuilder<S> {
         self
     }
 
+    /// Restores a completed session boundary into a fresh driver, WebSocket,
+    /// and tool runtime while retaining its typed history and cache lineage.
+    ///
+    /// An explicitly configured session ID names the new runtime/event stream;
+    /// it does not replace the snapshot's prompt-cache lineage. Configure the
+    /// same instructions, tool definitions, and custom handlers used by the
+    /// original session; incompatible policy is rejected during [`Self::build`].
+    #[must_use]
+    pub fn resume(mut self, snapshot: SessionSnapshot) -> Self {
+        self.resume = Some(snapshot);
+        self
+    }
+
     /// Replaces the default Responses configuration or service stack.
     #[must_use]
     pub fn responses<T>(self, responses: Responses<T>) -> NanocodexBuilder<T> {
@@ -633,6 +833,7 @@ impl<S> NanocodexBuilder<S> {
             session_id: self.session_id,
             prompt_cache: self.prompt_cache,
             codex: self.codex,
+            resume: self.resume,
             responses,
         }
     }
@@ -666,6 +867,7 @@ impl NanocodexBuilder<StandardResponses> {
             self.session_id,
             self.prompt_cache,
             self.codex,
+            self.resume,
             service_factory,
         )
     }
@@ -711,6 +913,7 @@ where
             self.session_id,
             self.prompt_cache,
             self.codex,
+            self.resume,
             service_factory,
         )
     }
@@ -748,6 +951,7 @@ where
             self.session_id,
             self.prompt_cache,
             self.codex,
+            self.resume,
             service_factory,
         )
     }
@@ -764,6 +968,7 @@ struct AgentDriver<S> {
     global_instructions: Option<Arc<str>>,
     spawner: BranchSpawner<S>,
     initial_checkpoint: Option<ModelCheckpoint>,
+    initial_runtime: Option<ToolRuntime>,
     origin: AgentOrigin,
     rollout: Option<RolloutRecorder>,
 }
@@ -843,6 +1048,7 @@ where
                 self.tools.clone(),
                 prompt_cache.clone(),
                 checkpoint,
+                self.initial_runtime.take(),
             )
         } else {
             ModelRun::new(
@@ -1160,6 +1366,7 @@ where
                         self.tools.clone(),
                         prompt_cache.clone(),
                         checkpoint.model.clone(),
+                        None,
                     );
                     (Err(NanocodexError::TurnCancelled), true)
                 }
@@ -1406,6 +1613,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_agent<S>(
     config: Arc<ModelConfig>,
     tools: ToolsConfiguration,
@@ -1413,6 +1621,7 @@ fn build_agent<S>(
     session_id: Option<String>,
     prompt_cache: PromptCacheConfig,
     codex: CodexCompatibility,
+    resume: Option<SessionSnapshot>,
     service_factory: ServiceFactory<S>,
 ) -> Result<(Nanocodex, AgentEvents)>
 where
@@ -1421,9 +1630,27 @@ where
     S::Future: Send,
 {
     let session_id = session_id.unwrap_or_else(new_session_id);
-    let lineage_id = Arc::<str>::from(session_id.as_str());
     let PromptCacheConfig { key, shared } = prompt_cache;
-    let workspace = workspace
+    let is_resume = resume.is_some();
+    let (lineage_id, prompt_cache_key, initial_checkpoint) = if let Some(snapshot) = resume {
+        let (lineage_id, restored_cache_key, checkpoint) = snapshot.into_checkpoint()?;
+        if key
+            .as_deref()
+            .is_some_and(|key| key != restored_cache_key.as_ref())
+        {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "configured prompt cache key does not match the resumed session".to_owned(),
+            ));
+        }
+        (lineage_id, Some(restored_cache_key), Some(checkpoint))
+    } else {
+        (
+            Arc::<str>::from(session_id.as_str()),
+            key.map(Arc::from),
+            None,
+        )
+    };
+    let configured_workspace = workspace
         .map(|path| {
             path.into_os_string()
                 .into_string()
@@ -1433,6 +1660,26 @@ where
                 })
         })
         .transpose()?;
+    let workspace = if let Some(checkpoint) = initial_checkpoint.as_ref() {
+        let restored = crate::model::resolve_workspace(Some(checkpoint.workspace()))?;
+        if restored != checkpoint.workspace() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "workspace no longer resolves to the stored location".to_owned(),
+            ));
+        }
+        if let Some(configured) = configured_workspace {
+            let requested = crate::model::resolve_workspace(Some(&configured))?;
+            if requested != restored {
+                return Err(NanocodexError::WorkspaceChanged {
+                    current: restored,
+                    requested,
+                });
+            }
+        }
+        Some(Arc::<str>::from(restored))
+    } else {
+        configured_workspace
+    };
     let service = service_factory();
     let global_instructions = load_global_instructions(codex.home.as_deref());
     spawn_agent_driver(
@@ -1440,7 +1687,7 @@ where
             config,
             tools,
             lineage_id,
-            prompt_cache_key: key.map(Arc::from),
+            prompt_cache_key,
             shared_prompt_cache: shared,
             codex_home: codex.home,
             depth: 0,
@@ -1450,10 +1697,10 @@ where
         session_id,
         workspace,
         service,
-        None,
+        initial_checkpoint,
         global_instructions,
         AgentOrigin {
-            kind: "root",
+            kind: if is_resume { "resume" } else { "root" },
             depth: 0,
             parent_session_id: None,
         },
@@ -1510,6 +1757,10 @@ where
     let rollout_info = rollout.as_ref().map(|recorder| recorder.info().clone());
     let session_id: Arc<str> = Arc::from(session_id);
     let (events, event_stream) = EventSink::channel(session_id.to_string());
+    let initial_runtime = initial_checkpoint
+        .as_ref()
+        .map(|checkpoint| validated_resume_runtime(checkpoint, &spawner.config, &tools))
+        .transpose()?;
     let transport_stats = Arc::new(TransportStats::default());
     let agent = Nanocodex {
         commands,
@@ -1531,6 +1782,7 @@ where
                 global_instructions,
                 spawner,
                 initial_checkpoint,
+                initial_runtime,
                 origin,
                 rollout,
             }
