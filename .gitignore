@@ -26,5 +26,7 @@ examples/react-vite/dist/
 examples/react-vite/node_modules/
 jobs/
 trials/
+/generated_images/
+/reverse-me
 __pycache__/
 *.pyc
