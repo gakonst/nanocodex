@@ -8,13 +8,15 @@ use serde_json::value::{RawValue, to_raw_value};
 use serde_json::{Map, Value, json};
 use tracing::{Instrument, info, info_span};
 
+#[cfg(feature = "code-mode")]
+use crate::code_mode::{self, CodeModeExecution};
 use crate::{
-    apply_patch,
-    code_mode::{self, CodeModeExecution},
-    image_generation, plan,
+    apply_patch, plan,
     shell::{self, ShellSessions},
-    view_image, web_search,
+    view_image,
 };
+#[cfg(feature = "remote-tools")]
+use crate::{image_generation, web_search};
 
 pub const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 10_000;
 
@@ -43,6 +45,31 @@ pub struct ToolExecution {
     pub(crate) code_mode_value: Option<Value>,
     pub metadata: Option<Box<RawValue>>,
     pub(crate) process_trace: Option<ProcessTrace>,
+}
+
+/// Lossless, serialization-ready representation of a tool execution.
+///
+/// This is intended for process boundaries such as a tool runtime hosted in a
+/// VM. Known output shapes remain typed while the Code Mode value and metadata
+/// stay as validated, opaque JSON.
+#[doc(hidden)]
+#[derive(Deserialize, Serialize)]
+pub struct ToolExecutionWire {
+    pub output: ToolOutputBody,
+    pub success: bool,
+    pub code_mode_value: Option<Box<RawValue>>,
+    pub metadata: Option<Box<RawValue>>,
+    pub process_trace: Option<ProcessTraceWire>,
+}
+
+#[doc(hidden)]
+#[derive(Deserialize, Serialize)]
+pub struct ProcessTraceWire {
+    pub exit_code: Option<i32>,
+    pub session_id: Option<i64>,
+    pub original_token_count: Option<usize>,
+    pub output_bytes: usize,
+    pub wall_time_seconds: f64,
 }
 
 /// Owned context used when a Code Mode cell may outlive the model tool call
@@ -226,6 +253,68 @@ impl ToolExecution {
         });
         self
     }
+
+    /// Converts this execution into its lossless process-boundary form.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal Code Mode JSON cannot be encoded.
+    #[doc(hidden)]
+    pub fn into_wire(self) -> Result<ToolExecutionWire, serde_json::Error> {
+        Ok(ToolExecutionWire {
+            output: self.output,
+            success: self.success,
+            code_mode_value: self
+                .code_mode_value
+                .map(|value| to_raw_value(&value))
+                .transpose()?,
+            metadata: self.metadata,
+            process_trace: self.process_trace.map(Into::into),
+        })
+    }
+
+    /// Restores an execution received from a process boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an opaque Code Mode value cannot be decoded.
+    #[doc(hidden)]
+    pub fn from_wire(wire: ToolExecutionWire) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            output: wire.output,
+            success: wire.success,
+            code_mode_value: wire
+                .code_mode_value
+                .map(|value| serde_json::from_str(value.get()))
+                .transpose()?,
+            metadata: wire.metadata,
+            process_trace: wire.process_trace.map(Into::into),
+        })
+    }
+}
+
+impl From<ProcessTrace> for ProcessTraceWire {
+    fn from(trace: ProcessTrace) -> Self {
+        Self {
+            exit_code: trace.exit_code,
+            session_id: trace.session_id,
+            original_token_count: trace.original_token_count,
+            output_bytes: trace.output_bytes,
+            wall_time_seconds: trace.wall_time_seconds,
+        }
+    }
+}
+
+impl From<ProcessTraceWire> for ProcessTrace {
+    fn from(trace: ProcessTraceWire) -> Self {
+        Self {
+            exit_code: trace.exit_code,
+            session_id: trace.session_id,
+            original_token_count: trace.original_token_count,
+            output_bytes: trace.output_bytes,
+            wall_time_seconds: trace.wall_time_seconds,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -345,6 +434,8 @@ pub struct Tools {
     workspace: bool,
     web_search: bool,
     image_generation: bool,
+    working_directory: Option<Arc<str>>,
+    default_shell: Option<Arc<str>>,
     registered: Vec<Arc<dyn Tool>>,
     providers: Vec<Arc<dyn DynamicToolProvider>>,
 }
@@ -355,6 +446,8 @@ impl Default for Tools {
             workspace: true,
             web_search: true,
             image_generation: true,
+            working_directory: None,
+            default_shell: None,
             registered: Vec::new(),
             providers: Vec::new(),
         }
@@ -368,6 +461,8 @@ impl fmt::Debug for Tools {
             .field("workspace", &self.workspace)
             .field("web_search", &self.web_search)
             .field("image_generation", &self.image_generation)
+            .field("working_directory", &self.working_directory)
+            .field("default_shell", &self.default_shell)
             .field(
                 "registered",
                 &self
@@ -431,6 +526,12 @@ pub enum ToolsBuildError {
     #[error("tool name must not be empty")]
     EmptyName,
 
+    #[error("working directory override must not be empty")]
+    EmptyWorkingDirectory,
+
+    #[error("default shell override must not be empty")]
+    EmptyDefaultShell,
+
     #[error("tool name `{0}` is registered more than once")]
     DuplicateName(Box<str>),
 
@@ -473,6 +574,20 @@ impl ToolsBuilder {
         self
     }
 
+    /// Overrides the default working directory described to the model.
+    #[must_use]
+    pub fn working_directory(mut self, directory: impl Into<Arc<str>>) -> Self {
+        self.tools.working_directory = Some(directory.into());
+        self
+    }
+
+    /// Overrides the default shell described to the model.
+    #[must_use]
+    pub fn default_shell(mut self, shell: impl Into<Arc<str>>) -> Self {
+        self.tools.default_shell = Some(shell.into());
+        self
+    }
+
     /// Adds a function or freeform tool to the runtime.
     #[must_use]
     pub fn tool<T: Tool + 'static>(mut self, tool: T) -> Self {
@@ -496,6 +611,22 @@ impl ToolsBuilder {
     /// Returns an error for empty, inconsistent, duplicate, or enabled built-in
     /// tool names.
     pub fn build(self) -> Result<Tools, ToolsBuildError> {
+        if self
+            .tools
+            .working_directory
+            .as_deref()
+            .is_some_and(|directory| directory.trim().is_empty())
+        {
+            return Err(ToolsBuildError::EmptyWorkingDirectory);
+        }
+        if self
+            .tools
+            .default_shell
+            .as_deref()
+            .is_some_and(|shell| shell.trim().is_empty())
+        {
+            return Err(ToolsBuildError::EmptyDefaultShell);
+        }
         let mut names = Vec::with_capacity(self.tools.registered.len());
         for tool in &self.tools.registered {
             let name = tool.name();
@@ -533,14 +664,17 @@ fn built_in_name(tools: &Tools, name: &str) -> bool {
 
 pub struct ToolRuntime {
     registry: Arc<ToolRegistry>,
+    #[cfg(feature = "code-mode")]
     code_mode: code_mode::CodeModeRuntime,
     sessions: Arc<ShellSessions>,
-    default_shell_name: &'static str,
+    default_shell_name: Arc<str>,
+    working_directory: Arc<str>,
 }
 
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct ToolRuntimeControl {
+    #[cfg(feature = "code-mode")]
     code_mode: code_mode::CodeModeControl,
     sessions: Arc<ShellSessions>,
 }
@@ -579,7 +713,9 @@ impl ToolRuntime {
     ) -> Self {
         let workspace = workspace.into();
         let sessions = Arc::new(ShellSessions::new());
-        let default_shell_name = sessions.default_shell_name();
+        let default_shell_name = Arc::from(sessions.default_shell_name());
+        let working_directory = Arc::from(workspace.to_string_lossy().into_owned());
+        #[cfg(feature = "code-mode")]
         let code_mode_workspace = workspace.clone();
         let mut handlers: Vec<Arc<dyn Tool>> = Vec::new();
         if workspace_enabled {
@@ -589,24 +725,31 @@ impl ToolRuntime {
                     Arc::clone(&sessions),
                 )) as Arc<dyn Tool>,
                 Arc::new(shell::WriteStdinHandler::new(Arc::clone(&sessions))),
-                Arc::new(plan::PlanHandler::new()),
+                Arc::new(plan::UpdatePlanTool::new()),
                 Arc::new(apply_patch::ApplyPatchHandler::new(workspace.clone())),
                 Arc::new(view_image::ViewImageHandler::new(workspace.clone())),
             ]);
         }
-        if let Some(web_search) = web_search {
-            handlers.push(Arc::new(web_search::WebSearchHandler::new(web_search)));
+        #[cfg(feature = "remote-tools")]
+        {
+            if let Some(web_search) = web_search {
+                handlers.push(Arc::new(web_search::WebSearchHandler::new(web_search)));
+            }
+            if let Some(image_generation) = image_generation {
+                handlers.push(Arc::new(image_generation::ImageGenerationHandler::new(
+                    image_generation,
+                )));
+            }
         }
-        if let Some(image_generation) = image_generation {
-            handlers.push(Arc::new(image_generation::ImageGenerationHandler::new(
-                image_generation,
-            )));
-        }
+        #[cfg(not(feature = "remote-tools"))]
+        let _ = (web_search, image_generation);
         Self {
             registry: Arc::new(ToolRegistry::from_ordered(handlers)),
+            #[cfg(feature = "code-mode")]
             code_mode: code_mode::CodeModeRuntime::new(code_mode_workspace),
             sessions,
             default_shell_name,
+            working_directory,
         }
     }
 
@@ -615,23 +758,36 @@ impl ToolRuntime {
         let registry = Arc::make_mut(&mut self.registry);
         registry.extend(tools.registered.iter().cloned());
         registry.providers.extend(tools.providers.iter().cloned());
+        if let Some(working_directory) = &tools.working_directory {
+            self.working_directory = Arc::clone(working_directory);
+        }
+        if let Some(default_shell) = &tools.default_shell {
+            self.default_shell_name = Arc::clone(default_shell);
+        }
         self
     }
 
     #[must_use]
-    pub const fn default_shell_name(&self) -> &'static str {
-        self.default_shell_name
+    pub fn default_shell_name(&self) -> &str {
+        &self.default_shell_name
+    }
+
+    #[must_use]
+    pub fn working_directory(&self) -> &str {
+        &self.working_directory
     }
 
     #[doc(hidden)]
     #[must_use]
     pub fn control(&self) -> ToolRuntimeControl {
         ToolRuntimeControl {
+            #[cfg(feature = "code-mode")]
             code_mode: self.code_mode.control(),
             sessions: Arc::clone(&self.sessions),
         }
     }
 
+    #[cfg(feature = "code-mode")]
     #[must_use]
     pub fn model_specs(&self) -> Vec<ToolDefinition> {
         vec![
@@ -640,6 +796,7 @@ impl ToolRuntime {
         ]
     }
 
+    #[cfg(feature = "code-mode")]
     pub async fn execute_code(&self, source: &str, context: ToolContext<'_>) -> CodeModeExecution {
         self.code_mode
             .execute(
@@ -650,6 +807,7 @@ impl ToolRuntime {
             .await
     }
 
+    #[cfg(feature = "code-mode")]
     /// Executes Code Mode without copying an already-owned history snapshot.
     #[doc(hidden)]
     pub async fn execute_code_owned(
@@ -662,18 +820,35 @@ impl ToolRuntime {
             .await
     }
 
+    #[cfg(feature = "code-mode")]
     pub async fn wait_for_code(&self, input: &str, context: ToolContext<'_>) -> CodeModeExecution {
         self.code_mode.wait(input, context).await
+    }
+
+    /// Executes one registered tool through this runtime's retained state.
+    ///
+    /// Shell sessions created by `exec_command` remain available to later
+    /// `write_stdin` calls on the same runtime.
+    pub async fn execute_tool(
+        &self,
+        name: &str,
+        input: ToolInput,
+        context: ToolContext<'_>,
+    ) -> ToolExecution {
+        self.registry.execute_direct(name, input, context).await
     }
 }
 
 impl ToolRuntimeControl {
     #[doc(hidden)]
     pub async fn cancel(&self) {
+        #[cfg(feature = "code-mode")]
         tokio::join!(
             self.code_mode.terminate_all(),
             self.sessions.terminate_all()
         );
+        #[cfg(not(feature = "code-mode"))]
+        self.sessions.terminate_all().await;
     }
 }
 
@@ -686,6 +861,21 @@ pub(crate) struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    async fn execute_direct(
+        &self,
+        name: &str,
+        input: ToolInput,
+        context: ToolContext<'_>,
+    ) -> ToolExecution {
+        let Some((handler, _definition)) = self.get(name) else {
+            return ToolExecution::error(format!("unsupported tool call: {name}"));
+        };
+        match handler.execute(input, context).await {
+            Ok(execution) => execution,
+            Err(error) => ToolExecution::error(error.to_string()),
+        }
+    }
+
     pub(crate) async fn execute_nested(
         &self,
         name: &str,
@@ -1166,6 +1356,32 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(names, ["exec_command"]);
+    }
+
+    #[test]
+    fn tool_recipe_overrides_model_visible_environment_context() {
+        let tools = Tools::builder()
+            .without_defaults()
+            .working_directory("/workspace")
+            .default_shell("sh")
+            .build()
+            .unwrap();
+        let runtime = ToolRuntime::new_with_tools("/host/attempt", None, None, &tools);
+
+        assert_eq!(runtime.working_directory(), "/workspace");
+        assert_eq!(runtime.default_shell_name(), "sh");
+    }
+
+    #[test]
+    fn tool_recipe_rejects_empty_environment_overrides() {
+        assert!(matches!(
+            Tools::builder().working_directory(" ").build(),
+            Err(super::ToolsBuildError::EmptyWorkingDirectory)
+        ));
+        assert!(matches!(
+            Tools::builder().default_shell("").build(),
+            Err(super::ToolsBuildError::EmptyDefaultShell)
+        ));
     }
 
     #[tokio::test]

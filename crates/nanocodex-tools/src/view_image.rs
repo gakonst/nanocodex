@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    ImageDetail, Tool, ToolContext, ToolExecution, ToolInput, ToolOutputBody, ToolOutputContent,
-    ToolResult,
+    ImageDetail, StandardTool, Tool, ToolContext, ToolExecution, ToolInput, ToolOutputBody,
+    ToolOutputContent, ToolResult,
 };
 
 pub(super) struct ViewImageHandler {
@@ -27,42 +27,7 @@ impl Tool for ViewImageHandler {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            self.name(),
-            "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Local filesystem path to an image file."
-                    },
-                    "detail": {
-                        "type": "string",
-                        "enum": ["high", "original"],
-                        "description": "Image detail level. Defaults to `high`; use `original` to preserve exact resolution."
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-        )
-        .with_output_schema(json!({
-                "type": "object",
-                "properties": {
-                    "image_url": {
-                        "type": "string",
-                        "description": "Data URL for the loaded image."
-                    },
-                    "detail": {
-                        "type": "string",
-                        "enum": ["high", "original"],
-                        "description": "Image detail hint returned by view_image."
-                    }
-                },
-                "required": ["image_url", "detail"],
-                "additionalProperties": false
-            }))
+        StandardTool::ViewImage.definition()
     }
 
     async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {

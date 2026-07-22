@@ -13,6 +13,11 @@ keywords.workspace = true
 categories.workspace = true
 description = "Code Mode and heterogeneous tool runtime for Nanocodex"
 
+[features]
+default = ["code-mode", "remote-tools"]
+code-mode = ["dep:rquickjs"]
+remote-tools = ["dep:reqwest"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["-D", "warnings"]
@@ -29,8 +34,8 @@ base64.workspace = true
 futures-util.workspace = true
 image.workspace = true
 portable-pty.workspace = true
-reqwest.workspace = true
-rquickjs.workspace = true
+reqwest = { workspace = true, optional = true }
+rquickjs = { workspace = true, optional = true }
 schemars.workspace = true
 sha1.workspace = true
 thiserror.workspace = true

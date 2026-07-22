@@ -2,9 +2,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use nanocodex_core::ToolDefinition;
 use serde::Deserialize;
-use serde_json::{Value, json};
 
-use crate::{Tool, ToolContext, ToolExecution, ToolInput, ToolResult};
+use crate::{StandardTool, Tool, ToolContext, ToolExecution, ToolInput, ToolResult};
 
 use super::{ExecCommand, ShellSessions, WriteStdin};
 
@@ -29,43 +28,7 @@ impl Tool for ExecCommandHandler {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            self.name(),
-            "Runs a shell command, returning output or a session ID for ongoing interaction. Live sessions are terminated when the agent ends; detach services that must remain running afterward.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "cmd": { "type": "string", "description": "Shell command to execute." },
-                    "workdir": {
-                        "type": "string",
-                        "description": "Working directory for the command. Defaults to the task workspace."
-                    },
-                    "shell": {
-                        "type": "string",
-                        "description": "Shell binary to launch. Defaults to the user's default shell."
-                    },
-                    "login": {
-                        "type": "boolean",
-                        "description": "True runs with login-shell semantics; false disables them. Defaults to true."
-                    },
-                    "tty": {
-                        "type": "boolean",
-                        "description": "True allocates a PTY for the command; false or omitted uses plain pipes."
-                    },
-                    "yield_time_ms": {
-                        "type": "integer",
-                        "description": "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
-                    },
-                    "max_output_tokens": {
-                        "type": "integer",
-                        "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
-                    }
-                },
-                "required": ["cmd"],
-                "additionalProperties": false
-            }),
-        )
-        .with_output_schema(unified_exec_output_schema())
+        StandardTool::ExecCommand.definition()
     }
 
     async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
@@ -101,34 +64,7 @@ impl Tool for WriteStdinHandler {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            self.name(),
-            "Writes characters to an existing exec session and returns recent output.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "session_id": {
-                        "type": "integer",
-                        "description": "Identifier of the running exec session."
-                    },
-                    "chars": {
-                        "type": "string",
-                        "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."
-                    },
-                    "yield_time_ms": {
-                        "type": "integer",
-                        "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."
-                    },
-                    "max_output_tokens": {
-                        "type": "integer",
-                        "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
-                    }
-                },
-                "required": ["session_id"],
-                "additionalProperties": false
-            }),
-        )
-        .with_output_schema(unified_exec_output_schema())
+        StandardTool::WriteStdin.definition()
     }
 
     async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
@@ -182,40 +118,6 @@ struct WriteStdinArguments {
     yield_time_ms: Option<i64>,
     #[serde(default)]
     max_output_tokens: Option<i64>,
-}
-
-fn unified_exec_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "chunk_id": {
-                "type": "string",
-                "description": "Chunk identifier included when the response reports one."
-            },
-            "wall_time_seconds": {
-                "type": "number",
-                "description": "Elapsed wall time spent waiting for output in seconds."
-            },
-            "exit_code": {
-                "type": "number",
-                "description": "Process exit code when the command finished during this call."
-            },
-            "session_id": {
-                "type": "number",
-                "description": "Session identifier to pass to write_stdin when the process is still running."
-            },
-            "original_token_count": {
-                "type": "number",
-                "description": "Approximate token count before output truncation."
-            },
-            "output": {
-                "type": "string",
-                "description": "Command output text, possibly truncated."
-            }
-        },
-        "required": ["wall_time_seconds", "output"],
-        "additionalProperties": false
-    })
 }
 
 #[cfg(test)]

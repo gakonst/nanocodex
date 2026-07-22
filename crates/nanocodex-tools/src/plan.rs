@@ -3,59 +3,36 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use super::{Tool, ToolContext, ToolExecution, ToolInput, ToolResult};
+use super::{StandardTool, Tool, ToolContext, ToolExecution, ToolInput, ToolResult};
 
-pub(super) struct PlanHandler {
+/// Host-owned standard plan tool for runtimes that replace workspace effects.
+pub struct UpdatePlanTool {
     current: Mutex<Option<UpdatePlanArgs>>,
 }
 
-impl PlanHandler {
-    pub(super) const fn new() -> Self {
+impl UpdatePlanTool {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             current: Mutex::const_new(None),
         }
     }
 }
 
+impl Default for UpdatePlanTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait::async_trait]
-impl Tool for PlanHandler {
+impl Tool for UpdatePlanTool {
     fn name(&self) -> &'static str {
         "update_plan"
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            self.name(),
-            "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.\n",
-            json!({
-                "type": "object",
-                "properties": {
-                    "explanation": {
-                        "type": "string",
-                        "description": "Optional explanation for this plan update."
-                    },
-                    "plan": {
-                        "type": "array",
-                        "description": "The list of steps",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "step": { "type": "string", "description": "Task step text." },
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed"],
-                                    "description": "Step status."
-                                }
-                            },
-                            "required": ["step", "status"],
-                            "additionalProperties": false
-                        }
-                    }
-                },
-                "required": ["plan"],
-                "additionalProperties": false
-            }),
-        )
+        StandardTool::UpdatePlan.definition()
     }
 
     async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
