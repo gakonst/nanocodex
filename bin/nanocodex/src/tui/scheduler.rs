@@ -35,6 +35,14 @@ impl RenderScheduler {
         self.deadline = Some(self.deadline.map_or(now, |deadline| deadline.min(now)));
     }
 
+    pub(super) fn request_input_burst(&mut self, now: Instant) {
+        let burst_deadline = now + self.frame_interval;
+        self.deadline = Some(
+            self.deadline
+                .map_or(burst_deadline, |deadline| deadline.min(burst_deadline)),
+        );
+    }
+
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
@@ -109,6 +117,21 @@ mod tests {
 
         assert_eq!(scheduler.deadline(), Some(input_at));
         assert!(scheduler.is_due(input_at));
+    }
+
+    #[test]
+    fn input_burst_gets_one_frame_to_coalesce() {
+        let start = Instant::now();
+        let mut scheduler = RenderScheduler::new(FRAME, start);
+        scheduler.presented(start);
+
+        let first = start + Duration::from_millis(20);
+        scheduler.request_input_burst(first);
+        scheduler.request_input_burst(first + Duration::from_millis(2));
+
+        assert_eq!(scheduler.deadline(), Some(first + FRAME));
+        assert!(!scheduler.is_due(first + Duration::from_millis(8)));
+        assert!(scheduler.is_due(first + FRAME));
     }
 
     #[test]

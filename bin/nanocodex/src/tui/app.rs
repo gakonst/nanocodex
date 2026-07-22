@@ -18,6 +18,11 @@ use super::selection::ScreenSelection;
 use super::transcript::{ToolStatus, Transcript, TranscriptItem};
 
 const MAX_TOOL_ARGUMENT_CHARS: usize = 180;
+const MAX_MULTILINE_TOOL_ARGUMENT_CHARS: usize = 4_000;
+const MAX_MULTILINE_TOOL_ARGUMENT_LINES: usize = 24;
+const MAX_PATCH_ARGUMENT_CHARS: usize = 64 * 1_024;
+const MAX_PATCH_ARGUMENT_LINES: usize = 1_000;
+const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 const CANCEL_CONFIRMATION_WINDOW: Duration = Duration::from_secs(1);
 const SMOOTH_SCROLL_BACKLOG_ROWS: usize = 8;
 const MAX_SMOOTH_SCROLL_CATCH_UP_ROWS: usize = 32;
@@ -26,6 +31,12 @@ const MAX_SMOOTH_SCROLL_CATCH_UP_ROWS: usize = 32;
 struct AttachedImage {
     placeholder: String,
     path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingPaste {
+    placeholder: String,
+    text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,10 +297,13 @@ impl Conversation {
                 }
             }
             AgentEventKind::AssistantMessage => {
-                if let Ok(payload) = event.decode_payload::<TextPayload>()
-                    && !self.streamed_this_turn
-                {
-                    self.push_output(TranscriptItem::Assistant(payload.text));
+                if let Ok(payload) = event.decode_payload::<TextPayload>() {
+                    if self.streamed_this_turn {
+                        self.note_tail_will_change();
+                    } else {
+                        self.push_output(TranscriptItem::Assistant(payload.text.clone()));
+                    }
+                    let _ = self.transcript.finalize_assistant(&payload.text);
                 }
             }
             AgentEventKind::ReasoningSummaryDelta => {
@@ -299,28 +313,10 @@ impl Conversation {
                 }
             }
             AgentEventKind::ToolCall => {
-                if let Ok(payload) = event.decode_payload::<ToolCallPayload>() {
-                    let arguments = compact_arguments(&payload.arguments);
-                    self.status = format!("Running {}", payload.tool);
-                    self.push_output(TranscriptItem::Tool {
-                        call_id: payload.call_id,
-                        name: payload.tool,
-                        arguments,
-                        status: ToolStatus::Running,
-                    });
-                }
+                self.on_tool_call(event);
             }
             AgentEventKind::ToolResult => {
-                if let Ok(payload) = event.decode_payload::<ToolResultPayload>() {
-                    let status = match payload.status.as_str() {
-                        "completed" => ToolStatus::Completed,
-                        "cancelled" => ToolStatus::Cancelled,
-                        _ => ToolStatus::Failed,
-                    };
-                    self.transcript.set_tool_status(&payload.call_id, status);
-                    self.note_unseen_output();
-                    "Working".clone_into(&mut self.status);
-                }
+                self.on_tool_result(event);
             }
             AgentEventKind::RunError => {
                 if let Ok(payload) = event.decode_payload::<ErrorPayload>() {
@@ -356,6 +352,51 @@ impl Conversation {
             | AgentEventKind::ModelConnectionFailed => return false,
         }
         true
+    }
+
+    fn on_tool_call(&mut self, event: &AgentEvent) {
+        let Ok(payload) = event.decode_payload::<ToolCallPayload>() else {
+            return;
+        };
+        let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
+        self.status = format!("Running {}", payload.tool);
+        let call_id = payload.call_id;
+        let name = payload.tool;
+        let status = ToolStatus::Running;
+        if self.transcript.has_tool_parent(&call_id) {
+            self.note_tail_will_change();
+            let _ = self
+                .transcript
+                .push_tool_child(call_id, name, arguments, status);
+        } else {
+            self.push_output(TranscriptItem::Tool {
+                call_id,
+                name,
+                arguments,
+                status,
+            });
+        }
+    }
+
+    fn on_tool_result(&mut self, event: &AgentEvent) {
+        let Ok(payload) = event.decode_payload::<ToolResultPayload>() else {
+            return;
+        };
+        let status = match payload.status.as_str() {
+            "completed" => ToolStatus::Completed,
+            "cancelled" => ToolStatus::Cancelled,
+            _ => ToolStatus::Failed,
+        };
+        let result = payload
+            .result
+            .as_ref()
+            .map(|result| summarize_tool_result(payload.tool.as_deref(), result, status));
+        self.note_tail_will_change();
+        let _ =
+            self.transcript
+                .set_tool_result(&payload.call_id, status, payload.duration_ns, result);
+        self.note_unseen_output();
+        "Working".clone_into(&mut self.status);
     }
 
     fn run_failed(&mut self, event: &AgentEvent) {
@@ -661,6 +702,7 @@ struct MainBranchPane {
 struct ComposerDraft {
     input: String,
     local_images: Vec<AttachedImage>,
+    pending_pastes: Vec<PendingPaste>,
     cursor: usize,
     scroll: usize,
     preferred_column: Option<usize>,
@@ -789,6 +831,7 @@ pub(super) struct App {
     pub(super) focus: PaneId,
     pub(super) input: String,
     local_images: Vec<AttachedImage>,
+    pending_pastes: Vec<PendingPaste>,
     pub(super) cursor: usize,
     pub(super) frame: usize,
     composer_width: u16,
@@ -824,6 +867,7 @@ impl App {
             focus: PaneId::Main,
             input: String::new(),
             local_images: Vec::new(),
+            pending_pastes: Vec::new(),
             cursor: 0,
             frame: 0,
             composer_width: 80,
@@ -839,22 +883,36 @@ impl App {
 
     pub(super) fn insert_char(&mut self, character: char) {
         self.prepare_composer_edit();
+        self.snap_cursor_out_of_pending_paste();
         self.input.insert(self.cursor, character);
         self.cursor += character.len_utf8();
         self.preferred_column = None;
-        self.synchronize_local_images();
+        self.synchronize_composer_elements();
     }
 
     pub(super) fn insert_str(&mut self, text: &str) {
         self.prepare_composer_edit();
+        self.snap_cursor_out_of_pending_paste();
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.preferred_column = None;
-        self.synchronize_local_images();
+        self.synchronize_composer_elements();
     }
 
     pub(super) fn handle_paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let char_count = text.chars().count();
+        if char_count > LARGE_PASTE_CHAR_THRESHOLD {
+            self.prepare_composer_edit();
+            self.synchronize_composer_elements();
+            self.snap_cursor_out_of_pending_paste();
+            let placeholder = self.next_large_paste_placeholder(char_count);
+            self.input.insert_str(self.cursor, &placeholder);
+            self.cursor += placeholder.len();
+            self.pending_pastes.push(PendingPaste { placeholder, text });
+            self.preferred_column = None;
+            return;
+        }
         if text.len() > 1
             && let Some(path) = normalize_pasted_path(&text)
         {
@@ -881,10 +939,8 @@ impl App {
             .char_indices()
             .next_back()
             .map_or(0, |(index, _)| index);
-        self.input.drain(previous..self.cursor);
-        self.cursor = previous;
+        self.cursor = self.delete_composer_range(previous, self.cursor);
         self.preferred_column = None;
-        self.synchronize_local_images();
     }
 
     pub(super) fn delete(&mut self) {
@@ -898,22 +954,27 @@ impl App {
             .map_or(self.input.len(), |character| {
                 self.cursor + character.len_utf8()
             });
-        self.input.drain(self.cursor..next);
+        self.cursor = self.delete_composer_range(self.cursor, next);
         self.preferred_column = None;
-        self.synchronize_local_images();
     }
 
     pub(super) fn move_left(&mut self) {
-        self.cursor = self.input[..self.cursor]
+        let next = self.input[..self.cursor]
             .char_indices()
             .next_back()
             .map_or(0, |(index, _)| index);
+        self.cursor = self
+            .pending_paste_containing(next)
+            .map_or(next, |(start, _)| start);
         self.preferred_column = None;
     }
 
     pub(super) fn move_right(&mut self) {
         if let Some(character) = self.input[self.cursor..].chars().next() {
             self.cursor += character.len_utf8();
+        }
+        if let Some((_, end)) = self.pending_paste_containing(self.cursor) {
+            self.cursor = end;
         }
         self.preferred_column = None;
     }
@@ -932,7 +993,9 @@ impl App {
             }
             cursor = index;
         }
-        self.cursor = cursor;
+        self.cursor = self
+            .pending_paste_containing(cursor)
+            .map_or(cursor, |(start, _)| start);
         self.preferred_column = None;
     }
 
@@ -950,7 +1013,9 @@ impl App {
             }
             cursor += character.len_utf8();
         }
-        self.cursor = cursor;
+        self.cursor = self
+            .pending_paste_containing(cursor)
+            .map_or(cursor, |(_, end)| end);
         self.preferred_column = None;
     }
 
@@ -1033,10 +1098,8 @@ impl App {
         }
         if start != self.cursor {
             self.prepare_composer_edit();
-            self.input.drain(start..self.cursor);
-            self.cursor = start;
+            self.cursor = self.delete_composer_range(start, self.cursor);
             self.preferred_column = None;
-            self.synchronize_local_images();
         }
     }
 
@@ -1051,10 +1114,8 @@ impl App {
         };
         if start != self.cursor {
             self.prepare_composer_edit();
-            self.input.drain(start..self.cursor);
-            self.cursor = start;
+            self.cursor = self.delete_composer_range(start, self.cursor);
             self.preferred_column = None;
-            self.synchronize_local_images();
         }
     }
 
@@ -1069,9 +1130,8 @@ impl App {
         };
         if end != self.cursor {
             self.prepare_composer_edit();
-            self.input.drain(self.cursor..end);
+            self.cursor = self.delete_composer_range(self.cursor, end);
             self.preferred_column = None;
-            self.synchronize_local_images();
         }
     }
 
@@ -1103,9 +1163,10 @@ impl App {
     pub(super) fn replace_input(&mut self, input: String) {
         self.prepare_composer_edit();
         self.input = input;
+        self.pending_pastes.clear();
         self.cursor = self.input.len();
         self.preferred_column = None;
-        self.synchronize_local_images();
+        self.synchronize_composer_elements();
     }
 
     pub(super) fn editor_failed(&mut self, error: impl std::fmt::Display) {
@@ -1117,6 +1178,7 @@ impl App {
     pub(super) fn clear_input(&mut self) {
         self.input.clear();
         self.local_images.clear();
+        self.pending_pastes.clear();
         self.cursor = 0;
         self.preferred_column = None;
     }
@@ -1152,12 +1214,14 @@ impl App {
     }
 
     pub(super) fn take_submission(&mut self) -> Option<SubmittedPrompt> {
-        self.synchronize_local_images();
-        if self.input.chars().all(char::is_whitespace) && self.local_images.is_empty() {
+        self.synchronize_composer_elements();
+        let display = self.expanded_composer_input();
+        if display.chars().all(char::is_whitespace) && self.local_images.is_empty() {
             return None;
         }
         self.cursor = 0;
-        let display = std::mem::take(&mut self.input);
+        self.input.clear();
+        self.pending_pastes.clear();
         let local_images = std::mem::take(&mut self.local_images)
             .into_iter()
             .map(|image| image.path)
@@ -1204,6 +1268,7 @@ impl App {
             cursor: prompt.len(),
             input: prompt,
             local_images: Vec::new(),
+            pending_pastes: Vec::new(),
             scroll: 0,
             preferred_column: None,
         });
@@ -1231,12 +1296,13 @@ impl App {
     }
 
     pub(super) fn commit_historical_edit(&mut self) -> Option<HistoricalEditRequest> {
-        if self.input.chars().all(char::is_whitespace) {
+        let prompt = self.expanded_composer_input();
+        if prompt.chars().all(char::is_whitespace) {
             "Historical prompt cannot be empty".clone_into(&mut self.main.status);
             return None;
         }
         let editor = self.historical_editor.take()?;
-        let prompt = self.input.trim().to_owned();
+        let prompt = prompt.trim().to_owned();
         self.restore_composer_draft(editor.composer_draft);
         let new_branch_id = self.next_main_branch_id;
         self.next_main_branch_id = self.next_main_branch_id.saturating_add(1);
@@ -1290,6 +1356,7 @@ impl App {
             cursor: 0,
             input: String::new(),
             local_images: Vec::new(),
+            pending_pastes: Vec::new(),
             scroll: 0,
             preferred_column: None,
         });
@@ -1311,6 +1378,7 @@ impl App {
                 cursor: pending.prompt.len(),
                 input: pending.prompt,
                 local_images: Vec::new(),
+                pending_pastes: Vec::new(),
                 scroll: 0,
                 preferred_column: None,
             });
@@ -1483,6 +1551,7 @@ impl App {
         ComposerDraft {
             input: self.input.clone(),
             local_images: self.local_images.clone(),
+            pending_pastes: self.pending_pastes.clone(),
             cursor: self.cursor,
             scroll: self.composer_scroll,
             preferred_column: self.preferred_column,
@@ -1492,6 +1561,7 @@ impl App {
     fn restore_composer_draft(&mut self, draft: ComposerDraft) {
         self.input = draft.input;
         self.local_images = draft.local_images;
+        self.pending_pastes = draft.pending_pastes;
         self.cursor = draft.cursor.min(self.input.len());
         self.composer_scroll = draft.scroll;
         self.preferred_column = draft.preferred_column;
@@ -1771,13 +1841,21 @@ impl App {
     }
 
     pub(super) fn scroll_up(&mut self, rows: usize) {
-        if let Some(conversation) = self.conversation_mut(self.focus) {
+        self.scroll_up_in(self.focus, rows);
+    }
+
+    pub(super) fn scroll_up_in(&mut self, target: PaneId, rows: usize) {
+        if let Some(conversation) = self.conversation_mut(target) {
             conversation.scroll_up(rows);
         }
     }
 
     pub(super) fn scroll_down(&mut self, rows: usize) {
-        if let Some(conversation) = self.conversation_mut(self.focus) {
+        self.scroll_down_in(self.focus, rows);
+    }
+
+    pub(super) fn scroll_down_in(&mut self, target: PaneId, rows: usize) {
+        if let Some(conversation) = self.conversation_mut(target) {
             conversation.scroll_down(rows);
             if conversation.scroll_from_bottom == 0 {
                 conversation.has_unseen_output = false;
@@ -1894,7 +1972,8 @@ impl App {
 
     pub(super) fn attach_local_image(&mut self, path: PathBuf) {
         self.prepare_composer_edit();
-        self.synchronize_local_images();
+        self.synchronize_composer_elements();
+        self.snap_cursor_out_of_pending_paste();
         let placeholder = format!("[Image #{}]", self.local_images.len() + 1);
         self.input.insert_str(self.cursor, &placeholder);
         self.cursor += placeholder.len();
@@ -1902,9 +1981,93 @@ impl App {
         self.preferred_column = None;
     }
 
-    fn synchronize_local_images(&mut self) {
+    fn synchronize_composer_elements(&mut self) {
         self.local_images
             .retain(|image| self.input.contains(&image.placeholder));
+        let active = resolved_pending_pastes(&self.input, &self.pending_pastes)
+            .into_iter()
+            .map(|(_, _, index)| index)
+            .collect::<HashSet<_>>();
+        let mut index = 0_usize;
+        self.pending_pastes.retain(|_| {
+            let retain = active.contains(&index);
+            index = index.saturating_add(1);
+            retain
+        });
+    }
+
+    fn next_large_paste_placeholder(&self, char_count: usize) -> String {
+        let base = format!("[Pasted Content {char_count} chars]");
+        let prefix = format!("{base} #");
+        let mut max_suffix = 0_usize;
+        for paste in &self.pending_pastes {
+            if paste.placeholder == base {
+                max_suffix = max_suffix.max(1);
+            } else if let Some(suffix) = paste.placeholder.strip_prefix(&prefix)
+                && let Ok(suffix) = suffix.parse::<usize>()
+            {
+                max_suffix = max_suffix.max(suffix);
+            }
+        }
+        if max_suffix == 0 {
+            base
+        } else {
+            format!("{base} #{}", max_suffix + 1)
+        }
+    }
+
+    fn pending_paste_containing(&self, position: usize) -> Option<(usize, usize)> {
+        resolved_pending_pastes(&self.input, &self.pending_pastes)
+            .into_iter()
+            .find_map(|(start, end, _)| {
+                (start < position && position < end).then_some((start, end))
+            })
+    }
+
+    fn snap_cursor_out_of_pending_paste(&mut self) {
+        if let Some((_, end)) = self.pending_paste_containing(self.cursor) {
+            self.cursor = end;
+        }
+    }
+
+    fn delete_composer_range(&mut self, mut start: usize, mut end: usize) -> usize {
+        for (paste_start, paste_end, _) in
+            resolved_pending_pastes(&self.input, &self.pending_pastes)
+        {
+            if start < paste_end && end > paste_start {
+                start = start.min(paste_start);
+                end = end.max(paste_end);
+            }
+        }
+        self.input.drain(start..end);
+        self.synchronize_composer_elements();
+        start
+    }
+
+    fn expanded_composer_input(&self) -> String {
+        let expansions = resolved_pending_pastes(&self.input, &self.pending_pastes);
+        if expansions.is_empty() {
+            return self.input.clone();
+        }
+        let extra = expansions
+            .iter()
+            .fold(0_usize, |extra, (start, end, index)| {
+                extra.saturating_add(
+                    self.pending_pastes[*index]
+                        .text
+                        .len()
+                        .saturating_sub(end.saturating_sub(*start)),
+                )
+            });
+        let mut output = String::with_capacity(self.input.len().saturating_add(extra));
+        let mut cursor = 0_usize;
+        for (start, end, index) in expansions {
+            output.push_str(&self.input[cursor..start]);
+            output.push_str(&self.pending_pastes[index].text);
+            cursor = end;
+        }
+        output.push_str(&self.input[cursor..]);
+        output
     }
 
     fn expire_cancel_confirmation(&mut self, now: Instant) {
@@ -1915,6 +2078,35 @@ impl App {
             self.cancel_confirmation = None;
         }
     }
+}
+
+fn resolved_pending_pastes(input: &str, pastes: &[PendingPaste]) -> Vec<(usize, usize, usize)> {
+    let mut candidates = pastes
+        .iter()
+        .enumerate()
+        .flat_map(|(index, paste)| {
+            input
+                .match_indices(&paste.placeholder)
+                .map(move |(start, placeholder)| (start, start + placeholder.len(), index))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    let mut used = HashSet::with_capacity(pastes.len());
+    let mut resolved = Vec::with_capacity(pastes.len());
+    let mut cursor = 0_usize;
+    for candidate @ (start, end, index) in candidates {
+        if start < cursor || !used.insert(index) {
+            continue;
+        }
+        resolved.push(candidate);
+        cursor = end;
+    }
+    resolved
 }
 
 fn normalize_pasted_path(pasted: &str) -> Option<PathBuf> {
@@ -1954,7 +2146,85 @@ struct ToolCallPayload {
 #[derive(Deserialize)]
 struct ToolResultPayload {
     call_id: String,
+    #[serde(default)]
+    tool: Option<String>,
     status: String,
+    #[serde(default)]
+    duration_ns: Option<u64>,
+    #[serde(default)]
+    result: Option<Value>,
+}
+
+fn summarize_tool_arguments(tool: &str, arguments: &Value) -> String {
+    if tool == "exec"
+        && let Some(source) = arguments.as_str()
+    {
+        return bounded_multiline_tool_text(source);
+    }
+    if let Some(object) = arguments.as_object() {
+        if tool == "write_stdin"
+            && let Some(session_id) = object.get("session_id")
+        {
+            return format!("session {session_id}");
+        }
+        let preferred = match tool {
+            "exec_command" => object.get("cmd").and_then(Value::as_str),
+            "view_image" => object.get("path").and_then(Value::as_str),
+            "read_file" => object
+                .get("path")
+                .or_else(|| object.get("file_path"))
+                .and_then(Value::as_str),
+            "wait" => object.get("cell_id").and_then(Value::as_str),
+            _ => None,
+        };
+        if let Some(preferred) = preferred {
+            if tool == "exec_command" && preferred.contains('\n') {
+                return bounded_multiline_tool_text(preferred);
+            }
+            return compact_tool_text(preferred);
+        }
+    }
+    if tool == "apply_patch"
+        && let Some(patch) = arguments.as_str()
+    {
+        return bounded_multiline_text(patch, MAX_PATCH_ARGUMENT_CHARS, MAX_PATCH_ARGUMENT_LINES);
+    }
+    compact_arguments(arguments)
+}
+
+fn summarize_tool_result(tool: Option<&str>, result: &Value, status: ToolStatus) -> String {
+    if tool == Some("exec_command") {
+        let decoded = result
+            .as_str()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .unwrap_or_else(|| result.clone());
+        if let Some(object) = decoded.as_object() {
+            let mut parts = Vec::new();
+            if let Some(exit_code) = object.get("exit_code").and_then(Value::as_i64) {
+                parts.push(format!("exit {exit_code}"));
+            }
+            if let Some(output) = object.get("output").and_then(Value::as_str) {
+                let lines = output.lines().count();
+                if lines > 0 {
+                    parts.push(format!("{lines} line{}", if lines == 1 { "" } else { "s" }));
+                }
+            }
+            if !parts.is_empty() {
+                return parts.join(" · ");
+            }
+        }
+    }
+    if tool == Some("apply_patch")
+        && result
+            .as_str()
+            .is_some_and(|result| result.contains("Success"))
+    {
+        return "applied".to_owned();
+    }
+    if matches!(status, ToolStatus::Failed | ToolStatus::Cancelled) {
+        return compact_arguments(result);
+    }
+    String::new()
 }
 
 fn compact_arguments(arguments: &Value) -> String {
@@ -1962,11 +2232,47 @@ fn compact_arguments(arguments: &Value) -> String {
         Value::String(value) => value.clone(),
         _ => arguments.to_string(),
     };
+    compact_tool_text(&value)
+}
+
+fn compact_tool_text(value: &str) -> String {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if value.chars().count() <= MAX_TOOL_ARGUMENT_CHARS {
         return value;
     }
     let mut output: String = value.chars().take(MAX_TOOL_ARGUMENT_CHARS).collect();
     output.push('…');
+    output
+}
+
+fn bounded_multiline_tool_text(value: &str) -> String {
+    bounded_multiline_text(
+        value,
+        MAX_MULTILINE_TOOL_ARGUMENT_CHARS,
+        MAX_MULTILINE_TOOL_ARGUMENT_LINES,
+    )
+}
+
+fn bounded_multiline_text(value: &str, max_chars: usize, max_lines: usize) -> String {
+    let mut output = String::new();
+    let mut characters = 0_usize;
+    for (index, line) in value.trim().lines().enumerate() {
+        if index >= max_lines {
+            output.push_str("\n…");
+            break;
+        }
+        if index > 0 {
+            output.push('\n');
+        }
+        for character in line.chars() {
+            if characters >= max_chars {
+                output.push('…');
+                return output;
+            }
+            output.push(character);
+            characters = characters.saturating_add(1);
+        }
+    }
     output
 }
 
@@ -1981,7 +2287,7 @@ mod tests {
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     use serde_json::{Value, json};
 
-    use super::{App, PaneId, smooth_scroll_drain};
+    use super::{App, PaneId, smooth_scroll_drain, summarize_tool_arguments};
     use crate::tui::transcript::TranscriptItem;
 
     fn event(kind: AgentEventKind, payload: &Value) -> AgentEvent {
@@ -1993,6 +2299,19 @@ mod tests {
             "payload": payload,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn code_mode_and_multiline_shell_arguments_preserve_line_structure() {
+        let code = "const tasks = inputs.map(run);\nawait Promise.all(tasks);";
+        assert_eq!(summarize_tool_arguments("exec", &json!(code)), code);
+        assert_eq!(
+            summarize_tool_arguments(
+                "exec_command",
+                &json!({ "cmd": "cargo test \\\n  --workspace" }),
+            ),
+            "cargo test \\\n  --workspace"
+        );
     }
 
     #[test]
@@ -2051,6 +2370,78 @@ mod tests {
             submission.into_prompt().instruction,
             PromptInput::Text(text) if text == pasted
         ));
+    }
+
+    #[test]
+    fn large_paste_uses_codex_placeholder_and_expands_on_submit() {
+        let pasted = "界".repeat(1_001);
+        let mut app = App::new(".".into());
+
+        app.handle_paste(&pasted);
+
+        assert_eq!(app.input, "[Pasted Content 1001 chars]");
+        assert_eq!(app.pending_pastes.len(), 1);
+        let submission = app.take_submission().expect("large paste submission");
+        assert_eq!(submission.display(), pasted);
+        assert!(app.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn paste_at_threshold_stays_directly_editable() {
+        let pasted = "x".repeat(1_000);
+        let mut app = App::new(".".into());
+
+        app.handle_paste(&pasted);
+
+        assert_eq!(app.input, pasted);
+        assert!(app.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_large_paste_is_not_submitted() {
+        let mut app = App::new(".".into());
+        app.handle_paste(&" ".repeat(1_001));
+
+        assert!(app.take_submission().is_none());
+        assert_eq!(app.input, "[Pasted Content 1001 chars]");
+        assert_eq!(app.pending_pastes.len(), 1);
+    }
+
+    #[test]
+    fn equal_sized_large_pastes_get_distinct_placeholders_and_expand_in_order() {
+        let first = "a".repeat(1_001);
+        let second = "b".repeat(1_001);
+        let mut app = App::new(".".into());
+
+        app.handle_paste(&first);
+        app.insert_char(' ');
+        app.handle_paste(&second);
+
+        assert_eq!(
+            app.input,
+            "[Pasted Content 1001 chars] [Pasted Content 1001 chars] #2"
+        );
+        assert_eq!(
+            app.take_submission().expect("two pastes").display(),
+            format!("{first} {second}")
+        );
+    }
+
+    #[test]
+    fn editing_or_deleting_a_large_paste_treats_its_placeholder_atomically() {
+        let mut app = App::new(".".into());
+        app.handle_paste(&"x".repeat(1_001));
+        let placeholder_len = app.input.len();
+
+        app.cursor = placeholder_len / 2;
+        app.insert_char('!');
+        assert_eq!(app.cursor, placeholder_len + 1);
+        assert!(app.input.ends_with('!'));
+
+        app.cursor = placeholder_len;
+        app.backspace();
+        assert_eq!(app.input, "!");
+        assert!(app.pending_pastes.is_empty());
     }
 
     #[test]
@@ -2844,7 +3235,7 @@ mod tests {
         assert_eq!(app.main.transcript.len(), 3);
         assert_eq!(app.main.status, "Thinking...");
 
-        let area = Rect::new(0, 0, 40, 8);
+        let area = Rect::new(0, 0, 40, 12);
         let mut buffer = Buffer::empty(area);
         app.main
             .transcript
@@ -2861,7 +3252,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let first = rendered.find("• First thought").unwrap();
-        let tool = rendered.find("◌ exec").unwrap();
+        let tool = rendered.find("◌ Code Mode").unwrap();
         let second = rendered.find("• Second thought").unwrap();
         assert!(first < tool && tool < second);
     }

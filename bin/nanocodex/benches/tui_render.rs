@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main};
 
 mod tui {
-    use std::{cell::Cell, hint::black_box, rc::Rc, sync::Arc, time::Instant};
+    use std::{cell::Cell, fmt::Write as _, hint::black_box, rc::Rc, sync::Arc, time::Instant};
 
     use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
     use nanocodex::{AgentEvent, AgentEventKind, AgentEventTiming, TimedAgentEvent};
@@ -10,6 +10,16 @@ mod tui {
         backend::{CrosstermBackend, TestBackend},
         layout::Rect,
     };
+
+    #[allow(dead_code, unused_imports)]
+    mod markdown {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/markdown.rs"));
+    }
+
+    #[allow(dead_code, unused_imports)]
+    mod diff {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/diff.rs"));
+    }
 
     #[allow(dead_code, unused_imports)]
     mod transcript {
@@ -711,6 +721,44 @@ mod tui {
         });
     }
 
+    pub(super) fn large_paste_benchmarks(criterion: &mut Criterion) {
+        let pasted = sized_text(100 * 1_024, 5);
+        let mut group = criterion.benchmark_group("tui_large_paste");
+        group.bench_function("ingest_100k", |bencher| {
+            bencher.iter_batched(
+                || App::new("/workspace/nanocodex".into()),
+                |mut app| {
+                    app.handle_paste(black_box(&pasted));
+                    black_box(app);
+                },
+                BatchSize::LargeInput,
+            );
+        });
+        group.bench_function("placeholder_frame_100k/120x40", |bencher| {
+            let mut app = App::new("/workspace/nanocodex".into());
+            app.handle_paste(&pasted);
+            let mut terminal = Terminal::new(TestBackend::new(120, 40))
+                .expect("large-paste benchmark terminal should initialize");
+            bencher.iter(|| {
+                terminal
+                    .draw(|frame| view::render(frame, &mut app))
+                    .expect("large-paste benchmark frame should render");
+            });
+        });
+        group.bench_function("expand_100k", |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut app = App::new("/workspace/nanocodex".into());
+                    app.handle_paste(&pasted);
+                    app
+                },
+                |mut app| black_box(app.take_submission()),
+                BatchSize::LargeInput,
+            );
+        });
+        group.finish();
+    }
+
     pub(super) fn history_navigation_benchmarks(criterion: &mut Criterion) {
         let mut group = criterion.benchmark_group("tui_history_navigation");
         for shape in TRACE_SHAPES {
@@ -869,6 +917,159 @@ mod tui {
         }
         group.finish();
     }
+
+    pub(super) fn markdown_benchmarks(criterion: &mut Criterion) {
+        let mut markdown = String::new();
+        for index in 0_usize..40 {
+            write!(
+                markdown,
+                "## Result {index}\n\nA **formatted** result with `inline code`.\n\n| Name | Status | Detail |\n| --- | --- | --- |\n| build-{index} | passed | deterministic output |\n\n"
+            )
+            .expect("writing benchmark Markdown to a string cannot fail");
+            if index.is_multiple_of(4) {
+                write!(
+                    markdown,
+                    "```rust\nfn result_{index}() -> usize {{ {index} }}\n```\n\n"
+                )
+                .expect("writing benchmark code to a string cannot fail");
+            }
+        }
+        criterion.bench_function("tui_markdown/finalize_and_first_frame/120x40", |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut transcript = Transcript::default();
+                    transcript.push(TranscriptItem::Assistant(markdown.clone()));
+                    let terminal = Terminal::new(TestBackend::new(120, 40))
+                        .expect("markdown benchmark terminal should initialize");
+                    (transcript, terminal)
+                },
+                |(mut transcript, mut terminal)| {
+                    assert!(transcript.finalize_assistant(black_box(&markdown)));
+                    terminal
+                        .draw(|frame| {
+                            frame.render_widget(
+                                transcript.widget(0, None, None, "empty"),
+                                frame.area(),
+                            );
+                        })
+                        .expect("markdown benchmark frame should render");
+                    black_box((transcript, terminal));
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        criterion.bench_function("tui_markdown/healed_streaming_frame/120x40", |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut transcript = Transcript::default();
+                    transcript.push(TranscriptItem::Assistant(format!(
+                        "{markdown}\nStreaming **formatted tail"
+                    )));
+                    let terminal = Terminal::new(TestBackend::new(120, 40))
+                        .expect("streaming Markdown benchmark terminal should initialize");
+                    (transcript, terminal)
+                },
+                |(mut transcript, mut terminal)| {
+                    assert!(transcript.append_assistant_delta(" with `code"));
+                    terminal
+                        .draw(|frame| {
+                            frame.render_widget(
+                                transcript.widget(0, None, None, "empty"),
+                                frame.area(),
+                            );
+                        })
+                        .expect("streaming Markdown benchmark frame should render");
+                    black_box((transcript, terminal));
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    pub(super) fn tool_tree_benchmark(criterion: &mut Criterion) {
+        criterion.bench_function("tui_tool_tree/update_and_frame/120x40", |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut transcript = Transcript::default();
+                    transcript.push(TranscriptItem::Tool {
+                        call_id: "call-1".to_owned(),
+                        name: "exec".to_owned(),
+                        arguments: "const tasks = inputs.map(run);\nconst output = await Promise.all(tasks);\ntext(output);".to_owned(),
+                        status: ToolStatus::Running,
+                    });
+                    for index in 0..16 {
+                        assert!(transcript.push_tool_child(
+                            format!("call-1/code-{index}"),
+                            "exec_command".to_owned(),
+                            format!("worker {index}"),
+                            ToolStatus::Running,
+                        ));
+                    }
+                    let terminal = Terminal::new(TestBackend::new(120, 40))
+                        .expect("tool benchmark terminal should initialize");
+                    (transcript, terminal)
+                },
+                |(mut transcript, mut terminal)| {
+                    assert!(transcript.set_tool_result(
+                        "call-1/code-15",
+                        ToolStatus::Completed,
+                        Some(80_000_000),
+                        Some("exit 0".to_owned()),
+                    ));
+                    terminal
+                        .draw(|frame| {
+                            frame.render_widget(
+                                transcript.widget(0, None, None, "empty"),
+                                frame.area(),
+                            );
+                        })
+                        .expect("tool benchmark frame should render");
+                    black_box((transcript, terminal));
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        let mut patch = String::from("*** Begin Patch\n");
+        for index in 0..16 {
+            use std::fmt::Write as _;
+            writeln!(patch, "*** Update File: src/module_{index}.rs").unwrap();
+            patch.push_str("@@\n-old_value();\n+new_value();\n context();\n");
+        }
+        patch.push_str("*** End Patch");
+        criterion.bench_function(
+            "tui_tool_tree/patch_16_files_first_frame/120x40",
+            |bencher| {
+                bencher.iter_batched(
+                    || {
+                        let mut transcript = Transcript::default();
+                        transcript.push(TranscriptItem::Tool {
+                            call_id: "patch-1".to_owned(),
+                            name: "apply_patch".to_owned(),
+                            arguments: patch.clone(),
+                            status: ToolStatus::Completed,
+                        });
+                        let terminal = Terminal::new(TestBackend::new(120, 40))
+                            .expect("patch benchmark terminal should initialize");
+                        (transcript, terminal)
+                    },
+                    |(transcript, mut terminal)| {
+                        terminal
+                            .draw(|frame| {
+                                frame.render_widget(
+                                    transcript.widget(0, None, None, "empty"),
+                                    frame.area(),
+                                );
+                            })
+                            .expect("patch benchmark frame should render");
+                        black_box((transcript, terminal));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
 }
 
 criterion_group!(
@@ -885,7 +1086,10 @@ criterion_group!(
     tui::stream_telemetry_benchmark,
     tui::first_frame_benchmarks,
     tui::composer_benchmarks,
+    tui::large_paste_benchmarks,
     tui::history_navigation_benchmarks,
-    tui::branch_state_benchmarks
+    tui::branch_state_benchmarks,
+    tui::markdown_benchmarks,
+    tui::tool_tree_benchmark
 );
 criterion_main!(benches);

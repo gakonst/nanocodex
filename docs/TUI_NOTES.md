@@ -74,10 +74,31 @@ Unknown slash-prefixed input is sent to the model as an ordinary prompt.
 
 - Transcript state is semantic: user, assistant, tool, and error entries are
   retained separately from their rendered cells.
-- Streaming assistant deltas mutate the current assistant tail rather than
-  adding one transcript entry per delta.
+- Streaming assistant deltas append to one canonical raw Markdown tail rather
+  than adding one transcript entry per delta. Rendering temporarily closes
+  incomplete fences, inline code, emphasis, strikethrough, and links without
+  mutating that source; the final assistant event disables healing and seals
+  the exact completed response.
 - Tool state is updated by call ID and distinguishes running, completed,
   cancelled, and failed calls.
+- Markdown supports headings, emphasis, lists, quotes, links, fenced code, and
+  tables. Known fenced-code languages use a lazily loaded native syntax set;
+  unknown languages retain a plain-code fallback. Tables keep aligned columns
+  when they fit and become labeled row cards at narrow widths.
+- Code Mode's `parent/code-N` events render as one activity tree. Child calls
+  retain status, compact arguments/results, and duration; the completed parent
+  uses its wall time and the summed child durations to label demonstrably
+  overlapping work without parsing or guessing at the JavaScript program. The
+  parent JavaScript remains multiline and syntax-highlighted, while multiline
+  child commands render as indented continuation rows instead of one flattened
+  line. Immutable highlighted source is cached on the activity.
+- `apply_patch` activities retain bounded patch source and render operation-aware
+  file paths, moves, aggregate and per-file `+/-` counts, hunk markers, and
+  syntax-aware added/context lines instead of flattening a patch into arguments.
+- Following Codex's composer contract, explicit pastes over 1,000 characters
+  become compact `[Pasted Content N chars]` elements. Their full text stays out
+  of layout and rendering, equal-sized pastes receive stable suffixes, element
+  deletion is atomic, and surviving placeholders expand losslessly on submit.
 - Wrapped entry height is cached for the current terminal width. A width change
   recomputes it.
 - Rendering finds the visible window from the newest entry backward, then clips
@@ -109,9 +130,13 @@ Unknown slash-prefixed input is sent to the model as an ordinary prompt.
 - Manual scroll offsets are clamped to the transcript's actual wrapped height
   at the current viewport size. Repeated wheel or page input at the oldest row
   therefore cannot accumulate invisible overscroll that must later be unwound.
+- Mouse-wheel events are coalesced for one frame. Reversing direction within
+  that queued burst discards the older direction instead of making the user
+  wait for stale trackpad momentum to drain.
 - Terminal setup uses synchronized updates, bracketed paste, mouse capture, and
-  enhanced keyboard reporting where supported. Restoration is drop- and
-  panic-safe.
+  enhanced keyboard and focus reporting where supported. Completion emits one
+  OSC 9 notification on known supporting terminals, with tmux passthrough, or a
+  BEL fallback only while unfocused. Restoration is drop- and panic-safe.
 
 ### Scheduling
 
@@ -164,8 +189,20 @@ The Criterion suite in `bin/nanocodex/benches/tui_render.rs` measures:
 - a 128-row follow-bottom burst, one smooth viewport step, and draining the
   bounded animation backlog at `120x40`;
 - repeated rendering of a 100 KiB multiline composer draft at `120x40`; and
+- 100 KiB large-paste ingestion, placeholder rendering, and submission expansion;
+- first-frame rendering of a 16-file patch activity; and
 - selection of every retained user prompt and the first selected-history frame
-  at `120x40`.
+  at `120x40`;
+- finalized Markdown parsing plus its first `120x40` frame;
+- a healed streaming Markdown update and `120x40` frame; and
+- a 16-child Code Mode activity update plus its `120x40` frame.
+
+On the 2026-07-21 development-machine gate, sealing and first-rendering a
+representative multi-section Markdown fixture with ten highlighted Rust blocks
+measured 1.285 ms. Healing and rendering the same fixture with an incomplete
+formatted tail measured 1.313 ms per changed frame. The scheduler coalesces
+multiple deltas before that work. Updating and rendering a 16-child Code Mode
+tree with cached highlighted JavaScript measured 171.87 µs.
 
 `TUI-PERF-01` replaced the complete oldest-first height sum and walk with a
 bottom-up visible-window search. On the 2026-07-21 development-machine run,
@@ -323,14 +360,14 @@ choice; `Defer` is intentionally outside the next slice.
 | --- | --- | --- | --- |
 | `TUI-PERF-01` | Done | Add a long-history height/index strategy. | Bottom-up traversal is benchmarked on both representative shapes, scrolled and unscrolled, with alternating-width resize invalidation. The retained-history walk and sum are no longer on the normal tail-render path. |
 | `TUI-SCROLL-01` | Done | Preserve reading position while output streams. | Wrapped growth and new entries are coalesced into the pane's bottom-relative offset. The title marks unseen output; `Ctrl+End` and reaching the tail clear it. Scroll input and resize clamp at the real wrapped extent without retaining hidden overscroll. Tests cover wrap growth, resize, clamping, and main/`/btw` isolation. |
-| `TUI-STREAM-01` | Deferred | Make streaming versus sealed transcript entries explicit. | The raw-string prototype reduced isolated update work but did not produce a reproducible end-to-end frame win, while adding per-frame materialization. Re-evaluate with canonical raw source as part of `TUI-RENDER-01`. |
+| `TUI-STREAM-01` | Done | Make streaming versus sealed transcript entries explicit. | The assistant tail retains canonical raw Markdown plus explicit streaming state. Changed frames heal only their temporary parse input; the terminal event seals exact source and disables healing. The representative highlighted streaming frame is benchmarked under the frame budget. |
 | `TUI-SMOOTH-01` | Done | Smooth follow-bottom movement once streaming output fills the viewport. | Keep agent events and canonical transcript updates immediate, but retain the prior visual bottom while newly wrapped rows arrive and advance it by one row per render. Initial viewport fill is unchanged, newline-heavy bursts retain their exact visual row debt instead of jumping when they exceed one screen, and manual scroll cancels pending automatic movement immediately. |
 | `TUI-COMPOSER-01` | Done | Make multiline editing a reliable daily-driver surface. | `Ctrl+G` safely yields stdin and terminal ownership to `$VISUAL`/`$EDITOR`; readline keys work; rendering and Up/Down share one visual-row map. The 100 KiB composer frame is benchmarked and exact wrap boundaries are regression-tested. |
 | `TUI-BRANCH-01` | Done | Make transcript edit create an Amp-style historical branch. | Up at the composer boundary selects prior user turns inline without wrapping or clearing a running response. `e` replaces the selected row with an inline editor; submit may fork while the source completion continues on its retained branch and sends only after the new branch opens. Abandoned branch agents, transcripts, and drafts remain available. `Ctrl+Alt+B` opens the measured right-side depth-first branch tree; moving its selection immediately changes the transcript preview and switches the idle agent without an Enter confirmation. `Ctrl+Alt+Up/Down` retains fast cycling. |
-| `TUI-PASTE-01` | Evaluate | Handle paste bursts and very large drafts deliberately. | Preserve pasted bytes after newline normalization, keep the UI responsive, and decide whether the composer shows a compact placeholder for unusually large pastes. Do not silently truncate. |
-| `TUI-RENDER-01` | Evaluate | Render assistant Markdown and useful tables. | Preserve selectable/copyable source and deterministic reflow. Benchmark long messages and avoid turning presentation into a new transcript contract. |
-| `TUI-TOOL-01` | Evaluate | Improve tool-call presentation. | Explore collapsed/expanded arguments and results, duration, and clearer status without hiding failures or changing event semantics. |
-| `TUI-NOTIFY-01` | Evaluate | Notify on completion while unfocused. | Detect focus state, make BEL/OSC 9 behavior configurable or terminal-safe, and never emit noisy notifications for every streaming event. |
+| `TUI-PASTE-01` | Done | Handle very large explicit pastes deliberately. | Match Codex's greater-than-1,000-character threshold and placeholder labels, keep full normalized text outside composer layout, make placeholder deletion atomic, and expand surviving payloads exactly on submission. The 100 KiB ingest/render/expand path is benchmarked. Non-bracketed key-event paste detection remains unnecessary while the Ratatui terminal contract enables bracketed paste. |
+| `TUI-RENDER-01` | Done | Render assistant Markdown and useful tables. | Streaming snapshots heal incomplete constructs before parsing; completed source is exact and width-cached. Wide tables align columns, narrow tables become lossless labeled row cards, and fenced blocks receive native syntax highlighting with a plain fallback. Deterministic healing/reflow/highlighting tests and finalized/streaming frame benchmarks cover the boundary without changing the transcript event contract. |
+| `TUI-TOOL-01` | Done | Improve tool-call presentation. | Code Mode parent and `/code-N` child events form one timed activity tree with multiline highlighted JavaScript, multiline child continuation rows, compact results, explicit status, failure detail, and evidence-based sequence/overlap labels. Patch calls add operation-aware paths, moves, `+/-` counts, and styled hunks. A 16-child update/frame benchmark and 16-file patch frame cover the cached representation. |
+| `TUI-NOTIFY-01` | Done | Notify on completion while unfocused. | Focus reporting gates exactly one terminal-safe completion notification per turn. Known terminals receive OSC 9, tmux receives an escaped passthrough sequence, unknown terminals use BEL, and a backend write failure disables later attempts. |
 | `TUI-SEARCH-01` | Evaluate | Add transcript search and copy-oriented navigation. | First define how matches interact with semantic entries, wrapped rows, two panes, and streaming updates. |
 | `TUI-BTW-01` | Defer | Support multiple named `/btw` panes. | Product candidate already recorded in `docs/ORCHESTRATION_DECISION_CONTEXT.md`; preserve fresh driver/tool runtime ownership and explicit cleanup. This is broader than a rendering slice. |
 | `TUI-BTW-02` | Evaluate | Make branch cancellation and close cleanup explicit. | Cancellation exists, but busy `/close` is rejected. Decide whether close should offer cancel-and-close while guaranteeing subprocess and driver cleanup. |

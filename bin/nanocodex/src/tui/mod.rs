@@ -1,7 +1,10 @@
 mod app;
 mod clipboard;
 mod composer;
+mod diff;
 mod external_editor;
+mod markdown;
+mod notification;
 mod scheduler;
 mod selection;
 mod telemetry;
@@ -32,6 +35,7 @@ use tracing::{Instrument, info_span};
 
 use self::{
     app::{App, PaneId, SubmittedPrompt},
+    notification::Notifier,
     scheduler::{RenderScheduler, STREAM_FRAME_INTERVAL},
     telemetry::{StreamTelemetry, ViewTelemetry},
     terminal::TerminalSession,
@@ -48,6 +52,7 @@ BTW question:
 ";
 const DEFAULT_JAEGER_UI_URL: &str = "http://127.0.0.1:16686";
 const JAEGER_UI_URL_ENV: &str = "NANOCODEX_JAEGER_UI_URL";
+const MOUSE_SCROLL_ROWS: usize = 3;
 
 enum WorkerCommand {
     Prompt {
@@ -230,6 +235,7 @@ enum UiAction {
 enum RedrawPriority {
     Immediate,
     Streaming,
+    InputBurst,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,6 +251,47 @@ struct UiModel {
     root_session_id: Arc<str>,
     agent_events_open: bool,
     worker_updates_open: bool,
+    terminal_focused: bool,
+    pending_notification: Option<String>,
+    pending_mouse_scroll: Option<MouseScrollBurst>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollDirection {
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MouseScrollBurst {
+    target: PaneId,
+    direction: ScrollDirection,
+    rows: usize,
+}
+
+impl MouseScrollBurst {
+    fn new(target: PaneId, direction: ScrollDirection) -> Self {
+        Self {
+            target,
+            direction,
+            rows: MOUSE_SCROLL_ROWS,
+        }
+    }
+
+    fn push(&mut self, target: PaneId, direction: ScrollDirection) {
+        if self.target != target || self.direction != direction {
+            *self = Self::new(target, direction);
+            return;
+        }
+        self.rows = self.rows.saturating_add(MOUSE_SCROLL_ROWS);
+    }
+
+    fn apply(self, app: &mut App) {
+        match self.direction {
+            ScrollDirection::Up => app.scroll_up_in(self.target, self.rows),
+            ScrollDirection::Down => app.scroll_down_in(self.target, self.rows),
+        }
+    }
 }
 
 impl UiModel {
@@ -254,6 +301,24 @@ impl UiModel {
             root_session_id,
             agent_events_open: true,
             worker_updates_open: true,
+            terminal_focused: true,
+            pending_notification: None,
+            pending_mouse_scroll: None,
+        }
+    }
+
+    fn queue_mouse_scroll(&mut self, direction: ScrollDirection) {
+        let target = self.app.focus;
+        if let Some(pending) = &mut self.pending_mouse_scroll {
+            pending.push(target, direction);
+        } else {
+            self.pending_mouse_scroll = Some(MouseScrollBurst::new(target, direction));
+        }
+    }
+
+    fn apply_pending_mouse_scroll(&mut self) {
+        if let Some(pending) = self.pending_mouse_scroll.take() {
+            pending.apply(&mut self.app);
         }
     }
 
@@ -264,6 +329,35 @@ impl UiModel {
     ) -> Result<UiUpdate> {
         match action {
             UiAction::Terminal(event) => {
+                let mouse_scroll = match event {
+                    Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollUp => {
+                        Some(ScrollDirection::Up)
+                    }
+                    Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollDown => {
+                        Some(ScrollDirection::Down)
+                    }
+                    _ => None,
+                };
+                if let Some(direction) = mouse_scroll {
+                    let _ = self.app.clear_mouse_selection();
+                    self.queue_mouse_scroll(direction);
+                    return Ok(UiUpdate::Redraw(RedrawPriority::InputBurst));
+                }
+                // A non-wheel event is an ordering barrier: apply the gesture to
+                // the pane it started in before focus or viewport state can change.
+                self.apply_pending_mouse_scroll();
+                match event {
+                    Event::FocusGained => {
+                        self.terminal_focused = true;
+                        self.pending_notification = None;
+                        return Ok(UiUpdate::Ignore);
+                    }
+                    Event::FocusLost => {
+                        self.terminal_focused = false;
+                        return Ok(UiUpdate::Ignore);
+                    }
+                    _ => {}
+                }
                 match handle_terminal_event(event, &mut self.app, &self.root_session_id, commands)?
                 {
                     TerminalAction::Redraw => Ok(UiUpdate::Redraw(RedrawPriority::Immediate)),
@@ -287,6 +381,20 @@ impl UiModel {
                 Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
             }
             UiAction::Worker(update) => {
+                if !self.terminal_focused
+                    && let WorkerEvent::TurnFinished { target, error, .. } = &update
+                {
+                    let scope = if matches!(target, PaneId::Main) {
+                        "Nanocodex"
+                    } else {
+                        "Nanocodex BTW"
+                    };
+                    self.pending_notification = Some(if error.is_some() {
+                        format!("{scope} needs attention")
+                    } else {
+                        format!("{scope} finished")
+                    });
+                }
                 handle_worker_update(&mut self.app, update, commands)?;
                 Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
             }
@@ -341,6 +449,7 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut stream_telemetry = StreamTelemetry::default();
     let mut view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));
+    let mut notifier = Notifier::from_env();
 
     submit_initial_prompt(&mut ui.app, &root_session_id, &worker_tx, initial_prompt)?;
 
@@ -351,6 +460,7 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
             &mut terminal,
             &mut scheduler,
             &mut stream_telemetry,
+            &mut notifier,
         )?;
 
         let render_deadline = scheduler.deadline();
@@ -425,10 +535,12 @@ fn render_due_frame(
     terminal: &mut TerminalSession,
     scheduler: &mut RenderScheduler,
     stream_telemetry: &mut StreamTelemetry,
+    notifier: &mut Notifier,
 ) -> Result<()> {
     if !scheduler.is_due(Instant::now()) {
         return Ok(());
     }
+    ui.apply_pending_mouse_scroll();
     ui.app.advance_smooth_scroll();
     let render_started = Instant::now();
     let draw_metrics = terminal.draw(|frame| view::render(frame, &mut ui.app))?;
@@ -442,6 +554,9 @@ fn render_due_frame(
     let presented_at = Instant::now();
     scheduler.presented(presented_at);
     stream_telemetry.frame_presented(render_started, presented_at, draw_metrics, &ui.app);
+    if let Some(message) = ui.pending_notification.take() {
+        notifier.notify(terminal, &message);
+    }
     if ui.app.smooth_scroll_pending() {
         scheduler.request_streaming(presented_at);
     }
@@ -502,6 +617,7 @@ fn apply_update(update: UiUpdate, scheduler: &mut RenderScheduler) -> bool {
     match update {
         UiUpdate::Redraw(RedrawPriority::Immediate) => scheduler.request_immediate(now),
         UiUpdate::Redraw(RedrawPriority::Streaming) => scheduler.request_streaming(now),
+        UiUpdate::Redraw(RedrawPriority::InputBurst) => scheduler.request_input_burst(now),
         UiUpdate::Ignore | UiUpdate::ExternalEditor => {}
         UiUpdate::Quit => return true,
     }
@@ -1328,12 +1444,12 @@ fn handle_terminal_event(
             }
             MouseEventKind::ScrollUp => {
                 let _ = app.clear_mouse_selection();
-                app.scroll_up(3);
+                app.scroll_up(MOUSE_SCROLL_ROWS);
                 Ok(TerminalAction::Redraw)
             }
             MouseEventKind::ScrollDown => {
                 let _ = app.clear_mouse_selection();
-                app.scroll_down(3);
+                app.scroll_down(MOUSE_SCROLL_ROWS);
                 Ok(TerminalAction::Redraw)
             }
             _ => Ok(TerminalAction::Ignore),
@@ -1857,7 +1973,7 @@ fn browser_command(url: &str) -> Command {
 mod tests {
     use std::{path::PathBuf, sync::Arc, time::Duration};
 
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use futures_util::{SinkExt, StreamExt};
     use nanocodex::{Nanocodex, Responses, Thinking};
     use serde_json::{Value, json};
@@ -1871,6 +1987,15 @@ mod tests {
         spawn_agent_worker,
     };
     use crate::tui::app::App;
+
+    fn mouse_scroll(kind: MouseEventKind) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
 
     #[test]
     fn parses_tui_commands_without_capturing_similar_prompts() {
@@ -2012,6 +2137,98 @@ mod tests {
             UiUpdate::Redraw(RedrawPriority::Streaming)
         );
         assert!(!ui.worker_updates_open);
+    }
+
+    #[test]
+    fn reversing_a_queued_mouse_scroll_discards_the_previous_direction() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.main.scroll_from_bottom = 15;
+        let mut ui = UiModel::new(app, std::sync::Arc::from("main-session"));
+
+        for _ in 0..4 {
+            assert_eq!(
+                ui.update(
+                    UiAction::Terminal(mouse_scroll(MouseEventKind::ScrollUp)),
+                    &commands,
+                )
+                .unwrap(),
+                UiUpdate::Redraw(RedrawPriority::InputBurst)
+            );
+        }
+        assert_eq!(ui.app.main.scroll_from_bottom, 15);
+
+        ui.update(
+            UiAction::Terminal(mouse_scroll(MouseEventKind::ScrollDown)),
+            &commands,
+        )
+        .unwrap();
+        ui.apply_pending_mouse_scroll();
+
+        assert_eq!(
+            ui.app.main.scroll_from_bottom, 12,
+            "the reverse tick should replace, not unwind, the queued upward ticks",
+        );
+        assert!(ui.pending_mouse_scroll.is_none());
+    }
+
+    #[test]
+    fn same_direction_mouse_scrolls_accumulate_until_the_frame() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut ui = UiModel::new(
+            App::new("/workspace".into()),
+            std::sync::Arc::from("main-session"),
+        );
+
+        for _ in 0..3 {
+            ui.update(
+                UiAction::Terminal(mouse_scroll(MouseEventKind::ScrollUp)),
+                &commands,
+            )
+            .unwrap();
+        }
+        ui.apply_pending_mouse_scroll();
+
+        assert_eq!(ui.app.main.scroll_from_bottom, 9);
+    }
+
+    #[test]
+    fn completion_notification_is_queued_only_while_unfocused() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut ui = UiModel::new(
+            App::new("/workspace".into()),
+            std::sync::Arc::from("main-session"),
+        );
+
+        ui.update(UiAction::Terminal(Event::FocusLost), &commands)
+            .unwrap();
+        ui.update(
+            UiAction::Worker(WorkerEvent::TurnFinished {
+                target: PaneId::Main,
+                main_branch_id: Some(0),
+                error: None,
+            }),
+            &commands,
+        )
+        .unwrap();
+        assert_eq!(
+            ui.pending_notification.as_deref(),
+            Some("Nanocodex finished")
+        );
+
+        ui.update(UiAction::Terminal(Event::FocusGained), &commands)
+            .unwrap();
+        assert!(ui.pending_notification.is_none());
+        ui.update(
+            UiAction::Worker(WorkerEvent::TurnFinished {
+                target: PaneId::Main,
+                main_branch_id: Some(0),
+                error: None,
+            }),
+            &commands,
+        )
+        .unwrap();
+        assert!(ui.pending_notification.is_none());
     }
 
     #[allow(clippy::too_many_lines)]

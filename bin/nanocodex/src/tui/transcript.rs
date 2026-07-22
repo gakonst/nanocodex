@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     mem,
     sync::{
@@ -18,6 +19,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::composer::ComposerLayout;
+use super::diff::{PatchPresentation, present_apply_patch};
+use super::markdown::{heal_streaming_markdown, highlighted_code_lines, render_agent_markdown};
 
 #[derive(Clone, Copy)]
 pub(super) struct InlineEdit<'a> {
@@ -79,6 +82,38 @@ impl Transcript {
         self.invalidate_total_height();
     }
 
+    pub(super) fn has_tool_parent(&self, call_id: &str) -> bool {
+        let Some((parent, _)) = call_id.split_once("/code-") else {
+            return false;
+        };
+        self.entries
+            .iter()
+            .rev()
+            .any(|entry| matches!(&entry.kind, EntryKind::Tool { call_id } if call_id == parent))
+    }
+
+    pub(super) fn push_tool_child(
+        &mut self,
+        call_id: String,
+        name: String,
+        arguments: String,
+        status: ToolStatus,
+    ) -> bool {
+        let Some((parent, _)) = call_id.split_once("/code-") else {
+            return false;
+        };
+        let Some(entry) =
+            self.entries.iter_mut().rev().find(
+                |entry| matches!(&entry.kind, EntryKind::Tool { call_id } if call_id == parent),
+            )
+        else {
+            return false;
+        };
+        Arc::make_mut(entry).push_tool_child(call_id, name, arguments, status);
+        self.invalidate_total_height();
+        true
+    }
+
     pub(super) fn push_editable_user(&mut self, message: String, prompt_id: u64) {
         let mut entry = TranscriptEntry::new(TranscriptItem::User(message));
         entry.prompt_id = Some(prompt_id);
@@ -107,6 +142,17 @@ impl Transcript {
             self.invalidate_total_height();
         }
         appended
+    }
+
+    pub(super) fn finalize_assistant(&mut self, message: &str) -> bool {
+        let finalized = self
+            .entries
+            .last_mut()
+            .is_some_and(|entry| Arc::make_mut(entry).finalize_assistant(message));
+        if finalized {
+            self.invalidate_total_height();
+        }
+        finalized
     }
 
     pub(super) fn tail_is_assistant(&self) -> bool {
@@ -216,15 +262,24 @@ impl Transcript {
         }
     }
 
-    pub(super) fn set_tool_status(&mut self, call_id: &str, status: ToolStatus) {
-        if let Some(entry) =
-            self.entries.iter_mut().rev().find(
-                |entry| matches!(&entry.kind, EntryKind::Tool { call_id: id } if id == call_id),
-            )
-        {
-            Arc::make_mut(entry).set_tool_status(status);
+    pub(super) fn set_tool_result(
+        &mut self,
+        call_id: &str,
+        status: ToolStatus,
+        duration_ns: Option<u64>,
+        result: Option<String>,
+    ) -> bool {
+        let parent_id = call_id
+            .split_once("/code-")
+            .map_or(call_id, |(parent, _)| parent);
+        if let Some(entry) = self.entries.iter_mut().rev().find(
+            |entry| matches!(&entry.kind, EntryKind::Tool { call_id } if call_id == parent_id),
+        ) {
+            Arc::make_mut(entry).set_tool_result(call_id, status, duration_ns, result);
             self.invalidate_total_height();
+            return true;
         }
+        false
     }
 
     fn total_height(&self, width: u16) -> usize {
@@ -641,6 +696,34 @@ struct TranscriptEntry {
 enum EntryContent {
     Static(Text<'static>),
     Streaming(StreamingText),
+    Markdown(MarkdownContent),
+    Tool(ToolActivity),
+}
+
+#[derive(Clone)]
+struct ToolActivity {
+    call_id: String,
+    name: String,
+    arguments: String,
+    status: ToolStatus,
+    duration_ns: Option<u64>,
+    result: Option<String>,
+    children: Vec<ToolActivity>,
+    highlighted_source: Option<Vec<Line<'static>>>,
+    patch: Option<PatchPresentation>,
+}
+
+struct MarkdownContent {
+    source: String,
+    streaming: bool,
+    cached: Mutex<Option<RenderedMarkdown>>,
+}
+
+#[derive(Clone)]
+struct RenderedMarkdown {
+    width: u16,
+    text: Text<'static>,
+    height: usize,
 }
 
 struct StreamingText {
@@ -686,6 +769,21 @@ impl Clone for StreamingLine {
     }
 }
 
+impl Clone for MarkdownContent {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            streaming: self.streaming,
+            cached: Mutex::new(
+                self.cached
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            ),
+        }
+    }
+}
+
 impl Clone for TranscriptEntry {
     fn clone(&self) -> Self {
         Self {
@@ -714,7 +812,7 @@ impl TranscriptEntry {
             TranscriptItem::Assistant(message) => (
                 EntryKind::Assistant,
                 None,
-                EntryContent::Streaming(StreamingText::assistant(&message)),
+                EntryContent::Markdown(MarkdownContent::streaming(&message)),
             ),
             TranscriptItem::Reasoning(message) => (
                 EntryKind::Reasoning,
@@ -726,23 +824,13 @@ impl TranscriptEntry {
                 name,
                 arguments,
                 status,
-            } => {
-                let (icon, color) = tool_style(status);
-                (
-                    EntryKind::Tool { call_id },
-                    None,
-                    EntryContent::Static(Text::from(vec![
-                        Line::from(vec![
-                            Span::styled(format!("{icon} {name}"), Style::default().fg(color)),
-                            Span::styled(
-                                format!("  {arguments}"),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        ]),
-                        Line::raw(""),
-                    ])),
-                )
-            }
+            } => (
+                EntryKind::Tool {
+                    call_id: call_id.clone(),
+                },
+                None,
+                EntryContent::Tool(ToolActivity::new(call_id, name, arguments, status)),
+            ),
             TranscriptItem::Error(message) => (
                 EntryKind::Error,
                 None,
@@ -766,6 +854,8 @@ impl TranscriptEntry {
         Paragraph::new(match &self.content {
             EntryContent::Static(text) => text.clone(),
             EntryContent::Streaming(streaming) => streaming.materialized_text(),
+            EntryContent::Markdown(markdown) => markdown.text(80),
+            EntryContent::Tool(tool) => tool.text(),
         })
         .wrap(Wrap { trim: false })
     }
@@ -784,6 +874,10 @@ impl TranscriptEntry {
                 .wrap(Wrap { trim: false })
                 .line_count(width),
             EntryContent::Streaming(streaming) => streaming.height(width),
+            EntryContent::Markdown(markdown) => markdown.height(width),
+            EntryContent::Tool(tool) => Paragraph::new(tool.text())
+                .wrap(Wrap { trim: false })
+                .line_count(width),
         };
         let encoded = (u64::from(width) << 48)
             | u64::try_from(height)
@@ -814,6 +908,25 @@ impl TranscriptEntry {
             EntryContent::Streaming(streaming) => {
                 streaming.render(area, buffer, scroll, total_height, selected);
             }
+            EntryContent::Markdown(markdown) => {
+                let mut paragraph =
+                    Paragraph::new(markdown.text(area.width)).wrap(Wrap { trim: false });
+                if selected {
+                    paragraph = paragraph.style(Style::default().add_modifier(Modifier::REVERSED));
+                }
+                paragraph
+                    .scroll((saturating_u16(scroll), 0))
+                    .render(area, buffer);
+            }
+            EntryContent::Tool(tool) => {
+                let mut paragraph = Paragraph::new(tool.text()).wrap(Wrap { trim: false });
+                if selected {
+                    paragraph = paragraph.style(Style::default().add_modifier(Modifier::REVERSED));
+                }
+                paragraph
+                    .scroll((saturating_u16(scroll), 0))
+                    .render(area, buffer);
+            }
         }
     }
 
@@ -822,13 +935,11 @@ impl TranscriptEntry {
             return false;
         }
 
-        let EntryContent::Streaming(streaming) = &mut self.content else {
+        let EntryContent::Markdown(markdown) = &mut self.content else {
             return false;
         };
-        let cached = self.cached_height.load(Ordering::Relaxed);
-        let cached_width = (cached != 0).then_some((cached >> 48) as u16);
-        let replacement = streaming.append(delta, cached_width);
-        self.update_streaming_height(cached, cached_width, replacement);
+        markdown.append(delta);
+        self.cached_height.store(0, Ordering::Relaxed);
         true
     }
 
@@ -844,6 +955,18 @@ impl TranscriptEntry {
         let cached_width = (cached != 0).then_some((cached >> 48) as u16);
         let replacement = streaming.append(delta, cached_width);
         self.update_streaming_height(cached, cached_width, replacement);
+        true
+    }
+
+    fn finalize_assistant(&mut self, message: &str) -> bool {
+        if !matches!(self.kind, EntryKind::Assistant) {
+            return false;
+        }
+        match &mut self.content {
+            EntryContent::Markdown(markdown) => markdown.finalize(message),
+            _ => self.content = EntryContent::Markdown(MarkdownContent::new(message)),
+        }
+        self.cached_height.store(0, Ordering::Relaxed);
         true
     }
 
@@ -867,49 +990,331 @@ impl TranscriptEntry {
         }
     }
 
-    fn set_tool_status(&mut self, status: ToolStatus) {
+    fn push_tool_child(
+        &mut self,
+        call_id: String,
+        name: String,
+        arguments: String,
+        status: ToolStatus,
+    ) {
         let EntryKind::Tool { .. } = self.kind else {
             return;
         };
-        let (icon, color) = tool_style(status);
-        let EntryContent::Static(text) = &mut self.content else {
+        let EntryContent::Tool(tool) = &mut self.content else {
             return;
         };
-        if let Some(span) = text
-            .lines
-            .first_mut()
-            .and_then(|line| line.spans.first_mut())
-        {
-            let content = span.content.to_mut();
-            let old_icon_len = content.chars().next().map_or(0, char::len_utf8);
-            content.replace_range(..old_icon_len, icon);
-            span.style = Style::default().fg(color);
-        }
+        tool.children
+            .push(ToolActivity::new(call_id, name, arguments, status));
+        self.cached_height.store(0, Ordering::Relaxed);
+    }
+
+    fn set_tool_result(
+        &mut self,
+        call_id: &str,
+        status: ToolStatus,
+        duration_ns: Option<u64>,
+        result: Option<String>,
+    ) {
+        let EntryKind::Tool { .. } = self.kind else {
+            return;
+        };
+        let EntryContent::Tool(tool) = &mut self.content else {
+            return;
+        };
+        let target = if tool.call_id == call_id {
+            Some(tool)
+        } else {
+            tool.children
+                .iter_mut()
+                .find(|child| child.call_id == call_id)
+        };
+        let Some(target) = target else {
+            return;
+        };
+        target.status = status;
+        target.duration_ns = duration_ns;
+        target.result = result;
         self.cached_height.store(0, Ordering::Relaxed);
     }
 }
 
-impl StreamingText {
-    fn assistant(message: &str) -> Self {
-        let title_style = Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD);
-        let body_style = Style::default().fg(Color::White);
-        let mut lines = Vec::with_capacity(message.lines().count().saturating_add(2));
-        lines.push(StreamingLine::new("● Nanocodex".to_owned(), title_style));
-        lines.extend(
-            message
-                .split('\n')
-                .map(|line| StreamingLine::new(format!("  {line}"), body_style)),
-        );
-        lines.push(StreamingLine::new(String::new(), Style::default()));
+impl ToolActivity {
+    fn new(call_id: String, name: String, arguments: String, status: ToolStatus) -> Self {
+        let highlighted_source = (name == "exec" && !arguments.is_empty())
+            .then(|| highlighted_code_lines(Some("javascript"), &arguments));
+        let patch = (name == "apply_patch")
+            .then(|| present_apply_patch(&arguments))
+            .flatten();
         Self {
-            lines,
-            body_style,
-            continuation_prefix: "  ",
+            call_id,
+            name,
+            arguments,
+            status,
+            duration_ns: None,
+            result: None,
+            children: Vec::new(),
+            highlighted_source,
+            patch,
         }
     }
 
+    fn text(&self) -> Text<'static> {
+        let (icon, color) = tool_style(self.status);
+        let display_name = if self.name == "exec" {
+            "Code Mode"
+        } else {
+            self.name.as_str()
+        };
+        let mut details = Vec::new();
+        if !self.children.is_empty() {
+            details.push(format!(
+                "{} call{}",
+                self.children.len(),
+                if self.children.len() == 1 { "" } else { "s" }
+            ));
+        }
+        if self.children.is_empty()
+            && let Some(patch) = &self.patch
+        {
+            details.push(patch.summary.clone());
+        }
+        if let Some(duration_ns) = self.duration_ns {
+            details.push(format_duration(duration_ns));
+        }
+        if self.children.len() >= 2
+            && let Some(parent_duration) = self.duration_ns
+        {
+            let child_duration = self
+                .children
+                .iter()
+                .filter_map(|child| child.duration_ns)
+                .fold(0_u64, u64::saturating_add);
+            details.push(
+                if child_duration > parent_duration.saturating_mul(6) / 5 {
+                    "overlapping"
+                } else {
+                    "sequence"
+                }
+                .to_owned(),
+            );
+        }
+        if !self.children.is_empty()
+            && let Some(result) = self.result.as_deref().filter(|result| !result.is_empty())
+        {
+            details.push(result.to_owned());
+        }
+
+        let mut lines = vec![tool_header_line(icon, color, display_name, &details)];
+
+        if let Some(highlighted_source) = &self.highlighted_source {
+            lines.push(Line::styled(
+                "  ┌─ javascript",
+                Style::default().fg(Color::DarkGray),
+            ));
+            for line in highlighted_source {
+                let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
+                spans.extend(line.spans.clone());
+                lines.push(Line::from(spans));
+            }
+            lines.push(Line::styled("  └─", Style::default().fg(Color::DarkGray)));
+            if self.children.is_empty()
+                && let Some(result) = self.result.as_deref().filter(|result| !result.is_empty())
+            {
+                lines.push(Line::from(vec![
+                    Span::styled("  └─ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(result.to_owned(), Style::default().fg(Color::Gray)),
+                ]));
+            }
+        } else if self.children.is_empty()
+            && let Some(patch) = &self.patch
+        {
+            lines.extend(prefixed_patch_lines(&patch.lines, "  "));
+        } else if self.children.is_empty() {
+            let mut activity_detail = self.arguments.clone();
+            if let Some(result) = self.result.as_deref().filter(|result| !result.is_empty()) {
+                push_detail(&mut activity_detail, result);
+            }
+            if !activity_detail.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("  └─ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(activity_detail, Style::default().fg(Color::Gray)),
+                ]));
+            }
+        }
+        if !self.children.is_empty() {
+            for (index, child) in self.children.iter().enumerate() {
+                let last = index + 1 == self.children.len();
+                lines.extend(child_lines(child, last));
+            }
+        }
+        lines.push(Line::raw(""));
+        Text::from(lines)
+    }
+}
+
+fn tool_header_line(
+    icon: &str,
+    color: Color,
+    display_name: &str,
+    details: &[String],
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{icon} {display_name}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if details.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", details.join(" · "))
+            },
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+}
+
+fn child_lines(child: &ToolActivity, last: bool) -> Vec<Line<'static>> {
+    let (icon, color) = tool_style(child.status);
+    let connector = if last { "  └─" } else { "  ├─" };
+    let argument_lines = child.arguments.lines().collect::<Vec<_>>();
+    let mut detail = if let Some(patch) = &child.patch {
+        patch.summary.clone()
+    } else if argument_lines.len() <= 1 {
+        child.arguments.clone()
+    } else {
+        String::new()
+    };
+    if let Some(duration_ns) = child.duration_ns {
+        push_detail(&mut detail, &format_duration(duration_ns));
+    }
+    if let Some(result) = child.result.as_deref().filter(|result| !result.is_empty()) {
+        push_detail(&mut detail, result);
+    }
+    let mut lines = vec![Line::from(vec![
+        Span::styled(connector, Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(" {icon} {}", child.name),
+            Style::default().fg(color),
+        ),
+        Span::styled(
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!("  {detail}")
+            },
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+    if let Some(patch) = &child.patch {
+        let continuation = if last { "       " } else { "  │    " };
+        lines.extend(prefixed_patch_lines(&patch.lines, continuation));
+    } else if argument_lines.len() > 1 {
+        let continuation = if last { "     " } else { "  │  " };
+        for argument in argument_lines {
+            lines.push(Line::from(vec![
+                Span::styled(continuation, Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  {argument}"), Style::default().fg(Color::Gray)),
+            ]));
+        }
+    }
+    lines
+}
+
+fn prefixed_patch_lines(lines: &[Line<'static>], prefix: &'static str) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(prefix, Style::default().fg(Color::DarkGray))];
+            spans.extend(line.spans.clone());
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn push_detail(target: &mut String, detail: &str) {
+    if !target.is_empty() {
+        target.push_str(" · ");
+    }
+    target.push_str(detail);
+}
+
+fn format_duration(duration_ns: u64) -> String {
+    if duration_ns < 1_000_000 {
+        format!("{}µs", duration_ns / 1_000)
+    } else if duration_ns < 1_000_000_000 {
+        format!("{}ms", duration_ns / 1_000_000)
+    } else {
+        let tenths = duration_ns / 100_000_000;
+        format!("{}.{:01}s", tenths / 10, tenths % 10)
+    }
+}
+
+impl MarkdownContent {
+    fn new(source: &str) -> Self {
+        Self {
+            source: source.to_owned(),
+            streaming: false,
+            cached: Mutex::new(None),
+        }
+    }
+
+    fn streaming(source: &str) -> Self {
+        Self {
+            source: source.to_owned(),
+            streaming: true,
+            cached: Mutex::new(None),
+        }
+    }
+
+    fn append(&mut self, delta: &str) {
+        self.source.push_str(delta);
+        *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    fn finalize(&mut self, source: &str) {
+        source.clone_into(&mut self.source);
+        self.streaming = false;
+        *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    fn text(&self, width: u16) -> Text<'static> {
+        self.with_rendered(width, |rendered| rendered.text.clone())
+    }
+
+    fn height(&self, width: u16) -> usize {
+        self.with_rendered(width, |rendered| rendered.height)
+    }
+
+    fn with_rendered<R>(&self, width: u16, read: impl FnOnce(&RenderedMarkdown) -> R) -> R {
+        let mut cached = self.cached.lock().unwrap_or_else(PoisonError::into_inner);
+        if cached
+            .as_ref()
+            .is_some_and(|rendered| rendered.width != width)
+        {
+            *cached = None;
+        }
+        let rendered = cached.get_or_insert_with(|| {
+            let source = if self.streaming {
+                heal_streaming_markdown(&self.source)
+            } else {
+                Cow::Borrowed(self.source.as_str())
+            };
+            let text = render_agent_markdown(&source, width);
+            let height = Paragraph::new(text.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(width);
+            RenderedMarkdown {
+                width,
+                text,
+                height,
+            }
+        });
+        read(rendered)
+    }
+}
+
+impl StreamingText {
     fn reasoning(message: &str) -> Self {
         let body_style = Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC);
         let mut parts = message.split('\n');
@@ -1264,14 +1669,14 @@ mod tests {
         backend::TestBackend,
         buffer::Buffer,
         layout::Rect,
-        style::{Color, Style},
+        style::{Color, Modifier, Style},
         text::Line,
         widgets::{Paragraph, Widget, Wrap},
     };
 
     use super::{
-        InlineEdit, StreamingLine, ToolStatus, Transcript, TranscriptItem, saturating_u16,
-        tool_style,
+        EntryContent, InlineEdit, StreamingLine, ToolStatus, Transcript, TranscriptItem,
+        saturating_u16, tool_style,
     };
 
     #[test]
@@ -1302,6 +1707,144 @@ mod tests {
                 "\"                    \"\n",
             )
         );
+    }
+
+    #[test]
+    fn assistant_markdown_is_healed_and_rendered_while_streaming() {
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Assistant("Streaming **bold".to_owned()));
+
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buffer = Buffer::empty(area);
+        transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .chunks(usize::from(area.width))
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Streaming bold"));
+        assert!(!rendered.contains("**"));
+        let bold_cell = buffer.cell((12, 1)).unwrap();
+        assert!(bold_cell.modifier.contains(Modifier::BOLD));
+
+        assert!(transcript.append_assistant_delta("**"));
+        assert!(transcript.finalize_assistant("Streaming **bold**"));
+        let EntryContent::Markdown(markdown) = &transcript.entries[0].content else {
+            panic!("assistant entry should retain Markdown source");
+        };
+        assert_eq!(markdown.source, "Streaming **bold**");
+        assert!(!markdown.streaming);
+    }
+
+    #[test]
+    fn finalized_assistant_renders_markdown_and_reflows_tables_by_width() {
+        let source = "## Result\n\n| Name | Status |\n| --- | --- |\n| build | passed |";
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Assistant(source.to_owned()));
+        assert!(transcript.finalize_assistant(source));
+
+        let mut wide = Terminal::new(TestBackend::new(48, 8)).unwrap();
+        wide.draw(|frame| {
+            frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+        })
+        .unwrap();
+        assert!(wide.backend().to_string().contains("Name  │ Status"));
+
+        let mut narrow = Terminal::new(TestBackend::new(14, 12)).unwrap();
+        narrow
+            .draw(|frame| {
+                frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+            })
+            .unwrap();
+        assert!(narrow.backend().to_string().contains("┌─ row 1"));
+    }
+
+    #[test]
+    fn code_mode_children_form_one_timed_activity_tree() {
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Tool {
+            call_id: "call-1".to_owned(),
+            name: "exec".to_owned(),
+            arguments: "const tasks = [\"test\", \"patch\"];\nawait Promise.all(tasks);".to_owned(),
+            status: ToolStatus::Running,
+        });
+        assert!(transcript.push_tool_child(
+            "call-1/code-1".to_owned(),
+            "exec_command".to_owned(),
+            "cargo test \\\n  --workspace".to_owned(),
+            ToolStatus::Running,
+        ));
+        assert!(transcript.set_tool_result(
+            "call-1/code-1",
+            ToolStatus::Completed,
+            Some(90_000_000),
+            Some("exit 0".to_owned()),
+        ));
+        assert!(transcript.push_tool_child(
+            "call-1/code-2".to_owned(),
+            "apply_patch".to_owned(),
+            "src/main.rs".to_owned(),
+            ToolStatus::Running,
+        ));
+        assert!(transcript.set_tool_result(
+            "call-1/code-2",
+            ToolStatus::Completed,
+            Some(80_000_000),
+            Some("applied".to_owned()),
+        ));
+        assert!(transcript.set_tool_result(
+            "call-1",
+            ToolStatus::Completed,
+            Some(120_000_000),
+            None,
+        ));
+
+        assert_eq!(transcript.len(), 1);
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+            })
+            .unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("✓ Code Mode  2 calls · 120ms · overlapping"));
+        assert!(rendered.contains("┌─ javascript"));
+        assert!(rendered.contains("const tasks = [\"test\", \"patch\"]"));
+        assert!(rendered.contains("├─ ✓ exec_command  90ms · exit 0"));
+        assert!(rendered.contains("cargo test \\"));
+        assert!(rendered.contains("--workspace"));
+        assert!(rendered.contains("└─ ✓ apply_patch  src/main.rs · 80ms · applied"));
+    }
+
+    #[test]
+    fn apply_patch_activity_renders_paths_counts_and_hunks() {
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Tool {
+            call_id: "patch-1".to_owned(),
+            name: "apply_patch".to_owned(),
+            arguments:
+                "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old();\n+new();\n*** End Patch"
+                    .to_owned(),
+            status: ToolStatus::Completed,
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+            })
+            .unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Edited src/main.rs (+1 -1)"));
+        assert!(rendered.contains("- old();"));
+        assert!(rendered.contains("+ new();"));
     }
 
     #[test]

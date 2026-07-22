@@ -42,6 +42,8 @@ iana-time-zone = "0.1.64"
 js-sys = "0.3.82"
 nix = { version = "0.30.1", default-features = false, features = ["process", "signal", "user"] }
 portable-pty = "0.9.0"
+pulldown-cmark = { version = "0.10", default-features = false }
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 opentelemetry = { version = "0.31.0", features = ["trace"] }
 opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-client", "reqwest-rustls-webpki-roots", "trace"] }
 opentelemetry-semantic-conventions = "0.31.0"

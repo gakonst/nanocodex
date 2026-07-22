@@ -12,8 +12,9 @@ use std::{
 use crossterm::{
     cursor::{Hide, Show},
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute, queue,
     terminal::{
@@ -180,6 +181,11 @@ impl TerminalSession {
         })
     }
 
+    pub(super) fn write_control_sequence(&mut self, sequence: &[u8]) -> io::Result<()> {
+        self.terminal.backend_mut().write_all(sequence)?;
+        Write::flush(self.terminal.backend_mut())
+    }
+
     pub(super) fn suspend(&mut self) -> io::Result<()> {
         if !self.active {
             return Ok(());
@@ -235,6 +241,7 @@ fn restore_commands(output: &mut impl io::Write) {
         EndSynchronizedUpdate,
         Show,
         PopKeyboardEnhancementFlags,
+        DisableFocusChange,
         DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen
@@ -246,6 +253,7 @@ fn activate_commands(output: &mut impl io::Write) -> io::Result<()> {
         output,
         EnterAlternateScreen,
         EnableBracketedPaste,
+        EnableFocusChange,
         EnableMouseCapture,
         Hide
     )?;
