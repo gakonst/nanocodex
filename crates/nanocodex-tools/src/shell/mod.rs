@@ -7,6 +7,7 @@ pub(crate) use tool::{ExecCommandHandler, WriteStdinHandler};
 
 use std::{
     collections::{HashMap, VecDeque},
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -98,14 +99,21 @@ pub(crate) struct ShellSessions {
     sessions: Mutex<SessionStore>,
     next_session_id: AtomicI64,
     default_shell: selection::Shell,
+    environment: Arc<Vec<(OsString, OsString)>>,
 }
 
 impl ShellSessions {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::with_environment(Arc::new(Vec::new()))
+    }
+
+    pub(crate) fn with_environment(environment: Arc<Vec<(OsString, OsString)>>) -> Self {
         Self {
             sessions: Mutex::new(SessionStore::default()),
             next_session_id: AtomicI64::new(1),
             default_shell: selection::default_user_shell(),
+            environment,
         }
     }
 
@@ -125,7 +133,7 @@ impl ShellSessions {
             || self.default_shell.clone(),
             selection::get_shell_by_model_provided_path,
         );
-        let (environment, secrets) = process::sanitized_environment();
+        let (environment, secrets) = process::sanitized_environment(&self.environment);
         let spawned = match process::spawn(
             &command.script,
             &workdir,
@@ -545,7 +553,11 @@ fn duration_ms(requested: Option<i64>, default: u64, minimum: u64, maximum: u64)
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use std::time::{Duration, SystemTime};
+    use std::{
+        ffi::OsString,
+        sync::Arc,
+        time::{Duration, SystemTime},
+    };
 
     #[cfg(unix)]
     use super::WriteStdin;
@@ -563,6 +575,46 @@ mod tests {
         captured.push(b"next", 4);
         let second = captured.take();
         assert_eq!(second.with_omission_marker(), b"next");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_process_receives_explicit_environment_overrides() {
+        let sessions = ShellSessions::with_environment(Arc::new(vec![
+            (
+                OsString::from("NANOCODEX_EGRESS_TEST"),
+                OsString::from("injected"),
+            ),
+            (
+                OsString::from("HTTPS_PROXY"),
+                OsString::from("http://nanocodex:proxy-secret-value@127.0.0.1:1234"),
+            ),
+            (
+                OsString::from("NANOCODEX_MPP_EGRESS_PASSWORD"),
+                OsString::from("proxy-secret-value"),
+            ),
+        ]));
+
+        let result = sessions
+            .execute(
+                ExecCommand::new(
+                    "printf '%s|%s' \"$NANOCODEX_EGRESS_TEST\" \"$HTTPS_PROXY\"".to_owned(),
+                    None,
+                    Some("/bin/sh".to_owned()),
+                    Some(false),
+                    false,
+                    Some(1_000),
+                    None,
+                ),
+                std::path::Path::new("/"),
+            )
+            .await;
+
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(
+            result.output,
+            "injected|http://nanocodex:[REDACTED]@127.0.0.1:1234"
+        );
     }
 
     #[cfg(unix)]

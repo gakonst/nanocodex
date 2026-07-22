@@ -4,8 +4,7 @@ use clap::{Args, ValueEnum, builder::NonEmptyStringValueParser};
 use eyre::Result;
 use nanocodex_observability::{LogFormat, LogOutput, ObservabilityBuilder, ObservabilityGuard};
 
-const DEFAULT_FILTER: &str =
-    "warn,nanocodex=info,nanocodex_service=info,nanocodex_tools=info,nanocodex_mcp=info";
+const DEFAULT_FILTER: &str = "warn,nanocodex=info,nanocodex_service=info,nanocodex_tools=info,nanocodex_mcp=info,mpp_egress=info";
 
 #[derive(Args)]
 pub(crate) struct ObservabilityArgs {

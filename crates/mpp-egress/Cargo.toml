@@ -1,0 +1,32 @@
+[package]
+name = "mpp-egress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Private embedded MPP-aware HTTP egress proxy for Nanocodex"
+
+[dependencies]
+base64.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+hudsucker.workspace = true
+mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "e59900080f5cd36ec8992673924aad1a74b96950", default-features = false, features = ["client"] }
+rand.workspace = true
+reqwest = { package = "reqwest", version = "0.13", default-features = false, features = ["native-tls", "stream"] }
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "net", "rt", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+axum = "0.8"
+serde_json.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

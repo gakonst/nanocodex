@@ -32,10 +32,15 @@ pub(super) struct ImageGenerationHandler {
 }
 
 impl ImageGenerationHandler {
+    #[cfg(test)]
     pub(super) fn new(config: ImageGenerationConfig) -> Self {
+        Self::with_client(config, reqwest::Client::new())
+    }
+
+    pub(super) fn with_client(config: ImageGenerationConfig, client: reqwest::Client) -> Self {
         let api_base_url = config.api_base_url.trim_end_matches('/');
         Self {
-            client: reqwest::Client::new(),
+            client,
             generation_endpoint: format!("{api_base_url}/images/generations"),
             edit_endpoint: format!("{api_base_url}/images/edits"),
             auth: config.auth,
