@@ -1,9 +1,16 @@
 use std::{
     borrow::Cow,
+    collections::HashMap,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{
+        Arc, Mutex, OnceLock, PoisonError,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -28,6 +35,19 @@ pub(super) fn render_agent_markdown(source: &str, width: u16) -> Text<'static> {
         writer.event(event);
     }
     writer.finish()
+}
+
+pub(super) fn markdown_image_generation() -> u64 {
+    REMOTE_IMAGE_GENERATION.load(Ordering::Acquire)
+}
+
+pub(super) fn markdown_images_need_redraw() -> bool {
+    PENDING_REMOTE_IMAGES.load(Ordering::Acquire) != 0
+        || REMOTE_IMAGE_REDRAW.load(Ordering::Acquire)
+}
+
+pub(super) fn begin_markdown_image_frame() {
+    REMOTE_IMAGE_REDRAW.store(false, Ordering::Release);
 }
 
 pub(super) fn heal_streaming_markdown(source: &str) -> Cow<'_, str> {
@@ -852,24 +872,24 @@ impl MarkdownWriter {
 
 fn inline_image_lines(destination: &str, width: u16) -> Option<Vec<Line<'static>>> {
     const MAX_SOURCE_BYTES: u64 = 64 * 1_024 * 1_024;
-    const MAX_SOURCE_PIXELS: u64 = 40_000_000;
     const MAX_COLUMNS: u32 = 60;
     const MAX_PIXEL_ROWS: u32 = 40;
 
-    let path = local_image_path(destination)?;
-    if std::fs::metadata(&path).ok()?.len() > MAX_SOURCE_BYTES {
-        return None;
-    }
-    let (source_width, source_height) = image::image_dimensions(&path).ok()?;
-    if source_width == 0
-        || source_height == 0
-        || u64::from(source_width).saturating_mul(u64::from(source_height)) > MAX_SOURCE_PIXELS
-    {
-        return None;
-    }
+    let image = if let Some(path) = local_image_path(destination) {
+        if std::fs::metadata(&path).ok()?.len() > MAX_SOURCE_BYTES {
+            return None;
+        }
+        let dimensions = image::image_dimensions(&path).ok()?;
+        valid_image_dimensions(dimensions)?;
+        Arc::new(image::open(path).ok()?)
+    } else if destination.starts_with("data:") {
+        Arc::new(decode_data_image(destination)?)
+    } else {
+        remote_image(destination)?
+    };
+    let (source_width, source_height) = (image.width(), image.height());
     let max_columns = u32::from(width.saturating_sub(4).max(1)).min(MAX_COLUMNS);
-    let pixels = image::open(path)
-        .ok()?
+    let pixels = image
         .thumbnail(
             max_columns.min(source_width),
             MAX_PIXEL_ROWS.min(source_height),
@@ -908,6 +928,142 @@ fn local_image_path(destination: &str) -> Option<PathBuf> {
     let destination = destination.strip_prefix("sandbox:").unwrap_or(destination);
     let path = Path::new(destination);
     (!destination.is_empty()).then(|| path.to_owned())
+}
+
+const MAX_SOURCE_PIXELS: u64 = 40_000_000;
+const MAX_REMOTE_IMAGE_BYTES: usize = 8 * 1_024 * 1_024;
+const MAX_REMOTE_IMAGES: usize = 16;
+
+static REMOTE_IMAGE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static PENDING_REMOTE_IMAGES: AtomicUsize = AtomicUsize::new(0);
+static REMOTE_IMAGE_REDRAW: AtomicBool = AtomicBool::new(false);
+
+enum RemoteImage {
+    Fetching,
+    Ready(Arc<image::DynamicImage>),
+    Failed,
+}
+
+fn remote_image_cache() -> &'static Mutex<HashMap<String, RemoteImage>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, RemoteImage>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remote_image(destination: &str) -> Option<Arc<image::DynamicImage>> {
+    let url = reqwest::Url::parse(destination).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let key = url.to_string();
+    let mut cache = remote_image_cache()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    match cache.get(&key) {
+        Some(RemoteImage::Ready(image)) => return Some(Arc::clone(image)),
+        Some(RemoteImage::Fetching | RemoteImage::Failed) => return None,
+        None => {}
+    }
+    if cache.len() >= MAX_REMOTE_IMAGES
+        && let Some(expired) = cache
+            .iter()
+            .find_map(|(key, state)| (!matches!(state, RemoteImage::Fetching)).then(|| key.clone()))
+    {
+        cache.remove(&expired);
+    }
+    if cache.len() >= MAX_REMOTE_IMAGES {
+        return None;
+    }
+    cache.insert(key.clone(), RemoteImage::Fetching);
+    PENDING_REMOTE_IMAGES.fetch_add(1, Ordering::AcqRel);
+    drop(cache);
+
+    let thread_key = key.clone();
+    if std::thread::Builder::new()
+        .name("nanocodex-image".to_owned())
+        .spawn(move || complete_remote_image(thread_key))
+        .is_err()
+    {
+        remote_image_cache()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, RemoteImage::Failed);
+        PENDING_REMOTE_IMAGES.fetch_sub(1, Ordering::AcqRel);
+    }
+    None
+}
+
+fn complete_remote_image(key: String) {
+    let fetched = fetch_remote_image(&key);
+    remote_image_cache()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            key,
+            fetched.map_or(RemoteImage::Failed, |image| {
+                RemoteImage::Ready(Arc::new(image))
+            }),
+        );
+    REMOTE_IMAGE_GENERATION.fetch_add(1, Ordering::AcqRel);
+    REMOTE_IMAGE_REDRAW.store(true, Ordering::Release);
+    PENDING_REMOTE_IMAGES.fetch_sub(1, Ordering::AcqRel);
+}
+
+fn fetch_remote_image(url: &str) -> Option<image::DynamicImage> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .ok()?;
+    let response = client.get(url).send().ok()?.error_for_status().ok()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_REMOTE_IMAGE_BYTES as u64)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    response
+        .take((MAX_REMOTE_IMAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= MAX_REMOTE_IMAGE_BYTES).then_some(())?;
+    decode_image_bytes(&bytes)
+}
+
+fn decode_data_image(destination: &str) -> Option<image::DynamicImage> {
+    let (metadata, payload) = destination.strip_prefix("data:")?.split_once(',')?;
+    if !metadata
+        .split(';')
+        .next()
+        .is_some_and(|mime_type| mime_type.starts_with("image/"))
+        || !metadata
+            .split(';')
+            .skip(1)
+            .any(|parameter| parameter.eq_ignore_ascii_case("base64"))
+        || payload.len() > MAX_REMOTE_IMAGE_BYTES.saturating_mul(4).div_ceil(3)
+    {
+        return None;
+    }
+    let bytes = BASE64_STANDARD.decode(payload).ok()?;
+    (bytes.len() <= MAX_REMOTE_IMAGE_BYTES).then_some(())?;
+    decode_image_bytes(&bytes)
+}
+
+fn decode_image_bytes(bytes: &[u8]) -> Option<image::DynamicImage> {
+    let dimensions = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    valid_image_dimensions(dimensions)?;
+    image::load_from_memory(bytes).ok()
+}
+
+fn valid_image_dimensions((width, height): (u32, u32)) -> Option<()> {
+    (width != 0
+        && height != 0
+        && u64::from(width).saturating_mul(u64::from(height)) <= MAX_SOURCE_PIXELS)
+        .then_some(())
 }
 
 fn composite_over_black([red, green, blue, alpha]: [u8; 4]) -> [u8; 3] {
@@ -996,7 +1152,12 @@ fn strip_html(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{
+        collections::HashSet,
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        time::{Duration, Instant},
+    };
 
     use ratatui::{Terminal, backend::TestBackend, style::Color, widgets::Paragraph};
 
@@ -1066,10 +1227,63 @@ mod tests {
 
     #[test]
     fn remote_markdown_images_keep_an_explicit_fallback() {
-        let rendered = render("![deployment chart](https://example.com/chart.png)", 80, 4);
+        let rendered = render("![deployment chart](ftp://example.com/chart.png)", 80, 4);
 
         assert!(rendered.contains("🖼 deployment chart"));
-        assert!(rendered.contains("https://example.com/chart.png"));
+        assert!(rendered.contains("ftp://example.com/chart.png"));
+    }
+
+    #[test]
+    fn fetches_remote_markdown_images_without_blocking_rendering() {
+        let mut source = image::RgbaImage::new(1, 2);
+        source.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        source.put_pixel(0, 1, image::Rgba([0, 0, 255, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1_024];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                png.len()
+            )
+            .unwrap();
+            stream.write_all(&png).unwrap();
+        });
+
+        let markdown = format!("![remote](http://{address}/image.png)");
+        let first = render_agent_markdown(&markdown, 30);
+        assert!(first.lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("remote"))
+        }));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let pixel = loop {
+            if let Some(pixel) = render_agent_markdown(&markdown, 30)
+                .lines
+                .into_iter()
+                .flat_map(|line| line.spans)
+                .find(|span| span.content == "▀")
+            {
+                break pixel;
+            }
+            assert!(Instant::now() < deadline, "remote image did not load");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        server.join().unwrap();
+
+        assert_eq!(pixel.style.fg, Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(pixel.style.bg, Some(Color::Rgb(0, 0, 255)));
     }
 
     #[test]

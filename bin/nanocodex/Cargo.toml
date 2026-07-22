@@ -24,7 +24,7 @@ nanocodex.workspace = true
 nanocodex-observability.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
 self-replace.workspace = true
 semver.workspace = true
 serde.workspace = true

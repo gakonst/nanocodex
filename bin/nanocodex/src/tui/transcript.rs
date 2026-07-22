@@ -21,7 +21,8 @@ use unicode_width::UnicodeWidthStr;
 use super::composer::ComposerLayout;
 use super::diff::{PatchPresentation, present_apply_patch};
 use super::markdown::{
-    code_line_count, heal_streaming_markdown, highlighted_code_lines, render_agent_markdown,
+    code_line_count, heal_streaming_markdown, highlighted_code_lines, markdown_image_generation,
+    render_agent_markdown,
 };
 
 #[derive(Clone, Copy)]
@@ -724,6 +725,7 @@ struct MarkdownContent {
 #[derive(Clone)]
 struct RenderedMarkdown {
     width: u16,
+    image_generation: u64,
     text: Text<'static>,
     height: usize,
 }
@@ -857,7 +859,7 @@ impl TranscriptEntry {
             EntryContent::Static(text) => text.clone(),
             EntryContent::Streaming(streaming) => streaming.materialized_text(),
             EntryContent::Markdown(markdown) => markdown.text(80),
-            EntryContent::Tool(tool) => tool.text(),
+            EntryContent::Tool(tool) => tool.text(80),
         })
         .wrap(Wrap { trim: false })
     }
@@ -868,7 +870,8 @@ impl TranscriptEntry {
 
     fn height(&self, width: u16) -> usize {
         let cached = self.cached_height.load(Ordering::Relaxed);
-        if cached != 0 && cached >> 48 == u64::from(width) {
+        let cache_entry_height = !matches!(self.content, EntryContent::Markdown(_));
+        if cache_entry_height && cached != 0 && cached >> 48 == u64::from(width) {
             return usize::try_from(cached & ((1_u64 << 48) - 1)).unwrap_or(usize::MAX);
         }
         let height = match &self.content {
@@ -877,7 +880,7 @@ impl TranscriptEntry {
                 .line_count(width),
             EntryContent::Streaming(streaming) => streaming.height(width),
             EntryContent::Markdown(markdown) => markdown.height(width),
-            EntryContent::Tool(tool) => Paragraph::new(tool.text())
+            EntryContent::Tool(tool) => Paragraph::new(tool.text(width))
                 .wrap(Wrap { trim: false })
                 .line_count(width),
         };
@@ -885,7 +888,9 @@ impl TranscriptEntry {
             | u64::try_from(height)
                 .unwrap_or((1_u64 << 48) - 1)
                 .min((1_u64 << 48) - 1);
-        self.cached_height.store(encoded, Ordering::Relaxed);
+        if cache_entry_height {
+            self.cached_height.store(encoded, Ordering::Relaxed);
+        }
         height
     }
 
@@ -921,7 +926,8 @@ impl TranscriptEntry {
                     .render(area, buffer);
             }
             EntryContent::Tool(tool) => {
-                let mut paragraph = Paragraph::new(tool.text()).wrap(Wrap { trim: false });
+                let mut paragraph =
+                    Paragraph::new(tool.text(area.width)).wrap(Wrap { trim: false });
                 if selected {
                     paragraph = paragraph.style(Style::default().add_modifier(Modifier::REVERSED));
                 }
@@ -1060,7 +1066,14 @@ impl ToolActivity {
         }
     }
 
-    fn text(&self) -> Text<'static> {
+    fn text(&self, width: u16) -> Text<'static> {
+        if self.children.is_empty()
+            && let Some(patch) = &self.patch
+        {
+            let mut lines = patch.lines(width);
+            lines.push(Line::raw(""));
+            return Text::from(lines);
+        }
         let (icon, color) = tool_style(self.status);
         let display_name = if self.name == "exec" {
             "Code Mode"
@@ -1074,11 +1087,6 @@ impl ToolActivity {
                 self.children.len(),
                 if self.children.len() == 1 { "" } else { "s" }
             ));
-        }
-        if self.children.is_empty()
-            && let Some(patch) = &self.patch
-        {
-            details.push(patch.summary.clone());
         }
         if let Some(duration_ns) = self.duration_ns {
             details.push(format_duration(duration_ns));
@@ -1127,10 +1135,6 @@ impl ToolActivity {
                     Span::styled(result.to_owned(), Style::default().fg(Color::Gray)),
                 ]));
             }
-        } else if self.children.is_empty()
-            && let Some(patch) = &self.patch
-        {
-            lines.extend(prefixed_patch_lines(&patch.lines, "  "));
         } else if self.children.is_empty() {
             let mut activity_detail = self.arguments.clone();
             if let Some(result) = self.result.as_deref().filter(|result| !result.is_empty()) {
@@ -1146,7 +1150,7 @@ impl ToolActivity {
         if !self.children.is_empty() {
             for (index, child) in self.children.iter().enumerate() {
                 let last = index + 1 == self.children.len();
-                lines.extend(child_lines(child, last));
+                lines.extend(child_lines(child, last, width));
             }
         }
         lines.push(Line::raw(""));
@@ -1176,7 +1180,7 @@ fn tool_header_line(
     ])
 }
 
-fn child_lines(child: &ToolActivity, last: bool) -> Vec<Line<'static>> {
+fn child_lines(child: &ToolActivity, last: bool, width: u16) -> Vec<Line<'static>> {
     let (icon, color) = tool_style(child.status);
     let connector = if last { "  └─" } else { "  ├─" };
     let argument_lines = child.arguments.lines().collect::<Vec<_>>();
@@ -1210,7 +1214,9 @@ fn child_lines(child: &ToolActivity, last: bool) -> Vec<Line<'static>> {
     ])];
     if let Some(patch) = &child.patch {
         let continuation = if last { "       " } else { "  │    " };
-        lines.extend(prefixed_patch_lines(&patch.lines, continuation));
+        let prefix_width = u16::try_from(continuation.len()).unwrap_or(u16::MAX);
+        let patch_lines = patch.lines(width.saturating_sub(prefix_width));
+        lines.extend(prefixed_patch_lines(&patch_lines[1..], continuation));
     } else if argument_lines.len() > 1 {
         let continuation = if last { "     " } else { "  │  " };
         for argument in argument_lines {
@@ -1229,7 +1235,7 @@ fn prefixed_patch_lines(lines: &[Line<'static>], prefix: &'static str) -> Vec<Li
         .map(|line| {
             let mut spans = vec![Span::styled(prefix, Style::default().fg(Color::DarkGray))];
             spans.extend(line.spans.clone());
-            Line::from(spans)
+            Line::from(spans).style(line.style)
         })
         .collect()
 }
@@ -1289,11 +1295,11 @@ impl MarkdownContent {
     }
 
     fn with_rendered<R>(&self, width: u16, read: impl FnOnce(&RenderedMarkdown) -> R) -> R {
+        let image_generation = markdown_image_generation();
         let mut cached = self.cached.lock().unwrap_or_else(PoisonError::into_inner);
-        if cached
-            .as_ref()
-            .is_some_and(|rendered| rendered.width != width)
-        {
+        if cached.as_ref().is_some_and(|rendered| {
+            rendered.width != width || rendered.image_generation != image_generation
+        }) {
             *cached = None;
         }
         let rendered = cached.get_or_insert_with(|| {
@@ -1308,6 +1314,7 @@ impl MarkdownContent {
                 .line_count(width);
             RenderedMarkdown {
                 width,
+                image_generation,
                 text,
                 height,
             }
@@ -1844,9 +1851,9 @@ mod tests {
             })
             .unwrap();
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Edited src/main.rs (+1 -1)"));
-        assert!(rendered.contains("- old();"));
-        assert!(rendered.contains("+ new();"));
+        assert!(rendered.contains("• Edited src/main.rs (+1 -1)"));
+        assert!(rendered.contains("1 -old();"));
+        assert!(rendered.contains("1 +new();"));
     }
 
     #[test]

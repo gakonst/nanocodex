@@ -536,7 +536,9 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
                     return Ok(());
                 }
             }
-            _ = ticker.tick(), if ui.app.main.running || ui.app.btw.as_ref().is_some_and(|btw| btw.conversation.running) => {
+            _ = ticker.tick(), if ui.app.main.running
+                || ui.app.btw.as_ref().is_some_and(|btw| btw.conversation.running)
+                || markdown::markdown_images_need_redraw() => {
                 if apply_update(ui.update(UiAction::Tick, &worker_tx)?, &mut scheduler) {
                     return Ok(());
                 }
@@ -558,6 +560,7 @@ fn render_due_frame(
     ui.apply_pending_mouse_scroll();
     ui.app.advance_smooth_scroll();
     let render_started = Instant::now();
+    markdown::begin_markdown_image_frame();
     let draw_metrics = terminal.draw(|frame| view::render(frame, &mut ui.app))?;
     if let Some(text) = ui.app.take_pending_copy()
         && let Err(error) = clipboard::copy_to_clipboard(&text)
