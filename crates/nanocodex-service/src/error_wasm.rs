@@ -39,7 +39,6 @@ impl ResponsesError {
     #[must_use]
     pub fn retry_advice(&self) -> Option<RetryAdvice> {
         let class = match self {
-            Self::Authorization { .. } => return None,
             Self::Connect { .. } => "handshake_transport",
             Self::Send {
                 reconnectable: true,
@@ -48,7 +47,17 @@ impl ResponsesError {
             Self::Receive(_) => "receive_transport",
             Self::IdleTimeout { .. } => "event_idle_timeout",
             Self::UnexpectedEnd | Self::Closed { .. } => "premature_close",
-            _ => return None,
+            Self::Authorization { .. }
+            | Self::Send {
+                reconnectable: false,
+                ..
+            }
+            | Self::InvalidJson(_)
+            | Self::UnexpectedBinary
+            | Self::EncodeRequest(_)
+            | Self::InvalidPayload { .. }
+            | Self::Api { .. }
+            | Self::InvalidImageRequest { .. } => return None,
         };
         Some(RetryAdvice {
             class,
