@@ -12,12 +12,20 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::version;
+
 const REPOSITORY: &str = "gakonst/nanocodex";
-const RELEASE_API: &str = "https://api.github.com/repos/gakonst/nanocodex/releases/latest";
+const STABLE_RELEASE_API: &str = "https://api.github.com/repos/gakonst/nanocodex/releases/latest";
+const NIGHTLY_RELEASE_API: &str =
+    "https://api.github.com/repos/gakonst/nanocodex/releases/tags/nightly";
 const CHECKSUMS_ASSET: &str = "SHA256SUMS";
 
 #[derive(Debug, Args)]
 pub(crate) struct Update {
+    /// Install the latest nightly build instead of the latest stable release.
+    #[arg(long)]
+    nightly: bool,
+
     /// Reinstall the latest release even when its version is not newer.
     #[arg(long)]
     force: bool,
@@ -38,27 +46,42 @@ struct ReleaseAsset {
 impl Update {
     pub(crate) async fn run(self) -> Result<()> {
         let client = Client::builder()
-            .user_agent(format!("nanocodex/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("nanocodex/{}", version::SEMVER_VERSION))
             .timeout(Duration::from_secs(60))
             .build()
             .wrap_err("failed to create the update client")?;
         let release = client
-            .get(RELEASE_API)
+            .get(release_api(self.nightly))
             .header(header::ACCEPT, "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
             .await
-            .wrap_err("failed to query the latest Nanocodex release")?
+            .wrap_err_with(|| format!("failed to query the {} Nanocodex release", self.channel()))?
             .error_for_status()
-            .wrap_err("GitHub did not return a latest Nanocodex release")?
+            .wrap_err_with(|| {
+                format!(
+                    "GitHub did not return a {} Nanocodex release",
+                    self.channel()
+                )
+            })?
             .json::<Release>()
             .await
             .wrap_err("GitHub returned invalid release metadata")?;
 
         let current = Version::parse(env!("CARGO_PKG_VERSION"))
             .wrap_err("the installed Nanocodex version is invalid")?;
-        let latest = parse_release_version(&release.tag_name)?;
-        if !self.force && latest <= current {
+        let latest = if self.nightly {
+            None
+        } else {
+            Some(parse_release_version(&release.tag_name)?)
+        };
+        if !should_install(
+            self.nightly,
+            self.force,
+            version::IS_NIGHTLY,
+            latest.as_ref(),
+            &current,
+        ) {
             println!("nanocodex {current} is already up to date");
             return Ok(());
         }
@@ -84,9 +107,35 @@ impl Update {
             )
         })?;
 
-        println!("updated nanocodex {current} -> {latest}");
+        if self.nightly {
+            println!("updated nanocodex {current} -> nightly");
+        } else if let Some(latest) = latest {
+            println!("updated nanocodex {current} -> {latest}");
+        }
         Ok(())
     }
+
+    fn channel(&self) -> &'static str {
+        if self.nightly { "nightly" } else { "stable" }
+    }
+}
+
+fn release_api(nightly: bool) -> &'static str {
+    if nightly {
+        NIGHTLY_RELEASE_API
+    } else {
+        STABLE_RELEASE_API
+    }
+}
+
+fn should_install(
+    nightly: bool,
+    force: bool,
+    current_is_nightly: bool,
+    latest: Option<&Version>,
+    current: &Version,
+) -> bool {
+    force || nightly || current_is_nightly || latest.is_some_and(|latest| latest > current)
 }
 
 async fn download(client: &Client, asset: &ReleaseAsset) -> Result<Vec<u8>> {
@@ -228,6 +277,39 @@ mod tests {
             Version::new(1, 2, 3)
         );
         assert!(parse_release_version("latest").is_err());
+    }
+
+    #[test]
+    fn selects_stable_and_nightly_release_channels() {
+        assert_eq!(release_api(false), STABLE_RELEASE_API);
+        assert_eq!(release_api(true), NIGHTLY_RELEASE_API);
+    }
+
+    #[test]
+    fn nightly_channel_always_installs_and_stable_respects_versions() {
+        let current = Version::new(1, 2, 3);
+        assert!(should_install(true, false, false, None, &current));
+        assert!(should_install(
+            false,
+            false,
+            true,
+            Some(&Version::new(1, 2, 3)),
+            &current
+        ));
+        assert!(!should_install(
+            false,
+            false,
+            false,
+            Some(&Version::new(1, 2, 3)),
+            &current
+        ));
+        assert!(should_install(
+            false,
+            false,
+            false,
+            Some(&Version::new(1, 2, 4)),
+            &current
+        ));
     }
 
     #[test]

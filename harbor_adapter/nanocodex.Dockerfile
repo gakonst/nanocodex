@@ -4,11 +4,16 @@ FROM rust:1.88-alpine3.21 AS build
 
 ARG TARGETARCH
 ARG CARGO_PROFILE=dev
+ARG TAG_NAME=dev
+ARG VERGEN_GIT_SHA=unknown
+ENV TAG_NAME=${TAG_NAME} \
+    VERGEN_GIT_SHA=${VERGEN_GIT_SHA}
 WORKDIR /build
 RUN apk add --no-cache musl-dev
 
 COPY Cargo.toml Cargo.lock ./
 COPY bin/nanocodex/Cargo.toml bin/nanocodex/Cargo.toml
+COPY bin/nanocodex/build.rs bin/nanocodex/build.rs
 COPY bindings/python/Cargo.toml bindings/python/Cargo.toml
 COPY bindings/wasm/Cargo.toml bindings/wasm/Cargo.toml
 COPY crates/nanocodex/Cargo.toml crates/nanocodex/Cargo.toml
@@ -80,3 +85,8 @@ RUN --mount=type=cache,id=nanocodex-cargo-registry,target=/usr/local/cargo/regis
 
 FROM scratch AS artifact
 COPY --from=build /out/nanocodex /nanocodex
+
+FROM alpine:3.21 AS runtime
+RUN apk add --no-cache ca-certificates git
+COPY --from=build /out/nanocodex /usr/local/bin/nanocodex
+ENTRYPOINT ["/usr/local/bin/nanocodex"]
