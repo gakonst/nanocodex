@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -69,6 +69,21 @@ impl SubmittedPrompt {
         self.display.insert_str(0, prefix);
     }
 
+    fn append(&mut self, mut other: Self) {
+        let image_offset = self.local_images.len();
+        for index in (1..=other.local_images.len()).rev() {
+            other.display = other.display.replace(
+                &format!("[Image #{index}]"),
+                &format!("[Image #{}]", image_offset + index),
+            );
+        }
+        if !self.display.is_empty() && !other.display.is_empty() {
+            self.display.push('\n');
+        }
+        self.display.push_str(&other.display);
+        self.local_images.append(&mut other.local_images);
+    }
+
     pub(super) fn into_prompt(self) -> Prompt {
         if self.local_images.is_empty() {
             return Prompt::new(self.display);
@@ -127,7 +142,7 @@ pub(super) enum PaneId {
 pub(super) struct PendingSteer {
     id: u64,
     run_generation: u64,
-    prompt: String,
+    prompt: SubmittedPrompt,
     state: PendingSteerState,
 }
 
@@ -139,7 +154,7 @@ enum PendingSteerState {
 
 impl PendingSteer {
     pub(super) fn prompt(&self) -> &str {
-        &self.prompt
+        self.prompt.display()
     }
 
     pub(super) fn is_admitted(&self) -> bool {
@@ -161,12 +176,14 @@ pub(super) struct Conversation {
     pending_scroll_anchor: Option<PendingScrollAnchor>,
     streamed_this_turn: bool,
     pending_run_error: Option<String>,
+    hidden_terminal_polls: HashMap<String, String>,
     pub(super) queued_prompts: VecDeque<String>,
     queued_prompt_ids: VecDeque<u64>,
     displayed_queued_prompt: Option<u64>,
     pub(super) pending_steers: VecDeque<PendingSteer>,
     run_generation: u64,
     applied_steer_runs_waiting_for_ack: VecDeque<u64>,
+    interrupting_steers: Option<u64>,
 }
 
 impl Conversation {
@@ -185,12 +202,14 @@ impl Conversation {
             pending_scroll_anchor: None,
             streamed_this_turn: false,
             pending_run_error: None,
+            hidden_terminal_polls: HashMap::new(),
             queued_prompts: VecDeque::new(),
             queued_prompt_ids: VecDeque::new(),
             displayed_queued_prompt: None,
             pending_steers: VecDeque::new(),
             run_generation: 0,
             applied_steer_runs_waiting_for_ack: VecDeque::new(),
+            interrupting_steers: None,
         }
     }
 
@@ -218,7 +237,7 @@ impl Conversation {
         self.jump_to_bottom();
     }
 
-    fn queue_steer(&mut self, id: u64, prompt: String) {
+    fn queue_steer(&mut self, id: u64, prompt: SubmittedPrompt) {
         self.pending_steers.push_back(PendingSteer {
             id,
             run_generation: self.run_generation,
@@ -283,6 +302,7 @@ impl Conversation {
                 self.run_generation = self.run_generation.saturating_add(1);
                 self.streamed_this_turn = false;
                 self.pending_run_error = None;
+                self.hidden_terminal_polls.clear();
                 "Thinking...".clone_into(&mut self.status);
             }
             AgentEventKind::RunSteered => {
@@ -313,10 +333,10 @@ impl Conversation {
                 }
             }
             AgentEventKind::ToolCall => {
-                self.on_tool_call(event);
+                return self.on_tool_call(event);
             }
             AgentEventKind::ToolResult => {
-                self.on_tool_result(event);
+                return self.on_tool_result(event);
             }
             AgentEventKind::RunError => {
                 if let Ok(payload) = event.decode_payload::<ErrorPayload>() {
@@ -354,14 +374,24 @@ impl Conversation {
         true
     }
 
-    fn on_tool_call(&mut self, event: &AgentEvent) {
+    fn on_tool_call(&mut self, event: &AgentEvent) -> bool {
         let Ok(payload) = event.decode_payload::<ToolCallPayload>() else {
-            return;
+            return false;
         };
+        if is_empty_terminal_poll(&payload.tool, &payload.arguments) {
+            let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
+            self.hidden_terminal_polls
+                .insert(payload.call_id, arguments);
+            return false;
+        }
         let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
         self.status = format!("Running {}", payload.tool);
         let call_id = payload.call_id;
-        let name = payload.tool;
+        let name = if payload.tool == "write_stdin" {
+            "terminal input".to_owned()
+        } else {
+            payload.tool
+        };
         let status = ToolStatus::Running;
         if self.transcript.has_tool_parent(&call_id) {
             self.note_tail_will_change();
@@ -376,17 +406,40 @@ impl Conversation {
                 status,
             });
         }
+        true
     }
 
-    fn on_tool_result(&mut self, event: &AgentEvent) {
+    fn on_tool_result(&mut self, event: &AgentEvent) -> bool {
         let Ok(payload) = event.decode_payload::<ToolResultPayload>() else {
-            return;
+            return false;
         };
         let status = match payload.status.as_str() {
             "completed" => ToolStatus::Completed,
             "cancelled" => ToolStatus::Cancelled,
             _ => ToolStatus::Failed,
         };
+        if let Some(arguments) = self.hidden_terminal_polls.remove(&payload.call_id) {
+            if status == ToolStatus::Completed {
+                return false;
+            }
+            let call_id = payload.call_id.clone();
+            if self.transcript.has_tool_parent(&call_id) {
+                self.note_tail_will_change();
+                let _ = self.transcript.push_tool_child(
+                    call_id,
+                    "terminal wait".to_owned(),
+                    arguments,
+                    status,
+                );
+            } else {
+                self.push_output(TranscriptItem::Tool {
+                    call_id,
+                    name: "terminal wait".to_owned(),
+                    arguments,
+                    status,
+                });
+            }
+        }
         let result = payload
             .result
             .as_ref()
@@ -397,6 +450,7 @@ impl Conversation {
                 .set_tool_result(&payload.call_id, status, payload.duration_ns, result);
         self.note_unseen_output();
         "Working".clone_into(&mut self.status);
+        true
     }
 
     fn run_failed(&mut self, event: &AgentEvent) {
@@ -424,7 +478,8 @@ impl Conversation {
                 .iter()
                 .position(|steer| steer.run_generation == run_generation)
             else {
-                break;
+                let _ = self.applied_steer_runs_waiting_for_ack.pop_front();
+                continue;
             };
             let Some(steer) = self.pending_steers.get(index) else {
                 break;
@@ -435,7 +490,7 @@ impl Conversation {
             let Some(steer) = self.pending_steers.remove(index) else {
                 break;
             };
-            self.push_output(TranscriptItem::User(steer.prompt));
+            self.push_output(TranscriptItem::User(steer.prompt.display));
             let _ = self.applied_steer_runs_waiting_for_ack.pop_front();
             applied += 1;
         }
@@ -451,6 +506,22 @@ impl Conversation {
     fn remove_pending_steer(&mut self, id: u64) {
         if let Some(index) = self.pending_steers.iter().position(|steer| steer.id == id) {
             drop(self.pending_steers.remove(index));
+        }
+    }
+
+    fn remove_queued_prompt(&mut self, id: u64) {
+        let Some(index) = self
+            .queued_prompt_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+        else {
+            return;
+        };
+        let _ = self.queued_prompt_ids.remove(index);
+        let _ = self.queued_prompts.remove(index);
+        self.pending_turns = self.pending_turns.saturating_sub(1);
+        if self.displayed_queued_prompt == Some(id) {
+            self.displayed_queued_prompt = None;
         }
     }
 
@@ -850,6 +921,17 @@ struct CancelConfirmation {
     expires_at: Instant,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum EscapeAction {
+    Cancel(PaneId),
+    InterruptForSteers {
+        target: PaneId,
+        prompt_id: u64,
+        steer_ids: Vec<u64>,
+        prompt: SubmittedPrompt,
+    },
+}
+
 impl App {
     pub(super) fn new(cwd: PathBuf) -> Self {
         Self {
@@ -1183,10 +1265,10 @@ impl App {
         self.preferred_column = None;
     }
 
-    /// Implements Amp's two-stage interrupt gesture. The first Escape arms a
-    /// target-scoped confirmation; the second within one second confirms it.
-    /// Draft input is preserved while a turn is running.
-    pub(super) fn handle_escape(&mut self, now: Instant) -> Option<PaneId> {
+    /// Interrupts immediately to resubmit pending steers, otherwise implements
+    /// the two-stage cancellation gesture. Draft input is preserved while a
+    /// turn is running.
+    pub(super) fn handle_escape(&mut self, now: Instant) -> Option<EscapeAction> {
         let target = self.focus;
         if !self.is_running(target) {
             self.cancel_confirmation = None;
@@ -1194,11 +1276,37 @@ impl App {
             return None;
         }
 
+        let prompt_id = self.next_input_id;
+        if let Some(conversation) = self.conversation_mut(target)
+            && conversation.interrupting_steers.is_none()
+            && !conversation.pending_steers.is_empty()
+        {
+            let mut pending = conversation.pending_steers.iter();
+            let first = pending.next()?;
+            let mut prompt = first.prompt.clone();
+            let mut steer_ids = vec![first.id];
+            for steer in pending {
+                steer_ids.push(steer.id);
+                prompt.append(steer.prompt.clone());
+            }
+            conversation.interrupting_steers = Some(prompt_id);
+            conversation.queue_prompt(prompt_id, prompt.display().to_owned());
+            "Interrupting to send steer".clone_into(&mut conversation.status);
+            self.next_input_id = self.next_input_id.saturating_add(1);
+            self.cancel_confirmation = None;
+            return Some(EscapeAction::InterruptForSteers {
+                target,
+                prompt_id,
+                steer_ids,
+                prompt,
+            });
+        }
+
         if self.cancel_confirmation.is_some_and(|confirmation| {
             confirmation.target == target && now <= confirmation.expires_at
         }) {
             self.cancel_confirmation = None;
-            return Some(target);
+            return Some(EscapeAction::Cancel(target));
         }
 
         self.cancel_confirmation = Some(CancelConfirmation {
@@ -1699,12 +1807,48 @@ impl App {
         Some(id)
     }
 
-    pub(super) fn queue_steer(&mut self, target: PaneId, prompt: String) -> Option<u64> {
+    pub(super) fn queue_steer(
+        &mut self,
+        target: PaneId,
+        prompt: impl Into<SubmittedPrompt>,
+    ) -> Option<u64> {
         self.conversation(target)?;
         let id = self.next_input_id;
         self.next_input_id = self.next_input_id.saturating_add(1);
-        self.conversation_mut(target)?.queue_steer(id, prompt);
+        self.conversation_mut(target)?
+            .queue_steer(id, prompt.into());
         Some(id)
+    }
+
+    pub(super) fn interrupted_steers_resubmitted(
+        &mut self,
+        target: PaneId,
+        prompt_id: u64,
+        steer_ids: &[u64],
+    ) {
+        if let Some(conversation) = self.conversation_mut(target)
+            && conversation.interrupting_steers == Some(prompt_id)
+        {
+            conversation
+                .pending_steers
+                .retain(|steer| !steer_ids.contains(&steer.id));
+            conversation.interrupting_steers = None;
+            "Sending steer".clone_into(&mut conversation.status);
+        }
+    }
+
+    pub(super) fn interrupted_steers_kept(&mut self, target: PaneId, prompt_id: u64) {
+        if let Some(conversation) = self.conversation_mut(target)
+            && conversation.interrupting_steers == Some(prompt_id)
+        {
+            conversation.remove_queued_prompt(prompt_id);
+            conversation.interrupting_steers = None;
+            conversation.status = if conversation.running {
+                "Working".to_owned()
+            } else {
+                "Ready".to_owned()
+            };
+        }
     }
 
     pub(super) fn steer_admitted(&mut self, target: PaneId, id: u64) {
@@ -2165,7 +2309,19 @@ fn summarize_tool_arguments(tool: &str, arguments: &Value) -> String {
         if tool == "write_stdin"
             && let Some(session_id) = object.get("session_id")
         {
-            return format!("session {session_id}");
+            let input = object
+                .get("chars")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if input.is_empty() {
+                return format!("session {session_id}");
+            }
+            let input = if input == "\u{3}" {
+                "Ctrl-C".to_owned()
+            } else {
+                compact_tool_text(&input.escape_default().collect::<String>())
+            };
+            return format!("session {session_id} · {input}");
         }
         let preferred = match tool {
             "exec_command" => object.get("cmd").and_then(Value::as_str),
@@ -2190,6 +2346,17 @@ fn summarize_tool_arguments(tool: &str, arguments: &Value) -> String {
         return bounded_multiline_text(patch, MAX_PATCH_ARGUMENT_CHARS, MAX_PATCH_ARGUMENT_LINES);
     }
     compact_arguments(arguments)
+}
+
+fn is_empty_terminal_poll(tool: &str, arguments: &Value) -> bool {
+    tool == "write_stdin"
+        && arguments.as_object().is_some_and(|arguments| {
+            arguments
+                .get("chars")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .is_empty()
+        })
 }
 
 fn summarize_tool_result(tool: Option<&str>, result: &Value, status: ToolStatus) -> String {
@@ -2287,7 +2454,9 @@ mod tests {
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     use serde_json::{Value, json};
 
-    use super::{App, PaneId, smooth_scroll_drain, summarize_tool_arguments};
+    use super::{
+        App, EscapeAction, PaneId, SubmittedPrompt, smooth_scroll_drain, summarize_tool_arguments,
+    };
     use crate::tui::transcript::TranscriptItem;
 
     fn event(kind: AgentEventKind, payload: &Value) -> AgentEvent {
@@ -3258,6 +3427,90 @@ mod tests {
     }
 
     #[test]
+    fn terminal_polls_stay_out_of_the_transcript_but_input_remains_visible() {
+        let mut app = App::new(".".into());
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({ "call_id": "call-1", "tool": "exec", "arguments": "await work();" }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({
+                "call_id": "call-1/code-1",
+                "tool": "write_stdin",
+                "arguments": { "session_id": 7, "chars": "" }
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolResult,
+            &json!({
+                "call_id": "call-1/code-1",
+                "tool": "write_stdin",
+                "status": "completed",
+                "result": "{}"
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({
+                "call_id": "call-1/code-2",
+                "tool": "write_stdin",
+                "arguments": { "session_id": 7, "chars": "\u{3}" }
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolResult,
+            &json!({
+                "call_id": "call-1/code-2",
+                "tool": "write_stdin",
+                "status": "completed",
+                "result": "{}"
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({
+                "call_id": "call-1/code-3",
+                "tool": "write_stdin",
+                "arguments": { "session_id": 99 }
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolResult,
+            &json!({
+                "call_id": "call-1/code-3",
+                "tool": "write_stdin",
+                "status": "failed",
+                "result": "unknown session 99"
+            }),
+        ));
+
+        assert_eq!(app.main.transcript.len(), 1);
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .chunks(usize::from(area.width))
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("write_stdin"));
+        assert!(rendered.contains("terminal input"));
+        assert!(rendered.contains("session 7 · Ctrl-C"));
+        assert!(rendered.contains("terminal wait"));
+        assert!(rendered.contains("unknown session 99"));
+        assert!(!app.main.hidden_terminal_polls.contains_key("call-1/code-1"));
+    }
+
+    #[test]
     fn escape_requires_confirmation_and_preserves_the_draft() {
         let now = Instant::now();
         let mut app = App::new(".".into());
@@ -3271,7 +3524,7 @@ mod tests {
 
         assert_eq!(
             app.handle_escape(now + Duration::from_millis(999)),
-            Some(PaneId::Main)
+            Some(EscapeAction::Cancel(PaneId::Main))
         );
         assert!(!app.cancel_confirmation_active());
         assert_eq!(app.input, "keep this draft");
@@ -3288,5 +3541,82 @@ mod tests {
         assert!(!app.cancel_confirmation_active());
         assert_eq!(app.handle_escape(now + Duration::from_millis(1_002)), None);
         assert!(app.cancel_confirmation_active());
+    }
+
+    #[test]
+    fn escape_interrupts_once_and_merges_pending_steers() {
+        let now = Instant::now();
+        let mut app = App::new(".".into());
+        app.main.running = true;
+        app.input = "keep editing this draft".to_owned();
+        app.cursor = app.input.len();
+        let first = app
+            .queue_steer(PaneId::Main, "first correction".to_owned())
+            .unwrap();
+        let second = app
+            .queue_steer(PaneId::Main, "second correction".to_owned())
+            .unwrap();
+
+        let Some(EscapeAction::InterruptForSteers {
+            target,
+            prompt_id,
+            steer_ids,
+            prompt,
+        }) = app.handle_escape(now)
+        else {
+            panic!("pending steers should interrupt on the first escape");
+        };
+
+        assert_eq!(target, PaneId::Main);
+        assert_eq!(steer_ids, vec![first, second]);
+        assert_eq!(prompt.display(), "first correction\nsecond correction");
+        assert_eq!(app.input, "keep editing this draft");
+        assert!(!app.cancel_confirmation_active());
+        assert_eq!(app.main.interrupting_steers, Some(prompt_id));
+        assert_eq!(app.main.queued_prompt_ids.back(), Some(&prompt_id));
+
+        app.interrupted_steers_resubmitted(target, prompt_id, &steer_ids);
+        assert!(app.main.pending_steers.is_empty());
+        assert!(app.main.interrupting_steers.is_none());
+        assert_eq!(app.main.queued_prompt_ids.back(), Some(&prompt_id));
+    }
+
+    #[test]
+    fn failed_interrupt_keeps_steers_and_removes_the_duplicate_follow_up() {
+        let mut app = App::new(".".into());
+        app.main.running = true;
+        let steer_id = app
+            .queue_steer(PaneId::Main, "keep this steer".to_owned())
+            .unwrap();
+        let Some(EscapeAction::InterruptForSteers { prompt_id, .. }) =
+            app.handle_escape(Instant::now())
+        else {
+            panic!("pending steer should request an interrupt");
+        };
+
+        app.interrupted_steers_kept(PaneId::Main, prompt_id);
+
+        assert_eq!(
+            app.main.pending_steers.front().map(|steer| steer.id),
+            Some(steer_id)
+        );
+        assert!(!app.main.queued_prompt_ids.contains(&prompt_id));
+        assert_eq!(app.main.pending_turns, 0);
+        assert!(app.main.interrupting_steers.is_none());
+    }
+
+    #[test]
+    fn merged_steers_rebase_image_placeholders() {
+        let mut first = SubmittedPrompt::new("inspect [Image #1]".to_owned(), vec!["a.png".into()]);
+        first.append(SubmittedPrompt::new(
+            "compare [Image #1] and [Image #2]".to_owned(),
+            vec!["b.png".into(), "c.png".into()],
+        ));
+
+        assert_eq!(
+            first.display(),
+            "inspect [Image #1]\ncompare [Image #2] and [Image #3]"
+        );
+        assert_eq!(first.local_images.len(), 3);
     }
 }

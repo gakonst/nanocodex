@@ -20,7 +20,9 @@ use unicode_width::UnicodeWidthStr;
 
 use super::composer::ComposerLayout;
 use super::diff::{PatchPresentation, present_apply_patch};
-use super::markdown::{heal_streaming_markdown, highlighted_code_lines, render_agent_markdown};
+use super::markdown::{
+    code_line_count, heal_streaming_markdown, highlighted_code_lines, render_agent_markdown,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct InlineEdit<'a> {
@@ -1108,7 +1110,7 @@ impl ToolActivity {
 
         if let Some(highlighted_source) = &self.highlighted_source {
             lines.push(Line::styled(
-                "  ┌─ javascript",
+                format!("  ┌─ javascript · {} LOC", code_line_count(&self.arguments)),
                 Style::default().fg(Color::DarkGray),
             ));
             for line in highlighted_source {
@@ -1815,7 +1817,7 @@ mod tests {
             .unwrap();
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("✓ Code Mode  2 calls · 120ms · overlapping"));
-        assert!(rendered.contains("┌─ javascript"));
+        assert!(rendered.contains("┌─ javascript · 2 LOC"));
         assert!(rendered.contains("const tasks = [\"test\", \"patch\"]"));
         assert!(rendered.contains("├─ ✓ exec_command  90ms · exit 0"));
         assert!(rendered.contains("cargo test \\"));

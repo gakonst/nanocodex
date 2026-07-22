@@ -114,9 +114,9 @@ fn parse_apply_patch(source: &str) -> Vec<FilePatch> {
                 files.push(file);
             }
         } else {
-            if line.starts_with('+') && !line.starts_with("+++") {
+            if line.starts_with('+') {
                 file.added += 1;
-            } else if line.starts_with('-') && !line.starts_with("---") {
+            } else if line.starts_with('-') {
                 file.removed += 1;
             }
             file.body.push(line.to_owned());

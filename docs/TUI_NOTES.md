@@ -22,6 +22,7 @@ The implementation in `bin/nanocodex/src/tui/mod.rs` is the source of truth.
 | `Tab` or `BackTab` with an empty draft | Toggle focus between the main and `/btw` panes when a side pane exists. |
 | `Shift+Enter`, `Alt+Enter`, or `Ctrl+J` | Insert a newline. |
 | `Esc` while idle | Clear the draft. |
+| `Esc` while a steer is pending | Cancel the focused turn and immediately submit all pending steers as one FIFO-ordered follow-up. Preserve the current composer draft and separately queued prompts. |
 | `Esc`, then `Esc` within one second while running | Cancel the focused turn. The first press arms target-scoped confirmation and preserves the draft. Repeated key events do not confirm cancellation. |
 | `Ctrl+C` | Quit. |
 | `Ctrl+D` with an empty draft | Quit. |

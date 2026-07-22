@@ -1,4 +1,8 @@
-use std::{borrow::Cow, sync::OnceLock};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
@@ -89,6 +93,11 @@ pub(super) fn highlighted_code_lines(language: Option<&str>, source: &str) -> Ve
         output.push(Line::raw(""));
     }
     output
+}
+
+pub(super) fn code_line_count(source: &str) -> usize {
+    let source = source.trim_end_matches(['\r', '\n']);
+    usize::from(!source.is_empty()) + source.bytes().filter(|byte| *byte == b'\n').count()
 }
 
 struct HighlightAssets {
@@ -354,6 +363,7 @@ struct MarkdownWriter {
     quote_depth: usize,
     code_block: Option<CodeBlock>,
     table: Option<TableState>,
+    image: Option<MarkdownImage>,
 }
 
 struct ListState {
@@ -363,6 +373,12 @@ struct ListState {
 struct CodeBlock {
     language: Option<String>,
     source: String,
+}
+
+struct MarkdownImage {
+    destination: String,
+    title: String,
+    alt: String,
 }
 
 #[derive(Default)]
@@ -391,6 +407,7 @@ impl MarkdownWriter {
             quote_depth: 0,
             code_block: None,
             table: None,
+            image: None,
         }
     }
 
@@ -404,6 +421,15 @@ impl MarkdownWriter {
                 Event::Text(text) | Event::Code(text) => code.source.push_str(&text),
                 Event::SoftBreak | Event::HardBreak => code.source.push('\n'),
                 Event::End(TagEnd::CodeBlock) => self.end_code_block(),
+                _ => {}
+            }
+            return;
+        }
+        if let Some(image) = &mut self.image {
+            match event {
+                Event::Text(text) | Event::Code(text) => image.alt.push_str(&text),
+                Event::SoftBreak | Event::HardBreak => image.alt.push(' '),
+                Event::End(TagEnd::Image) => self.end_image(),
                 _ => {}
             }
             return;
@@ -487,7 +513,16 @@ impl MarkdownWriter {
                     .fg(Color::Blue)
                     .add_modifier(Modifier::UNDERLINED),
             ),
-            Event::Start(Tag::Image { .. }) => self.append_text("image: "),
+            Event::Start(Tag::Image {
+                dest_url, title, ..
+            }) => {
+                self.flush_current();
+                self.image = Some(MarkdownImage {
+                    destination: dest_url.into_string(),
+                    title: title.into_string(),
+                    alt: String::new(),
+                });
+            }
             Event::Text(text) => self.append_text(&text),
             Event::Code(code) => {
                 let style = self.current_style().patch(
@@ -645,7 +680,7 @@ impl MarkdownWriter {
         };
         let title = code.language.as_deref().unwrap_or("code");
         self.lines.push(Line::styled(
-            format!("  ┌─ {title}"),
+            format!("  ┌─ {title} · {} LOC", code_line_count(&code.source)),
             Style::default().fg(Color::DarkGray),
         ));
         for line in highlighted_code_lines(code.language.as_deref(), &code.source) {
@@ -655,6 +690,42 @@ impl MarkdownWriter {
         }
         self.lines
             .push(Line::styled("  └─", Style::default().fg(Color::DarkGray)));
+        self.blank_line();
+    }
+
+    fn end_image(&mut self) {
+        let Some(image) = self.image.take() else {
+            return;
+        };
+        let label = if image.alt.trim().is_empty() {
+            image.title.trim()
+        } else {
+            image.alt.trim()
+        };
+        if let Some(lines) = inline_image_lines(&image.destination, self.width) {
+            self.lines.extend(lines);
+            if !label.is_empty() {
+                self.lines.push(Line::styled(
+                    format!("  {label}"),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+        } else {
+            let label = if label.is_empty() { "image" } else { label };
+            self.lines.push(Line::from(vec![
+                Span::styled("  🖼 ", Style::default().fg(Color::DarkGray)),
+                Span::styled(label.to_owned(), Style::default().fg(Color::White)),
+                Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    image.destination,
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+            ]));
+        }
         self.blank_line();
     }
 
@@ -779,6 +850,73 @@ impl MarkdownWriter {
     }
 }
 
+fn inline_image_lines(destination: &str, width: u16) -> Option<Vec<Line<'static>>> {
+    const MAX_SOURCE_BYTES: u64 = 64 * 1_024 * 1_024;
+    const MAX_SOURCE_PIXELS: u64 = 40_000_000;
+    const MAX_COLUMNS: u32 = 60;
+    const MAX_PIXEL_ROWS: u32 = 40;
+
+    let path = local_image_path(destination)?;
+    if std::fs::metadata(&path).ok()?.len() > MAX_SOURCE_BYTES {
+        return None;
+    }
+    let (source_width, source_height) = image::image_dimensions(&path).ok()?;
+    if source_width == 0
+        || source_height == 0
+        || u64::from(source_width).saturating_mul(u64::from(source_height)) > MAX_SOURCE_PIXELS
+    {
+        return None;
+    }
+    let max_columns = u32::from(width.saturating_sub(4).max(1)).min(MAX_COLUMNS);
+    let pixels = image::open(path)
+        .ok()?
+        .thumbnail(
+            max_columns.min(source_width),
+            MAX_PIXEL_ROWS.min(source_height),
+        )
+        .into_rgba8();
+    let (columns, pixel_rows) = pixels.dimensions();
+    let terminal_rows = pixel_rows.saturating_add(1) / 2;
+    let mut lines = Vec::with_capacity(usize::try_from(terminal_rows).unwrap_or(usize::MAX));
+    for row in 0..terminal_rows {
+        let top_y = row.saturating_mul(2);
+        let bottom_y = top_y.saturating_add(1).min(pixel_rows.saturating_sub(1));
+        let mut spans = Vec::with_capacity(usize::try_from(columns).unwrap_or(usize::MAX) + 1);
+        spans.push(Span::raw("  "));
+        for column in 0..columns {
+            let top = composite_over_black(pixels.get_pixel(column, top_y).0);
+            let bottom = composite_over_black(pixels.get_pixel(column, bottom_y).0);
+            spans.push(Span::styled(
+                "▀",
+                Style::default()
+                    .fg(Color::Rgb(top[0], top[1], top[2]))
+                    .bg(Color::Rgb(bottom[0], bottom[1], bottom[2])),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    Some(lines)
+}
+
+fn local_image_path(destination: &str) -> Option<PathBuf> {
+    if destination.starts_with("file://") {
+        return reqwest::Url::parse(destination).ok()?.to_file_path().ok();
+    }
+    if destination.contains("://") || destination.starts_with("data:") {
+        return None;
+    }
+    let destination = destination.strip_prefix("sandbox:").unwrap_or(destination);
+    let path = Path::new(destination);
+    (!destination.is_empty()).then(|| path.to_owned())
+}
+
+fn composite_over_black([red, green, blue, alpha]: [u8; 4]) -> [u8; 3] {
+    let alpha = u16::from(alpha);
+    [red, green, blue].map(|channel| {
+        u8::try_from(u16::from(channel).saturating_mul(alpha) / 255).unwrap_or(u8::MAX)
+    })
+}
+
 fn table_card_field(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
@@ -860,9 +998,11 @@ fn strip_html(html: &str) -> String {
 mod tests {
     use std::collections::HashSet;
 
-    use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+    use ratatui::{Terminal, backend::TestBackend, style::Color, widgets::Paragraph};
 
-    use super::{heal_streaming_markdown, highlighted_code_lines, render_agent_markdown};
+    use super::{
+        code_line_count, heal_streaming_markdown, highlighted_code_lines, render_agent_markdown,
+    };
 
     fn render(markdown: &str, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -887,8 +1027,56 @@ mod tests {
         assert!(rendered.contains("Result"));
         assert!(rendered.contains("Use bold, emphasis, and cargo test."));
         assert!(rendered.contains("• first"));
-        assert!(rendered.contains("┌─ rust"));
+        assert!(rendered.contains("┌─ rust · 1 LOC"));
         assert!(rendered.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn renders_local_markdown_images_inline_with_true_color_pixels() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("inline.png");
+        let mut image = image::RgbaImage::new(2, 2);
+        image.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        image.put_pixel(1, 0, image::Rgba([0, 255, 0, 255]));
+        image.put_pixel(0, 1, image::Rgba([0, 0, 255, 255]));
+        image.put_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        image.save(&path).unwrap();
+
+        let markdown = format!("before\n\n![sample image]({})\n\nafter", path.display());
+        let rendered = render_agent_markdown(&markdown, 30);
+        let content = rendered
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        let pixel = rendered
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content == "▀")
+            .expect("inline image pixel");
+
+        assert!(content.contains("before"));
+        assert!(content.contains("sample image"));
+        assert!(content.contains("after"));
+        assert_eq!(pixel.style.fg, Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(pixel.style.bg, Some(Color::Rgb(0, 0, 255)));
+    }
+
+    #[test]
+    fn remote_markdown_images_keep_an_explicit_fallback() {
+        let rendered = render("![deployment chart](https://example.com/chart.png)", 80, 4);
+
+        assert!(rendered.contains("🖼 deployment chart"));
+        assert!(rendered.contains("https://example.com/chart.png"));
+    }
+
+    #[test]
+    fn code_line_counts_ignore_only_terminal_newlines() {
+        assert_eq!(code_line_count(""), 0);
+        assert_eq!(code_line_count("one\n"), 1);
+        assert_eq!(code_line_count("one\n\ntwo\n\n"), 3);
     }
 
     #[test]
