@@ -3,7 +3,7 @@ use std::time::Duration;
 #[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
 
-use nanocodex_core::{ModelConfig, Usage};
+use nanocodex_core::{ModelConfig, Thinking, Usage};
 use serde::Serialize;
 use serde_json::value::RawValue;
 use web_time::Instant;
@@ -223,13 +223,14 @@ pub(super) fn terminal_payload<'a>(
     terminal_status: &'static str,
     elapsed: Duration,
     config: &'a ModelConfig,
+    thinking: Thinking,
     stats: &'a RunStats,
 ) -> TerminalPayload<'a> {
     TerminalPayload {
         status: terminal_status,
         model: nanocodex_core::MODEL,
         reasoning_mode: config.reasoning_mode.as_str(),
-        effort: config.thinking.as_str(),
+        effort: thinking.as_str(),
         transport: TRANSPORT,
         orchestration: ModelConfig::orchestration(),
         duration_ms: duration_ms(elapsed),

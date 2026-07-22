@@ -27,6 +27,7 @@ async fn main() -> Result<()> {
     let first = first.result().await?;
     println!("first result: {}", first.final_message);
 
+    agent.set_thinking(Thinking::High).await?;
     let second = agent
         .prompt(
             "What single word did you reply with in the previous turn? Reply with only that word in uppercase.",

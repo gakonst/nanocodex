@@ -14,6 +14,8 @@ py/bindings/.venv/bin/python examples/python/follow_on.py
 `prompt()` only accepts the turn and returns a `Turn`; `Turn.result()` does the
 blocking wait while releasing Python's GIL. `AgentEvents.recv_json()` likewise
 releases the GIL, so applications can consume it from a normal Python thread.
+`agent.set_thinking("high")` changes the effort for subsequently accepted turns
+without replacing the session.
 The Rust runtime, tools, transport, retries, history, and event ordering stay
 inside the extension; no app server or per-tool Python bridge is involved.
 

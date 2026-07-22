@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::{Serialize, ser::SerializeSeq};
 
 use super::ResponseItem;
-use crate::ModelConfig;
+use crate::{ModelConfig, Thinking};
 
 /// Stable request metadata and prefix shared by every operation in a session.
 #[derive(Clone)]
@@ -354,11 +354,13 @@ impl<'a> ResponseCreate<'a> {
     #[must_use]
     pub fn warmup(
         config: &'a ModelConfig,
+        thinking: Thinking,
         profile: &'a RequestProfile,
         turn_state: Option<&'a str>,
     ) -> Self {
         Self::new(
             config,
+            thinking,
             ResponsesInput::new(profile.prefix(), &[], None),
             None,
             Some(false),
@@ -370,6 +372,7 @@ impl<'a> ResponseCreate<'a> {
     #[must_use]
     pub fn generation(
         config: &'a ModelConfig,
+        thinking: Thinking,
         input: ResponsesInput<'a>,
         previous_response_id: Option<&'a str>,
         profile: &'a RequestProfile,
@@ -377,6 +380,7 @@ impl<'a> ResponseCreate<'a> {
     ) -> Self {
         Self::new(
             config,
+            thinking,
             input,
             previous_response_id,
             None,
@@ -387,6 +391,7 @@ impl<'a> ResponseCreate<'a> {
 
     fn new(
         config: &'a ModelConfig,
+        thinking: Thinking,
         input: ResponsesInput<'a>,
         previous_response_id: Option<&'a str>,
         generate: Option<bool>,
@@ -402,7 +407,7 @@ impl<'a> ResponseCreate<'a> {
             parallel_tool_calls: false,
             reasoning: ReasoningControls {
                 mode: config.reasoning_mode.request_value(),
-                effort: config.thinking.as_str(),
+                effort: thinking.as_str(),
                 summary: "detailed",
                 context: "all_turns",
             },
@@ -467,7 +472,7 @@ mod tests {
             }],
         )]);
         let profile = RequestProfile::new("branch-a", "lineage-a", prefix);
-        let request = ResponseCreate::warmup(&config, &profile, None);
+        let request = ResponseCreate::warmup(&config, Thinking::Low, &profile, None);
         let request = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(request["prompt_cache_key"], json!("lineage-a"));
@@ -511,8 +516,9 @@ mod tests {
                 thinking,
                 ..ModelConfig::default()
             };
-            let request = serde_json::to_value(ResponseCreate::warmup(&config, &profile, None))
-                .expect("request should serialize");
+            let request =
+                serde_json::to_value(ResponseCreate::warmup(&config, thinking, &profile, None))
+                    .expect("request should serialize");
 
             assert_eq!(request["reasoning"]["mode"], json!("pro"));
             assert_eq!(request["reasoning"]["effort"], json!(expected));

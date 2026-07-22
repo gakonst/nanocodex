@@ -84,6 +84,15 @@ impl Nanocodex {
         })
     }
 
+    /// Change the reasoning effort for subsequently accepted turns.
+    fn set_thinking(&self, py: Python<'_>, thinking: &str) -> PyResult<()> {
+        let thinking = parse_thinking(thinking)?;
+        let runtime = Arc::clone(&self.runtime);
+        let agent = self.agent.clone();
+        py.detach(move || runtime.block_on(agent.set_thinking(thinking)))
+            .map_err(runtime_error)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Nanocodex(runtime_references={})",

@@ -12,6 +12,7 @@ class BindingTests(unittest.TestCase):
         )
         self.assertNotIn(secret, repr(agent))
         self.assertTrue(callable(agent.prompt))
+        agent.set_thinking("high")
         self.assertTrue(callable(events.recv_json))
 
     def test_configuration_errors_cross_the_boundary(self) -> None:
@@ -20,6 +21,10 @@ class BindingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "expected standard or pro"):
             Nanocodex("test-key", reasoning_mode="impossible")
+
+        agent, _ = Nanocodex("test-key")
+        with self.assertRaisesRegex(ValueError, "expected none"):
+            agent.set_thinking("impossible")
 
         with self.assertRaisesRegex(RuntimeError, "OpenAI credentials are empty"):
             Nanocodex("")

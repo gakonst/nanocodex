@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[tokio::test]
-async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> {
+async fn follow_on_prompts_can_change_thinking_without_restarting_the_session() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -19,15 +19,20 @@ async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> 
         let mut socket = accept_async(stream).await?;
         let warmup = next_json(&mut socket).await?;
         assert_warmup(&warmup);
+        assert_eq!(warmup["reasoning"]["effort"], "low");
         assert_eq!(warmup["input"][1]["content"][0]["text"], "custom prompt");
         send_warmup(&mut socket, "resp-warmup").await?;
 
         let first = next_json(&mut socket).await?;
         assert_eq!(first["previous_response_id"], "resp-warmup");
+        assert_eq!(first["reasoning"]["effort"], "low");
+        let prompt_cache_key = first["prompt_cache_key"].clone();
         send_final(&mut socket, "resp-first").await?;
 
         let follow_on = next_json(&mut socket).await?;
         assert_eq!(follow_on["previous_response_id"], "resp-first");
+        assert_eq!(follow_on["reasoning"]["effort"], "high");
+        assert_eq!(follow_on["prompt_cache_key"], prompt_cache_key);
         assert_eq!(follow_on["input"].as_array().map(Vec::len), Some(1));
         assert_eq!(follow_on["input"][0]["role"], "user");
         assert_eq!(follow_on["input"][0]["content"][0]["text"], "second prompt");
@@ -46,6 +51,7 @@ async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> 
 
     let first = agent.prompt(Prompt::new("first prompt")).await?;
     assert_eq!(first.result().await?.final_message, "done");
+    agent.set_thinking(Thinking::High).await?;
     let second = agent.prompt(Prompt::new("second prompt")).await?;
     assert_eq!(second.result().await?.final_message, "done");
     drop(agent);
@@ -59,9 +65,92 @@ async fn follow_on_prompts_reuse_the_session_socket_and_context() -> Result<()> 
     assert_eq!(completed.len(), 2);
     assert_eq!(completed[0]["connection_attempts"], 1);
     assert_eq!(completed[0]["response_attempts"], 2);
+    assert_eq!(completed[0]["effort"], "low");
     assert_eq!(completed[1]["connection_attempts"], 0);
     assert_eq!(completed[1]["response_attempts"], 1);
+    assert_eq!(completed[1]["effort"], "high");
 
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn queued_prompts_retain_the_thinking_captured_when_accepted() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let (first_started, first_started_rx) = tokio::sync::oneshot::channel();
+    let (release_first, release_first_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        let warmup = next_json(&mut socket).await?;
+        assert_eq!(warmup["reasoning"]["effort"], "low");
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let first = next_json(&mut socket).await?;
+        assert_eq!(first["reasoning"]["effort"], "low");
+        first_started
+            .send(())
+            .map_err(|()| eyre!("first request signal receiver dropped"))?;
+        release_first_rx
+            .await
+            .map_err(|_| eyre!("first request release sender dropped"))?;
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-first-tool",
+                &[json!({
+                    "type": "custom_tool_call",
+                    "call_id": "call-exec",
+                    "name": "exec",
+                    "input": "text(\"continued\")"
+                })],
+            ),
+        )
+        .await?;
+
+        let continuation = next_json(&mut socket).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-first-tool");
+        assert_eq!(continuation["reasoning"]["effort"], "low");
+        send_final(&mut socket, "resp-first").await?;
+
+        let queued = next_json(&mut socket).await?;
+        assert_eq!(queued["previous_response_id"], "resp-first");
+        assert_eq!(queued["reasoning"]["effort"], "low");
+        send_final(&mut socket, "resp-queued").await?;
+
+        let updated = next_json(&mut socket).await?;
+        assert_eq!(updated["previous_response_id"], "resp-queued");
+        assert_eq!(updated["reasoning"]["effort"], "high");
+        send_final(&mut socket, "resp-updated").await
+    });
+
+    let workspace = temporary_workspace("queued-thinking")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+
+    let first = agent.prompt("first prompt").await?;
+    first_started_rx
+        .await
+        .map_err(|_| eyre!("first request was not observed"))?;
+    let queued = agent.prompt("queued prompt").await?;
+    agent.set_thinking(Thinking::High).await?;
+    release_first
+        .send(())
+        .map_err(|()| eyre!("first request release receiver dropped"))?;
+    first.result().await?;
+    queued.result().await?;
+    agent.prompt("updated prompt").await?.result().await?;
+
+    drop((agent, events));
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
@@ -1432,6 +1521,7 @@ async fn latest_fork_during_streaming_inherits_the_active_prompt_delta() -> Resu
 
         let active = next_json(&mut root).await?;
         assert_eq!(active["previous_response_id"], "resp-warmup");
+        assert_eq!(active["reasoning"]["effort"], "low");
         assert!(active.to_string().contains("active root prompt"));
         root_started
             .send(())
@@ -1441,6 +1531,7 @@ async fn latest_fork_during_streaming_inherits_the_active_prompt_delta() -> Resu
         let mut branch = accept_async(stream).await?;
         let fork = next_json(&mut branch).await?;
         assert_eq!(fork["previous_response_id"], "resp-warmup");
+        assert_eq!(fork["reasoning"]["effort"], "high");
         let fork_text = fork.to_string();
         assert!(fork_text.contains("active root prompt"));
         assert!(fork_text.contains("BTW question"));
@@ -1464,6 +1555,7 @@ async fn latest_fork_during_streaming_inherits_the_active_prompt_delta() -> Resu
     root_started_rx
         .await
         .map_err(|_| eyre!("root request was not observed"))?;
+    agent.set_thinking(Thinking::High).await?;
     let (fork, fork_events) = agent.fork().await?;
     let branch = fork.prompt("BTW question").await?;
     assert_eq!(branch.result().await?.final_message, "done");
@@ -1924,6 +2016,7 @@ async fn clean_spawn_reuses_an_explicit_cache_key_without_history_or_lineage() -
         let (stream, _) = listener.accept().await?;
         let mut child = accept_async(stream).await?;
         let child_warmup = next_json(&mut child).await?;
+        assert_eq!(child_warmup["reasoning"]["effort"], "high");
         let child_session = child_warmup["client_metadata"]["session_id"]
             .as_str()
             .ok_or_else(|| eyre!("clean child warmup omitted its session id"))?;
@@ -1963,6 +2056,7 @@ async fn clean_spawn_reuses_an_explicit_cache_key_without_history_or_lineage() -
         .await
         .ok_or_else(|| eyre!("root tool factory did not receive an agent handle"))?;
     root.prompt("root turn").await?.result().await?;
+    root.set_thinking(Thinking::High).await?;
 
     let (child, child_events) = root_handle.spawn().await?;
     received_handles

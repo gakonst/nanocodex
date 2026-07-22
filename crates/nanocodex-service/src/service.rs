@@ -258,12 +258,14 @@ impl ResponsesService {
         let encoded = match request.kind {
             ResponsesAttemptKind::Warmup => EncodedRequest::new(&ResponseCreate::warmup(
                 &self.config,
+                request.thinking(),
                 &request.profile,
                 connection.turn_state.as_deref(),
             )),
             ResponsesAttemptKind::Generation | ResponsesAttemptKind::Compaction => {
                 EncodedRequest::new(&ResponseCreate::generation(
                     &self.config,
+                    request.thinking(),
                     request.input(),
                     request.previous_response_id(),
                     &request.profile,
