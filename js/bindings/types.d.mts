@@ -38,6 +38,7 @@ export type AgentActions = {
   };
   session: {
     fork(options?: ForkOptions): Promise<DefaultAgent>;
+    setThinking(thinking: Thinking): Promise<void>;
     spawn(): Promise<DefaultAgent>;
   };
   turn: {

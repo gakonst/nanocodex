@@ -11,6 +11,7 @@ export function agentActions() {
     },
     session: {
       fork: (options) => session.fork(agent, options),
+      setThinking: (thinking) => session.setThinking(agent, thinking),
       spawn: () => session.spawn(agent),
     },
     turn: {

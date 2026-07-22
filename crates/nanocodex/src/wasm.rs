@@ -77,6 +77,7 @@ enum Command {
     Prompt {
         key: TurnKey,
         prompt: Prompt,
+        thinking: Option<Thinking>,
         result: oneshot::Sender<Result<CompletedWasmTurn, String>>,
     },
     Steer {
@@ -95,16 +96,22 @@ enum Command {
     Spawn {
         result: oneshot::Sender<Result<WasmNanocodex, String>>,
     },
+    SetThinking {
+        thinking: Thinking,
+        result: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 enum QueuedTurn {
     Pending {
         key: TurnKey,
         prompt: Prompt,
+        thinking: Thinking,
         result: oneshot::Sender<Result<CompletedWasmTurn, String>>,
     },
     Cancelled {
         prompt: Prompt,
+        thinking: Thinking,
         result: oneshot::Sender<Result<CompletedWasmTurn, String>>,
     },
 }
@@ -199,6 +206,7 @@ impl WasmNanocodex {
             .send(Command::Prompt {
                 key,
                 prompt,
+                thinking: None,
                 result,
             })
             .map_err(|_| js_error("the Nanocodex driver stopped"))?;
@@ -253,6 +261,22 @@ impl WasmNanocodex {
         request_command(&self.commands, |result| Command::Spawn { result })
             .await
             .map_err(js_error)
+    }
+
+    /// Change the reasoning effort for subsequently accepted turns.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsupported effort or a stopped agent driver.
+    #[wasm_bindgen(js_name = setThinking)]
+    pub async fn set_thinking(&self, thinking: &str) -> Result<(), JsValue> {
+        let thinking = thinking.parse::<Thinking>().map_err(js_error)?;
+        request_command(&self.commands, |result| Command::SetThinking {
+            thinking,
+            result,
+        })
+        .await
+        .map_err(js_error)
     }
 }
 
@@ -455,6 +479,7 @@ async fn run_driver(
     events: EventSink,
     transport_stats: Arc<TransportStats>,
 ) {
+    let mut default_thinking = factory.config.thinking;
     let mut latest_checkpoint: Option<Arc<CommittedWasmCheckpoint>> = None;
     let mut queued_turns = VecDeque::new();
     let mut commands_open = true;
@@ -466,17 +491,27 @@ async fn run_driver(
                     QueuedTurn::Pending {
                         key,
                         prompt,
+                        thinking,
                         result,
                     } => {
                         break Command::Prompt {
                             key,
                             prompt,
+                            thinking: Some(thinking),
                             result,
                         };
                     }
-                    QueuedTurn::Cancelled { prompt, result } => {
+                    QueuedTurn::Cancelled {
+                        prompt,
+                        thinking,
+                        result,
+                    } => {
                         let outcome = model
-                            .emit_cancelled_before_start(&prompt, factory.workspace.as_deref())
+                            .emit_cancelled_before_start(
+                                &prompt,
+                                factory.workspace.as_deref(),
+                                thinking,
+                            )
                             .map_or_else(
                                 |error| Err(error.to_string()),
                                 |()| Err(NanocodexError::TurnCancelled.to_string()),
@@ -499,12 +534,24 @@ async fn run_driver(
         let Command::Prompt {
             key,
             prompt,
+            thinking,
             result,
         } = command
         else {
-            handle_idle_command(command, latest_checkpoint.as_ref(), &factory);
+            if let Command::SetThinking { thinking, result } = command {
+                default_thinking = thinking;
+                drop(result.send(Ok(())));
+                continue;
+            }
+            handle_idle_command(
+                command,
+                latest_checkpoint.as_ref(),
+                &factory,
+                default_thinking,
+            );
             continue;
         };
+        let thinking = thinking.unwrap_or(default_thinking);
 
         let (steers, steer_rx) = mpsc::channel(STEER_CAPACITY);
         let (cancel, cancel_rx) = oneshot::channel();
@@ -515,6 +562,7 @@ async fn run_driver(
         let mut execution = Box::pin(model.execute(
             prompt,
             factory.workspace.clone(),
+            thinking,
             steer_rx,
             cancel_rx,
             fork_snapshots,
@@ -540,8 +588,18 @@ async fn run_driver(
                 }
                 command = commands.recv() => {
                     match command {
-                        Some(Command::Prompt { key, prompt, result }) => {
-                            queued_turns.push_back(QueuedTurn::Pending { key, prompt, result });
+                        Some(Command::Prompt {
+                            key,
+                            prompt,
+                            thinking: _,
+                            result,
+                        }) => {
+                            queued_turns.push_back(QueuedTurn::Pending {
+                                key,
+                                prompt,
+                                thinking: default_thinking,
+                                result,
+                            });
                         }
                         Some(Command::Steer { key: target, prompt, result }) => {
                             if target != key {
@@ -572,7 +630,16 @@ async fn run_driver(
                             break execution.as_mut().await;
                         }
                         Some(command @ (Command::Fork { .. } | Command::Spawn { .. })) => {
-                            handle_idle_command(command, latest_checkpoint.as_ref(), &factory);
+                            handle_idle_command(
+                                command,
+                                latest_checkpoint.as_ref(),
+                                &factory,
+                                default_thinking,
+                            );
+                        }
+                        Some(Command::SetThinking { thinking, result }) => {
+                            default_thinking = thinking;
+                            drop(result.send(Ok(())));
                         }
                         None => commands_open = false,
                     }
@@ -634,19 +701,23 @@ fn handle_idle_command(
     command: Command,
     latest: Option<&Arc<CommittedWasmCheckpoint>>,
     factory: &WasmAgentFactory,
+    thinking: Thinking,
 ) {
     match command {
         Command::Fork { checkpoint, result } => {
             let checkpoint = checkpoint.or_else(|| latest.cloned());
             let outcome = checkpoint
                 .ok_or_else(|| NanocodexError::ForkBeforeCompletedTurn.to_string())
-                .and_then(|checkpoint| spawn_fork(factory, &checkpoint));
+                .and_then(|checkpoint| spawn_fork(factory, &checkpoint, thinking));
             drop(result.send(outcome));
         }
         Command::Spawn { result } => {
             let session_id = new_session_id();
             let lineage_id = Arc::<str>::from(session_id.as_str());
             let mut clean = factory.clone();
+            let mut config = (*clean.config).clone();
+            config.thinking = thinking;
+            clean.config = Arc::new(config);
             clean.lineage_id = lineage_id;
             clean.prompt_cache = ModelPromptCache::new(Arc::clone(&clean.lineage_id), None);
             drop(result.send(Ok(spawn_agent(clean, session_id, None))));
@@ -657,6 +728,9 @@ fn handle_idle_command(
         Command::Cancel { result, .. } => {
             drop(result.send(Err(NanocodexError::TurnNotCancellable.to_string())));
         }
+        Command::SetThinking { result, .. } => {
+            drop(result.send(Ok(())));
+        }
         Command::Prompt { .. } => {}
     }
 }
@@ -664,11 +738,15 @@ fn handle_idle_command(
 fn spawn_fork(
     factory: &WasmAgentFactory,
     checkpoint: &CommittedWasmCheckpoint,
+    thinking: Thinking,
 ) -> Result<WasmNanocodex, String> {
     if checkpoint.lineage_id != factory.lineage_id {
         return Err("checkpoint belongs to another conversation".to_owned());
     }
     let mut fork = factory.clone();
+    let mut config = (*fork.config).clone();
+    config.thinking = thinking;
+    fork.config = Arc::new(config);
     fork.workspace = Some(Arc::from(checkpoint.model.workspace()));
     Ok(spawn_agent(
         fork,
@@ -684,10 +762,23 @@ fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) 
     else {
         return false;
     };
-    let Some(QueuedTurn::Pending { prompt, result, .. }) = queued_turns.remove(position) else {
+    let Some(QueuedTurn::Pending {
+        prompt,
+        thinking,
+        result,
+        ..
+    }) = queued_turns.remove(position)
+    else {
         return false;
     };
-    queued_turns.insert(position, QueuedTurn::Cancelled { prompt, result });
+    queued_turns.insert(
+        position,
+        QueuedTurn::Cancelled {
+            prompt,
+            thinking,
+            result,
+        },
+    );
     true
 }
 

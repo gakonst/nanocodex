@@ -71,6 +71,10 @@ export async function spawn(agent) {
   return createAgent(await state.raw.spawn(), state.runtime);
 }
 
+export function setThinking(agent, thinking) {
+  return agentState(agent).raw.setThinking(thinking);
+}
+
 export function subscribeAgentEvents(agent, listener, options = {}) {
   const state = agentState(agent);
   if (typeof state.runtime.subscribe !== "function") {

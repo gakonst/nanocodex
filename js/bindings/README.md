@@ -17,6 +17,8 @@ const agent = await Agent.create({
 const turn = agent.turn.prompt({ input: "Build the thing." });
 console.log(await turn.result());
 
+await agent.session.setThinking("high");
+
 const branch = await agent.session.fork({ at: turn });
 console.log(await branch.turn.prompt({ input: "Try another approach." }).result());
 
@@ -29,6 +31,7 @@ an owned client decorated with matching domain actions:
 
 - `agent.turn.prompt(...)` / `Actions.turn.prompt(agent, ...)`
 - `agent.session.fork(...)` / `Actions.session.fork(agent, ...)`
+- `agent.session.setThinking(...)` / `Actions.session.setThinking(agent, ...)`
 - `agent.session.spawn()` / `Actions.session.spawn(agent)`
 - `agent.events.watch(...)` / `Actions.events.watch(agent, ...)`
 

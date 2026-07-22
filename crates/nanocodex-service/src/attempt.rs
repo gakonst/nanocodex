@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use nanocodex_core::{
-    AgentEventKind, EventError, EventSink, ResponseItem,
+    AgentEventKind, EventError, EventSink, ResponseItem, Thinking,
     responses::{RequestProfile, ResponseHistory, ResponsesInput, WarmupResponse},
 };
 use serde::Serialize;
@@ -129,6 +129,7 @@ pub struct ResponsesAttempt {
     incremental_start: usize,
     tail: Option<ResponseItem>,
     previous_response_id: Option<String>,
+    thinking: Thinking,
     pub(crate) profile: Arc<RequestProfile>,
     pub(crate) observer: ResponsesObserver,
     pub(crate) attempt: u32,
@@ -137,7 +138,11 @@ pub struct ResponsesAttempt {
 }
 
 impl ResponsesAttempt {
-    fn warmup(profile: Arc<RequestProfile>, observer: ResponsesObserver) -> Self {
+    fn warmup(
+        thinking: Thinking,
+        profile: Arc<RequestProfile>,
+        observer: ResponsesObserver,
+    ) -> Self {
         Self {
             kind: ResponsesAttemptKind::Warmup,
             call_index: None,
@@ -146,6 +151,7 @@ impl ResponsesAttempt {
             incremental_start: 0,
             tail: None,
             previous_response_id: None,
+            thinking,
             profile,
             observer,
             attempt: 1,
@@ -154,12 +160,14 @@ impl ResponsesAttempt {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generation(
         call_index: u32,
         full_history: ResponseHistory,
         incremental_history: ResponseHistory,
         incremental_start: usize,
         previous_response_id: Option<&str>,
+        thinking: Thinking,
         profile: Arc<RequestProfile>,
         observer: ResponsesObserver,
     ) -> Self {
@@ -171,6 +179,7 @@ impl ResponsesAttempt {
             incremental_start,
             tail: None,
             previous_response_id: previous_response_id.map(str::to_owned),
+            thinking,
             profile,
             observer,
             attempt: 1,
@@ -187,6 +196,7 @@ impl ResponsesAttempt {
         incremental_start: usize,
         previous_response_id: &str,
         trigger: ResponseItem,
+        thinking: Thinking,
         profile: Arc<RequestProfile>,
         observer: ResponsesObserver,
     ) -> Self {
@@ -198,6 +208,7 @@ impl ResponsesAttempt {
             incremental_start,
             tail: Some(trigger),
             previous_response_id: Some(previous_response_id.to_owned()),
+            thinking,
             profile,
             observer,
             attempt: 1,
@@ -234,6 +245,12 @@ impl ResponsesAttempt {
     #[must_use]
     pub const fn model_call_index(&self) -> Option<u32> {
         self.call_index
+    }
+
+    /// Returns the reasoning effort fixed for this replayable attempt.
+    #[must_use]
+    pub const fn thinking(&self) -> Thinking {
+        self.thinking
     }
 
     #[must_use]
@@ -335,8 +352,8 @@ impl ResponsesAttemptFactory {
     }
 
     #[must_use]
-    pub fn warmup(&self) -> ResponsesAttempt {
-        ResponsesAttempt::warmup(Arc::clone(&self.profile), self.observer.clone())
+    pub fn warmup(&self, thinking: Thinking) -> ResponsesAttempt {
+        ResponsesAttempt::warmup(thinking, Arc::clone(&self.profile), self.observer.clone())
     }
 
     #[must_use]
@@ -347,6 +364,7 @@ impl ResponsesAttemptFactory {
         incremental_history: ResponseHistory,
         incremental_start: usize,
         previous_response_id: Option<&str>,
+        thinking: Thinking,
     ) -> ResponsesAttempt {
         ResponsesAttempt::generation(
             call_index,
@@ -354,6 +372,7 @@ impl ResponsesAttemptFactory {
             incremental_history,
             incremental_start,
             previous_response_id,
+            thinking,
             Arc::clone(&self.profile),
             self.observer.clone(),
         )
@@ -369,6 +388,7 @@ impl ResponsesAttemptFactory {
         incremental_start: usize,
         previous_response_id: &str,
         trigger: ResponseItem,
+        thinking: Thinking,
     ) -> ResponsesAttempt {
         ResponsesAttempt::compaction(
             call_index,
@@ -377,8 +397,38 @@ impl ResponsesAttemptFactory {
             incremental_start,
             previous_response_id,
             trigger,
+            thinking,
             Arc::clone(&self.profile),
             self.observer.clone(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResponseHistory, ResponsesAttemptFactory, TransportStats};
+    use nanocodex_core::{EventSink, Thinking, responses::RequestProfile};
+    use std::sync::Arc;
+
+    #[test]
+    fn retry_preserves_the_attempts_thinking_level() {
+        let (events, _receiver) = EventSink::channel("attempt-test".to_owned());
+        let factory = ResponsesAttemptFactory::new(
+            RequestProfile::new("attempt-test", "attempt-test", Arc::from([])),
+            events,
+            Arc::new(TransportStats::default()),
+        );
+        let mut attempt = factory.generation(
+            1,
+            ResponseHistory::default(),
+            ResponseHistory::default(),
+            0,
+            Some("resp-previous"),
+            Thinking::High,
+        );
+
+        assert_eq!(attempt.thinking(), Thinking::High);
+        assert!(attempt.prepare_retry());
+        assert_eq!(attempt.thinking(), Thinking::High);
     }
 }

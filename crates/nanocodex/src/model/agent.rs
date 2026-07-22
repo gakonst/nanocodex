@@ -1,8 +1,8 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use nanocodex_core::{
-    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, ToolDefinition, Usage,
-    responses::RequestProfile,
+    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, Thinking, ToolDefinition,
+    Usage, responses::RequestProfile,
 };
 use nanocodex_service::{
     CodeCall, CodeCallKind, ResponsesAttempt, ResponsesAttemptFactory, ResponsesClient,
@@ -39,6 +39,7 @@ use nanocodex_tools::{
 pub(crate) struct ModelRun<S> {
     events: EventSink,
     config: Arc<ModelConfig>,
+    thinking: Thinking,
     client: ResponsesClient<S>,
     transport_stats: Arc<TransportStats>,
     started_at: Instant,
@@ -228,9 +229,11 @@ impl<S> ModelRun<S> {
         prompt_cache: ModelPromptCache,
         global_instructions: Option<Arc<str>>,
     ) -> Self {
+        let thinking = config.thinking;
         Self {
             events,
             config,
+            thinking,
             client,
             transport_stats,
             started_at: Instant::now(),
@@ -264,9 +267,11 @@ impl<S> ModelRun<S> {
             &runtime,
             config.system_prompt(),
         );
+        let thinking = config.thinking;
         Self {
             events,
             config,
+            thinking,
             client,
             transport_stats,
             started_at: Instant::now(),
@@ -313,7 +318,9 @@ where
         &mut self,
         task: &Prompt,
         workspace: Option<&str>,
+        thinking: Thinking,
     ) -> Result<()> {
+        self.thinking = thinking;
         self.started_at = Instant::now();
         self.stats = RunStats::default();
         self.events.emit(
@@ -322,7 +329,7 @@ where
                 mode: "openai_model",
                 model: MODEL,
                 reasoning_mode: self.config.reasoning_mode.as_str(),
-                effort: self.config.thinking.as_str(),
+                effort: self.thinking.as_str(),
                 transport: TRANSPORT,
                 orchestration: ModelConfig::orchestration(),
                 websocket_url: display_endpoint(&self.config.websocket_url),
@@ -340,6 +347,7 @@ where
                 "cancelled",
                 self.started_at.elapsed(),
                 &self.config,
+                self.thinking,
                 &self.stats,
             ),
         )?;
@@ -350,10 +358,12 @@ where
         &mut self,
         task: Prompt,
         workspace: Option<Arc<str>>,
+        thinking: Thinking,
         steers: tokio::sync::mpsc::Receiver<Prompt>,
         mut cancel: tokio::sync::oneshot::Receiver<()>,
         fork_snapshots: watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTurnOutcome> {
+        self.thinking = thinking;
         self.started_at = Instant::now();
         self.stats = RunStats::default();
         let transport_before = self.transport_stats.snapshot();
@@ -363,7 +373,7 @@ where
                 mode: "openai_model",
                 model: MODEL,
                 reasoning_mode: self.config.reasoning_mode.as_str(),
-                effort: self.config.thinking.as_str(),
+                effort: self.thinking.as_str(),
                 transport: TRANSPORT,
                 orchestration: ModelConfig::orchestration(),
                 websocket_url: display_endpoint(&self.config.websocket_url),
@@ -382,7 +392,13 @@ where
                     .apply_transport(self.transport_stats.since(transport_before));
                 self.events.emit(
                     AgentEventKind::RunCompleted,
-                    terminal_payload("completed", elapsed, &self.config, &self.stats),
+                    terminal_payload(
+                        "completed",
+                        elapsed,
+                        &self.config,
+                        self.thinking,
+                        &self.stats,
+                    ),
                 )?;
                 let checkpoint = self.commit_checkpoint()?;
                 Ok(ModelTurnOutcome::Completed(CompletedModelTurn {
@@ -404,7 +420,13 @@ where
                     .apply_transport(self.transport_stats.since(transport_before));
                 self.events.emit(
                     AgentEventKind::RunFailed,
-                    terminal_payload("cancelled", elapsed, &self.config, &self.stats),
+                    terminal_payload(
+                        "cancelled",
+                        elapsed,
+                        &self.config,
+                        self.thinking,
+                        &self.stats,
+                    ),
                 )?;
                 Ok(ModelTurnOutcome::Cancelled(checkpoint))
             }
@@ -416,7 +438,7 @@ where
                     .apply_transport(self.transport_stats.since(transport_before));
                 self.events.emit(
                     AgentEventKind::RunFailed,
-                    terminal_payload("failed", elapsed, &self.config, &self.stats),
+                    terminal_payload("failed", elapsed, &self.config, self.thinking, &self.stats),
                 )?;
                 Err(error)
             }
@@ -1017,7 +1039,7 @@ where
     ) -> Result<WarmupExecution> {
         let success = self
             .client
-            .execute(factory.warmup())
+            .execute(factory.warmup(self.thinking))
             .instrument(span.clone())
             .await
             .map_err(Into::into)?;
@@ -1069,7 +1091,7 @@ where
                 call_index,
                 model: MODEL,
                 reasoning_mode: self.config.reasoning_mode.as_str(),
-                effort: self.config.thinking.as_str(),
+                effort: self.thinking.as_str(),
                 previous_response_id,
             },
         )?;
@@ -1079,12 +1101,13 @@ where
             conversation.shared_history(),
             conversation.delta_start,
             previous_response_id,
+            self.thinking,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
             call_index,
             self.config.reasoning_mode.as_str(),
-            self.config.thinking.as_str(),
+            self.thinking.as_str(),
             previous_response_id.is_some(),
             input_item_count,
             input_bytes,
@@ -1184,6 +1207,7 @@ where
             incremental_start,
             previous_response_id,
             trigger,
+            self.thinking,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = info_span!(
