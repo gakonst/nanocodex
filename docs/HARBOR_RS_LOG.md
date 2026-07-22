@@ -369,3 +369,96 @@ Decision:
 - Treat Terminal-Bench as a release measurement, not the product-design loop.
   Future comparisons start from released product behavior and separate agent
   execution from image, sandbox, setup, verifier, and scheduler time.
+
+### 2026-07-22 — Arize, Harbor, Eve, and Raindrop boundary review
+
+The reviewed upstream heads are
+[`Arize-ai/phoenix@ca2ee69`](https://github.com/Arize-ai/phoenix/tree/ca2ee69073c73c1011c26317a76bf42b438511fe),
+[`harbor-framework/harbor@00c19fe`](https://github.com/harbor-framework/harbor/tree/00c19fe2a9c1b9b7ed07efc270412007ac4cb3da),
+[`vercel/eve@a75496c`](https://github.com/vercel/eve/tree/a75496cf5072e44ecbbce5585fe50957281eecd1),
+and
+[`raindrop-ai/workshop@d46bcef`](https://github.com/raindrop-ai/workshop/tree/d46bcef06cea7d223cf6b169359841cb728de888).
+The Eve and Raindrop changes since the July 20 snapshots do not alter the
+earlier conclusions.
+
+These systems occupy different evaluation layers:
+
+- Harbor owns the benchmark trial: task package, isolated environment, agent
+  installation and execution, verifier, reward, trajectory, repeated attempts,
+  and local or hosted environment provider.
+- Arize Phoenix/AX owns datasets, experiment runs, evaluators, annotations,
+  traces, comparison, and production evaluation. Phoenix's SDK runner can call
+  arbitrary application task functions, while its restart-resumable background
+  runner executes Playground prompt/model jobs. The server runner explicitly
+  stops task dispatch for anything other than an `ExperimentPromptTask`; it is
+  not a container or arbitrary-agent supervisor. See the
+  [background-runner design](https://github.com/Arize-ai/phoenix/blob/ca2ee69073c73c1011c26317a76bf42b438511fe/src/phoenix/server/daemons/experiment_runner.py#L1-L69)
+  and its
+  [task boundary](https://github.com/Arize-ai/phoenix/blob/ca2ee69073c73c1011c26317a76bf42b438511fe/src/phoenix/server/daemons/experiment_runner.py#L1426-L1431).
+- Eve Eval owns application-level tests against a live Eve server. It provides
+  typed intermediate-event assertions, deterministic discovery IDs, a bounded
+  pool, ordered presentation, and reporters, but no trial environment or
+  process-tree supervision.
+- Raindrop Workshop owns local trace inspection and application-provided replay.
+  It helps turn a production failure into a project-native regression test, but
+  its public Workshop is not a benchmark scheduler or canonical evaluator.
+
+Phoenix adds an important persistence reference that was missing from the
+July 20 comparison. Its background runner claims jobs in the database, derives
+missing task and evaluator work from persisted rows, paginates bounded buffers,
+uses global and per-experiment concurrency, separates task and evaluation
+phases, and reconstructs transient queues after restart. This is stronger than
+holding a whole run in memory and is directly relevant to native-runner
+recovery. It does not solve Nanocodex's environment boundary: a cancelled LLM
+call is not proof that a task process tree or container is gone, and a
+persisted experiment output is not a canonical verifier result.
+
+Harbor resume also needs a precise characterization. Both the locally pinned
+`harbor==0.18.1.dev202607150126` and the reviewed upstream support
+trial-granularity job resume. Harbor preserves readable completed
+`result.json` files, removes a trial directory without a result, and reruns the
+missing trial. Its retry loop removes the failed trial directory before the
+next attempt. See
+[`Job._maybe_init_existing_job`](https://github.com/harbor-framework/harbor/blob/00c19fe2a9c1b9b7ed07efc270412007ac4cb3da/src/harbor/job.py#L230-L312)
+and
+[`TrialQueue._execute_trial_with_retries`](https://github.com/harbor-framework/harbor/blob/00c19fe2a9c1b9b7ed07efc270412007ac4cb3da/src/harbor/trial/queue.py#L194-L232).
+The gap is therefore not absence of resume. The gap is crash-consistent,
+attempt-preserving recovery: direct result writes can be interrupted, a crash
+after a side effect but before publication can repeat work, and retry history
+is overwritten instead of receiving explicit lineage.
+
+Decisions:
+
+- Keep Harbor as the canonical Terminal-Bench execution and compatibility
+  boundary until a native runner passes the planned parity and fault-injection
+  gates. Do not replace canonical verifiers with LLM judges or experiment
+  annotations.
+- Keep Arize/Phoenix optional and downstream. It may consume Nanocodex OTLP
+  traces or derived results for analysis, dataset curation, and evaluator
+  experiments, but it is not the benchmark source of truth and must not become
+  a runtime dependency.
+- Borrow Phoenix's data-derived recovery: persisted completion determines
+  missing work; transient queues, UI state, and sockets do not. Evaluate stale
+  claims or leases, bounded paginated buffers, task/evaluator phase separation,
+  and global versus per-job concurrency in the deterministic runner fixture.
+- Keep the earlier Eve decisions: deterministic IDs, a small work-conserving
+  pool, reporter work outside execution permits, and presentation order
+  independent of completion order. Do not wait until run completion to publish
+  native results.
+- Keep the earlier Raindrop decisions: persist before notification, expose a
+  monotonic observation cursor, and make replay reconstruct a retained failure.
+  Do not use polling, timestamp/name fallback, or in-memory correlation as a
+  completion primitive.
+- Keep the native runner outside `nanocodex` and its lower crates. It is a
+  narrow Terminal-Bench consumer, not an SDK scheduler, generic eval platform,
+  hosted observability service, or replacement for application-native tests.
+
+The first fixture is unchanged but now has an explicit comparison target. For
+each durable transition, kill and restart the current Harbor path and the
+minimal native prototype. Cover at least: agent exit before stream publication,
+stream publication before parsing, agent completion before verifier start,
+verifier exit before result commit, result commit before export, retry
+scheduling, and cancellation during every phase. The native result must retain
+every attempt, commit at most one verifier result per attempt, reproduce raw
+bytes and final accounting, clean all owned descendants, and export the same
+Harbor/ATIF semantics without using export success as trial completion.

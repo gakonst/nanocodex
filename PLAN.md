@@ -409,6 +409,16 @@ Harbor results and ATIF are the eval record. Do not copy another append-only
 experiment diary into this plan; use Git history and retained job paths for
 past investigations.
 
+Evaluation-runner research is tracked separately in
+[`docs/HARBOR_RS_LOG.md`](docs/HARBOR_RS_LOG.md). Harbor remains the canonical
+task, environment, verifier, ATIF, and leaderboard boundary. Arize
+Phoenix/AX, Eve Eval, and Raindrop Workshop are complementary experiment,
+application-test, and trace/replay systems rather than replacements for that
+boundary. A possible native runner remains outside the SDK and may advance
+only after the deterministic fault-injection fixture proves crash-safe attempt
+lineage, atomic artifact publication, descendant cleanup, and Harbor-compatible
+accounting. Until then, use the pinned Harbor path for eval claims.
+
 ## Codex parity checkpoint
 
 The local upstream review is complete through
