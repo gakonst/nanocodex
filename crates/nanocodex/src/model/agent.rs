@@ -438,7 +438,7 @@ where
             let user_content = prepare_user_input(&task.instruction).await;
             let history = task_input(
                 user_content,
-                &workspace,
+                tools.working_directory(),
                 tools.default_shell_name(),
                 project_instructions.as_deref(),
             );
@@ -599,6 +599,7 @@ where
                         &mut session.conversation,
                         &session.factory,
                         &session.workspace,
+                        session.tools.working_directory(),
                         session.tools.default_shell_name(),
                     )
                     .await?;
@@ -636,6 +637,7 @@ where
                 &mut session.conversation,
                 &session.factory,
                 &session.workspace,
+                session.tools.working_directory(),
                 session.tools.default_shell_name(),
             )
             .await?;
@@ -793,7 +795,8 @@ where
         after_model_call_index: u32,
         conversation: &mut ConversationState,
         factory: &ResponsesAttemptFactory,
-        workspace: &str,
+        project_workspace: &str,
+        working_directory: &str,
         shell: &str,
     ) -> Result<()> {
         let Some(auto_compact_token_limit) = compaction::auto_compact_token_limit(MODEL) else {
@@ -820,8 +823,9 @@ where
                 factory,
             )
             .await?;
-        let project_instructions = load_project_instructions(Path::new(workspace))?;
-        let canonical_context = task_context(workspace, shell, project_instructions.as_deref());
+        let project_instructions = load_project_instructions(Path::new(project_workspace))?;
+        let canonical_context =
+            task_context(working_directory, shell, project_instructions.as_deref());
         conversation.install_compaction(item, canonical_context, factory.profile().prefix());
         Ok(())
     }
