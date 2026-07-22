@@ -17,6 +17,7 @@ use mpp::{
     client::{
         MultiProvider, PaymentProvider, TempoProvider, TempoSessionProvider,
         tempo::{
+            AutoswapConfig,
             session::store::{
                 SqliteChannelStore, SqliteChannelStoreOptions, default_channel_database_path,
             },
@@ -44,6 +45,8 @@ use tokio_tungstenite::{
 
 const DEFAULT_MPP_WEBSOCKET_URL: &str = "wss://openai.mpp.tempo.xyz/v1/responses";
 const DEFAULT_TEMPO_RPC_URL: &str = "https://rpc.mainnet.tempo.xyz";
+const DEFAULT_TEMPO_PAY_WITH: &str = "0x20c0000000000000000000000000000000000000";
+const DEFAULT_TEMPO_SWAP_SLIPPAGE_BPS: u16 = 100;
 // Five $5 refill quanta while retaining a finite client-side authorization cap.
 const DEFAULT_MAX_DEPOSIT: u128 = 25_000_000;
 const DEFAULT_MAX_EGRESS_CHARGE: u128 = 100_000;
@@ -108,6 +111,25 @@ pub(crate) struct MppArgs {
     )]
     rpc_url: String,
 
+    /// Stablecoin used to acquire the MPP service's requested currency.
+    #[arg(
+        long = "provider.tempo.pay-with",
+        global = true,
+        env = "NANOCODEX_PROVIDER_TEMPO_PAY_WITH",
+        default_value = DEFAULT_TEMPO_PAY_WITH,
+        value_parser = NonEmptyStringValueParser::new()
+    )]
+    pay_with: String,
+
+    /// Maximum slippage for automatic stablecoin swaps, in basis points.
+    #[arg(
+        long = "provider.tempo.swap-slippage-bps",
+        global = true,
+        env = "NANOCODEX_PROVIDER_TEMPO_SWAP_SLIPPAGE_BPS",
+        default_value_t = DEFAULT_TEMPO_SWAP_SLIPPAGE_BPS
+    )]
+    swap_slippage_bps: u16,
+
     /// Maximum total native session deposit in token atomic units.
     #[arg(
         long = "provider.tempo.max-deposit",
@@ -165,25 +187,33 @@ impl MppArgs {
         })
         .map_err(|error| eyre!(error))
         .wrap_err("failed to open the Tempo session channel store")?;
+        let autoswap = AutoswapConfig::new(
+            self.pay_with
+                .parse()
+                .wrap_err("invalid provider.tempo.pay-with token address")?,
+            self.swap_slippage_bps,
+        );
         let charge = TempoProvider::new(wallet.signer.clone(), &self.rpc_url)
             .wrap_err("failed to configure the native Tempo charge provider")?
             .with_signing_mode(TempoSigningMode::Keychain {
                 wallet: wallet.account,
-                key_authorization: None,
+                key_authorization: wallet.key_authorization.clone(),
                 version: KeychainVersion::V2,
             })
-            .with_expected_chain_id(wallet.chain_id);
+            .with_expected_chain_id(wallet.chain_id)
+            .with_autoswap(autoswap.clone());
         let session = TempoSessionProvider::new(wallet.signer, &self.rpc_url)
             .wrap_err("failed to configure the native Tempo session provider")?
             .with_signing_mode(TempoSigningMode::Keychain {
                 wallet: wallet.account,
-                key_authorization: None,
+                key_authorization: wallet.key_authorization,
                 version: KeychainVersion::V2,
             })
             .with_authorized_signer(wallet.access_key)
             .with_channel_store(Arc::new(store))
             .with_default_deposit(self.max_deposit)
-            .with_max_deposit(self.max_deposit);
+            .with_max_deposit(self.max_deposit)
+            .with_autoswap(autoswap);
         let mut management_headers = reqwest13::header::HeaderMap::new();
         if let Some(api_key) = &self.mpp_api_key {
             management_headers.insert(
@@ -710,6 +740,8 @@ mod tests {
             wallet_store: None,
             channel_store: None,
             rpc_url: DEFAULT_TEMPO_RPC_URL.to_owned(),
+            pay_with: DEFAULT_TEMPO_PAY_WITH.to_owned(),
+            swap_slippage_bps: DEFAULT_TEMPO_SWAP_SLIPPAGE_BPS,
             max_deposit: DEFAULT_MAX_DEPOSIT,
             egress_max_charge: DEFAULT_MAX_EGRESS_CHARGE,
             mpp_api_key: None,
