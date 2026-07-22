@@ -82,6 +82,7 @@ unicode-segmentation = "1.13"
 unicode-width = "0.2"
 url = "2.5.7"
 uuid = { version = "1", features = ["v7"] }
+vergen = { version = "8", default-features = false }
 wasm-bindgen = "0.2.105"
 wasm-bindgen-futures = "0.4.55"
 web-time = "1.1.0"

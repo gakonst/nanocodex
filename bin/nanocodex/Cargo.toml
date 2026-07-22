@@ -9,6 +9,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Daily-driver TUI and headless JSONL adapter for Nanocodex"
+build = "build.rs"
 
 [dependencies]
 arboard.workspace = true
@@ -36,6 +37,10 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "proce
 tracing.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+
+[build-dependencies]
+chrono.workspace = true
+vergen = { workspace = true, features = ["build", "git", "gitcl"] }
 
 [dev-dependencies]
 criterion.workspace = true

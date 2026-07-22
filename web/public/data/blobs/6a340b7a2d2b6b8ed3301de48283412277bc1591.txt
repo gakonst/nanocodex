@@ -28,7 +28,8 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
   const { Nanocodex } = require("../pkg-node/nanocodex.js");
   const agent = new Nanocodex(JSON.stringify({
     api_key: "test-key",
-    thinking: "low",
+    thinking: "none",
+    reasoning_mode: "pro",
     websocket_url: server.url,
     session_id: "wasm-session",
   }));
@@ -41,6 +42,8 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
 
     const warmup = await reader.next();
     assert.equal(warmup.generate, false);
+    assert.equal(warmup.reasoning.mode, "pro");
+    assert.equal(warmup.reasoning.effort, "none");
     assert.equal(warmup.input[0].tools[0].name, "exec");
     assert.match(warmup.input[0].tools[0].description, /tools\.multiply/);
     sendWarmup(socket, "resp-warmup");

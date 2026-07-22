@@ -1,0 +1,147 @@
+name: Nightly Release
+
+permissions: {}
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'gakonst/nanocodex'
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: nanocodex-x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            artifact: nanocodex-aarch64-unknown-linux-gnu
+            apt: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: nanocodex-aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: nanocodex-x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: nanocodex-x86_64-pc-windows-msvc.exe
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - name: Install cross-linker
+        if: matrix.apt != ''
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ${{ matrix.apt }}
+      - name: Build nightly binary
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+          TAG_NAME: nightly
+          VERGEN_GIT_SHA: ${{ github.sha }}
+        run: cargo build --locked --profile maxperf --package nanocodex-bin --target ${{ matrix.target }}
+      - name: Stage Unix artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/maxperf/nanocodex" "dist/${{ matrix.artifact }}"
+      - name: Stage Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist
+          Copy-Item "target/${{ matrix.target }}/maxperf/nanocodex.exe" "dist/${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: github.repository == 'gakonst/nanocodex'
+    name: publish immutable and rolling nightlies
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum nanocodex-* > SHA256SUMS
+      - name: Publish immutable and rolling releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          immutable_tag="nightly-${GITHUB_SHA}"
+          short_sha="${GITHUB_SHA:0:10}"
+          release_name="Nanocodex Nightly ($(date -u +%Y-%m-%d), ${short_sha})"
+          notes_file=$(mktemp)
+          {
+            printf "Automated nightly build from [\`%s\`](https://github.com/%s/commit/%s).\n\n" "$short_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+            printf "Install it with \`nanocodex update --nightly\`.\n"
+          } > "$notes_file"
+
+          if gh release view "$immutable_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
+              --title "$release_name" --notes-file "$notes_file" --prerelease
+          else
+            gh release create "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "$release_name" \
+              --notes-file "$notes_file" --prerelease
+          fi
+          gh release upload "$immutable_tag" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref='refs/tags/nightly' -f sha="$GITHUB_SHA" >/dev/null
+          fi
+
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit nightly --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "Nanocodex Nightly" \
+              --notes-file "$notes_file" --prerelease
+          else
+            gh release create nightly --repo "$GITHUB_REPOSITORY" \
+              --title "Nanocodex Nightly" --notes-file "$notes_file" --prerelease
+          fi
+          gh release upload nightly dist/* --repo "$GITHUB_REPOSITORY" --clobber

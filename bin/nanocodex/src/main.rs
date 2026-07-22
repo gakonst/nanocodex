@@ -6,6 +6,7 @@ mod run;
 mod subagents;
 mod tui;
 mod update;
+mod version;
 
 use clap::{Args, Parser, Subcommand, builder::NonEmptyStringValueParser};
 use eyre::Result;
@@ -15,7 +16,8 @@ use observability::ObservabilityArgs;
 
 #[derive(Parser)]
 #[command(
-    version,
+    version = version::SHORT_VERSION,
+    long_version = version::LONG_VERSION,
     about = "An interactive coding agent and headless JSONL runner",
     args_conflicts_with_subcommands = true,
     subcommand_negates_reqs = true
@@ -41,7 +43,7 @@ enum Command {
     Auth(auth::Auth),
     /// Run one prompt and stream JSONL events to stdout.
     Run(Box<RunCommand>),
-    /// Update this executable to the latest GitHub release.
+    /// Update this executable from a GitHub release channel.
     Update(update::Update),
 }
 

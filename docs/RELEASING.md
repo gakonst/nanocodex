@@ -4,6 +4,18 @@ Nanocodex releases all seven public Rust crates and the CLI in lockstep. The
 process combines Alloy's conventional-commit changelog with Foundry's
 label-grouped, contributor-attributed GitHub release notes.
 
+## Nightly releases
+
+The `Nightly Release` workflow runs daily and may also be dispatched manually.
+Each successful run publishes an immutable `nightly-<full SHA>` prerelease and
+refreshes the rolling `nightly` prerelease with the same binaries and
+`SHA256SUMS`. The rolling tag is what `nanocodex update --nightly` follows.
+
+The separate `Docker` workflow publishes multi-architecture GHCR images. Tag
+pushes publish the version plus `latest`; scheduled or manually selected
+nightly runs publish `nightly` plus `nightly-<full SHA>`; commit dispatches
+publish the full SHA only.
+
 ## Changelogs
 
 There are two complementary kinds of release record:

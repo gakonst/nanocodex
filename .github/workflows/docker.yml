@@ -1,0 +1,135 @@
+name: Docker
+
+permissions: {}
+
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Image channel to publish
+        required: true
+        type: choice
+        options:
+          - nightly
+          - commit
+        default: nightly
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+concurrency:
+  group: docker-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'gakonst/nanocodex'
+    name: build ${{ matrix.platform }} image
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            architecture: arm64
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Extract OCI labels
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      - name: Select image tags and build version
+        id: params
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            tag_name="$GITHUB_REF_NAME"
+          elif [[ "$GITHUB_EVENT_NAME" == schedule || "${{ inputs.channel }}" == nightly ]]; then
+            tag_name=nightly
+          else
+            tag_name=dev
+          fi
+          printf 'tag_name=%s\n' "$tag_name" >> "$GITHUB_OUTPUT"
+      - name: Build and push architecture image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: harbor_adapter/nanocodex.Dockerfile
+          target: runtime
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:build-${{ github.sha }}-${{ matrix.architecture }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CARGO_PROFILE=maxperf
+            TAG_NAME=${{ steps.params.outputs.tag_name }}
+            VERGEN_GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=docker-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.architecture }}
+          provenance: false
+
+  manifest:
+    if: github.repository == 'gakonst/nanocodex'
+    name: publish and verify multi-architecture manifest
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish image tags
+        id: publish
+        shell: bash
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}"
+          sources=(
+            "${image}:build-${GITHUB_SHA}-amd64"
+            "${image}:build-${GITHUB_SHA}-arm64"
+          )
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            tags=("$GITHUB_REF_NAME" latest)
+          elif [[ "$GITHUB_EVENT_NAME" == schedule || "${{ inputs.channel }}" == nightly ]]; then
+            tags=(nightly "nightly-${GITHUB_SHA}")
+          else
+            tags=("$GITHUB_SHA")
+          fi
+          for tag in "${tags[@]}"; do
+            docker buildx imagetools create --tag "${image}:${tag}" "${sources[@]}"
+          done
+          printf 'verify_tag=%s\n' "${tags[0]}" >> "$GITHUB_OUTPUT"
+      - name: Verify the published manifest
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          TAG_NAME: ${{ steps.publish.outputs.verify_tag }}
+        shell: bash
+        run: docker buildx imagetools inspect "${IMAGE}:${TAG_NAME}"

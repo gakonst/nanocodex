@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use nanocodex::{
-    AgentEvents as RustAgentEvents, Nanocodex as RustNanocodex, OpenAiAuth, Thinking,
-    load_chatgpt_auth,
+    AgentEvents as RustAgentEvents, Nanocodex as RustNanocodex, OpenAiAuth, ReasoningMode,
+    Thinking, load_chatgpt_auth,
 };
 use pyo3::{
     Bound, PyResult, Python,
@@ -21,11 +21,12 @@ struct Nanocodex {
 #[pymethods]
 impl Nanocodex {
     #[new]
-    #[pyo3(signature = (api_key = None, *, auth_file = None, thinking = "medium", workspace = None, instructions = None))]
+    #[pyo3(signature = (api_key = None, *, auth_file = None, thinking = "medium", reasoning_mode = "standard", workspace = None, instructions = None))]
     fn new(
         api_key: Option<String>,
         auth_file: Option<String>,
         thinking: &str,
+        reasoning_mode: &str,
         workspace: Option<String>,
         instructions: Option<String>,
     ) -> PyResult<(Self, AgentEvents)> {
@@ -42,10 +43,13 @@ impl Nanocodex {
             }
         };
         let thinking = parse_thinking(thinking)?;
+        let reasoning_mode = parse_reasoning_mode(reasoning_mode)?;
         let runtime = build_runtime()?;
         let (agent, events) = runtime
             .block_on(async move {
-                let mut builder = RustNanocodex::builder(auth).thinking(thinking);
+                let mut builder = RustNanocodex::builder(auth)
+                    .reasoning_mode(reasoning_mode)
+                    .thinking(thinking);
                 if let Some(workspace) = workspace {
                     builder = builder.workspace(workspace);
                 }
@@ -168,6 +172,10 @@ fn build_runtime() -> PyResult<Arc<Runtime>> {
 }
 
 fn parse_thinking(value: &str) -> PyResult<Thinking> {
+    value.parse().map_err(PyValueError::new_err)
+}
+
+fn parse_reasoning_mode(value: &str) -> PyResult<ReasoningMode> {
     value.parse().map_err(PyValueError::new_err)
 }
 

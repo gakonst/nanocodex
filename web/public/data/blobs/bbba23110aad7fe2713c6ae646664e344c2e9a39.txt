@@ -24,6 +24,17 @@ Pass an API key positionally, or use native subscription credentials created by
 agent, events = Nanocodex(auth_file="/path/to/.codex/auth.json")
 ```
 
+GPT-5.6 Pro is a reasoning mode, not a different model slug. Select it
+independently from any supported effort level:
+
+```python
+agent, events = Nanocodex(
+    api_key,
+    reasoning_mode="pro",
+    thinking="xhigh",  # none, low, medium, high, xhigh, or max
+)
+```
+
 Runnable consumers live together at the repository boundary under
 [`examples/python`](../../examples/python): `follow_on.py` demonstrates retained
 conversation state and `events.py` consumes the ordered event receiver.

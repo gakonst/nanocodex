@@ -33,6 +33,17 @@ Install the daily-driver CLI on macOS or Linux:
 curl -fsSL https://nanocodex.paradigm.xyz | bash
 ```
 
+The installer tracks stable releases. Switch an installed CLI to the rolling
+nightly channel with:
+
+```sh
+nanocodex update --nightly
+```
+
+Multi-architecture Linux images are published to GHCR as
+`ghcr.io/gakonst/nanocodex:latest` and `ghcr.io/gakonst/nanocodex:nightly`.
+Immutable version, commit, and `nightly-<commit>` tags are also available.
+
 Add the library to a Rust project:
 
 ```sh
