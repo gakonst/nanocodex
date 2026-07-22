@@ -5,18 +5,99 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nanocodex::{AgentEvent, AgentEventKind};
+use nanocodex::{AgentEvent, AgentEventKind, Prompt, UserInput};
+use ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect},
+};
 use serde::Deserialize;
 use serde_json::Value;
 
 use super::composer::ComposerLayout;
+use super::selection::ScreenSelection;
 use super::transcript::{ToolStatus, Transcript, TranscriptItem};
 
-const MAX_REASONING_STATUS_CHARS: usize = 160;
 const MAX_TOOL_ARGUMENT_CHARS: usize = 180;
 const CANCEL_CONFIRMATION_WINDOW: Duration = Duration::from_secs(1);
 const SMOOTH_SCROLL_BACKLOG_ROWS: usize = 8;
 const MAX_SMOOTH_SCROLL_CATCH_UP_ROWS: usize = 32;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AttachedImage {
+    placeholder: String,
+    path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SubmittedPrompt {
+    display: String,
+    local_images: Vec<PathBuf>,
+}
+
+impl SubmittedPrompt {
+    fn new(display: String, local_images: Vec<PathBuf>) -> Self {
+        Self {
+            display,
+            local_images,
+        }
+    }
+
+    pub(super) fn text(text: String) -> Self {
+        Self::new(text, Vec::new())
+    }
+
+    pub(super) fn display(&self) -> &str {
+        &self.display
+    }
+
+    pub(super) fn set_display(&mut self, display: String) {
+        self.display = display;
+    }
+
+    pub(super) fn prepend_text(&mut self, prefix: &str) {
+        self.display.insert_str(0, prefix);
+    }
+
+    pub(super) fn into_prompt(self) -> Prompt {
+        if self.local_images.is_empty() {
+            return Prompt::new(self.display);
+        }
+
+        let mut content = self
+            .local_images
+            .into_iter()
+            .map(|path| UserInput::LocalImage { path, detail: None })
+            .collect::<Vec<_>>();
+        if !self.display.is_empty() {
+            content.push(UserInput::Text { text: self.display });
+        }
+        Prompt::content(content)
+    }
+}
+
+impl From<String> for SubmittedPrompt {
+    fn from(value: String) -> Self {
+        Self::text(value)
+    }
+}
+
+impl From<&str> for SubmittedPrompt {
+    fn from(value: &str) -> Self {
+        Self::text(value.to_owned())
+    }
+}
+
+impl PartialEq<str> for SubmittedPrompt {
+    fn eq(&self, other: &str) -> bool {
+        self.display == other
+    }
+}
+
+impl PartialEq<&str> for SubmittedPrompt {
+    fn eq(&self, other: &&str) -> bool {
+        self.display == *other
+    }
+}
 
 struct PendingScrollAnchor {
     width: u16,
@@ -68,10 +149,10 @@ pub(super) struct Conversation {
     viewport_height: Option<u16>,
     pending_scroll_anchor: Option<PendingScrollAnchor>,
     streamed_this_turn: bool,
-    reasoning: String,
     pending_run_error: Option<String>,
     pub(super) queued_prompts: VecDeque<String>,
     queued_prompt_ids: VecDeque<u64>,
+    displayed_queued_prompt: Option<u64>,
     pub(super) pending_steers: VecDeque<PendingSteer>,
     run_generation: u64,
     applied_steer_runs_waiting_for_ack: VecDeque<u64>,
@@ -92,10 +173,10 @@ impl Conversation {
             viewport_height: None,
             pending_scroll_anchor: None,
             streamed_this_turn: false,
-            reasoning: String::new(),
             pending_run_error: None,
             queued_prompts: VecDeque::new(),
             queued_prompt_ids: VecDeque::new(),
+            displayed_queued_prompt: None,
             pending_steers: VecDeque::new(),
             run_generation: 0,
             applied_steer_runs_waiting_for_ack: VecDeque::new(),
@@ -109,6 +190,12 @@ impl Conversation {
     }
 
     fn queue_prompt(&mut self, id: u64, prompt: String) {
+        let display_immediately = !self.running && self.queued_prompts.is_empty();
+        if display_immediately {
+            self.note_new_entry();
+            self.transcript.push_editable_user(prompt.clone(), id);
+            self.displayed_queued_prompt = Some(id);
+        }
         self.queued_prompts.push_back(prompt);
         self.queued_prompt_ids.push_back(id);
         self.pending_turns += 1;
@@ -176,16 +263,16 @@ impl Conversation {
                 if let (Some(prompt), Some(prompt_id)) = (
                     self.queued_prompts.pop_front(),
                     self.queued_prompt_ids.pop_front(),
-                ) {
+                ) && self.displayed_queued_prompt.take() != Some(prompt_id)
+                {
                     self.note_new_entry();
                     self.transcript.push_editable_user(prompt, prompt_id);
                 }
                 self.running = true;
                 self.run_generation = self.run_generation.saturating_add(1);
                 self.streamed_this_turn = false;
-                self.reasoning.clear();
                 self.pending_run_error = None;
-                "Thinking".clone_into(&mut self.status);
+                "Thinking...".clone_into(&mut self.status);
             }
             AgentEventKind::RunSteered => {
                 self.applied_steer_runs_waiting_for_ack
@@ -207,8 +294,8 @@ impl Conversation {
             }
             AgentEventKind::ReasoningSummaryDelta => {
                 if let Ok(payload) = event.decode_payload::<TextPayload>() {
-                    self.reasoning.push_str(&payload.text);
-                    self.status = reasoning_tail(&self.reasoning);
+                    self.push_reasoning_delta(&payload.text);
+                    "Thinking...".clone_into(&mut self.status);
                 }
             }
             AgentEventKind::ToolCall => {
@@ -337,7 +424,29 @@ impl Conversation {
         }
     }
 
+    fn push_reasoning_delta(&mut self, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
+        if self.transcript.tail_is_reasoning() {
+            self.note_tail_will_change();
+            let _ = self.transcript.append_reasoning_delta(delta);
+        } else {
+            self.push_output(TranscriptItem::Reasoning(delta.to_owned()));
+        }
+    }
+
+    #[allow(dead_code)]
     pub(super) fn settle_viewport(&mut self, width: u16, height: u16) {
+        self.settle_viewport_with_selection(width, height, false);
+    }
+
+    pub(super) fn settle_viewport_with_selection(
+        &mut self,
+        width: u16,
+        height: u16,
+        preserve_view: bool,
+    ) {
         let viewport_changed =
             self.viewport_width != Some(width) || self.viewport_height != Some(height);
         if let Some(pending) = self.pending_scroll_anchor.take() {
@@ -350,7 +459,7 @@ impl Conversation {
             let new_entry_rows = pending
                 .new_entries_start
                 .map_or(0, |first| self.transcript.height_from(first, pending.width));
-            if self.scroll_from_bottom > 0 {
+            if self.scroll_from_bottom > 0 || preserve_view {
                 self.scroll_from_bottom = self
                     .scroll_from_bottom
                     .saturating_add(changed_tail_rows)
@@ -369,7 +478,7 @@ impl Conversation {
         }
         self.viewport_width = Some(width);
         self.viewport_height = Some(height);
-        if viewport_changed {
+        if viewport_changed || preserve_view {
             self.clamp_scroll();
         }
     }
@@ -551,6 +660,7 @@ struct MainBranchPane {
 
 struct ComposerDraft {
     input: String,
+    local_images: Vec<AttachedImage>,
     cursor: usize,
     scroll: usize,
     preferred_column: Option<usize>,
@@ -678,6 +788,7 @@ pub(super) struct App {
     pub(super) btw: Option<BtwPane>,
     pub(super) focus: PaneId,
     pub(super) input: String,
+    local_images: Vec<AttachedImage>,
     pub(super) cursor: usize,
     pub(super) frame: usize,
     composer_width: u16,
@@ -687,6 +798,7 @@ pub(super) struct App {
     next_main_branch_id: u64,
     next_input_id: u64,
     cancel_confirmation: Option<CancelConfirmation>,
+    screen_selection: ScreenSelection,
 }
 
 #[derive(Clone, Copy)]
@@ -711,6 +823,7 @@ impl App {
             btw: None,
             focus: PaneId::Main,
             input: String::new(),
+            local_images: Vec::new(),
             cursor: 0,
             frame: 0,
             composer_width: 80,
@@ -720,6 +833,7 @@ impl App {
             next_main_branch_id: 1,
             next_input_id: 1,
             cancel_confirmation: None,
+            screen_selection: ScreenSelection::default(),
         }
     }
 
@@ -728,6 +842,7 @@ impl App {
         self.input.insert(self.cursor, character);
         self.cursor += character.len_utf8();
         self.preferred_column = None;
+        self.synchronize_local_images();
     }
 
     pub(super) fn insert_str(&mut self, text: &str) {
@@ -735,6 +850,26 @@ impl App {
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.preferred_column = None;
+        self.synchronize_local_images();
+    }
+
+    pub(super) fn handle_paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if text.len() > 1
+            && let Some(path) = normalize_pasted_path(&text)
+        {
+            let path = if path.is_absolute() {
+                path
+            } else {
+                self.cwd.join(path)
+            };
+            if image::image_dimensions(&path).is_ok() {
+                self.attach_local_image(path);
+                self.insert_char(' ');
+                return;
+            }
+        }
+        self.insert_str(&text);
     }
 
     pub(super) fn backspace(&mut self) {
@@ -749,6 +884,7 @@ impl App {
         self.input.drain(previous..self.cursor);
         self.cursor = previous;
         self.preferred_column = None;
+        self.synchronize_local_images();
     }
 
     pub(super) fn delete(&mut self) {
@@ -764,6 +900,7 @@ impl App {
             });
         self.input.drain(self.cursor..next);
         self.preferred_column = None;
+        self.synchronize_local_images();
     }
 
     pub(super) fn move_left(&mut self) {
@@ -899,6 +1036,7 @@ impl App {
             self.input.drain(start..self.cursor);
             self.cursor = start;
             self.preferred_column = None;
+            self.synchronize_local_images();
         }
     }
 
@@ -916,6 +1054,7 @@ impl App {
             self.input.drain(start..self.cursor);
             self.cursor = start;
             self.preferred_column = None;
+            self.synchronize_local_images();
         }
     }
 
@@ -932,6 +1071,7 @@ impl App {
             self.prepare_composer_edit();
             self.input.drain(self.cursor..end);
             self.preferred_column = None;
+            self.synchronize_local_images();
         }
     }
 
@@ -965,6 +1105,7 @@ impl App {
         self.input = input;
         self.cursor = self.input.len();
         self.preferred_column = None;
+        self.synchronize_local_images();
     }
 
     pub(super) fn editor_failed(&mut self, error: impl std::fmt::Display) {
@@ -975,6 +1116,7 @@ impl App {
 
     pub(super) fn clear_input(&mut self) {
         self.input.clear();
+        self.local_images.clear();
         self.cursor = 0;
         self.preferred_column = None;
     }
@@ -1009,13 +1151,18 @@ impl App {
             .is_some_and(|confirmation| confirmation.target == self.focus)
     }
 
-    pub(super) fn take_submission(&mut self) -> Option<String> {
-        if self.input.chars().all(char::is_whitespace) {
+    pub(super) fn take_submission(&mut self) -> Option<SubmittedPrompt> {
+        self.synchronize_local_images();
+        if self.input.chars().all(char::is_whitespace) && self.local_images.is_empty() {
             return None;
         }
         self.cursor = 0;
-        let prompt = std::mem::take(&mut self.input);
-        Some(prompt)
+        let display = std::mem::take(&mut self.input);
+        let local_images = std::mem::take(&mut self.local_images)
+            .into_iter()
+            .map(|image| image.path)
+            .collect();
+        Some(SubmittedPrompt::new(display, local_images))
     }
 
     pub(super) fn transcript_selection_active(&self) -> bool {
@@ -1056,6 +1203,7 @@ impl App {
         self.restore_composer_draft(ComposerDraft {
             cursor: prompt.len(),
             input: prompt,
+            local_images: Vec::new(),
             scroll: 0,
             preferred_column: None,
         });
@@ -1141,6 +1289,7 @@ impl App {
         self.restore_composer_draft(ComposerDraft {
             cursor: 0,
             input: String::new(),
+            local_images: Vec::new(),
             scroll: 0,
             preferred_column: None,
         });
@@ -1161,6 +1310,7 @@ impl App {
             self.restore_composer_draft(ComposerDraft {
                 cursor: pending.prompt.len(),
                 input: pending.prompt,
+                local_images: Vec::new(),
                 scroll: 0,
                 preferred_column: None,
             });
@@ -1332,6 +1482,7 @@ impl App {
     fn capture_composer_draft(&self) -> ComposerDraft {
         ComposerDraft {
             input: self.input.clone(),
+            local_images: self.local_images.clone(),
             cursor: self.cursor,
             scroll: self.composer_scroll,
             preferred_column: self.preferred_column,
@@ -1340,6 +1491,7 @@ impl App {
 
     fn restore_composer_draft(&mut self, draft: ComposerDraft) {
         self.input = draft.input;
+        self.local_images = draft.local_images;
         self.cursor = draft.cursor.min(self.input.len());
         self.composer_scroll = draft.scroll;
         self.preferred_column = draft.preferred_column;
@@ -1461,6 +1613,7 @@ impl App {
             conversation.pending_turns = 0;
             conversation.queued_prompts.clear();
             conversation.queued_prompt_ids.clear();
+            conversation.displayed_queued_prompt = None;
             conversation.pending_steers.clear();
             conversation.applied_steer_runs_waiting_for_ack.clear();
             conversation.running = false;
@@ -1643,6 +1796,41 @@ impl App {
         self.expire_cancel_confirmation(Instant::now());
     }
 
+    pub(super) fn begin_mouse_selection(&mut self, position: Position) -> bool {
+        let changed = self.screen_selection.begin(position);
+        if self.screen_selection.is_active() {
+            self.main.scroll_up(0);
+            if let Some(btw) = &mut self.btw {
+                btw.conversation.scroll_up(0);
+            }
+        }
+        changed
+    }
+
+    pub(super) fn drag_mouse_selection(&mut self, position: Position) -> bool {
+        self.screen_selection.drag(position)
+    }
+
+    pub(super) fn finish_mouse_selection(&mut self, position: Position) -> bool {
+        self.screen_selection.finish(position)
+    }
+
+    pub(super) fn clear_mouse_selection(&mut self) -> bool {
+        self.screen_selection.clear()
+    }
+
+    pub(super) fn mouse_selection_intersects(&self, area: Rect) -> bool {
+        self.screen_selection.intersects(area)
+    }
+
+    pub(super) fn render_mouse_selection(&mut self, buffer: &mut Buffer, areas: &[Rect]) {
+        self.screen_selection.render(buffer, areas);
+    }
+
+    pub(super) fn take_pending_copy(&mut self) -> Option<String> {
+        self.screen_selection.take_pending_copy()
+    }
+
     pub(super) fn advance_smooth_scroll(&mut self) {
         self.main.advance_smooth_scroll();
         if let Some(btw) = &mut self.btw {
@@ -1704,6 +1892,21 @@ impl App {
         }
     }
 
+    pub(super) fn attach_local_image(&mut self, path: PathBuf) {
+        self.prepare_composer_edit();
+        self.synchronize_local_images();
+        let placeholder = format!("[Image #{}]", self.local_images.len() + 1);
+        self.input.insert_str(self.cursor, &placeholder);
+        self.cursor += placeholder.len();
+        self.local_images.push(AttachedImage { placeholder, path });
+        self.preferred_column = None;
+    }
+
+    fn synchronize_local_images(&mut self) {
+        self.local_images
+            .retain(|image| self.input.contains(&image.placeholder));
+    }
+
     fn expire_cancel_confirmation(&mut self, now: Instant) {
         if self
             .cancel_confirmation
@@ -1712,6 +1915,18 @@ impl App {
             self.cancel_confirmation = None;
         }
     }
+}
+
+fn normalize_pasted_path(pasted: &str) -> Option<PathBuf> {
+    let mut paths = shlex::split(pasted.trim())?;
+    if paths.len() != 1 {
+        return None;
+    }
+    let path = paths.pop()?;
+    if path.starts_with("file://") {
+        return reqwest::Url::parse(&path).ok()?.to_file_path().ok();
+    }
+    Some(PathBuf::from(path))
 }
 
 #[derive(Deserialize)]
@@ -1755,20 +1970,6 @@ fn compact_arguments(arguments: &Value) -> String {
     output
 }
 
-fn reasoning_tail(reasoning: &str) -> String {
-    let compact = reasoning.split_whitespace().collect::<Vec<_>>().join(" ");
-    let count = compact.chars().count();
-    if count <= MAX_REASONING_STATUS_CHARS {
-        return compact;
-    }
-    let mut tail: String = compact
-        .chars()
-        .skip(count - MAX_REASONING_STATUS_CHARS)
-        .collect();
-    tail.insert(0, '…');
-    tail
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1776,7 +1977,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use nanocodex::{AgentEvent, AgentEventKind};
+    use nanocodex::{AgentEvent, AgentEventKind, PromptInput, UserInput};
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     use serde_json::{Value, json};
 
@@ -1792,6 +1993,64 @@ mod tests {
             "payload": payload,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn pasted_image_path_becomes_a_typed_image_prompt() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("dragged image.png");
+        image::RgbaImage::new(1, 1).save(&path).unwrap();
+        let mut app = App::new(directory.path().to_path_buf());
+
+        app.handle_paste(&format!("'{}'", path.display()));
+
+        assert_eq!(app.input, "[Image #1] ");
+        let submission = app.take_submission().unwrap();
+        assert_eq!(submission.display(), "[Image #1] ");
+        let PromptInput::Content(content) = submission.into_prompt().instruction else {
+            panic!("image submission should use typed content");
+        };
+        assert!(matches!(
+            &content[..],
+            [
+                UserInput::LocalImage {
+                    path: submitted_path,
+                    detail: None,
+                },
+                UserInput::Text { text },
+            ] if submitted_path == &path && text == "[Image #1] "
+        ));
+    }
+
+    #[test]
+    fn pasted_file_url_becomes_an_image_attachment() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("url-image.png");
+        image::RgbaImage::new(1, 1).save(&path).unwrap();
+        let url = reqwest::Url::from_file_path(&path).unwrap();
+        let mut app = App::new(directory.path().to_path_buf());
+
+        app.handle_paste(url.as_str());
+
+        assert_eq!(app.input, "[Image #1] ");
+    }
+
+    #[test]
+    fn pasted_non_image_path_remains_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notes.txt");
+        std::fs::write(&path, "not an image").unwrap();
+        let pasted = format!("'{}'", path.display());
+        let mut app = App::new(directory.path().to_path_buf());
+
+        app.handle_paste(&pasted);
+
+        assert_eq!(app.input, pasted);
+        let submission = app.take_submission().unwrap();
+        assert!(matches!(
+            submission.into_prompt().instruction,
+            PromptInput::Text(text) if text == pasted
+        ));
     }
 
     #[test]
@@ -1816,6 +2075,63 @@ mod tests {
         app.close_btw(id);
         assert_eq!(app.focus, PaneId::Main);
         assert!(app.btw.is_none());
+    }
+
+    #[test]
+    fn submitted_prompt_is_selectable_before_run_started_without_clearing_the_view() {
+        let mut app = App::new(".".into());
+        app.main
+            .transcript
+            .push_editable_user("older prompt".to_owned(), 41);
+        app.main
+            .transcript
+            .push(TranscriptItem::Assistant("older answer".to_owned()));
+
+        let prompt_id = app
+            .queue_prompt(PaneId::Main, "fix this typo".to_owned())
+            .unwrap();
+        app.move_up();
+
+        assert_eq!(app.main.selected_user, Some(2));
+        assert_eq!(
+            app.main.transcript.user_edit_target(2),
+            Some((prompt_id, "fix this typo"))
+        );
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, app.main.selected_user, None, "empty")
+            .render(area, &mut buffer);
+        assert!(buffer.content.iter().any(|cell| cell.symbol() == "f"));
+
+        app.main.on_agent_event(&event(
+            AgentEventKind::RunStarted,
+            &json!({ "status": "started" }),
+        ));
+        assert_eq!(
+            app.main.transcript.len(),
+            3,
+            "prompt must not be duplicated"
+        );
+        assert_eq!(app.main.selected_user, Some(2));
+    }
+
+    #[test]
+    fn prompt_queued_behind_a_running_turn_stays_out_of_the_transcript() {
+        let mut app = App::new(".".into());
+        app.main.running = true;
+        app.main
+            .transcript
+            .push(TranscriptItem::Assistant("current answer".to_owned()));
+
+        let _ = app.queue_prompt(PaneId::Main, "queued follow-up".to_owned());
+
+        assert_eq!(app.main.transcript.len(), 1);
+        assert_eq!(
+            app.main.queued_prompts.front().map(String::as_str),
+            Some("queued follow-up")
+        );
     }
 
     #[test]
@@ -1849,6 +2165,39 @@ mod tests {
             .widget(app.main.scroll_from_bottom, None, None, "empty")
             .render(area, &mut after);
         assert!(app.main.scroll_from_bottom > old_offset);
+        assert!(app.main.has_unseen_output);
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn reasoning_wrap_growth_preserves_a_scrolled_view() {
+        let mut app = App::new(".".into());
+        app.main.settle_viewport(20, 6);
+        for index in 0..8 {
+            app.main
+                .push_output(TranscriptItem::User(format!("earlier message {index}")));
+        }
+        app.main.push_reasoning_delta("streaming thought");
+        app.main.settle_viewport(20, 6);
+        app.main.scroll_from_bottom = 5;
+
+        let area = Rect::new(0, 0, 20, 6);
+        let mut before = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(app.main.scroll_from_bottom, None, None, "empty")
+            .render(area, &mut before);
+
+        app.main.push_reasoning_delta(
+            " with enough additional words to wrap onto several newly visible rows",
+        );
+        app.main.settle_viewport(20, 6);
+
+        let mut after = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(app.main.scroll_from_bottom, None, None, "empty")
+            .render(area, &mut after);
         assert!(app.main.has_unseen_output);
         assert_eq!(after, before);
     }
@@ -2449,9 +2798,72 @@ mod tests {
             AgentEventKind::ReasoningSummaryDelta,
             &json!({ "model_call_index": 0, "text": "Inspecting the request path" }),
         ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ReasoningSummaryDelta,
+            &json!({ "model_call_index": 0, "text": " and event ordering" }),
+        ));
 
-        assert_eq!(app.main.reasoning, "Inspecting the request path");
-        assert_eq!(app.main.status, "Inspecting the request path");
+        assert_eq!(app.main.status, "Thinking...");
+        assert_eq!(app.main.transcript.len(), 1);
+
+        let area = Rect::new(0, 0, 50, 4);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .chunks(usize::from(area.width))
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("• Inspecting the request path and event ordering"));
+    }
+
+    #[test]
+    fn reasoning_resumes_in_a_new_inline_block_after_a_tool() {
+        let mut app = App::new(".".into());
+        app.main.on_agent_event(&event(
+            AgentEventKind::ReasoningSummaryDelta,
+            &json!({ "model_call_index": 0, "text": "First thought" }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({ "call_id": "call-1", "tool": "exec", "arguments": "pwd" }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ReasoningSummaryDelta,
+            &json!({ "model_call_index": 1, "text": "Second thought" }),
+        ));
+
+        assert_eq!(app.main.transcript.len(), 3);
+        assert_eq!(app.main.status, "Thinking...");
+
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .chunks(usize::from(area.width))
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let first = rendered.find("• First thought").unwrap();
+        let tool = rendered.find("◌ exec").unwrap();
+        let second = rendered.find("• Second thought").unwrap();
+        assert!(first < tool && tool < second);
     }
 
     #[test]

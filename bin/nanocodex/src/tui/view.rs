@@ -49,34 +49,78 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
     .areas(area);
 
     render_header(frame, app, header_area);
+    let mut selectable_areas = SelectableAreas::default();
+    render_transcripts(frame, app, transcript_area, &mut selectable_areas);
+    render_pending(frame, app, pending_area);
+    selectable_areas.push(render_composer(frame, app, composer_area, &composer_layout));
+    render_footer(frame, app, footer_area);
+    app.render_mouse_selection(frame.buffer_mut(), selectable_areas.as_slice());
+}
+
+#[derive(Default)]
+struct SelectableAreas {
+    areas: [Rect; 3],
+    count: usize,
+}
+
+impl SelectableAreas {
+    fn push(&mut self, area: Rect) {
+        if let Some(slot) = self.areas.get_mut(self.count) {
+            *slot = area;
+            self.count += 1;
+        }
+    }
+
+    fn as_slice(&self) -> &[Rect] {
+        &self.areas[..self.count]
+    }
+}
+
+fn render_transcripts(
+    frame: &mut Frame<'_>,
+    app: &mut App,
+    transcript_area: Rect,
+    selectable_areas: &mut SelectableAreas,
+) {
     let historical_editor_index = app.historical_editor_index();
     let inline_edit = historical_editor_index.map(|index| InlineEdit {
         index,
         input: app.input.as_str(),
         cursor: app.cursor,
     });
-    if let Some(btw) = &mut app.btw {
+    if app.btw.is_some() {
         let [main_area, btw_area] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(transcript_area);
-        render_transcript(
-            frame,
-            &mut app.main,
-            main_area,
-            " Main ",
-            app.focus == PaneId::Main,
-            inline_edit,
-            "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
-        );
-        render_transcript(
-            frame,
-            &mut btw.conversation,
-            btw_area,
-            " BTW · forked context ",
-            app.focus == PaneId::Btw(btw.id),
-            None,
-            "Ask a quick side question without interrupting the main thread.",
-        );
+        let preserve_main = app.mouse_selection_intersects(main_area);
+        let preserve_btw = app.mouse_selection_intersects(btw_area);
+        if let Some(btw) = app.btw.as_mut() {
+            selectable_areas.push(render_transcript(
+                frame,
+                &mut app.main,
+                main_area,
+                TranscriptRenderOptions {
+                    title: " Main ",
+                    focused: app.focus == PaneId::Main,
+                    inline_edit,
+                    empty_message:
+                        "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
+                    preserve_view: preserve_main,
+                },
+            ));
+            selectable_areas.push(render_transcript(
+                frame,
+                &mut btw.conversation,
+                btw_area,
+                TranscriptRenderOptions {
+                    title: " BTW · forked context ",
+                    focused: app.focus == PaneId::Btw(btw.id),
+                    inline_edit: None,
+                    empty_message: "Ask a quick side question without interrupting the main thread.",
+                    preserve_view: preserve_btw,
+                },
+            ));
+        }
     } else if app.branch_navigator_active() {
         let [main_area, navigator_area] =
             Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
@@ -85,31 +129,36 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
         let title = format!(" Branch {selected} preview ");
         {
             let conversation = app.branch_navigator_conversation_mut();
-            render_transcript(
+            selectable_areas.push(render_transcript(
                 frame,
                 conversation,
                 main_area,
-                &title,
-                true,
-                None,
-                "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
-            );
+                TranscriptRenderOptions {
+                    title: &title,
+                    focused: true,
+                    inline_edit: None,
+                    empty_message:
+                        "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
+                    preserve_view: false,
+                },
+            ));
         }
         render_branch_navigator(frame, app, navigator_area);
     } else {
-        render_transcript(
+        let preserve_main = app.mouse_selection_intersects(transcript_area);
+        selectable_areas.push(render_transcript(
             frame,
             &mut app.main,
             transcript_area,
-            " Main ",
-            true,
-            inline_edit,
-            "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
-        );
+            TranscriptRenderOptions {
+                title: " Main ",
+                focused: true,
+                inline_edit,
+                empty_message: "Ask Nanocodex to inspect, edit, run, or explain this workspace.",
+                preserve_view: preserve_main,
+            },
+        ));
     }
-    render_pending(frame, app, pending_area);
-    render_composer(frame, app, composer_area, &composer_layout);
-    render_footer(frame, app, footer_area);
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -197,15 +246,28 @@ fn render_branch_navigator(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+#[derive(Clone, Copy)]
+struct TranscriptRenderOptions<'a> {
+    title: &'a str,
+    focused: bool,
+    inline_edit: Option<InlineEdit<'a>>,
+    empty_message: &'static str,
+    preserve_view: bool,
+}
+
 fn render_transcript(
     frame: &mut Frame<'_>,
     conversation: &mut Conversation,
     area: Rect,
-    title: &str,
-    focused: bool,
-    inline_edit: Option<InlineEdit<'_>>,
-    empty_message: &'static str,
-) {
+    options: TranscriptRenderOptions<'_>,
+) -> Rect {
+    let TranscriptRenderOptions {
+        title,
+        focused,
+        inline_edit,
+        empty_message,
+        preserve_view,
+    } = options;
     let title = if conversation.has_unseen_output {
         format!("{title}↓ New output · Ctrl+End ")
     } else {
@@ -220,7 +282,7 @@ fn render_transcript(
             Color::DarkGray
         }));
     let inner = block.inner(area);
-    conversation.settle_viewport(inner.width, inner.height);
+    conversation.settle_viewport_with_selection(inner.width, inner.height, preserve_view);
     let scroll_from_bottom = conversation.display_scroll_from_bottom();
     frame.render_widget(block, area);
 
@@ -243,9 +305,10 @@ fn render_transcript(
     {
         frame.set_cursor_position(position);
     }
+    inner
 }
 
-fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &ComposerLayout) {
+fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &ComposerLayout) -> Rect {
     let conversation = app.active_conversation();
     let target = match app.focus {
         PaneId::Main => "Main",
@@ -278,7 +341,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &Compos
             )),
             inner,
         );
-        return;
+        return inner;
     }
     let cursor = layout.cursor_position(&app.input, app.cursor);
     let vertical_scroll = app.composer_scroll();
@@ -290,7 +353,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &Compos
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 
     if app.transcript_selection_active() || app.branch_navigator_active() {
-        return;
+        return inner;
     }
 
     let x = inner
@@ -300,6 +363,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &Compos
         .y
         .saturating_add(saturating_u16(cursor.row.saturating_sub(vertical_scroll)));
     frame.set_cursor_position(Position::new(x, y));
+    inner
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -315,11 +379,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else if app.cancel_confirmation_active() {
         "Stop Agent Turn — Esc again to confirm".to_owned()
     } else if conversation.running {
-        format!(
-            "{} {}",
-            spinner[app.frame % spinner.len()],
-            conversation.status
-        )
+        format!("{} Thinking...", spinner[app.frame % spinner.len()])
     } else {
         conversation.status.clone()
     };
@@ -339,9 +399,9 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     };
     let help = if app.btw.is_some() {
-        "  BackTab switch · /trace inspect · /close dismiss · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit"
+        "  BackTab switch · Ctrl+V image · /close dismiss · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit"
     } else {
-        "  /btw <question> side fork · /trace inspect · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit"
+        "  /btw <question> side fork · Ctrl+V image · Enter send/steer · Tab queue · Esc Esc stop · Ctrl+C quit"
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -466,10 +526,11 @@ mod tests {
         backend::{Backend, ClearType, TestBackend, WindowSize},
         buffer::Cell,
         layout::{Position, Rect, Size},
+        style::Color,
     };
 
     use super::render;
-    use crate::tui::app::App;
+    use crate::tui::{app::App, transcript::TranscriptItem};
 
     #[test]
     fn btw_renders_as_a_side_by_side_focused_pane() {
@@ -512,6 +573,46 @@ mod tests {
         assert!(rendered.contains("use the database implementation"));
         assert!(rendered.contains("⏳ queued"));
         assert!(rendered.contains("write a final benchmark summary"));
+    }
+
+    #[test]
+    fn running_footer_uses_one_fixed_thinking_label() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.main.running = true;
+        app.main.status = "Running exec_command".to_owned();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("Thinking..."));
+        assert!(!rendered.contains("Running exec_command"));
+    }
+
+    #[test]
+    fn mouse_selection_copies_composer_and_transcript_text() {
+        let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.input = "copy composer".to_owned();
+        app.cursor = app.input.len();
+        app.main
+            .transcript
+            .push(TranscriptItem::User("transcript copy".to_owned()));
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        assert!(app.begin_mouse_selection((1, 9).into()));
+        assert!(app.finish_mouse_selection((13, 9).into()));
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert_eq!(app.take_pending_copy().as_deref(), Some("copy composer"));
+        assert_eq!(
+            terminal.backend().buffer().cell((1, 9)).unwrap().bg,
+            Color::LightBlue
+        );
+
+        let _ = app.clear_mouse_selection();
+        assert!(app.begin_mouse_selection((3, 3).into()));
+        assert!(app.finish_mouse_selection((17, 3).into()));
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert_eq!(app.take_pending_copy().as_deref(), Some("transcript copy"));
     }
 
     #[test]
@@ -633,7 +734,7 @@ mod tests {
                 "\"┌ Message → Main ──────────────────────────────┐\"\n",
                 "\"│                                              │\"\n",
                 "\"└──────────────────────────────────────────────┘\"\n",
-                "\" Ready  /btw <question> side fork · /trace inspe\"\n",
+                "\" Ready  /btw <question> side fork · Ctrl+V image\"\n",
             )
         );
     }

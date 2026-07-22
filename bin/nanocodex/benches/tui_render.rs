@@ -25,6 +25,11 @@ mod tui {
     }
 
     #[allow(dead_code, unused_imports)]
+    mod selection {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/selection.rs"));
+    }
+
+    #[allow(dead_code, unused_imports)]
     mod app {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/app.rs"));
     }
@@ -312,6 +317,22 @@ mod tui {
                 );
             });
         }
+        group.bench_function("reasoning_100k", |bencher| {
+            bencher.iter_batched(
+                || {
+                    let mut transcript = Transcript::default();
+                    transcript.push(TranscriptItem::Reasoning(sized_text(100 * 1_024, 3)));
+                    black_box(transcript.tail_height(118));
+                    transcript
+                },
+                |mut transcript| {
+                    assert!(transcript.append_reasoning_delta(black_box("\nnext summary line")));
+                    black_box(transcript.tail_height(118));
+                    transcript
+                },
+                BatchSize::LargeInput,
+            );
+        });
         group.finish();
     }
 
@@ -582,6 +603,28 @@ mod tui {
         group.finish();
     }
 
+    pub(super) fn mouse_selection_benchmark(criterion: &mut Criterion) {
+        let mut app = trace_app_with_tail(TRACE_SHAPES[0], 100 * 1_024);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40))
+            .expect("mouse-selection benchmark terminal should initialize");
+        terminal
+            .draw(|frame| view::render(frame, &mut app))
+            .expect("initial mouse-selection frame should render");
+        assert!(app.begin_mouse_selection((1, 2).into()));
+        let alternate = Cell::new(false);
+
+        criterion.bench_function("tui_mouse_selection/drag_visible_range/120x40", |bencher| {
+            bencher.iter(|| {
+                let next = !alternate.get();
+                alternate.set(next);
+                assert!(app.drag_mouse_selection((118 - u16::from(next), 30).into()));
+                terminal
+                    .draw(|frame| view::render(frame, &mut app))
+                    .expect("mouse-selection benchmark frame should render");
+            });
+        });
+    }
+
     pub(super) fn stream_telemetry_benchmark(criterion: &mut Criterion) {
         const DELTAS: u64 = 1_024;
         let events = std::iter::once(AgentEventKind::RunStarted)
@@ -838,6 +881,7 @@ criterion_group!(
     tui::scroll_anchor_benchmark,
     tui::smooth_follow_benchmark,
     tui::terminal_output_benchmark,
+    tui::mouse_selection_benchmark,
     tui::stream_telemetry_benchmark,
     tui::first_frame_benchmarks,
     tui::composer_benchmarks,

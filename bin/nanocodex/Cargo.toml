@@ -11,11 +11,14 @@ repository.workspace = true
 description = "Daily-driver TUI and headless JSONL adapter for Nanocodex"
 
 [dependencies]
+arboard.workspace = true
+base64.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dotenvy.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+image.workspace = true
 nanocodex.workspace = true
 nanocodex-observability.workspace = true
 ratatui.workspace = true

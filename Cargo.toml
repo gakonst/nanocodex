@@ -17,6 +17,7 @@ categories = ["api-bindings", "asynchronous", "development-tools"]
 publish = true
 
 [workspace.dependencies]
+arboard = "3"
 base64 = "0.22.1"
 async-trait = "0.1.89"
 bm25 = "2.3.2"

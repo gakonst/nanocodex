@@ -1,7 +1,9 @@
 mod app;
+mod clipboard;
 mod composer;
 mod external_editor;
 mod scheduler;
+mod selection;
 mod telemetry;
 mod terminal;
 mod transcript;
@@ -15,7 +17,7 @@ use std::{
 };
 
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use eyre::{Result, WrapErr};
 use futures_util::StreamExt;
@@ -29,7 +31,7 @@ use tokio::{
 use tracing::{Instrument, info_span};
 
 use self::{
-    app::{App, PaneId},
+    app::{App, PaneId, SubmittedPrompt},
     scheduler::{RenderScheduler, STREAM_FRAME_INTERVAL},
     telemetry::{StreamTelemetry, ViewTelemetry},
     terminal::TerminalSession,
@@ -51,12 +53,12 @@ enum WorkerCommand {
     Prompt {
         target: PaneId,
         prompt_id: u64,
-        prompt: String,
+        prompt: SubmittedPrompt,
     },
     Steer {
         target: PaneId,
         id: u64,
-        prompt: String,
+        prompt: SubmittedPrompt,
     },
     Cancel {
         target: PaneId,
@@ -64,7 +66,7 @@ enum WorkerCommand {
     OpenBtw {
         id: u64,
         prompt_id: Option<u64>,
-        prompt: Option<String>,
+        prompt: Option<SubmittedPrompt>,
     },
     CloseBtw {
         id: u64,
@@ -183,7 +185,7 @@ struct TrackedTurn {
 
 struct SteerRequest {
     id: u64,
-    prompt: String,
+    prompt: SubmittedPrompt,
 }
 
 #[derive(Clone, Copy)]
@@ -194,18 +196,17 @@ struct TurnTarget<'a> {
 }
 
 impl BtwWorker {
-    fn prepare_prompt(&mut self, prompt: String) -> String {
+    fn prepare_prompt(&mut self, prompt: SubmittedPrompt) -> SubmittedPrompt {
         prepare_btw_prompt(&mut self.first_prompt, prompt)
     }
 }
 
-fn prepare_btw_prompt(first_prompt: &mut bool, prompt: String) -> String {
+fn prepare_btw_prompt(first_prompt: &mut bool, mut prompt: SubmittedPrompt) -> SubmittedPrompt {
     if *first_prompt {
         *first_prompt = false;
-        format!("{BTW_BOUNDARY}{prompt}")
-    } else {
-        prompt
+        prompt.prepend_text(BTW_BOUNDARY);
     }
+    prompt
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -312,8 +313,8 @@ enum SubmitIntent {
 
 #[derive(Debug, Eq, PartialEq)]
 enum Submission {
-    Prompt(String),
-    Btw(Option<String>),
+    Prompt(SubmittedPrompt),
+    Btw(Option<SubmittedPrompt>),
     CloseBtw,
     Cancel,
     Trace,
@@ -431,6 +432,13 @@ fn render_due_frame(
     ui.app.advance_smooth_scroll();
     let render_started = Instant::now();
     let draw_metrics = terminal.draw(|frame| view::render(frame, &mut ui.app))?;
+    if let Some(text) = ui.app.take_pending_copy()
+        && let Err(error) = clipboard::copy_to_clipboard(&text)
+    {
+        tracing::warn!(%error, "failed to copy the mouse selection");
+        ui.app
+            .set_active_status(format!("Clipboard copy failed: {error}"));
+    }
     let presented_at = Instant::now();
     scheduler.presented(presented_at);
     stream_telemetry.frame_presented(render_started, presented_at, draw_metrics, &ui.app);
@@ -539,11 +547,12 @@ fn handle_worker_update(
             request_id,
         } => {
             if let Some(prompt) = app.main_branch_opened(id, parent_id, prompt_id, request_id) {
-                let prompt_id =
-                    app.queue_prompt(PaneId::Main, prompt.clone())
-                        .ok_or_else(|| {
-                            eyre::eyre!("historical branch disappeared before submission")
-                        })?;
+                let prompt = SubmittedPrompt::text(prompt);
+                let prompt_id = app
+                    .queue_prompt(PaneId::Main, prompt.display().to_owned())
+                    .ok_or_else(|| {
+                        eyre::eyre!("historical branch disappeared before submission")
+                    })?;
                 send_command(
                     commands,
                     WorkerCommand::Prompt {
@@ -655,7 +664,7 @@ impl AgentWorker {
         }
     }
 
-    async fn prompt(&mut self, target: PaneId, prompt_id: u64, prompt: String) {
+    async fn prompt(&mut self, target: PaneId, prompt_id: u64, prompt: SubmittedPrompt) {
         match target {
             PaneId::Main => {
                 if let Some(turn) = start_turn(
@@ -708,7 +717,7 @@ impl AgentWorker {
         }
     }
 
-    async fn steer(&mut self, target: PaneId, steer_id: u64, prompt: String) {
+    async fn steer(&mut self, target: PaneId, steer_id: u64, prompt: SubmittedPrompt) {
         let turn = match target {
             PaneId::Main => {
                 steer_turn(
@@ -787,7 +796,7 @@ impl AgentWorker {
         cancel_turn(turns, session_id, target, &self.updates).await;
     }
 
-    async fn open_btw(&mut self, id: u64, prompt_id: Option<u64>, prompt: Option<String>) {
+    async fn open_btw(&mut self, id: u64, prompt_id: Option<u64>, prompt: Option<SubmittedPrompt>) {
         self.btw = None;
         let span = info_span!(
             target: "nanocodex",
@@ -1008,7 +1017,7 @@ async fn start_turn(
     agent: &Nanocodex,
     target: TurnTarget<'_>,
     prompt_id: u64,
-    prompt: String,
+    prompt: SubmittedPrompt,
     next_turn_id: &mut u64,
     finished: &mpsc::UnboundedSender<FinishedTurn>,
     updates: &mpsc::UnboundedSender<WorkerEvent>,
@@ -1033,7 +1042,11 @@ async fn start_turn(
         id,
         span: span.clone(),
     }));
-    match agent.prompt(prompt).instrument(span.clone()).await {
+    match agent
+        .prompt(prompt.into_prompt())
+        .instrument(span.clone())
+        .await
+    {
         Ok(turn) => {
             *next_turn_id = next_turn_id.saturating_add(1);
             let control = turn.control();
@@ -1117,7 +1130,7 @@ async fn steer_turn(
         );
         let outcome = turn
             .control
-            .steer(request.prompt.clone())
+            .steer(request.prompt.clone().into_prompt())
             .instrument(span.clone())
             .await;
         span.record(
@@ -1155,7 +1168,7 @@ async fn steer_turn(
     drop(updates.send(WorkerEvent::SteerQueued {
         target: target.pane,
         id: request.id,
-        prompt: request.prompt.clone(),
+        prompt: request.prompt.display().to_owned(),
     }));
     start_turn(
         agent,
@@ -1280,24 +1293,55 @@ fn handle_terminal_event(
 ) -> Result<TerminalAction> {
     match event {
         Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+            let _ = app.clear_mouse_selection();
             handle_key(key, app, root_session_id, commands)
         }
         Event::Paste(text) => {
-            app.insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+            let _ = app.clear_mouse_selection();
+            app.handle_paste(&text);
             Ok(TerminalAction::Redraw)
         }
         Event::Mouse(mouse) => match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let changed = app.begin_mouse_selection((mouse.column, mouse.row).into());
+                Ok(if changed {
+                    TerminalAction::Redraw
+                } else {
+                    TerminalAction::Ignore
+                })
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let changed = app.drag_mouse_selection((mouse.column, mouse.row).into());
+                Ok(if changed {
+                    TerminalAction::Redraw
+                } else {
+                    TerminalAction::Ignore
+                })
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let changed = app.finish_mouse_selection((mouse.column, mouse.row).into());
+                Ok(if changed {
+                    TerminalAction::Redraw
+                } else {
+                    TerminalAction::Ignore
+                })
+            }
             MouseEventKind::ScrollUp => {
+                let _ = app.clear_mouse_selection();
                 app.scroll_up(3);
                 Ok(TerminalAction::Redraw)
             }
             MouseEventKind::ScrollDown => {
+                let _ = app.clear_mouse_selection();
                 app.scroll_down(3);
                 Ok(TerminalAction::Redraw)
             }
             _ => Ok(TerminalAction::Ignore),
         },
-        Event::Resize(_, _) => Ok(TerminalAction::Redraw),
+        Event::Resize(_, _) => {
+            let _ = app.clear_mouse_selection();
+            Ok(TerminalAction::Redraw)
+        }
         Event::FocusGained | Event::FocusLost | Event::Key(_) => Ok(TerminalAction::Ignore),
     }
 }
@@ -1308,6 +1352,15 @@ fn handle_key(
     root_session_id: &str,
     commands: &mpsc::UnboundedSender<WorkerCommand>,
 ) -> Result<TerminalAction> {
+    if matches!(key.code, KeyCode::Char('v' | 'V'))
+        && key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        paste_clipboard_image(app, clipboard::paste_image_to_temp_png);
+        return Ok(TerminalAction::Redraw);
+    }
+
     if let Some(action) = handle_inline_historical_editor_key(key, app, commands)? {
         return Ok(action);
     }
@@ -1403,6 +1456,22 @@ fn handle_key(
         | KeyCode::Modifier(_) => {}
     }
     Ok(TerminalAction::Redraw)
+}
+
+fn paste_clipboard_image(
+    app: &mut App,
+    paste: impl FnOnce() -> Result<std::path::PathBuf, String>,
+) {
+    match paste() {
+        Ok(path) => {
+            app.attach_local_image(path);
+            app.insert_char(' ');
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to paste a clipboard image");
+            app.push_active_error(format!("Failed to paste image: {error}"));
+        }
+    }
 }
 
 fn handle_global_navigation_key(
@@ -1617,10 +1686,10 @@ fn submit(
         Submission::Prompt(prompt) => {
             let target = app.focus;
             if matches!(intent, SubmitIntent::Immediate) && app.is_running(target) {
-                if let Some(id) = app.queue_steer(target, prompt.clone()) {
+                if let Some(id) = app.queue_steer(target, prompt.display().to_owned()) {
                     send_command(commands, WorkerCommand::Steer { target, id, prompt })?;
                 }
-            } else if let Some(prompt_id) = app.queue_prompt(target, prompt.clone()) {
+            } else if let Some(prompt_id) = app.queue_prompt(target, prompt.display().to_owned()) {
                 send_command(
                     commands,
                     WorkerCommand::Prompt {
@@ -1636,7 +1705,7 @@ fn submit(
                 app.focus_btw();
                 if let Some(prompt) = prompt {
                     let target = PaneId::Btw(id);
-                    if let Some(prompt_id) = app.queue_prompt(target, prompt.clone()) {
+                    if let Some(prompt_id) = app.queue_prompt(target, prompt.display().to_owned()) {
                         send_command(
                             commands,
                             WorkerCommand::Prompt {
@@ -1649,9 +1718,9 @@ fn submit(
                 }
             } else {
                 let id = app.begin_btw();
-                let prompt_id = prompt
-                    .as_ref()
-                    .and_then(|prompt| app.queue_prompt(PaneId::Btw(id), prompt.clone()));
+                let prompt_id = prompt.as_ref().and_then(|prompt| {
+                    app.queue_prompt(PaneId::Btw(id), prompt.display().to_owned())
+                });
                 send_command(
                     commands,
                     WorkerCommand::OpenBtw {
@@ -1700,14 +1769,19 @@ fn send_command(
         .map_err(|_| eyre::eyre!("agent worker stopped"))
 }
 
-fn classify_submission(input: String) -> Submission {
-    let trimmed = input.trim();
+fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
+    let mut input = input.into();
+    let trimmed = input.display().trim();
     if trimmed == "/btw" {
         return Submission::Btw(None);
     }
     if let Some(prompt) = trimmed.strip_prefix("/btw ") {
         let prompt = prompt.trim();
-        return Submission::Btw((!prompt.is_empty()).then(|| prompt.to_owned()));
+        if prompt.is_empty() {
+            return Submission::Btw(None);
+        }
+        input.set_display(prompt.to_owned());
+        return Submission::Btw(Some(input));
     }
     if trimmed == "/close" {
         return Submission::CloseBtw;
@@ -1793,7 +1867,8 @@ mod tests {
     use super::{
         BTW_BOUNDARY, PaneId, RedrawPriority, Submission, TerminalAction, UiAction, UiModel,
         UiUpdate, WorkerCommand, WorkerEvent, active_session_id, classify_submission, handle_key,
-        handle_worker_update, prepare_btw_prompt, session_trace_url, spawn_agent_worker,
+        handle_worker_update, paste_clipboard_image, prepare_btw_prompt, session_trace_url,
+        spawn_agent_worker,
     };
     use crate::tui::app::App;
 
@@ -1805,7 +1880,7 @@ mod tests {
         );
         assert_eq!(
             classify_submission(" /btw   inspect the cache  ".to_owned()),
-            Submission::Btw(Some("inspect the cache".to_owned()))
+            Submission::Btw(Some("inspect the cache".into()))
         );
         assert_eq!(
             classify_submission("/close".to_owned()),
@@ -1821,12 +1896,33 @@ mod tests {
         );
         assert_eq!(
             classify_submission("/btw-not-a-command".to_owned()),
-            Submission::Prompt("/btw-not-a-command".to_owned())
+            Submission::Prompt("/btw-not-a-command".into())
         );
         assert_eq!(
             classify_submission("/trace-this".to_owned()),
-            Submission::Prompt("/trace-this".to_owned())
+            Submission::Prompt("/trace-this".into())
         );
+    }
+
+    #[test]
+    fn clipboard_image_paste_attaches_the_materialized_image() {
+        let mut app = App::new("/workspace".into());
+        let path = PathBuf::from("/tmp/copied-image.png");
+
+        paste_clipboard_image(&mut app, || Ok(path.clone()));
+
+        assert_eq!(app.input, "[Image #1] ");
+        let submission = app.take_submission().unwrap();
+        let nanocodex::PromptInput::Content(content) = submission.into_prompt().instruction else {
+            panic!("clipboard image should produce typed content");
+        };
+        assert!(matches!(
+            &content[0],
+            nanocodex::UserInput::LocalImage {
+                path: submitted_path,
+                detail: None,
+            } if submitted_path == &path
+        ));
     }
 
     #[test]
@@ -1885,11 +1981,11 @@ mod tests {
     fn side_boundary_wraps_only_the_first_btw_prompt() {
         let mut first = true;
         assert_eq!(
-            prepare_btw_prompt(&mut first, "first".to_owned()),
+            prepare_btw_prompt(&mut first, "first".into()).display(),
             format!("{BTW_BOUNDARY}first")
         );
         assert_eq!(
-            prepare_btw_prompt(&mut first, "follow-up".to_owned()),
+            prepare_btw_prompt(&mut first, "follow-up".into()).display(),
             "follow-up"
         );
     }
@@ -1981,13 +2077,13 @@ mod tests {
         commands.send(WorkerCommand::Prompt {
             target: PaneId::Main,
             prompt_id: 1,
-            prompt: "initial task".to_owned(),
+            prompt: "initial task".into(),
         })?;
         first_seen_rx.await?;
         commands.send(WorkerCommand::Steer {
             target: PaneId::Main,
             id: 7,
-            prompt: "steering correction".to_owned(),
+            prompt: "steering correction".into(),
         })?;
         timeout(Duration::from_secs(5), async {
             loop {
@@ -2094,7 +2190,7 @@ mod tests {
         commands.send(WorkerCommand::Prompt {
             target: PaneId::Main,
             prompt_id: 1,
-            prompt: "first prompt".to_owned(),
+            prompt: "first prompt".into(),
         })?;
         timeout(Duration::from_secs(5), async {
             loop {
@@ -2116,7 +2212,7 @@ mod tests {
         commands.send(WorkerCommand::Prompt {
             target: PaneId::Main,
             prompt_id: 2,
-            prompt: "second prompt".to_owned(),
+            prompt: "second prompt".into(),
         })?;
         timeout(Duration::from_secs(5), second_seen_rx)
             .await
@@ -2148,7 +2244,7 @@ mod tests {
         commands.send(WorkerCommand::Prompt {
             target: PaneId::Main,
             prompt_id: 3,
-            prompt: "revised second prompt".to_owned(),
+            prompt: "revised second prompt".into(),
         })?;
         timeout(Duration::from_secs(5), async {
             let mut parent_finished = false;
@@ -2239,6 +2335,42 @@ mod tests {
         );
         assert_eq!(app.input, "multiline\ndraft");
         assert_eq!(app.cursor, 4);
+    }
+
+    #[test]
+    fn up_selects_a_just_submitted_prompt_before_worker_events_arrive() {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.input = "message with typo".to_owned();
+        app.cursor = app.input.len();
+
+        assert_eq!(
+            handle_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &mut app,
+                "main-session",
+                &commands,
+            )
+            .unwrap(),
+            TerminalAction::Redraw
+        );
+        assert!(matches!(
+            worker.try_recv(),
+            Ok(WorkerCommand::Prompt { prompt, .. }) if prompt == "message with typo"
+        ));
+        assert_eq!(
+            handle_key(
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                &mut app,
+                "main-session",
+                &commands,
+            )
+            .unwrap(),
+            TerminalAction::Redraw
+        );
+        assert!(app.transcript_selection_active());
+        assert!(app.start_historical_edit());
+        assert_eq!(app.input, "message with typo");
     }
 
     #[test]

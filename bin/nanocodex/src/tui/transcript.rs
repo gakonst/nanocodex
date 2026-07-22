@@ -28,6 +28,7 @@ pub(super) struct InlineEdit<'a> {
 
 pub(super) enum TranscriptItem {
     User(String),
+    Reasoning(String),
     Assistant(String),
     Tool {
         call_id: String,
@@ -97,10 +98,27 @@ impl Transcript {
         appended
     }
 
+    pub(super) fn append_reasoning_delta(&mut self, delta: &str) -> bool {
+        let appended = self
+            .entries
+            .last_mut()
+            .is_some_and(|entry| Arc::make_mut(entry).append_reasoning_delta(delta));
+        if appended {
+            self.invalidate_total_height();
+        }
+        appended
+    }
+
     pub(super) fn tail_is_assistant(&self) -> bool {
         self.entries
             .last()
             .is_some_and(|entry| matches!(entry.kind, EntryKind::Assistant))
+    }
+
+    pub(super) fn tail_is_reasoning(&self) -> bool {
+        self.entries
+            .last()
+            .is_some_and(|entry| matches!(entry.kind, EntryKind::Reasoning))
     }
 
     pub(super) fn tail_height(&self, width: u16) -> Option<usize> {
@@ -605,6 +623,7 @@ fn inline_edit_layout(input: &str, width: u16) -> ComposerLayout {
 #[derive(Clone)]
 enum EntryKind {
     User,
+    Reasoning,
     Assistant,
     Tool { call_id: String },
     Error,
@@ -621,34 +640,38 @@ struct TranscriptEntry {
 #[derive(Clone)]
 enum EntryContent {
     Static(Text<'static>),
-    Assistant(AssistantText),
+    Streaming(StreamingText),
 }
 
-struct AssistantText {
-    lines: Vec<AssistantLine>,
+struct StreamingText {
+    lines: Vec<StreamingLine>,
+    body_style: Style,
+    continuation_prefix: &'static str,
 }
 
-struct AssistantLine {
+struct StreamingLine {
     content: String,
     style: Style,
-    cached_layout: Mutex<Option<AssistantLineLayout>>,
+    cached_layout: Mutex<Option<StreamingLineLayout>>,
 }
 
 #[derive(Clone)]
-struct AssistantLineLayout {
+struct StreamingLineLayout {
     width: u16,
     rows: Vec<String>,
 }
 
-impl Clone for AssistantText {
+impl Clone for StreamingText {
     fn clone(&self) -> Self {
         Self {
             lines: self.lines.clone(),
+            body_style: self.body_style,
+            continuation_prefix: self.continuation_prefix,
         }
     }
 }
 
-impl Clone for AssistantLine {
+impl Clone for StreamingLine {
     fn clone(&self) -> Self {
         Self {
             content: self.content.clone(),
@@ -691,7 +714,12 @@ impl TranscriptEntry {
             TranscriptItem::Assistant(message) => (
                 EntryKind::Assistant,
                 None,
-                EntryContent::Assistant(AssistantText::new(&message)),
+                EntryContent::Streaming(StreamingText::assistant(&message)),
+            ),
+            TranscriptItem::Reasoning(message) => (
+                EntryKind::Reasoning,
+                None,
+                EntryContent::Streaming(StreamingText::reasoning(&message)),
             ),
             TranscriptItem::Tool {
                 call_id,
@@ -737,7 +765,7 @@ impl TranscriptEntry {
     fn paragraph(&self) -> Paragraph<'static> {
         Paragraph::new(match &self.content {
             EntryContent::Static(text) => text.clone(),
-            EntryContent::Assistant(assistant) => assistant.materialized_text(),
+            EntryContent::Streaming(streaming) => streaming.materialized_text(),
         })
         .wrap(Wrap { trim: false })
     }
@@ -755,7 +783,7 @@ impl TranscriptEntry {
             EntryContent::Static(text) => Paragraph::new(text.clone())
                 .wrap(Wrap { trim: false })
                 .line_count(width),
-            EntryContent::Assistant(assistant) => assistant.height(width),
+            EntryContent::Streaming(streaming) => streaming.height(width),
         };
         let encoded = (u64::from(width) << 48)
             | u64::try_from(height)
@@ -783,8 +811,8 @@ impl TranscriptEntry {
                     .scroll((saturating_u16(scroll), 0))
                     .render(area, buffer);
             }
-            EntryContent::Assistant(assistant) => {
-                assistant.render(area, buffer, scroll, total_height, selected);
+            EntryContent::Streaming(streaming) => {
+                streaming.render(area, buffer, scroll, total_height, selected);
             }
         }
     }
@@ -794,12 +822,37 @@ impl TranscriptEntry {
             return false;
         }
 
-        let EntryContent::Assistant(assistant) = &mut self.content else {
+        let EntryContent::Streaming(streaming) = &mut self.content else {
             return false;
         };
         let cached = self.cached_height.load(Ordering::Relaxed);
         let cached_width = (cached != 0).then_some((cached >> 48) as u16);
-        let replacement = assistant.append(delta, cached_width);
+        let replacement = streaming.append(delta, cached_width);
+        self.update_streaming_height(cached, cached_width, replacement);
+        true
+    }
+
+    fn append_reasoning_delta(&mut self, delta: &str) -> bool {
+        if !matches!(self.kind, EntryKind::Reasoning) {
+            return false;
+        }
+
+        let EntryContent::Streaming(streaming) = &mut self.content else {
+            return false;
+        };
+        let cached = self.cached_height.load(Ordering::Relaxed);
+        let cached_width = (cached != 0).then_some((cached >> 48) as u16);
+        let replacement = streaming.append(delta, cached_width);
+        self.update_streaming_height(cached, cached_width, replacement);
+        true
+    }
+
+    fn update_streaming_height(
+        &self,
+        cached: u64,
+        cached_width: Option<u16>,
+        replacement: Option<(usize, usize)>,
+    ) {
         if let Some((old_height, new_height)) = replacement {
             let total = usize::try_from(cached & ((1_u64 << 48) - 1)).unwrap_or(usize::MAX);
             self.cached_height.store(
@@ -812,7 +865,6 @@ impl TranscriptEntry {
         } else {
             self.cached_height.store(0, Ordering::Relaxed);
         }
-        true
     }
 
     fn set_tool_status(&mut self, status: ToolStatus) {
@@ -837,21 +889,42 @@ impl TranscriptEntry {
     }
 }
 
-impl AssistantText {
-    fn new(message: &str) -> Self {
+impl StreamingText {
+    fn assistant(message: &str) -> Self {
         let title_style = Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD);
         let body_style = Style::default().fg(Color::White);
         let mut lines = Vec::with_capacity(message.lines().count().saturating_add(2));
-        lines.push(AssistantLine::new("● Nanocodex".to_owned(), title_style));
+        lines.push(StreamingLine::new("● Nanocodex".to_owned(), title_style));
         lines.extend(
             message
                 .split('\n')
-                .map(|line| AssistantLine::new(format!("  {line}"), body_style)),
+                .map(|line| StreamingLine::new(format!("  {line}"), body_style)),
         );
-        lines.push(AssistantLine::new(String::new(), Style::default()));
-        Self { lines }
+        lines.push(StreamingLine::new(String::new(), Style::default()));
+        Self {
+            lines,
+            body_style,
+            continuation_prefix: "  ",
+        }
+    }
+
+    fn reasoning(message: &str) -> Self {
+        let body_style = Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC);
+        let mut parts = message.split('\n');
+        let mut lines = Vec::with_capacity(message.lines().count().saturating_add(1));
+        lines.push(StreamingLine::new(
+            format!("• {}", parts.next().unwrap_or_default()),
+            body_style,
+        ));
+        lines.extend(parts.map(|line| StreamingLine::new(format!("  {line}"), body_style)));
+        lines.push(StreamingLine::new(String::new(), Style::default()));
+        Self {
+            lines,
+            body_style,
+            continuation_prefix: "  ",
+        }
     }
 
     fn height(&self, width: u16) -> usize {
@@ -880,11 +953,14 @@ impl AssistantText {
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner) = None;
         }
-        let body_style = Style::default().fg(Color::White);
+        let body_style = self.body_style;
+        let continuation_prefix = self.continuation_prefix;
         self.lines
-            .extend(parts.map(|part| AssistantLine::new(format!("  {part}"), body_style)));
+            .extend(parts.map(|part| {
+                StreamingLine::new(format!("{continuation_prefix}{part}"), body_style)
+            }));
         self.lines
-            .push(AssistantLine::new(String::new(), Style::default()));
+            .push(StreamingLine::new(String::new(), Style::default()));
 
         let width = cached_width?;
         let added_lines = delta.bytes().filter(|byte| *byte == b'\n').count();
@@ -984,7 +1060,7 @@ impl AssistantText {
     }
 }
 
-impl AssistantLine {
+impl StreamingLine {
     fn new(content: String, style: Style) -> Self {
         Self {
             content,
@@ -1038,7 +1114,7 @@ impl AssistantLine {
         });
     }
 
-    fn with_layout<R>(&self, width: u16, read: impl FnOnce(&AssistantLineLayout) -> R) -> R {
+    fn with_layout<R>(&self, width: u16, read: impl FnOnce(&StreamingLineLayout) -> R) -> R {
         let mut cached = self
             .cached_layout
             .lock()
@@ -1046,7 +1122,7 @@ impl AssistantLine {
         if cached.as_ref().is_none_or(|layout| layout.width != width) {
             *cached = None;
         }
-        let layout = cached.get_or_insert_with(|| AssistantLineLayout {
+        let layout = cached.get_or_insert_with(|| StreamingLineLayout {
             width,
             rows: wrap_line(&self.content, width),
         });
@@ -1194,7 +1270,7 @@ mod tests {
     };
 
     use super::{
-        AssistantLine, InlineEdit, ToolStatus, Transcript, TranscriptItem, saturating_u16,
+        InlineEdit, StreamingLine, ToolStatus, Transcript, TranscriptItem, saturating_u16,
         tool_style,
     };
 
@@ -1229,6 +1305,37 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_deltas_stream_as_a_dim_inline_block() {
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Reasoning("Inspecting".to_owned()));
+        assert!(transcript.append_reasoning_delta(" the request\nand tools"));
+
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buffer = Buffer::empty(area);
+        transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+
+        assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "•");
+        assert_eq!(buffer.cell((0, 1)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((2, 1)).unwrap().symbol(), "a");
+        assert!(
+            buffer
+                .cell((0, 0))
+                .unwrap()
+                .modifier
+                .contains(ratatui::style::Modifier::DIM)
+        );
+        assert!(
+            buffer
+                .cell((2, 0))
+                .unwrap()
+                .modifier
+                .contains(ratatui::style::Modifier::ITALIC)
+        );
+    }
+
+    #[test]
     fn cached_assistant_line_wrapping_matches_ratatui() {
         let cases = [
             "",
@@ -1240,7 +1347,7 @@ mod tests {
         for content in cases {
             for width in [1, 3, 8, 20] {
                 let line =
-                    AssistantLine::new(content.to_owned(), Style::default().fg(Color::White));
+                    StreamingLine::new(content.to_owned(), Style::default().fg(Color::White));
                 let height = saturating_u16(line.height(width));
                 let area = Rect::new(0, 0, width, height);
                 let mut actual = Buffer::empty(area);
