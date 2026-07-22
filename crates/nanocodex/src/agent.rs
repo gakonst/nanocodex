@@ -8,7 +8,9 @@ use std::{
     },
 };
 
-use nanocodex_core::{AgentEvents, EventSink, ModelConfig, OpenAiAuth, Prompt, Thinking};
+use nanocodex_core::{
+    AgentEvents, EventSink, ModelConfig, OpenAiAuth, Prompt, ReasoningMode, Thinking,
+};
 use nanocodex_service::{
     DefaultResponsesService, ResponsesAttempt, ResponsesClient, ResponsesService,
     ResponsesServiceResponse, TransportStats,
@@ -468,6 +470,14 @@ impl<S> NanocodexBuilder<S> {
         self
     }
 
+    /// Sets the Responses reasoning execution mode. The default is
+    /// [`ReasoningMode::Standard`].
+    #[must_use]
+    pub const fn reasoning_mode(mut self, reasoning_mode: ReasoningMode) -> Self {
+        self.config.reasoning_mode = reasoning_mode;
+        self
+    }
+
     /// Replaces the standard built-in tool selection.
     #[must_use]
     pub fn tools(mut self, tools: Tools) -> Self {
@@ -730,7 +740,10 @@ where
         self.tools.start_providers();
         let session_id = self.events.request_id().to_owned();
         let rollout = self.rollout.take();
-        let thinking = self.spawner.config.thinking;
+        let reasoning = ReasoningSettings {
+            mode: self.spawner.config.reasoning_mode,
+            effort: self.spawner.config.thinking,
+        };
         let inherited_checkpoint = self.initial_checkpoint.as_ref().map(|checkpoint| {
             Arc::new(CommittedCheckpoint {
                 lineage_id: Arc::clone(&self.spawner.lineage_id),
@@ -797,7 +810,7 @@ where
                                 session_id.as_str(),
                                 self.spawner.lineage_id.as_ref(),
                                 &self.origin,
-                                thinking,
+                                reasoning,
                                 turn_index,
                                 prompt.instruction.text_bytes(),
                             );
@@ -854,7 +867,7 @@ where
                 session_id.as_str(),
                 self.spawner.lineage_id.as_ref(),
                 &self.origin,
-                thinking,
+                reasoning,
                 turn_index,
                 prompt.instruction.text_bytes(),
             );
@@ -1069,7 +1082,7 @@ fn agent_turn_span(
     session_id: &str,
     lineage_id: &str,
     origin: &AgentOrigin,
-    thinking: Thinking,
+    reasoning: ReasoningSettings,
     turn_index: u64,
     prompt_bytes: usize,
 ) -> tracing::Span {
@@ -1088,7 +1101,9 @@ fn agent_turn_span(
         agent.depth = origin.depth,
         trace.parented = parented,
         model = nanocodex_core::MODEL,
-        thinking = thinking.as_str(),
+        reasoning.mode = reasoning.mode.as_str(),
+        reasoning.effort = reasoning.effort.as_str(),
+        thinking = reasoning.effort.as_str(),
         turn.index = turn_index,
         prompt.bytes = prompt_bytes,
         status = tracing::field::Empty,
@@ -1097,6 +1112,12 @@ fn agent_turn_span(
         span.record("parent.session.id", parent_session_id.as_ref());
     }
     span
+}
+
+#[derive(Clone, Copy)]
+struct ReasoningSettings {
+    mode: ReasoningMode,
+    effort: Thinking,
 }
 
 fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) -> bool {

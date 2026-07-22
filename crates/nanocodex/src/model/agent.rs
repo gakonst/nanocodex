@@ -310,6 +310,7 @@ where
             RunStarted {
                 mode: "openai_model",
                 model: MODEL,
+                reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.config.thinking.as_str(),
                 transport: TRANSPORT,
                 orchestration: ModelConfig::orchestration(),
@@ -350,6 +351,7 @@ where
             RunStarted {
                 mode: "openai_model",
                 model: MODEL,
+                reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.config.thinking.as_str(),
                 transport: TRANSPORT,
                 orchestration: ModelConfig::orchestration(),
@@ -1045,6 +1047,7 @@ where
             ModelCallStarted {
                 call_index,
                 model: MODEL,
+                reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.config.thinking.as_str(),
                 previous_response_id,
             },
@@ -1059,6 +1062,8 @@ where
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
             call_index,
+            self.config.reasoning_mode.as_str(),
+            self.config.thinking.as_str(),
             previous_response_id.is_some(),
             input_item_count,
             input_bytes,
@@ -1350,6 +1355,8 @@ fn record_indexed_span_content(
 
 fn model_call_span(
     call_index: u32,
+    reasoning_mode: &str,
+    reasoning_effort: &str,
     previous_response: bool,
     input_item_count: usize,
     input_bytes: usize,
@@ -1360,6 +1367,8 @@ fn model_call_span(
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
         model = MODEL,
+        reasoning.mode = reasoning_mode,
+        reasoning.effort = reasoning_effort,
         model.call_index = call_index,
         previous_response,
         model.input.item_count = input_item_count,

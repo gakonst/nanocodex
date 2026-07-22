@@ -185,6 +185,7 @@ impl UserInput {
 #[derive(Clone)]
 pub struct ModelConfig {
     pub auth: OpenAiAuth,
+    pub reasoning_mode: ReasoningMode,
     pub thinking: Thinking,
     pub websocket_url: String,
     pub api_base_url: String,
@@ -212,6 +213,7 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             auth: OpenAiAuth::api_key(String::new()),
+            reasoning_mode: ReasoningMode::default(),
             thinking: Thinking::default(),
             websocket_url: "wss://api.openai.com/v1/responses".to_owned(),
             api_base_url: "https://api.openai.com/v1".to_owned(),
@@ -220,8 +222,58 @@ impl Default for ModelConfig {
     }
 }
 
+/// Responses reasoning execution mode for the supported GPT-5.6 model family.
+///
+/// Standard mode preserves the default request behavior. Pro mode performs
+/// additional model work before returning one final answer and can increase
+/// latency and token usage independently of [`Thinking`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReasoningMode {
+    #[default]
+    Standard,
+    Pro,
+}
+
+impl ReasoningMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Pro => "pro",
+        }
+    }
+
+    pub(crate) const fn request_value(self) -> Option<&'static str> {
+        match self {
+            Self::Standard => None,
+            Self::Pro => Some("pro"),
+        }
+    }
+}
+
+impl fmt::Display for ReasoningMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ReasoningMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "standard" => Ok(Self::Standard),
+            "pro" => Ok(Self::Pro),
+            _ => Err(format!(
+                "invalid reasoning mode {value:?}; expected standard or pro"
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Thinking {
+    None,
     Low,
     #[default]
     Medium,
@@ -234,6 +286,7 @@ impl Thinking {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::None => "none",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
@@ -254,13 +307,14 @@ impl FromStr for Thinking {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "none" => Ok(Self::None),
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::Xhigh),
             "max" => Ok(Self::Max),
             _ => Err(format!(
-                "invalid reasoning effort {value:?}; expected low, medium, high, xhigh, or max"
+                "invalid reasoning effort {value:?}; expected none, low, medium, high, xhigh, or max"
             )),
         }
     }
@@ -270,7 +324,24 @@ impl FromStr for Thinking {
 mod tests {
     use serde_json::json;
 
-    use super::Prompt;
+    use super::{Prompt, ReasoningMode, Thinking};
+
+    #[test]
+    fn reasoning_configuration_parses_every_public_value() {
+        assert_eq!("standard".parse(), Ok(ReasoningMode::Standard));
+        assert_eq!("pro".parse(), Ok(ReasoningMode::Pro));
+
+        for (value, expected) in [
+            ("none", Thinking::None),
+            ("low", Thinking::Low),
+            ("medium", Thinking::Medium),
+            ("high", Thinking::High),
+            ("xhigh", Thinking::Xhigh),
+            ("max", Thinking::Max),
+        ] {
+            assert_eq!(value.parse(), Ok(expected));
+        }
+    }
 
     #[test]
     fn prompt_serialization_contains_only_user_input() {

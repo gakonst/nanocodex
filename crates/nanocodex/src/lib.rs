@@ -31,7 +31,7 @@ pub use nanocodex_core::{
     InternalMessageMetadata, ItemStatus, JsonSchema, JsonValue, LocalShellAction,
     LocalShellExecAction, LocalShellStatus, MODEL, MessagePhase, MessageRole, OpenAiAuth,
     OpenAiAuthError, OpenAiAuthMode, OutputTextAnnotation, OutputTextLogprob, OutputTextTopLogprob,
-    Prompt, PromptInput, ReasoningContent, ReasoningSummary, ResponseItem, Thinking,
+    Prompt, PromptInput, ReasoningContent, ReasoningMode, ReasoningSummary, ResponseItem, Thinking,
     TimedAgentEvent, ToolCaller, ToolDefinition, Usage, UserInput, WebSearchAction,
     monotonic_now_ns,
 };

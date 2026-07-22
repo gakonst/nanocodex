@@ -170,6 +170,19 @@ let (historical, _events) = agent.fork_from(&checkpoint).await?;
 `prompt().await` means accepted, not completed. The agent retains conversation
 history, tools, cache identity, response chain, and its WebSocket automatically.
 
+GPT-5.6 Pro is selected independently from reasoning effort; it does not use a
+different model slug. All six effort levels are available in either mode:
+
+```rust
+let (agent, _events) = Nanocodex::builder(api_key)
+    .reasoning_mode(ReasoningMode::Pro)
+    .thinking(Thinking::Xhigh) // None, Low, Medium, High, Xhigh, or Max
+    .build()?;
+```
+
+The CLI equivalents are `--reasoning-mode pro --thinking xhigh`, with matching
+`OPENAI_REASONING_MODE` and `OPENAI_REASONING_EFFORT` environment variables.
+
 Independent agents that use the same immutable instructions and tool definitions
 may deliberately share only their provider-side prompt cache while retaining
 separate conversations, response chains, tools, and workspaces:

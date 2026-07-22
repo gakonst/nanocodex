@@ -401,6 +401,7 @@ impl<'a> ResponseCreate<'a> {
             tool_choice: "auto",
             parallel_tool_calls: false,
             reasoning: ReasoningControls {
+                mode: config.reasoning_mode.request_value(),
                 effort: config.thinking.as_str(),
                 summary: "detailed",
                 context: "all_turns",
@@ -423,6 +424,8 @@ impl<'a> ResponseCreate<'a> {
 
 #[derive(Clone, Copy, Serialize)]
 struct ReasoningControls {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'static str>,
     effort: &'static str,
     summary: &'static str,
     context: &'static str,
@@ -447,7 +450,7 @@ struct ClientMetadata<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContentItem, MessageRole, Thinking};
+    use crate::{ContentItem, MessageRole, ReasoningMode, Thinking};
     use serde_json::json;
 
     #[test]
@@ -482,6 +485,39 @@ mod tests {
     #[test]
     fn thinking_defaults_to_medium() {
         assert_eq!(ModelConfig::default().thinking, Thinking::Medium);
+    }
+
+    #[test]
+    fn pro_mode_and_every_effort_serialize_independently() {
+        let prefix: Arc<[ResponseItem]> = Arc::from([ResponseItem::message(
+            MessageRole::Developer,
+            [ContentItem::InputText {
+                text: "system prompt".into(),
+            }],
+        )]);
+        let profile = RequestProfile::new("pro-agent", "pro-lineage", prefix);
+
+        for (thinking, expected) in [
+            (Thinking::None, "none"),
+            (Thinking::Low, "low"),
+            (Thinking::Medium, "medium"),
+            (Thinking::High, "high"),
+            (Thinking::Xhigh, "xhigh"),
+            (Thinking::Max, "max"),
+        ] {
+            let config = ModelConfig {
+                auth: crate::OpenAiAuth::api_key("test-key"),
+                reasoning_mode: ReasoningMode::Pro,
+                thinking,
+                ..ModelConfig::default()
+            };
+            let request = serde_json::to_value(ResponseCreate::warmup(&config, &profile, None))
+                .expect("request should serialize");
+
+            assert_eq!(request["reasoning"]["mode"], json!("pro"));
+            assert_eq!(request["reasoning"]["effort"], json!(expected));
+            assert_eq!(request["reasoning"]["context"], json!("all_turns"));
+        }
     }
 
     #[test]

@@ -36,3 +36,6 @@ JavaScript tools are described with a name, description, JSON Schema, and
 handler. They are injected into code mode as `tools.<name>(input)`, and their
 calls/results are folded into the same ordered Rust `AgentEvent` stream as the
 parent `exec` call.
+
+Pass `reasoning_mode: "pro"` independently from `thinking`, which accepts
+`none`, `low`, `medium`, `high`, `xhigh`, or `max`.

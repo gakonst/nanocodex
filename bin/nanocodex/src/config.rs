@@ -5,7 +5,9 @@ use std::{
 
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
-use nanocodex::{AgentEvents, Nanocodex, OpenAiAuth, Responses, RolloutConfig, Thinking, Tools};
+use nanocodex::{
+    AgentEvents, Nanocodex, OpenAiAuth, ReasoningMode, Responses, RolloutConfig, Thinking, Tools,
+};
 
 use crate::mcp::McpArgs;
 use crate::subagents::{self, ChildAgents};
@@ -34,9 +36,13 @@ pub(crate) struct AgentArgs {
     #[arg(long, default_value = ".")]
     cwd: PathBuf,
 
-    /// Reasoning effort used by the model.
+    /// Reasoning effort: none, low, medium, high, xhigh, or max.
     #[arg(long, env = "OPENAI_REASONING_EFFORT", default_value_t)]
     thinking: Thinking,
+
+    /// Reasoning execution mode: standard or pro.
+    #[arg(long, env = "OPENAI_REASONING_MODE", default_value_t)]
+    reasoning_mode: ReasoningMode,
 
     /// Replace the standard system/developer instructions.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
@@ -115,6 +121,7 @@ impl AgentArgs {
         let tools = tools.build()?;
         let child_agents = self.subagents.then(|| Arc::new(ChildAgents::default()));
         let builder = Nanocodex::builder(auth)
+            .reasoning_mode(self.reasoning_mode)
             .thinking(self.thinking)
             .workspace(self.cwd)
             .responses(responses);

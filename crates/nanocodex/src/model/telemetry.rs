@@ -20,6 +20,7 @@ const COST_STATUS: &str = "not_reported_by_responses_api";
 pub(super) struct ModelCallStarted<'a> {
     pub(super) call_index: u32,
     pub(super) model: &'a str,
+    pub(super) reasoning_mode: &'static str,
     pub(super) effort: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) previous_response_id: Option<&'a str>,
@@ -227,6 +228,7 @@ pub(super) fn terminal_payload<'a>(
     TerminalPayload {
         status: terminal_status,
         model: nanocodex_core::MODEL,
+        reasoning_mode: config.reasoning_mode.as_str(),
         effort: config.thinking.as_str(),
         transport: TRANSPORT,
         orchestration: ModelConfig::orchestration(),
@@ -242,6 +244,7 @@ pub(super) fn terminal_payload<'a>(
 pub(super) struct RunStarted<'a> {
     pub(super) mode: &'static str,
     pub(super) model: &'a str,
+    pub(super) reasoning_mode: &'static str,
     pub(super) effort: &'static str,
     pub(super) transport: &'static str,
     pub(super) orchestration: &'static str,
@@ -265,6 +268,7 @@ pub(super) struct RunError<'a> {
 pub(super) struct TerminalPayload<'a> {
     status: &'static str,
     model: &'a str,
+    reasoning_mode: &'static str,
     effort: &'static str,
     transport: &'static str,
     orchestration: &'static str,

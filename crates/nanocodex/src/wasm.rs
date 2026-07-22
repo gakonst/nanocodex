@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-use nanocodex_core::{EventSink, ModelConfig, Prompt, Thinking};
+use nanocodex_core::{EventSink, ModelConfig, Prompt, ReasoningMode, Thinking};
 use nanocodex_service::{ResponsesClient, ResponsesService, TransportStats};
 use nanocodex_tools::Tools;
 use serde::Deserialize;
@@ -25,6 +25,8 @@ struct WasmConfig {
     api_key: String,
     #[serde(default = "default_thinking")]
     thinking: String,
+    #[serde(default = "default_reasoning_mode")]
+    reasoning_mode: String,
     #[serde(default = "default_websocket_url")]
     websocket_url: String,
     #[serde(default = "default_api_base_url")]
@@ -61,9 +63,14 @@ impl WasmNanocodex {
             .map_err(|error| js_error(format!("invalid Nanocodex configuration: {error}")))?;
         validate(&config)?;
         let thinking = config.thinking.parse::<Thinking>().map_err(js_error)?;
+        let reasoning_mode = config
+            .reasoning_mode
+            .parse::<ReasoningMode>()
+            .map_err(js_error)?;
         let session_id = config.session_id.unwrap_or_else(new_session_id);
         let model_config = Arc::new(ModelConfig {
             auth: nanocodex_core::OpenAiAuth::api_key(config.api_key),
+            reasoning_mode,
             thinking,
             websocket_url: config.websocket_url,
             api_base_url: config.api_base_url,
@@ -214,6 +221,10 @@ fn new_session_id() -> String {
 
 fn default_thinking() -> String {
     "medium".to_owned()
+}
+
+fn default_reasoning_mode() -> String {
+    "standard".to_owned()
 }
 
 fn default_websocket_url() -> String {
