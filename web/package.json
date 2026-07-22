@@ -1,5 +1,5 @@
 {
-  "name": "nanocodex",
+  "name": "nanocodex-web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,28 +8,36 @@
   },
   "scripts": {
     "sync": "node scripts/sync-nanocodex.mjs && node scripts/sync-harbor.mjs",
-    "predev": "npm run sync",
-    "dev": "vite dev",
+    "wasm": "cd .. && just build-wasm",
+    "predev": "npm run sync && npm run wasm",
+    "dev": "CLOUDFLARE_INCLUDE_PROCESS_ENV=true node --env-file-if-exists=../.env ./node_modules/vite/bin/vite.js dev",
+    "test": "node --test src/agentTerminalModel.test.ts worker/index.test.ts",
     "typecheck": "tsc --noEmit",
     "gen:types": "wrangler types",
-    "prebuild": "npm run sync",
+    "prebuild": "npm run sync && npm run wasm",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "deploy:preview": "npm run build && wrangler deploy --env preview",
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
+    "nanocodex": "file:../js/bindings",
+    "nanocodex-react": "file:../js/react",
     "@pierre/diffs": "1.2.12",
+    "@pierre/theme": "^1.1.0",
     "@pierre/trees": "^1.0.0-beta.5",
     "@radix-ui/react-dropdown-menu": "2.1.16",
     "@radix-ui/react-switch": "1.2.6",
     "@tanstack/react-virtual": "^3.14.6",
     "lucide-react": "^1.24.0",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "shiki": "^4.2.0",
+    "streamdown": "^2.5.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
+    "@types/node": "^22.20.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",

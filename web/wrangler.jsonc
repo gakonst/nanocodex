@@ -20,6 +20,20 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BYOK_SESSIONS",
+        "class_name": "ByokSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ByokSession"]
+    }
+  ],
   "vars": {
     "ENVIRONMENT": "development"
   },

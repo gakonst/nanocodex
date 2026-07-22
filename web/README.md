@@ -25,6 +25,13 @@ npm install
 npm run dev
 ```
 
+The homepage consumes the publishable `nanocodex` and `nanocodex-react`
+packages under `../js`; it does not reach into generated WASM artifacts. Its
+React integration follows an external-store pattern: create a
+`createNanocodexConfig()` once, pass it to `NanocodexProvider`, and consume
+`useNanocodexState`, `useNanocodexMessages`, or the compatibility
+`useNanocodex` hook. React owns no agent history or model-loop state.
+
 The local Worker and Vite client run together at `http://localhost:5173`, using
 the same Cloudflare Vite-plugin layout as Tempo's React MPP examples.
 
@@ -47,6 +54,42 @@ The homepage and Evals view present the matched public task set as a provisional
 development instrument, not a general product ranking. The comparison links
 each disagreement back to its retained trial so compatibility gaps can be
 inspected directly.
+
+The homepage is also a real embedded-agent demo with three deliberately thin
+layers:
+
+- `../js/bindings` publishes `nanocodex`, the viem-like imperative client. Its agent and turn
+  handles expose prompt, typed browser content, steer, cancel, latest-checkpoint
+  fork, historical-checkpoint fork, and clean sibling spawn operations.
+- `../js/react` publishes `nanocodex-react`, the wagmi-like headless React owner. Its provider and
+  hooks manage the module Worker lifecycle, readiness, commands, and event
+  subscriptions without imposing presentation policy.
+- `AgentTerminal` is the optimized Ratatui-faithful consumer: native colors,
+  rendering hierarchy, queue/steer behavior, `/btw`, historical branch editing,
+  branch navigation, per-branch drafts, clipboard images, and key bindings over
+  virtualized transcripts.
+
+The module Worker loads the generated `nanocodex-wasm` package, and the Rust
+engine owns the persistent Responses session, typed history, event stream, and
+tool loop. The Cloudflare Worker upgrades `/api/responses` and proxies OpenAI
+tool calls. It accepts a user-provided OpenAI key into a one-hour Durable Object
+session and returns only an opaque `HttpOnly`, `SameSite=Strict` cookie. The key
+is never placed in a URL, local storage, React state, or WASM configuration.
+A user key takes precedence over the optional deployment-owned
+`OPENAI_API_KEY`; forgetting or expiring it falls back to that deployment key
+when present.
+
+Local development reads the optional ignored root `.env` through the repository
+workflow. For a shared demo fallback, configure the deployed Worker with
+`wrangler secret put OPENAI_API_KEY`. BYOK itself uses the `BYOK_SESSIONS`
+Durable Object binding declared in `wrangler.jsonc` and does not require a
+deployment-owned OpenAI key.
+
+Streaming events are coalesced once per animation frame before updating the
+semantic transcript, and each independently scrolling transcript is
+virtualized. `npm test` keeps the
+event accumulator bounded under a 20,000-delta burst and covers assistant,
+reasoning, and tool lifecycle updates.
 
 The homepage also exposes the release contract: the checksum-verifying install
 command, in-place `nanocodex update`, the crates.io SDK entry point, and links

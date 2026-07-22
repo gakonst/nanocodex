@@ -23,6 +23,7 @@ import {
 } from "react";
 import type { CodeBrowserHandle } from "./CodeBrowser";
 import type { CommitCodeStreamHandle } from "./CommitCodeStream";
+import { AgentTerminal } from "./AgentTerminal";
 import harborSummaryData from "./data/harbor-summary.json";
 import repositoryData from "./data/harness-repository.json";
 import type { EvalComparison } from "./Harbor";
@@ -564,6 +565,8 @@ export function Xedoc() {
                       entire product.
                     </p>
                   </header>
+
+                  <AgentTerminal />
 
                   <section
                     className="home-release-section"
