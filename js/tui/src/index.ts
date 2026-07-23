@@ -48,11 +48,18 @@ export type ToolActivity = {
   children: ToolActivity[];
 };
 
+export type PlanStepStatus = "pending" | "in_progress" | "completed";
+export type PlanUpdate = {
+  explanation?: string;
+  plan: { step: string; status: PlanStepStatus }[];
+};
+
 export type TerminalEntry =
   | { id: string; kind: "user"; text: string; promptId?: number }
   | { id: string; kind: "reasoning"; text: string; streaming: boolean }
   | { id: string; kind: "assistant"; text: string; streaming: boolean }
   | { id: string; kind: "tool"; tool: ToolActivity }
+  | { id: string; kind: "plan"; update: PlanUpdate }
   | { id: string; kind: "error"; text: string };
 
 export type PendingSteer = {
@@ -283,10 +290,21 @@ export function applyAgentEvents(
         }
         break;
       }
-      case "tool.call":
+      case "tool.call": {
+        const tool = payloadString(event.payload, "tool") ?? "tool";
+        if (isEmptyTerminalPoll(tool, event.payload.arguments)) break;
+        if (tool === "update_plan") {
+          const update = decodePlanUpdate(event.payload.arguments);
+          if (update) {
+            mutableEntries().push({ id: `plan-${event.seq}`, kind: "plan", update });
+            next.status = "Working";
+            break;
+          }
+        }
         applyToolCall(mutableEntries(), event);
-        next.status = `Running ${payloadString(event.payload, "tool") ?? "tool"}`;
+        next.status = `Running ${tool}`;
         break;
+      }
       case "tool.result":
         applyToolResult(mutableEntries(), event);
         next.status = "Working";
@@ -420,6 +438,27 @@ function applyToolCall(entries: TerminalEntry[], event: AgentEvent): void {
     }
   }
   entries.push({ id: `tool-${callId}`, kind: "tool", tool });
+}
+
+function isEmptyTerminalPoll(tool: string, value: unknown): boolean {
+  return tool === "write_stdin"
+    && isObject(value)
+    && (typeof value.chars !== "string" || value.chars.length === 0);
+}
+
+function decodePlanUpdate(value: unknown): PlanUpdate | undefined {
+  if (!isObject(value) || !Array.isArray(value.plan)) return undefined;
+  const plan = value.plan.flatMap((item) => {
+    if (!isObject(item) || typeof item.step !== "string") return [];
+    const status = item.status;
+    if (status !== "pending" && status !== "in_progress" && status !== "completed") return [];
+    return [{ step: item.step, status } satisfies PlanUpdate["plan"][number]];
+  });
+  if (plan.length !== value.plan.length) return undefined;
+  return {
+    ...(typeof value.explanation === "string" ? { explanation: value.explanation } : {}),
+    plan,
+  };
 }
 
 function applyToolResult(entries: TerminalEntry[], event: AgentEvent): void {

@@ -60,6 +60,16 @@
   color: var(--nc-color-muted);
 }
 
+.tui-plan-line.is-completed {
+  color: var(--nc-color-muted);
+  text-decoration: line-through;
+}
+
+.tui-plan-line.is-in_progress {
+  color: var(--nc-color-accent);
+  font-weight: 700;
+}
+
 .tui-branches,
 .tui-yellow { color: var(--nc-color-warning); }
 .tui-green { color: var(--nc-color-success); }

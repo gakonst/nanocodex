@@ -172,6 +172,11 @@
   overflow-wrap: anywhere;
 }
 
+.tui-plan-line {
+  padding-left: 2ch;
+  overflow-wrap: anywhere;
+}
+
 .tui-tool-images {
   display: flex;
   gap: 1ch;

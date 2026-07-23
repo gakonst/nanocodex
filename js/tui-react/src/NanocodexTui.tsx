@@ -30,6 +30,7 @@ import {
   turnFinished,
   turnRejected,
   type AgentEvent,
+  type PlanUpdate,
   type TerminalEntry,
   type TerminalState,
   type ToolActivity,
@@ -995,8 +996,24 @@ const TranscriptRow = memo(function TranscriptRow({
   if (entry.kind === "error") {
     return <div className="tui-entry tui-error" data-nc-part="entry" data-kind="error">✗ {entry.text}</div>;
   }
+  if (entry.kind === "plan") {
+    return <PlanRow update={entry.update} />;
+  }
   return <ToolRow tool={entry.tool} />;
 });
+
+function PlanRow({ update }: { update: PlanUpdate }) {
+  const explanation = update.explanation?.trim();
+  return <div className="tui-entry tui-plan" data-nc-part="entry" data-kind="plan">
+    <div><span className="tui-dim">• </span><strong>Updated Plan</strong></div>
+    {explanation ? <div className="tui-plan-line tui-dim"><span>└ </span><em>{explanation}</em></div> : null}
+    {update.plan.map((item, index) => {
+      const marker = item.status === "completed" ? "✔" : "□";
+      const connector = !explanation && index === 0 ? "└ " : "  ";
+      return <div className={`tui-plan-line is-${item.status}`} key={`${index}-${item.step}`}><span className="tui-dim">{connector}</span>{marker} {item.step}</div>;
+    })}
+  </div>;
+}
 
 function ToolRow({ tool }: { tool: ToolActivity }) {
   const style = toolStyle(tool.status);
@@ -1005,7 +1022,7 @@ function ToolRow({ tool }: { tool: ToolActivity }) {
   return (
     <div className="tui-entry tui-tool" data-nc-part="entry" data-kind="tool" data-state={tool.status}>
       <div><strong className={style.className}>{style.icon} {displayName}</strong>{details ? <span className="tui-dim">  {details}</span> : null}</div>
-      {tool.name === "exec" && tool.arguments ? (
+      {tool.name === "exec" && tool.arguments && !tool.children.length ? (
         <div className="tui-tool-code"><span>  ┌─ javascript · {codeLineCount(tool.arguments)} LOC</span><SyntaxCode code={tool.arguments} language="javascript" tree /><span>  └─</span></div>
       ) : !tool.children.length && (tool.arguments || tool.result) ? (
         <pre className="tui-tool-detail"><span>  └─ </span>{[tool.arguments, tool.result].filter(Boolean).join(" · ")}</pre>
@@ -1026,9 +1043,12 @@ function codeLineCount(source: string): number {
 
 function ToolChild({ tool, last }: { tool: ToolActivity; last: boolean }) {
   const style = toolStyle(tool.status);
+  const displayName = tool.name === "exec_command"
+    ? tool.status === "running" ? "Running" : "Ran"
+    : tool.name;
   const detail = [tool.arguments, tool.durationNs ? formatDuration(tool.durationNs) : undefined, tool.result]
     .filter(Boolean).join(" · ");
-  return <div className="tui-tool-child"><span className="tui-dim">  {last ? "└─" : "├─"}</span><span className={style.className}> {style.icon} {tool.name}</span>{detail ? <span className="tui-dim">  {detail}</span> : null}</div>;
+  return <div className="tui-tool-child"><span className="tui-dim">  {last ? "└─" : "├─"}</span><span className={style.className}> {style.icon} {displayName}</span>{detail ? <span className="tui-dim">  {detail}</span> : null}</div>;
 }
 
 function BranchNavigator({ tui }: { tui: TuiState }) {
@@ -1233,6 +1253,7 @@ function formatDuration(nanoseconds: number): string {
 function estimateHeight(entry: TerminalEntry | undefined): number {
   if (!entry) return 36;
   if (entry.kind === "tool") return 54 + entry.tool.children.length * 18 + lineCount(entry.tool.arguments) * 18;
+  if (entry.kind === "plan") return 28 + (entry.update.plan.length + (entry.update.explanation ? 1 : 0)) * 18;
   const lines = lineCount(entry.text);
   return Math.min(520, 28 + lines * 18);
 }

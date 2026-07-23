@@ -199,6 +199,57 @@ test("code-mode children render under their parent tool activity", () => {
   assert.equal(entry?.kind === "tool" ? entry.tool.children[0]?.status : undefined, "completed");
 });
 
+test("empty terminal polls stay hidden even when they fail", () => {
+  const state = applyAgentEvents(initialTerminalState(), [
+    event(1, "tool.call", {
+      call_id: "call-exec",
+      tool: "exec",
+      arguments: "await tools.write_stdin({ session_id: 7 })",
+    }),
+    event(2, "tool.call", {
+      call_id: "call-exec/code-1",
+      tool: "write_stdin",
+      arguments: { session_id: 7, chars: "" },
+    }),
+    event(3, "tool.result", {
+      call_id: "call-exec/code-1",
+      tool: "write_stdin",
+      status: "failed",
+      result: "unknown session",
+    }),
+  ]);
+
+  assert.equal(state.entries.length, 1);
+  assert.equal(state.entries[0]?.kind === "tool" ? state.entries[0].tool.children.length : -1, 0);
+});
+
+test("plan updates become checklist entries", () => {
+  const state = applyAgentEvents(initialTerminalState(), [
+    event(1, "tool.call", {
+      call_id: "call-plan",
+      tool: "update_plan",
+      arguments: {
+        explanation: "Adapting the work",
+        plan: [
+          { step: "Inspect", status: "completed" },
+          { step: "Implement", status: "in_progress" },
+          { step: "Verify", status: "pending" },
+        ],
+      },
+    }),
+    event(2, "tool.result", {
+      call_id: "call-plan",
+      tool: "update_plan",
+      status: "completed",
+      result: "Plan updated",
+    }),
+  ]);
+
+  assert.equal(state.entries.length, 1);
+  assert.equal(state.entries[0]?.kind, "plan");
+  assert.equal(state.entries[0]?.kind === "plan" ? state.entries[0].update.plan[1]?.status : undefined, "in_progress");
+});
+
 test("apply_patch activities summarize added and removed lines", () => {
   const patch = "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old();\n+new();\n keep();\n*** Add File: README.md\n+# Demo\n+\n*** End Patch";
   const state = applyAgentEvents(initialTerminalState(), [
