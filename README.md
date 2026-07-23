@@ -190,6 +190,16 @@ Both project the same immutable committed session boundary: snapshots encode
 the complete native restore state, while rollouts append the Codex-specific
 turn envelope and only the newly committed history.
 
+Creating and retaining that committed boundary is constant-time: forks,
+`TurnResult`, and rollout projection share the immutable typed-history prefix.
+Calling `TurnResult::snapshot()` is deliberately different. It copies the
+complete history into an independently serializable value, so its work and
+memory scale with total retained history; JSON encoding adds another
+content-sized pass. Treat it as a durability boundary rather than something to
+call after every turn unless every boundary must be retained. Rollout recording
+remains incremental during ordinary turns, and the first request after
+restoring a serialized snapshot performs the required full-history replay.
+
 GPT-5.6 Pro is selected independently from reasoning effort; it does not use a
 different model slug. All six effort levels are available in either mode:
 
@@ -429,11 +439,13 @@ let (mainline, historical, latest) = tokio::try_join!(
 
 #### Why checkpoint forks are efficient
 
-Every Nanocodex `response.create` request sets `store: true`. Once a response
-completes, the API can retain it as a checkpoint; Nanocodex keeps its response
-ID private inside the completed `TurnResult`. The next healthy model call sends
-that ID as `previous_response_id` plus only the new delta—the user message,
-steer, or tool output added since the stored response—not the transcript again.
+With the stored incremental policy, used by default with API-key
+authentication, each Nanocodex `response.create` request sets `store: true`.
+Once a response completes, the API can retain it as a checkpoint; Nanocodex
+keeps its response ID private inside the completed `TurnResult`. The next
+healthy model call sends that ID as `previous_response_id` plus only the new
+delta—the user message, steer, or tool output added since the stored
+response—not the transcript again.
 
 The same mechanism makes a historical fork cheap:
 
@@ -451,6 +463,13 @@ Locally, immutable typed-history segments and stable cache lineage are shared,
 so constructing the branch does not copy the retained conversation either.
 The API still evaluates the complete logical context—and token usage reflects
 that context—even though the request payload carries only the delta.
+
+The local fork remains constant-time under every transport and storage policy.
+What changes is its first wire request: a fresh `store: false` fork cannot use a
+durable provider checkpoint and replays its shared committed history. HTTPS
+with `store: false` also replays on every turn; a persistent WebSocket may use
+connection-local incremental continuation until it is replaced. Stable cache
+lineage is preserved in all cases.
 
 Stored responses are an optimization, not the source of truth. Nanocodex keeps
 complete client-owned typed history for every checkpoint. If the provider no
@@ -691,6 +710,16 @@ model-service speed guarantees. See
 and
 [`long_prompt_profile_2026-07-20.md`](benchmarks/long_prompt_profile_2026-07-20.md)
 for methodology and reproduction commands.
+
+The committed-history benchmark on the current session/rollout implementation
+kept an active checkpoint plus parent append at 0.369–0.394 µs from 100 through
+10,000 retained items. Iterating only the next request suffix stayed near 26
+ns. The full-history flattening component required by an explicit durable
+snapshot scaled from 8.2 µs at 100 items to 92 µs at 1,000 and 992 µs at
+10,000. Those synthetic items contain about 512 bytes of text each; the
+flattening numbers exclude JSON encoding. See the
+[transport benchmark](docs/RESPONSE_TRANSPORT_BENCH.md#committed-session-projection-cost)
+for the table and interpretation.
 
 Our live checkpoint benchmark uses `gpt-5.6-sol`, a deterministic 600-fact
 prefix, ten sequential turns, and concurrent historical forks. Three runs on

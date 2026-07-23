@@ -202,6 +202,45 @@ evidence for byte volume, cache behavior, connection setup, and first-event
 behavior; it is not evidence that `store` itself changes model generation
 speed.
 
+## Committed-session projection cost
+
+Forks, native durable snapshots, and Codex-compatible rollouts now project one
+immutable committed session boundary. The refactor did not change
+`ResponseHistory`, request construction, transport setup, or the benchmark
+harness. It replaced parallel checkpoint wrappers with one shared private type
+containing the same lineage and model-checkpoint fields.
+
+The deterministic Criterion suite was rerun on 2026-07-23 from
+`7cdf7b6f005c55e308fe127678eb91b6a5909837` on the same arm64 macOS host. Its
+synthetic response items contain approximately 512 bytes of text each:
+
+| Local operation | 100 items | 1,000 items | 10,000 items |
+| --- | ---: | ---: | ---: |
+| Seal active boundary, retain checkpoint, append to parent | 0.369 µs | 0.372 µs | 0.394 µs |
+| Iterate only the next request suffix | 27.6 ns | 25.8 ns | 25.8 ns |
+| Flatten retained history into one shared owner | 8.2 µs | 92 µs | 992 µs |
+
+The first two rows cover the hot-path mechanics used by forks, incremental
+requests, and rollout projection. They remain effectively constant as retained
+history grows. The live transport run independently measured checkpoint
+selection at 0.3–0.4 µs per fork before driver and transport setup.
+
+The final row isolates the full-history flattening component of an explicit
+durable snapshot; it is a structural proxy rather than an end-to-end
+`SessionSnapshot` serialization benchmark. `TurnResult::snapshot()` also copies
+small session metadata, and serializing the result adds a JSON pass. Both
+snapshot construction and the first resumed request therefore scale with total
+retained history. Normal completion, forking, and incremental rollout writes do
+not perform this flattening. Repeatedly retaining a snapshot after every turn
+can make cumulative copying quadratic in conversation length; applications
+should snapshot at the durability cadence they actually require.
+
+Reproduce the local measurements with:
+
+```sh
+cargo bench -p nanocodex-core --bench fork_history -- --noplot
+```
+
 ## Design implication
 
 The TUI should select one transport and storage policy when it creates an agent
