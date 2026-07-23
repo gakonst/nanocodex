@@ -558,6 +558,15 @@ mod tests {
             history: &[],
             output_token_budget: DEFAULT_TOOL_OUTPUT_TOKENS,
         };
+        let warmup = mcp
+            .search
+            .execute(
+                ToolInput::Function(to_raw_value(&json!({ "query": "echo message" })).unwrap()),
+                context,
+            )
+            .await
+            .unwrap();
+        assert!(warmup.success);
         let started = std::time::Instant::now();
         for _ in 0..10_000 {
             let result = mcp
@@ -570,6 +579,74 @@ mod tests {
                 .unwrap();
             assert!(result.success);
         }
-        eprintln!("10k repeated searches: {:?}", started.elapsed());
+        eprintln!("10k prewarmed searches: {:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    #[ignore = "manual Streamable HTTP MCP handshake and discovery smoke"]
+    async fn smoke_http_servers_from_environment() {
+        let configured = std::env::var("NANOCODEX_MCP_SMOKE_SERVERS")
+            .expect("set NANOCODEX_MCP_SMOKE_SERVERS to comma-separated NAME=URL entries");
+        let bearers = std::env::var("NANOCODEX_MCP_SMOKE_BEARERS")
+            .ok()
+            .map(|configured| {
+                configured
+                    .split(',')
+                    .map(|entry| {
+                        let (name, variable) = entry
+                            .split_once('=')
+                            .expect("each smoke bearer must use NAME=ENV");
+                        (name.to_owned(), variable.to_owned())
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let mut builder = Mcp::builder();
+        for entry in configured.split(',') {
+            let (name, url) = entry
+                .split_once('=')
+                .expect("each smoke server must use NAME=URL");
+            let mut server = McpServer::http(url).startup_timeout(Duration::from_secs(120));
+            if let Some(variable) = bearers.get(name) {
+                server = server.bearer_token_env(variable);
+            }
+            builder = builder.server(name, server);
+        }
+        let mcp = builder.build().unwrap();
+        mcp.start();
+        let result = mcp
+            .search
+            .execute(
+                ToolInput::Function(
+                    to_raw_value(&json!({
+                        "query": "documentation status health search list",
+                        "limit": 32
+                    }))
+                    .unwrap(),
+                ),
+                ToolContext {
+                    model: MODEL,
+                    session_id: "http-smoke-session",
+                    call_id: "http-smoke-search",
+                    history: &[],
+                    output_token_budget: DEFAULT_TOOL_OUTPUT_TOKENS,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        let ToolOutputBody::Text(output) = result.output else {
+            panic!("expected JSON text search result");
+        };
+        let output: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(output["pending_servers"], 0);
+        assert_eq!(output["failed_servers"], json!({}));
+        let tools = output["tools"].as_array().expect("tools must be an array");
+        assert!(!tools.is_empty());
+        let names = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        eprintln!("HTTP MCP smoke discovered {} tools: {names:?}", tools.len());
     }
 }

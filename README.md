@@ -616,6 +616,20 @@ nanocodex auth login
 nanocodex --auth-file "${CODEX_HOME:-$HOME/.codex}/auth.json"
 ```
 
+The CLI starts the deferred `openaiDeveloperDocs`, `tempo`, and `cloudflare`
+Streamable HTTP MCP providers by default. Their catalogs stay out of the stable
+model prompt until Code Mode calls `tool_search`. Disable the set with
+`--mcp-defaults false`, or override and extend it with the existing `--mcp` and
+`--mcp-stdio` options. `NANOCODEX_MCP_DEFAULTS=false` is the environment
+equivalent.
+
+Provider prewarming is scheduled before agent construction returns, so the TUI
+does not wait for HTTP client setup, DNS/TLS, MCP handshakes, `tools/list`, or
+BM25 indexing. Discovery and index construction run in parallel in the
+background while the terminal is idle. Activating a deferred tool changes only
+the nested Code Mode runtime; the model-visible `exec`/`tool_search` prefix stays
+byte-stable for prompt-cache reuse.
+
 The CLI records Codex-compatible rollouts beneath
 `${CODEX_HOME:-$HOME/.codex}/sessions` by default. The `request_id` in headless
 JSONL is the resumable UUID, so a completed handoff is:

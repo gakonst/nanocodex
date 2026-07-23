@@ -6,7 +6,7 @@ use std::{
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
 use nanocodex::{
-    AgentEvents, Nanocodex, OpenAiAuth, ReasoningMode, Responses, ResponsesHistory,
+    AgentEvents, Nanocodex, OpenAiAuth, OpenAiAuthMode, ReasoningMode, Responses, ResponsesHistory,
     ResponsesTransport, RolloutConfig, Thinking, Tools,
 };
 
@@ -141,9 +141,7 @@ impl AgentArgs {
         } else {
             select_auth(self.api_key, self.auth_file, environment_api_key()?)?
         };
-        let direct_websocket_url = self
-            .websocket_url
-            .unwrap_or_else(|| "wss://api.openai.com/v1/responses".to_owned());
+        let direct_websocket_url = direct_websocket_url(self.websocket_url, auth.mode());
         let (websocket_url, mpp_adapter) = self.mpp.start(direct_websocket_url).await?;
         let mut responses = Responses::builder()
             .transport(self.responses_transport)
@@ -209,6 +207,10 @@ impl AgentArgs {
             mpp_adapter,
         })
     }
+}
+
+fn direct_websocket_url(explicit: Option<String>, auth_mode: OpenAiAuthMode) -> String {
+    explicit.unwrap_or_else(|| auth_mode.default_websocket_url().to_owned())
 }
 
 fn select_auth(
@@ -306,7 +308,26 @@ mod tests {
     use clap::CommandFactory;
     use nanocodex::OpenAiAuthMode;
 
-    use super::{select_auth, select_auth_with_default};
+    use super::{direct_websocket_url, select_auth, select_auth_with_default};
+
+    #[test]
+    fn default_websocket_url_follows_the_selected_auth_mode() {
+        assert_eq!(
+            direct_websocket_url(None, OpenAiAuthMode::ApiKey),
+            "wss://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            direct_websocket_url(None, OpenAiAuthMode::ChatGpt),
+            "wss://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            direct_websocket_url(
+                Some("ws://127.0.0.1:1234/responses".to_owned()),
+                OpenAiAuthMode::ChatGpt,
+            ),
+            "ws://127.0.0.1:1234/responses"
+        );
+    }
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -354,6 +375,17 @@ mod tests {
             .expect("the CLI should expose the rollouts argument");
 
         assert_eq!(rollouts.get_default_values(), ["true"]);
+    }
+
+    #[test]
+    fn standard_mcp_servers_are_enabled_by_default() {
+        let command = crate::Cli::command();
+        let mcp_defaults = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "mcp_defaults")
+            .expect("the CLI should expose the MCP defaults argument");
+
+        assert_eq!(mcp_defaults.get_default_values(), ["true"]);
     }
 
     #[test]

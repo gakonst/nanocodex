@@ -28,7 +28,6 @@ mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "
 mpp-egress.workspace = true
 ratatui.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
-reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls"] }
 self-replace.workspace = true
 semver.workspace = true
 serde.workspace = true
@@ -50,6 +49,7 @@ vergen = { workspace = true, features = ["build", "git", "gitcl"] }
 
 [dev-dependencies]
 criterion.workspace = true
+nanocodex-tools.workspace = true
 tokio-tungstenite.workspace = true
 
 [[bench]]

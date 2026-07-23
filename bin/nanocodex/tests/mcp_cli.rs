@@ -29,6 +29,8 @@ async fn repeated_cli_turns_search_and_call_mcp_through_the_library() -> Result<
             .arg(endpoint)
             .arg("--cwd")
             .arg(&workspace)
+            .arg("--mcp-defaults")
+            .arg("false")
             .arg("--mcp-stdio")
             .arg("fixture=node")
             .arg("--mcp-arg")

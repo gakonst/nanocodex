@@ -40,8 +40,8 @@ pub(crate) async fn connect(server: &McpServer) -> Result<ConnectedServer, Strin
                 .map_err(|error| format!("failed to launch stdio transport: {error}"))?;
             let client = tokio::time::timeout(server.startup_timeout, ().serve(transport))
                 .await
-                .map_err(|_| startup_timeout(server))?
-                .map_err(|error| format!("MCP initialize failed: {error}"))?;
+                .map_err(|_| startup_timeout(server, "initialize"))?
+                .map_err(|error| format!("MCP initialize failed: {}", error_chain(&error)))?;
             finish_startup(server, client).await
         }
         McpTransport::StreamableHttp {
@@ -53,6 +53,13 @@ pub(crate) async fn connect(server: &McpServer) -> Result<ConnectedServer, Strin
             // Installing ring is idempotent and keeps this crate usable without
             // requiring nanocodex-service to have opened a WebSocket first.
             drop(rustls::crypto::ring::default_provider().install_default());
+            let http_client = reqwest::Client::builder()
+                // Match RMCP's default: its streamed handshake responses are not always fully
+                // consumed before the next request, so retaining them as idle connections causes
+                // stalls or failed sends with real peers.
+                .pool_max_idle_per_host(0)
+                .build()
+                .map_err(|error| format!("failed to build MCP HTTP client: {error}"))?;
             if url.trim().is_empty() {
                 return Err("Streamable HTTP URL must not be empty".to_owned());
             }
@@ -77,11 +84,11 @@ pub(crate) async fn connect(server: &McpServer) -> Result<ConnectedServer, Strin
                 }
                 config = config.auth_header(token);
             }
-            let transport = StreamableHttpClientTransport::from_config(config);
+            let transport = StreamableHttpClientTransport::with_client(http_client, config);
             let client = tokio::time::timeout(server.startup_timeout, ().serve(transport))
                 .await
-                .map_err(|_| startup_timeout(server))?
-                .map_err(|error| format!("MCP initialize failed: {error}"))?;
+                .map_err(|_| startup_timeout(server, "initialize"))?
+                .map_err(|error| format!("MCP initialize failed: {}", error_chain(&error)))?;
             finish_startup(server, client).await
         }
     }
@@ -94,17 +101,28 @@ async fn finish_startup(
     let client = Arc::new(client);
     let tools = tokio::time::timeout(server.startup_timeout, client.list_all_tools())
         .await
-        .map_err(|_| startup_timeout(server))?
-        .map_err(|error| format!("MCP tools/list failed: {error}"))?
+        .map_err(|_| startup_timeout(server, "tools/list"))?
+        .map_err(|error| format!("MCP tools/list failed: {}", error_chain(&error)))?
         .into_iter()
         .filter(|tool| server.includes_tool(tool.name.as_ref()))
         .collect();
     Ok(ConnectedServer { client, tools })
 }
 
-fn startup_timeout(server: &McpServer) -> String {
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        message.push_str(": ");
+        message.push_str(&error.to_string());
+        source = error.source();
+    }
+    message
+}
+
+fn startup_timeout(server: &McpServer, operation: &str) -> String {
     format!(
-        "MCP startup exceeded {:.1} seconds",
+        "MCP {operation} exceeded {:.1} seconds",
         server.startup_timeout.as_secs_f64()
     )
 }

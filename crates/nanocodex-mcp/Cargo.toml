@@ -23,6 +23,7 @@ bm25.workspace = true
 http.workspace = true
 nanocodex-core.workspace = true
 nanocodex-tools.workspace = true
+reqwest.workspace = true
 rmcp.workspace = true
 rustls.workspace = true
 serde.workspace = true

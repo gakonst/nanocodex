@@ -845,7 +845,6 @@ where
     /// Returns an infrastructure error while receiving or starting a command.
     #[allow(clippy::too_many_lines)]
     async fn run(mut self) -> Result<()> {
-        self.tools.start_providers();
         let session_id = self.events.request_id().to_owned();
         let rollout = self.rollout.take();
         let mut default_thinking = self.spawner.config.thinking;
@@ -1595,6 +1594,9 @@ where
         rollout: rollout_info,
         rollout_recorder: rollout.clone(),
     };
+    // Start discovery before returning the handle so an idle CLI or TUI immediately
+    // contributes its human think time to provider prewarming.
+    tools.start_providers();
     drop(
         runtime.spawn(
             AgentDriver {
@@ -1717,10 +1719,14 @@ fn rollout_workspace(workspace: Option<&str>) -> std::io::Result<PathBuf> {
 mod tests {
     use std::{
         future::{Pending, Ready, pending},
+        sync::atomic::AtomicBool,
         time::Duration,
     };
 
     use super::*;
+    use async_trait::async_trait;
+    use nanocodex_tools::{DynamicToolProvider, ToolContext, ToolDefinition, ToolExecution};
+    use serde_json::Value;
     use tempfile::tempdir;
     use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
 
@@ -1746,6 +1752,32 @@ mod tests {
 
     #[derive(Clone)]
     struct PendingService;
+
+    struct StartProbe(Arc<AtomicBool>);
+
+    #[async_trait]
+    impl DynamicToolProvider for StartProbe {
+        fn start(&self) {
+            self.0.store(true, Ordering::Release);
+        }
+
+        fn direct_tools(&self) -> Vec<Arc<dyn nanocodex_tools::Tool>> {
+            Vec::new()
+        }
+
+        fn available_definitions(&self) -> Vec<ToolDefinition> {
+            Vec::new()
+        }
+
+        async fn execute(
+            &self,
+            _name: &str,
+            _input: Value,
+            _context: ToolContext<'_>,
+        ) -> Option<ToolExecution> {
+            None
+        }
+    }
 
     impl Service<ResponsesAttempt> for PendingService {
         type Response = ResponsesServiceResponse;
@@ -1779,6 +1811,25 @@ mod tests {
             .responses(responses)
             .build()
             .unwrap();
+        drop(events);
+    }
+
+    #[tokio::test]
+    async fn starts_dynamic_providers_before_build_returns() {
+        let started = Arc::new(AtomicBool::new(false));
+        let tools = Tools::builder()
+            .provider(StartProbe(Arc::clone(&started)))
+            .build()
+            .unwrap();
+        let responses = Responses::builder().service(|| NeverCalled).build();
+
+        let (_agent, events) = Nanocodex::builder("test")
+            .tools(tools)
+            .responses(responses)
+            .build()
+            .unwrap();
+
+        assert!(started.load(Ordering::Acquire));
         drop(events);
     }
 

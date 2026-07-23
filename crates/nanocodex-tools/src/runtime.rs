@@ -1597,6 +1597,7 @@ text(result);
             .unwrap();
         tools.start_providers();
         let runtime = ToolRuntime::new(".", None, None).with_tools(&tools);
+        let model_specs_before = serde_json::to_vec(&runtime.model_specs()).unwrap();
         let execution = runtime
             .execute_code(
                 r#"
@@ -1615,6 +1616,11 @@ text(result.value);
             .await;
 
         assert!(execution.success);
+        assert_eq!(
+            serde_json::to_vec(&runtime.model_specs()).unwrap(),
+            model_specs_before,
+            "activating deferred tools must not change the model request prefix"
+        );
         assert_eq!(execution.nested_calls.len(), 2);
         assert_eq!(execution.nested_calls[0].name, "tool_search");
         assert_eq!(execution.nested_calls[1].name, "deferred_echo");

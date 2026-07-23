@@ -226,16 +226,16 @@ impl MppArgs {
             .with_max_deposit(self.max_deposit)
             .with_top_up_amount(self.top_up_amount)
             .with_autoswap(autoswap);
-        let mut management_headers = reqwest13::header::HeaderMap::new();
+        let mut management_headers = reqwest::header::HeaderMap::new();
         if let Some(api_key) = &self.mpp_api_key {
             management_headers.insert(
-                reqwest13::header::HeaderName::from_static("x-api-key"),
-                reqwest13::header::HeaderValue::from_str(api_key)?,
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                reqwest::header::HeaderValue::from_str(api_key)?,
             );
         }
         let payment = NativeSession {
             session,
-            client: reqwest13::Client::new(),
+            client: reqwest::Client::new(),
             management_url: endpoint.to_string(),
             management_headers,
         };
@@ -305,9 +305,9 @@ where
     }
 }
 
-fn payment_http_url(websocket_url: &str) -> Result<reqwest13::Url> {
-    let mut url = reqwest13::Url::parse(websocket_url)
-        .wrap_err("Tempo Responses WebSocket URL is invalid")?;
+fn payment_http_url(websocket_url: &str) -> Result<reqwest::Url> {
+    let mut url =
+        reqwest::Url::parse(websocket_url).wrap_err("Tempo Responses WebSocket URL is invalid")?;
     let scheme = match url.scheme() {
         "ws" => "http",
         "wss" => "https",
@@ -333,8 +333,8 @@ fn openai_api_base_url(websocket_url: &str) -> Result<String> {
 }
 
 fn websocket_origin(websocket_url: &str) -> Result<String> {
-    let url = reqwest13::Url::parse(websocket_url)
-        .wrap_err("Tempo Responses WebSocket URL is invalid")?;
+    let url =
+        reqwest::Url::parse(websocket_url).wrap_err("Tempo Responses WebSocket URL is invalid")?;
     match url.scheme() {
         "ws" | "wss" => Ok(url.origin().ascii_serialization()),
         scheme => Err(eyre!("unsupported Tempo WebSocket URL scheme {scheme}")),
@@ -420,9 +420,9 @@ impl Drop for MppAdapter {
 #[derive(Clone)]
 struct NativeSession {
     session: TempoSessionProvider,
-    client: reqwest13::Client,
+    client: reqwest::Client,
     management_url: String,
-    management_headers: reqwest13::header::HeaderMap,
+    management_headers: reqwest::header::HeaderMap,
 }
 
 impl PaymentProvider for NativeSession {

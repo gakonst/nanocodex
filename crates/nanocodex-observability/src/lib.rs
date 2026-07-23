@@ -195,6 +195,7 @@ impl ObservabilityBuilder {
         let Some(endpoint) = self.otlp_endpoint.as_deref() else {
             return Ok(None);
         };
+        drop(rustls::crypto::ring::default_provider().install_default());
         let resource = self.resource();
         if current_tokio_runtime_is_multi_thread() {
             let exporter = SpanExporter::builder()

@@ -1,11 +1,38 @@
 use std::{collections::BTreeMap, str::FromStr, time::Duration};
 
-use clap::Args;
+use clap::{ArgAction, Args};
 use eyre::{Result, bail};
 use nanocodex::{Mcp, McpServer};
 
-#[derive(Args, Default)]
+const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 3] = [
+    (
+        "openaiDeveloperDocs",
+        "https://developers.openai.com/mcp",
+        "Search OpenAI developer documentation.",
+    ),
+    (
+        "tempo",
+        "https://mcp.tempo.xyz/mcp",
+        "Tempo network and protocol tools.",
+    ),
+    (
+        "cloudflare",
+        "https://docs.mcp.cloudflare.com/mcp",
+        "Search Cloudflare developer documentation.",
+    ),
+];
+
+#[derive(Args)]
 pub(crate) struct McpArgs {
+    /// Load the standard `OpenAI`, Tempo, and Cloudflare MCP servers.
+    #[arg(
+        long,
+        env = "NANOCODEX_MCP_DEFAULTS",
+        default_value_t = true,
+        action = ArgAction::Set
+    )]
+    mcp_defaults: bool,
+
     /// Add a named Streamable HTTP MCP server (`NAME=URL`). Repeatable.
     #[arg(long = "mcp", value_name = "NAME=URL")]
     http: Vec<NamedValue>,
@@ -42,6 +69,7 @@ enum Transport {
 
 struct ServerConfig {
     transport: Transport,
+    description: Option<String>,
     arguments: Vec<String>,
     bearer_env: Option<String>,
     header_env: Vec<(String, String)>,
@@ -62,13 +90,6 @@ struct NamedHeaderValue {
 
 impl McpArgs {
     pub(crate) fn build(self) -> Result<Option<Mcp>> {
-        if self.http.is_empty() && self.stdio.is_empty() {
-            if self.arguments.is_empty() && self.bearer_env.is_empty() && self.header_env.is_empty()
-            {
-                return Ok(None);
-            }
-            bail!("MCP options require at least one --mcp or --mcp-stdio server");
-        }
         if self.mcp_startup_timeout == 0 || self.mcp_tool_timeout == 0 {
             bail!("MCP timeouts must be greater than zero");
         }
@@ -79,6 +100,26 @@ impl McpArgs {
         }
         for command in self.stdio {
             insert_server(&mut servers, command, Transport::Stdio)?;
+        }
+        if self.mcp_defaults {
+            for (name, url, description) in DEFAULT_MCP_SERVERS {
+                servers
+                    .entry(name.to_owned())
+                    .or_insert_with(|| ServerConfig {
+                        transport: Transport::Http(url.to_owned()),
+                        description: Some(description.to_owned()),
+                        arguments: Vec::new(),
+                        bearer_env: None,
+                        header_env: Vec::new(),
+                    });
+            }
+        }
+        if servers.is_empty() {
+            if self.arguments.is_empty() && self.bearer_env.is_empty() && self.header_env.is_empty()
+            {
+                return Ok(None);
+            }
+            bail!("MCP options require at least one --mcp or --mcp-stdio server");
         }
         for argument in self.arguments {
             let server = server_mut(&mut servers, &argument.name, "--mcp-arg")?;
@@ -111,12 +152,16 @@ impl McpArgs {
         let tool_timeout = Duration::from_secs(self.mcp_tool_timeout);
         let mut builder = Mcp::builder();
         for (name, server) in servers {
+            let description = server.description;
             let mut configured = match server.transport {
                 Transport::Http(url) => McpServer::http(url),
                 Transport::Stdio(command) => McpServer::stdio(command).args(server.arguments),
             }
             .startup_timeout(startup_timeout)
             .tool_timeout(tool_timeout);
+            if let Some(description) = description {
+                configured = configured.description(description);
+            }
             if let Some(variable) = server.bearer_env {
                 configured = configured.bearer_token_env(variable);
             }
@@ -140,6 +185,7 @@ fn insert_server(
             name.clone(),
             ServerConfig {
                 transport: transport(named.value),
+                description: None,
                 arguments: Vec::new(),
                 bearer_env: None,
                 header_env: Vec::new(),
@@ -150,6 +196,100 @@ fn insert_server(
         bail!("MCP server `{name}` is configured more than once");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nanocodex_tools::{ToolRuntime, Tools};
+
+    fn args() -> McpArgs {
+        McpArgs {
+            mcp_defaults: true,
+            http: Vec::new(),
+            stdio: Vec::new(),
+            arguments: Vec::new(),
+            bearer_env: Vec::new(),
+            header_env: Vec::new(),
+            mcp_startup_timeout: 30,
+            mcp_tool_timeout: 300,
+        }
+    }
+
+    #[test]
+    fn default_mcp_servers_build() {
+        assert!(args().build().unwrap().is_some());
+    }
+
+    #[test]
+    fn defaults_can_be_disabled() {
+        assert!(
+            McpArgs {
+                mcp_defaults: false,
+                ..args()
+            }
+            .build()
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn explicit_server_can_override_a_default_name() {
+        let mut args = args();
+        args.http.push(NamedValue {
+            name: "tempo".to_owned(),
+            value: "https://example.test/mcp".to_owned(),
+        });
+
+        assert!(args.build().unwrap().is_some());
+    }
+
+    #[test]
+    fn duplicate_explicit_servers_are_rejected() {
+        let mut args = args();
+        for value in ["https://one.test/mcp", "https://two.test/mcp"] {
+            args.http.push(NamedValue {
+                name: "tempo".to_owned(),
+                value: value.to_owned(),
+            });
+        }
+
+        assert!(args.build().is_err());
+    }
+
+    #[test]
+    fn defaults_add_only_deferred_search_to_the_initial_tool_context() {
+        let baseline_tools = Tools::builder().build().unwrap();
+        let baseline = serde_json::to_vec(
+            &ToolRuntime::new_with_tools(".", None, None, &baseline_tools).model_specs(),
+        )
+        .unwrap();
+
+        let mcp = args().build().unwrap().unwrap();
+        let default_tools = Tools::builder().provider(mcp).build().unwrap();
+        let with_defaults = serde_json::to_vec(
+            &ToolRuntime::new_with_tools(".", None, None, &default_tools).model_specs(),
+        )
+        .unwrap();
+        let encoded = String::from_utf8(with_defaults.clone()).unwrap();
+
+        assert!(encoded.contains("tool_search"));
+        assert!(encoded.contains("openaiDeveloperDocs"));
+        assert!(encoded.contains("tempo"));
+        assert!(encoded.contains("cloudflare"));
+        assert!(!encoded.contains("mcp__openaiDeveloperDocs__"));
+        assert!(!encoded.contains("mcp__tempo__"));
+        assert!(!encoded.contains("mcp__cloudflare__"));
+        assert!(with_defaults.len() > baseline.len());
+
+        eprintln!(
+            "initial serialized tool context: baseline={} bytes, default MCP={} bytes, delta={} bytes",
+            baseline.len(),
+            with_defaults.len(),
+            with_defaults.len() - baseline.len()
+        );
+    }
 }
 
 fn server_mut<'a>(

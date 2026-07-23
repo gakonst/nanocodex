@@ -23,6 +23,7 @@ opentelemetry-otlp.workspace = true
 opentelemetry-semantic-conventions.workspace = true
 opentelemetry_sdk.workspace = true
 reqwest.workspace = true
+rustls.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
