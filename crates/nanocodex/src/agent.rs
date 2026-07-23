@@ -33,7 +33,7 @@ use crate::{
     },
     responses::{FactoryResponses, LayeredResponses, Responses, StandardResponses},
     rollout::{RolloutConfig, RolloutInfo, RolloutOrigin, RolloutRecorder, RolloutTurn},
-    session::SessionSnapshot,
+    session::{CommittedSession, SessionSnapshot},
 };
 
 const COMMAND_CAPACITY: usize = 8;
@@ -162,7 +162,7 @@ struct TurnKey(u64);
 #[non_exhaustive]
 pub struct TurnResult {
     pub final_message: String,
-    checkpoint: Arc<CommittedCheckpoint>,
+    checkpoint: Arc<CommittedSession>,
 }
 
 impl TurnResult {
@@ -173,7 +173,7 @@ impl TurnResult {
     /// responsible for protecting and retaining serialized snapshots appropriately.
     #[must_use]
     pub fn snapshot(&self) -> SessionSnapshot {
-        SessionSnapshot::from_checkpoint(&self.checkpoint.lineage_id, &self.checkpoint.model)
+        self.checkpoint.snapshot()
     }
 }
 
@@ -184,12 +184,6 @@ impl fmt::Debug for TurnResult {
             .field("final_message", &self.final_message)
             .finish_non_exhaustive()
     }
-}
-
-#[derive(Clone)]
-struct CommittedCheckpoint {
-    lineage_id: Arc<str>,
-    model: ModelCheckpoint,
 }
 
 enum Command {
@@ -211,7 +205,7 @@ enum Command {
         result: oneshot::Sender<Result<()>>,
     },
     Fork {
-        checkpoint: Option<Arc<CommittedCheckpoint>>,
+        checkpoint: Option<Arc<CommittedSession>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },
     Spawn {
@@ -468,7 +462,7 @@ impl Nanocodex {
     /// Returns an error when the result belongs to another conversation or the
     /// driver stopped.
     pub async fn fork_from(&self, completed: &TurnResult) -> Result<(Self, AgentEvents)> {
-        if completed.checkpoint.lineage_id != self.lineage_id {
+        if completed.checkpoint.lineage_id() != self.lineage_id.as_ref() {
             return Err(NanocodexError::CheckpointLineageMismatch);
         }
         self.request_fork(Some(Arc::clone(&completed.checkpoint)))
@@ -477,7 +471,7 @@ impl Nanocodex {
 
     async fn request_fork(
         &self,
-        checkpoint: Option<Arc<CommittedCheckpoint>>,
+        checkpoint: Option<Arc<CommittedSession>>,
     ) -> Result<(Self, AgentEvents)> {
         request_fork(&self.commands, checkpoint).await
     }
@@ -485,7 +479,7 @@ impl Nanocodex {
 
 async fn request_fork(
     commands: &mpsc::Sender<Command>,
-    checkpoint: Option<Arc<CommittedCheckpoint>>,
+    checkpoint: Option<Arc<CommittedSession>>,
 ) -> Result<(Nanocodex, AgentEvents)> {
     request_command(commands, |result| Command::Fork { checkpoint, result }).await
 }
@@ -857,10 +851,10 @@ where
         let mut default_thinking = self.spawner.config.thinking;
         let mut default_fast_mode = self.spawner.config.fast_mode;
         let inherited_checkpoint = self.initial_model.as_ref().map(|initial| {
-            Arc::new(CommittedCheckpoint {
-                lineage_id: Arc::clone(&self.spawner.lineage_id),
-                model: initial.checkpoint.clone(),
-            })
+            Arc::new(CommittedSession::new(
+                Arc::clone(&self.spawner.lineage_id),
+                initial.checkpoint.clone(),
+            ))
         });
         let prompt_cache_key = self
             .spawner
@@ -1070,10 +1064,10 @@ where
                         }
                         let snapshot = fork_snapshot_rx.borrow_and_update().clone();
                         if let Some(snapshot) = snapshot {
-                            latest_fork_checkpoint = Some(Arc::new(CommittedCheckpoint {
-                                lineage_id: Arc::clone(&self.spawner.lineage_id),
-                                model: snapshot,
-                            }));
+                            latest_fork_checkpoint = Some(Arc::new(CommittedSession::new(
+                                Arc::clone(&self.spawner.lineage_id),
+                                snapshot,
+                            )));
                         }
                     }
                     command = self.commands.recv() => {
@@ -1163,13 +1157,13 @@ where
                         final_message,
                         checkpoint,
                     } = completed;
+                    let checkpoint = Arc::new(CommittedSession::new(
+                        Arc::clone(&self.spawner.lineage_id),
+                        checkpoint,
+                    ));
                     let rollout_turn =
                         rollout_turn.map(|turn| turn.completed(final_message.clone()));
                     persist_rollout(rollout.as_ref(), &checkpoint, rollout_turn).await;
-                    let checkpoint = Arc::new(CommittedCheckpoint {
-                        lineage_id: Arc::clone(&self.spawner.lineage_id),
-                        model: checkpoint,
-                    });
                     latest_fork_checkpoint = Some(Arc::clone(&checkpoint));
                     (
                         Ok(TurnResult {
@@ -1180,15 +1174,15 @@ where
                     )
                 }
                 Ok(ModelTurnOutcome::Cancelled(checkpoint)) => {
+                    let checkpoint = Arc::new(CommittedSession::new(
+                        Arc::clone(&self.spawner.lineage_id),
+                        checkpoint,
+                    ));
                     let rollout_turn = rollout_turn.map(RolloutTurn::interrupted);
                     persist_rollout(rollout.as_ref(), &checkpoint, rollout_turn).await;
-                    let checkpoint = Arc::new(CommittedCheckpoint {
-                        lineage_id: Arc::clone(&self.spawner.lineage_id),
-                        model: checkpoint,
-                    });
                     latest_fork_checkpoint = Some(Arc::clone(&checkpoint));
                     let prepared = prepare_checkpoint(
-                        checkpoint.model.clone(),
+                        checkpoint.model().clone(),
                         &self.spawner.config,
                         &self.tools,
                     );
@@ -1234,16 +1228,13 @@ where
 
 async fn persist_rollout(
     rollout: Option<&RolloutRecorder>,
-    checkpoint: &ModelCheckpoint,
+    checkpoint: &CommittedSession,
     turn: Option<RolloutTurn>,
 ) {
     let (Some(rollout), Some(turn)) = (rollout, turn) else {
         return;
     };
-    if let Err(source) = rollout
-        .persist(checkpoint.history(), checkpoint.history_revision(), turn)
-        .await
-    {
+    if let Err(source) = rollout.persist(checkpoint, turn).await {
         error!(
             target: "nanocodex",
             rollout_path = %rollout.info().path().display(),
@@ -1332,7 +1323,7 @@ fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) 
 
 fn handle_idle_command<S>(
     command: Command,
-    latest: Option<&Arc<CommittedCheckpoint>>,
+    latest: Option<&Arc<CommittedSession>>,
     spawner: &BranchSpawner<S>,
     thinking: Thinking,
     fast_mode: bool,
@@ -1377,13 +1368,13 @@ where
 {
     fn spawn_fork(
         &self,
-        checkpoint: &CommittedCheckpoint,
+        checkpoint: &CommittedSession,
         parent_session_id: &str,
         thinking: Thinking,
         fast_mode: bool,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = new_session_id();
-        let workspace = Some(Arc::<str>::from(checkpoint.model.workspace()));
+        let workspace = Some(Arc::<str>::from(checkpoint.model().workspace()));
         let mut spawner = self.clone();
         let mut config = (*spawner.config).clone();
         config.thinking = thinking;
@@ -1395,7 +1386,7 @@ where
             session_id,
             workspace,
             (self.service_factory)(),
-            Some(checkpoint.model.clone()),
+            Some(checkpoint.model().clone()),
             None,
             AgentOrigin {
                 kind: "fork",

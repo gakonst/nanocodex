@@ -182,9 +182,13 @@ Snapshots contain the complete unredacted conversation and must be protected
 like the prompts and tool data they preserve. Resuming creates fresh runtime
 resources while retaining authoritative typed history and cache lineage. They
 do not persist provider response IDs, so the first resumed request replays that
-history once before returning to incremental requests. Use `RolloutConfig` for
-the existing Codex-compatible on-disk recording and `codex resume` handoff;
+history before subsequent turns follow the configured incremental or full-replay
+policy. Use `RolloutConfig` for the existing Codex-compatible on-disk recording
+and `codex resume` handoff;
 snapshots are the library-level checkpoint for application-owned restoration.
+Both project the same immutable committed session boundary: snapshots encode
+the complete native restore state, while rollouts append the Codex-specific
+turn envelope and only the newly committed history.
 
 GPT-5.6 Pro is selected independently from reasoning effort; it does not use a
 different model slug. All six effort levels are available in either mode:
@@ -511,6 +515,8 @@ Recording appends Codex's model-context response items and its legacy turn and
 message events after each completed or cancelled turn, so both resumed model
 context and the visible Codex transcript are restored. Compaction uses explicit
 replacement-history records, and failed partial output is excluded.
+The rollout writer projects the same committed session boundary exposed by
+`TurnResult::snapshot()` rather than maintaining a second conversation state.
 `flush_rollout()` retries pending writes and provides a durability barrier.
 Treat a resume as a single-writer handoff: release the Nanocodex session before
 continuing the same rollout in Codex.

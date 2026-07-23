@@ -18,10 +18,11 @@ use wasm_bindgen_futures::spawn_local;
 use crate::{
     NanocodexError, SessionSnapshot,
     model::agent::{
-        CompletedModelTurn, ModelCheckpoint, ModelRun, ModelTurnOutcome, PreparedCheckpoint,
-        prepare_checkpoint, prepare_resumed_checkpoint,
+        CompletedModelTurn, ModelRun, ModelTurnOutcome, PreparedCheckpoint, prepare_checkpoint,
+        prepare_resumed_checkpoint,
     },
     prompt_cache::ModelPromptCache,
+    session::CommittedSession,
 };
 
 const STEER_CAPACITY: usize = 8;
@@ -67,15 +68,9 @@ struct WasmAgentFactory {
 }
 
 #[derive(Clone)]
-struct CommittedWasmCheckpoint {
-    lineage_id: Arc<str>,
-    model: ModelCheckpoint,
-}
-
-#[derive(Clone)]
 struct CompletedWasmTurn {
     final_message: String,
-    checkpoint: Arc<CommittedWasmCheckpoint>,
+    checkpoint: Arc<CommittedSession>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -99,7 +94,7 @@ enum Command {
         result: oneshot::Sender<Result<(), String>>,
     },
     Fork {
-        checkpoint: Option<Arc<CommittedWasmCheckpoint>>,
+        checkpoint: Option<Arc<CommittedSession>>,
         result: oneshot::Sender<Result<WasmNanocodex, String>>,
     },
     Spawn {
@@ -450,11 +445,7 @@ impl WasmTurn {
     /// Throws until the turn has completed or if serialization fails.
     pub fn snapshot(&self) -> Result<String, JsValue> {
         let checkpoint = self.completed_checkpoint().map_err(js_error)?;
-        serde_json::to_string(&SessionSnapshot::from_checkpoint(
-            &checkpoint.lineage_id,
-            &checkpoint.model,
-        ))
-        .map_err(js_error)
+        serde_json::to_string(&checkpoint.snapshot()).map_err(js_error)
     }
 }
 
@@ -479,7 +470,7 @@ fn parse_browser_prompt(content_json: &str) -> Result<Prompt, JsValue> {
 }
 
 impl WasmTurn {
-    fn completed_checkpoint(&self) -> Result<Arc<CommittedWasmCheckpoint>, String> {
+    fn completed_checkpoint(&self) -> Result<Arc<CommittedSession>, String> {
         let state = self.state.borrow();
         match &*state {
             TurnState::Completed(Ok(completed)) => Ok(Arc::clone(&completed.checkpoint)),
@@ -556,7 +547,7 @@ async fn run_driver(
 ) {
     let mut default_thinking = factory.config.thinking;
     let mut default_fast_mode = factory.config.fast_mode;
-    let mut latest_checkpoint: Option<Arc<CommittedWasmCheckpoint>> = None;
+    let mut latest_checkpoint: Option<Arc<CommittedSession>> = None;
     let mut queued_turns = VecDeque::new();
     let mut commands_open = true;
 
@@ -669,10 +660,10 @@ async fn run_driver(
                         continue;
                     }
                     if let Some(snapshot) = fork_snapshot_rx.borrow_and_update().clone() {
-                        latest_checkpoint = Some(Arc::new(CommittedWasmCheckpoint {
-                            lineage_id: Arc::clone(&factory.lineage_id),
-                            model: snapshot,
-                        }));
+                        latest_checkpoint = Some(Arc::new(CommittedSession::new(
+                            Arc::clone(&factory.lineage_id),
+                            snapshot,
+                        )));
                     }
                 }
                 command = commands.recv() => {
@@ -750,10 +741,10 @@ async fn run_driver(
                 final_message,
                 checkpoint,
             })) => {
-                let checkpoint = Arc::new(CommittedWasmCheckpoint {
-                    lineage_id: Arc::clone(&factory.lineage_id),
-                    model: checkpoint,
-                });
+                let checkpoint = Arc::new(CommittedSession::new(
+                    Arc::clone(&factory.lineage_id),
+                    checkpoint,
+                ));
                 latest_checkpoint = Some(Arc::clone(&checkpoint));
                 (
                     Ok(CompletedWasmTurn {
@@ -764,13 +755,13 @@ async fn run_driver(
                 )
             }
             Ok(ModelTurnOutcome::Cancelled(checkpoint)) => {
-                let checkpoint = Arc::new(CommittedWasmCheckpoint {
-                    lineage_id: Arc::clone(&factory.lineage_id),
-                    model: checkpoint,
-                });
+                let checkpoint = Arc::new(CommittedSession::new(
+                    Arc::clone(&factory.lineage_id),
+                    checkpoint,
+                ));
                 latest_checkpoint = Some(Arc::clone(&checkpoint));
                 let prepared =
-                    prepare_checkpoint(checkpoint.model.clone(), &factory.config, &factory.tools);
+                    prepare_checkpoint(checkpoint.model().clone(), &factory.config, &factory.tools);
                 model = ModelRun::from_checkpoint(
                     events.clone(),
                     Arc::clone(&factory.config),
@@ -797,7 +788,7 @@ async fn run_driver(
 
 fn handle_idle_command(
     command: Command,
-    latest: Option<&Arc<CommittedWasmCheckpoint>>,
+    latest: Option<&Arc<CommittedSession>>,
     factory: &WasmAgentFactory,
     thinking: Thinking,
     fast_mode: bool,
@@ -841,11 +832,11 @@ fn handle_idle_command(
 
 fn spawn_fork(
     factory: &WasmAgentFactory,
-    checkpoint: &CommittedWasmCheckpoint,
+    checkpoint: &CommittedSession,
     thinking: Thinking,
     fast_mode: bool,
 ) -> Result<WasmNanocodex, String> {
-    if checkpoint.lineage_id != factory.lineage_id {
+    if checkpoint.lineage_id() != factory.lineage_id.as_ref() {
         return Err("checkpoint belongs to another conversation".to_owned());
     }
     let mut fork = factory.clone();
@@ -853,8 +844,8 @@ fn spawn_fork(
     config.thinking = thinking;
     config.fast_mode = fast_mode;
     fork.config = Arc::new(config);
-    fork.workspace = Some(Arc::from(checkpoint.model.workspace()));
-    let prepared = prepare_checkpoint(checkpoint.model.clone(), &fork.config, &fork.tools);
+    fork.workspace = Some(Arc::from(checkpoint.model().workspace()));
+    let prepared = prepare_checkpoint(checkpoint.model().clone(), &fork.config, &fork.tools);
     Ok(spawn_agent(fork, new_session_id(), Some(prepared)))
 }
 
