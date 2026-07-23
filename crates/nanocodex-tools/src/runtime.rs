@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use tracing::{Instrument, info, info_span};
 
 #[cfg(feature = "code-mode")]
-use crate::code_mode::{self, CodeModeExecution};
+use crate::code_mode::{self, CodeModeExecution, CodeModeObserver};
 use crate::{
     apply_patch, plan,
     shell::{self, ShellSessions},
@@ -808,6 +808,24 @@ impl ToolRuntime {
     }
 
     #[cfg(feature = "code-mode")]
+    #[doc(hidden)]
+    pub async fn execute_code_with_updates(
+        &self,
+        source: &str,
+        context: ToolContext<'_>,
+        observer: &mut dyn CodeModeObserver,
+    ) -> CodeModeExecution {
+        self.code_mode
+            .execute_with_updates(
+                source,
+                Arc::clone(&self.registry),
+                OwnedToolContext::from_borrowed(context),
+                observer,
+            )
+            .await
+    }
+
+    #[cfg(feature = "code-mode")]
     /// Executes Code Mode without copying an already-owned history snapshot.
     #[doc(hidden)]
     pub async fn execute_code_owned(
@@ -821,8 +839,32 @@ impl ToolRuntime {
     }
 
     #[cfg(feature = "code-mode")]
+    #[doc(hidden)]
+    pub async fn execute_code_owned_with_updates(
+        &self,
+        source: &str,
+        context: OwnedToolContext,
+        observer: &mut dyn CodeModeObserver,
+    ) -> CodeModeExecution {
+        self.code_mode
+            .execute_with_updates(source, Arc::clone(&self.registry), context, observer)
+            .await
+    }
+
+    #[cfg(feature = "code-mode")]
     pub async fn wait_for_code(&self, input: &str, context: ToolContext<'_>) -> CodeModeExecution {
         self.code_mode.wait(input, context).await
+    }
+
+    #[cfg(feature = "code-mode")]
+    #[doc(hidden)]
+    pub async fn wait_for_code_with_updates(
+        &self,
+        input: &str,
+        _context: ToolContext<'_>,
+        observer: &mut dyn CodeModeObserver,
+    ) -> CodeModeExecution {
+        self.code_mode.wait_with_updates(input, observer).await
     }
 
     /// Executes one registered tool through this runtime's retained state.

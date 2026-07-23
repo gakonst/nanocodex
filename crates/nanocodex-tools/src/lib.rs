@@ -24,7 +24,7 @@ mod wasm;
 mod web_search;
 
 #[cfg(all(not(target_family = "wasm"), feature = "code-mode"))]
-pub use code_mode::{CodeModeExecution, NestedToolCall};
+pub use code_mode::{CodeModeExecution, CodeModeObserver, CodeModeUpdate, NestedToolCall};
 #[cfg(not(target_family = "wasm"))]
 pub use image::{prepare_output_images, prepare_user_input};
 pub use nanocodex_core::{ImageDetail, ToolDefinition};

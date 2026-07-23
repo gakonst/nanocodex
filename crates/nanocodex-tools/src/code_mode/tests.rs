@@ -5,8 +5,8 @@ use nanocodex_core::ResponseItem;
 use serde_json::Value;
 
 use super::{
-    CellUpdate, CodeModeExecution, LiveCell, NestedToolCall, nested_tool_yield_after, observe_cell,
-    observer_yield_timeout, parse_exec_source,
+    CellUpdate, CodeModeExecution, CodeModeObserver, CodeModeUpdate, LiveCell, NestedToolCall,
+    nested_tool_yield_after, observe_cell, observer_yield_timeout, parse_exec_source,
 };
 use crate::{ToolContext, ToolOutputBody, ToolOutputContent, ToolRuntime, WebSearchConfig};
 
@@ -221,6 +221,56 @@ text({ first: first.exit_code, second: second.exit_code });
     );
     let result = serde_json::from_str::<Value>(emitted_text(&execution)?)?;
     assert_eq!(result, serde_json::json!({ "first": 0, "second": 0 }));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn nested_call_updates_stream_in_start_and_resolution_order() -> Result<()> {
+    #[derive(Default)]
+    struct Timeline(Vec<String>);
+
+    impl CodeModeObserver for Timeline {
+        fn update(&mut self, update: CodeModeUpdate<'_>) {
+            match update {
+                CodeModeUpdate::NestedCallStarted { call_id, .. } => {
+                    self.0.push(format!("start:{call_id}"));
+                }
+                CodeModeUpdate::NestedCallCompleted(call) => {
+                    self.0.push(format!("done:{}", call.call_id));
+                }
+            }
+        }
+    }
+
+    let workspace = temporary_workspace("streaming-nested-tools")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let mut timeline = Timeline::default();
+    let execution = tools
+        .execute_code_with_updates(
+            r#"
+await Promise.all([
+  tools.exec_command({ cmd: "sleep 0.08", login: false }),
+  tools.exec_command({ cmd: "sleep 0.01", login: false }),
+]);
+"#,
+            test_context(&history),
+            &mut timeline,
+        )
+        .await;
+
+    assert!(execution.success, "{}", execution_output(&execution));
+    assert_eq!(
+        timeline.0,
+        [
+            "start:call-exec/code-1",
+            "start:call-exec/code-2",
+            "done:call-exec/code-2",
+            "done:call-exec/code-1",
+        ]
+    );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -778,6 +828,21 @@ fn exec_pragma_rejects_unknown_fields() {
 #[test]
 fn nested_shell_yields_follow_the_handlers_bounds() {
     assert_eq!(
+        nested_tool_yield_after("exec_command", &serde_json::json!({ "cmd": "sleep 1" })),
+        Some(Duration::from_secs(10))
+    );
+    assert_eq!(
+        nested_tool_yield_after("write_stdin", &serde_json::json!({ "session_id": 1 }),),
+        Some(Duration::from_secs(5))
+    );
+    assert_eq!(
+        nested_tool_yield_after(
+            "write_stdin",
+            &serde_json::json!({ "session_id": 1, "chars": "x" }),
+        ),
+        Some(Duration::from_millis(250))
+    );
+    assert_eq!(
         nested_tool_yield_after(
             "exec_command",
             &serde_json::json!({ "yield_time_ms": 45_000 }),
@@ -818,8 +883,10 @@ async fn default_cell_yield_extends_for_a_longer_nested_shell_wait() {
     let task = tokio::spawn(async move {
         updates_tx
             .send(CellUpdate::NestedCallStarted {
+                call_id: "call/code-1".to_owned(),
                 name: "write_stdin".to_owned(),
-                yield_after: Duration::from_millis(40),
+                input: serde_json::Value::Null,
+                yield_after: Some(Duration::from_millis(40)),
             })
             .expect("observer should receive the nested call");
         tokio::time::sleep(Duration::from_millis(15)).await;
@@ -843,6 +910,7 @@ async fn default_cell_yield_extends_for_a_longer_nested_shell_wait() {
         Duration::from_millis(5),
         None,
         true,
+        &mut super::IgnoreCodeModeUpdates,
     )
     .await;
 
@@ -859,8 +927,10 @@ async fn explicit_cell_yield_is_not_extended_by_a_nested_shell_wait() {
     let task = tokio::spawn(async move {
         updates_tx
             .send(CellUpdate::NestedCallStarted {
+                call_id: "call/code-1".to_owned(),
                 name: "write_stdin".to_owned(),
-                yield_after: Duration::from_millis(40),
+                input: serde_json::Value::Null,
+                yield_after: Some(Duration::from_millis(40)),
             })
             .expect("observer should receive the nested call");
         tokio::time::sleep(Duration::from_millis(15)).await;
@@ -882,6 +952,7 @@ async fn explicit_cell_yield_is_not_extended_by_a_nested_shell_wait() {
         Duration::from_millis(5),
         None,
         false,
+        &mut super::IgnoreCodeModeUpdates,
     )
     .await;
 

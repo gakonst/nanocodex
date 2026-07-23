@@ -31,9 +31,9 @@ use super::{
 };
 use crate::{NanocodexError, Result, prompt_cache::ModelPromptCache};
 use nanocodex_tools::{
-    ImageGenerationConfig, NestedToolCall, OwnedToolContext, ToolContext, ToolOutputBody,
-    ToolRuntime, ToolRuntimeControl, Tools, WebSearchConfig, prepare_output_images,
-    prepare_user_input,
+    CodeModeExecution, CodeModeObserver, CodeModeUpdate, ImageGenerationConfig, OwnedToolContext,
+    ToolContext, ToolOutputBody, ToolRuntime, ToolRuntimeControl, Tools, WebSearchConfig,
+    prepare_output_images, prepare_user_input,
 };
 
 pub(crate) struct ModelRun<S> {
@@ -112,6 +112,114 @@ struct ActiveToolCall {
     name: String,
     kind: CodeCallKind,
     started_at: Instant,
+}
+
+struct NestedToolEventObserver<'a> {
+    events: &'a EventSink,
+    tool_call_indices: &'a HashMap<Box<str>, u32>,
+    stats: &'a mut RunStats,
+    fallback_call_index: u32,
+    parent_call_id: &'a str,
+    error: Option<NanocodexError>,
+}
+
+impl CodeModeObserver for NestedToolEventObserver<'_> {
+    fn update(&mut self, update: CodeModeUpdate<'_>) {
+        if self.error.is_some() {
+            return;
+        }
+        let result = match update {
+            CodeModeUpdate::NestedCallStarted {
+                call_id,
+                name,
+                input,
+            } => {
+                let (call_id, call_index) = self.event_context(call_id);
+                let result = self.events.emit(
+                    AgentEventKind::ToolCall,
+                    ToolCallEvent {
+                        call_id: &call_id,
+                        tool: name,
+                        arguments: input,
+                        model_call_index: call_index,
+                    },
+                );
+                if result.is_ok() {
+                    self.stats.tool_calls += 1;
+                }
+                result
+            }
+            CodeModeUpdate::NestedCallCompleted(call) => {
+                let (call_id, _) = self.event_context(&call.call_id);
+                let result = self.events.emit(
+                    AgentEventKind::ToolResult,
+                    ToolResultEvent {
+                        call_id: &call_id,
+                        tool: &call.name,
+                        status: status(call.success),
+                        duration_ns: call.duration_ns,
+                        started_after_ns: Some(call.started_after_ns),
+                        result: &call.output,
+                        metadata: call.metadata.as_deref(),
+                    },
+                );
+                if result.is_ok() {
+                    self.stats.tool_work_duration_ns += call.duration_ns;
+                }
+                result
+            }
+        };
+        if let Err(error) = result {
+            self.error = Some(error.into());
+        }
+    }
+}
+
+impl NestedToolEventObserver<'_> {
+    fn event_context(&self, nested_call_id: &str) -> (String, u32) {
+        let embedded_parent = nested_call_id
+            .rsplit_once("/code-")
+            .map(|(parent, _)| parent);
+        let original_parent = embedded_parent.unwrap_or(self.parent_call_id);
+        let call_id = embedded_parent.map_or_else(
+            || format!("{}/{nested_call_id}", self.parent_call_id),
+            |_| nested_call_id.to_owned(),
+        );
+        let call_index = self
+            .tool_call_indices
+            .get(original_parent)
+            .copied()
+            .unwrap_or(self.fallback_call_index);
+        (call_id, call_index)
+    }
+}
+
+async fn execute_code_call(
+    tools: &ToolRuntime,
+    call: &CodeCall,
+    owned_context: Option<OwnedToolContext>,
+    session_id: &str,
+    observer: &mut dyn CodeModeObserver,
+    tool_span: &tracing::Span,
+) -> CodeModeExecution {
+    if let Some(context) = owned_context {
+        tools
+            .execute_code_owned_with_updates(&call.input, context, observer)
+            .instrument(tool_span.clone())
+            .await
+    } else {
+        let context = ToolContext {
+            model: MODEL,
+            session_id,
+            call_id: &call.call_id,
+            history: &[],
+            output_token_budget: nanocodex_tools::DEFAULT_TOOL_OUTPUT_TOKENS,
+        };
+        tools
+            .wait_for_code_with_updates(&call.input, context, observer)
+            .instrument(tool_span.clone())
+            .await
+    }
 }
 
 struct WarmupExecution {
@@ -811,24 +919,29 @@ where
         let started_at = self.track_active_tool_call(&call);
         let tool_span = model_tool_span(&call, call_index);
         record_span_content(&tool_span, "tool.arguments", &call.input);
-        let mut execution = if let Some(context) = owned_context {
-            tools
-                .execute_code_owned(&call.input, context)
-                .instrument(tool_span.clone())
-                .await
-        } else {
-            let context = ToolContext {
-                model: MODEL,
-                session_id: self.events.request_id(),
-                call_id: &call.call_id,
-                history: &[],
-                output_token_budget: nanocodex_tools::DEFAULT_TOOL_OUTPUT_TOKENS,
-            };
-            tools
-                .wait_for_code(&call.input, context)
-                .instrument(tool_span.clone())
-                .await
+        let session_id = self.events.request_id().to_owned();
+        let mut observer = NestedToolEventObserver {
+            events: &self.events,
+            tool_call_indices: &self.tool_call_indices,
+            stats: &mut self.stats,
+            fallback_call_index: call_index,
+            parent_call_id: &call.call_id,
+            error: None,
         };
+        let mut execution = execute_code_call(
+            tools,
+            &call,
+            owned_context,
+            &session_id,
+            &mut observer,
+            &tool_span,
+        )
+        .await;
+        let update_error = observer.error.take();
+        drop(observer);
+        if let Some(error) = update_error {
+            return Err(error);
+        }
         prepare_output_images(&mut execution.output).await;
         if let Some(content) = serialize_trace_content(&execution.output) {
             record_span_content(&tool_span, "tool.output", &content);
@@ -839,9 +952,6 @@ where
         tool_span.record("otel.status_code", otel_status(execution.success));
         tool_span.record("duration_ns", duration_ns);
         self.stats.tool_wall_duration_ns += duration_ns;
-        for nested in &execution.nested_calls {
-            self.emit_nested_tool(call_index, &call.call_id, nested)?;
-        }
         self.events.emit(
             AgentEventKind::ToolResult,
             ToolResultEvent {
@@ -916,49 +1026,6 @@ where
         let canonical_context =
             task_context(working_directory, shell, project_instructions.as_deref());
         conversation.install_compaction(item, canonical_context, factory.profile().prefix());
-        Ok(())
-    }
-
-    fn emit_nested_tool(
-        &mut self,
-        call_index: u32,
-        parent_call_id: &str,
-        call: &NestedToolCall,
-    ) -> Result<()> {
-        let embedded_parent = call.call_id.rsplit_once("/code-").map(|(parent, _)| parent);
-        let original_parent = embedded_parent.unwrap_or(parent_call_id);
-        let call_id = embedded_parent.map_or_else(
-            || format!("{parent_call_id}/{}", call.call_id),
-            |_| call.call_id.clone(),
-        );
-        let call_index = self
-            .tool_call_indices
-            .get(original_parent)
-            .copied()
-            .unwrap_or(call_index);
-        self.events.emit(
-            AgentEventKind::ToolCall,
-            ToolCallEvent {
-                call_id: &call_id,
-                tool: &call.name,
-                arguments: &call.input,
-                model_call_index: call_index,
-            },
-        )?;
-        self.events.emit(
-            AgentEventKind::ToolResult,
-            ToolResultEvent {
-                call_id: &call_id,
-                tool: &call.name,
-                status: status(call.success),
-                duration_ns: call.duration_ns,
-                started_after_ns: Some(call.started_after_ns),
-                result: &call.output,
-                metadata: call.metadata.as_deref(),
-            },
-        )?;
-        self.stats.tool_calls += 1;
-        self.stats.tool_work_duration_ns += call.duration_ns;
         Ok(())
     }
 
