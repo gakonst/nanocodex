@@ -5,14 +5,19 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-21
+## [0.1.1](https://github.com/gakonst/nanocodex/releases/tag/v0.1.1) - 2026-07-23
 
 ### Bug Fixes
 
+- [auth] Disable response storage for ChatGPT
 - Preserve assistant message phases in events ([#3](https://github.com/gakonst/nanocodex/issues/3))
 
 ### Features
 
+- Support GPT-5.6 Pro reasoning mode
+- [agent] Propagate reasoning mode across runtime surfaces
+- [agent] Refine task execution guidance
+- [telemetry] Measure end-to-end TUI stream latency
 - Add ChatGPT subscription authentication
 - [observability] Export full-fidelity agent traces
 - [core] Expose event stream request IDs
@@ -22,12 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [eval] Remove benchmark-specific tuning
+- [release] Prepare 0.1.0
 - [release] Refresh 0.1.0 changelogs
 - [release] Add per-crate changelogs
 - [release] Automate publishing and native updates
 
+### Other
+
+- Merge pull request [#11](https://github.com/gakonst/nanocodex/issues/11) from gakonst/agent/gpt-5-6-pro-config
+
 ### Performance
 
+- [tui] Optimize long-session rendering and interaction
 - [tools] Share code mode history snapshots
 - [core] Iterate incremental history suffixes
 - [tui] Coalesce streaming renders

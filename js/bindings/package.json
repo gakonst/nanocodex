@@ -1,6 +1,6 @@
 {
   "name": "nanocodex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Viem-style Node and browser bindings for the Nanocodex WASM agent",
   "type": "module",
   "sideEffects": false,

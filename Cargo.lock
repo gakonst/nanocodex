@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-bin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "base64",
@@ -1746,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion",
  "serde",
@@ -1759,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-examples"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dotenvy",
  "eyre",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bm25",
@@ -1806,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-observability"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-python"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nanocodex",
  "pyo3",
@@ -1833,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-service"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "criterion",
@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1887,7 +1887,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nanocodex",
  "wasm-bindgen",

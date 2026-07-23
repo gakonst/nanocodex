@@ -5,16 +5,97 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1](https://github.com/gakonst/nanocodex/releases/tag/v0.1.1) - 2026-07-23
+
+### Bug Fixes
+
+- [wasm] Scope host tools to agent sessions
+- [tui] Render images and wrap patches
+- [ci] Update dependency policy
+- [release] Build Docker images natively
+- [shell] Serialize session input and process interrupts
+- [code-mode] Preserve tool results across yields
+- [tui] Pace newline-heavy stream scrolling
+- [tui] Cancel pending scroll on manual input
+- [tui] Finish deferred branch switches
+- [auth] Disable response storage for ChatGPT
+- [cli] Prefer OPENAI_API_KEY by default
+- [harbor] Keep hosted build manifest complete
+- [ci] Remove typo-triggering auth test
+- [install] Handle shell profile update failures
+
+### Documentation
+
+- Record evaluation runner boundaries
+- Explain shared prompt caches
+- Record evaluation runner boundaries
+- Explain Nanocodex design thesis
+- [perf] Document runtime profiling results
+
+### Features
+
+- [js] Add CDN previews and package releases
+- [web] Embed the reusable wasm agent terminal
+- [tui] Add reusable browser terminal packages
+- [react] Add typed worker lifecycle bindings
+- [js] Redesign runtime-specific agent API
+- Support GPT-5.6 Pro reasoning mode
+- Share prompt-cache warmups
+- Persist Codex-compatible rollouts
+- [tui] Polish transcript and composer UX
+- Expose VM-ready standard tools
+- [release] Add nightly and GHCR delivery
+- [web] Add browser agent terminal
+- [tui] Refine steering and tool activity
+- [agent] Propagate reasoning mode across runtime surfaces
+- [bindings] Publish JavaScript and Python clients
+- [wasm] Add full agent lifecycle control
+- [tools] Align the WASM host runtime contract
+- [agent] Add shared cache and resumable rollouts
+- [tui] Polish transcript and composer UX
+- Expose VM-ready standard tools
+- [tui] Improve transcript and clipboard interaction
+- [tui] Improve live transcript interaction
+- [tools] Allow replacing workspace tools
+- [tui] Switch branches from live navigator
+- [tui] Add history editing and branch navigation
+- [agent] Expose clean sibling spawn
+- [tools] Embed QuickJS code mode
+- [cli] Add same-session completion audit
+- [agent] Refine task execution guidance
+- [telemetry] Measure end-to-end TUI stream latency
+- [cli] Prefer stored ChatGPT login
+
+### Miscellaneous Tasks
+
+- [web] Refresh repository data
+- Add code mode validation batch
+- [eval] Remove benchmark-specific tuning
+
+### Other
+
+- Merge remote-tracking branch 'origin/master'
+- Merge pull request [#11](https://github.com/gakonst/nanocodex/issues/11) from gakonst/agent/gpt-5-6-pro-config
+- Merge pull request [#9](https://github.com/gakonst/nanocodex/issues/9) from gakonst/agent/cloneable-nanocodex-builder
+- Make NanocodexBuilder cloneable
+- Merge pull request [#8](https://github.com/gakonst/nanocodex/issues/8) from gakonst/agent/embedded-quickjs-code-mode
+- Merge pull request [#7](https://github.com/gakonst/nanocodex/issues/7) from gakonst/agent/completion-audit
+
+### Performance
+
+- [tui] Optimize long-session rendering and interaction
+- [tui] Make streaming rendering content-size independent
+
+### Refactor
+
+- [service] Exhaustively classify WASM retry errors
+
+### Testing
+
+- [tools] Cover custom tools in code mode
+- [cli] Keep subagents opt-in
+
 ## [0.1.0](https://github.com/gakonst/nanocodex/releases/tag/v0.1.0) - 2026-07-21
-
-### Highlights
-
-- Initial library-first Nanocodex SDK with API-key and ChatGPT subscription
-  authentication, a persistent Responses WebSocket client, Tower service stack,
-  code-mode tools, MCP integration, embedded bindings, CLI, and observability.
-- Checksummed maxperf native installers and self-updates, dependency-ordered
-  crates.io publishing, repo-wide and crate-specific changelogs,
-  contributor-attributed GitHub release notes, and docs.rs archive validation.
 
 ### Bug Fixes
 
@@ -194,6 +275,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.1.0 changelog
 - [release] Prepare 0.1.0
 - [release] Refresh 0.1.0 changelogs
 - [release] Add per-crate changelogs
