@@ -1478,11 +1478,15 @@ fn attempt_factory(
     tools: &ToolRuntime,
     system_prompt: &str,
 ) -> ResponsesAttemptFactory {
+    #[cfg(not(target_family = "wasm"))]
+    let tool_specs = tools.model_specs();
+    #[cfg(target_family = "wasm")]
+    let tool_specs = tools.model_specs(events.request_id());
     ResponsesAttemptFactory::new(
         request_profile(
             events.request_id(),
             prompt_cache_key,
-            tools.model_specs(),
+            tool_specs,
             system_prompt,
         ),
         events.clone(),

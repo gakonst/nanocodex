@@ -27,7 +27,7 @@ extern "C" {
     -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = toolDefinitions)]
-    fn host_tool_definitions() -> String;
+    fn host_tool_definitions(session_id: &str) -> String;
 }
 
 #[derive(Deserialize, Serialize)]
@@ -217,9 +217,10 @@ impl ToolRuntime {
     }
 
     #[must_use]
-    pub fn model_specs(&self) -> Vec<ToolDefinition> {
-        let definitions = serde_json::from_str::<Vec<ToolDefinition>>(&host_tool_definitions())
-            .unwrap_or_default();
+    pub fn model_specs(&self, session_id: &str) -> Vec<ToolDefinition> {
+        let definitions =
+            serde_json::from_str::<Vec<ToolDefinition>>(&host_tool_definitions(session_id))
+                .unwrap_or_default();
         let mut description = EXEC_DESCRIPTION.to_owned();
         for definition in definitions {
             description.push_str("\n\n- `tools.");
