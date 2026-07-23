@@ -22,8 +22,7 @@ use super::app::PlanStepStatus;
 use super::composer::ComposerLayout;
 use super::diff::{PatchPresentation, present_apply_patch};
 use super::markdown::{
-    code_line_count, heal_streaming_markdown, highlighted_code_lines, render_agent_markdown,
-    restore_markdown_links_from_sources,
+    heal_streaming_markdown, render_agent_markdown, restore_markdown_links_from_sources,
 };
 
 #[derive(Clone, Copy)]
@@ -320,13 +319,30 @@ impl Transcript {
         duration_ns: Option<u64>,
         result: Option<String>,
     ) -> bool {
+        self.set_tool_result_timing(call_id, status, None, duration_ns, result)
+    }
+
+    pub(super) fn set_tool_result_timing(
+        &mut self,
+        call_id: &str,
+        status: ToolStatus,
+        started_after_ns: Option<u64>,
+        duration_ns: Option<u64>,
+        result: Option<String>,
+    ) -> bool {
         let parent_id = call_id
             .split_once("/code-")
             .map_or(call_id, |(parent, _)| parent);
         if let Some(entry) = self.entries.iter_mut().rev().find(
             |entry| matches!(&entry.kind, EntryKind::Tool { call_id } if call_id == parent_id),
         ) {
-            Arc::make_mut(entry).set_tool_result(call_id, status, duration_ns, result);
+            Arc::make_mut(entry).set_tool_result(
+                call_id,
+                status,
+                started_after_ns,
+                duration_ns,
+                result,
+            );
             self.invalidate_total_height();
             return true;
         }
@@ -756,10 +772,10 @@ struct ToolActivity {
     name: String,
     arguments: String,
     status: ToolStatus,
+    started_after_ns: Option<u64>,
     duration_ns: Option<u64>,
     result: Option<String>,
     children: Vec<ToolActivity>,
-    highlighted_source: Option<Vec<Line<'static>>>,
     patch: Option<PatchPresentation>,
     plain_detail: Option<StreamingText>,
     cached_layout: Mutex<Option<Box<CachedToolLayout>>>,
@@ -838,10 +854,10 @@ impl Clone for ToolActivity {
             name: self.name.clone(),
             arguments: self.arguments.clone(),
             status: self.status,
+            started_after_ns: self.started_after_ns,
             duration_ns: self.duration_ns,
             result: self.result.clone(),
             children: self.children.clone(),
-            highlighted_source: self.highlighted_source.clone(),
             patch: self.patch.clone(),
             plain_detail: self.plain_detail.clone(),
             cached_layout: Mutex::new(
@@ -1114,6 +1130,7 @@ impl TranscriptEntry {
         &mut self,
         call_id: &str,
         status: ToolStatus,
+        started_after_ns: Option<u64>,
         duration_ns: Option<u64>,
         result: Option<String>,
     ) {
@@ -1134,6 +1151,7 @@ impl TranscriptEntry {
             return;
         };
         target.status = status;
+        target.started_after_ns = started_after_ns;
         target.duration_ns = duration_ns;
         target.result = result;
         target.refresh_plain_detail();
@@ -1153,23 +1171,20 @@ impl ToolActivity {
         status: ToolStatus,
         details_expanded: Arc<AtomicBool>,
     ) -> Self {
-        let highlighted_source = (name == "exec" && !arguments.is_empty())
-            .then(|| highlighted_code_lines(Some("javascript"), &arguments));
         let patch = (name == "apply_patch")
             .then(|| present_apply_patch(&arguments))
             .flatten();
-        let plain_detail =
-            (highlighted_source.is_none() && patch.is_none() && !arguments.is_empty())
-                .then(|| StreamingText::tool_detail(&arguments, None));
+        let plain_detail = (name != "exec" && patch.is_none() && !arguments.is_empty())
+            .then(|| StreamingText::tool_detail(&arguments, None));
         Self {
             call_id,
             name,
             arguments,
             status,
+            started_after_ns: None,
             duration_ns: None,
             result: None,
             children: Vec::new(),
-            highlighted_source,
             patch,
             plain_detail,
             cached_layout: Mutex::new(None),
@@ -1179,7 +1194,7 @@ impl ToolActivity {
 
     fn refresh_plain_detail(&mut self) {
         self.plain_detail = (self.children.is_empty()
-            && self.highlighted_source.is_none()
+            && self.name != "exec"
             && self.patch.is_none()
             && (!self.arguments.is_empty()
                 || self
@@ -1285,7 +1300,11 @@ impl ToolActivity {
     fn plain_header_line(&self) -> Line<'static> {
         let (icon, color) = tool_style(self.status);
         let display_name = if self.name == "exec" {
-            "Code Mode"
+            if self.children.is_empty() {
+                "Working"
+            } else {
+                "Tools"
+            }
         } else {
             self.name.as_str()
         };
@@ -1312,7 +1331,11 @@ impl ToolActivity {
         }
         let (icon, color) = tool_style(self.status);
         let display_name = if self.name == "exec" {
-            "Code Mode"
+            if self.children.is_empty() {
+                "Working"
+            } else {
+                "Tools"
+            }
         } else {
             self.name.as_str()
         };
@@ -1327,23 +1350,6 @@ impl ToolActivity {
         if let Some(duration_ns) = self.duration_ns {
             details.push(format_duration(duration_ns));
         }
-        if self.children.len() >= 2
-            && let Some(parent_duration) = self.duration_ns
-        {
-            let child_duration = self
-                .children
-                .iter()
-                .filter_map(|child| child.duration_ns)
-                .fold(0_u64, u64::saturating_add);
-            details.push(
-                if child_duration > parent_duration.saturating_mul(6) / 5 {
-                    "overlapping"
-                } else {
-                    "sequence"
-                }
-                .to_owned(),
-            );
-        }
         if !self.children.is_empty()
             && let Some(result) = self.result.as_deref().filter(|result| !result.is_empty())
         {
@@ -1356,28 +1362,7 @@ impl ToolActivity {
 
         let mut lines = vec![tool_header_line(icon, color, display_name, &details)];
 
-        if self.children.is_empty()
-            && let Some(highlighted_source) = &self.highlighted_source
-        {
-            lines.push(Line::styled(
-                format!("  ┌─ javascript · {} LOC", code_line_count(&self.arguments)),
-                Style::default().fg(Color::DarkGray),
-            ));
-            for line in highlighted_source {
-                let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
-                spans.extend(line.spans.clone());
-                lines.push(Line::from(spans));
-            }
-            lines.push(Line::styled("  └─", Style::default().fg(Color::DarkGray)));
-            if self.children.is_empty()
-                && let Some(result) = self.result.as_deref().filter(|result| !result.is_empty())
-            {
-                lines.push(Line::from(vec![
-                    Span::styled("  └─ ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(result.to_owned(), Style::default().fg(Color::Gray)),
-                ]));
-            }
-        } else if self.children.is_empty() {
+        if self.children.is_empty() && self.name != "exec" {
             let mut activity_detail = self.arguments.clone();
             if let Some(result) = self.result.as_deref().filter(|result| !result.is_empty()) {
                 push_detail(&mut activity_detail, result);
@@ -1390,9 +1375,20 @@ impl ToolActivity {
             }
         }
         if !self.children.is_empty() {
-            for (index, child) in self.children.iter().enumerate() {
-                let last = index + 1 == self.children.len();
-                lines.extend(child_lines(child, last, width));
+            let groups = child_activity_groups(&self.children);
+            for (group_index, group) in groups.iter().enumerate() {
+                let group_is_last = group_index + 1 == groups.len();
+                let group_len = group.end - group.start;
+                for (child_index, child) in self.children[group.clone()].iter().enumerate() {
+                    let child_is_last = child_index + 1 == group_len;
+                    let (connector, continuation) = activity_connector(
+                        group_is_last,
+                        group_len > 1,
+                        child_index,
+                        child_is_last,
+                    );
+                    lines.extend(child_lines(child, connector, continuation, width));
+                }
             }
         }
         lines.push(Line::raw(""));
@@ -1406,7 +1402,7 @@ impl ToolActivity {
         display_name: &str,
         mut details: Vec<String>,
     ) -> Text<'static> {
-        if self.children.is_empty() {
+        if self.children.is_empty() && self.name != "exec" {
             let preview = self.patch.as_ref().map_or_else(
                 || compact_activity_preview(&self.arguments),
                 |patch| patch.summary.clone(),
@@ -1444,9 +1440,13 @@ fn tool_header_line(
     ])
 }
 
-fn child_lines(child: &ToolActivity, last: bool, width: u16) -> Vec<Line<'static>> {
+fn child_lines(
+    child: &ToolActivity,
+    connector: &'static str,
+    continuation: &'static str,
+    width: u16,
+) -> Vec<Line<'static>> {
     let (icon, color) = tool_style(child.status);
-    let connector = if last { "  └─" } else { "  ├─" };
     let argument_lines = child.arguments.lines().collect::<Vec<_>>();
     let detail_style = Style::default().fg(Color::DarkGray);
     let mut detail = Vec::new();
@@ -1476,12 +1476,10 @@ fn child_lines(child: &ToolActivity, last: bool, width: u16) -> Vec<Line<'static
     }
     let mut lines = vec![Line::from(header)];
     if let Some(patch) = &child.patch {
-        let continuation = if last { "     " } else { "  │  " };
         let prefix_width = u16::try_from(continuation.len()).unwrap_or(u16::MAX);
         let patch_lines = patch.lines(width.saturating_sub(prefix_width));
         lines.extend(prefixed_patch_lines(&patch_lines[1..], continuation));
     } else if argument_lines.len() > 1 {
-        let continuation = if last { "     " } else { "  │  " };
         for argument in argument_lines {
             lines.push(Line::from(vec![
                 Span::styled(continuation, Style::default().fg(Color::DarkGray)),
@@ -1490,6 +1488,56 @@ fn child_lines(child: &ToolActivity, last: bool, width: u16) -> Vec<Line<'static
         }
     }
     lines
+}
+
+fn child_activity_groups(children: &[ToolActivity]) -> Vec<std::ops::Range<usize>> {
+    let mut groups = Vec::new();
+    let mut group_start = 0;
+    let mut group_end_ns = None::<u64>;
+    for (index, child) in children.iter().enumerate() {
+        let interval = child
+            .started_after_ns
+            .zip(child.duration_ns)
+            .map(|(start, duration)| (start, start.saturating_add(duration)));
+        let overlaps = interval
+            .zip(group_end_ns)
+            .is_some_and(|((start, _), end)| start < end);
+        if index > group_start && !overlaps {
+            groups.push(group_start..index);
+            group_start = index;
+            group_end_ns = None;
+        }
+        if let Some((_, end)) = interval {
+            group_end_ns = Some(group_end_ns.map_or(end, |current| current.max(end)));
+        }
+    }
+    if group_start < children.len() {
+        groups.push(group_start..children.len());
+    }
+    groups
+}
+
+fn activity_connector(
+    group_is_last: bool,
+    parallel: bool,
+    child_index: usize,
+    child_is_last: bool,
+) -> (&'static str, &'static str) {
+    if !parallel {
+        return if group_is_last {
+            ("  └──", "      ")
+        } else {
+            ("  ├──", "  │   ")
+        };
+    }
+    match (child_index, child_is_last, group_is_last) {
+        (0, _, true) => ("  └─┬", "    │ "),
+        (0, _, false) => ("  ├─┬", "  │ │ "),
+        (_, false, true) => ("    ├", "    │ "),
+        (_, true, true) => ("    └", "      "),
+        (_, false, false) => ("  │ ├", "  │ │ "),
+        (_, true, false) => ("  │ └", "  │   "),
+    }
 }
 
 fn push_styled_detail(target: &mut Vec<Span<'static>>, detail: String, style: Style) {
@@ -2600,7 +2648,8 @@ mod tests {
         transcript.push(TranscriptItem::Tool {
             call_id: "call-1".to_owned(),
             name: "exec".to_owned(),
-            arguments: "const tasks = [\"test\", \"patch\"];\nawait Promise.all(tasks);".to_owned(),
+            arguments: "const parts = await Promise.all(files.map(scan));\nawait reduce(parts);"
+                .to_owned(),
             status: ToolStatus::Running,
         });
         assert!(transcript.push_tool_child(
@@ -2609,9 +2658,10 @@ mod tests {
             "cargo test \\\n  --workspace".to_owned(),
             ToolStatus::Running,
         ));
-        assert!(transcript.set_tool_result(
+        assert!(transcript.set_tool_result_timing(
             "call-1/code-1",
             ToolStatus::Completed,
+            Some(1_000_000),
             Some(90_000_000),
             Some("exit 0".to_owned()),
         ));
@@ -2621,11 +2671,25 @@ mod tests {
             "src/main.rs".to_owned(),
             ToolStatus::Running,
         ));
-        assert!(transcript.set_tool_result(
+        assert!(transcript.set_tool_result_timing(
             "call-1/code-2",
             ToolStatus::Completed,
+            Some(2_000_000),
             Some(80_000_000),
             Some("applied".to_owned()),
+        ));
+        assert!(transcript.push_tool_child(
+            "call-1/code-3".to_owned(),
+            "exec_command".to_owned(),
+            "jq -s add /tmp/parts/*.json · in /repo".to_owned(),
+            ToolStatus::Running,
+        ));
+        assert!(transcript.set_tool_result_timing(
+            "call-1/code-3",
+            ToolStatus::Completed,
+            Some(100_000_000),
+            Some(20_000_000),
+            Some("exit 0".to_owned()),
         ));
         assert!(transcript.set_tool_result(
             "call-1",
@@ -2642,13 +2706,16 @@ mod tests {
             })
             .unwrap();
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("✓ Code Mode  2 calls · 120ms · overlapping"));
+        assert!(rendered.contains("✓ Tools  3 calls · 120ms"));
+        assert!(!rendered.contains("overlapping"));
+        assert!(!rendered.contains("sequence"));
         assert!(!rendered.contains("javascript"));
         assert!(!rendered.contains("const tasks"));
-        assert!(rendered.contains("├─ ✓ Ran  90ms · exit 0"));
+        assert!(rendered.contains("├─┬ ✓ Ran"));
         assert!(rendered.contains("cargo test \\"));
         assert!(rendered.contains("--workspace"));
-        assert!(rendered.contains("└─ ✓ apply_patch  src/main.rs · 80ms · applied"));
+        assert!(rendered.contains("│ └ ✓ apply_patch  src/main.rs · 80ms · applied"));
+        assert!(rendered.contains("└── ✓ Ran  jq -s add /tmp/parts/*.json"));
     }
 
     #[test]
@@ -2662,14 +2729,14 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
         );
 
-        let lines = child_lines(&child, true, 80);
+        let lines = child_lines(&child, "  └──", "      ", 80);
         let body = lines
             .iter()
             .skip(1)
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        assert!(body.iter().any(|line| line.starts_with("       1 -old")));
-        assert!(body.iter().all(|line| !line.starts_with("         ")));
+        assert!(body.iter().any(|line| line.starts_with("        1 -old")));
+        assert!(body.iter().all(|line| !line.starts_with("          ")));
     }
 
     #[test]

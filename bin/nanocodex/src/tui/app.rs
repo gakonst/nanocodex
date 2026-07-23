@@ -410,7 +410,7 @@ impl Conversation {
         let name = if payload.tool == "write_stdin" {
             "terminal input".to_owned()
         } else {
-            payload.tool
+            present_tool_name(&payload.tool, &payload.arguments).to_owned()
         };
         let status = ToolStatus::Running;
         if self.transcript.has_tool_parent(&call_id) {
@@ -451,9 +451,18 @@ impl Conversation {
             .as_ref()
             .map(|result| summarize_tool_result(payload.tool.as_deref(), result, status));
         self.note_tail_will_change();
-        let _ =
+        let _ = if payload.started_after_ns.is_some() {
+            self.transcript.set_tool_result_timing(
+                &payload.call_id,
+                status,
+                payload.started_after_ns,
+                payload.duration_ns,
+                result,
+            )
+        } else {
             self.transcript
-                .set_tool_result(&payload.call_id, status, payload.duration_ns, result);
+                .set_tool_result(&payload.call_id, status, payload.duration_ns, result)
+        };
         self.note_unseen_output();
         "Working".clone_into(&mut self.status);
         true
@@ -2466,6 +2475,8 @@ struct ToolResultPayload {
     #[serde(default)]
     duration_ns: Option<u64>,
     #[serde(default)]
+    started_after_ns: Option<u64>,
+    #[serde(default)]
     result: Option<Value>,
 }
 
@@ -2514,8 +2525,30 @@ fn summarize_tool_arguments(tool: &str, arguments: &Value) -> String {
             };
             return format!("session {session_id} · {input}");
         }
+        if tool == "exec_command"
+            && let Some(command) = object.get("cmd").and_then(Value::as_str)
+        {
+            let mut summary = if command.contains('\n') {
+                bounded_multiline_tool_text(command)
+            } else {
+                compact_tool_text(command)
+            };
+            if let Some(workdir) = object.get("workdir").and_then(Value::as_str) {
+                if summary.contains('\n') {
+                    summary.push_str("\nin ");
+                } else {
+                    summary.push_str(" · in ");
+                }
+                summary.push_str(&compact_tool_text(workdir));
+            }
+            return summary;
+        }
+        if tool == "web__run"
+            && let Some(summary) = summarize_web_arguments(object)
+        {
+            return summary;
+        }
         let preferred = match tool {
-            "exec_command" => object.get("cmd").and_then(Value::as_str),
             "view_image" => object.get("path").and_then(Value::as_str),
             "read_file" => object
                 .get("path")
@@ -2525,9 +2558,6 @@ fn summarize_tool_arguments(tool: &str, arguments: &Value) -> String {
             _ => None,
         };
         if let Some(preferred) = preferred {
-            if tool == "exec_command" && preferred.contains('\n') {
-                return bounded_multiline_tool_text(preferred);
-            }
             return compact_tool_text(preferred);
         }
     }
@@ -2537,6 +2567,54 @@ fn summarize_tool_arguments(tool: &str, arguments: &Value) -> String {
         return bounded_multiline_text(patch, MAX_PATCH_ARGUMENT_CHARS, MAX_PATCH_ARGUMENT_LINES);
     }
     compact_arguments(arguments)
+}
+
+fn present_tool_name<'a>(tool: &'a str, arguments: &Value) -> &'a str {
+    if tool != "web__run" {
+        return tool;
+    }
+    let Some(object) = arguments.as_object() else {
+        return "Web";
+    };
+    if object.contains_key("search_query") {
+        "Web search"
+    } else if object.contains_key("image_query") {
+        "Image search"
+    } else if object.contains_key("open") {
+        "Opening page"
+    } else if object.contains_key("weather") {
+        "Weather"
+    } else if object.contains_key("finance") {
+        "Markets"
+    } else if object.contains_key("sports") {
+        "Sports"
+    } else {
+        "Web"
+    }
+}
+
+fn summarize_web_arguments(object: &serde_json::Map<String, Value>) -> Option<String> {
+    for (operation, field) in [
+        ("search_query", "q"),
+        ("image_query", "q"),
+        ("weather", "location"),
+        ("finance", "ticker"),
+        ("find", "pattern"),
+        ("open", "ref_id"),
+    ] {
+        let Some(items) = object.get(operation).and_then(Value::as_array) else {
+            continue;
+        };
+        let values = items
+            .iter()
+            .filter_map(|item| item.get(field).and_then(Value::as_str))
+            .take(3)
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            return Some(compact_tool_text(&values.join(" · ")));
+        }
+    }
+    None
 }
 
 fn is_empty_terminal_poll(tool: &str, arguments: &Value) -> bool {
@@ -2646,7 +2724,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        App, EscapeAction, PaneId, SubmittedPrompt, smooth_scroll_drain, summarize_tool_arguments,
+        App, EscapeAction, PaneId, SubmittedPrompt, present_tool_name, smooth_scroll_drain,
+        summarize_tool_arguments,
     };
     use crate::tui::transcript::TranscriptItem;
 
@@ -2671,6 +2750,32 @@ mod tests {
                 &json!({ "cmd": "cargo test \\\n  --workspace" }),
             ),
             "cargo test \\\n  --workspace"
+        );
+    }
+
+    #[test]
+    fn shell_arguments_include_the_working_directory() {
+        assert_eq!(
+            summarize_tool_arguments(
+                "exec_command",
+                &json!({ "cmd": "cargo test --workspace", "workdir": "/workspace/nanocodex" }),
+            ),
+            "cargo test --workspace · in /workspace/nanocodex"
+        );
+    }
+
+    #[test]
+    fn web_tools_present_the_operation_and_relevant_subject() {
+        let arguments = json!({
+            "search_query": [
+                { "q": "Rust async cancellation" },
+                { "q": "Tokio process groups" }
+            ]
+        });
+        assert_eq!(present_tool_name("web__run", &arguments), "Web search");
+        assert_eq!(
+            summarize_tool_arguments("web__run", &arguments),
+            "Rust async cancellation · Tokio process groups"
         );
     }
 
@@ -3640,7 +3745,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let first = rendered.find("• First thought").unwrap();
-        let tool = rendered.find("◌ Code Mode").unwrap();
+        let tool = rendered.find("◌ Working").unwrap();
         let second = rendered.find("• Second thought").unwrap();
         assert!(first < tool && tool < second);
     }
