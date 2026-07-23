@@ -273,6 +273,17 @@ replay because it has no connection-local checkpoint. Explicit
 `--store-responses` and `--responses-history` values override these defaults
 when the combination is supported.
 
+These defaults optimize the normal long-lived interactive session, where the
+retained WebSocket delivered warm first events in 80-151 ms versus 277-369 ms
+over HTTPS. HTTPS is the better explicit choice for cold or fork-heavy
+one-shot work: cold first events were 374-405 ms versus 587-679 ms for
+WebSocket, and fresh HTTPS forks reached their first event in 373-436 ms versus
+about 1.0-1.1 seconds for a new WebSocket. With API-key authentication,
+`store: true` also reduced three historical-fork requests by roughly 97%.
+Completion latency was backend-noisy, and every policy had identical token,
+cache, and estimated-cost behavior in this workload. See the full
+[transport benchmark](docs/RESPONSE_TRANSPORT_BENCH.md).
+
 Library consumers own their login UX and can reuse the same managed session:
 
 ```rust

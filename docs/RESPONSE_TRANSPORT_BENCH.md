@@ -206,12 +206,16 @@ speed.
 
 The TUI should select one transport and storage policy when it creates an agent
 session; forks should preserve that policy rather than switching transports.
-The persistent WebSocket optimization matters for interactive first-event
-latency and cheap mainline deltas. `store: true` matters independently when a
-branch must start from a historical checkpoint on a fresh connection: it
-avoids replaying that branch's retained history. If storage is unavailable,
-including with ChatGPT subscription authentication, the performant fallback is
-the current immutable segmented client-owned history, concurrent fork
-execution, stable cache key, and full replay on each fresh fork. HTTPS remains
-a viable single-session policy and can use stored checkpoints with API-key
+The persistent WebSocket is therefore the default for both authorization modes:
+it optimizes the common long-lived interactive mainline with the lowest warm
+first-event latency and cheap incremental turns. HTTPS is the explicit
+alternative for cold, one-shot, or fork-heavy sessions where avoiding a fresh
+WebSocket handshake matters more than warm mainline latency.
+
+`store: true` matters independently when a branch must start from a historical
+checkpoint on a fresh connection: it avoids replaying that branch's retained
+history. If storage is unavailable, including with ChatGPT subscription
+authentication, the performant fallback is the current immutable segmented
+client-owned history, concurrent fork execution, stable cache key, and full
+replay on each fresh fork. HTTPS can use stored checkpoints with API-key
 authentication when storage is enabled.
