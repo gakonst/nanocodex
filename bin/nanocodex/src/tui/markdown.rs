@@ -34,8 +34,11 @@ pub(super) fn restore_markdown_links_from_sources<'a>(
     mut selected: String,
     sources: impl IntoIterator<Item = &'a str>,
 ) -> String {
+    let sources = sources.into_iter().collect::<Vec<_>>();
+    restore_fenced_code(&mut selected, &sources);
     let mut links = sources
-        .into_iter()
+        .iter()
+        .copied()
         .flat_map(markdown_links)
         .collect::<Vec<_>>();
     links.sort_unstable_by(|left, right| {
@@ -71,6 +74,84 @@ pub(super) fn restore_markdown_links_from_sources<'a>(
         selected.replace_range(start..end, &replacement);
     }
     selected
+}
+
+fn restore_fenced_code(selected: &mut String, sources: &[&str]) {
+    for source in sources {
+        for code in markdown_code_blocks(source) {
+            let raw = code.source.trim_end_matches(['\r', '\n']);
+            for header_indent in ["  ", ""] {
+                for body_indent in ["  ", ""] {
+                    for footer_indent in ["  ", ""] {
+                        let rendered =
+                            rendered_code_block(&code, header_indent, body_indent, footer_indent);
+                        if selected.contains(&rendered) {
+                            *selected = selected.replace(&rendered, raw);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn markdown_code_blocks(source: &str) -> Vec<CodeBlock> {
+    let mut blocks = Vec::new();
+    let mut active: Option<CodeBlock> = None;
+    for event in Parser::new_ext(source, Options::all()) {
+        if let Some(code) = &mut active {
+            match event {
+                Event::Text(text) | Event::Code(text) => code.source.push_str(&text),
+                Event::SoftBreak | Event::HardBreak => code.source.push('\n'),
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some(code) = active.take() {
+                        blocks.push(code);
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if let Event::Start(Tag::CodeBlock(kind)) = event {
+            let language = match kind {
+                CodeBlockKind::Fenced(language) if !language.is_empty() => {
+                    Some(language.into_string())
+                }
+                CodeBlockKind::Fenced(_) | CodeBlockKind::Indented => None,
+            };
+            active = Some(CodeBlock {
+                language,
+                source: String::new(),
+            });
+        }
+    }
+    blocks
+}
+
+fn rendered_code_block(
+    code: &CodeBlock,
+    header_indent: &str,
+    body_indent: &str,
+    footer_indent: &str,
+) -> String {
+    let title = code.language.as_deref().unwrap_or("code");
+    let mut rendered = format!(
+        "{header_indent}┌─ {title} · {} LOC",
+        code_line_count(&code.source)
+    );
+    for line in code.source.trim_end_matches(['\r', '\n']).split('\n') {
+        rendered.push('\n');
+        rendered.push_str(body_indent);
+        rendered.push('│');
+        if !line.is_empty() {
+            rendered.push(' ');
+            rendered.push_str(line.trim_end_matches('\r'));
+        }
+    }
+    rendered.push('\n');
+    rendered.push_str(footer_indent);
+    rendered.push_str("└─");
+    rendered
 }
 
 fn match_is_inside_url(selected: &str, start: usize) -> bool {
@@ -1098,6 +1179,17 @@ mod tests {
                 "[docs](https://example.com/docs)",
             ),
             "docsify [docs](https://example.com/docs) [docs](https://existing.example)"
+        );
+    }
+
+    #[test]
+    fn semantic_copy_replaces_fenced_code_chrome_with_raw_code() {
+        let source = "Run this:\n\n```sh\necho '{\"garbageCollector\":{\"strategy\":\"disabled\"}}' |\n  sudo tee /etc/determinate/config.json >/dev/null\n\nsudo launchctl kickstart -k system/systems.determinate.nix-daemon\njust switch\n```";
+        let rendered = "┌─ sh · 5 LOC\n  │ echo '{\"garbageCollector\":{\"strategy\":\"disabled\"}}' |\n  │   sudo tee /etc/determinate/config.json >/dev/null\n  │\n  │ sudo launchctl kickstart -k system/systems.determinate.nix-daemon\n  │ just switch\n  └─";
+
+        assert_eq!(
+            restore_markdown_links(rendered.to_owned(), source),
+            "echo '{\"garbageCollector\":{\"strategy\":\"disabled\"}}' |\n  sudo tee /etc/determinate/config.json >/dev/null\n\nsudo launchctl kickstart -k system/systems.determinate.nix-daemon\njust switch"
         );
     }
 
