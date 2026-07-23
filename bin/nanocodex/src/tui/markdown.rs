@@ -3,7 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
 };
-use std::{borrow::Cow, sync::OnceLock};
+use std::{borrow::Cow, fmt::Write as _, sync::OnceLock};
 use syntect::{
     easy::HighlightLines,
     highlighting::{FontStyle, Theme, ThemeSet},
@@ -36,44 +36,144 @@ pub(super) fn restore_markdown_links_from_sources<'a>(
 ) -> String {
     let sources = sources.into_iter().collect::<Vec<_>>();
     restore_fenced_code(&mut selected, &sources);
-    let mut links = sources
-        .iter()
-        .copied()
-        .flat_map(markdown_links)
-        .collect::<Vec<_>>();
-    links.sort_unstable_by(|left, right| {
-        right
-            .0
-            .len()
-            .cmp(&left.0.len())
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    links.dedup_by(|left, right| left.0 == right.0);
-    let mut replacements = Vec::<(usize, usize, String)>::new();
-    for (label, destination) in links {
-        if label.is_empty() || destination.is_empty() || label == destination {
+    let logical = LogicalMarkdown::from_sources(sources.iter().copied());
+    logical.copy_range(&selected).unwrap_or(selected)
+}
+
+#[derive(Clone, Default)]
+pub(super) struct LogicalMarkdown {
+    text: String,
+    links: Vec<LogicalLink>,
+}
+
+#[derive(Clone)]
+struct LogicalLink {
+    start: usize,
+    end: usize,
+    destination: String,
+}
+
+impl LogicalMarkdown {
+    pub(super) fn from_sources<'a>(sources: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut logical = Self::default();
+        for source in sources {
+            logical.ensure_newline();
+            logical.append_source(source);
+        }
+        logical
+    }
+
+    fn append_source(&mut self, source: &str) {
+        let mut active_links = Vec::<(usize, String)>::new();
+        for event in Parser::new_ext(source, Options::all()) {
+            match event {
+                Event::Start(Tag::Link { dest_url, .. }) => {
+                    active_links.push((self.text.len(), dest_url.into_string()));
+                }
+                Event::End(TagEnd::Link) => {
+                    if let Some((start, destination)) = active_links.pop() {
+                        self.links.push(LogicalLink {
+                            start,
+                            end: self.text.len(),
+                            destination,
+                        });
+                    }
+                }
+                Event::Text(text) | Event::Code(text) => self.text.push_str(&text),
+                Event::SoftBreak
+                | Event::HardBreak
+                | Event::End(
+                    TagEnd::Paragraph
+                    | TagEnd::Heading(_)
+                    | TagEnd::Item
+                    | TagEnd::CodeBlock
+                    | TagEnd::TableCell
+                    | TagEnd::TableRow,
+                ) => self.ensure_newline(),
+                Event::Html(html) | Event::InlineHtml(html) => {
+                    self.text.push_str(&strip_html(&html));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn ensure_newline(&mut self) {
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            self.text.push('\n');
+        }
+    }
+
+    pub(super) fn copy_range(&self, selected: &str) -> Option<String> {
+        let selected_key = compact_whitespace(selected);
+        if selected_key.is_empty() {
+            return None;
+        }
+        let (text_key, offsets) = compact_whitespace_with_offsets(&self.text);
+        let mut matches = text_key.match_indices(&selected_key);
+        let (normalized_start, _) = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        let normalized_end = normalized_start.saturating_add(selected_key.len());
+        let start = offsets.iter().find_map(|(key_start, _, source_start, _)| {
+            (*key_start == normalized_start).then_some(*source_start)
+        })?;
+        let end = offsets.iter().find_map(|(_, key_end, _, source_end)| {
+            (*key_end == normalized_end).then_some(*source_end)
+        })?;
+        Some(self.markdown_range(start, end))
+    }
+
+    fn markdown_range(&self, start: usize, end: usize) -> String {
+        let mut output = String::new();
+        let mut cursor = start;
+        for link in self
+            .links
+            .iter()
+            .filter(|link| link.start < end && link.end > start)
+        {
+            let link_start = link.start.max(start);
+            let link_end = link.end.min(end);
+            output.push_str(&self.text[cursor..link_start]);
+            let label = &self.text[link_start..link_end];
+            if label == link.destination {
+                output.push_str(label);
+            } else {
+                let _ = write!(output, "[{label}]({})", link.destination);
+            }
+            cursor = link_end;
+        }
+        output.push_str(&self.text[cursor..end]);
+        output
+    }
+}
+
+fn compact_whitespace(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn compact_whitespace_with_offsets(value: &str) -> (String, Vec<(usize, usize, usize, usize)>) {
+    let mut compact = String::new();
+    let mut offsets = Vec::new();
+    for (source_start, character) in value.char_indices() {
+        if character.is_whitespace() {
             continue;
         }
-        for (start, _) in selected.match_indices(&label) {
-            let end = start.saturating_add(label.len());
-            if match_is_inside_url(&selected, start)
-                || !link_label_boundary(&selected, &label, start, end)
-                || replacements
-                    .iter()
-                    .any(|(existing_start, existing_end, _)| {
-                        start < *existing_end && end > *existing_start
-                    })
-            {
-                continue;
-            }
-            replacements.push((start, end, format!("[{label}]({destination})")));
-        }
+        let key_start = compact.len();
+        compact.push(character);
+        let key_end = compact.len();
+        offsets.push((
+            key_start,
+            key_end,
+            source_start,
+            source_start.saturating_add(character.len_utf8()),
+        ));
     }
-    replacements.sort_unstable_by_key(|(start, _, _)| std::cmp::Reverse(*start));
-    for (start, end, replacement) in replacements {
-        selected.replace_range(start..end, &replacement);
-    }
-    selected
+    (compact, offsets)
 }
 
 fn restore_fenced_code(selected: &mut String, sources: &[&str]) {
@@ -171,66 +271,6 @@ fn markdown_code_blocks(source: &str) -> Vec<CodeBlock> {
         }
     }
     blocks
-}
-
-fn match_is_inside_url(selected: &str, start: usize) -> bool {
-    let token_start = selected[..start]
-        .rfind(char::is_whitespace)
-        .map_or(0, |index| index.saturating_add(1));
-    selected[token_start..].starts_with("https://")
-        || selected[token_start..].starts_with("http://")
-}
-
-fn link_label_boundary(selected: &str, label: &str, start: usize, end: usize) -> bool {
-    if selected[..start].ends_with('[') && selected[end..].starts_with("](") {
-        return false;
-    }
-    let begins_with_word = label
-        .chars()
-        .next()
-        .is_some_and(|character| character.is_alphanumeric() || character == '_');
-    let ends_with_word = label
-        .chars()
-        .next_back()
-        .is_some_and(|character| character.is_alphanumeric() || character == '_');
-    let before_is_word = selected[..start]
-        .chars()
-        .next_back()
-        .is_some_and(|character| character.is_alphanumeric() || character == '_');
-    let after_is_word = selected[end..]
-        .chars()
-        .next()
-        .is_some_and(|character| character.is_alphanumeric() || character == '_');
-    (!begins_with_word || !before_is_word) && (!ends_with_word || !after_is_word)
-}
-
-fn markdown_links(source: &str) -> Vec<(String, String)> {
-    let mut links = Vec::new();
-    let mut active: Option<(String, String)> = None;
-    for event in Parser::new_ext(source, Options::all()) {
-        match event {
-            Event::Start(Tag::Link { dest_url, .. }) => {
-                active = Some((String::new(), dest_url.into_string()));
-            }
-            Event::Text(text) | Event::Code(text) if active.is_some() => {
-                if let Some((label, _)) = &mut active {
-                    label.push_str(&text);
-                }
-            }
-            Event::SoftBreak | Event::HardBreak if active.is_some() => {
-                if let Some((label, _)) = &mut active {
-                    label.push(' ');
-                }
-            }
-            Event::End(TagEnd::Link) => {
-                if let Some(link) = active.take() {
-                    links.push(link);
-                }
-            }
-            _ => {}
-        }
-    }
-    links
 }
 
 pub(super) fn heal_streaming_markdown(source: &str) -> Cow<'_, str> {
@@ -879,18 +919,11 @@ impl MarkdownWriter {
         let Some(code) = self.code_block.take() else {
             return;
         };
-        let title = code.language.as_deref().unwrap_or("code");
-        self.lines.push(Line::styled(
-            format!("  ┌─ {title} · {} LOC", code_line_count(&code.source)),
-            Style::default().fg(Color::DarkGray),
-        ));
         for line in highlighted_code_lines(code.language.as_deref(), &code.source) {
-            let mut spans = vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
+            let mut spans = vec![Span::raw("    ")];
             spans.extend(line.spans);
             self.lines.push(Line::from(spans));
         }
-        self.lines
-            .push(Line::styled("  └─", Style::default().fg(Color::DarkGray)));
         self.blank_line();
     }
 
@@ -1143,7 +1176,9 @@ mod tests {
         assert!(rendered.contains("Result"));
         assert!(rendered.contains("Use bold, emphasis, and cargo test."));
         assert!(rendered.contains("• first"));
-        assert!(rendered.contains("┌─ rust · 1 LOC"));
+        assert!(rendered.contains("fn main"));
+        assert!(!rendered.contains("LOC"));
+        assert!(!rendered.contains("┌─"));
         assert!(rendered.contains("fn main() {}"));
     }
 
@@ -1194,10 +1229,24 @@ mod tests {
         );
         assert_eq!(
             restore_markdown_links(
-                "docsify docs [docs](https://existing.example)".to_owned(),
-                "[docs](https://example.com/docs)",
+                "docsify docs docs".to_owned(),
+                "docsify docs [docs](https://example.com/docs)",
             ),
-            "docsify [docs](https://example.com/docs) [docs](https://existing.example)"
+            "docsify docs [docs](https://example.com/docs)"
+        );
+        assert_eq!(
+            restore_markdown_links(
+                "docu".to_owned(),
+                "Read [documentation](https://example.com/docs) now",
+            ),
+            "[docu](https://example.com/docs)"
+        );
+        assert_eq!(
+            restore_markdown_links(
+                "Read the\ndocs".to_owned(),
+                "Read the [docs](https://example.com/docs)",
+            ),
+            "Read the [docs](https://example.com/docs)"
         );
     }
 
@@ -1228,7 +1277,7 @@ mod tests {
         assert_eq!(
             restore_markdown_links(
                 "https://example.com/docs and docs".to_owned(),
-                "Read [docs](https://example.com/documentation)",
+                "https://example.com/docs and [docs](https://example.com/documentation)",
             ),
             "https://example.com/docs and [docs](https://example.com/documentation)"
         );
@@ -1237,7 +1286,7 @@ mod tests {
                 "https://example.com".to_owned(),
                 "[https://example.com](https://redirect.example)",
             ),
-            "https://example.com"
+            "[https://example.com](https://redirect.example)"
         );
     }
 

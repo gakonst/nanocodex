@@ -22,7 +22,8 @@ use super::app::PlanStepStatus;
 use super::composer::ComposerLayout;
 use super::diff::{PatchPresentation, present_apply_patch};
 use super::markdown::{
-    heal_streaming_markdown, render_agent_markdown, restore_markdown_links_from_sources,
+    LogicalMarkdown, heal_streaming_markdown, render_agent_markdown,
+    restore_markdown_links_from_sources,
 };
 
 #[derive(Clone, Copy)]
@@ -289,6 +290,21 @@ impl Transcript {
     }
 
     pub(super) fn semanticize_copy(&self, selected: String) -> String {
+        let mut local_matches = self
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let EntryContent::Markdown(markdown) = &entry.content else {
+                    return None;
+                };
+                markdown.semanticize_copy(&selected)
+            })
+            .take(2);
+        if let Some(copied) = local_matches.next()
+            && local_matches.next().is_none()
+        {
+            return copied;
+        }
         restore_markdown_links_from_sources(
             selected,
             self.entries.iter().filter_map(|entry| {
@@ -789,6 +805,7 @@ struct MarkdownContent {
     base_style: Style,
     show_header: bool,
     cached: Mutex<Option<RenderedText>>,
+    logical_copy: Mutex<Option<LogicalMarkdown>>,
 }
 
 #[derive(Clone)]
@@ -881,6 +898,12 @@ impl Clone for MarkdownContent {
             show_header: self.show_header,
             cached: Mutex::new(
                 self.cached
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            ),
+            logical_copy: Mutex::new(
+                self.logical_copy
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .clone(),
@@ -1727,6 +1750,7 @@ impl MarkdownContent {
             base_style: Style::default(),
             show_header: true,
             cached: Mutex::new(None),
+            logical_copy: Mutex::new(None),
         }
     }
 
@@ -1738,6 +1762,7 @@ impl MarkdownContent {
             base_style: Style::default(),
             show_header: true,
             cached: Mutex::new(None),
+            logical_copy: Mutex::new(None),
         }
     }
 
@@ -1749,6 +1774,7 @@ impl MarkdownContent {
             base_style: Style::default().add_modifier(Modifier::DIM),
             show_header: false,
             cached: Mutex::new(None),
+            logical_copy: Mutex::new(None),
         }
     }
 
@@ -1772,6 +1798,10 @@ impl MarkdownContent {
             .map_or(0, |index| index.saturating_add(1));
         let replace_tail = !self.source.is_empty() && !self.source.ends_with('\n');
         self.source.push_str(delta);
+        *self
+            .logical_copy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         self.plain_streaming = incremental;
         let mut cached = self.cached.lock().unwrap_or_else(PoisonError::into_inner);
         if incremental && let Some(rendered) = cached.as_mut() {
@@ -1794,6 +1824,10 @@ impl MarkdownContent {
             self.source.push_str("\n• ");
         }
         self.source.push_str(&indent_reasoning(delta));
+        *self
+            .logical_copy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
@@ -1801,7 +1835,21 @@ impl MarkdownContent {
         source.clone_into(&mut self.source);
         self.streaming = false;
         self.plain_streaming = false;
+        *self
+            .logical_copy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    fn semanticize_copy(&self, selected: &str) -> Option<String> {
+        let mut logical = self
+            .logical_copy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        logical
+            .get_or_insert_with(|| LogicalMarkdown::from_sources([self.source.as_str()]))
+            .copy_range(selected)
     }
 
     #[cfg(test)]

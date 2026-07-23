@@ -733,32 +733,40 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        let header_y = rows
+        let start_y = rows
             .iter()
-            .position(|row| row.contains("┌─ javascript"))
-            .expect("code fence header should be visible");
-        let header_x = rows[header_y]
-            .chars()
-            .position(|character| character == '┌')
+            .position(|row| row.contains("const result"))
+            .expect("first code line should be visible");
+        let start_row = u16::try_from(start_y).unwrap();
+        let start_x = (0..buffer.area.width)
+            .find(|column| {
+                (*column..buffer.area.width)
+                    .take("const result".len())
+                    .map(|x| buffer[(x, start_row)].symbol())
+                    .collect::<String>()
+                    == "const result"
+            })
             .unwrap();
-        let footer_y = rows
+        let end_y = rows
             .iter()
             .enumerate()
-            .skip(header_y + 1)
-            .find_map(|(index, row)| row.contains("└─").then_some(index))
-            .expect("code fence footer should be visible");
-        let footer_x = rows[footer_y]
-            .chars()
-            .position(|character| character == '└')
+            .skip(start_y + 1)
+            .find_map(|(index, row)| row.contains("text(result.output);").then_some(index))
+            .expect("last code line should be visible");
+        let end_y = u16::try_from(end_y).unwrap();
+        let end_start_x = (0..buffer.area.width)
+            .find(|column| {
+                (*column..buffer.area.width)
+                    .take("text(result.output);".len())
+                    .map(|x| buffer[(x, end_y)].symbol())
+                    .collect::<String>()
+                    == "text(result.output);"
+            })
             .unwrap();
-        let start = (
-            u16::try_from(header_x).unwrap(),
-            u16::try_from(header_y).unwrap(),
-        );
-        let end = (
-            u16::try_from(footer_x + 1).unwrap(),
-            u16::try_from(footer_y).unwrap(),
-        );
+        let end_x = end_start_x
+            .saturating_add(u16::try_from("text(result.output);".len() - 1).unwrap_or(u16::MAX));
+        let start = (start_x, start_row);
+        let end = (end_x, end_y);
 
         assert!(app.begin_mouse_selection(start.into()));
         assert!(app.finish_mouse_selection(end.into()));
