@@ -22,8 +22,9 @@
 
 Nanocodex is a Code Mode-first Rust agents SDK. It provides typed turns, tools,
 events, steering, cancellation, queueing, and fast historical forks over the
-OpenAI Responses WebSocket API. It keeps the complete coding-agent conversation
-inside your process without requiring an app server or durable control plane.
+OpenAI Responses API. It supports persistent WebSocket and HTTPS/SSE transports
+while keeping the complete coding-agent conversation inside your process,
+without requiring an app server or durable control plane.
 
 ## Installation
 
@@ -254,12 +255,38 @@ nanocodex auth status
 nanocodex
 ```
 
-Plain `nanocodex` and `nanocodex run` prefer `OPENAI_API_KEY`; direct binary runs
-load it from the nearest `.env` automatically. An explicit `--api-key` overrides
-both automatic sources. Without an API key, the CLI falls back to the stored
-subscription session. To select `ChatGPT` explicitly while a key is available,
-pass `NANOCODEX_AUTH_FILE` or `--auth-file`. `nanocodex auth logout` removes the
-shared file and therefore logs both Codex and Nanocodex out.
+Plain `nanocodex` and `nanocodex run` prefer an existing Codex subscription
+session in `$CODEX_HOME/auth.json` (normally `~/.codex/auth.json`). If that file
+is absent, the CLI falls back to `OPENAI_API_KEY`; direct binary runs load the
+key from the nearest `.env` automatically. An explicit `--api-key` overrides
+both automatic sources, while `NANOCODEX_AUTH_FILE` or `--auth-file` selects a
+specific subscription file. A present but invalid auth file fails visibly
+instead of silently incurring API-key charges. `nanocodex auth logout` removes
+the shared file and therefore logs both Codex and Nanocodex out.
+
+The default Responses policy depends on the selected authorization:
+
+| Authorization | Default transport | Default `store` | Default history |
+| --- | --- | ---: | --- |
+| ChatGPT subscription | WebSocket | `false` | connection-local incremental |
+| API key | WebSocket | `true` | stored incremental |
+
+Selecting HTTPS keeps API-key sessions stored and incremental. ChatGPT HTTPS
+remains `store: false` and automatically switches to complete client-history
+replay because it has no connection-local checkpoint. Explicit
+`--store-responses` and `--responses-history` values override these defaults
+when the combination is supported.
+
+These defaults optimize the normal long-lived interactive session, where the
+retained WebSocket delivered warm first events in 80-151 ms versus 277-369 ms
+over HTTPS. HTTPS is the better explicit choice for cold or fork-heavy
+one-shot work: cold first events were 374-405 ms versus 587-679 ms for
+WebSocket, and fresh HTTPS forks reached their first event in 373-436 ms versus
+about 1.0-1.1 seconds for a new WebSocket. With API-key authentication,
+`store: true` also reduced three historical-fork requests by roughly 97%.
+Completion latency was backend-noisy, and every policy had identical token,
+cache, and estimated-cost behavior in this workload. See the full
+[transport benchmark](docs/RESPONSE_TRANSPORT_BENCH.md).
 
 Library consumers own their login UX and can reuse the same managed session:
 
@@ -280,13 +307,15 @@ already-authorized WebSocket from the host and never own refresh tokens.
 ## Lifecycle details
 
 `Nanocodex::new` installs the standard instructions, medium thinking, built-in
-tools, persistent WebSocket, and retry/reconnect policy. Dropping the event
-receiver is supported; events then become a no-op.
+tools, persistent WebSocket, and retry/reconnect policy. The builder can instead
+fix HTTPS/SSE, response storage, and full-replay policy for the agent and all of
+its forks. Dropping the event receiver is supported; events then become a no-op.
 
 Callers never pass transcripts, response IDs, tool outputs, or turn IDs back to
-the agent. On a healthy socket the driver sends only the new delta with
-`previous_response_id`. After reconnecting it drops that ID and transparently
-replays its authoritative typed history.
+the agent. An incremental transport sends only the new delta with
+`previous_response_id`; full-replay policy transparently sends the authoritative
+typed history. A replacement ephemeral socket and HTTPS with `store: false`
+also replay that history.
 
 The Responses path encodes each wire request once and rejects common
 non-metadata frames before attempting metadata decoding. Every streamed attempt
@@ -539,10 +568,10 @@ edit:
 ```sh
 curl -fsSL https://nanocodex.paradigm.xyz | bash
 
-# OPENAI_API_KEY is loaded from the nearest .env by default.
+# Reuse an existing Codex login, or fall back to OPENAI_API_KEY when absent.
 nanocodex
 
-# Or explicitly use the same subscription store Codex uses.
+# Create or explicitly select the same subscription store Codex uses.
 nanocodex auth login
 nanocodex --auth-file "${CODEX_HOME:-$HOME/.codex}/auth.json"
 ```
@@ -616,7 +645,7 @@ integrations, managed subagents, and a mature TUI and IDE ecosystem.
 | --- | --- | --- |
 | Product boundary | Rust library in your process | Application and durable agent runtime |
 | State | In-memory authority; optional Codex-compatible rollout | Persisted threads and rollouts |
-| Follow-on turns | New input delta on one persistent WebSocket | Full Codex session lifecycle |
+| Follow-on turns | Fixed WebSocket or HTTPS policy; automatic delta or full replay | Full Codex session lifecycle |
 | Historical forks | Exact completed checkpoint; parent keeps running | Durable thread reconstruction |
 | Tools | Code Mode over Rust tools and MCP | Broad built-in tool and integration surface |
 | Middleware | Your concrete Tower stack | Codex-owned runtime policy |

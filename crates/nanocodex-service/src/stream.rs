@@ -8,11 +8,13 @@ use nanocodex_core::{
 use serde::Serialize;
 use web_time::Instant;
 
+#[cfg(not(target_family = "wasm"))]
+use crate::http::ResponsesHttpStream;
 use crate::{
     ResponsesError,
     service_error::ResponsesServiceError,
     socket::{ResponsesSocket, decode_event, parse_raw_json},
-    telemetry::{ApiEvent, TRANSPORT, elapsed_ns},
+    telemetry::{ApiEvent, elapsed_ns},
 };
 
 const INVALID_IMAGE_ERROR: &str = "The image data you provided does not represent a valid image";
@@ -173,8 +175,27 @@ struct ReceivedServerEvent {
     api_event_seq: u64,
 }
 
+pub(crate) enum ResponseEventSource<'a> {
+    WebSocket(&'a mut ResponsesSocket),
+    #[cfg(not(target_family = "wasm"))]
+    Https(&'a mut ResponsesHttpStream),
+}
+
+impl ResponseEventSource<'_> {
+    async fn next_text_or_idle_timeout(
+        &mut self,
+    ) -> Result<crate::socket::ReceivedText, ResponsesError> {
+        match self {
+            Self::WebSocket(socket) => socket.next_text_or_idle_timeout().await,
+            #[cfg(not(target_family = "wasm"))]
+            Self::Https(stream) => stream.next_text_or_idle_timeout().await,
+        }
+    }
+}
+
 pub(crate) async fn receive(
-    socket: &mut ResponsesSocket,
+    source: &mut ResponseEventSource<'_>,
+    transport: &'static str,
     events: &EventSink,
     call_index: u32,
     started_at: Instant,
@@ -184,7 +205,15 @@ pub(crate) async fn receive(
     let mut timing = StreamTiming::new(started_at);
 
     loop {
-        let received = next_event(socket, events, "generation", call_index, &mut timing).await?;
+        let received = next_event(
+            source,
+            transport,
+            events,
+            "generation",
+            call_index,
+            &mut timing,
+        )
+        .await?;
         match received.event {
             ServerEvent::OutputItemAdded { output_index, item } => {
                 let Some(output_index) = output_index else {
@@ -319,7 +348,8 @@ fn emit_assistant_message(
 }
 
 pub(crate) async fn receive_compaction(
-    socket: &mut ResponsesSocket,
+    source: &mut ResponseEventSource<'_>,
+    transport: &'static str,
     events: &EventSink,
     call_index: u32,
     started_at: Instant,
@@ -328,7 +358,15 @@ pub(crate) async fn receive_compaction(
     let mut timing = StreamTiming::new(started_at);
 
     loop {
-        let received = next_event(socket, events, "compaction", call_index, &mut timing).await?;
+        let received = next_event(
+            source,
+            transport,
+            events,
+            "compaction",
+            call_index,
+            &mut timing,
+        )
+        .await?;
         match received.event {
             ServerEvent::OutputItemDone { item } => done_items.push(item),
             ServerEvent::Completed { mut response } => {
@@ -364,14 +402,15 @@ pub(crate) async fn receive_compaction(
 }
 
 async fn next_event(
-    socket: &mut ResponsesSocket,
+    source: &mut ResponseEventSource<'_>,
+    transport: &'static str,
     events: &EventSink,
     phase: &'static str,
     call_index: u32,
     timing: &mut StreamTiming,
 ) -> Result<ReceivedServerEvent, ResponsesServiceError> {
     let receive_started_at = Instant::now();
-    let received = socket.next_text_or_idle_timeout().await?;
+    let received = source.next_text_or_idle_timeout().await?;
     timing.pipeline.receive_wait_duration_ns = timing
         .pipeline
         .receive_wait_duration_ns
@@ -400,7 +439,7 @@ async fn next_event(
         AgentEventKind::ApiEvent,
         ApiEvent {
             direction: "inbound",
-            transport: TRANSPORT,
+            transport,
             phase,
             model_call_index: Some(call_index),
             event: raw_event,

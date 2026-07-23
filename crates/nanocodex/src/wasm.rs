@@ -157,6 +157,9 @@ impl WasmNanocodex {
             reasoning_mode,
             thinking,
             fast_mode: config.fast_mode,
+            responses_transport: nanocodex_core::ResponsesTransport::WebSocket,
+            responses_history: nanocodex_core::ResponsesHistory::Incremental,
+            store_responses: true,
             websocket_url: config.websocket_url,
             api_base_url: config.api_base_url,
             system_prompt: config

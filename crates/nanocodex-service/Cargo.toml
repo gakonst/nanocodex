@@ -11,7 +11,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Tower services and persistent Responses WebSocket transport for Nanocodex"
+description = "Tower services and Responses transports for Nanocodex"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -32,6 +32,7 @@ web-time.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 base64.workspace = true
 futures-util.workspace = true
+reqwest.workspace = true
 rustls.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true

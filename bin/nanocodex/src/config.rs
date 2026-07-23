@@ -6,7 +6,8 @@ use std::{
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
 use nanocodex::{
-    AgentEvents, Nanocodex, OpenAiAuth, ReasoningMode, Responses, RolloutConfig, Thinking, Tools,
+    AgentEvents, Nanocodex, OpenAiAuth, ReasoningMode, Responses, ResponsesHistory,
+    ResponsesTransport, RolloutConfig, Thinking, Tools,
 };
 
 use crate::mcp::McpArgs;
@@ -24,7 +25,7 @@ pub(crate) struct ConfiguredAgent {
     reason = "independent CLI feature toggles are not one state machine"
 )]
 pub(crate) struct AgentArgs {
-    /// Explicit `OpenAI` API key override. Otherwise `OPENAI_API_KEY` is preferred.
+    /// Explicit `OpenAI` API key override.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     api_key: Option<String>,
 
@@ -88,7 +89,23 @@ pub(crate) struct AgentArgs {
     #[arg(long, env = "OPENAI_RESPONSES_WEBSOCKET_URL")]
     websocket_url: Option<String>,
 
-    /// `OpenAI` HTTP API base used by standalone web search.
+    /// Responses transport fixed for the complete agent session.
+    #[arg(
+        long,
+        env = "NANOCODEX_RESPONSES_TRANSPORT",
+        default_value_t = ResponsesTransport::WebSocket
+    )]
+    responses_transport: ResponsesTransport,
+
+    /// Incremental response-ID chaining or complete history replay.
+    #[arg(long, env = "NANOCODEX_RESPONSES_HISTORY")]
+    responses_history: Option<ResponsesHistory>,
+
+    /// Whether the Responses API retains server-side checkpoints.
+    #[arg(long, env = "NANOCODEX_STORE_RESPONSES", action = ArgAction::Set)]
+    store_responses: Option<bool>,
+
+    /// `OpenAI` HTTP API base used by HTTPS Responses and standalone web search.
     #[arg(long, env = "OPENAI_API_BASE_URL")]
     api_base_url: Option<String>,
 
@@ -105,7 +122,13 @@ impl AgentArgs {
         let codex_home = default_codex_home()?;
         let rollout = self.rollouts.then(|| codex_home.clone());
         let auth = select_auth(self.api_key, self.auth_file, environment_api_key()?)?;
-        let mut responses = Responses::builder();
+        let mut responses = Responses::builder().transport(self.responses_transport);
+        if let Some(history) = self.responses_history {
+            responses = responses.history(history);
+        }
+        if let Some(store) = self.store_responses {
+            responses = responses.store(store);
+        }
         if let Some(websocket_url) = self.websocket_url {
             responses = responses.websocket_url(websocket_url);
         }
@@ -160,16 +183,40 @@ fn select_auth(
     auth_file: Option<PathBuf>,
     environment_api_key: Option<String>,
 ) -> Result<OpenAiAuth> {
+    select_auth_with_default(
+        explicit_api_key,
+        auth_file,
+        environment_api_key,
+        default_auth_file,
+    )
+}
+
+fn select_auth_with_default<F>(
+    explicit_api_key: Option<String>,
+    auth_file: Option<PathBuf>,
+    environment_api_key: Option<String>,
+    resolve_default_auth_file: F,
+) -> Result<OpenAiAuth>
+where
+    F: FnOnce() -> Result<PathBuf>,
+{
     if let Some(api_key) = explicit_api_key {
         return Ok(OpenAiAuth::api_key(api_key));
     }
     if let Some(auth_file) = auth_file {
         return load_subscription_auth(&auth_file);
     }
+    let auth_file = resolve_default_auth_file()?;
+    if auth_file
+        .try_exists()
+        .wrap_err_with(|| format!("failed to inspect {}", auth_file.display()))?
+    {
+        return load_subscription_auth(&auth_file);
+    }
     if let Some(api_key) = environment_api_key {
         return Ok(OpenAiAuth::api_key(api_key));
     }
-    load_subscription_auth(&default_auth_file()?)
+    load_subscription_auth(&auth_file)
 }
 
 fn environment_api_key() -> Result<Option<String>> {
@@ -226,7 +273,7 @@ mod tests {
     use clap::CommandFactory;
     use nanocodex::OpenAiAuthMode;
 
-    use super::select_auth;
+    use super::{select_auth, select_auth_with_default};
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -236,6 +283,22 @@ mod tests {
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    fn write_chatgpt_auth(path: &std::path::Path) {
+        std::fs::write(
+            path,
+            br#"{
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": "header.e30.signature",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "account_id": "account-1"
+                }
+            }"#,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -261,6 +324,28 @@ mod tests {
     }
 
     #[test]
+    fn responses_transport_is_selected_once_at_startup() {
+        let command = crate::Cli::command();
+        let transport = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "responses_transport")
+            .expect("the CLI should expose the Responses transport argument");
+        assert_eq!(transport.get_default_values(), ["websocket"]);
+
+        let history = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "responses_history")
+            .expect("the CLI should expose the Responses history argument");
+        assert!(history.get_default_values().is_empty());
+
+        let store = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "store_responses")
+            .expect("the CLI should expose the Responses storage argument");
+        assert!(store.get_default_values().is_empty());
+    }
+
+    #[test]
     fn explicit_api_key_overrides_automatic_auth_selection() {
         let auth = select_auth(
             Some("explicit-key".into()),
@@ -273,10 +358,41 @@ mod tests {
     }
 
     #[test]
-    fn environment_key_is_the_automatic_default() {
-        let auth = select_auth(None, None, Some("environment-key".into())).unwrap();
+    fn default_chatgpt_auth_precedes_the_environment_key() {
+        let auth_file = auth_file();
+        write_chatgpt_auth(&auth_file);
+
+        let auth = select_auth_with_default(None, None, Some("environment-key".into()), || {
+            Ok(auth_file.clone())
+        })
+        .unwrap();
+
+        assert_eq!(auth.mode(), OpenAiAuthMode::ChatGpt);
+        std::fs::remove_file(auth_file).unwrap();
+    }
+
+    #[test]
+    fn environment_key_is_used_when_the_default_auth_file_is_missing() {
+        let auth_file = auth_file();
+        let auth =
+            select_auth_with_default(None, None, Some("environment-key".into()), || Ok(auth_file))
+                .unwrap();
 
         assert_eq!(auth.mode(), OpenAiAuthMode::ApiKey);
+    }
+
+    #[test]
+    fn invalid_default_auth_does_not_silently_fall_back_to_a_key() {
+        let auth_file = auth_file();
+        std::fs::write(&auth_file, b"{}").unwrap();
+
+        let error = select_auth_with_default(None, None, Some("environment-key".into()), || {
+            Ok(auth_file.clone())
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("no ChatGPT tokens"));
+        std::fs::remove_file(auth_file).unwrap();
     }
 
     #[test]

@@ -1,14 +1,364 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use eyre::{Result, eyre};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::{net::TcpListener, time::timeout};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    time::timeout,
+};
 use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
 use crate::{
-    AgentHandle, Nanocodex, NanocodexError, Prompt, Responses, ResponsesError, Thinking, Tools,
+    AgentHandle, Nanocodex, NanocodexError, OpenAiAuth, Prompt, Responses, ResponsesError,
+    ResponsesHistory, ResponsesTransport, Thinking, Tools,
 };
+
+#[derive(Clone)]
+struct StaticChatGptAuth;
+
+impl nanocodex_core::OpenAiAuthSource for StaticChatGptAuth {
+    fn validate(&self) -> std::result::Result<(), nanocodex_core::OpenAiAuthError> {
+        Ok(())
+    }
+
+    fn snapshot(
+        &self,
+    ) -> nanocodex_core::OpenAiAuthFuture<
+        '_,
+        std::result::Result<nanocodex_core::OpenAiAuthSnapshot, nanocodex_core::OpenAiAuthError>,
+    > {
+        Box::pin(async {
+            Ok(nanocodex_core::OpenAiAuthSnapshot::new(
+                nanocodex_core::OpenAiAuthMode::ChatGpt,
+                "subscription-token",
+                Some("account-123"),
+                false,
+                0,
+            ))
+        })
+    }
+
+    fn recover_unauthorized(
+        &self,
+        _rejected: &nanocodex_core::OpenAiAuthSnapshot,
+    ) -> nanocodex_core::OpenAiAuthFuture<
+        '_,
+        std::result::Result<(), nanocodex_core::OpenAiAuthError>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn chatgpt_auth() -> OpenAiAuth {
+    OpenAiAuth::managed_chatgpt(Arc::new(StaticChatGptAuth))
+}
+
+#[tokio::test]
+async fn https_ephemeral_replays_complete_follow_on_history() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let first = next_http_json(&listener).await?;
+        assert_eq!(first.body["store"], false);
+        assert!(first.body.get("type").is_none());
+        assert!(first.body.get("previous_response_id").is_none());
+        assert!(first.body.to_string().contains("first prompt"));
+        send_http_final(first.stream, "resp-first").await?;
+
+        let second = next_http_json(&listener).await?;
+        assert_eq!(second.body["store"], false);
+        assert!(second.body.get("type").is_none());
+        assert!(second.body.get("previous_response_id").is_none());
+        let replay = second.body.to_string();
+        assert!(replay.contains("first prompt"));
+        assert!(replay.contains("done"));
+        assert!(replay.contains("second prompt"));
+        send_http_final(second.stream, "resp-second").await
+    });
+
+    let workspace = temporary_workspace("https-ephemeral-follow-on")?;
+    let responses = Responses::builder()
+        .transport(ResponsesTransport::Https)
+        .store(false)
+        .api_base_url(endpoint)
+        .build();
+    let (agent, events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("https-ephemeral")
+        .build()?;
+    assert_eq!(
+        agent
+            .prompt("first prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+    assert_eq!(
+        agent
+            .prompt("second prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+    drop((agent, events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock HTTPS Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn https_stored_fork_uses_the_historical_response_checkpoint() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let root = next_http_json(&listener).await?;
+        assert_eq!(root.body["store"], true);
+        assert!(root.body.get("previous_response_id").is_none());
+        send_http_final(root.stream, "resp-root").await?;
+
+        let branch = next_http_json(&listener).await?;
+        assert_eq!(branch.body["store"], true);
+        assert_eq!(branch.body["previous_response_id"], "resp-root");
+        assert!(branch.body.to_string().contains("branch prompt"));
+        send_http_final(branch.stream, "resp-branch").await
+    });
+
+    let workspace = temporary_workspace("https-stored-fork")?;
+    let responses = Responses::builder()
+        .transport(ResponsesTransport::Https)
+        .store(true)
+        .api_base_url(endpoint)
+        .build();
+    let (agent, root_events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("https-stored")
+        .build()?;
+    let root = agent.prompt("root prompt").await?.result().await?;
+    let (fork, fork_events) = agent.fork_from(&root).await?;
+    assert_eq!(
+        fork.prompt("branch prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+    drop((agent, fork, root_events, fork_events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock HTTPS Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn chatgpt_https_uses_subscription_headers_and_ephemeral_replay() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let request = next_http_json(&listener).await?;
+        assert!(
+            request
+                .headers
+                .contains("authorization: bearer subscription-token")
+        );
+        assert!(request.headers.contains("chatgpt-account-id: account-123"));
+        assert_eq!(request.body["store"], false);
+        assert!(request.body.get("previous_response_id").is_none());
+        send_http_final(request.stream, "resp-chatgpt").await
+    });
+
+    let workspace = temporary_workspace("https-chatgpt")?;
+    let responses = Responses::builder()
+        .transport(ResponsesTransport::Https)
+        .api_base_url(endpoint)
+        .build();
+    let (agent, events) = Nanocodex::builder(chatgpt_auth())
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("https-chatgpt")
+        .build()?;
+    assert_eq!(
+        agent
+            .prompt("subscription prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+    drop((agent, events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock HTTPS Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_auth_storage_and_https_history_policies() {
+    let stored_chatgpt = Responses::builder().store(true).build();
+    let error = Nanocodex::builder(chatgpt_auth())
+        .responses(stored_chatgpt)
+        .build()
+        .err()
+        .expect("ChatGPT store:true must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("ChatGPT subscription authentication does not support store: true")
+    );
+
+    let incremental_ephemeral_https = Responses::builder()
+        .transport(ResponsesTransport::Https)
+        .store(false)
+        .history(ResponsesHistory::Incremental)
+        .build();
+    let error = Nanocodex::builder("test-key")
+        .responses(incremental_ephemeral_https)
+        .build()
+        .err()
+        .expect("ephemeral HTTPS incremental history must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("HTTPS with store: false requires full client-history replay")
+    );
+}
+
+#[tokio::test]
+async fn websocket_ephemeral_chains_on_connection_and_replays_a_fresh_fork() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut root = accept_async(stream).await?;
+        let warmup = next_json(&mut root).await?;
+        assert_eq!(warmup["store"], false);
+        assert_eq!(warmup["generate"], false);
+        send_warmup(&mut root, "resp-warmup").await?;
+
+        let first = next_json(&mut root).await?;
+        assert_eq!(first["store"], false);
+        assert_eq!(first["previous_response_id"], "resp-warmup");
+        send_final(&mut root, "resp-first").await?;
+
+        let second = next_json(&mut root).await?;
+        assert_eq!(second["previous_response_id"], "resp-first");
+        assert_eq!(second["input"].as_array().map(Vec::len), Some(1));
+        send_final(&mut root, "resp-second").await?;
+
+        let (stream, _) = listener.accept().await?;
+        let mut branch = accept_async(stream).await?;
+        let replay = next_json(&mut branch).await?;
+        assert_eq!(replay["store"], false);
+        assert!(replay.get("previous_response_id").is_none());
+        let replay = replay.to_string();
+        assert!(replay.contains("first prompt"));
+        assert!(replay.contains("branch prompt"));
+        send_final(&mut branch, "resp-branch").await
+    });
+
+    let workspace = temporary_workspace("websocket-ephemeral-fork")?;
+    let responses = Responses::builder()
+        .websocket_url(endpoint)
+        .store(false)
+        .build();
+    let (agent, root_events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("websocket-ephemeral")
+        .build()?;
+    let first = agent.prompt("first prompt").await?.result().await?;
+    assert_eq!(
+        agent
+            .prompt("second prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+    let (fork, fork_events) = agent.fork_from(&first).await?;
+    assert_eq!(
+        fork.prompt("branch prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+    drop((agent, fork, root_events, fork_events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_full_replay_never_sends_a_previous_response_id() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        let warmup = next_json(&mut socket).await?;
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let first = next_json(&mut socket).await?;
+        assert!(first.get("previous_response_id").is_none());
+        assert!(first.to_string().contains("first prompt"));
+        send_final(&mut socket, "resp-first").await?;
+
+        let second = next_json(&mut socket).await?;
+        assert!(second.get("previous_response_id").is_none());
+        let replay = second.to_string();
+        assert!(replay.contains("first prompt"));
+        assert!(replay.contains("second prompt"));
+        send_final(&mut socket, "resp-second").await?;
+        drop(warmup);
+        Result::<()>::Ok(())
+    });
+
+    let workspace = temporary_workspace("websocket-full-replay")?;
+    let responses = Responses::builder()
+        .websocket_url(endpoint)
+        .store(false)
+        .history(ResponsesHistory::FullReplay)
+        .build();
+    let (agent, events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("websocket-replay")
+        .build()?;
+    agent.prompt("first prompt").await?.result().await?;
+    agent.prompt("second prompt").await?.result().await?;
+    drop((agent, events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn follow_on_prompts_can_change_turn_policy_without_restarting_the_session() -> Result<()> {
@@ -2399,6 +2749,64 @@ fn completed_response_with_usage(response_id: &str, output: &[Value], total_toke
             }
         }
     })
+}
+
+struct CapturedHttpRequest {
+    stream: TcpStream,
+    headers: String,
+    body: Value,
+}
+
+async fn next_http_json(listener: &TcpListener) -> Result<CapturedHttpRequest> {
+    let (mut stream, _) = listener.accept().await?;
+    let mut bytes = Vec::with_capacity(4096);
+    let header_end = loop {
+        if let Some(position) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+        let read = stream.read_buf(&mut bytes).await?;
+        if read == 0 {
+            return Err(eyre!("HTTPS test client closed before request headers"));
+        }
+    };
+    let headers = String::from_utf8(bytes[..header_end].to_vec())?.to_ascii_lowercase();
+    let content_length = headers
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .map(str::trim)
+        .ok_or_else(|| eyre!("HTTPS test request omitted Content-Length"))?
+        .parse::<usize>()?;
+    while bytes.len() - header_end < content_length {
+        let read = stream.read_buf(&mut bytes).await?;
+        if read == 0 {
+            return Err(eyre!("HTTPS test client closed before request body"));
+        }
+    }
+    let body = serde_json::from_slice(&bytes[header_end..header_end + content_length])?;
+    Ok(CapturedHttpRequest {
+        stream,
+        headers,
+        body,
+    })
+}
+
+async fn send_http_final(mut stream: TcpStream, response_id: &str) -> Result<()> {
+    let event = completed_response(
+        response_id,
+        &[json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "done" }]
+        })],
+    );
+    let body = format!("data: {event}\n\ndata: [DONE]\n\n");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 async fn next_json<S>(socket: &mut WebSocketStream<S>) -> Result<Value>
