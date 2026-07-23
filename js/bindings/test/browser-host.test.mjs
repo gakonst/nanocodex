@@ -34,6 +34,8 @@ test("browser host carries ordered frames and application tools", async () => {
   assert.match(JSON.stringify(execution.output), /42/);
   assert.equal(execution.nested_calls[0].name, "double");
   assert.equal(execution.nested_calls[0].call_id, "call-exec/code-1");
+  assert.equal(Number.isSafeInteger(execution.nested_calls[0].started_after_ns), true);
+  assert.ok(execution.nested_calls[0].started_after_ns >= 0);
   assert.equal(JSON.parse(host.toolDefinitions())[0].name, "double");
   host.emitEvent("event");
   assert.deepEqual(events, ["event"]);
