@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use std::time::Instant;
 
 use super::{
     app::{App, Conversation, PaneId, ReasoningPicker, STANDARD_THINKING_OPTIONS},
@@ -491,7 +492,11 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else if app.cancel_confirmation_active() {
         "Stop Agent Turn — Esc again to confirm".to_owned()
     } else if conversation.running {
-        format!("{} Thinking...", spinner[app.frame % spinner.len()])
+        format!(
+            "{} Working ({})",
+            spinner[app.frame % spinner.len()],
+            format_elapsed(conversation.run_elapsed(Instant::now()))
+        )
     } else {
         conversation.status.clone()
     };
@@ -567,6 +572,22 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(Line::from(model)).alignment(Alignment::Right),
         right,
     );
+}
+
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    if seconds < 3_600 {
+        return format!("{}m {:02}s", seconds / 60, seconds % 60);
+    }
+    format!(
+        "{}h {:02}m {:02}s",
+        seconds / 3_600,
+        (seconds % 3_600) / 60,
+        seconds % 60
+    )
 }
 
 fn conversation_pending_count(conversation: &Conversation) -> usize {
@@ -674,6 +695,7 @@ fn saturating_u16(value: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::time::Instant;
 
     use ratatui::{
         Terminal,
@@ -730,15 +752,20 @@ mod tests {
     }
 
     #[test]
-    fn running_footer_uses_one_fixed_thinking_label() {
+    fn running_footer_uses_one_elapsed_working_indicator() {
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
         let mut app = App::new("/workspace".into());
         app.main.running = true;
+        let now = Instant::now();
+        app.main.set_run_started_at(
+            now.checked_sub(std::time::Duration::from_secs(65))
+                .unwrap_or(now),
+        );
         app.main.status = "Running exec_command".to_owned();
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Thinking..."));
+        assert!(rendered.contains("Working (1m 05s)"));
         assert!(!rendered.contains("Running exec_command"));
     }
 

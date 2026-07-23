@@ -199,6 +199,10 @@ impl PendingSteer {
     }
 }
 
+struct PendingCodeExec {
+    arguments: String,
+}
+
 pub(super) struct Conversation {
     pub(super) transcript: Transcript,
     pub(super) selected_user: Option<usize>,
@@ -213,6 +217,8 @@ pub(super) struct Conversation {
     pending_scroll_anchor: Option<PendingScrollAnchor>,
     streamed_this_turn: bool,
     pending_run_error: Option<String>,
+    run_started_at: Option<Instant>,
+    pending_code_execs: HashMap<String, PendingCodeExec>,
     hidden_terminal_calls: HashMap<String, i64>,
     running_shell_sessions: HashMap<i64, ContinuedTool>,
     hidden_cell_waits: HashMap<String, String>,
@@ -243,6 +249,8 @@ impl Conversation {
             pending_scroll_anchor: None,
             streamed_this_turn: false,
             pending_run_error: None,
+            run_started_at: None,
+            pending_code_execs: HashMap::new(),
             hidden_terminal_calls: HashMap::new(),
             running_shell_sessions: HashMap::new(),
             hidden_cell_waits: HashMap::new(),
@@ -262,6 +270,17 @@ impl Conversation {
         let mut branch = Self::new("Ready");
         branch.transcript = self.transcript.prefix_before(transcript_index);
         branch
+    }
+
+    pub(super) fn run_elapsed(&self, now: Instant) -> Duration {
+        self.run_started_at
+            .map(|started_at| now.saturating_duration_since(started_at))
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_run_started_at(&mut self, started_at: Instant) {
+        self.run_started_at = Some(started_at);
     }
 
     fn queue_prompt(&mut self, id: u64, prompt: String) {
@@ -347,6 +366,8 @@ impl Conversation {
                 self.run_generation = self.run_generation.saturating_add(1);
                 self.streamed_this_turn = false;
                 self.pending_run_error = None;
+                self.run_started_at = Some(Instant::now());
+                self.pending_code_execs.clear();
                 self.hidden_terminal_calls.clear();
                 self.hidden_cell_waits.clear();
                 self.hidden_plan_calls.clear();
@@ -395,6 +416,8 @@ impl Conversation {
                     self.push_output(TranscriptItem::Error(error));
                 }
                 self.running = false;
+                self.run_started_at = None;
+                self.pending_code_execs.clear();
                 self.reconcile_applied_steers();
                 "Ready".clone_into(&mut self.status);
             }
@@ -453,6 +476,14 @@ impl Conversation {
             self.hidden_cell_waits.insert(payload.call_id, cell_id);
             return false;
         }
+        if payload.tool == "exec" {
+            let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
+            "Running exec".clone_into(&mut self.status);
+            self.pending_code_execs
+                .insert(payload.call_id.clone(), PendingCodeExec { arguments });
+            return true;
+        }
+        self.materialize_code_parent(&payload.call_id);
         let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
         self.status = format!("Running {}", payload.tool);
         let call_id = payload.call_id;
@@ -492,6 +523,7 @@ impl Conversation {
         if let Some(cell_id) = self.hidden_cell_waits.remove(&payload.call_id) {
             return self.on_cell_transport_result(&cell_id, &payload, status);
         }
+        let pending_code_exec = self.pending_code_execs.contains_key(&payload.call_id);
         if payload.tool.as_deref() == Some("exec_command")
             && status == ToolStatus::Completed
             && let Some(session_id) = payload.result.as_ref().and_then(result_session_id)
@@ -506,10 +538,11 @@ impl Conversation {
             );
             return true;
         }
-        if payload.tool.as_deref() == Some("exec")
+        if (payload.tool.as_deref() == Some("exec") || pending_code_exec)
             && status == ToolStatus::Completed
             && let Some(cell_id) = payload.result.as_ref().and_then(running_cell_id)
         {
+            let visible = self.pending_code_execs.remove(&payload.call_id).is_none();
             self.running_cells.insert(
                 cell_id,
                 ContinuedTool::new(
@@ -518,7 +551,10 @@ impl Conversation {
                     payload.duration_ns,
                 ),
             );
-            return true;
+            return visible;
+        }
+        if self.pending_code_execs.remove(&payload.call_id).is_some() {
+            return false;
         }
         let result = payload
             .result
@@ -540,6 +576,21 @@ impl Conversation {
         self.note_unseen_output();
         "Working".clone_into(&mut self.status);
         true
+    }
+
+    fn materialize_code_parent(&mut self, child_call_id: &str) {
+        let Some(parent_call_id) = code_parent_call_id(child_call_id) else {
+            return;
+        };
+        let Some(parent) = self.pending_code_execs.remove(parent_call_id) else {
+            return;
+        };
+        self.push_output(TranscriptItem::Tool {
+            call_id: parent_call_id.to_owned(),
+            name: "exec".to_owned(),
+            arguments: parent.arguments,
+            status: ToolStatus::Running,
+        });
     }
 
     fn on_terminal_transport_result(
@@ -614,6 +665,8 @@ impl Conversation {
 
     fn run_failed(&mut self, event: &AgentEvent) {
         self.running = false;
+        self.run_started_at = None;
+        self.pending_code_execs.clear();
         self.reconcile_applied_steers();
         let cancelled = event
             .decode_payload::<TerminalPayload>()
@@ -2885,6 +2938,10 @@ fn tool_string_argument(arguments: &Value, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn code_parent_call_id(call_id: &str) -> Option<&str> {
+    call_id.split_once("/code-").map(|(parent, _)| parent)
+}
+
 fn result_session_id(result: &Value) -> Option<i64> {
     let decoded = result
         .as_str()
@@ -3351,7 +3408,11 @@ mod tests {
             PaneId::Btw(btw_id),
             &event(
                 AgentEventKind::ToolCall,
-                &json!({ "call_id": "side-1", "tool": "exec", "arguments": "pwd" }),
+                &json!({
+                    "call_id": "side-1",
+                    "tool": "exec_command",
+                    "arguments": { "cmd": "pwd" }
+                }),
             ),
         );
         app.btw
@@ -3944,7 +4005,7 @@ mod tests {
 
         assert!(!app.main.running);
         assert_eq!(app.main.status, "Cancelled");
-        assert_eq!(app.main.transcript.len(), 2);
+        assert_eq!(app.main.transcript.len(), 1);
     }
 
     #[test]
@@ -3997,6 +4058,14 @@ mod tests {
             &json!({ "call_id": "call-1", "tool": "exec", "arguments": "pwd" }),
         ));
         app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({
+                "call_id": "call-1/code-1",
+                "tool": "exec_command",
+                "arguments": { "cmd": "pwd" }
+            }),
+        ));
+        app.main.on_agent_event(&event(
             AgentEventKind::ReasoningSummaryDelta,
             &json!({ "model_call_index": 1, "text": "Second thought" }),
         ));
@@ -4021,9 +4090,38 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let first = rendered.find("• First thought").unwrap();
-        let tool = rendered.find("◌ Working").unwrap();
+        let tool = rendered.find("◌ Tools").unwrap();
         let second = rendered.find("• Second thought").unwrap();
         assert!(first < tool && tool < second);
+    }
+
+    #[test]
+    fn sequential_empty_code_execs_do_not_leave_working_rows() {
+        let mut app = App::new(".".into());
+        for index in 1..=2 {
+            let call_id = format!("call-{index}");
+            app.main.on_agent_event(&event(
+                AgentEventKind::ToolCall,
+                &json!({
+                    "call_id": call_id,
+                    "tool": "exec",
+                    "arguments": "text('done');"
+                }),
+            ));
+            app.main.on_agent_event(&event(
+                AgentEventKind::ToolResult,
+                &json!({
+                    "call_id": call_id,
+                    "tool": "exec",
+                    "status": "completed",
+                    "duration_ns": 10_000_000_000_u64,
+                    "result": "Script completed\nWall time 10 seconds\nOutput:\ndone"
+                }),
+            ));
+        }
+
+        assert!(app.main.transcript.is_empty());
+        assert!(app.main.pending_code_execs.is_empty());
     }
 
     #[test]
@@ -4167,26 +4265,7 @@ mod tests {
             }),
         ));
 
-        assert_eq!(app.main.transcript.len(), 1);
-        let area = Rect::new(0, 0, 80, 8);
-        let mut buffer = Buffer::empty(area);
-        app.main
-            .transcript
-            .widget(0, None, None, "empty")
-            .render(area, &mut buffer);
-        let rendered = buffer
-            .content
-            .chunks(usize::from(area.width))
-            .map(|row| {
-                row.iter()
-                    .map(ratatui::buffer::Cell::symbol)
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(!rendered.contains("wait"));
-        assert!(!rendered.contains("cell ID"));
-        assert!(rendered.contains("12ms"));
+        assert!(app.main.transcript.is_empty());
         assert!(!app.main.running_cells.contains_key("3"));
     }
 
