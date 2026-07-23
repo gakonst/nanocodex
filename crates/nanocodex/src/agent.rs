@@ -9,14 +9,14 @@ use std::{
 };
 
 use nanocodex_core::{
-    AgentEvents, EventSink, MODEL, MessageRole, ModelConfig, OpenAiAuth, OpenAiAuthMode, Prompt,
-    ReasoningMode, ResponseItem, ResponsesHistory, ResponsesTransport, Thinking,
+    AgentEvents, EventSink, ModelConfig, OpenAiAuth, OpenAiAuthMode, Prompt, ReasoningMode,
+    ResponsesHistory, ResponsesTransport, Thinking,
 };
 use nanocodex_service::{
     DefaultResponsesService, ResponsesAttempt, ResponsesClient, ResponsesService,
     ResponsesServiceResponse, TransportStats,
 };
-use nanocodex_tools::{ToolRuntime, Tools, ToolsBuildError};
+use nanocodex_tools::{Tools, ToolsBuildError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tower::Service;
 use tracing::{Instrument, error, info, info_span};
@@ -26,13 +26,14 @@ use crate::{
     NanocodexError, Result,
     model::{
         agent::{
-            CompletedModelTurn, ModelCheckpoint, ModelRun, ModelTurnOutcome,
-            validated_resume_runtime,
+            CompletedModelTurn, ModelCheckpoint, ModelRun, ModelTurnOutcome, PreparedCheckpoint,
+            prepare_checkpoint, prepare_resumed_checkpoint,
         },
         load_global_instructions,
     },
     responses::{FactoryResponses, LayeredResponses, Responses, StandardResponses},
     rollout::{RolloutConfig, RolloutInfo, RolloutOrigin, RolloutRecorder, RolloutTurn},
+    session::SessionSnapshot,
 };
 
 const COMMAND_CAPACITY: usize = 8;
@@ -41,8 +42,6 @@ const STEER_CAPACITY: usize = 8;
 type ServiceFactory<S> = Arc<dyn Fn() -> S + Send + Sync>;
 type ToolsFactory =
     Arc<dyn Fn(AgentHandle) -> std::result::Result<Tools, ToolsBuildError> + Send + Sync>;
-
-const SESSION_SNAPSHOT_VERSION: u32 = 1;
 
 #[derive(Clone)]
 enum ToolsConfiguration {
@@ -174,16 +173,7 @@ impl TurnResult {
     /// responsible for protecting and retaining serialized snapshots appropriately.
     #[must_use]
     pub fn snapshot(&self) -> SessionSnapshot {
-        SessionSnapshot {
-            version: SESSION_SNAPSHOT_VERSION,
-            model: MODEL.to_owned(),
-            lineage_id: self.checkpoint.lineage_id.to_string(),
-            prompt_cache_key: self.checkpoint.model.prompt_cache_key().to_owned(),
-            workspace: self.checkpoint.model.workspace().to_owned(),
-            request_prefix: self.checkpoint.model.request_prefix().to_vec(),
-            canonical_context: self.checkpoint.model.canonical_context().clone(),
-            history: self.checkpoint.model.snapshot_history(),
-        }
+        SessionSnapshot::from_checkpoint(&self.checkpoint.lineage_id, &self.checkpoint.model)
     }
 }
 
@@ -200,107 +190,6 @@ impl fmt::Debug for TurnResult {
 struct CommittedCheckpoint {
     lineage_id: Arc<str>,
     model: ModelCheckpoint,
-}
-
-/// Versioned, serializable state for resuming a completed session boundary.
-///
-/// Its fields are intentionally private: callers may persist or transfer the
-/// value, but Nanocodex remains responsible for interpreting model history and
-/// cache state. Provider response IDs are deliberately excluded: the first
-/// resumed request replays the authoritative typed history, then subsequent
-/// requests return to incremental continuation. Resuming requires the same
-/// model instructions and tool definitions used to create the snapshot.
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
-pub struct SessionSnapshot {
-    version: u32,
-    model: String,
-    lineage_id: String,
-    prompt_cache_key: String,
-    workspace: String,
-    request_prefix: Vec<ResponseItem>,
-    canonical_context: ResponseItem,
-    history: Vec<ResponseItem>,
-}
-
-impl fmt::Debug for SessionSnapshot {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SessionSnapshot")
-            .field("version", &self.version)
-            .field("model", &self.model)
-            .field("history_items", &self.history.len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl SessionSnapshot {
-    /// Snapshot format version understood by this Nanocodex release.
-    #[must_use]
-    pub const fn version(&self) -> u32 {
-        self.version
-    }
-
-    fn into_checkpoint(self) -> Result<(Arc<str>, Arc<str>, ModelCheckpoint)> {
-        if self.version != SESSION_SNAPSHOT_VERSION {
-            return Err(NanocodexError::InvalidSessionSnapshot(format!(
-                "unsupported format version {}; expected {SESSION_SNAPSHOT_VERSION}",
-                self.version
-            )));
-        }
-        if self.model != MODEL {
-            return Err(NanocodexError::InvalidSessionSnapshot(format!(
-                "snapshot model {} is incompatible with {MODEL}",
-                self.model
-            )));
-        }
-        if self.lineage_id.trim().is_empty() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
-                "cache lineage must not be empty".to_owned(),
-            ));
-        }
-        if self.prompt_cache_key.trim().is_empty() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
-                "prompt cache key must not be empty".to_owned(),
-            ));
-        }
-        if self.workspace.trim().is_empty() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
-                "workspace must not be empty".to_owned(),
-            ));
-        }
-        if self.request_prefix.is_empty() {
-            return Err(NanocodexError::InvalidSessionSnapshot(
-                "request prefix must not be empty".to_owned(),
-            ));
-        }
-        if !matches!(
-            self.request_prefix.as_slice(),
-            [
-                ResponseItem::AdditionalTools {
-                    role: MessageRole::Developer,
-                    ..
-                },
-                ResponseItem::Message {
-                    role: MessageRole::Developer,
-                    ..
-                }
-            ]
-        ) {
-            return Err(NanocodexError::InvalidSessionSnapshot(
-                "request prefix does not match the supported model contract".to_owned(),
-            ));
-        }
-        let lineage_id = Arc::<str>::from(self.lineage_id);
-        let prompt_cache_key = Arc::<str>::from(self.prompt_cache_key);
-        let checkpoint = ModelCheckpoint::resume(
-            self.workspace,
-            Arc::from(self.request_prefix),
-            Arc::clone(&prompt_cache_key),
-            self.canonical_context,
-            self.history,
-        )?;
-        Ok((lineage_id, prompt_cache_key, checkpoint))
-    }
 }
 
 enum Command {
@@ -417,22 +306,6 @@ impl Nanocodex {
     /// Returns an error when authorization is unavailable or no Tokio runtime is active.
     pub fn new(auth: impl Into<OpenAiAuth>) -> Result<(Self, AgentEvents)> {
         Self::builder(auth).build()
-    }
-
-    /// Resumes a completed session snapshot with the standard configuration.
-    ///
-    /// Use [`Self::builder`] with [`NanocodexBuilder::resume`] when restoring
-    /// custom tools, middleware, or other application policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when authorization, the snapshot, its workspace, or
-    /// the restored standard model/tool profile is invalid.
-    pub fn resume(
-        auth: impl Into<OpenAiAuth>,
-        snapshot: SessionSnapshot,
-    ) -> Result<(Self, AgentEvents)> {
-        Self::builder(auth).resume(snapshot).build()
     }
 
     /// Starts configuring an agent with sensible defaults.
@@ -925,8 +798,7 @@ struct AgentDriver<S> {
     workspace: Option<Arc<str>>,
     global_instructions: Option<Arc<str>>,
     spawner: BranchSpawner<S>,
-    initial_checkpoint: Option<ModelCheckpoint>,
-    initial_runtime: Option<ToolRuntime>,
+    initial_model: Option<PreparedCheckpoint>,
     origin: AgentOrigin,
     rollout: Option<RolloutRecorder>,
 }
@@ -984,10 +856,10 @@ where
         let rollout = self.rollout.take();
         let mut default_thinking = self.spawner.config.thinking;
         let mut default_fast_mode = self.spawner.config.fast_mode;
-        let inherited_checkpoint = self.initial_checkpoint.as_ref().map(|checkpoint| {
+        let inherited_checkpoint = self.initial_model.as_ref().map(|initial| {
             Arc::new(CommittedCheckpoint {
                 lineage_id: Arc::clone(&self.spawner.lineage_id),
-                model: checkpoint.clone(),
+                model: initial.checkpoint.clone(),
             })
         });
         let prompt_cache_key = self
@@ -997,7 +869,7 @@ where
             .map_or_else(|| Arc::clone(&self.spawner.lineage_id), Arc::clone);
         let prompt_cache =
             ModelPromptCache::new(prompt_cache_key, self.spawner.shared_prompt_cache.clone());
-        let mut model = if let Some(checkpoint) = self.initial_checkpoint.take() {
+        let mut model = if let Some(initial) = self.initial_model.take() {
             ModelRun::from_checkpoint(
                 self.events.clone(),
                 Arc::clone(&self.spawner.config),
@@ -1005,8 +877,7 @@ where
                 Arc::clone(&self.transport_stats),
                 self.tools.clone(),
                 prompt_cache.clone(),
-                checkpoint,
-                self.initial_runtime.take(),
+                initial,
             )
         } else {
             ModelRun::new(
@@ -1316,6 +1187,11 @@ where
                         model: checkpoint,
                     });
                     latest_fork_checkpoint = Some(Arc::clone(&checkpoint));
+                    let prepared = prepare_checkpoint(
+                        checkpoint.model.clone(),
+                        &self.spawner.config,
+                        &self.tools,
+                    );
                     model = ModelRun::from_checkpoint(
                         self.events.clone(),
                         Arc::clone(&self.spawner.config),
@@ -1323,8 +1199,7 @@ where
                         Arc::clone(&self.transport_stats),
                         self.tools.clone(),
                         prompt_cache.clone(),
-                        checkpoint.model.clone(),
-                        None,
+                        prepared,
                     );
                     (Err(NanocodexError::TurnCancelled), true)
                 }
@@ -1715,9 +1590,10 @@ where
     let rollout_info = rollout.as_ref().map(|recorder| recorder.info().clone());
     let session_id: Arc<str> = Arc::from(session_id);
     let (events, event_stream) = EventSink::channel(session_id.to_string());
-    let initial_runtime = initial_checkpoint
-        .as_ref()
-        .map(|checkpoint| validated_resume_runtime(checkpoint, &spawner.config, &tools))
+    let initial_model = initial_checkpoint
+        .map(|checkpoint| {
+            prepare_resumed_checkpoint(checkpoint, &spawner.config, &tools, &session_id)
+        })
         .transpose()?;
     let transport_stats = Arc::new(TransportStats::default());
     let agent = Nanocodex {
@@ -1739,8 +1615,7 @@ where
                 workspace,
                 global_instructions,
                 spawner,
-                initial_checkpoint,
-                initial_runtime,
+                initial_model,
                 origin,
                 rollout,
             }

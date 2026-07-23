@@ -15,13 +15,14 @@ use tower::Service;
 use tracing::{Instrument, info, info_span};
 use web_time::Instant;
 
+use super::context_manager::has_well_formed_tool_calls;
 use super::{
     CompactionCompleted, CompactionFailed, CompactionStarted, ModelCallCompleted, ModelCallFailed,
     ModelCallStarted, RunError, RunStarted, RunStats, RunSteered, ToolCallArguments, ToolCallEvent,
     ToolResultEvent, WarmupCompleted, WarmupFailed, WarmupStarted,
     agents_md::load_instructions,
     compaction,
-    context_manager::{ContextManager, has_well_formed_tool_calls},
+    context_manager::ContextManager,
     display_endpoint, elapsed_ns,
     input::{
         custom_tool_notification, custom_tool_output, function_tool_output, task_context,
@@ -73,6 +74,11 @@ pub(crate) struct ModelCheckpoint {
     prompt_cache_key: Arc<str>,
     preserve_inherited_delta: bool,
     global_instructions: Option<Arc<str>>,
+}
+
+pub(crate) struct PreparedCheckpoint {
+    pub(crate) checkpoint: ModelCheckpoint,
+    pub(crate) runtime: ToolRuntime,
 }
 
 impl ModelCheckpoint {
@@ -428,7 +434,6 @@ impl<S> ModelRun<S> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_checkpoint(
         events: EventSink,
         config: Arc<ModelConfig>,
@@ -436,11 +441,12 @@ impl<S> ModelRun<S> {
         transport_stats: Arc<TransportStats>,
         tools: Tools,
         prompt_cache: ModelPromptCache,
-        checkpoint: ModelCheckpoint,
-        runtime: Option<ToolRuntime>,
+        prepared: PreparedCheckpoint,
     ) -> Self {
-        let runtime =
-            runtime.unwrap_or_else(|| tool_runtime(&checkpoint.workspace, &config, &tools));
+        let PreparedCheckpoint {
+            checkpoint,
+            runtime,
+        } = prepared;
         let active_tools = runtime.control();
         let factory = ResponsesAttemptFactory::new(
             RequestProfile::new(
@@ -501,16 +507,36 @@ impl<S> ModelRun<S> {
     }
 }
 
-pub(crate) fn validated_resume_runtime(
-    checkpoint: &ModelCheckpoint,
+pub(crate) fn prepare_checkpoint(
+    checkpoint: ModelCheckpoint,
     config: &ModelConfig,
     tools: &Tools,
-) -> Result<ToolRuntime> {
+) -> PreparedCheckpoint {
     let runtime = tool_runtime(checkpoint.workspace(), config, tools);
+    PreparedCheckpoint {
+        checkpoint,
+        runtime,
+    }
+}
+
+pub(crate) fn prepare_resumed_checkpoint(
+    checkpoint: ModelCheckpoint,
+    config: &ModelConfig,
+    tools: &Tools,
+    session_id: &str,
+) -> Result<PreparedCheckpoint> {
+    let prepared = prepare_checkpoint(checkpoint, config, tools);
+    #[cfg(not(target_family = "wasm"))]
+    let tool_specs = {
+        let _ = session_id;
+        prepared.runtime.model_specs()
+    };
+    #[cfg(target_family = "wasm")]
+    let tool_specs = prepared.runtime.model_specs(session_id);
     let expected = request_profile(
         "resume-validation",
         "resume-validation",
-        runtime.model_specs(),
+        tool_specs,
         config.system_prompt(),
     );
     let expected = serde_json::to_vec(expected.prefix()).map_err(|error| {
@@ -518,7 +544,7 @@ pub(crate) fn validated_resume_runtime(
             "failed to validate the request prefix: {error}"
         ))
     })?;
-    let stored = serde_json::to_vec(checkpoint.request_prefix()).map_err(|error| {
+    let stored = serde_json::to_vec(prepared.checkpoint.request_prefix()).map_err(|error| {
         NanocodexError::InvalidSessionSnapshot(format!(
             "failed to validate the stored request prefix: {error}"
         ))
@@ -528,7 +554,7 @@ pub(crate) fn validated_resume_runtime(
             "instructions or tool definitions do not match the resumed session".to_owned(),
         ));
     }
-    Ok(runtime)
+    Ok(prepared)
 }
 
 impl<S> ModelRun<S>

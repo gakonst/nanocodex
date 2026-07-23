@@ -11,13 +11,12 @@ mod prompt_cache;
 mod responses;
 #[cfg(not(target_family = "wasm"))]
 mod rollout;
+mod session;
 #[cfg(target_family = "wasm")]
 mod wasm;
 
 #[cfg(not(target_family = "wasm"))]
-pub use agent::{
-    AgentHandle, Nanocodex, NanocodexBuilder, SessionSnapshot, Turn, TurnControl, TurnResult,
-};
+pub use agent::{AgentHandle, Nanocodex, NanocodexBuilder, Turn, TurnControl, TurnResult};
 #[cfg(not(target_family = "wasm"))]
 pub use async_trait::async_trait;
 #[cfg(not(target_family = "wasm"))]
@@ -60,6 +59,7 @@ pub use responses::{Responses, ResponsesBuilder};
 pub use rollout::{RolloutConfig, RolloutInfo};
 #[cfg(not(target_family = "wasm"))]
 pub use schemars::JsonSchema as ToolSchema;
+pub use session::SessionSnapshot;
 #[cfg(target_family = "wasm")]
 pub use wasm::{WasmNanocodex, WasmTurn};
 

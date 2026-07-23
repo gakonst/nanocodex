@@ -27,10 +27,29 @@ const followOn = Actions.turn.prompt(agent, { input: "Now explain it." });
 console.log(await Actions.turn.getResult(followOn));
 ```
 
+Completed turns can be persisted and resumed by a fresh Node or browser agent:
+
+```js
+const snapshot = turn.snapshot();
+agent.dispose();
+
+const resumed = await Agent.create({
+  apiKey: process.env.OPENAI_API_KEY,
+  resume: snapshot,
+  tools,
+});
+```
+
+The snapshot contains authoritative typed history but no provider response ID,
+so the first resumed request safely replays the committed conversation. Resume
+with the same instructions and tool definitions, and release the original
+agent before handing its snapshot to another writer.
+
 `Agent` and `Actions` are module namespaces, not classes. `Agent.create` returns
 an owned client decorated with matching domain actions:
 
 - `agent.turn.prompt(...)` / `Actions.turn.prompt(agent, ...)`
+- `turn.snapshot()` / `Actions.turn.getSnapshot(turn)`
 - `agent.session.fork(...)` / `Actions.session.fork(agent, ...)`
 - `agent.session.setThinking(...)` / `Actions.session.setThinking(agent, ...)`
 - `agent.session.setFastMode(...)` / `Actions.session.setFastMode(agent, ...)`

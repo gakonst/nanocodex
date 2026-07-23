@@ -85,6 +85,80 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
   await server.close();
 });
 
+test("WASM snapshots resume authoritative history in a fresh agent", async () => {
+  const originalServer = await startServer();
+  const original = await Agent.create({
+    apiKey: "test-key",
+    websocketUrl: originalServer.url,
+    thinking: "none",
+    instructions: "durable wasm instructions",
+    sessionId: "original-session",
+  });
+  const originalScenario = (async () => {
+    const socket = await originalServer.connection;
+    const reader = messageReader(socket);
+    await reader.next();
+    sendWarmup(socket, "resp-warmup");
+    await reader.next();
+    sendFinal(socket, "resp-first", "stored");
+  })();
+  const first = original.turn.prompt({ input: "remember cobalt" });
+  assert.equal(await first.result(), "stored");
+  const snapshot = first.snapshot();
+  assert.equal(snapshot.version, 1);
+  assert.equal(Actions.turn.getSnapshot(first).model, snapshot.model);
+  await originalScenario;
+  original.dispose();
+  await originalServer.close();
+
+  const resumedServer = await startServer();
+  const resumed = await Agent.create({
+    apiKey: "test-key",
+    websocketUrl: resumedServer.url,
+    thinking: "none",
+    instructions: "durable wasm instructions",
+    sessionId: "resumed-session",
+    resume: snapshot,
+  });
+  const resumedScenario = (async () => {
+    const socket = await resumedServer.connection;
+    assert.equal(socket.request.headers["session-id"], "resumed-session");
+    const request = await messageReader(socket).next();
+    assert.equal(request.previous_response_id, undefined);
+    assert.equal(request.prompt_cache_key, snapshot.prompt_cache_key);
+    assert.match(JSON.stringify(request.input), /remember cobalt/);
+    assert.match(JSON.stringify(request.input), /what did I ask/);
+    sendFinal(socket, "resp-resumed", "cobalt");
+  })();
+  assert.equal(
+    await resumed.turn.prompt({ input: "what did I ask you to remember?" }).result(),
+    "cobalt",
+  );
+  await resumedScenario;
+
+  const spawnedConnection = new Promise((resolve) => {
+    resumedServer.websocketServer.once("connection", (socket, request) => {
+      socket.request = request;
+      resolve(socket);
+    });
+  });
+  const spawned = await resumed.session.spawn();
+  const spawnedScenario = (async () => {
+    const socket = await spawnedConnection;
+    const reader = messageReader(socket);
+    const warmup = await reader.next();
+    assert.equal(warmup.prompt_cache_key, snapshot.prompt_cache_key);
+    sendWarmup(socket, "resp-spawn-warmup");
+    await reader.next();
+    sendFinal(socket, "resp-spawned", "fresh");
+  })();
+  assert.equal(await spawned.turn.prompt({ input: "start fresh" }).result(), "fresh");
+  await spawnedScenario;
+  spawned.dispose();
+  resumed.dispose();
+  await resumedServer.close();
+});
+
 test("independent agents keep their host connections isolated", async () => {
   const leftServer = await startServer();
   const rightServer = await startServer();

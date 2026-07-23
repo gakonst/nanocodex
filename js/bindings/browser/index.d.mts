@@ -4,6 +4,7 @@ export type {
   PromptInput,
   PromptItem,
   ReasoningMode,
+  SessionSnapshot,
   Thinking,
   Tool,
   ToolContext,

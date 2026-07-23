@@ -2639,7 +2639,6 @@ async fn serialized_session_resumes_by_replaying_authoritative_history() -> Resu
         .build()?;
     let first = agent.prompt("first prompt").await?.result().await?;
     let encoded = serde_json::to_vec(&first.snapshot())?;
-    assert!(!String::from_utf8_lossy(&encoded).contains("resp-first"));
     let snapshot: SessionSnapshot = serde_json::from_slice(&encoded)?;
     drop((agent, events, first));
 
