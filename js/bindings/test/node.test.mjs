@@ -46,6 +46,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     const generation = await reader.next();
     assert.equal(generation.previous_response_id, "resp-warmup");
     assert.equal(generation.reasoning.effort, "none");
+    assert.equal(generation.service_tier, undefined);
     sendCompleted(socket, "resp-tool", [{
       type: "custom_tool_call",
       call_id: "call-exec",
@@ -62,6 +63,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     const followOn = await reader.next();
     assert.equal(followOn.previous_response_id, "resp-first");
     assert.equal(followOn.reasoning.effort, "high");
+    assert.equal(followOn.service_tier, "priority");
     assert.match(JSON.stringify(followOn.input), /Add one/);
     sendFinal(socket, "resp-second", "43");
   })();
@@ -69,6 +71,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
   const first = agent.turn.prompt({ input: "Use multiply for 6 × 7." });
   assert.equal(await first.result(), "42");
   await agent.session.setThinking("high");
+  await agent.session.setFastMode(true);
   const second = Actions.turn.prompt(agent, { input: "Add one to that result." });
   assert.equal(await Actions.turn.getResult(second), "43");
   await scenario;

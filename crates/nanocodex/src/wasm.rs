@@ -37,6 +37,8 @@ struct WasmConfig {
     thinking: String,
     #[serde(default = "default_reasoning_mode")]
     reasoning_mode: String,
+    #[serde(default)]
+    fast_mode: bool,
     #[serde(default = "default_websocket_url")]
     websocket_url: String,
     #[serde(default = "default_api_base_url")]
@@ -78,6 +80,7 @@ enum Command {
         key: TurnKey,
         prompt: Prompt,
         thinking: Option<Thinking>,
+        fast_mode: Option<bool>,
         result: oneshot::Sender<Result<CompletedWasmTurn, String>>,
     },
     Steer {
@@ -100,6 +103,10 @@ enum Command {
         thinking: Thinking,
         result: oneshot::Sender<Result<(), String>>,
     },
+    SetFastMode {
+        enabled: bool,
+        result: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 enum QueuedTurn {
@@ -107,11 +114,13 @@ enum QueuedTurn {
         key: TurnKey,
         prompt: Prompt,
         thinking: Thinking,
+        fast_mode: bool,
         result: oneshot::Sender<Result<CompletedWasmTurn, String>>,
     },
     Cancelled {
         prompt: Prompt,
         thinking: Thinking,
+        fast_mode: bool,
         result: oneshot::Sender<Result<CompletedWasmTurn, String>>,
     },
 }
@@ -147,6 +156,7 @@ impl WasmNanocodex {
             auth: nanocodex_core::OpenAiAuth::api_key(config.api_key),
             reasoning_mode,
             thinking,
+            fast_mode: config.fast_mode,
             websocket_url: config.websocket_url,
             api_base_url: config.api_base_url,
             system_prompt: config
@@ -207,6 +217,7 @@ impl WasmNanocodex {
                 key,
                 prompt,
                 thinking: None,
+                fast_mode: None,
                 result,
             })
             .map_err(|_| js_error("the Nanocodex driver stopped"))?;
@@ -273,6 +284,17 @@ impl WasmNanocodex {
         let thinking = thinking.parse::<Thinking>().map_err(js_error)?;
         request_command(&self.commands, |result| Command::SetThinking {
             thinking,
+            result,
+        })
+        .await
+        .map_err(js_error)
+    }
+
+    /// Enable or disable priority processing for subsequently accepted turns.
+    #[wasm_bindgen(js_name = setFastMode)]
+    pub async fn set_fast_mode(&self, enabled: bool) -> Result<(), JsValue> {
+        request_command(&self.commands, |result| Command::SetFastMode {
+            enabled,
             result,
         })
         .await
@@ -480,6 +502,7 @@ async fn run_driver(
     transport_stats: Arc<TransportStats>,
 ) {
     let mut default_thinking = factory.config.thinking;
+    let mut default_fast_mode = factory.config.fast_mode;
     let mut latest_checkpoint: Option<Arc<CommittedWasmCheckpoint>> = None;
     let mut queued_turns = VecDeque::new();
     let mut commands_open = true;
@@ -492,18 +515,21 @@ async fn run_driver(
                         key,
                         prompt,
                         thinking,
+                        fast_mode,
                         result,
                     } => {
                         break Command::Prompt {
                             key,
                             prompt,
                             thinking: Some(thinking),
+                            fast_mode: Some(fast_mode),
                             result,
                         };
                     }
                     QueuedTurn::Cancelled {
                         prompt,
                         thinking,
+                        fast_mode,
                         result,
                     } => {
                         let outcome = model
@@ -511,6 +537,7 @@ async fn run_driver(
                                 &prompt,
                                 factory.workspace.as_deref(),
                                 thinking,
+                                fast_mode,
                             )
                             .map_or_else(
                                 |error| Err(error.to_string()),
@@ -535,6 +562,7 @@ async fn run_driver(
             key,
             prompt,
             thinking,
+            fast_mode,
             result,
         } = command
         else {
@@ -543,15 +571,22 @@ async fn run_driver(
                 drop(result.send(Ok(())));
                 continue;
             }
+            if let Command::SetFastMode { enabled, result } = command {
+                default_fast_mode = enabled;
+                drop(result.send(Ok(())));
+                continue;
+            }
             handle_idle_command(
                 command,
                 latest_checkpoint.as_ref(),
                 &factory,
                 default_thinking,
+                default_fast_mode,
             );
             continue;
         };
         let thinking = thinking.unwrap_or(default_thinking);
+        let fast_mode = fast_mode.unwrap_or(default_fast_mode);
 
         let (steers, steer_rx) = mpsc::channel(STEER_CAPACITY);
         let (cancel, cancel_rx) = oneshot::channel();
@@ -563,6 +598,7 @@ async fn run_driver(
             prompt,
             factory.workspace.clone(),
             thinking,
+            fast_mode,
             steer_rx,
             cancel_rx,
             fork_snapshots,
@@ -592,12 +628,14 @@ async fn run_driver(
                             key,
                             prompt,
                             thinking: _,
+                            fast_mode: _,
                             result,
                         }) => {
                             queued_turns.push_back(QueuedTurn::Pending {
                                 key,
                                 prompt,
                                 thinking: default_thinking,
+                                fast_mode: default_fast_mode,
                                 result,
                             });
                         }
@@ -635,10 +673,15 @@ async fn run_driver(
                                 latest_checkpoint.as_ref(),
                                 &factory,
                                 default_thinking,
+                                default_fast_mode,
                             );
                         }
                         Some(Command::SetThinking { thinking, result }) => {
                             default_thinking = thinking;
+                            drop(result.send(Ok(())));
+                        }
+                        Some(Command::SetFastMode { enabled, result }) => {
+                            default_fast_mode = enabled;
                             drop(result.send(Ok(())));
                         }
                         None => commands_open = false,
@@ -702,13 +745,14 @@ fn handle_idle_command(
     latest: Option<&Arc<CommittedWasmCheckpoint>>,
     factory: &WasmAgentFactory,
     thinking: Thinking,
+    fast_mode: bool,
 ) {
     match command {
         Command::Fork { checkpoint, result } => {
             let checkpoint = checkpoint.or_else(|| latest.cloned());
             let outcome = checkpoint
                 .ok_or_else(|| NanocodexError::ForkBeforeCompletedTurn.to_string())
-                .and_then(|checkpoint| spawn_fork(factory, &checkpoint, thinking));
+                .and_then(|checkpoint| spawn_fork(factory, &checkpoint, thinking, fast_mode));
             drop(result.send(outcome));
         }
         Command::Spawn { result } => {
@@ -717,6 +761,7 @@ fn handle_idle_command(
             let mut clean = factory.clone();
             let mut config = (*clean.config).clone();
             config.thinking = thinking;
+            config.fast_mode = fast_mode;
             clean.config = Arc::new(config);
             clean.lineage_id = lineage_id;
             clean.prompt_cache = ModelPromptCache::new(Arc::clone(&clean.lineage_id), None);
@@ -728,7 +773,7 @@ fn handle_idle_command(
         Command::Cancel { result, .. } => {
             drop(result.send(Err(NanocodexError::TurnNotCancellable.to_string())));
         }
-        Command::SetThinking { result, .. } => {
+        Command::SetThinking { result, .. } | Command::SetFastMode { result, .. } => {
             drop(result.send(Ok(())));
         }
         Command::Prompt { .. } => {}
@@ -739,6 +784,7 @@ fn spawn_fork(
     factory: &WasmAgentFactory,
     checkpoint: &CommittedWasmCheckpoint,
     thinking: Thinking,
+    fast_mode: bool,
 ) -> Result<WasmNanocodex, String> {
     if checkpoint.lineage_id != factory.lineage_id {
         return Err("checkpoint belongs to another conversation".to_owned());
@@ -746,6 +792,7 @@ fn spawn_fork(
     let mut fork = factory.clone();
     let mut config = (*fork.config).clone();
     config.thinking = thinking;
+    config.fast_mode = fast_mode;
     fork.config = Arc::new(config);
     fork.workspace = Some(Arc::from(checkpoint.model.workspace()));
     Ok(spawn_agent(
@@ -765,6 +812,7 @@ fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) 
     let Some(QueuedTurn::Pending {
         prompt,
         thinking,
+        fast_mode,
         result,
         ..
     }) = queued_turns.remove(position)
@@ -776,6 +824,7 @@ fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) 
         QueuedTurn::Cancelled {
             prompt,
             thinking,
+            fast_mode,
             result,
         },
     );

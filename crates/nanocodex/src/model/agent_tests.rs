@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[tokio::test]
-async fn follow_on_prompts_can_change_thinking_without_restarting_the_session() -> Result<()> {
+async fn follow_on_prompts_can_change_turn_policy_without_restarting_the_session() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -26,17 +26,25 @@ async fn follow_on_prompts_can_change_thinking_without_restarting_the_session() 
         let first = next_json(&mut socket).await?;
         assert_eq!(first["previous_response_id"], "resp-warmup");
         assert_eq!(first["reasoning"]["effort"], "low");
+        assert!(first.get("service_tier").is_none());
         let prompt_cache_key = first["prompt_cache_key"].clone();
         send_final(&mut socket, "resp-first").await?;
 
         let follow_on = next_json(&mut socket).await?;
         assert_eq!(follow_on["previous_response_id"], "resp-first");
         assert_eq!(follow_on["reasoning"]["effort"], "high");
+        assert_eq!(follow_on["service_tier"], "priority");
         assert_eq!(follow_on["prompt_cache_key"], prompt_cache_key);
         assert_eq!(follow_on["input"].as_array().map(Vec::len), Some(1));
         assert_eq!(follow_on["input"][0]["role"], "user");
         assert_eq!(follow_on["input"][0]["content"][0]["text"], "second prompt");
-        send_final(&mut socket, "resp-second").await
+        send_final(&mut socket, "resp-second").await?;
+
+        let standard = next_json(&mut socket).await?;
+        assert_eq!(standard["previous_response_id"], "resp-second");
+        assert_eq!(standard["reasoning"]["effort"], "high");
+        assert!(standard.get("service_tier").is_none());
+        send_final(&mut socket, "resp-third").await
     });
 
     let workspace = temporary_workspace("follow-on")?;
@@ -52,8 +60,12 @@ async fn follow_on_prompts_can_change_thinking_without_restarting_the_session() 
     let first = agent.prompt(Prompt::new("first prompt")).await?;
     assert_eq!(first.result().await?.final_message, "done");
     agent.set_thinking(Thinking::High).await?;
+    agent.set_fast_mode(true).await?;
     let second = agent.prompt(Prompt::new("second prompt")).await?;
     assert_eq!(second.result().await?.final_message, "done");
+    agent.set_fast_mode(false).await?;
+    let third = agent.prompt(Prompt::new("third prompt")).await?;
+    assert_eq!(third.result().await?.final_message, "done");
     drop(agent);
 
     let mut completed = Vec::new();
@@ -62,13 +74,16 @@ async fn follow_on_prompts_can_change_thinking_without_restarting_the_session() 
             completed.push(event.decode_payload::<Value>()?);
         }
     }
-    assert_eq!(completed.len(), 2);
+    assert_eq!(completed.len(), 3);
     assert_eq!(completed[0]["connection_attempts"], 1);
     assert_eq!(completed[0]["response_attempts"], 2);
     assert_eq!(completed[0]["effort"], "low");
     assert_eq!(completed[1]["connection_attempts"], 0);
     assert_eq!(completed[1]["response_attempts"], 1);
     assert_eq!(completed[1]["effort"], "high");
+    assert_eq!(completed[2]["connection_attempts"], 0);
+    assert_eq!(completed[2]["response_attempts"], 1);
+    assert_eq!(completed[2]["effort"], "high");
 
     timeout(std::time::Duration::from_secs(5), server)
         .await
@@ -120,11 +135,13 @@ async fn queued_prompts_retain_the_thinking_captured_when_accepted() -> Result<(
         let queued = next_json(&mut socket).await?;
         assert_eq!(queued["previous_response_id"], "resp-first");
         assert_eq!(queued["reasoning"]["effort"], "low");
+        assert!(queued.get("service_tier").is_none());
         send_final(&mut socket, "resp-queued").await?;
 
         let updated = next_json(&mut socket).await?;
         assert_eq!(updated["previous_response_id"], "resp-queued");
         assert_eq!(updated["reasoning"]["effort"], "high");
+        assert_eq!(updated["service_tier"], "priority");
         send_final(&mut socket, "resp-updated").await
     });
 
@@ -143,6 +160,7 @@ async fn queued_prompts_retain_the_thinking_captured_when_accepted() -> Result<(
         .map_err(|_| eyre!("first request was not observed"))?;
     let queued = agent.prompt("queued prompt").await?;
     agent.set_thinking(Thinking::High).await?;
+    agent.set_fast_mode(true).await?;
     release_first
         .send(())
         .map_err(|()| eyre!("first request release receiver dropped"))?;

@@ -21,12 +21,13 @@ struct Nanocodex {
 #[pymethods]
 impl Nanocodex {
     #[new]
-    #[pyo3(signature = (api_key = None, *, auth_file = None, thinking = "medium", reasoning_mode = "standard", workspace = None, instructions = None))]
+    #[pyo3(signature = (api_key = None, *, auth_file = None, thinking = "medium", reasoning_mode = "standard", fast_mode = false, workspace = None, instructions = None))]
     fn new(
         api_key: Option<String>,
         auth_file: Option<String>,
         thinking: &str,
         reasoning_mode: &str,
+        fast_mode: bool,
         workspace: Option<String>,
         instructions: Option<String>,
     ) -> PyResult<(Self, AgentEvents)> {
@@ -49,7 +50,8 @@ impl Nanocodex {
             .block_on(async move {
                 let mut builder = RustNanocodex::builder(auth)
                     .reasoning_mode(reasoning_mode)
-                    .thinking(thinking);
+                    .thinking(thinking)
+                    .fast_mode(fast_mode);
                 if let Some(workspace) = workspace {
                     builder = builder.workspace(workspace);
                 }
@@ -90,6 +92,14 @@ impl Nanocodex {
         let runtime = Arc::clone(&self.runtime);
         let agent = self.agent.clone();
         py.detach(move || runtime.block_on(agent.set_thinking(thinking)))
+            .map_err(runtime_error)
+    }
+
+    /// Enable or disable priority processing for subsequently accepted turns.
+    fn set_fast_mode(&self, py: Python<'_>, enabled: bool) -> PyResult<()> {
+        let runtime = Arc::clone(&self.runtime);
+        let agent = self.agent.clone();
+        py.detach(move || runtime.block_on(agent.set_fast_mode(enabled)))
             .map_err(runtime_error)
     }
 

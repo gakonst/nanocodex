@@ -19,6 +19,7 @@ export function create(options = {}) {
   const {
     thinking,
     reasoningMode,
+    fastMode,
     instructions,
     sessionId,
     apiKey,
@@ -47,5 +48,5 @@ export function create(options = {}) {
     release: (raw) => releaseHostSession(host, raw.sessionId),
     decorate: (agent) => agent.extend(agentActions()),
   });
-  return createAgentClient(runtime, { thinking, reasoningMode, instructions, sessionId });
+  return createAgentClient(runtime, { thinking, reasoningMode, fastMode, instructions, sessionId });
 }

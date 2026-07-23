@@ -13,6 +13,7 @@ class BindingTests(unittest.TestCase):
         self.assertNotIn(secret, repr(agent))
         self.assertTrue(callable(agent.prompt))
         agent.set_thinking("high")
+        agent.set_fast_mode(True)
         self.assertTrue(callable(events.recv_json))
 
     def test_configuration_errors_cross_the_boundary(self) -> None:
