@@ -181,6 +181,7 @@ enum Command {
         key: TurnKey,
         prompt: Prompt,
         thinking: Option<Thinking>,
+        fast_mode: Option<bool>,
         parent: Option<tracing::Span>,
         result: oneshot::Sender<Result<TurnResult>>,
     },
@@ -204,6 +205,10 @@ enum Command {
         thinking: Thinking,
         result: oneshot::Sender<Result<()>>,
     },
+    SetFastMode {
+        enabled: bool,
+        result: oneshot::Sender<Result<()>>,
+    },
 }
 
 enum QueuedTurn {
@@ -211,12 +216,14 @@ enum QueuedTurn {
         key: TurnKey,
         prompt: Prompt,
         thinking: Thinking,
+        fast_mode: bool,
         parent: Option<tracing::Span>,
         result: oneshot::Sender<Result<TurnResult>>,
     },
     Cancelled {
         prompt: Prompt,
         thinking: Thinking,
+        fast_mode: bool,
         parent: Option<tracing::Span>,
         result: oneshot::Sender<Result<TurnResult>>,
     },
@@ -358,6 +365,7 @@ impl Nanocodex {
                 key,
                 prompt,
                 thinking: None,
+                fast_mode: None,
                 parent,
                 result,
             })
@@ -386,6 +394,22 @@ impl Nanocodex {
     pub async fn set_thinking(&self, thinking: Thinking) -> Result<()> {
         request_command(&self.commands, |result| Command::SetThinking {
             thinking,
+            result,
+        })
+        .await
+    }
+
+    /// Enables or disables priority processing for subsequently accepted turns.
+    ///
+    /// An active turn and prompts already queued by the driver retain the mode
+    /// they captured when accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the agent driver has stopped.
+    pub async fn set_fast_mode(&self, enabled: bool) -> Result<()> {
+        request_command(&self.commands, |result| Command::SetFastMode {
+            enabled,
             result,
         })
         .await
@@ -501,6 +525,13 @@ impl<S> NanocodexBuilder<S> {
     #[must_use]
     pub const fn thinking(mut self, thinking: Thinking) -> Self {
         self.config.thinking = thinking;
+        self
+    }
+
+    /// Enables priority processing. The default is disabled.
+    #[must_use]
+    pub const fn fast_mode(mut self, enabled: bool) -> Self {
+        self.config.fast_mode = enabled;
         self
     }
 
@@ -789,6 +820,7 @@ where
         let session_id = self.events.request_id().to_owned();
         let rollout = self.rollout.take();
         let mut default_thinking = self.spawner.config.thinking;
+        let mut default_fast_mode = self.spawner.config.fast_mode;
         let inherited_checkpoint = self.initial_checkpoint.as_ref().map(|checkpoint| {
             Arc::new(CommittedCheckpoint {
                 lineage_id: Arc::clone(&self.spawner.lineage_id),
@@ -835,6 +867,7 @@ where
                             key,
                             prompt,
                             thinking,
+                            fast_mode,
                             parent,
                             result,
                         } => {
@@ -842,6 +875,7 @@ where
                                 key,
                                 prompt,
                                 thinking: Some(thinking),
+                                fast_mode: Some(fast_mode),
                                 parent,
                                 result,
                             };
@@ -849,6 +883,7 @@ where
                         QueuedTurn::Cancelled {
                             prompt,
                             thinking,
+                            fast_mode,
                             parent,
                             result,
                         } => {
@@ -889,6 +924,7 @@ where
                                 &prompt,
                                 self.workspace.as_deref(),
                                 thinking,
+                                fast_mode,
                             )?;
                             drop(result.send(Err(NanocodexError::TurnCancelled)));
                             continue;
@@ -908,6 +944,7 @@ where
                 key,
                 prompt,
                 thinking,
+                fast_mode,
                 parent,
                 result,
             } = command
@@ -917,17 +954,24 @@ where
                     drop(result.send(Ok(())));
                     continue;
                 }
+                if let Command::SetFastMode { enabled, result } = command {
+                    default_fast_mode = enabled;
+                    drop(result.send(Ok(())));
+                    continue;
+                }
                 handle_idle_command(
                     command,
                     latest_fork_checkpoint.as_ref(),
                     &self.spawner,
                     default_thinking,
+                    default_fast_mode,
                     session_id.as_str(),
                     self.workspace.clone(),
                 );
                 continue;
             };
             let thinking = thinking.unwrap_or(default_thinking);
+            let fast_mode = fast_mode.unwrap_or(default_fast_mode);
             turn_index += 1;
             let prompt_content = tracing::enabled!(
                 target: "nanocodex",
@@ -971,6 +1015,7 @@ where
                         prompt,
                         self.workspace.clone(),
                         thinking,
+                        fast_mode,
                         steer_rx,
                         cancel_rx,
                         fork_snapshots,
@@ -1002,6 +1047,7 @@ where
                                 key,
                                 prompt,
                                 thinking: _,
+                                fast_mode: _,
                                 parent,
                                 result,
                             }) => {
@@ -1009,6 +1055,7 @@ where
                                     key,
                                     prompt,
                                     thinking: default_thinking,
+                                    fast_mode: default_fast_mode,
                                     parent,
                                     result,
                                 });
@@ -1055,12 +1102,17 @@ where
                                     latest_fork_checkpoint.as_ref(),
                                     &self.spawner,
                                     default_thinking,
+                                    default_fast_mode,
                                     session_id.as_str(),
                                     self.workspace.clone(),
                                 );
                             }
                             Some(Command::SetThinking { thinking, result }) => {
                                 default_thinking = thinking;
+                                drop(result.send(Ok(())));
+                            }
+                            Some(Command::SetFastMode { enabled, result }) => {
+                                default_fast_mode = enabled;
                                 drop(result.send(Ok(())));
                             }
                             None => commands_open = false,
@@ -1217,6 +1269,7 @@ fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) 
     let QueuedTurn::Pending {
         prompt,
         thinking,
+        fast_mode,
         parent,
         result,
         ..
@@ -1229,6 +1282,7 @@ fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) 
         QueuedTurn::Cancelled {
             prompt,
             thinking,
+            fast_mode,
             parent,
             result,
         },
@@ -1241,6 +1295,7 @@ fn handle_idle_command<S>(
     latest: Option<&Arc<CommittedCheckpoint>>,
     spawner: &BranchSpawner<S>,
     thinking: Thinking,
+    fast_mode: bool,
     session_id: &str,
     workspace: Option<Arc<str>>,
 ) where
@@ -1253,11 +1308,13 @@ fn handle_idle_command<S>(
             let checkpoint = checkpoint.or_else(|| latest.cloned());
             let outcome = checkpoint
                 .ok_or(NanocodexError::ForkBeforeCompletedTurn)
-                .and_then(|checkpoint| spawner.spawn_fork(&checkpoint, session_id, thinking));
+                .and_then(|checkpoint| {
+                    spawner.spawn_fork(&checkpoint, session_id, thinking, fast_mode)
+                });
             drop(result.send(outcome));
         }
         Command::Spawn { result } => {
-            drop(result.send(spawner.spawn_clean(workspace, session_id, thinking)));
+            drop(result.send(spawner.spawn_clean(workspace, session_id, thinking, fast_mode)));
         }
         Command::Steer { result, .. } => {
             drop(result.send(Err(NanocodexError::TurnNotSteerable)));
@@ -1265,7 +1322,7 @@ fn handle_idle_command<S>(
         Command::Cancel { result, .. } => {
             drop(result.send(Err(NanocodexError::TurnNotCancellable)));
         }
-        Command::SetThinking { result, .. } => {
+        Command::SetThinking { result, .. } | Command::SetFastMode { result, .. } => {
             drop(result.send(Ok(())));
         }
         Command::Prompt { .. } => {}
@@ -1283,12 +1340,14 @@ where
         checkpoint: &CommittedCheckpoint,
         parent_session_id: &str,
         thinking: Thinking,
+        fast_mode: bool,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = new_session_id();
         let workspace = Some(Arc::<str>::from(checkpoint.model.workspace()));
         let mut spawner = self.clone();
         let mut config = (*spawner.config).clone();
         config.thinking = thinking;
+        config.fast_mode = fast_mode;
         spawner.config = Arc::new(config);
         spawner.depth = self.depth.saturating_add(1);
         spawn_agent_driver(
@@ -1311,11 +1370,13 @@ where
         workspace: Option<Arc<str>>,
         parent_session_id: &str,
         thinking: Thinking,
+        fast_mode: bool,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = new_session_id();
         let depth = self.depth.saturating_add(1);
         let mut config = (*self.config).clone();
         config.thinking = thinking;
+        config.fast_mode = fast_mode;
         let spawner = Self {
             config: Arc::new(config),
             tools: self.tools.clone(),

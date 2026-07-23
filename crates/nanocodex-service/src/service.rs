@@ -376,6 +376,7 @@ impl ResponsesService {
             ResponsesAttemptKind::Warmup => EncodedRequest::new(&ResponseCreate::warmup(
                 &self.config,
                 request.thinking(),
+                request.fast_mode(),
                 &request.profile,
                 connection.turn_state.as_deref(),
             )),
@@ -383,6 +384,7 @@ impl ResponsesService {
                 EncodedRequest::new(&ResponseCreate::generation(
                     &self.config,
                     request.thinking(),
+                    request.fast_mode(),
                     request.input(),
                     request.previous_response_id(),
                     &request.profile,

@@ -19,6 +19,7 @@ export type AgentEvent = {
 export type AgentOptions = {
   instructions?: string | undefined;
   reasoningMode?: ReasoningMode | undefined;
+  fastMode?: boolean | undefined;
   sessionId?: string | undefined;
   thinking?: Thinking | undefined;
 };
@@ -38,6 +39,7 @@ export type AgentActions = {
   };
   session: {
     fork(options?: ForkOptions): Promise<DefaultAgent>;
+    setFastMode(enabled: boolean): Promise<void>;
     setThinking(thinking: Thinking): Promise<void>;
     spawn(): Promise<DefaultAgent>;
   };

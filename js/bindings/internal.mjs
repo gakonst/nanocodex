@@ -75,6 +75,10 @@ export function setThinking(agent, thinking) {
   return agentState(agent).raw.setThinking(thinking);
 }
 
+export function setFastMode(agent, enabled) {
+  return agentState(agent).raw.setFastMode(enabled);
+}
+
 export function subscribeAgentEvents(agent, listener, options = {}) {
   const state = agentState(agent);
   if (typeof state.runtime.subscribe !== "function") {
@@ -98,6 +102,7 @@ export function toWasmConfig(options = {}) {
   const config = { api_key: apiKey };
   copy(config, "thinking", options.thinking);
   copy(config, "reasoning_mode", options.reasoningMode);
+  copy(config, "fast_mode", options.fastMode);
   copy(config, "websocket_url", options.websocketUrl);
   copy(config, "api_base_url", options.apiBaseUrl);
   copy(config, "instructions", options.instructions);

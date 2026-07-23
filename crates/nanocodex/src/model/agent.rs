@@ -40,6 +40,7 @@ pub(crate) struct ModelRun<S> {
     events: EventSink,
     config: Arc<ModelConfig>,
     thinking: Thinking,
+    fast_mode: bool,
     client: ResponsesClient<S>,
     transport_stats: Arc<TransportStats>,
     started_at: Instant,
@@ -230,10 +231,12 @@ impl<S> ModelRun<S> {
         global_instructions: Option<Arc<str>>,
     ) -> Self {
         let thinking = config.thinking;
+        let fast_mode = config.fast_mode;
         Self {
             events,
             config,
             thinking,
+            fast_mode,
             client,
             transport_stats,
             started_at: Instant::now(),
@@ -268,10 +271,12 @@ impl<S> ModelRun<S> {
             config.system_prompt(),
         );
         let thinking = config.thinking;
+        let fast_mode = config.fast_mode;
         Self {
             events,
             config,
             thinking,
+            fast_mode,
             client,
             transport_stats,
             started_at: Instant::now(),
@@ -326,8 +331,10 @@ where
         task: &Prompt,
         workspace: Option<&str>,
         thinking: Thinking,
+        fast_mode: bool,
     ) -> Result<()> {
         self.thinking = thinking;
+        self.fast_mode = fast_mode;
         self.started_at = Instant::now();
         self.stats = RunStats::default();
         self.events.emit(
@@ -361,16 +368,19 @@ where
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute(
         &mut self,
         task: Prompt,
         workspace: Option<Arc<str>>,
         thinking: Thinking,
+        fast_mode: bool,
         steers: tokio::sync::mpsc::Receiver<Prompt>,
         mut cancel: tokio::sync::oneshot::Receiver<()>,
         fork_snapshots: watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTurnOutcome> {
         self.thinking = thinking;
+        self.fast_mode = fast_mode;
         self.started_at = Instant::now();
         self.stats = RunStats::default();
         let transport_before = self.transport_stats.snapshot();
@@ -1049,7 +1059,7 @@ where
     ) -> Result<WarmupExecution> {
         let success = self
             .client
-            .execute(factory.warmup(self.thinking))
+            .execute(factory.warmup(self.thinking, self.fast_mode))
             .instrument(span.clone())
             .await
             .map_err(Into::into)?;
@@ -1112,6 +1122,7 @@ where
             conversation.delta_start,
             previous_response_id,
             self.thinking,
+            self.fast_mode,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
@@ -1218,6 +1229,7 @@ where
             previous_response_id,
             trigger,
             self.thinking,
+            self.fast_mode,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = info_span!(

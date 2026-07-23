@@ -130,6 +130,7 @@ pub struct ResponsesAttempt {
     tail: Option<ResponseItem>,
     previous_response_id: Option<String>,
     thinking: Thinking,
+    fast_mode: bool,
     pub(crate) profile: Arc<RequestProfile>,
     pub(crate) observer: ResponsesObserver,
     pub(crate) attempt: u32,
@@ -140,6 +141,7 @@ pub struct ResponsesAttempt {
 impl ResponsesAttempt {
     fn warmup(
         thinking: Thinking,
+        fast_mode: bool,
         profile: Arc<RequestProfile>,
         observer: ResponsesObserver,
     ) -> Self {
@@ -152,6 +154,7 @@ impl ResponsesAttempt {
             tail: None,
             previous_response_id: None,
             thinking,
+            fast_mode,
             profile,
             observer,
             attempt: 1,
@@ -168,6 +171,7 @@ impl ResponsesAttempt {
         incremental_start: usize,
         previous_response_id: Option<&str>,
         thinking: Thinking,
+        fast_mode: bool,
         profile: Arc<RequestProfile>,
         observer: ResponsesObserver,
     ) -> Self {
@@ -180,6 +184,7 @@ impl ResponsesAttempt {
             tail: None,
             previous_response_id: previous_response_id.map(str::to_owned),
             thinking,
+            fast_mode,
             profile,
             observer,
             attempt: 1,
@@ -197,6 +202,7 @@ impl ResponsesAttempt {
         previous_response_id: &str,
         trigger: ResponseItem,
         thinking: Thinking,
+        fast_mode: bool,
         profile: Arc<RequestProfile>,
         observer: ResponsesObserver,
     ) -> Self {
@@ -209,6 +215,7 @@ impl ResponsesAttempt {
             tail: Some(trigger),
             previous_response_id: Some(previous_response_id.to_owned()),
             thinking,
+            fast_mode,
             profile,
             observer,
             attempt: 1,
@@ -251,6 +258,12 @@ impl ResponsesAttempt {
     #[must_use]
     pub const fn thinking(&self) -> Thinking {
         self.thinking
+    }
+
+    /// Returns whether this replayable attempt uses priority service.
+    #[must_use]
+    pub const fn fast_mode(&self) -> bool {
+        self.fast_mode
     }
 
     #[must_use]
@@ -356,11 +369,17 @@ impl ResponsesAttemptFactory {
     }
 
     #[must_use]
-    pub fn warmup(&self, thinking: Thinking) -> ResponsesAttempt {
-        ResponsesAttempt::warmup(thinking, Arc::clone(&self.profile), self.observer.clone())
+    pub fn warmup(&self, thinking: Thinking, fast_mode: bool) -> ResponsesAttempt {
+        ResponsesAttempt::warmup(
+            thinking,
+            fast_mode,
+            Arc::clone(&self.profile),
+            self.observer.clone(),
+        )
     }
 
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn generation(
         &self,
         call_index: u32,
@@ -369,6 +388,7 @@ impl ResponsesAttemptFactory {
         incremental_start: usize,
         previous_response_id: Option<&str>,
         thinking: Thinking,
+        fast_mode: bool,
     ) -> ResponsesAttempt {
         ResponsesAttempt::generation(
             call_index,
@@ -377,6 +397,7 @@ impl ResponsesAttemptFactory {
             incremental_start,
             previous_response_id,
             thinking,
+            fast_mode,
             Arc::clone(&self.profile),
             self.observer.clone(),
         )
@@ -393,6 +414,7 @@ impl ResponsesAttemptFactory {
         previous_response_id: &str,
         trigger: ResponseItem,
         thinking: Thinking,
+        fast_mode: bool,
     ) -> ResponsesAttempt {
         ResponsesAttempt::compaction(
             call_index,
@@ -402,6 +424,7 @@ impl ResponsesAttemptFactory {
             previous_response_id,
             trigger,
             thinking,
+            fast_mode,
             Arc::clone(&self.profile),
             self.observer.clone(),
         )
@@ -415,7 +438,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn retry_preserves_the_attempts_thinking_level() {
+    fn retry_preserves_the_attempts_turn_policy() {
         let (events, _receiver) = EventSink::channel("attempt-test".to_owned());
         let factory = ResponsesAttemptFactory::new(
             RequestProfile::new("attempt-test", "attempt-test", Arc::from([])),
@@ -429,10 +452,13 @@ mod tests {
             0,
             Some("resp-previous"),
             Thinking::High,
+            true,
         );
 
         assert_eq!(attempt.thinking(), Thinking::High);
+        assert!(attempt.fast_mode());
         assert!(attempt.prepare_retry());
         assert_eq!(attempt.thinking(), Thinking::High);
+        assert!(attempt.fast_mode());
     }
 }

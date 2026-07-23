@@ -4,7 +4,8 @@ import { Agent as BrowserAgent } from "../browser/index.mjs";
 declare const apiKey: string;
 
 async function check() {
-  const agent = await Agent.create({ apiKey, thinking: "high" });
+  const agent = await Agent.create({ apiKey, thinking: "high", fastMode: false });
+  await agent.session.setFastMode(true);
   const options: Actions.turn.prompt.Options = { input: "hello" };
   const turn: Turn = agent.turn.prompt(options);
   const sameTurn: Actions.turn.prompt.ReturnType = Actions.turn.prompt(agent, options);

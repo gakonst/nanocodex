@@ -178,7 +178,11 @@ different model slug. All six effort levels are available in either mode:
 let (agent, _events) = Nanocodex::builder(api_key)
     .reasoning_mode(ReasoningMode::Pro)
     .thinking(Thinking::Xhigh) // None, Low, Medium, High, Xhigh, or Max
+    .fast_mode(true) // Requests priority service.
     .build()?;
+
+// Later turns can switch priority service without replacing the session.
+agent.set_fast_mode(false).await?;
 ```
 
 The CLI equivalents are `--reasoning-mode pro --thinking xhigh`, with matching

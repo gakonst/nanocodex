@@ -15,3 +15,6 @@ export declare namespace spawn {
 
 /** Changes the reasoning effort for subsequently accepted turns. */
 export function setThinking(agent: Agent<object>, thinking: Thinking): Promise<void>;
+
+/** Enables or disables priority processing for subsequently accepted turns. */
+export function setFastMode(agent: Agent<object>, enabled: boolean): Promise<void>;

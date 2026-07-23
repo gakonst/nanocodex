@@ -346,6 +346,8 @@ pub struct ResponseCreate<'a> {
     prompt_cache_key: &'a str,
     text: TextControls,
     #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     generate: Option<bool>,
     client_metadata: ClientMetadata<'a>,
 }
@@ -355,12 +357,16 @@ impl<'a> ResponseCreate<'a> {
     pub fn warmup(
         config: &'a ModelConfig,
         thinking: Thinking,
+        fast_mode: bool,
         profile: &'a RequestProfile,
         turn_state: Option<&'a str>,
     ) -> Self {
         Self::new(
             config,
-            thinking,
+            RequestPolicy {
+                thinking,
+                fast_mode,
+            },
             ResponsesInput::new(profile.prefix(), &[], None),
             None,
             Some(false),
@@ -373,6 +379,7 @@ impl<'a> ResponseCreate<'a> {
     pub fn generation(
         config: &'a ModelConfig,
         thinking: Thinking,
+        fast_mode: bool,
         input: ResponsesInput<'a>,
         previous_response_id: Option<&'a str>,
         profile: &'a RequestProfile,
@@ -380,7 +387,10 @@ impl<'a> ResponseCreate<'a> {
     ) -> Self {
         Self::new(
             config,
-            thinking,
+            RequestPolicy {
+                thinking,
+                fast_mode,
+            },
             input,
             previous_response_id,
             None,
@@ -391,7 +401,7 @@ impl<'a> ResponseCreate<'a> {
 
     fn new(
         config: &'a ModelConfig,
-        thinking: Thinking,
+        policy: RequestPolicy,
         input: ResponsesInput<'a>,
         previous_response_id: Option<&'a str>,
         generate: Option<bool>,
@@ -411,7 +421,7 @@ impl<'a> ResponseCreate<'a> {
             parallel_tool_calls: false,
             reasoning: ReasoningControls {
                 mode: config.reasoning_mode.request_value(),
-                effort: thinking.as_str(),
+                effort: policy.thinking.as_str(),
                 summary: "detailed",
                 context: "all_turns",
             },
@@ -420,6 +430,7 @@ impl<'a> ResponseCreate<'a> {
             include: ["reasoning.encrypted_content"],
             prompt_cache_key: profile.prompt_cache_key(),
             text: TextControls { verbosity: "low" },
+            service_tier: policy.fast_mode.then_some("priority"),
             generate,
             client_metadata: ClientMetadata {
                 session_id: profile.session_id(),
@@ -429,6 +440,12 @@ impl<'a> ResponseCreate<'a> {
             },
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct RequestPolicy {
+    thinking: Thinking,
+    fast_mode: bool,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -477,7 +494,7 @@ mod tests {
             }],
         )]);
         let profile = RequestProfile::new("branch-a", "lineage-a", prefix);
-        let request = ResponseCreate::warmup(&config, Thinking::Low, &profile, None);
+        let request = ResponseCreate::warmup(&config, Thinking::Low, false, &profile, None);
         let request = serde_json::to_value(request).expect("request should serialize");
 
         assert_eq!(request["prompt_cache_key"], json!("lineage-a"));
@@ -521,9 +538,10 @@ mod tests {
                 thinking,
                 ..ModelConfig::default()
             };
-            let request =
-                serde_json::to_value(ResponseCreate::warmup(&config, thinking, &profile, None))
-                    .expect("request should serialize");
+            let request = serde_json::to_value(ResponseCreate::warmup(
+                &config, thinking, false, &profile, None,
+            ))
+            .expect("request should serialize");
 
             assert_eq!(request["reasoning"]["mode"], json!("pro"));
             assert_eq!(request["reasoning"]["effort"], json!(expected));
@@ -535,6 +553,31 @@ mod tests {
     fn response_storage_support_tracks_auth_mode() {
         assert!(crate::OpenAiAuthMode::ApiKey.supports_stored_responses());
         assert!(!crate::OpenAiAuthMode::ChatGpt.supports_stored_responses());
+    }
+
+    #[test]
+    fn fast_mode_selects_priority_service_tier() {
+        let config = ModelConfig::default();
+        let profile = RequestProfile::new("fast-agent", "fast-lineage", Arc::from([]));
+        let standard = serde_json::to_value(ResponseCreate::warmup(
+            &config,
+            Thinking::Medium,
+            false,
+            &profile,
+            None,
+        ))
+        .expect("standard request should serialize");
+        let fast = serde_json::to_value(ResponseCreate::warmup(
+            &config,
+            Thinking::Medium,
+            true,
+            &profile,
+            None,
+        ))
+        .expect("fast request should serialize");
+
+        assert!(standard.get("service_tier").is_none());
+        assert_eq!(fast["service_tier"], json!("priority"));
     }
 
     #[test]

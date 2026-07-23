@@ -15,7 +15,8 @@ py/bindings/.venv/bin/python examples/python/follow_on.py
 blocking wait while releasing Python's GIL. `AgentEvents.recv_json()` likewise
 releases the GIL, so applications can consume it from a normal Python thread.
 `agent.set_thinking("high")` changes the effort for subsequently accepted turns
-without replacing the session.
+without replacing the session. `agent.set_fast_mode(True)` similarly enables
+priority service for subsequently accepted turns.
 The Rust runtime, tools, transport, retries, history, and event ordering stay
 inside the extension; no app server or per-tool Python bridge is involved.
 
@@ -34,6 +35,7 @@ agent, events = Nanocodex(
     api_key,
     reasoning_mode="pro",
     thinking="xhigh",  # none, low, medium, high, xhigh, or max
+    fast_mode=True,
 )
 ```
 
