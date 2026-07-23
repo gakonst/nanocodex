@@ -22,8 +22,9 @@
 
 Nanocodex is a Code Mode-first Rust agents SDK. It provides typed turns, tools,
 events, steering, cancellation, queueing, and fast historical forks over the
-OpenAI Responses WebSocket API. It keeps the complete coding-agent conversation
-inside your process without requiring an app server or durable control plane.
+OpenAI Responses API. It supports persistent WebSocket and HTTPS/SSE transports
+while keeping the complete coding-agent conversation inside your process,
+without requiring an app server or durable control plane.
 
 ## Installation
 
@@ -276,13 +277,15 @@ already-authorized WebSocket from the host and never own refresh tokens.
 ## Lifecycle details
 
 `Nanocodex::new` installs the standard instructions, medium thinking, built-in
-tools, persistent WebSocket, and retry/reconnect policy. Dropping the event
-receiver is supported; events then become a no-op.
+tools, persistent WebSocket, and retry/reconnect policy. The builder can instead
+fix HTTPS/SSE, response storage, and full-replay policy for the agent and all of
+its forks. Dropping the event receiver is supported; events then become a no-op.
 
 Callers never pass transcripts, response IDs, tool outputs, or turn IDs back to
-the agent. On a healthy socket the driver sends only the new delta with
-`previous_response_id`. After reconnecting it drops that ID and transparently
-replays its authoritative typed history.
+the agent. An incremental transport sends only the new delta with
+`previous_response_id`; full-replay policy transparently sends the authoritative
+typed history. A replacement ephemeral socket and HTTPS with `store: false`
+also replay that history.
 
 The Responses path encodes each wire request once and rejects common
 non-metadata frames before attempting metadata decoding. Every streamed attempt
@@ -612,7 +615,7 @@ integrations, managed subagents, and a mature TUI and IDE ecosystem.
 | --- | --- | --- |
 | Product boundary | Rust library in your process | Application and durable agent runtime |
 | State | In-memory authority; optional Codex-compatible rollout | Persisted threads and rollouts |
-| Follow-on turns | New input delta on one persistent WebSocket | Full Codex session lifecycle |
+| Follow-on turns | Fixed WebSocket or HTTPS policy; automatic delta or full replay | Full Codex session lifecycle |
 | Historical forks | Exact completed checkpoint; parent keeps running | Durable thread reconstruction |
 | Tools | Code Mode over Rust tools and MCP | Broad built-in tool and integration surface |
 | Middleware | Your concrete Tower stack | Codex-owned runtime policy |

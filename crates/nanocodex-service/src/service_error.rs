@@ -141,7 +141,13 @@ impl From<ResponsesError> for ResponsesServiceError {
             ResponsesError::UnexpectedEnd
             | ResponsesError::Closed { .. }
             | ResponsesError::Receive(_) => FailurePhase::Receive,
+            #[cfg(not(target_family = "wasm"))]
+            ResponsesError::HttpRequest(_) | ResponsesError::InvalidSseUtf8(_) => {
+                FailurePhase::Receive
+            }
             ResponsesError::Api { .. } => FailurePhase::Api,
+            #[cfg(not(target_family = "wasm"))]
+            ResponsesError::HttpRejected { .. } => FailurePhase::Api,
             _ => FailurePhase::Protocol,
         };
         Self::responses(error, phase, 0)

@@ -8,7 +8,7 @@ use std::{
 #[cfg(not(target_family = "wasm"))]
 use nanocodex_core::OpenAiAuthMode;
 use nanocodex_core::{
-    AgentEventKind, ModelConfig, OpenAiAuthSnapshot,
+    AgentEventKind, ModelConfig, OpenAiAuthSnapshot, ResponsesHistory, ResponsesTransport,
     responses::{ResponseCreate, WarmupResponse, WarmupServerEvent},
 };
 use tokio::sync::Mutex;
@@ -16,6 +16,8 @@ use tower::{Service, retry::Retry};
 use tracing::{Instrument, info_span};
 use web_time::Instant;
 
+#[cfg(not(target_family = "wasm"))]
+use crate::http::{HttpMetadata, ResponsesHttp, ResponsesHttpStream};
 use crate::{
     EncodedRequest, ResponsesError,
     attempt::{ResponsesAttempt, ResponsesAttemptKind, ResponsesOutput, ResponsesServiceResponse},
@@ -75,11 +77,13 @@ impl ConnectionState {
     }
 }
 
-/// Stateful WebSocket attempt service at the base of a Responses Tower stack.
+/// Stateful transport attempt service at the base of a Responses Tower stack.
 #[derive(Clone)]
 pub struct ResponsesService {
     config: Arc<ModelConfig>,
     connection: Arc<Mutex<ConnectionState>>,
+    #[cfg(not(target_family = "wasm"))]
+    http: ResponsesHttp,
 }
 
 impl ResponsesService {
@@ -88,10 +92,12 @@ impl ResponsesService {
         Self {
             config,
             connection: Arc::new(Mutex::new(ConnectionState::new())),
+            #[cfg(not(target_family = "wasm"))]
+            http: ResponsesHttp::new(),
         }
     }
 
-    /// Builds the standard persistent-WebSocket service with retry policy.
+    /// Builds the configured standard Responses service with retry policy.
     #[must_use]
     pub fn standard(config: Arc<ModelConfig>) -> DefaultResponsesService {
         Retry::new(ResponsesRetryPolicy, Self::new(config))
@@ -108,6 +114,18 @@ impl ResponsesService {
             .response_attempts
             .fetch_add(1, Ordering::Relaxed);
         let started_at = Instant::now();
+        request.observer.emit(
+            AgentEventKind::ModelAttemptStarted,
+            AttemptStarted {
+                phase: request.kind,
+                model_call_index: request.call_index,
+                attempt: request.attempt,
+                max_attempts: request.max_attempts,
+                replay_mode: request.replay_mode(),
+                previous_response_id: request.previous_response_id(),
+                connection_generation: connection.generation,
+            },
+        )?;
         let result = self.run_inner(connection, request, started_at).await;
         tracing::Span::current().record(
             "status",
@@ -155,18 +173,33 @@ impl ResponsesService {
         request: &ResponsesAttempt,
         started_at: Instant,
     ) -> Result<ResponsesServiceResponse, ResponsesServiceError> {
-        request.observer.emit(
-            AgentEventKind::ModelAttemptStarted,
-            AttemptStarted {
-                phase: request.kind,
-                model_call_index: request.call_index,
-                attempt: request.attempt,
-                max_attempts: request.max_attempts,
-                replay_mode: request.replay_mode(),
-                previous_response_id: request.previous_response_id(),
-                connection_generation: connection.generation,
-            },
-        )?;
+        match self.config.responses_transport {
+            ResponsesTransport::WebSocket => {
+                self.run_websocket(connection, request, started_at).await
+            }
+            ResponsesTransport::Https => {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    self.run_https(request, started_at).await
+                }
+                #[cfg(target_family = "wasm")]
+                {
+                    Err(ResponsesServiceError::invalid_attempt_state(
+                        "HTTPS Responses transport is unavailable in browser WASM",
+                        FailurePhase::Connect,
+                        0,
+                    ))
+                }
+            }
+        }
+    }
+
+    async fn run_websocket(
+        &self,
+        connection: &mut ConnectionState,
+        request: &ResponsesAttempt,
+        started_at: Instant,
+    ) -> Result<ResponsesServiceResponse, ResponsesServiceError> {
         if connection.socket.is_none() {
             self.connect(connection, request).await?;
         }
@@ -209,7 +242,8 @@ impl ResponsesService {
             ),
             ResponsesAttemptKind::Generation => ResponsesOutput::Generation(
                 stream::receive(
-                    socket,
+                    &mut stream::ResponseEventSource::WebSocket(socket),
+                    ResponsesTransport::WebSocket.as_str(),
                     &request.observer.events,
                     required_call_index(request)?,
                     started_at,
@@ -219,7 +253,8 @@ impl ResponsesService {
             ),
             ResponsesAttemptKind::Compaction => ResponsesOutput::Compaction(
                 stream::receive_compaction(
-                    socket,
+                    &mut stream::ResponseEventSource::WebSocket(socket),
+                    ResponsesTransport::WebSocket.as_str(),
                     &request.observer.events,
                     required_call_index(request)?,
                     started_at,
@@ -247,6 +282,88 @@ impl ResponsesService {
             attempt: request.attempt,
             connection_generation: generation,
             server_reasoning_included: connection.server_reasoning_included,
+        })
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn run_https(
+        &self,
+        request: &ResponsesAttempt,
+        started_at: Instant,
+    ) -> Result<ResponsesServiceResponse, ResponsesServiceError> {
+        if matches!(request.kind, ResponsesAttemptKind::Warmup) {
+            return Err(ResponsesServiceError::invalid_attempt_state(
+                "HTTPS Responses transport does not perform a warmup request",
+                FailurePhase::Protocol,
+                0,
+            ));
+        }
+        let encode_started_at = Instant::now();
+        let encoded = self.encode_request(&ConnectionState::new(), request)?;
+        let encode_duration_ns = elapsed_ns(encode_started_at);
+        let request_bytes = encoded.raw().get().len();
+        let transport = ResponsesTransport::Https.as_str();
+        let span = tracing::Span::current();
+        span.record("request.bytes", request_bytes);
+        span.record("request.encode.duration_ns", encode_duration_ns);
+        request.observer.emit(
+            AgentEventKind::ApiEvent,
+            ApiEvent {
+                direction: "outbound",
+                transport,
+                phase: request.kind.phase(),
+                model_call_index: request.call_index,
+                event: encoded.raw(),
+            },
+        )?;
+        let send_started_at = Instant::now();
+        let (mut response, metadata) = self
+            .send_https_with_auth_recovery(request.profile.session_id(), &encoded)
+            .await
+            .map_err(|error| ResponsesServiceError::responses(error, FailurePhase::Send, 0))?;
+        let send_duration_ns = elapsed_ns(send_started_at);
+        span.record("request.send.duration_ns", send_duration_ns);
+        let mut source = stream::ResponseEventSource::Https(&mut response);
+        let output = match request.kind {
+            ResponsesAttemptKind::Generation => ResponsesOutput::Generation(
+                stream::receive(
+                    &mut source,
+                    transport,
+                    &request.observer.events,
+                    required_call_index(request)?,
+                    started_at,
+                )
+                .await?,
+            ),
+            ResponsesAttemptKind::Compaction => ResponsesOutput::Compaction(
+                stream::receive_compaction(
+                    &mut source,
+                    transport,
+                    &request.observer.events,
+                    required_call_index(request)?,
+                    started_at,
+                )
+                .await?,
+            ),
+            ResponsesAttemptKind::Warmup => unreachable!("warmup rejected above"),
+        };
+        let pipeline_stats = match &output {
+            ResponsesOutput::Generation(result) => result.pipeline_stats,
+            ResponsesOutput::Compaction(result) => result.pipeline_stats,
+            ResponsesOutput::Warmup(_) => unreachable!("warmup rejected above"),
+        };
+        record_pipeline_stats(
+            &span,
+            request_bytes,
+            encode_duration_ns,
+            send_duration_ns,
+            pipeline_stats,
+        );
+        Ok(ResponsesServiceResponse {
+            output,
+            attempt: request.attempt,
+            connection_generation: 0,
+            server_reasoning_included: metadata.reasoning_included,
         })
     }
 
@@ -442,6 +559,37 @@ impl ResponsesService {
         ResponsesSocket::connect(&self.config.websocket_url, &auth, session_id).await
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    async fn send_https_with_auth_recovery(
+        &self,
+        session_id: &str,
+        request: &EncodedRequest,
+    ) -> Result<(ResponsesHttpStream, HttpMetadata), ResponsesError> {
+        let auth = self.auth_snapshot().await?;
+        match self
+            .http
+            .send(&self.config.api_base_url, &auth, session_id, request)
+            .await
+        {
+            Err(ResponsesError::HttpRejected { status: 401, .. })
+                if auth.mode() == OpenAiAuthMode::ChatGpt =>
+            {
+                self.config
+                    .auth
+                    .recover_unauthorized(&auth)
+                    .await
+                    .map_err(|error| ResponsesError::Authorization {
+                        detail: error.to_string(),
+                    })?;
+                let refreshed = self.auth_snapshot().await?;
+                self.http
+                    .send(&self.config.api_base_url, &refreshed, session_id, request)
+                    .await
+            }
+            result => result,
+        }
+    }
+
     async fn auth_snapshot(&self) -> Result<OpenAiAuthSnapshot, ResponsesError> {
         self.config
             .auth
@@ -524,46 +672,62 @@ impl Service<ResponsesAttempt> for ResponsesService {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, request: ResponsesAttempt) -> Self::Future {
+    fn call(&mut self, mut request: ResponsesAttempt) -> Self::Future {
         let service = self.clone();
-        let input_item_count = request.input_item_count();
-        let span = info_span!(
-            target: "nanocodex_service",
-            "responses.attempt",
-            otel.kind = "client",
-            otel.status_code = tracing::field::Empty,
-            phase = request.kind.phase(),
-            model.call_index = request.call_index,
-            attempt = request.attempt,
-            max_attempts = request.max_attempts,
-            replay.mode = request.replay_mode(),
-            model.input.item_count = input_item_count,
-            request.bytes = tracing::field::Empty,
-            request.encode.duration_ns = tracing::field::Empty,
-            request.send.duration_ns = tracing::field::Empty,
-            response.event.count = tracing::field::Empty,
-            response.bytes = tracing::field::Empty,
-            response.receive.wait_duration_ns = tracing::field::Empty,
-            response.parse.duration_ns = tracing::field::Empty,
-            response.emit.duration_ns = tracing::field::Empty,
-            response.decode.duration_ns = tracing::field::Empty,
-            response.socket_queue.duration_ns = tracing::field::Empty,
-            response.display_delta.count = tracing::field::Empty,
-            response.display_delta.bytes = tracing::field::Empty,
-            response.inter_delta_gap.max_ns = tracing::field::Empty,
-            response.inter_delta_stall_50ms.count = tracing::field::Empty,
-            response.inter_delta_stall_100ms.count = tracing::field::Empty,
-            response.inter_delta_stall_250ms.count = tracing::field::Empty,
-            status = tracing::field::Empty,
-            duration_ns = tracing::field::Empty,
-        );
-        Box::pin(
-            async move {
-                let mut connection = service.connection.lock().await;
-                service.run(&mut connection, &request).await
+        Box::pin(async move {
+            let mut connection = service.connection.lock().await;
+            if matches!(
+                service.config.responses_history,
+                ResponsesHistory::FullReplay
+            ) || (matches!(
+                service.config.responses_transport,
+                ResponsesTransport::Https
+            ) && !service.config.store_responses)
+                || (matches!(
+                    service.config.responses_transport,
+                    ResponsesTransport::WebSocket
+                ) && !service.config.store_responses
+                    && connection.socket.is_none()
+                    && request.previous_response_id().is_some())
+            {
+                request.force_full_replay();
             }
-            .instrument(span),
-        )
+            let input_item_count = request.input_item_count();
+            let span = info_span!(
+                target: "nanocodex_service",
+                "responses.attempt",
+                otel.kind = "client",
+                otel.status_code = tracing::field::Empty,
+                phase = request.kind.phase(),
+                model.call_index = request.call_index,
+                attempt = request.attempt,
+                max_attempts = request.max_attempts,
+                replay.mode = request.replay_mode(),
+                model.input.item_count = input_item_count,
+                request.bytes = tracing::field::Empty,
+                request.encode.duration_ns = tracing::field::Empty,
+                request.send.duration_ns = tracing::field::Empty,
+                response.event.count = tracing::field::Empty,
+                response.bytes = tracing::field::Empty,
+                response.receive.wait_duration_ns = tracing::field::Empty,
+                response.parse.duration_ns = tracing::field::Empty,
+                response.emit.duration_ns = tracing::field::Empty,
+                response.decode.duration_ns = tracing::field::Empty,
+                response.socket_queue.duration_ns = tracing::field::Empty,
+                response.display_delta.count = tracing::field::Empty,
+                response.display_delta.bytes = tracing::field::Empty,
+                response.inter_delta_gap.max_ns = tracing::field::Empty,
+                response.inter_delta_stall_50ms.count = tracing::field::Empty,
+                response.inter_delta_stall_100ms.count = tracing::field::Empty,
+                response.inter_delta_stall_250ms.count = tracing::field::Empty,
+                status = tracing::field::Empty,
+                duration_ns = tracing::field::Empty,
+            );
+            service
+                .run(&mut connection, &request)
+                .instrument(span)
+                .await
+        })
     }
 }
 

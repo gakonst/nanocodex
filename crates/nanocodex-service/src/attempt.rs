@@ -278,6 +278,10 @@ impl ResponsesAttempt {
         self.full_replay = true;
         true
     }
+
+    pub(crate) fn force_full_replay(&mut self) {
+        self.full_replay = true;
+    }
 }
 
 pub enum ResponsesOutput {

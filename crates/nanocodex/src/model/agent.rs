@@ -1,12 +1,12 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use nanocodex_core::{
-    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, ToolDefinition, Usage,
-    responses::RequestProfile,
+    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, ResponsesTransport,
+    ToolDefinition, Usage, responses::RequestProfile,
 };
 use nanocodex_service::{
     CodeCall, CodeCallKind, ResponsesAttempt, ResponsesAttemptFactory, ResponsesClient,
-    ResponsesOutput, ResponsesServiceResponse, TRANSPORT, TransportStats, TurnResult,
+    ResponsesOutput, ResponsesServiceResponse, TransportStats, TurnResult,
 };
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -298,6 +298,13 @@ impl<S> ModelRun<S> {
         )
     }
 
+    fn responses_endpoint(&self) -> &str {
+        match self.config.responses_transport {
+            ResponsesTransport::WebSocket => &self.config.websocket_url,
+            ResponsesTransport::Https => &self.config.api_base_url,
+        }
+    }
+
     fn load_agent_instructions(&self, workspace: &str) -> Result<Option<String>> {
         load_instructions(Path::new(workspace), self.global_instructions.as_deref())
     }
@@ -323,9 +330,9 @@ where
                 model: MODEL,
                 reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.config.thinking.as_str(),
-                transport: TRANSPORT,
+                transport: self.config.responses_transport.as_str(),
                 orchestration: ModelConfig::orchestration(),
-                websocket_url: display_endpoint(&self.config.websocket_url),
+                websocket_url: display_endpoint(self.responses_endpoint()),
                 workspace,
                 instruction_bytes: task.instruction.text_bytes(),
             },
@@ -364,9 +371,9 @@ where
                 model: MODEL,
                 reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.config.thinking.as_str(),
-                transport: TRANSPORT,
+                transport: self.config.responses_transport.as_str(),
                 orchestration: ModelConfig::orchestration(),
-                websocket_url: display_endpoint(&self.config.websocket_url),
+                websocket_url: display_endpoint(self.responses_endpoint()),
                 workspace: workspace.as_deref(),
                 instruction_bytes: task.instruction.text_bytes(),
             },
@@ -923,6 +930,9 @@ where
         &mut self,
         factory: &ResponsesAttemptFactory,
     ) -> Result<Option<String>> {
+        if matches!(self.config.responses_transport, ResponsesTransport::Https) {
+            return Ok(None);
+        }
         let started_at = Instant::now();
         self.events.emit(
             AgentEventKind::ModelWarmupStarted,

@@ -8,7 +8,7 @@ server, TUI, notebook, test harness, or future language binding without making
 any of those application shapes part of the core SDK.
 
 The library owns model execution, conversation history, prompt caching,
-Responses WebSocket state, tools, retries, and cancellation. Applications own
+Responses transport state, tools, retries, and cancellation. Applications own
 their presentation, event selection, tracing subscriber, persistence policy,
 and transport to their users. Native callers may explicitly enable a
 Codex-compatible committed-history rollout; the CLI enables that policy by
@@ -27,8 +27,9 @@ default so its completed threads can be handed off to `codex resume`.
   Callers never pass previous final messages, response IDs, reasoning items, or
   tool results back into the session.
 - The default is one fixed model contract with medium thinking, the standard
-  instructions, built-in tools, persistent Responses WebSocket, and bounded typed
-  retry/reconnect policy.
+  instructions, built-in tools, a persistent Responses WebSocket, and bounded
+  typed retry/reconnect policy. Native callers may instead fix HTTPS/SSE,
+  response storage, and history replay policy when they build the agent.
 - `Tools::builder().tool(...)` accepts both `#[tool]` functions and complete
   `Tool` implementations in the same heterogeneous registry.
 - `Responses::builder()` lets callers layer or replace the concrete Tower
@@ -48,16 +49,16 @@ application
                                       └─ ResponsesClient<S>
                                            └─ caller Tower layers
                                                 └─ retry policy
-                                                     └─ persistent WebSocket
+                                                     └─ WebSocket or HTTPS/SSE
 ```
 
 Crate ownership is fixed:
 
 - `nanocodex-core`: dependency-light prompts, events, model configuration, and
   typed Responses request/event/item data.
-- `nanocodex-service`: persistent WebSocket behavior, complete streamed
-  attempts, Tower service/client, retry policy, typed errors, and transport
-  telemetry.
+- `nanocodex-service`: persistent WebSocket and HTTPS/SSE behavior, complete
+  streamed attempts, Tower service/client, retry policy, typed errors, and
+  transport telemetry.
 - `nanocodex-tools`: code mode, local tools, custom-tool registry, process
   lifecycle, and bounded tool output.
 - `nanocodex-mcp`: stdio/Streamable HTTP clients, background handshake and tool
@@ -82,7 +83,7 @@ Socket tasks and mutable driver details stay private.
   are gone.
 - Public crate boundaries follow ownership rather than historical file layout.
 
-### 2. Responses WebSocket and Tower service
+### 2. Responses transports and Tower service
 
 - One `Service<ResponsesAttempt>` call covers a complete streamed attempt, not
   merely a frame send.

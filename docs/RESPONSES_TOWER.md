@@ -1,4 +1,4 @@
-# Responses WebSocket and Tower architecture
+# Responses transports and Tower architecture
 
 Status: implemented.
 
@@ -13,9 +13,10 @@ returns `(Nanocodex, AgentEvents)`. The driver owns mutable conversation,
 model, tool-runtime, and Tower service state. Each accepted prompt returns a
 `Turn`; `turn.result()` is independent from the optional event stream.
 
-One driver reuses its WebSocket, server response chain, typed history,
-code-mode runtime, shell sessions, and prompt-cache identity across follow-on
-turns. The caller does not replay earlier results.
+One driver reuses its selected transport policy, server response chain, typed
+history, code-mode runtime, shell sessions, and prompt-cache identity across
+follow-on turns. A WebSocket policy also reuses its connection. The caller does
+not replay earlier results.
 
 `ResponsesClient<S>` is generic over `Service<ResponsesAttempt>`. The common
 builder defers caller layers until it constructs the configured standard
@@ -58,21 +59,22 @@ retry, metrics, tracing, and error-mapping layers. Returning success after only
 sending a frame would make those policies incorrect.
 
 `ResponsesAttempt` is an owned replay snapshot. Large history is shared by
-`Arc`; cloning an attempt does not deep-clone the conversation. A healthy socket
-sends only the new delta with `previous_response_id`. A replacement socket
-invalidates that connection-local ID and serializes the full committed history.
+`Arc`; cloning an attempt does not deep-clone the conversation. Incremental
+history sends only the new delta with `previous_response_id`. Full-replay
+history serializes the complete committed conversation. A replacement
+ephemeral socket invalidates its connection-local ID and also replays history.
 
 Only completed responses enter history. Failed partial output cannot execute a
 tool or be replayed, so retry cannot duplicate a partial side effect.
 
 ## Standard resilience
 
-The default stack is one typed retry owner around one persistent socket:
+The default stack is one typed retry owner around one configured transport:
 
 ```text
 ResponsesRetryPolicy
   -> ResponsesService
-       -> ResponsesSocket
+       -> ResponsesSocket | HTTPS/SSE request
 ```
 
 Generation and compaction receive at most five attempts. Transient connection,
@@ -82,9 +84,10 @@ policy, quota, usage-limit, and context failures remain terminal. Server delay
 hints override bounded exponential backoff.
 
 Reconnect preserves the stable prompt-cache key and client-owned history,
-drops `previous_response_id`, and forces full-history replay. Requests retain
-`store: false`; prompt caching is an optimization, not the history source of
-truth.
+drops a connection-local `previous_response_id`, and forces full-history
+replay. HTTPS with `store: false` always replays because it has no
+connection-local checkpoint. Prompt caching is an optimization, not the
+history source of truth.
 
 ## Caller middleware
 

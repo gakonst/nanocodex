@@ -11,7 +11,7 @@ use web_time::Instant;
 #[cfg(not(target_family = "wasm"))]
 use crate::NanocodexError;
 use crate::Result;
-use nanocodex_service::{TRANSPORT, TransportStatsDelta};
+use nanocodex_service::TransportStatsDelta;
 use nanocodex_tools::ToolOutputBody;
 
 const COST_STATUS: &str = "not_reported_by_responses_api";
@@ -230,7 +230,7 @@ pub(super) fn terminal_payload<'a>(
         model: nanocodex_core::MODEL,
         reasoning_mode: config.reasoning_mode.as_str(),
         effort: config.thinking.as_str(),
-        transport: TRANSPORT,
+        transport: config.responses_transport.as_str(),
         orchestration: ModelConfig::orchestration(),
         duration_ms: duration_ms(elapsed),
         duration_ns: duration_ns(elapsed),

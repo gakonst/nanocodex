@@ -45,8 +45,8 @@ the compatible transport policies are:
 | Policy | ChatGPT `auth.json` | Current Nanocodex runtime |
 | --- | --- | --- |
 | WebSocket, connection-local response ID, replay on a fresh fork | yes | yes |
-| WebSocket, full replay | yes | transport supports it |
-| HTTPS/SSE, full replay | yes | benchmark/reference path only |
+| WebSocket, full replay | yes | yes |
+| HTTPS/SSE, full replay | yes | yes |
 | Any `store: true` checkpoint policy | no | no |
 
 The benchmark executable itself currently exercises API-key authentication so
@@ -54,6 +54,32 @@ that every row can be compared in one run. The compatibility claims above come
 from Nanocodex's auth-mode request construction and the reviewed local Codex
 HTTPS and WebSocket request paths, not from reusing a ChatGPT access token
 against `api.openai.com`.
+
+## Library policy
+
+Transport, storage, and history policy are selected when the agent is built and
+are inherited unchanged by every clean child and historical fork:
+
+```rust
+use nanocodex::{Responses, ResponsesTransport};
+
+let responses = Responses::builder()
+    .transport(ResponsesTransport::Https)
+    .store(false)
+    .build();
+let (agent, events) = nanocodex::Nanocodex::builder(auth)
+    .responses(responses)
+    .build()?;
+```
+
+HTTPS with `store: false` automatically selects full client-history replay.
+Callers can explicitly select
+`ResponsesHistory::{Incremental, FullReplay}` for the other supported
+combinations. The builder rejects `store: true` with ChatGPT subscription
+authentication and incremental HTTPS history with `store: false`.
+
+The native CLI/TUI fixes the same policy at startup with
+`--responses-transport`, `--responses-history`, and `--store-responses`.
 
 ## Measurements
 

@@ -1,7 +1,10 @@
 use std::{process, time::Duration};
 
 use eyre::{Result, WrapErr};
-use nanocodex::{AgentEventKind, AgentEvents, Nanocodex, Responses, Thinking, Tools, TurnResult};
+use nanocodex::{
+    AgentEventKind, AgentEvents, Nanocodex, Responses, ResponsesBuilder, ResponsesTransport,
+    StandardResponses, Thinking, Tools, TurnResult,
+};
 use tokio::task::JoinHandle;
 use tower::{limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
 
@@ -33,14 +36,9 @@ async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
     let api_key = std::env::var("OPENAI_API_KEY").wrap_err("OPENAI_API_KEY is required")?;
 
-    // These layers wrap Nanocodex's standard persistent-WebSocket/retry stack.
-    // They are deferred and cloned onto a fresh standard stack for every fork.
-    let responses = Responses::builder()
-        .websocket_url(env_or(
-            "OPENAI_RESPONSES_WEBSOCKET_URL",
-            DEFAULT_WEBSOCKET_URL,
-        ))
-        .api_base_url(env_or("OPENAI_API_BASE_URL", DEFAULT_API_BASE_URL))
+    // The fixed transport/storage policy and these layers are inherited by
+    // every fork, while each fork receives fresh mutable transport state.
+    let responses = configured_responses()?
         .layer(TimeoutLayer::new(Duration::from_secs(120)))
         .layer(ConcurrencyLimitLayer::new(1))
         .build();
@@ -205,4 +203,26 @@ const fn event_kind(kind: AgentEventKind) -> &'static str {
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
+}
+
+fn configured_responses() -> Result<ResponsesBuilder<StandardResponses>> {
+    let transport = std::env::var("NANOCODEX_RESPONSES_TRANSPORT")
+        .unwrap_or_else(|_| ResponsesTransport::WebSocket.to_string())
+        .parse::<ResponsesTransport>()
+        .map_err(eyre::Report::msg)?;
+    let mut responses = Responses::builder()
+        .transport(transport)
+        .websocket_url(env_or(
+            "OPENAI_RESPONSES_WEBSOCKET_URL",
+            DEFAULT_WEBSOCKET_URL,
+        ))
+        .api_base_url(env_or("OPENAI_API_BASE_URL", DEFAULT_API_BASE_URL));
+    if let Ok(store) = std::env::var("NANOCODEX_STORE_RESPONSES") {
+        responses = responses.store(
+            store
+                .parse::<bool>()
+                .wrap_err("NANOCODEX_STORE_RESPONSES must be true or false")?,
+        );
+    }
+    Ok(responses)
 }

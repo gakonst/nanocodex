@@ -6,7 +6,8 @@ use std::{
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
 use nanocodex::{
-    AgentEvents, Nanocodex, OpenAiAuth, ReasoningMode, Responses, RolloutConfig, Thinking, Tools,
+    AgentEvents, Nanocodex, OpenAiAuth, ReasoningMode, Responses, ResponsesHistory,
+    ResponsesTransport, RolloutConfig, Thinking, Tools,
 };
 
 use crate::mcp::McpArgs;
@@ -88,7 +89,23 @@ pub(crate) struct AgentArgs {
     #[arg(long, env = "OPENAI_RESPONSES_WEBSOCKET_URL")]
     websocket_url: Option<String>,
 
-    /// `OpenAI` HTTP API base used by standalone web search.
+    /// Responses transport fixed for the complete agent session.
+    #[arg(
+        long,
+        env = "NANOCODEX_RESPONSES_TRANSPORT",
+        default_value_t = ResponsesTransport::WebSocket
+    )]
+    responses_transport: ResponsesTransport,
+
+    /// Incremental response-ID chaining or complete history replay.
+    #[arg(long, env = "NANOCODEX_RESPONSES_HISTORY")]
+    responses_history: Option<ResponsesHistory>,
+
+    /// Whether the Responses API retains server-side checkpoints.
+    #[arg(long, env = "NANOCODEX_STORE_RESPONSES", action = ArgAction::Set)]
+    store_responses: Option<bool>,
+
+    /// `OpenAI` HTTP API base used by HTTPS Responses and standalone web search.
     #[arg(long, env = "OPENAI_API_BASE_URL")]
     api_base_url: Option<String>,
 
@@ -105,7 +122,13 @@ impl AgentArgs {
         let codex_home = default_codex_home()?;
         let rollout = self.rollouts.then(|| codex_home.clone());
         let auth = select_auth(self.api_key, self.auth_file, environment_api_key()?)?;
-        let mut responses = Responses::builder();
+        let mut responses = Responses::builder().transport(self.responses_transport);
+        if let Some(history) = self.responses_history {
+            responses = responses.history(history);
+        }
+        if let Some(store) = self.store_responses {
+            responses = responses.store(store);
+        }
         if let Some(websocket_url) = self.websocket_url {
             responses = responses.websocket_url(websocket_url);
         }
@@ -258,6 +281,28 @@ mod tests {
             .expect("the CLI should expose the rollouts argument");
 
         assert_eq!(rollouts.get_default_values(), ["true"]);
+    }
+
+    #[test]
+    fn responses_transport_is_selected_once_at_startup() {
+        let command = crate::Cli::command();
+        let transport = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "responses_transport")
+            .expect("the CLI should expose the Responses transport argument");
+        assert_eq!(transport.get_default_values(), ["websocket"]);
+
+        let history = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "responses_history")
+            .expect("the CLI should expose the Responses history argument");
+        assert!(history.get_default_values().is_empty());
+
+        let store = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "store_responses")
+            .expect("the CLI should expose the Responses storage argument");
+        assert!(store.get_default_values().is_empty());
     }
 
     #[test]

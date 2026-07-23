@@ -187,6 +187,9 @@ pub struct ModelConfig {
     pub auth: OpenAiAuth,
     pub reasoning_mode: ReasoningMode,
     pub thinking: Thinking,
+    pub responses_transport: ResponsesTransport,
+    pub responses_history: ResponsesHistory,
+    pub store_responses: bool,
     pub websocket_url: String,
     pub api_base_url: String,
     pub system_prompt: Arc<str>,
@@ -215,9 +218,87 @@ impl Default for ModelConfig {
             auth: OpenAiAuth::api_key(String::new()),
             reasoning_mode: ReasoningMode::default(),
             thinking: Thinking::default(),
+            responses_transport: ResponsesTransport::default(),
+            responses_history: ResponsesHistory::default(),
+            store_responses: true,
             websocket_url: "wss://api.openai.com/v1/responses".to_owned(),
             api_base_url: "https://api.openai.com/v1".to_owned(),
             system_prompt: SYSTEM_PROMPT.into(),
+        }
+    }
+}
+
+/// Responses transport selected once when an agent session is built.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResponsesTransport {
+    #[default]
+    WebSocket,
+    Https,
+}
+
+impl ResponsesTransport {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WebSocket => "responses_websocket_v2",
+            Self::Https => "responses_https_sse",
+        }
+    }
+}
+
+impl fmt::Display for ResponsesTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WebSocket => formatter.write_str("websocket"),
+            Self::Https => formatter.write_str("https"),
+        }
+    }
+}
+
+impl FromStr for ResponsesTransport {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "websocket" | "ws" => Ok(Self::WebSocket),
+            "https" | "http" => Ok(Self::Https),
+            _ => Err(format!(
+                "invalid Responses transport {value:?}; expected websocket or https"
+            )),
+        }
+    }
+}
+
+/// How committed client history is represented in each Responses request.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResponsesHistory {
+    /// Reuse a response ID when the selected transport and storage policy make
+    /// it valid, falling back to complete client-owned history as needed.
+    #[default]
+    Incremental,
+    /// Send complete committed client-owned history on every request.
+    FullReplay,
+}
+
+impl fmt::Display for ResponsesHistory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Incremental => formatter.write_str("incremental"),
+            Self::FullReplay => formatter.write_str("full-replay"),
+        }
+    }
+}
+
+impl FromStr for ResponsesHistory {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "incremental" => Ok(Self::Incremental),
+            "full-replay" | "replay" => Ok(Self::FullReplay),
+            _ => Err(format!(
+                "invalid Responses history policy {value:?}; expected incremental or full-replay"
+            )),
         }
     }
 }
