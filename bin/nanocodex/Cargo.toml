@@ -14,7 +14,7 @@ build = "build.rs"
 [dependencies]
 arboard.workspace = true
 base64.workspace = true
-alloy-transport-mpp = { version = "=0.2.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "ef9f2f59b553b6cf7ca11746eb48687d451c7dbe" }
+alloy-transport-mpp = { version = "=0.2.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "a91163d46aa614df33bf3214c8aef557abf6e9b7" }
 clap.workspace = true
 crossterm.workspace = true
 dotenvy.workspace = true
@@ -24,7 +24,7 @@ image.workspace = true
 nanocodex.workspace = true
 nanocodex-observability.workspace = true
 pulldown-cmark.workspace = true
-mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "ef9f2f59b553b6cf7ca11746eb48687d451c7dbe", default-features = false, features = ["tempo", "ws", "sqlite", "reqwest-rustls-tls"] }
+mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "a91163d46aa614df33bf3214c8aef557abf6e9b7", default-features = false, features = ["tempo", "ws", "sqlite", "reqwest-rustls-tls"] }
 mpp-egress.workspace = true
 ratatui.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }

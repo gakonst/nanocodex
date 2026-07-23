@@ -689,7 +689,7 @@ dependencies = [
 [[package]]
 name = "alloy-transport-mpp"
 version = "0.2.0"
-source = "git+https://github.com/tempoxyz/mpp-rs?rev=ef9f2f59b553b6cf7ca11746eb48687d451c7dbe#ef9f2f59b553b6cf7ca11746eb48687d451c7dbe"
+source = "git+https://github.com/tempoxyz/mpp-rs?rev=a91163d46aa614df33bf3214c8aef557abf6e9b7#a91163d46aa614df33bf3214c8aef557abf6e9b7"
 dependencies = [
  "alloy-json-rpc",
  "alloy-pubsub",
@@ -3904,7 +3904,7 @@ dependencies = [
 [[package]]
 name = "mpp"
 version = "0.11.0"
-source = "git+https://github.com/tempoxyz/mpp-rs?rev=ef9f2f59b553b6cf7ca11746eb48687d451c7dbe#ef9f2f59b553b6cf7ca11746eb48687d451c7dbe"
+source = "git+https://github.com/tempoxyz/mpp-rs?rev=a91163d46aa614df33bf3214c8aef557abf6e9b7#a91163d46aa614df33bf3214c8aef557abf6e9b7"
 dependencies = [
  "alloy",
  "async-stream",
