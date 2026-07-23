@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use mpp::{
     MppError, PaymentChallenge, PaymentCredential,
     client::{
-        MultiProvider, PaymentProvider, TempoProvider, TempoSessionProvider,
+        MultiProvider, PaymentContext, PaymentProvider, TempoProvider, TempoSessionProvider,
         tempo::{
             AutoswapConfig,
             session::store::{
@@ -261,7 +261,6 @@ impl MppArgs {
             .wrap_err("failed to start the local MPP WebSocket adapter")?;
         let config = Arc::new(BridgeConfig {
             endpoint: self.mpp_websocket_url,
-            bootstrap_url: endpoint.to_string(),
             api_key: self.mpp_api_key,
             payment,
         });
@@ -442,6 +441,36 @@ impl PaymentProvider for NativeSession {
             .await
     }
 
+    async fn pay_with_context(
+        &self,
+        challenge: &PaymentChallenge,
+        context: PaymentContext,
+    ) -> Result<PaymentCredential, MppError> {
+        self.session
+            .application_websocket_credential_with_top_up(
+                &self.client,
+                context.url.as_str(),
+                context.headers,
+                challenge,
+            )
+            .await
+    }
+
+    async fn prepare_application_websocket_challenge(
+        &self,
+        challenge: &PaymentChallenge,
+        context: PaymentContext,
+    ) -> Result<PaymentChallenge, MppError> {
+        self.session
+            .recover_application_websocket_challenge_with_headers(
+                &self.client,
+                context.url.as_str(),
+                context.headers,
+                challenge,
+            )
+            .await
+    }
+
     fn accept_payment_header(&self) -> Option<String> {
         self.session.accept_payment_header()
     }
@@ -525,7 +554,6 @@ impl CloseProvider for NativeSession {
 
 struct BridgeConfig {
     endpoint: String,
-    bootstrap_url: String,
     api_key: Option<String>,
     payment: NativeSession,
 }
@@ -598,24 +626,6 @@ async fn bridge(
         .map_err(|_| eyre!("local Responses WebSocket header capture was poisoned"))?
         .take()
         .ok_or_else(|| eyre!("local Responses WebSocket headers were not captured"))?;
-
-    let mut bootstrap_headers = reqwest13::header::HeaderMap::new();
-    if let Some(api_key) = &config.api_key {
-        bootstrap_headers.insert(
-            reqwest13::header::HeaderName::from_static("x-api-key"),
-            reqwest13::header::HeaderValue::from_str(api_key)?,
-        );
-    }
-    config
-        .payment
-        .session
-        .bootstrap_with_headers(
-            &reqwest13::Client::new(),
-            &config.bootstrap_url,
-            bootstrap_headers,
-        )
-        .await
-        .wrap_err("failed to rehydrate the Tempo MPP session")?;
 
     let mut connector = MppApplicationWsConnect::new(
         &config.endpoint,
