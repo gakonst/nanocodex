@@ -2596,7 +2596,7 @@ async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn serialized_session_resumes_incrementally_then_replays_on_checkpoint_miss() -> Result<()> {
+async fn serialized_session_resumes_by_replaying_authoritative_history() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -2611,26 +2611,6 @@ async fn serialized_session_resumes_incrementally_then_replays_on_checkpoint_mis
 
         let (stream, _) = listener.accept().await?;
         let mut resumed = accept_async(stream).await?;
-        let incremental = next_json(&mut resumed).await?;
-        assert_eq!(incremental["previous_response_id"], "resp-first");
-        assert_eq!(incremental["prompt_cache_key"], "durable-cache");
-        assert_eq!(incremental["input"].as_array().map(Vec::len), Some(1));
-        assert_eq!(
-            incremental["input"][0]["content"][0]["text"],
-            "resume prompt"
-        );
-        send_json(
-            &mut resumed,
-            json!({
-                "type": "error",
-                "error": {
-                    "code": "previous_response_not_found",
-                    "message": "checkpoint expired"
-                }
-            }),
-        )
-        .await?;
-
         let replay = next_json(&mut resumed).await?;
         assert!(replay.get("previous_response_id").is_none());
         assert_eq!(replay["prompt_cache_key"], "durable-cache");

@@ -105,25 +105,16 @@ impl ModelCheckpoint {
         self.conversation.flattened_history()
     }
 
-    pub(crate) fn previous_response_id(&self) -> Option<&str> {
-        self.conversation.previous_response_id.as_deref()
-    }
-
     pub(crate) fn resume(
         workspace: String,
         request_prefix: Arc<[ResponseItem]>,
         prompt_cache_key: Arc<str>,
         canonical_context: ResponseItem,
         history: Vec<ResponseItem>,
-        previous_response_id: Option<String>,
     ) -> Result<Self> {
         Ok(Self {
             workspace,
-            conversation: ConversationState::resume(
-                canonical_context,
-                history,
-                previous_response_id,
-            )?,
+            conversation: ConversationState::resume(canonical_context, history)?,
             request_prefix,
             prompt_cache_key,
             preserve_inherited_delta: false,
@@ -305,11 +296,7 @@ impl ConversationState {
         })
     }
 
-    fn resume(
-        canonical_context: ResponseItem,
-        history: Vec<ResponseItem>,
-        previous_response_id: Option<String>,
-    ) -> Result<Self> {
+    fn resume(canonical_context: ResponseItem, history: Vec<ResponseItem>) -> Result<Self> {
         if history.is_empty() {
             return Err(NanocodexError::InvalidSessionSnapshot(
                 "conversation history must not be empty".to_owned(),
@@ -338,7 +325,7 @@ impl ConversationState {
             canonical_context: Arc::new(canonical_context),
             context,
             delta_start,
-            previous_response_id,
+            previous_response_id: None,
             history_revision: 0,
         })
     }

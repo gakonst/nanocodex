@@ -28,7 +28,8 @@ default so its completed threads can be handed off to `codex resume`.
   tool results back into the session.
 - Completed results can produce versioned serializable session snapshots.
   Applications own snapshot storage and retention; resuming restores typed
-  history and cache lineage into fresh runtime resources.
+  history and cache lineage into fresh runtime resources. Snapshots complement
+  Codex-compatible rollouts and do not persist provider response IDs.
 - The default is one fixed model contract with medium thinking, the standard
   instructions, built-in tools, a persistent Responses WebSocket, and bounded
   typed retry/reconnect policy. Native callers may instead fix HTTPS/SSE,

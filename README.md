@@ -180,7 +180,11 @@ let (resumed, _events) = Nanocodex::builder(api_key)
 history, tools, cache identity, response chain, and its WebSocket automatically.
 Snapshots contain the complete unredacted conversation and must be protected
 like the prompts and tool data they preserve. Resuming creates fresh runtime
-resources while retaining authoritative typed history and cache lineage.
+resources while retaining authoritative typed history and cache lineage. They
+do not persist provider response IDs, so the first resumed request replays that
+history once before returning to incremental requests. Use `RolloutConfig` for
+the existing Codex-compatible on-disk recording and `codex resume` handoff;
+snapshots are the library-level checkpoint for application-owned restoration.
 
 GPT-5.6 Pro is selected independently from reasoning effort; it does not use a
 different model slug. All six effort levels are available in either mode:

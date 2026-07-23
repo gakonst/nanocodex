@@ -8,7 +8,6 @@ use std::{
     },
 };
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use nanocodex_core::{
     AgentEvents, EventSink, MODEL, MessageRole, ModelConfig, OpenAiAuth, OpenAiAuthMode, Prompt,
     ReasoningMode, ResponseItem, ResponsesHistory, ResponsesTransport, Thinking,
@@ -184,11 +183,6 @@ impl TurnResult {
             request_prefix: self.checkpoint.model.request_prefix().to_vec(),
             canonical_context: self.checkpoint.model.canonical_context().clone(),
             history: self.checkpoint.model.snapshot_history(),
-            continuation: self
-                .checkpoint
-                .model
-                .previous_response_id()
-                .map(|id| SessionContinuation(id.to_owned())),
         }
     }
 }
@@ -212,8 +206,10 @@ struct CommittedCheckpoint {
 ///
 /// Its fields are intentionally private: callers may persist or transfer the
 /// value, but Nanocodex remains responsible for interpreting model history and
-/// opaque transport continuation state. Resuming requires the same model
-/// instructions and tool definitions used to create the snapshot.
+/// cache state. Provider response IDs are deliberately excluded: the first
+/// resumed request replays the authoritative typed history, then subsequent
+/// requests return to incremental continuation. Resuming requires the same
+/// model instructions and tool definitions used to create the snapshot.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub struct SessionSnapshot {
     version: u32,
@@ -224,34 +220,6 @@ pub struct SessionSnapshot {
     request_prefix: Vec<ResponseItem>,
     canonical_context: ResponseItem,
     history: Vec<ResponseItem>,
-    #[serde(rename = "checkpoint")]
-    continuation: Option<SessionContinuation>,
-}
-
-#[derive(Clone)]
-struct SessionContinuation(String);
-
-impl serde::Serialize for SessionContinuation {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&URL_SAFE_NO_PAD.encode(self.0.as_bytes()))
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SessionContinuation {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let encoded = <String as serde::Deserialize>::deserialize(deserializer)?;
-        let decoded = URL_SAFE_NO_PAD
-            .decode(encoded)
-            .map_err(serde::de::Error::custom)?;
-        let value = String::from_utf8(decoded).map_err(serde::de::Error::custom)?;
-        Ok(Self(value))
-    }
 }
 
 impl fmt::Debug for SessionSnapshot {
@@ -322,15 +290,6 @@ impl SessionSnapshot {
                 "request prefix does not match the supported model contract".to_owned(),
             ));
         }
-        if self
-            .continuation
-            .as_ref()
-            .is_some_and(|continuation| continuation.0.is_empty())
-        {
-            return Err(NanocodexError::InvalidSessionSnapshot(
-                "transport continuation must not be empty".to_owned(),
-            ));
-        }
         let lineage_id = Arc::<str>::from(self.lineage_id);
         let prompt_cache_key = Arc::<str>::from(self.prompt_cache_key);
         let checkpoint = ModelCheckpoint::resume(
@@ -339,7 +298,6 @@ impl SessionSnapshot {
             Arc::clone(&prompt_cache_key),
             self.canonical_context,
             self.history,
-            self.continuation.map(|continuation| continuation.0),
         )?;
         Ok((lineage_id, prompt_cache_key, checkpoint))
     }
