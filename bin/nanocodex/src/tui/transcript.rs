@@ -1140,6 +1140,10 @@ impl TranscriptEntry {
         let EntryContent::Tool(tool) = &mut self.content else {
             return;
         };
+        *tool
+            .cached_layout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         let target = if tool.call_id == call_id {
             Some(tool)
         } else {
@@ -1553,42 +1557,34 @@ fn push_styled_detail(target: &mut Vec<Span<'static>>, detail: String, style: St
 fn plan_text(explanation: Option<&str>, steps: &[(String, PlanStepStatus)]) -> Text<'static> {
     let explanation = explanation.map(str::trim).filter(|text| !text.is_empty());
     let mut lines = vec![Line::from(vec![
-        Span::styled("• ", Style::default().fg(Color::DarkGray)),
+        Span::styled("● ", Style::default().fg(Color::Green)),
         Span::styled(
-            "Updated Plan",
-            Style::default().add_modifier(Modifier::BOLD),
+            "Plan",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         ),
     ])];
     if let Some(explanation) = explanation {
         lines.push(Line::styled(
-            format!("  └ {explanation}"),
+            format!("  {explanation}"),
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(Color::Gray)
                 .add_modifier(Modifier::ITALIC),
         ));
     }
-    for (index, (step, status)) in steps.iter().enumerate() {
-        let prefix = if index == 0 && explanation.is_none() {
-            "  └ "
-        } else {
-            "    "
-        };
+    for (step, status) in steps {
         let (marker, style) = match status {
-            PlanStepStatus::Completed => (
-                "✔ ",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::CROSSED_OUT),
-            ),
+            PlanStepStatus::Completed => ("✓ ", Style::default().fg(Color::DarkGray)),
             PlanStepStatus::InProgress => (
-                "□ ",
+                "→ ",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            PlanStepStatus::Pending => ("□ ", Style::default().fg(Color::DarkGray)),
+            PlanStepStatus::Pending => ("· ", Style::default().fg(Color::DarkGray)),
         };
-        lines.push(Line::styled(format!("{prefix}{marker}{step}"), style));
+        lines.push(Line::styled(format!("  {marker}{step}"), style));
     }
     lines.push(Line::raw(""));
     Text::from(lines)
@@ -1794,6 +1790,9 @@ impl MarkdownContent {
     }
 
     fn append_reasoning(&mut self, delta: &str) {
+        if self.source.ends_with("**") && delta.starts_with("**") {
+            self.source.push_str("\n• ");
+        }
         self.source.push_str(&indent_reasoning(delta));
         *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
@@ -2719,6 +2718,89 @@ mod tests {
     }
 
     #[test]
+    fn parallel_tool_rows_update_independently_as_promises_resolve() {
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Tool {
+            call_id: "call-1".to_owned(),
+            name: "exec".to_owned(),
+            arguments: "await Promise.all(tasks);".to_owned(),
+            status: ToolStatus::Running,
+        });
+        for (call_id, command) in [
+            ("call-1/code-1", "sleep 0.08"),
+            ("call-1/code-2", "sleep 0.01"),
+        ] {
+            assert!(transcript.push_tool_child(
+                call_id.to_owned(),
+                "exec_command".to_owned(),
+                command.to_owned(),
+                ToolStatus::Running,
+            ));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+            })
+            .unwrap();
+        let running = terminal.backend().to_string();
+        assert!(running.contains("◌ Running  sleep 0.08"));
+        assert!(running.contains("◌ Running  sleep 0.01"));
+
+        assert!(transcript.set_tool_result_timing(
+            "call-1/code-2",
+            ToolStatus::Completed,
+            Some(1_000_000),
+            Some(10_000_000),
+            Some("exit 0".to_owned()),
+        ));
+        terminal
+            .draw(|frame| {
+                frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+            })
+            .unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("◌ Running  sleep 0.08"));
+        assert!(rendered.contains("✓ Ran  sleep 0.01 · 10ms · exit 0"));
+    }
+
+    #[test]
+    fn code_mode_frame_never_falls_back_to_the_raw_javascript() {
+        let source = "await tools.update_plan({ plan: tasks }); // secretFlashMarker";
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Tool {
+            call_id: "call-1".to_owned(),
+            name: "exec".to_owned(),
+            arguments: source.to_owned(),
+            status: ToolStatus::Running,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+            })
+            .unwrap();
+        assert!(terminal.backend().to_string().contains("◌ Working"));
+        assert!(!terminal.backend().to_string().contains(source));
+
+        assert!(transcript.push_tool_child(
+            "call-1/code-1".to_owned(),
+            "exec_command".to_owned(),
+            "cargo test --workspace".to_owned(),
+            ToolStatus::Running,
+        ));
+        terminal
+            .draw(|frame| {
+                frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+            })
+            .unwrap();
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("◌ Tools  1 call"));
+        assert!(rendered.contains("cargo test --workspace"));
+        assert!(!rendered.contains(source));
+    }
+
+    #[test]
     fn code_mode_patch_body_uses_compact_child_indentation() {
         let child = ToolActivity::new(
             "call-1/code-1".to_owned(),
@@ -2860,6 +2942,29 @@ mod tests {
                 .modifier
                 .contains(ratatui::style::Modifier::ITALIC)
         );
+    }
+
+    #[test]
+    fn adjacent_bold_reasoning_summaries_render_as_separate_bullets() {
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Reasoning(
+            "**Planning parallel commands**".to_owned(),
+        ));
+        assert!(transcript.append_reasoning_delta("**Designing varied-duration command demos**"));
+
+        let EntryContent::Markdown(markdown) = &transcript.entries[0].content else {
+            panic!("reasoning should render as Markdown");
+        };
+        let rendered = markdown
+            .materialized_text(80)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("• Planning parallel commands"));
+        assert!(rendered.contains("• Designing varied-duration command demos"));
+        assert!(!rendered.contains("****"));
     }
 
     #[test]

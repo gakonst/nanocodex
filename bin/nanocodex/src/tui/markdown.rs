@@ -77,22 +77,67 @@ pub(super) fn restore_markdown_links_from_sources<'a>(
 }
 
 fn restore_fenced_code(selected: &mut String, sources: &[&str]) {
-    for source in sources {
-        for code in markdown_code_blocks(source) {
-            let raw = code.source.trim_end_matches(['\r', '\n']);
-            for header_indent in ["  ", ""] {
-                for body_indent in ["  ", ""] {
-                    for footer_indent in ["  ", ""] {
-                        let rendered =
-                            rendered_code_block(&code, header_indent, body_indent, footer_indent);
-                        if selected.contains(&rendered) {
-                            *selected = selected.replace(&rendered, raw);
-                        }
-                    }
-                }
-            }
+    let blocks = sources
+        .iter()
+        .flat_map(|source| markdown_code_blocks(source))
+        .collect::<Vec<_>>();
+    for code in &blocks {
+        while let Some(restored) = restore_framed_code(selected, code) {
+            *selected = restored;
         }
     }
+    let Some(without_gutters) = strip_code_gutters(selected) else {
+        return;
+    };
+    for code in &blocks {
+        let raw = code.source.trim_end_matches(['\r', '\n']);
+        if raw.contains(&without_gutters) {
+            *selected = without_gutters;
+            return;
+        }
+        if raw.lines().collect::<String>() == without_gutters.lines().collect::<String>() {
+            raw.clone_into(selected);
+            return;
+        }
+    }
+}
+
+fn restore_framed_code(selected: &str, code: &CodeBlock) -> Option<String> {
+    let title = code.language.as_deref().unwrap_or("code");
+    let header = format!("┌─ {title} · {} LOC", code_line_count(&code.source));
+    let lines = selected.split('\n').collect::<Vec<_>>();
+    let start = lines.iter().position(|line| line.trim_start() == header)?;
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find_map(|(index, line)| (line.trim_start() == "└─").then_some(index))?;
+    let raw = code.source.trim_end_matches(['\r', '\n']);
+    Some(
+        lines[..start]
+            .iter()
+            .copied()
+            .chain(std::iter::once(raw))
+            .chain(lines[end + 1..].iter().copied())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn strip_code_gutters(selected: &str) -> Option<String> {
+    let mut stripped_any = false;
+    let lines = selected
+        .split('\n')
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let Some(body) = trimmed.strip_prefix('│') else {
+                return line;
+            };
+            stripped_any = true;
+            body.strip_prefix(' ').unwrap_or(body)
+        })
+        .collect::<Vec<_>>();
+    stripped_any.then(|| lines.join("\n"))
 }
 
 fn markdown_code_blocks(source: &str) -> Vec<CodeBlock> {
@@ -126,32 +171,6 @@ fn markdown_code_blocks(source: &str) -> Vec<CodeBlock> {
         }
     }
     blocks
-}
-
-fn rendered_code_block(
-    code: &CodeBlock,
-    header_indent: &str,
-    body_indent: &str,
-    footer_indent: &str,
-) -> String {
-    let title = code.language.as_deref().unwrap_or("code");
-    let mut rendered = format!(
-        "{header_indent}┌─ {title} · {} LOC",
-        code_line_count(&code.source)
-    );
-    for line in code.source.trim_end_matches(['\r', '\n']).split('\n') {
-        rendered.push('\n');
-        rendered.push_str(body_indent);
-        rendered.push('│');
-        if !line.is_empty() {
-            rendered.push(' ');
-            rendered.push_str(line.trim_end_matches('\r'));
-        }
-    }
-    rendered.push('\n');
-    rendered.push_str(footer_indent);
-    rendered.push_str("└─");
-    rendered
 }
 
 fn match_is_inside_url(selected: &str, start: usize) -> bool {
@@ -1185,11 +1204,22 @@ mod tests {
     #[test]
     fn semantic_copy_replaces_fenced_code_chrome_with_raw_code() {
         let source = "Run this:\n\n```sh\necho '{\"garbageCollector\":{\"strategy\":\"disabled\"}}' |\n  sudo tee /etc/determinate/config.json >/dev/null\n\nsudo launchctl kickstart -k system/systems.determinate.nix-daemon\njust switch\n```";
-        let rendered = "┌─ sh · 5 LOC\n  │ echo '{\"garbageCollector\":{\"strategy\":\"disabled\"}}' |\n  │   sudo tee /etc/determinate/config.json >/dev/null\n  │\n  │ sudo launchctl kickstart -k system/systems.determinate.nix-daemon\n  │ just switch\n  └─";
+        let rendered = "┌─ sh · 5 LOC\n  │ echo '{\"garbageCollector\":{\"strategy\":\"disabled\"}}' |\ncontinued after a visual wrap\n  │   sudo tee /etc/determinate/config.json >/dev/null\n  └─";
 
         assert_eq!(
             restore_markdown_links(rendered.to_owned(), source),
             "echo '{\"garbageCollector\":{\"strategy\":\"disabled\"}}' |\n  sudo tee /etc/determinate/config.json >/dev/null\n\nsudo launchctl kickstart -k system/systems.determinate.nix-daemon\njust switch"
+        );
+    }
+
+    #[test]
+    fn semantic_copy_strips_gutters_when_only_the_code_body_is_selected() {
+        let source = "```javascript\nconst first = 1;\nconst second = 2;\n```";
+        let selected = "const first = 1;\n  │ const second = 2;";
+
+        assert_eq!(
+            restore_markdown_links(selected.to_owned(), source),
+            "const first = 1;\nconst second = 2;"
         );
     }
 

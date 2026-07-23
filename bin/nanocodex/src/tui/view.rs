@@ -716,6 +716,58 @@ mod tests {
     }
 
     #[test]
+    fn rendered_javascript_fence_copies_only_its_source() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+        let mut app = App::new("/workspace".into());
+        let source = "const result = await tools.exec_command({ cmd: \"cargo test --workspace\" });\ntext(result.output);";
+        app.main.transcript.push(TranscriptItem::Assistant(format!(
+            "Run this:\n\n```javascript\n{source}\n```"
+        )));
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rows = (0..buffer.area.height)
+            .map(|row| {
+                (0..buffer.area.width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let header_y = rows
+            .iter()
+            .position(|row| row.contains("┌─ javascript"))
+            .expect("code fence header should be visible");
+        let header_x = rows[header_y]
+            .chars()
+            .position(|character| character == '┌')
+            .unwrap();
+        let footer_y = rows
+            .iter()
+            .enumerate()
+            .skip(header_y + 1)
+            .find_map(|(index, row)| row.contains("└─").then_some(index))
+            .expect("code fence footer should be visible");
+        let footer_x = rows[footer_y]
+            .chars()
+            .position(|character| character == '└')
+            .unwrap();
+        let start = (
+            u16::try_from(header_x).unwrap(),
+            u16::try_from(header_y).unwrap(),
+        );
+        let end = (
+            u16::try_from(footer_x + 1).unwrap(),
+            u16::try_from(footer_y).unwrap(),
+        );
+
+        assert!(app.begin_mouse_selection(start.into()));
+        assert!(app.finish_mouse_selection(end.into()));
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        assert_eq!(app.take_pending_copy().as_deref(), Some(source));
+    }
+
+    #[test]
     fn selecting_history_during_a_running_response_keeps_transcript_context_visible() {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
         let mut app = App::new("/workspace".into());

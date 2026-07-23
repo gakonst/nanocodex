@@ -178,7 +178,10 @@ pub(super) struct Conversation {
     pending_scroll_anchor: Option<PendingScrollAnchor>,
     streamed_this_turn: bool,
     pending_run_error: Option<String>,
-    hidden_terminal_polls: HashMap<String, String>,
+    hidden_terminal_calls: HashMap<String, i64>,
+    running_shell_sessions: HashMap<i64, ContinuedTool>,
+    hidden_cell_waits: HashMap<String, String>,
+    running_cells: HashMap<String, ContinuedTool>,
     hidden_plan_calls: HashSet<String>,
     pub(super) queued_prompts: VecDeque<String>,
     queued_prompt_ids: VecDeque<u64>,
@@ -205,7 +208,10 @@ impl Conversation {
             pending_scroll_anchor: None,
             streamed_this_turn: false,
             pending_run_error: None,
-            hidden_terminal_polls: HashMap::new(),
+            hidden_terminal_calls: HashMap::new(),
+            running_shell_sessions: HashMap::new(),
+            hidden_cell_waits: HashMap::new(),
+            running_cells: HashMap::new(),
             hidden_plan_calls: HashSet::new(),
             queued_prompts: VecDeque::new(),
             queued_prompt_ids: VecDeque::new(),
@@ -306,7 +312,8 @@ impl Conversation {
                 self.run_generation = self.run_generation.saturating_add(1);
                 self.streamed_this_turn = false;
                 self.pending_run_error = None;
-                self.hidden_terminal_polls.clear();
+                self.hidden_terminal_calls.clear();
+                self.hidden_cell_waits.clear();
                 self.hidden_plan_calls.clear();
                 "Thinking...".clone_into(&mut self.status);
             }
@@ -398,20 +405,23 @@ impl Conversation {
             });
             return true;
         }
-        if is_empty_terminal_poll(&payload.tool, &payload.arguments) {
-            let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
-            self.hidden_terminal_polls
-                .insert(payload.call_id, arguments);
+        if payload.tool == "write_stdin"
+            && let Some(session_id) = tool_integer_argument(&payload.arguments, "session_id")
+        {
+            self.hidden_terminal_calls
+                .insert(payload.call_id, session_id);
+            return false;
+        }
+        if payload.tool == "wait"
+            && let Some(cell_id) = tool_string_argument(&payload.arguments, "cell_id")
+        {
+            self.hidden_cell_waits.insert(payload.call_id, cell_id);
             return false;
         }
         let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
         self.status = format!("Running {}", payload.tool);
         let call_id = payload.call_id;
-        let name = if payload.tool == "write_stdin" {
-            "terminal input".to_owned()
-        } else {
-            present_tool_name(&payload.tool, &payload.arguments).to_owned()
-        };
+        let name = present_tool_name(&payload.tool, &payload.arguments).to_owned();
         let status = ToolStatus::Running;
         if self.transcript.has_tool_parent(&call_id) {
             self.note_tail_will_change();
@@ -438,13 +448,42 @@ impl Conversation {
             "cancelled" => ToolStatus::Cancelled,
             _ => ToolStatus::Failed,
         };
-        if self
-            .hidden_terminal_polls
-            .remove(&payload.call_id)
-            .is_some()
-            || self.hidden_plan_calls.remove(&payload.call_id)
-        {
+        if self.hidden_plan_calls.remove(&payload.call_id) {
             return false;
+        }
+        if let Some(session_id) = self.hidden_terminal_calls.remove(&payload.call_id) {
+            return self.on_terminal_transport_result(session_id, &payload, status);
+        }
+        if let Some(cell_id) = self.hidden_cell_waits.remove(&payload.call_id) {
+            return self.on_cell_transport_result(&cell_id, &payload, status);
+        }
+        if payload.tool.as_deref() == Some("exec_command")
+            && status == ToolStatus::Completed
+            && let Some(session_id) = payload.result.as_ref().and_then(result_session_id)
+        {
+            self.running_shell_sessions.insert(
+                session_id,
+                ContinuedTool::new(
+                    payload.call_id,
+                    payload.started_after_ns,
+                    payload.duration_ns,
+                ),
+            );
+            return true;
+        }
+        if payload.tool.as_deref() == Some("exec")
+            && status == ToolStatus::Completed
+            && let Some(cell_id) = payload.result.as_ref().and_then(running_cell_id)
+        {
+            self.running_cells.insert(
+                cell_id,
+                ContinuedTool::new(
+                    payload.call_id,
+                    payload.started_after_ns,
+                    payload.duration_ns,
+                ),
+            );
+            return true;
         }
         let result = payload
             .result
@@ -466,6 +505,76 @@ impl Conversation {
         self.note_unseen_output();
         "Working".clone_into(&mut self.status);
         true
+    }
+
+    fn on_terminal_transport_result(
+        &mut self,
+        session_id: i64,
+        payload: &ToolResultPayload,
+        status: ToolStatus,
+    ) -> bool {
+        let Some(mut continued) = self.running_shell_sessions.remove(&session_id) else {
+            return false;
+        };
+        continued.add_duration(payload.duration_ns);
+        if status == ToolStatus::Completed
+            && payload
+                .result
+                .as_ref()
+                .and_then(result_session_id)
+                .is_some()
+        {
+            self.running_shell_sessions.insert(session_id, continued);
+            return false;
+        }
+        let result = payload
+            .result
+            .as_ref()
+            .map(|result| summarize_tool_result(Some("exec_command"), result, status));
+        self.finish_continued_tool(&continued, status, result)
+    }
+
+    fn on_cell_transport_result(
+        &mut self,
+        cell_id: &str,
+        payload: &ToolResultPayload,
+        status: ToolStatus,
+    ) -> bool {
+        let Some(mut continued) = self.running_cells.remove(cell_id) else {
+            return false;
+        };
+        continued.add_duration(payload.duration_ns);
+        if status == ToolStatus::Completed
+            && payload.result.as_ref().and_then(running_cell_id).is_some()
+        {
+            self.running_cells.insert(cell_id.to_owned(), continued);
+            return false;
+        }
+        let result = payload
+            .result
+            .as_ref()
+            .map(|result| summarize_tool_result(Some("exec"), result, status));
+        self.finish_continued_tool(&continued, status, result)
+    }
+
+    fn finish_continued_tool(
+        &mut self,
+        continued: &ContinuedTool,
+        status: ToolStatus,
+        result: Option<String>,
+    ) -> bool {
+        self.note_tail_will_change();
+        let updated = self.transcript.set_tool_result_timing(
+            &continued.call_id,
+            status,
+            continued.started_after_ns,
+            continued.duration_ns,
+            result,
+        );
+        if updated {
+            self.note_unseen_output();
+        }
+        updated
     }
 
     fn run_failed(&mut self, event: &AgentEvent) {
@@ -2480,6 +2589,30 @@ struct ToolResultPayload {
     result: Option<Value>,
 }
 
+struct ContinuedTool {
+    call_id: String,
+    started_after_ns: Option<u64>,
+    duration_ns: Option<u64>,
+}
+
+impl ContinuedTool {
+    const fn new(call_id: String, started_after_ns: Option<u64>, duration_ns: Option<u64>) -> Self {
+        Self {
+            call_id,
+            started_after_ns,
+            duration_ns,
+        }
+    }
+
+    fn add_duration(&mut self, duration_ns: Option<u64>) {
+        self.duration_ns = match (self.duration_ns, duration_ns) {
+            (Some(total), Some(duration)) => Some(total.saturating_add(duration)),
+            (total, None) => total,
+            (None, duration) => duration,
+        };
+    }
+}
+
 #[derive(Deserialize)]
 struct PlanUpdatePayload {
     #[serde(default)]
@@ -2617,15 +2750,35 @@ fn summarize_web_arguments(object: &serde_json::Map<String, Value>) -> Option<St
     None
 }
 
-fn is_empty_terminal_poll(tool: &str, arguments: &Value) -> bool {
-    tool == "write_stdin"
-        && arguments.as_object().is_some_and(|arguments| {
-            arguments
-                .get("chars")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .is_empty()
-        })
+fn tool_integer_argument(arguments: &Value, name: &str) -> Option<i64> {
+    arguments.as_object()?.get(name)?.as_i64()
+}
+
+fn tool_string_argument(arguments: &Value, name: &str) -> Option<String> {
+    arguments
+        .as_object()?
+        .get(name)?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn result_session_id(result: &Value) -> Option<i64> {
+    let decoded = result
+        .as_str()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    decoded
+        .as_ref()
+        .unwrap_or(result)
+        .get("session_id")?
+        .as_i64()
+}
+
+fn running_cell_id(result: &Value) -> Option<String> {
+    let text = result.as_str()?;
+    let marker = "Script running with cell ID ";
+    let suffix = text.lines().find_map(|line| line.strip_prefix(marker))?;
+    let cell_id = suffix.split_whitespace().next()?;
+    (!cell_id.is_empty()).then(|| cell_id.to_owned())
 }
 
 fn summarize_tool_result(tool: Option<&str>, result: &Value, status: ToolStatus) -> String {
@@ -3751,7 +3904,8 @@ mod tests {
     }
 
     #[test]
-    fn terminal_polls_stay_out_of_the_transcript_but_input_remains_visible() {
+    #[allow(clippy::too_many_lines)]
+    fn terminal_transport_resolves_the_original_command_without_leaking() {
         let mut app = App::new(".".into());
         app.main.on_agent_event(&event(
             AgentEventKind::ToolCall,
@@ -3761,6 +3915,24 @@ mod tests {
             AgentEventKind::ToolCall,
             &json!({
                 "call_id": "call-1/code-1",
+                "tool": "exec_command",
+                "arguments": { "cmd": "sleep 1" }
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolResult,
+            &json!({
+                "call_id": "call-1/code-1",
+                "tool": "exec_command",
+                "status": "completed",
+                "duration_ns": 10_000_000,
+                "result": "{\"session_id\":7,\"output\":\"\"}"
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({
+                "call_id": "call-1/code-2",
                 "tool": "write_stdin",
                 "arguments": { "session_id": 7, "chars": "" }
             }),
@@ -3768,16 +3940,17 @@ mod tests {
         app.main.on_agent_event(&event(
             AgentEventKind::ToolResult,
             &json!({
-                "call_id": "call-1/code-1",
+                "call_id": "call-1/code-2",
                 "tool": "write_stdin",
                 "status": "completed",
-                "result": "{}"
+                "duration_ns": 5_000_000,
+                "result": "{\"session_id\":7,\"output\":\"\"}"
             }),
         ));
         app.main.on_agent_event(&event(
             AgentEventKind::ToolCall,
             &json!({
-                "call_id": "call-1/code-2",
+                "call_id": "call-1/code-3",
                 "tool": "write_stdin",
                 "arguments": { "session_id": 7, "chars": "\u{3}" }
             }),
@@ -3785,16 +3958,17 @@ mod tests {
         app.main.on_agent_event(&event(
             AgentEventKind::ToolResult,
             &json!({
-                "call_id": "call-1/code-2",
+                "call_id": "call-1/code-3",
                 "tool": "write_stdin",
                 "status": "completed",
-                "result": "{}"
+                "duration_ns": 1_000_000,
+                "result": "{\"exit_code\":130,\"output\":\"\"}"
             }),
         ));
         app.main.on_agent_event(&event(
             AgentEventKind::ToolCall,
             &json!({
-                "call_id": "call-1/code-3",
+                "call_id": "call-1/code-4",
                 "tool": "write_stdin",
                 "arguments": { "session_id": 99 }
             }),
@@ -3802,7 +3976,7 @@ mod tests {
         app.main.on_agent_event(&event(
             AgentEventKind::ToolResult,
             &json!({
-                "call_id": "call-1/code-3",
+                "call_id": "call-1/code-4",
                 "tool": "write_stdin",
                 "status": "failed",
                 "result": "unknown session 99"
@@ -3827,21 +4001,79 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(!rendered.contains("write_stdin"));
-        assert!(rendered.contains("terminal input"));
-        assert!(rendered.contains("session 7 · Ctrl-C"));
+        assert!(!rendered.contains("terminal input"));
+        assert!(!rendered.contains("session 7"));
         assert!(!rendered.contains("terminal wait"));
         assert!(!rendered.contains("unknown session 99"));
-        assert!(!app.main.hidden_terminal_polls.contains_key("call-1/code-1"));
-        assert!(!app.main.hidden_terminal_polls.contains_key("call-1/code-3"));
+        assert!(rendered.contains("sleep 1"));
+        assert!(rendered.contains("exit 130"));
+        assert!(!app.main.hidden_terminal_calls.contains_key("call-1/code-2"));
+        assert!(!app.main.hidden_terminal_calls.contains_key("call-1/code-4"));
+        assert!(!app.main.running_shell_sessions.contains_key(&7));
     }
 
     #[test]
-    fn plan_updates_render_as_checklists_instead_of_tools() {
+    fn cell_wait_resolves_the_original_exec_without_leaking() {
+        let mut app = App::new(".".into());
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({ "call_id": "call-exec", "tool": "exec", "arguments": "await work();" }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolResult,
+            &json!({
+                "call_id": "call-exec",
+                "tool": "exec",
+                "status": "completed",
+                "duration_ns": 10_000_000,
+                "result": "Script running with cell ID 3\nWall time 10 seconds\nOutput:\n"
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({ "call_id": "call-wait", "tool": "wait", "arguments": { "cell_id": "3" } }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolResult,
+            &json!({
+                "call_id": "call-wait",
+                "tool": "wait",
+                "status": "completed",
+                "duration_ns": 2_000_000,
+                "result": "Script completed\nWall time 2 seconds\nOutput:\ndone"
+            }),
+        ));
+
+        assert_eq!(app.main.transcript.len(), 1);
+        let area = Rect::new(0, 0, 80, 8);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .chunks(usize::from(area.width))
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("wait"));
+        assert!(!rendered.contains("cell ID"));
+        assert!(rendered.contains("12ms"));
+        assert!(!app.main.running_cells.contains_key("3"));
+    }
+
+    #[test]
+    fn direct_and_nested_plan_updates_never_render_as_generic_tools() {
         let mut app = App::new(".".into());
         app.main.on_agent_event(&event(
             AgentEventKind::ToolCall,
             &json!({
-                "call_id": "call-plan",
+                "call_id": "call-exec/code-1",
                 "tool": "update_plan",
                 "arguments": {
                     "explanation": "Adapting the work",
@@ -3856,7 +4088,7 @@ mod tests {
         app.main.on_agent_event(&event(
             AgentEventKind::ToolResult,
             &json!({
-                "call_id": "call-plan",
+                "call_id": "call-exec/code-1",
                 "tool": "update_plan",
                 "status": "completed",
                 "result": "Plan updated"
@@ -3879,11 +4111,12 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("Updated Plan"));
-        assert!(rendered.contains("✔ Inspect"));
-        assert!(rendered.contains("□ Implement"));
+        assert!(rendered.contains("● Plan"));
+        assert!(rendered.contains("✓ Inspect"));
+        assert!(rendered.contains("→ Implement"));
+        assert!(rendered.contains("· Verify"));
         assert!(!rendered.contains("update_plan"));
-        assert!(!app.main.hidden_plan_calls.contains("call-plan"));
+        assert!(!app.main.hidden_plan_calls.contains("call-exec/code-1"));
     }
 
     #[test]
