@@ -23,7 +23,8 @@ use hudsucker::{
     hyper::{
         Method, Request, Response, StatusCode,
         header::{
-            CONNECTION, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, TRANSFER_ENCODING, UPGRADE,
+            CONNECTION, HOST, HeaderValue, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION,
+            TRANSFER_ENCODING, UPGRADE,
         },
         http::uri::Authority,
     },
@@ -45,6 +46,7 @@ use tracing::Instrument as _;
 const DEFAULT_MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MAX_PAYMENT_RETRIES: usize = 4;
 const CA_FILENAME: &str = "mpp-egress-ca.pem";
+const MPP_REQUEST_ID: &str = "mpp-request-id";
 
 /// Policy owned by one embedded proxy instance.
 #[derive(Clone, Debug)]
@@ -128,6 +130,7 @@ impl MppEgress {
             policy,
             proxy_authorization: proxy_authorization.clone(),
             authenticated_clients: Arc::new(Mutex::new(HashSet::new())),
+            request_id_prefix: random_identifier(),
             request_ids: Arc::new(AtomicU64::new(1)),
         };
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -231,6 +234,7 @@ struct PaymentHandler<P> {
     policy: EgressPolicy,
     proxy_authorization: String,
     authenticated_clients: Arc<Mutex<HashSet<SocketAddr>>>,
+    request_id_prefix: String,
     request_ids: Arc<AtomicU64>,
 }
 
@@ -244,10 +248,12 @@ where
         mut request: Request<Body>,
     ) -> RequestOrResponse {
         let request_id = self.request_ids.fetch_add(1, Ordering::Relaxed);
+        let logical_request_id = format!("{}-{request_id}", self.request_id_prefix);
         let span = tracing::info_span!(
             target: "mpp_egress",
             "mpp.egress.request",
             request.id = request_id,
+            mpp.request.id = %logical_request_id,
             client.address = %context.client_addr,
             http.request.method = %request.method(),
             url.full = %request.uri(),
@@ -284,7 +290,7 @@ where
                 return request.into();
             }
 
-            match self.forward(request).await {
+            match self.forward(request, &logical_request_id).await {
                 Ok(response) => response.into(),
                 Err(ForwardError::RequestTooLarge) => {
                     tracing::warn!(
@@ -341,7 +347,11 @@ where
         authorized
     }
 
-    async fn forward(&self, request: Request<Body>) -> Result<Response<Body>, ForwardError> {
+    async fn forward(
+        &self,
+        request: Request<Body>,
+        logical_request_id: &str,
+    ) -> Result<Response<Body>, ForwardError> {
         let (mut parts, body) = request.into_parts();
         let body = Limited::new(body, self.policy.max_request_bytes)
             .collect()
@@ -350,6 +360,10 @@ where
             .to_bytes();
         record_body_content("mpp.egress.request.body", &body);
         remove_hop_by_hop_request_headers(&mut parts.headers);
+        parts.headers.insert(
+            MPP_REQUEST_ID,
+            HeaderValue::from_str(logical_request_id).map_err(ForwardError::RequestId)?,
+        );
         tracing::info!(
             target: "mpp_egress",
             stage = "mpp.egress.origin.request.started",
@@ -607,13 +621,17 @@ fn proxy_authentication_required() -> Response<Body> {
 }
 
 fn random_proxy_password() -> String {
+    random_identifier()
+}
+
+fn random_identifier() -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut password = String::with_capacity(64);
+    let mut identifier = String::with_capacity(64);
     for byte in rand::random::<[u8; 32]>() {
-        password.push(char::from(HEX[usize::from(byte >> 4)]));
-        password.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        identifier.push(char::from(HEX[usize::from(byte >> 4)]));
+        identifier.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
-    password
+    identifier
 }
 
 struct EphemeralAuthority {
@@ -726,6 +744,8 @@ pub enum EgressError {
 enum ForwardError {
     #[error("request body is too large to replay")]
     RequestTooLarge,
+    #[error("failed to encode the MPP request ID")]
+    RequestId(#[source] hudsucker::hyper::header::InvalidHeaderValue),
     #[error("MPP payment request failed: {0}")]
     Payment(#[source] mpp::client::HttpError),
 }
@@ -867,15 +887,27 @@ mod tests {
     #[tokio::test]
     async fn pays_and_replays_the_exact_request_body() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let request_ids = Arc::new(StdMutex::new(Vec::new()));
         let calls_for_route = Arc::clone(&calls);
+        let request_ids_for_route = Arc::clone(&request_ids);
         let challenge = challenge_header();
         let app = Router::new().route(
             "/paid",
             post(move |request: Request<AxumBody>| {
                 let calls = Arc::clone(&calls_for_route);
+                let request_ids = Arc::clone(&request_ids_for_route);
                 let challenge = challenge.clone();
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
+                    request_ids.lock().unwrap().push(
+                        request
+                            .headers()
+                            .get(MPP_REQUEST_ID)
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_owned(),
+                    );
                     let paid = request.headers().contains_key("authorization");
                     let body = axum::body::to_bytes(request.into_body(), 1024)
                         .await
@@ -913,6 +945,11 @@ mod tests {
         assert_eq!(response.text().await.unwrap(), "paid");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(payments.load(Ordering::SeqCst), 1);
+        {
+            let request_ids = request_ids.lock().unwrap();
+            assert_eq!(request_ids.len(), 2);
+            assert_eq!(request_ids[0], request_ids[1]);
+        }
         egress.shutdown().await.unwrap();
     }
 
