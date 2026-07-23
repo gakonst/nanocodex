@@ -1,33 +1,13 @@
-import { Agent, type ReasoningMode, type Thinking, type Turn } from "nanocodex";
-import { browser } from "nanocodex/browser";
+import { Actions, Agent, type ReasoningMode, type Thinking, type Turn } from "nanocodex/browser";
+import type { TuiCommand, TuiTarget } from "nanocodex-tui";
 import { createBrowserTools } from "./browserTools";
 
-type Target = { pane: "main"; branchId: number } | { pane: "btw"; id: number };
+type Target = TuiTarget;
 type BrowserPromptItem =
   | { type: "image"; image_url: string; detail?: "auto" | "low" | "high" | "original" }
   | { type: "text"; text: string };
 
-type IncomingMessage =
-  | { type: "start"; thinking: Thinking; reasoningMode: ReasoningMode }
-  | {
-      type: "prompt";
-      target: Target;
-      id: number;
-      prompt: string;
-      images?: string[];
-      intent: "immediate" | "queue";
-    }
-  | { type: "cancel"; target: Target }
-  | { type: "openBtw"; id: number; sourceBranchId: number; promptId?: number; prompt?: string; images?: string[] }
-  | { type: "closeBtw"; id: number }
-  | {
-      type: "historicalFork";
-      sourceBranchId: number;
-      newBranchId: number;
-      selectedPromptId: number;
-      newPromptId: number;
-      prompt: string;
-    };
+type IncomingMessage = TuiCommand;
 
 type WorkerScope = {
   location: Location;
@@ -37,7 +17,7 @@ type WorkerScope = {
 
 type TurnRecord = {
   id: number;
-  turn: Turn.Client;
+  turn: Turn;
   settled: boolean;
   completed: boolean;
 };
@@ -45,7 +25,7 @@ type TurnRecord = {
 type Branch = {
   id: number;
   parentId?: number;
-  agent: Agent.Client;
+  agent: Agent.Agent;
   promptOrder: number[];
   turns: Map<number, TurnRecord>;
 };
@@ -65,37 +45,7 @@ const routes = new Map<string, Target>();
 const branches = new Map<number, Branch>();
 const sessionImages = new Map<string, string[]>();
 let btw: BtwBranch | undefined;
-const engine = browser({
-  apiKey: "worker-managed",
-  websocketUrl: workerEndpoint(),
-  createWebSocket: (endpoint: string, sessionId: string) => {
-    const url = new URL(endpoint);
-    url.searchParams.set("session_id", sessionId);
-    return new WebSocket(url);
-  },
-  onEvent: (event) => {
-    const target = event.request_id ? routes.get(event.request_id) : undefined;
-    if (target) worker.postMessage({ type: "event", target, event });
-  },
-  tools: {
-    ...createBrowserTools({
-      recentImages(sessionId, count) {
-        return (sessionImages.get(sessionId) ?? []).slice(-count);
-      },
-      rememberImage: rememberSessionImage,
-    }),
-    browserInfo: {
-      description: "Return basic information about the browser Worker runtime.",
-      parameters: { type: "object", additionalProperties: false },
-      handler: async () => ({
-        language: navigator.language,
-        online: navigator.onLine,
-        userAgent: navigator.userAgent,
-      }),
-    },
-  },
-});
-
+let eventWatch: Actions.events.watch.Watcher | undefined;
 worker.onmessage = ({ data }: MessageEvent<IncomingMessage>) => {
   void handleMessage(data).catch((error) => {
     worker.postMessage({
@@ -108,7 +58,7 @@ worker.onmessage = ({ data }: MessageEvent<IncomingMessage>) => {
 async function handleMessage(message: IncomingMessage): Promise<void> {
   switch (message.type) {
     case "start":
-    await start(message.thinking, message.reasoningMode);
+      await start(message.thinking, message.reasoningMode);
       return;
     case "prompt": {
       const branch = resolveTarget(message.target);
@@ -125,7 +75,7 @@ async function handleMessage(message: IncomingMessage): Promise<void> {
               for (const image of message.images) rememberSessionImage(branch.agent.sessionId, image);
               await active.turn.steer({ input: promptContent(prompt, message.images) });
             } else {
-              await active.turn.steer(prompt);
+              await active.turn.steer({ input: prompt });
             }
             post("steerAdmitted", message.target, { id: message.id });
             return;
@@ -166,7 +116,7 @@ async function handleMessage(message: IncomingMessage): Promise<void> {
       btw?.agent.dispose();
       btw = undefined;
       try {
-        const agent = await main.agent.fork.latest();
+        const agent = await main.agent.session.fork();
         inheritSessionImages(main.agent.sessionId, agent.sessionId);
         btw = {
           id: message.id,
@@ -206,8 +156,8 @@ async function handleMessage(message: IncomingMessage): Promise<void> {
           .map((id) => source.turns.get(id))
           .find((record) => record?.completed);
         const agent = previous
-          ? await source.agent.fork.from({ turn: previous.turn })
-          : await source.agent.spawn();
+          ? await source.agent.session.fork({ at: previous.turn })
+          : await source.agent.session.spawn();
         inheritSessionImages(source.agent.sessionId, agent.sessionId);
         const branch: Branch = {
           id: message.newBranchId,
@@ -239,6 +189,8 @@ async function handleMessage(message: IncomingMessage): Promise<void> {
 }
 
 async function start(thinking: Thinking, reasoningMode: ReasoningMode): Promise<void> {
+  eventWatch?.off();
+  eventWatch = undefined;
   for (const branch of branches.values()) branch.agent.dispose();
   branches.clear();
   routes.clear();
@@ -246,9 +198,37 @@ async function start(thinking: Thinking, reasoningMode: ReasoningMode): Promise<
   btw?.agent.dispose();
   btw = undefined;
   const agent = await Agent.create({
-    engine,
+    apiKey: "worker-managed",
+    websocketUrl: workerEndpoint(),
+    createWebSocket: (endpoint: string, sessionId: string) => {
+      const url = new URL(endpoint);
+      url.searchParams.set("session_id", sessionId);
+      return new WebSocket(url);
+    },
+    tools: {
+      ...createBrowserTools({
+        recentImages(sessionId, count) {
+          return (sessionImages.get(sessionId) ?? []).slice(-count);
+        },
+        rememberImage: rememberSessionImage,
+      }),
+      browserInfo: {
+        description: "Return basic information about the browser Worker runtime.",
+        parameters: { type: "object", additionalProperties: false },
+        handler: async () => ({
+          language: navigator.language,
+          online: navigator.onLine,
+          userAgent: navigator.userAgent,
+        }),
+      },
+    },
     thinking,
     reasoningMode,
+  });
+  eventWatch = agent.events.watch({ includeAllSessions: true });
+  eventWatch.onEvent((event) => {
+    const target = event.request_id ? routes.get(event.request_id) : undefined;
+    if (target) worker.postMessage({ type: "event", target, event });
   });
   const main: Branch = { id: 0, agent, promptOrder: [], turns: new Map() };
   branches.set(0, main);
@@ -257,14 +237,12 @@ async function start(thinking: Thinking, reasoningMode: ReasoningMode): Promise<
 }
 
 function startTurn(branch: Branch, target: Target, id: number, prompt: string, images: string[] = []): void {
-  let turn: Turn.Client;
+  let turn: Turn;
   try {
     for (const image of images) rememberSessionImage(branch.agent.sessionId, image);
     const prepared = preparePrompt(branch, prompt);
     turn = branch.agent.turn.prompt({
-      input: images.length
-        ? promptContent(prepared, images)
-        : prepared,
+      input: images.length ? promptContent(prepared, images) : prepared,
     });
   } catch (error) {
     post("turnFinished", target, { id, error: errorMessage(error) });

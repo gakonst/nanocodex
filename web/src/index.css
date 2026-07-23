@@ -765,14 +765,26 @@ html[data-theme="dark"] .button--medium:focus-visible {
 .agent-byok + .agent-tui { margin-top: 10px; }
 
 .agent-tui {
-  --tui-bg: var(--surface-raised);
-  --tui-fg: var(--text);
-  --tui-cyan: var(--blue);
-  --tui-yellow: #a86f00;
-  --tui-green: var(--positive);
-  --tui-red: var(--negative);
+  --nc-color-background: var(--surface-raised);
+  --nc-color-surface: var(--surface);
+  --nc-color-subtle: var(--surface-subtle);
+  --nc-color-foreground: var(--text);
+  --nc-color-muted: var(--grey-500);
+  --nc-color-accent: var(--blue);
+  --nc-color-success: var(--positive);
+  --nc-color-warning: #a86f00;
+  --nc-color-danger: var(--negative);
+  --nc-color-border: var(--border);
+  --nc-font-family: "Paradigm SemiMono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --nc-radius: var(--radius-small);
+  --tui-bg: var(--nc-color-background);
+  --tui-fg: var(--nc-color-foreground);
+  --tui-cyan: var(--nc-color-accent);
+  --tui-yellow: var(--nc-color-warning);
+  --tui-green: var(--nc-color-success);
+  --tui-red: var(--nc-color-danger);
   --tui-gray: var(--grey-600);
-  --tui-dark-gray: var(--grey-500);
+  --tui-dark-gray: var(--nc-color-muted);
   position: relative;
   display: grid;
   grid-template-rows: 22px minmax(290px, 1fr) auto auto 22px;
@@ -782,7 +794,7 @@ html[data-theme="dark"] .button--medium:focus-visible {
   margin: 30px 0 34px;
   overflow: hidden;
   color: var(--tui-fg);
-  font-family: "Paradigm SemiMono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family: var(--nc-font-family);
   font-size: 11px;
   font-variant-ligatures: none;
   line-height: 18px;

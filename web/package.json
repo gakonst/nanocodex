@@ -11,7 +11,7 @@
     "wasm": "cd .. && just build-wasm",
     "predev": "npm run sync && npm run wasm",
     "dev": "CLOUDFLARE_INCLUDE_PROCESS_ENV=true node --env-file-if-exists=../.env ./node_modules/vite/bin/vite.js dev",
-    "test": "node --test src/agentTerminalModel.test.ts worker/index.test.ts",
+    "test": "npm --prefix ../js/tui test && node --test worker/index.test.ts",
     "typecheck": "tsc --noEmit",
     "gen:types": "wrangler types",
     "prebuild": "npm run sync && npm run wasm",
@@ -21,8 +21,6 @@
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
-    "nanocodex": "file:../js/bindings",
-    "nanocodex-react": "file:../js/react",
     "@pierre/diffs": "1.2.12",
     "@pierre/theme": "^1.1.0",
     "@pierre/trees": "^1.0.0-beta.5",
@@ -30,9 +28,13 @@
     "@radix-ui/react-switch": "1.2.6",
     "@tanstack/react-virtual": "^3.14.6",
     "lucide-react": "^1.24.0",
+    "nanocodex": "file:../js/bindings",
+    "nanocodex-react": "file:../js/react",
+    "nanocodex-tui": "file:../js/tui",
+    "nanocodex-tui-react": "file:../js/tui-react",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "shiki": "^4.2.0",
+    "shiki": "^4.3.1",
     "streamdown": "^2.5.0"
   },
   "devDependencies": {
@@ -41,6 +43,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
+    "react-scan": "^0.5.7",
     "typescript": "5.9.3",
     "vite": "8.0.13",
     "wrangler": "4.92.0"

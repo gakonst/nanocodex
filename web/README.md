@@ -25,12 +25,15 @@ npm install
 npm run dev
 ```
 
+Development runs include the React Scan toolbar for render profiling.
+Production builds replace the profiler with a no-op module.
+
 The homepage consumes the publishable `nanocodex` and `nanocodex-react`
 packages under `../js`; it does not reach into generated WASM artifacts. Its
 React integration follows an external-store pattern: create a
-`createNanocodexConfig()` once, pass it to `NanocodexProvider`, and consume
-`useNanocodexState`, `useNanocodexMessages`, or the compatibility
-`useNanocodex` hook. React owns no agent history or model-loop state.
+`createConfig()` once, pass it to `NanocodexProvider`, and consume
+`useNanocodex`, `useNanocodexMessage`, or `useConfig`. React owns no agent
+history, credential policy, or model-loop state.
 
 The local Worker and Vite client run together at `http://localhost:5173`, using
 the same Cloudflare Vite-plugin layout as Tempo's React MPP examples.
@@ -58,9 +61,9 @@ inspected directly.
 The homepage is also a real embedded-agent demo with three deliberately thin
 layers:
 
-- `../js/bindings` publishes `nanocodex`, the viem-like imperative client. Its agent and turn
-  handles expose prompt, typed browser content, steer, cancel, latest-checkpoint
-  fork, historical-checkpoint fork, and clean sibling spawn operations.
+- `../js/bindings` publishes `nanocodex`, the viem-v3-style imperative client.
+  Runtime entrypoints expose flattened `Agent.create` factories, decorated
+  domain actions, standalone `Actions` namespaces, and typed watcher handles.
 - `../js/react` publishes `nanocodex-react`, the wagmi-like headless React owner. Its provider and
   hooks manage the module Worker lifecycle, readiness, commands, and event
   subscriptions without imposing presentation policy.
