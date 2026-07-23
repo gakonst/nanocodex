@@ -13,7 +13,10 @@ pub enum OpenAiAuthMode {
 }
 
 impl OpenAiAuthMode {
-    pub(crate) const fn stores_responses(self) -> bool {
+    /// Whether the default endpoint for this authorization mode supports
+    /// retained Responses checkpoints.
+    #[must_use]
+    pub const fn supports_stored_responses(self) -> bool {
         matches!(self, Self::ApiKey)
     }
 

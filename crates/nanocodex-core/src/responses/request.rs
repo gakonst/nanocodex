@@ -331,8 +331,8 @@ impl Serialize for ResponsesInput<'_> {
 
 #[derive(Serialize)]
 pub struct ResponseCreate<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    kind: Option<&'static str>,
     model: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<&'a str>,
@@ -398,8 +398,12 @@ impl<'a> ResponseCreate<'a> {
         profile: &'a RequestProfile,
         turn_state: Option<&'a str>,
     ) -> Self {
+        let websocket = matches!(
+            config.responses_transport,
+            crate::ResponsesTransport::WebSocket
+        );
         Self {
-            kind: "response.create",
+            kind: websocket.then_some("response.create"),
             model: crate::MODEL,
             previous_response_id,
             input,
@@ -411,7 +415,7 @@ impl<'a> ResponseCreate<'a> {
                 summary: "detailed",
                 context: "all_turns",
             },
-            store: config.auth.mode().stores_responses(),
+            store: config.store_responses,
             stream: true,
             include: ["reasoning.encrypted_content"],
             prompt_cache_key: profile.prompt_cache_key(),
@@ -420,8 +424,8 @@ impl<'a> ResponseCreate<'a> {
             client_metadata: ClientMetadata {
                 session_id: profile.session_id(),
                 thread_id: profile.session_id(),
-                responses_lite: "true",
-                turn_state,
+                responses_lite: websocket.then_some("true"),
+                turn_state: websocket.then_some(turn_state).flatten(),
             },
         }
     }
@@ -446,7 +450,8 @@ struct ClientMetadata<'a> {
     session_id: &'a str,
     thread_id: &'a str,
     #[serde(rename = "ws_request_header_x_openai_internal_codex_responses_lite")]
-    responses_lite: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    responses_lite: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x-codex-turn-state")]
     turn_state: Option<&'a str>,
@@ -527,9 +532,9 @@ mod tests {
     }
 
     #[test]
-    fn response_storage_tracks_auth_mode() {
-        assert!(crate::OpenAiAuthMode::ApiKey.stores_responses());
-        assert!(!crate::OpenAiAuthMode::ChatGpt.stores_responses());
+    fn response_storage_support_tracks_auth_mode() {
+        assert!(crate::OpenAiAuthMode::ApiKey.supports_stored_responses());
+        assert!(!crate::OpenAiAuthMode::ChatGpt.supports_stored_responses());
     }
 
     #[test]

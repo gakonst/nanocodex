@@ -55,6 +55,16 @@ pub enum ResponsesError {
     Api { event: String },
     #[error("Responses API rejected invalid image data: {event}")]
     InvalidImageRequest { event: String },
+    #[error("Responses HTTPS request failed")]
+    HttpRequest(#[source] reqwest::Error),
+    #[error("Responses HTTPS request was rejected with HTTP {status}: {body}")]
+    HttpRejected {
+        status: u16,
+        body: String,
+        retry_after: Option<Duration>,
+    },
+    #[error("Responses HTTPS stream contained invalid UTF-8")]
+    InvalidSseUtf8(#[source] std::string::FromUtf8Error),
 }
 
 impl ResponsesError {
@@ -81,6 +91,20 @@ impl ResponsesError {
             Self::UnexpectedEnd | Self::Closed { .. } => ("premature_close", None),
             Self::Receive(error) if is_transient_websocket(error) => ("receive_transport", None),
             Self::Api { event } => retryable_api_error(event)?,
+            Self::HttpRequest(error) if error.is_timeout() => ("https_timeout", None),
+            Self::HttpRequest(error) if error.is_connect() || error.is_body() => {
+                ("https_transport", None)
+            }
+            Self::HttpRejected {
+                status,
+                retry_after,
+                ..
+            } if *status == 429 => ("https_rate_limit", *retry_after),
+            Self::HttpRejected {
+                status,
+                retry_after,
+                ..
+            } if (500..=599).contains(status) => ("https_server", *retry_after),
             _ => return None,
         };
         Some(RetryAdvice {
@@ -114,6 +138,12 @@ impl ResponsesError {
             }
             Self::Api { .. } => "api",
             Self::InvalidImageRequest { .. } => "invalid_image_request",
+            Self::HttpRequest(error) if error.is_timeout() => "https_timeout",
+            Self::HttpRequest(_) => "https_transport",
+            Self::HttpRejected { status: 429, .. } => "https_rate_limit",
+            Self::HttpRejected { status, .. } if (500..=599).contains(status) => "https_server",
+            Self::HttpRejected { .. } => "https_rejected",
+            Self::InvalidSseUtf8(_) => "invalid_sse_utf8",
         }
     }
 

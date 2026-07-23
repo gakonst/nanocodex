@@ -7,6 +7,8 @@ mod error;
 #[cfg(target_family = "wasm")]
 #[path = "error_wasm.rs"]
 mod error;
+#[cfg(not(target_family = "wasm"))]
+mod http;
 mod middleware;
 mod service;
 mod service_error;

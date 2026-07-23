@@ -9,7 +9,8 @@ use std::{
 };
 
 use nanocodex_core::{
-    AgentEvents, EventSink, ModelConfig, OpenAiAuth, Prompt, ReasoningMode, Thinking,
+    AgentEvents, EventSink, ModelConfig, OpenAiAuth, OpenAiAuthMode, Prompt, ReasoningMode,
+    ResponsesHistory, ResponsesTransport, Thinking,
 };
 use nanocodex_service::{
     DefaultResponsesService, ResponsesAttempt, ResponsesClient, ResponsesService,
@@ -273,9 +274,9 @@ impl AgentHandle {
 }
 
 impl Nanocodex {
-    /// Builds a running agent with the standard instructions, tools, thinking level,
-    /// and Responses WebSocket stack, returning its prompt handle and ordered
-    /// event stream.
+    /// Builds a running agent with the standard instructions, tools, thinking
+    /// level, and Responses transport stack, returning its prompt handle and
+    /// ordered event stream.
     ///
     /// # Errors
     ///
@@ -1480,6 +1481,17 @@ where
 
 fn configure<S>(config: &mut ModelConfig, responses: &Responses<S>) {
     let mode = config.auth.mode();
+    config.responses_transport = responses.transport;
+    config.store_responses = responses
+        .store
+        .unwrap_or_else(|| mode.supports_stored_responses());
+    config.responses_history = responses.history.unwrap_or({
+        if matches!(responses.transport, ResponsesTransport::Https) && !config.store_responses {
+            ResponsesHistory::FullReplay
+        } else {
+            ResponsesHistory::Incremental
+        }
+    });
     config.websocket_url = responses
         .websocket_url
         .clone()
@@ -1500,14 +1512,31 @@ fn validate(
         .auth
         .validate()
         .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
-    if config.websocket_url.trim().is_empty() {
+    if matches!(config.responses_transport, ResponsesTransport::WebSocket)
+        && config.websocket_url.trim().is_empty()
+    {
         return Err(NanocodexError::InvalidRequest(
             "Responses WebSocket URL must not be empty".to_owned(),
         ));
     }
-    if config.api_base_url.trim().is_empty() {
+    if matches!(config.responses_transport, ResponsesTransport::Https)
+        && config.api_base_url.trim().is_empty()
+    {
         return Err(NanocodexError::InvalidRequest(
             "OpenAI API base URL must not be empty".to_owned(),
+        ));
+    }
+    if config.auth.mode() == OpenAiAuthMode::ChatGpt && config.store_responses {
+        return Err(NanocodexError::InvalidRequest(
+            "ChatGPT subscription authentication does not support store: true".to_owned(),
+        ));
+    }
+    if matches!(config.responses_transport, ResponsesTransport::Https)
+        && !config.store_responses
+        && matches!(config.responses_history, ResponsesHistory::Incremental)
+    {
+        return Err(NanocodexError::InvalidRequest(
+            "HTTPS with store: false requires full client-history replay".to_owned(),
         ));
     }
     if session_id.is_some_and(|session_id| session_id.trim().is_empty()) {
