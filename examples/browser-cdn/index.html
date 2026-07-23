@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nanocodex CDN PoC</title>
+    <style>
+      body { max-width: 48rem; margin: 4rem auto; padding: 0 1rem; font: 16px/1.5 system-ui; }
+      textarea, output { box-sizing: border-box; display: block; width: 100%; padding: .75rem; }
+      output { min-height: 8rem; margin-top: 1rem; white-space: pre-wrap; background: #f4f4f4; }
+      button { margin-top: .75rem; padding: .6rem 1rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Nanocodex, no build step</h1>
+    <form id="prompt-form">
+      <textarea id="prompt" rows="5">Reply with the name of your runtime and nothing else.</textarea>
+      <button>Run agent</button>
+    </form>
+    <output id="result">Ready.</output>
+
+    <script type="module">
+      import { Agent } from "https://cdn.jsdelivr.net/npm/nanocodex@0.1.0/browser/index.mjs";
+
+      const form = document.querySelector("#prompt-form");
+      const prompt = document.querySelector("#prompt");
+      const result = document.querySelector("#result");
+      let agent;
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        result.textContent = "Running…";
+        try {
+          agent ??= await Agent.create({
+            websocketUrl: websocketEndpoint(),
+            createWebSocket(endpoint, sessionId) {
+              const url = new URL(endpoint);
+              url.searchParams.set("session_id", sessionId);
+              return new WebSocket(url);
+            },
+          });
+          result.textContent = await agent.turn.prompt({ input: prompt.value }).result();
+        } catch (error) {
+          result.textContent = error instanceof Error ? error.message : String(error);
+        }
+      });
+
+      function websocketEndpoint() {
+        const override = new URL(location.href).searchParams.get("endpoint");
+        if (override) return override;
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        return `${protocol}//${location.host}/api/responses`;
+      }
+    </script>
+  </body>
+</html>

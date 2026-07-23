@@ -9,6 +9,8 @@ All language consumers live at this repository boundary:
 - Node.js: `node/` uses the shared Rust/WASM package with a Node WebSocket host.
 - Browser: `react-vite/` runs that WASM agent in a module Worker and renders its
   ordered events in React.
+- Browser CDN: `browser-cdn/` is one static HTML file that imports the published
+  package directly, with no install or build step.
 
 From the repository root:
 

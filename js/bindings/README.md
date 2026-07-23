@@ -85,6 +85,22 @@ const agent = await Agent.create({
 });
 ```
 
+After publication, a browser can load the same entrypoint without a package
+manager or build step:
+
+```html
+<script type="module">
+  import { Agent } from "https://cdn.jsdelivr.net/npm/nanocodex@0.1.0/browser/index.mjs";
+  const agent = await Agent.create({ websocketUrl: "/api/responses" });
+  console.log(await agent.turn.prompt({ input: "Hello." }).result());
+</script>
+```
+
+Pin the package version in production. The adjacent WASM file is part of the
+npm package and is resolved relative to the browser module. The endpoint must
+be authorized by the embedding application because browser WebSockets cannot
+attach OpenAI's upgrade authorization header.
+
 The owned Rust session retains follow-on history, response state, tool output,
 its WebSocket, and stable prompt-cache identity. Typed browser content accepts
 ordered text, remote/data-URL image, and audio items. JavaScript tools are

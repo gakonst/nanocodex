@@ -25,20 +25,28 @@
     "pkg-node",
     "pkg-web",
     "runtime",
+    "scripts/check-package.mjs",
     "internal.mjs",
     "index.d.mts",
     "index.mjs",
     "types.d.mts",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
-    "test": "node --test test/*.test.mjs && npm run test:typecheck",
+    "check:package": "node scripts/check-package.mjs",
+    "prepack": "npm run check:package",
+    "test": "node --test test/*.test.mjs && npm run test:typecheck && npm run check:package",
     "test:typecheck": "tsc -p test/tsconfig.json"
   },
   "dependencies": {
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "pkg-pr-new": "0.0.79",
     "typescript": "5.9.3"
   },
   "engines": {
@@ -47,7 +55,7 @@
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gakonst/nanocodex.git",
+    "url": "git+https://github.com/gakonst/nanocodex.git",
     "directory": "js/bindings"
   }
 }

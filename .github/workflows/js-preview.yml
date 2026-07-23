@@ -1,0 +1,49 @@
+name: JavaScript Package Preview
+
+permissions: {}
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: js-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    if: github.repository == 'gakonst/nanocodex'
+    name: publish commit preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: js/bindings/package-lock.json
+      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+      - name: Build and test package
+        run: |
+          npm ci --prefix js/bindings
+          ./scripts/build-js-package.sh
+          npm test --prefix js/bindings
+      - name: Publish immutable commit preview
+        working-directory: js/bindings
+        run: npm exec -- pkg-pr-new publish --previewVersion --compact --commentWithSha .

@@ -16,6 +16,19 @@ pushes publish the version plus `latest`; scheduled or manually selected
 nightly runs publish `nightly` plus `nightly-<full SHA>`; commit dispatches
 publish the full SHA only.
 
+## JavaScript package previews
+
+Every pull request and every commit merged to `master` builds and tests the
+actual Node/browser WASM package, then publishes an immutable SHA-addressed
+preview through pkg.pr.new. The workflow can also be dispatched manually for a
+selected ref. Preview package versions are rewritten to
+`0.0.0-preview-<sha>` so a lockfile cannot confuse them with an npm release.
+
+Install the pkg.pr.new GitHub App on `gakonst/nanocodex`; the preview CLI is a
+pinned development dependency in `js/bindings/package-lock.json`. Pull-request
+comments use commit URLs, so every tested artifact remains reproducible after
+new commits are pushed.
+
 ## Changelogs
 
 There are two complementary kinds of release record:
@@ -59,7 +72,8 @@ cargo install cargo-semver-checks --locked
 Then prepare a release pull request from the latest `master`:
 
 1. Choose a semantic version and update `workspace.package.version` plus every
-   `nanocodex*` entry in `workspace.dependencies` in `Cargo.toml`.
+   `nanocodex*` entry in `workspace.dependencies` in `Cargo.toml`, and keep
+   `js/bindings/package.json` on that same version.
 2. Run `cargo check --workspace` to refresh `Cargo.lock`.
 3. Generate the committed changelog after all intended feature commits are in
    the branch:
@@ -104,7 +118,9 @@ The tag starts the release workflow. It:
    attribution;
 4. builds five portable native CLI binaries with the fat-LTO `maxperf` profile;
 5. publishes the seven crates to crates.io in dependency order;
-6. attaches the binaries and `SHA256SUMS` to the draft.
+6. builds, tests, and publishes the Node/browser WASM package to npm with
+   provenance;
+7. attaches the binaries and `SHA256SUMS` to the draft.
 
 Open the draft at <https://github.com/gakonst/nanocodex/releases>, inspect the
 notes, verify `SHA256SUMS`, and smoke-test a downloaded platform binary. Then
@@ -118,9 +134,15 @@ human editorial check.
 ## GitHub configuration
 
 The Actions secret `CARGO_REGISTRY_TOKEN` must contain a crates.io token allowed
-to publish all seven `nanocodex*` crates. The workflow otherwise uses the
-short-lived repository `GITHUB_TOKEN`; write permission is restricted to the
-draft-release and asset-upload jobs.
+to publish all seven `nanocodex*` crates. Configure `nanocodex` on npm with the
+GitHub trusted publisher `gakonst/nanocodex`, workflow `release.yml`, allowed to
+run `npm publish`. The publishing job uses OIDC and emits npm provenance. The
+first package publication must claim the unscoped name using an npm account
+with two-factor authentication; until trusted publishing is configured, an
+`NPM_TOKEN` repository secret may authenticate that first workflow run.
+
+The workflow otherwise uses the short-lived repository `GITHUB_TOKEN`; write
+permission is restricted to the draft-release and asset-upload jobs.
 
 The repository labels and `.github/changelog.json` are part of the release
 contract. When adding or renaming a category, update both together.
@@ -132,5 +154,6 @@ present, so a registry propagation failure can be retried by rerunning the tag
 workflow. An existing draft is reused, its notes are refreshed, and assets are
 uploaded with `--clobber`. A published release is never mutated by a rerun.
 
-Published crate versions are immutable. Fix a bad release with a new patch
-version; only yank a version when continuing to resolve it would harm users.
+Published crate and npm versions are immutable. Fix a bad release with a new
+patch version; only yank a version when continuing to resolve it would harm
+users.

@@ -116,10 +116,7 @@ jobs:
         run: |
           npm ci --prefix js/bindings
           npm ci --prefix examples/react-vite
-          cargo build --locked -p nanocodex-wasm --target wasm32-unknown-unknown --profile wasm
-          wasm-bindgen target/wasm32-unknown-unknown/wasm/nanocodex_wasm.wasm --target nodejs --out-dir js/bindings/pkg-node --out-name nanocodex
-          wasm-bindgen target/wasm32-unknown-unknown/wasm/nanocodex_wasm.wasm --target web --out-dir js/bindings/pkg-web --out-name nanocodex
-          node js/bindings/scripts/write-package-types.mjs
+          ./scripts/build-js-package.sh
           npm test --prefix js/bindings
           npm test --prefix js/react
           npm run build --prefix examples/react-vite

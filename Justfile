@@ -56,10 +56,7 @@ smoke-python: build-python
 # Build one Rust/WASM artifact and generate both Node.js and browser bindings.
 build-wasm:
     @command -v wasm-bindgen >/dev/null || { echo "install wasm-bindgen-cli matching Cargo.lock" >&2; exit 2; }
-    cargo build --locked -p nanocodex-wasm --target "{{wasm_target}}" --profile wasm
-    wasm-bindgen target/{{wasm_target}}/wasm/nanocodex_wasm.wasm --target nodejs --out-dir js/bindings/pkg-node --out-name nanocodex
-    wasm-bindgen target/{{wasm_target}}/wasm/nanocodex_wasm.wasm --target web --out-dir js/bindings/pkg-web --out-name nanocodex
-    node js/bindings/scripts/write-package-types.mjs
+    ./scripts/build-js-package.sh
 
 # Exercise the real WASM model loop under Node and the browser host contract.
 test-wasm: build-wasm
@@ -254,6 +251,8 @@ check:
 release-check version:
     @workspace_version=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "nanocodex") | .version'); \
         test "{{version}}" = "$workspace_version" || { echo "expected workspace version {{version}}, found $workspace_version" >&2; exit 1; }
+    @js_version=$(node -p "require('./js/bindings/package.json').version"); \
+        test "{{version}}" = "$js_version" || { echo "expected JavaScript package version {{version}}, found $js_version" >&2; exit 1; }
     @cargo metadata --no-deps --format-version 1 | jq -e --arg version "{{version}}" \
         '[.packages[].dependencies[] | select(.source == null and (.name | startswith("nanocodex"))) | .req] | all(. == ("^" + $version))' >/dev/null
     @grep -Fq "## [{{version}}]" CHANGELOG.md
