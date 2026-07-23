@@ -123,6 +123,8 @@ pub(super) struct ToolResultEvent<'a> {
     pub(super) tool: &'a str,
     pub(super) status: &'static str,
     pub(super) duration_ns: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) started_after_ns: Option<u64>,
     pub(super) result: &'a ToolOutputBody,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) metadata: Option<&'a RawValue>,

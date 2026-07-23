@@ -115,6 +115,7 @@ pub struct NestedToolCall {
     pub input: Value,
     pub output: ToolOutputBody,
     pub success: bool,
+    pub started_after_ns: u64,
     pub duration_ns: u64,
     #[serde(default)]
     pub metadata: Option<Box<RawValue>>,

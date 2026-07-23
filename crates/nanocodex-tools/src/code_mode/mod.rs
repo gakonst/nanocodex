@@ -150,6 +150,7 @@ pub struct NestedToolCall {
     pub input: Value,
     pub output: ToolOutputBody,
     pub success: bool,
+    pub started_after_ns: u64,
     pub duration_ns: u64,
     pub metadata: Option<Box<RawValue>>,
 }
@@ -904,8 +905,17 @@ impl EmbeddedHost {
                                     yield_after,
                                 });
                             }
-                            pending_calls
-                                .push(execute_nested_call(tools, id, name, input, context).boxed());
+                            pending_calls.push(
+                                execute_nested_call(
+                                    tools,
+                                    id,
+                                    name,
+                                    input,
+                                    context,
+                                    actor_started_at,
+                                )
+                                .boxed(),
+                            );
                         }
                         RuntimeEvent::Notify { text, .. } => {
                             let _ = updates.send(CellUpdate::Notification(
@@ -1115,8 +1125,11 @@ async fn execute_nested_call(
     name: String,
     input: Value,
     context: &OwnedToolContext,
+    cell_started_at: Instant,
 ) -> CompletedNestedCall {
     let started_at = Instant::now();
+    let started_after_ns =
+        u64::try_from(started_at.duration_since(cell_started_at).as_nanos()).unwrap_or(u64::MAX);
     let call_id = format!("{}/code-{id}", context.call_id);
     let context = context.borrowed();
     let execution = tools
@@ -1140,6 +1153,7 @@ async fn execute_nested_call(
             input,
             output: execution.output,
             success: execution.success,
+            started_after_ns,
             duration_ns,
             metadata: execution.metadata,
         },
