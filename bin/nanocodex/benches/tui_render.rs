@@ -1320,6 +1320,142 @@ mod tui {
         );
     }
 
+    fn live_code_mode_tree() -> Transcript {
+        let mut transcript = Transcript::default();
+        transcript.push(TranscriptItem::Tool {
+            call_id: "code-mode-live".to_owned(),
+            name: "exec".to_owned(),
+            arguments: "const results = await Promise.all(tasks);".to_owned(),
+            status: ToolStatus::Running,
+        });
+        for index in 0..16 {
+            assert!(transcript.push_tool_child(
+                format!("code-mode-live/code-{index}"),
+                "exec_command".to_owned(),
+                format!("cargo test -p package-{index}"),
+                ToolStatus::Running,
+            ));
+        }
+        transcript
+    }
+
+    const PROMISE_RESOLUTION_ORDER: [usize; 16] =
+        [7, 2, 14, 0, 11, 5, 9, 1, 15, 4, 12, 6, 10, 3, 13, 8];
+
+    fn resolve_promises(transcript: &mut Transcript) {
+        for (resolved, index) in PROMISE_RESOLUTION_ORDER.into_iter().enumerate() {
+            assert!(transcript.set_tool_result_timing(
+                &format!("code-mode-live/code-{index}"),
+                ToolStatus::Completed,
+                Some(u64::try_from(index).unwrap_or(u64::MAX) * 100_000),
+                Some(u64::try_from(resolved + 1).unwrap_or(u64::MAX) * 1_000_000),
+                Some("exit 0".to_owned()),
+            ));
+        }
+    }
+
+    fn live_code_mode_output_setup() -> (Transcript, OutputTerminal, Rc<Cell<u64>>) {
+        let transcript = live_code_mode_tree();
+        let (mut terminal, output_bytes) = output_terminal();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+            })
+            .expect("initial live Code Mode frame should render");
+        (transcript, terminal, output_bytes)
+    }
+
+    fn resolve_promises_with_frames(
+        transcript: &mut Transcript,
+        terminal: &mut OutputTerminal,
+        output_bytes: &Cell<u64>,
+    ) -> DrawMetrics {
+        let mut totals = DrawMetrics::default();
+        for (resolved, index) in PROMISE_RESOLUTION_ORDER.into_iter().enumerate() {
+            assert!(transcript.set_tool_result_timing(
+                &format!("code-mode-live/code-{index}"),
+                ToolStatus::Completed,
+                Some(u64::try_from(index).unwrap_or(u64::MAX) * 100_000),
+                Some(u64::try_from(resolved + 1).unwrap_or(u64::MAX) * 1_000_000),
+                Some("exit 0".to_owned()),
+            ));
+            let bytes_before = output_bytes.get();
+            terminal.backend_mut().changed_cells = 0;
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+                })
+                .expect("live Code Mode completion frame should render");
+            totals.changed_cells = totals
+                .changed_cells
+                .saturating_add(terminal.backend().changed_cells);
+            totals.output_bytes = totals
+                .output_bytes
+                .saturating_add(output_bytes.get().saturating_sub(bytes_before));
+        }
+        totals
+    }
+
+    pub(super) fn code_mode_streaming_benchmark(criterion: &mut Criterion) {
+        const COMPLETIONS: u64 = 16;
+        let mut group = criterion.benchmark_group("tui_code_mode_stream");
+        group.throughput(Throughput::Elements(COMPLETIONS));
+        group.bench_function("apply_16_out_of_order_completions", |bencher| {
+            bencher.iter_batched(
+                live_code_mode_tree,
+                |mut transcript| {
+                    resolve_promises(&mut transcript);
+                    black_box(transcript);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        let (mut sample_transcript, mut sample_terminal, sample_bytes) =
+            live_code_mode_output_setup();
+        let sample = resolve_promises_with_frames(
+            &mut sample_transcript,
+            &mut sample_terminal,
+            sample_bytes.as_ref(),
+        );
+        assert!(
+            sample.changed_cells > 0,
+            "completion frames must be visible"
+        );
+        assert!(
+            sample.changed_cells <= 1_600,
+            "16 completions changed too many terminal cells: {}",
+            sample.changed_cells
+        );
+        assert!(
+            sample.output_bytes <= 3_500,
+            "16 completions emitted too many terminal bytes: {}",
+            sample.output_bytes
+        );
+        group.throughput(Throughput::Bytes(sample.output_bytes));
+        group.bench_function(
+            format!(
+                "resolve_16_frames_{}cells_{}bytes/120x40",
+                sample.changed_cells, sample.output_bytes
+            ),
+            |bencher| {
+                bencher.iter_batched(
+                    live_code_mode_output_setup,
+                    |(mut transcript, mut terminal, output_bytes)| {
+                        let metrics = resolve_promises_with_frames(
+                            &mut transcript,
+                            &mut terminal,
+                            output_bytes.as_ref(),
+                        );
+                        black_box(metrics);
+                    },
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+        group.finish();
+    }
+
     pub(super) fn folded_tool_benchmarks(criterion: &mut Criterion) {
         criterion.bench_function("tui_tool_tree/fold_3471_activities", |bencher| {
             bencher.iter_batched_ref(
@@ -1388,6 +1524,7 @@ criterion_group!(
     tui::branch_state_benchmarks,
     tui::markdown_benchmarks,
     tui::tool_tree_benchmark,
+    tui::code_mode_streaming_benchmark,
     tui::folded_tool_benchmarks
 );
 criterion_main!(benches);
