@@ -30,9 +30,14 @@ pub(super) struct WebSearchHandler {
 }
 
 impl WebSearchHandler {
+    #[cfg(test)]
     pub(super) fn new(config: WebSearchConfig) -> Self {
+        Self::with_client(config, reqwest::Client::new())
+    }
+
+    pub(super) fn with_client(config: WebSearchConfig, client: reqwest::Client) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client,
             endpoint: config.endpoint,
             auth: config.auth,
         }
@@ -346,10 +351,21 @@ mod tests {
     #[tokio::test]
     async fn posts_codex_search_request_and_returns_plaintext_output() -> Result<()> {
         let (endpoint, server) = spawn_search_server().await?;
-        let handler = WebSearchHandler::new(WebSearchConfig {
-            endpoint,
-            auth: subscription_auth(),
-        });
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-injected-client",
+            reqwest::header::HeaderValue::from_static("true"),
+        );
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
+        let handler = WebSearchHandler::with_client(
+            WebSearchConfig {
+                endpoint,
+                auth: subscription_auth(),
+            },
+            client,
+        );
         let history = serde_json::from_value::<Vec<nanocodex_core::ResponseItem>>(json!([
             json!({
                 "type": "message",
@@ -441,6 +457,9 @@ mod tests {
             }
             if !headers.contains("x-openai-fedramp: true") {
                 return Err(eyre!("search request did not contain FedRAMP routing"));
+            }
+            if !headers.contains("x-injected-client: true") {
+                return Err(eyre!("search request did not use the injected HTTP client"));
             }
             let response = serde_json::to_vec(&json!({
                 "encrypted_output": "ciphertext",

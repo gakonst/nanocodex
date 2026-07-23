@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, ffi::OsString, fmt, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use nanocodex_core::{ImageDetail, OpenAiAuth, ResponseItem, ToolDefinition};
@@ -436,6 +436,9 @@ pub struct Tools {
     image_generation: bool,
     working_directory: Option<Arc<str>>,
     default_shell: Option<Arc<str>>,
+    process_environment: Arc<Vec<(OsString, OsString)>>,
+    #[cfg(feature = "remote-tools")]
+    remote_http_client: Option<reqwest::Client>,
     registered: Vec<Arc<dyn Tool>>,
     providers: Vec<Arc<dyn DynamicToolProvider>>,
 }
@@ -448,6 +451,9 @@ impl Default for Tools {
             image_generation: true,
             working_directory: None,
             default_shell: None,
+            process_environment: Arc::new(Vec::new()),
+            #[cfg(feature = "remote-tools")]
+            remote_http_client: None,
             registered: Vec::new(),
             providers: Vec::new(),
         }
@@ -456,6 +462,10 @@ impl Default for Tools {
 
 impl fmt::Debug for Tools {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[cfg(feature = "remote-tools")]
+        let remote_http_client_configured = self.remote_http_client.is_some();
+        #[cfg(not(feature = "remote-tools"))]
+        let remote_http_client_configured = false;
         formatter
             .debug_struct("Tools")
             .field("workspace", &self.workspace)
@@ -463,6 +473,11 @@ impl fmt::Debug for Tools {
             .field("image_generation", &self.image_generation)
             .field("working_directory", &self.working_directory)
             .field("default_shell", &self.default_shell)
+            .field("process_environment_count", &self.process_environment.len())
+            .field(
+                "remote_http_client_configured",
+                &remote_http_client_configured,
+            )
             .field(
                 "registered",
                 &self
@@ -505,6 +520,15 @@ impl Tools {
     #[must_use]
     pub const fn image_generation_enabled(&self) -> bool {
         self.image_generation
+    }
+
+    fn process_environment(&self) -> Arc<Vec<(OsString, OsString)>> {
+        Arc::clone(&self.process_environment)
+    }
+
+    #[cfg(feature = "remote-tools")]
+    fn remote_http_client(&self) -> Option<reqwest::Client> {
+        self.remote_http_client.clone()
     }
 
     /// Starts all dynamic providers without waiting for their handshakes.
@@ -585,6 +609,34 @@ impl ToolsBuilder {
     #[must_use]
     pub fn default_shell(mut self, shell: impl Into<Arc<str>>) -> Self {
         self.tools.default_shell = Some(shell.into());
+        self
+    }
+
+    /// Adds explicit environment overrides to workspace-tool child processes.
+    ///
+    /// Overrides are scoped to commands spawned by this tool selection and do
+    /// not mutate the embedding process. A later value for the same name wins.
+    #[must_use]
+    pub fn process_environment<I, K, V>(mut self, variables: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
+        let environment = Arc::make_mut(&mut self.tools.process_environment);
+        for (name, value) in variables {
+            let name = name.into();
+            environment.retain(|(candidate, _)| candidate != &name);
+            environment.push((name, value.into()));
+        }
+        self
+    }
+
+    /// Overrides the HTTP client used by in-process remote tools.
+    #[cfg(feature = "remote-tools")]
+    #[must_use]
+    pub fn remote_http_client(mut self, client: reqwest::Client) -> Self {
+        self.tools.remote_http_client = Some(client);
         self
     }
 
@@ -685,7 +737,15 @@ impl ToolRuntime {
         web_search: Option<WebSearchConfig>,
         image_generation: Option<ImageGenerationConfig>,
     ) -> Self {
-        Self::new_inner(workspace, web_search, image_generation, true)
+        Self::new_inner(
+            workspace,
+            web_search,
+            image_generation,
+            true,
+            Arc::new(Vec::new()),
+            #[cfg(feature = "remote-tools")]
+            None,
+        )
     }
 
     /// Builds the runtime from one complete declarative tool selection.
@@ -701,6 +761,9 @@ impl ToolRuntime {
             web_search,
             image_generation,
             tools.workspace_enabled(),
+            tools.process_environment(),
+            #[cfg(feature = "remote-tools")]
+            tools.remote_http_client(),
         )
         .with_tools(tools)
     }
@@ -710,9 +773,11 @@ impl ToolRuntime {
         web_search: Option<WebSearchConfig>,
         image_generation: Option<ImageGenerationConfig>,
         workspace_enabled: bool,
+        process_environment: Arc<Vec<(OsString, OsString)>>,
+        #[cfg(feature = "remote-tools")] remote_http_client: Option<reqwest::Client>,
     ) -> Self {
         let workspace = workspace.into();
-        let sessions = Arc::new(ShellSessions::new());
+        let sessions = Arc::new(ShellSessions::with_environment(process_environment));
         let default_shell_name = Arc::from(sessions.default_shell_name());
         let working_directory = Arc::from(workspace.to_string_lossy().into_owned());
         #[cfg(feature = "code-mode")]
@@ -732,13 +797,20 @@ impl ToolRuntime {
         }
         #[cfg(feature = "remote-tools")]
         {
+            let remote_http_client = remote_http_client.unwrap_or_default();
             if let Some(web_search) = web_search {
-                handlers.push(Arc::new(web_search::WebSearchHandler::new(web_search)));
+                handlers.push(Arc::new(web_search::WebSearchHandler::with_client(
+                    web_search,
+                    remote_http_client.clone(),
+                )));
             }
             if let Some(image_generation) = image_generation {
-                handlers.push(Arc::new(image_generation::ImageGenerationHandler::new(
-                    image_generation,
-                )));
+                handlers.push(Arc::new(
+                    image_generation::ImageGenerationHandler::with_client(
+                        image_generation,
+                        remote_http_client,
+                    ),
+                ));
             }
         }
         #[cfg(not(feature = "remote-tools"))]

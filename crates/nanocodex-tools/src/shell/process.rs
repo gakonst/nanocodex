@@ -304,7 +304,9 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
-pub(super) fn sanitized_environment() -> (Vec<(OsString, OsString)>, Vec<String>) {
+pub(super) fn sanitized_environment(
+    overrides: &[(OsString, OsString)],
+) -> (Vec<(OsString, OsString)>, Vec<String>) {
     let mut environment = Vec::new();
     let mut secrets = Vec::new();
     for (name, value) in env::vars_os() {
@@ -317,6 +319,15 @@ pub(super) fn sanitized_environment() -> (Vec<(OsString, OsString)>, Vec<String>
         }
     }
     normalize_environment(&mut environment);
+    for (name, value) in overrides {
+        environment.retain(|(candidate, _)| candidate != name);
+        environment.push((name.clone(), value.clone()));
+        if is_sensitive_name(name)
+            && let Some(value) = value.to_str().filter(|value| value.len() >= 8)
+        {
+            secrets.push(value.to_owned());
+        }
+    }
     secrets.sort_unstable_by_key(|secret| std::cmp::Reverse(secret.len()));
     secrets.dedup();
     (environment, secrets)
@@ -340,7 +351,7 @@ fn is_sensitive_name(name: &OsStr) -> bool {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{NORMALIZED_ENVIRONMENT, normalize_environment};
+    use super::{NORMALIZED_ENVIRONMENT, normalize_environment, sanitized_environment};
 
     #[test]
     fn normalized_environment_overrides_terminal_and_pager_values() {
@@ -363,5 +374,18 @@ mod tests {
                 vec![&OsString::from(value)]
             );
         }
+    }
+
+    #[test]
+    fn explicit_environment_overrides_are_retained_and_redacted() {
+        let value = OsString::from("proxy-secret-value");
+        let (environment, secrets) = sanitized_environment(&[
+            (OsString::from("TERM"), OsString::from("mpp-terminal")),
+            (OsString::from("NANOCODEX_PROXY_TOKEN"), value.clone()),
+        ]);
+
+        assert!(environment.contains(&(OsString::from("TERM"), OsString::from("mpp-terminal"))));
+        assert!(environment.contains(&(OsString::from("NANOCODEX_PROXY_TOKEN"), value,)));
+        assert!(secrets.iter().any(|secret| secret == "proxy-secret-value"));
     }
 }

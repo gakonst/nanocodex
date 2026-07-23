@@ -14,6 +14,7 @@ mod view;
 
 use std::{
     collections::VecDeque,
+    path::PathBuf,
     process::{Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
@@ -444,19 +445,21 @@ enum Submission {
     Trace,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the ordered terminal, agent, worker, and render event loop is intentionally cohesive"
+)]
 pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Result<()> {
-    let cwd = config
-        .cwd()
-        .canonicalize()
-        .wrap_err("failed to resolve the working directory")?;
-    let configured = config.build()?;
+    let cwd = resolve_cwd(&config)?;
+    let configured = config.build().await?;
     let agent = configured.handle;
     let mut agent_events = configured.events;
     let root_session_id = Arc::<str>::from(agent_events.request_id());
-    let _child_agents = configured.child_agents;
+    let child_agents = configured.child_agents;
+    let mpp_adapter = configured.mpp_adapter;
     let (worker_tx, worker_rx) = mpsc::unbounded_channel();
     let (update_tx, mut update_rx) = mpsc::unbounded_channel();
-    spawn_agent_worker(agent, Arc::clone(&root_session_id), worker_rx, update_tx);
+    let worker = spawn_agent_worker(agent, Arc::clone(&root_session_id), worker_rx, update_tx);
 
     let mut terminal = TerminalSession::enter().wrap_err("failed to initialize the terminal")?;
     let mut input_events = EventStream::new();
@@ -469,18 +472,19 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
 
     submit_initial_prompt(&mut ui.app, &root_session_id, &worker_tx, initial_prompt)?;
 
-    loop {
-        view_telemetry.observe(&ui.app);
-        render_due_frame(
-            &mut ui,
-            &mut terminal,
-            &mut scheduler,
-            &mut stream_telemetry,
-            &mut notifier,
-        )?;
+    let loop_result: Result<()> = async {
+        loop {
+            view_telemetry.observe(&ui.app);
+            render_due_frame(
+                &mut ui,
+                &mut terminal,
+                &mut scheduler,
+                &mut stream_telemetry,
+                &mut notifier,
+            )?;
 
-        let render_deadline = scheduler.deadline();
-        tokio::select! {
+            let render_deadline = scheduler.deadline();
+            tokio::select! {
             () = async {
                 if let Some(deadline) = render_deadline {
                     sleep_until(deadline.into()).await;
@@ -495,7 +499,7 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
                     input_events = run_external_editor(input_events, &mut terminal, &mut ui.app).await?;
                     scheduler.request_immediate(Instant::now());
                 } else if apply_update(update, &mut scheduler) {
-                    return Ok(());
+                    break Ok(());
                 }
             }
             event = agent_events.recv_timed(), if ui.agent_events_open => {
@@ -528,18 +532,56 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
                     );
                 }
                 if apply_update(update, &mut scheduler) {
-                    return Ok(());
+                    break Ok(());
                 }
             }
             _ = ticker.tick(), if ui.app.main.running
                 || ui.app.btw.as_ref().is_some_and(|btw| btw.conversation.running)
                 || ui.app.mouse_selection_needs_redraw() => {
                 if apply_update(ui.update(UiAction::Tick, &worker_tx)?, &mut scheduler) {
-                    return Ok(());
+                    break Ok(());
                 }
+            }
             }
         }
     }
+    .await;
+
+    // Restore the terminal before disconnecting the paid WebSocket session.
+    drop((terminal, worker_tx, agent_events));
+    let shutdown_result = shutdown_runtime(worker, child_agents, mpp_adapter).await;
+    loop_result?;
+    shutdown_result
+}
+
+fn resolve_cwd(config: &AgentArgs) -> Result<PathBuf> {
+    config
+        .cwd()
+        .canonicalize()
+        .wrap_err("failed to resolve the working directory")
+}
+
+async fn shutdown_runtime(
+    worker: tokio::task::JoinHandle<()>,
+    child_agents: Option<std::sync::Arc<crate::subagents::ChildAgents>>,
+    mpp_adapter: Option<crate::mpp::MppAdapter>,
+) -> Result<()> {
+    worker.abort();
+    let worker_result = worker.await;
+    if let Some(child_agents) = child_agents {
+        child_agents.shutdown().await;
+    }
+    let shutdown_result = if let Some(adapter) = mpp_adapter {
+        adapter.shutdown().await
+    } else {
+        Ok(())
+    };
+    match worker_result {
+        Ok(()) => {}
+        Err(error) if error.is_cancelled() => {}
+        Err(error) => return Err(error).wrap_err("TUI agent worker failed"),
+    }
+    shutdown_result
 }
 
 fn apply_main_agent_event_batch(
@@ -779,7 +821,7 @@ fn spawn_agent_worker(
     root_session_id: Arc<str>,
     mut commands: mpsc::UnboundedReceiver<WorkerCommand>,
     updates: mpsc::UnboundedSender<WorkerEvent>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let (finished_tx, mut finished_rx) = mpsc::unbounded_channel::<FinishedTurn>();
         let mut worker = AgentWorker {
@@ -810,7 +852,7 @@ fn spawn_agent_worker(
                 }
             }
         }
-    });
+    })
 }
 
 struct AgentWorker {

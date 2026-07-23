@@ -14,6 +14,7 @@ build = "build.rs"
 [dependencies]
 arboard.workspace = true
 base64.workspace = true
+alloy-transport-mpp = { version = "=0.2.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "3a689a1b1c194f54ad7a1afcbfa9be388706a94e" }
 clap.workspace = true
 crossterm.workspace = true
 dotenvy.workspace = true
@@ -23,8 +24,11 @@ image.workspace = true
 nanocodex.workspace = true
 nanocodex-observability.workspace = true
 pulldown-cmark.workspace = true
+mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "3a689a1b1c194f54ad7a1afcbfa9be388706a94e", default-features = false, features = ["tempo", "ws", "sqlite", "reqwest-rustls-tls"] }
+mpp-egress.workspace = true
 ratatui.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls"] }
 self-replace.workspace = true
 semver.workspace = true
 serde.workspace = true
@@ -35,6 +39,7 @@ sha2.workspace = true
 shlex.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true

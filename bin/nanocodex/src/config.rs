@@ -11,12 +11,14 @@ use nanocodex::{
 };
 
 use crate::mcp::McpArgs;
+use crate::mpp::{MppAdapter, MppArgs};
 use crate::subagents::{self, ChildAgents};
 
 pub(crate) struct ConfiguredAgent {
     pub(crate) handle: Nanocodex,
     pub(crate) events: AgentEvents,
     pub(crate) child_agents: Option<Arc<ChildAgents>>,
+    pub(crate) mpp_adapter: Option<MppAdapter>,
 }
 
 #[derive(Args)]
@@ -105,12 +107,15 @@ pub(crate) struct AgentArgs {
     #[arg(long, env = "NANOCODEX_STORE_RESPONSES", action = ArgAction::Set)]
     store_responses: Option<bool>,
 
-    /// `OpenAI` HTTP API base used by HTTPS Responses and standalone web search.
+    /// `OpenAI` HTTP API base used by HTTPS Responses and in-process remote tools.
     #[arg(long, env = "OPENAI_API_BASE_URL")]
     api_base_url: Option<String>,
 
     #[command(flatten)]
     mcp: McpArgs,
+
+    #[command(flatten)]
+    mpp: MppArgs,
 }
 
 impl AgentArgs {
@@ -118,21 +123,39 @@ impl AgentArgs {
         &self.cwd
     }
 
-    pub(crate) fn build(self) -> Result<ConfiguredAgent> {
+    #[cfg(test)]
+    pub(crate) const fn uses_tempo(&self) -> bool {
+        self.mpp.is_enabled()
+    }
+
+    pub(crate) async fn build(self) -> Result<ConfiguredAgent> {
         let codex_home = default_codex_home()?;
         let rollout = self.rollouts.then(|| codex_home.clone());
-        let auth = select_auth(self.api_key, self.auth_file, environment_api_key()?)?;
-        let mut responses = Responses::builder().transport(self.responses_transport);
+        let mpp_enabled = self.mpp.is_enabled();
+        let auth = if mpp_enabled {
+            OpenAiAuth::api_key("tempo-proxy")
+        } else {
+            select_auth(self.api_key, self.auth_file, environment_api_key()?)?
+        };
+        let direct_websocket_url = self
+            .websocket_url
+            .unwrap_or_else(|| "wss://api.openai.com/v1/responses".to_owned());
+        let (websocket_url, mpp_adapter) = self.mpp.start(direct_websocket_url).await?;
+        let mut responses = Responses::builder()
+            .transport(self.responses_transport)
+            .websocket_url(websocket_url);
         if let Some(history) = self.responses_history {
             responses = responses.history(history);
         }
         if let Some(store) = self.store_responses {
             responses = responses.store(store);
         }
-        if let Some(websocket_url) = self.websocket_url {
-            responses = responses.websocket_url(websocket_url);
-        }
-        if let Some(api_base_url) = self.api_base_url {
+        let api_base_url = self.api_base_url.or_else(|| {
+            mpp_adapter
+                .as_ref()
+                .map(|adapter| adapter.api_base_url().to_owned())
+        });
+        if let Some(api_base_url) = api_base_url {
             responses = responses.api_base_url(api_base_url);
         }
         let responses = responses.build();
@@ -141,6 +164,11 @@ impl AgentArgs {
             .image_generation(self.image_generation);
         if let Some(mcp) = self.mcp.build()? {
             tools = tools.provider(mcp);
+        }
+        if let Some(mpp_adapter) = &mpp_adapter {
+            tools = tools
+                .process_environment(mpp_adapter.tool_environment())
+                .remote_http_client(mpp_adapter.tool_http_client()?);
         }
         let tools = tools.build()?;
         let child_agents = self.subagents.then(|| Arc::new(ChildAgents::default()));
@@ -174,6 +202,7 @@ impl AgentArgs {
             handle,
             events,
             child_agents,
+            mpp_adapter,
         })
     }
 }
