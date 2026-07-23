@@ -45,6 +45,10 @@ export function getTurnResult(turn) {
   return state.result;
 }
 
+export function getTurnSnapshot(turn) {
+  return JSON.parse(turnState(turn).raw.snapshot());
+}
+
 export function steer(turn, options) {
   const state = turnState(turn);
   const input = actionInput(options);
@@ -107,6 +111,7 @@ export function toWasmConfig(options = {}) {
   copy(config, "api_base_url", options.apiBaseUrl);
   copy(config, "instructions", options.instructions);
   copy(config, "session_id", options.sessionId);
+  copy(config, "resume", options.resume);
   return config;
 }
 
@@ -259,6 +264,7 @@ function createTurn(raw, agent) {
   const turn = {
     get agent() { return state.agent; },
     result: () => getTurnResult(turn),
+    snapshot: () => getTurnSnapshot(turn),
     steer: (input) => steer(turn, input),
     cancel: () => cancel(turn),
     dispose() {

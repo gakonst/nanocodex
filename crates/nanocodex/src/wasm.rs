@@ -16,9 +16,13 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::{
-    NanocodexError,
-    model::agent::{CompletedModelTurn, ModelCheckpoint, ModelRun, ModelTurnOutcome},
+    NanocodexError, SessionSnapshot,
+    model::agent::{
+        CompletedModelTurn, ModelRun, ModelTurnOutcome, PreparedCheckpoint, prepare_checkpoint,
+        prepare_resumed_checkpoint,
+    },
     prompt_cache::ModelPromptCache,
+    session::CommittedSession,
 };
 
 const STEER_CAPACITY: usize = 8;
@@ -49,6 +53,8 @@ struct WasmConfig {
     session_id: Option<String>,
     #[serde(default)]
     workspace: Option<String>,
+    #[serde(default)]
+    resume: Option<SessionSnapshot>,
 }
 
 #[derive(Clone)]
@@ -57,19 +63,14 @@ struct WasmAgentFactory {
     tools: Tools,
     workspace: Option<Arc<str>>,
     lineage_id: Arc<str>,
+    prompt_cache_key: Option<Arc<str>>,
     prompt_cache: ModelPromptCache,
-}
-
-#[derive(Clone)]
-struct CommittedWasmCheckpoint {
-    lineage_id: Arc<str>,
-    model: ModelCheckpoint,
 }
 
 #[derive(Clone)]
 struct CompletedWasmTurn {
     final_message: String,
-    checkpoint: Arc<CommittedWasmCheckpoint>,
+    checkpoint: Arc<CommittedSession>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -93,7 +94,7 @@ enum Command {
         result: oneshot::Sender<Result<(), String>>,
     },
     Fork {
-        checkpoint: Option<Arc<CommittedWasmCheckpoint>>,
+        checkpoint: Option<Arc<CommittedSession>>,
         result: oneshot::Sender<Result<WasmNanocodex, String>>,
     },
     Spawn {
@@ -166,19 +167,49 @@ impl WasmNanocodex {
                 .instructions
                 .map_or_else(|| ModelConfig::default().system_prompt, Arc::from),
         });
-        let lineage_id = Arc::<str>::from(session_id.as_str());
-        let prompt_cache = ModelPromptCache::new(Arc::clone(&lineage_id), None);
-        Ok(spawn_agent(
-            WasmAgentFactory {
-                config: model_config,
-                tools: Tools,
-                workspace: config.workspace.map(Arc::<str>::from),
-                lineage_id,
-                prompt_cache,
-            },
-            session_id,
-            None,
-        ))
+        let configured_workspace = config.workspace.map(Arc::<str>::from);
+        let (lineage_id, prompt_cache_key, initial_checkpoint, workspace) =
+            if let Some(snapshot) = config.resume {
+                let (lineage_id, prompt_cache_key, checkpoint) =
+                    snapshot.into_checkpoint().map_err(js_error)?;
+                if let Some(configured) = configured_workspace.as_deref()
+                    && configured != checkpoint.workspace()
+                {
+                    return Err(js_error(NanocodexError::WorkspaceChanged {
+                        current: checkpoint.workspace().to_owned(),
+                        requested: configured.to_owned(),
+                    }));
+                }
+                let workspace = Some(Arc::<str>::from(checkpoint.workspace()));
+                (
+                    lineage_id,
+                    Some(prompt_cache_key),
+                    Some(checkpoint),
+                    workspace,
+                )
+            } else {
+                let lineage_id = Arc::<str>::from(session_id.as_str());
+                (lineage_id, None, None, configured_workspace)
+            };
+        let active_cache_key = prompt_cache_key
+            .as_ref()
+            .map_or_else(|| Arc::clone(&lineage_id), Arc::clone);
+        let prompt_cache = ModelPromptCache::new(active_cache_key, None);
+        let factory = WasmAgentFactory {
+            config: model_config,
+            tools: Tools,
+            workspace,
+            lineage_id,
+            prompt_cache_key,
+            prompt_cache,
+        };
+        let initial_model = initial_checkpoint
+            .map(|checkpoint| {
+                prepare_resumed_checkpoint(checkpoint, &factory.config, &factory.tools, &session_id)
+            })
+            .transpose()
+            .map_err(js_error)?;
+        Ok(spawn_agent(factory, session_id, initial_model))
     }
 
     /// Stable session identifier used to route this agent's event stream.
@@ -406,6 +437,16 @@ impl WasmTurn {
             .map(|completed| completed.final_message)
             .map_err(js_error)
     }
+
+    /// Serialize this completed turn's resumable session snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Throws until the turn has completed or if serialization fails.
+    pub fn snapshot(&self) -> Result<String, JsValue> {
+        let checkpoint = self.completed_checkpoint().map_err(js_error)?;
+        serde_json::to_string(&checkpoint.snapshot()).map_err(js_error)
+    }
 }
 
 fn parse_browser_prompt(content_json: &str) -> Result<Prompt, JsValue> {
@@ -429,7 +470,7 @@ fn parse_browser_prompt(content_json: &str) -> Result<Prompt, JsValue> {
 }
 
 impl WasmTurn {
-    fn completed_checkpoint(&self) -> Result<Arc<CommittedWasmCheckpoint>, String> {
+    fn completed_checkpoint(&self) -> Result<Arc<CommittedSession>, String> {
         let state = self.state.borrow();
         match &*state {
             TurnState::Completed(Ok(completed)) => Ok(Arc::clone(&completed.checkpoint)),
@@ -444,7 +485,7 @@ impl WasmTurn {
 fn spawn_agent(
     factory: WasmAgentFactory,
     session_id: String,
-    initial_checkpoint: Option<ModelCheckpoint>,
+    initial_model: Option<PreparedCheckpoint>,
 ) -> WasmNanocodex {
     let (events, mut event_stream) = EventSink::channel(session_id.clone());
     spawn_local(async move {
@@ -456,7 +497,7 @@ fn spawn_agent(
     });
 
     let transport_stats = Arc::new(TransportStats::default());
-    let model = match initial_checkpoint {
+    let model = match initial_model {
         None => ModelRun::new(
             events.clone(),
             Arc::clone(&factory.config),
@@ -466,14 +507,14 @@ fn spawn_agent(
             factory.prompt_cache.clone(),
             None,
         ),
-        Some(checkpoint) => ModelRun::from_checkpoint(
+        Some(prepared) => ModelRun::from_checkpoint(
             events.clone(),
             Arc::clone(&factory.config),
             ResponsesClient::new(ResponsesService::standard(Arc::clone(&factory.config))),
             Arc::clone(&transport_stats),
             factory.tools.clone(),
             factory.prompt_cache.clone(),
-            checkpoint,
+            prepared,
         ),
     };
     let (commands, receiver) = mpsc::unbounded_channel();
@@ -506,7 +547,7 @@ async fn run_driver(
 ) {
     let mut default_thinking = factory.config.thinking;
     let mut default_fast_mode = factory.config.fast_mode;
-    let mut latest_checkpoint: Option<Arc<CommittedWasmCheckpoint>> = None;
+    let mut latest_checkpoint: Option<Arc<CommittedSession>> = None;
     let mut queued_turns = VecDeque::new();
     let mut commands_open = true;
 
@@ -619,10 +660,10 @@ async fn run_driver(
                         continue;
                     }
                     if let Some(snapshot) = fork_snapshot_rx.borrow_and_update().clone() {
-                        latest_checkpoint = Some(Arc::new(CommittedWasmCheckpoint {
-                            lineage_id: Arc::clone(&factory.lineage_id),
-                            model: snapshot,
-                        }));
+                        latest_checkpoint = Some(Arc::new(CommittedSession::new(
+                            Arc::clone(&factory.lineage_id),
+                            snapshot,
+                        )));
                     }
                 }
                 command = commands.recv() => {
@@ -700,10 +741,10 @@ async fn run_driver(
                 final_message,
                 checkpoint,
             })) => {
-                let checkpoint = Arc::new(CommittedWasmCheckpoint {
-                    lineage_id: Arc::clone(&factory.lineage_id),
-                    model: checkpoint,
-                });
+                let checkpoint = Arc::new(CommittedSession::new(
+                    Arc::clone(&factory.lineage_id),
+                    checkpoint,
+                ));
                 latest_checkpoint = Some(Arc::clone(&checkpoint));
                 (
                     Ok(CompletedWasmTurn {
@@ -714,11 +755,13 @@ async fn run_driver(
                 )
             }
             Ok(ModelTurnOutcome::Cancelled(checkpoint)) => {
-                let checkpoint = Arc::new(CommittedWasmCheckpoint {
-                    lineage_id: Arc::clone(&factory.lineage_id),
-                    model: checkpoint,
-                });
+                let checkpoint = Arc::new(CommittedSession::new(
+                    Arc::clone(&factory.lineage_id),
+                    checkpoint,
+                ));
                 latest_checkpoint = Some(Arc::clone(&checkpoint));
+                let prepared =
+                    prepare_checkpoint(checkpoint.model().clone(), &factory.config, &factory.tools);
                 model = ModelRun::from_checkpoint(
                     events.clone(),
                     Arc::clone(&factory.config),
@@ -726,7 +769,7 @@ async fn run_driver(
                     Arc::clone(&transport_stats),
                     factory.tools.clone(),
                     factory.prompt_cache.clone(),
-                    checkpoint.model.clone(),
+                    prepared,
                 );
                 (Err(NanocodexError::TurnCancelled.to_string()), true)
             }
@@ -745,7 +788,7 @@ async fn run_driver(
 
 fn handle_idle_command(
     command: Command,
-    latest: Option<&Arc<CommittedWasmCheckpoint>>,
+    latest: Option<&Arc<CommittedSession>>,
     factory: &WasmAgentFactory,
     thinking: Thinking,
     fast_mode: bool,
@@ -767,7 +810,11 @@ fn handle_idle_command(
             config.fast_mode = fast_mode;
             clean.config = Arc::new(config);
             clean.lineage_id = lineage_id;
-            clean.prompt_cache = ModelPromptCache::new(Arc::clone(&clean.lineage_id), None);
+            let cache_key = clean
+                .prompt_cache_key
+                .as_ref()
+                .map_or_else(|| Arc::clone(&clean.lineage_id), Arc::clone);
+            clean.prompt_cache = ModelPromptCache::new(cache_key, None);
             drop(result.send(Ok(spawn_agent(clean, session_id, None))));
         }
         Command::Steer { result, .. } => {
@@ -785,11 +832,11 @@ fn handle_idle_command(
 
 fn spawn_fork(
     factory: &WasmAgentFactory,
-    checkpoint: &CommittedWasmCheckpoint,
+    checkpoint: &CommittedSession,
     thinking: Thinking,
     fast_mode: bool,
 ) -> Result<WasmNanocodex, String> {
-    if checkpoint.lineage_id != factory.lineage_id {
+    if checkpoint.lineage_id() != factory.lineage_id.as_ref() {
         return Err("checkpoint belongs to another conversation".to_owned());
     }
     let mut fork = factory.clone();
@@ -797,12 +844,9 @@ fn spawn_fork(
     config.thinking = thinking;
     config.fast_mode = fast_mode;
     fork.config = Arc::new(config);
-    fork.workspace = Some(Arc::from(checkpoint.model.workspace()));
-    Ok(spawn_agent(
-        fork,
-        new_session_id(),
-        Some(checkpoint.model.clone()),
-    ))
+    fork.workspace = Some(Arc::from(checkpoint.model().workspace()));
+    let prepared = prepare_checkpoint(checkpoint.model().clone(), &fork.config, &fork.tools);
+    Ok(spawn_agent(fork, new_session_id(), Some(prepared)))
 }
 
 fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) -> bool {

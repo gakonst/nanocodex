@@ -65,6 +65,9 @@ pub enum NanocodexError {
     #[error("the completed turn belongs to a different conversation lineage")]
     CheckpointLineageMismatch,
 
+    #[error("invalid session snapshot: {0}")]
+    InvalidSessionSnapshot(String),
+
     #[error("building an agent requires an active Tokio runtime")]
     TokioRuntimeUnavailable,
 

@@ -108,6 +108,20 @@ pub struct CodeModeNotification {
     pub text: String,
 }
 
+pub enum CodeModeUpdate<'a> {
+    NestedCallStarted {
+        call_id: &'a str,
+        name: &'a str,
+        input: &'a Value,
+    },
+    NestedCallCompleted(&'a NestedToolCall),
+}
+
+#[doc(hidden)]
+pub trait CodeModeObserver {
+    fn update(&mut self, update: CodeModeUpdate<'_>);
+}
+
 #[derive(Deserialize)]
 pub struct NestedToolCall {
     pub call_id: String,
@@ -277,6 +291,18 @@ impl ToolRuntime {
         self.execute_code(source, context.borrowed()).await
     }
 
+    #[doc(hidden)]
+    pub async fn execute_code_owned_with_updates(
+        &self,
+        source: &str,
+        context: OwnedToolContext,
+        observer: &mut dyn CodeModeObserver,
+    ) -> CodeModeExecution {
+        let execution = self.execute_code_owned(source, context).await;
+        replay_nested_updates(&execution, observer);
+        execution
+    }
+
     #[expect(
         clippy::unused_async,
         reason = "matches the native tool-runtime contract"
@@ -288,6 +314,18 @@ impl ToolRuntime {
     ) -> CodeModeExecution {
         failed("background code-mode cells are unavailable in the WASM runtime")
     }
+
+    #[doc(hidden)]
+    pub async fn wait_for_code_with_updates(
+        &self,
+        input: &str,
+        context: ToolContext<'_>,
+        observer: &mut dyn CodeModeObserver,
+    ) -> CodeModeExecution {
+        let execution = self.wait_for_code(input, context).await;
+        replay_nested_updates(&execution, observer);
+        execution
+    }
 }
 
 impl ToolRuntimeControl {
@@ -297,6 +335,17 @@ impl ToolRuntimeControl {
         reason = "matches the native tool-runtime control contract"
     )]
     pub async fn cancel(&self) {}
+}
+
+fn replay_nested_updates(execution: &CodeModeExecution, observer: &mut dyn CodeModeObserver) {
+    for call in &execution.nested_calls {
+        observer.update(CodeModeUpdate::NestedCallStarted {
+            call_id: &call.call_id,
+            name: &call.name,
+            input: &call.input,
+        });
+        observer.update(CodeModeUpdate::NestedCallCompleted(call));
+    }
 }
 
 #[expect(

@@ -31,6 +31,10 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       tools[name] = async (input) => {
         const callId = `${parentCallId}/code-${nextCallId++}`;
         const toolStartedAt = performance.now();
+        const startedAfterNs = Math.max(
+          0,
+          Math.round((toolStartedAt - startedAt) * 1_000_000),
+        );
         try {
           const result = await tool.handler(input, { sessionId, parentCallId, callId });
           nestedCalls.push({
@@ -41,6 +45,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             input: clone(input) ?? null,
             output: outputBody(result),
             success: true,
+            started_after_ns: startedAfterNs,
             duration_ns: elapsedNs(toolStartedAt),
           });
           return result;
@@ -51,6 +56,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             input: clone(input) ?? null,
             output: errorMessage(error),
             success: false,
+            started_after_ns: startedAfterNs,
             duration_ns: elapsedNs(toolStartedAt),
           });
           throw error;

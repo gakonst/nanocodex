@@ -17,6 +17,8 @@ use tokio::{
 };
 use tracing::error;
 
+use crate::session::CommittedSession;
+
 const COMMAND_CAPACITY: usize = 8;
 
 /// Configuration for writing a thread in Codex's resumable rollout layout.
@@ -76,7 +78,7 @@ pub(crate) struct RolloutOrigin<'a> {
 
 enum RolloutCommand {
     Commit {
-        snapshot: Box<HistorySnapshot>,
+        commit: Box<RolloutCommit>,
         result: oneshot::Sender<io::Result<()>>,
     },
     Flush {
@@ -84,10 +86,29 @@ enum RolloutCommand {
     },
 }
 
-struct HistorySnapshot {
+struct RolloutCommit {
     history: ResponseHistory,
     revision: u64,
     turn: RolloutTurn,
+}
+
+impl RolloutCommit {
+    fn from_session(session: &CommittedSession, turn: RolloutTurn) -> Self {
+        Self {
+            history: session.rollout_history(),
+            revision: session.history_revision(),
+            turn,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_history(history: ResponseHistory, revision: u64, turn: RolloutTurn) -> Self {
+        Self {
+            history,
+            revision,
+            turn,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -227,18 +248,18 @@ impl RolloutRecorder {
 
     pub(crate) async fn persist(
         &self,
-        history: ResponseHistory,
-        revision: u64,
+        session: &CommittedSession,
         turn: RolloutTurn,
     ) -> io::Result<()> {
+        self.persist_commit(RolloutCommit::from_session(session, turn))
+            .await
+    }
+
+    async fn persist_commit(&self, commit: RolloutCommit) -> io::Result<()> {
         let (result, receiver) = oneshot::channel();
         self.commands
             .send(RolloutCommand::Commit {
-                snapshot: Box::new(HistorySnapshot {
-                    history,
-                    revision,
-                    turn,
-                }),
+                commit: Box::new(commit),
                 result,
             })
             .await
@@ -246,6 +267,17 @@ impl RolloutRecorder {
         receiver
             .await
             .map_err(|_| io::Error::other("Codex rollout writer stopped"))?
+    }
+
+    #[cfg(test)]
+    async fn persist_history(
+        &self,
+        history: ResponseHistory,
+        revision: u64,
+        turn: RolloutTurn,
+    ) -> io::Result<()> {
+        self.persist_commit(RolloutCommit::from_history(history, revision, turn))
+            .await
     }
 
     pub(crate) async fn flush(&self) -> io::Result<()> {
@@ -262,7 +294,7 @@ impl RolloutRecorder {
 
 struct RolloutWriter {
     file: tokio::fs::File,
-    pending: Option<HistorySnapshot>,
+    pending: Option<RolloutCommit>,
     written_revision: Option<u64>,
     written_len: usize,
     window_number: u64,
@@ -290,8 +322,8 @@ impl RolloutWriter {
     async fn run(mut self, mut commands: mpsc::Receiver<RolloutCommand>) -> io::Result<()> {
         while let Some(command) = commands.recv().await {
             match command {
-                RolloutCommand::Commit { snapshot, result } => {
-                    self.pending = Some(*snapshot);
+                RolloutCommand::Commit { commit, result } => {
+                    self.pending = Some(*commit);
                     drop(result.send(self.persist_pending().await));
                 }
                 RolloutCommand::Flush { result } => {
@@ -312,20 +344,20 @@ impl RolloutWriter {
     }
 
     async fn persist_pending(&mut self) -> io::Result<()> {
-        let Some(snapshot) = self.pending.take() else {
+        let Some(commit) = self.pending.take() else {
             return Ok(());
         };
-        match self.append_with_retry(&snapshot).await {
+        match self.append_with_retry(&commit).await {
             Ok(()) => Ok(()),
             Err(source) => {
-                self.pending = Some(snapshot);
+                self.pending = Some(commit);
                 Err(source)
             }
         }
     }
 
-    async fn append_with_retry(&mut self, snapshot: &HistorySnapshot) -> io::Result<()> {
-        let prepared = self.prepare_append(snapshot)?;
+    async fn append_with_retry(&mut self, commit: &RolloutCommit) -> io::Result<()> {
+        let prepared = self.prepare_append(commit)?;
         let original_len = self.file.metadata().await?.len();
         let first_error = match self.write_prepared(&prepared).await {
             Ok(()) => {
@@ -353,20 +385,20 @@ impl RolloutWriter {
         }
     }
 
-    fn prepare_append(&self, snapshot: &HistorySnapshot) -> io::Result<PreparedAppend> {
-        let len = snapshot.history.len();
+    fn prepare_append(&self, commit: &RolloutCommit) -> io::Result<PreparedAppend> {
+        let len = commit.history.len();
         match self.written_revision {
             None => Ok(PreparedAppend {
                 records: PreparedRecords::Items {
-                    history: snapshot.history.clone(),
+                    history: commit.history.clone(),
                     start: 0,
                 },
-                revision: snapshot.revision,
+                revision: commit.revision,
                 len,
                 window: None,
-                turn: snapshot.turn.clone(),
+                turn: commit.turn.clone(),
             }),
-            Some(revision) if revision == snapshot.revision => {
+            Some(revision) if revision == commit.revision => {
                 if len < self.written_len {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -375,13 +407,13 @@ impl RolloutWriter {
                 }
                 Ok(PreparedAppend {
                     records: PreparedRecords::Items {
-                        history: snapshot.history.clone(),
+                        history: commit.history.clone(),
                         start: self.written_len,
                     },
                     revision,
                     len,
                     window: None,
-                    turn: snapshot.turn.clone(),
+                    turn: commit.turn.clone(),
                 })
             }
             Some(_) => {
@@ -390,19 +422,19 @@ impl RolloutWriter {
                 Ok(PreparedAppend {
                     records: PreparedRecords::Compacted(CompactedItem {
                         message: String::new(),
-                        replacement_history: snapshot.history.iter().cloned().collect(),
+                        replacement_history: commit.history.iter().cloned().collect(),
                         window_number,
                         first_window_id: self.first_window_id.clone(),
                         previous_window_id: self.current_window_id.clone(),
                         window_id: window_id.clone(),
                     }),
-                    revision: snapshot.revision,
+                    revision: commit.revision,
                     len,
                     window: Some(WindowAdvance {
                         number: window_number,
                         id: window_id,
                     }),
-                    turn: snapshot.turn.clone(),
+                    turn: commit.turn.clone(),
                 })
             }
         }
@@ -752,7 +784,7 @@ mod tests {
         let home = tempdir().expect("temporary Codex home");
         let recorder = recorder(home.path());
         recorder
-            .persist(
+            .persist_history(
                 ResponseHistory::new(vec![message("remember amber")]),
                 0,
                 completed_turn("remember amber", "stored"),
@@ -792,7 +824,7 @@ mod tests {
         let home = tempdir().expect("temporary Codex home");
         let recorder = recorder(home.path());
         recorder
-            .persist(
+            .persist_history(
                 ResponseHistory::new(vec![message("one")]),
                 0,
                 completed_turn("one", "first"),
@@ -806,7 +838,7 @@ mod tests {
             .expect("read prefix");
 
         recorder
-            .persist(
+            .persist_history(
                 ResponseHistory::new(vec![message("one"), message("two")]),
                 0,
                 completed_turn("two", "second"),
@@ -832,7 +864,7 @@ mod tests {
         let home = tempdir().expect("temporary Codex home");
         let recorder = recorder(home.path());
         recorder
-            .persist(
+            .persist_history(
                 ResponseHistory::new(vec![message("one"), message("two")]),
                 0,
                 completed_turn("two", "before compaction"),
@@ -840,7 +872,7 @@ mod tests {
             .await
             .expect("persist original history");
         recorder
-            .persist(
+            .persist_history(
                 ResponseHistory::new(vec![message("summary")]),
                 1,
                 completed_turn("continue", "after compaction"),
@@ -893,11 +925,11 @@ mod tests {
             tokio::fs::File::from_std(file),
             uuid::Uuid::now_v7().to_string(),
         );
-        writer.pending = Some(HistorySnapshot {
-            history: ResponseHistory::new(vec![message("retry me")]),
-            revision: 0,
-            turn: completed_turn("retry me", "retried"),
-        });
+        writer.pending = Some(RolloutCommit::from_history(
+            ResponseHistory::new(vec![message("retry me")]),
+            0,
+            completed_turn("retry me", "retried"),
+        ));
         writer.inject_write_failures(2);
 
         assert!(writer.persist_pending().await.is_err());

@@ -11,6 +11,7 @@ mod prompt_cache;
 mod responses;
 #[cfg(not(target_family = "wasm"))]
 mod rollout;
+mod session;
 #[cfg(target_family = "wasm")]
 mod wasm;
 
@@ -58,6 +59,7 @@ pub use responses::{Responses, ResponsesBuilder};
 pub use rollout::{RolloutConfig, RolloutInfo};
 #[cfg(not(target_family = "wasm"))]
 pub use schemars::JsonSchema as ToolSchema;
+pub use session::SessionSnapshot;
 #[cfg(target_family = "wasm")]
 pub use wasm::{WasmNanocodex, WasmTurn};
 

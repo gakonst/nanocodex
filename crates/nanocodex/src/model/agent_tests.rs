@@ -15,7 +15,7 @@ use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
 use crate::{
     AgentHandle, Nanocodex, NanocodexError, OpenAiAuth, Prompt, Responses, ResponsesError,
-    ResponsesHistory, ResponsesTransport, Thinking, Tools,
+    ResponsesHistory, ResponsesTransport, RolloutConfig, SessionSnapshot, Thinking, Tools,
 };
 
 #[derive(Clone)]
@@ -2590,6 +2590,221 @@ async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn serialized_session_and_codex_rollout_share_committed_history() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut original = accept_async(stream).await?;
+        let warmup = next_json(&mut original).await?;
+        assert_eq!(warmup["prompt_cache_key"], "durable-cache");
+        send_warmup(&mut original, "resp-warmup").await?;
+        let first = next_json(&mut original).await?;
+        assert_eq!(first["previous_response_id"], "resp-warmup");
+        send_final(&mut original, "resp-first").await?;
+
+        let (stream, _) = listener.accept().await?;
+        let mut resumed = accept_async(stream).await?;
+        let replay = next_json(&mut resumed).await?;
+        assert!(replay.get("previous_response_id").is_none());
+        assert_eq!(replay["prompt_cache_key"], "durable-cache");
+        assert_eq!(replay["input"][0]["type"], "additional_tools");
+        assert_eq!(replay["input"][1]["role"], "developer");
+        assert_eq!(
+            replay["input"][1]["content"][0]["text"],
+            "durable instructions"
+        );
+        let replay_text = replay.to_string();
+        assert!(replay_text.contains("first prompt"));
+        assert!(replay_text.contains("resume prompt"));
+        send_final(&mut resumed, "resp-resumed").await?;
+        Result::<()>::Ok(())
+    });
+
+    let workspace = temporary_workspace("serialized-resume")?;
+    let rollout_home = temporary_workspace("serialized-resume-rollout")?;
+    let responses = Responses::builder().websocket_url(endpoint.clone()).build();
+    let (agent, events) = Nanocodex::builder("test-key")
+        .instructions("durable instructions")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("019c0d31-c308-7d91-bff4-5dca82d15ac6")
+        .prompt_cache_key("durable-cache")
+        .rollout(RolloutConfig::new(&rollout_home))
+        .build()?;
+    let rollout_path = agent
+        .rollout()
+        .ok_or_else(|| eyre!("rollout was not configured"))?
+        .path()
+        .to_path_buf();
+    let first = agent.prompt("first prompt").await?.result().await?;
+    let encoded = serde_json::to_vec(&first.snapshot())?;
+    agent.flush_rollout().await?;
+    let snapshot_json = serde_json::from_slice::<Value>(&encoded)?;
+    let rollout_history = std::fs::read_to_string(rollout_path)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|line| line["type"] == "response_item")
+        .map(|line| line["payload"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        snapshot_json["history"].as_array(),
+        Some(&rollout_history),
+        "native snapshots and Codex rollouts must project the same committed history"
+    );
+    let snapshot: SessionSnapshot = serde_json::from_slice(&encoded)?;
+    drop((agent, events, first));
+
+    let mut unsupported: Value = serde_json::from_slice(&encoded)?;
+    unsupported["version"] = json!(2);
+    let unsupported: SessionSnapshot = serde_json::from_value(unsupported)?;
+    let unsupported = Nanocodex::builder("test-key")
+        .responses(Responses::builder().websocket_url(endpoint.clone()).build())
+        .resume(unsupported)
+        .build();
+    assert!(matches!(
+        unsupported,
+        Err(NanocodexError::InvalidSessionSnapshot(message))
+            if message.contains("unsupported format version")
+    ));
+
+    let incompatible = Nanocodex::builder("test-key")
+        .instructions("changed instructions")
+        .thinking(Thinking::Low)
+        .responses(Responses::builder().websocket_url(endpoint.clone()).build())
+        .resume(snapshot.clone())
+        .build();
+    assert!(matches!(
+        incompatible,
+        Err(NanocodexError::InvalidSessionSnapshot(message))
+            if message.contains("instructions or tool definitions")
+    ));
+    let other_workspace = temporary_workspace("serialized-resume-other")?;
+    let incompatible = Nanocodex::builder("test-key")
+        .instructions("durable instructions")
+        .thinking(Thinking::Low)
+        .workspace(&other_workspace)
+        .responses(Responses::builder().websocket_url(endpoint.clone()).build())
+        .resume(snapshot.clone())
+        .build();
+    assert!(matches!(
+        incompatible,
+        Err(NanocodexError::WorkspaceChanged { .. })
+    ));
+    std::fs::remove_dir_all(other_workspace)?;
+    let incompatible = Nanocodex::builder("test-key")
+        .instructions("durable instructions")
+        .thinking(Thinking::Low)
+        .responses(Responses::builder().websocket_url(endpoint.clone()).build())
+        .prompt_cache_key("changed-cache")
+        .resume(snapshot.clone())
+        .build();
+    assert!(matches!(
+        incompatible,
+        Err(NanocodexError::InvalidSessionSnapshot(message))
+            if message.contains("prompt cache key")
+    ));
+
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (resumed, resumed_events) = Nanocodex::builder("test-key")
+        .instructions("durable instructions")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .session_id("resumed-runtime")
+        .resume(snapshot)
+        .build()?;
+    assert_eq!(resumed_events.request_id(), "resumed-runtime");
+    assert_eq!(
+        resumed
+            .prompt("resume prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+
+    drop((resumed, resumed_events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    std::fs::remove_dir_all(rollout_home)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn serialized_session_resumes_over_ephemeral_https() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let first = next_http_json(&listener).await?;
+        assert_eq!(first.body["store"], false);
+        assert!(first.body.get("previous_response_id").is_none());
+        assert!(first.body.to_string().contains("first prompt"));
+        send_http_final(first.stream, "resp-first").await?;
+
+        let resumed = next_http_json(&listener).await?;
+        assert_eq!(resumed.body["store"], false);
+        assert!(resumed.body.get("previous_response_id").is_none());
+        let replay = resumed.body.to_string();
+        assert!(replay.contains("first prompt"));
+        assert!(replay.contains("done"));
+        assert!(replay.contains("resume prompt"));
+        send_http_final(resumed.stream, "resp-resumed").await
+    });
+
+    let workspace = temporary_workspace("serialized-resume-https")?;
+    let responses = Responses::builder()
+        .transport(ResponsesTransport::Https)
+        .store(false)
+        .api_base_url(endpoint.clone())
+        .build();
+    let (agent, events) = Nanocodex::builder("test-key")
+        .instructions("durable instructions")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .prompt_cache_key("durable-cache")
+        .build()?;
+    let first = agent.prompt("first prompt").await?.result().await?;
+    let snapshot = serde_json::from_slice(&serde_json::to_vec(&first.snapshot())?)?;
+    drop((agent, events, first));
+
+    let responses = Responses::builder()
+        .transport(ResponsesTransport::Https)
+        .store(false)
+        .api_base_url(endpoint)
+        .build();
+    let (resumed, resumed_events) = Nanocodex::builder("test-key")
+        .instructions("durable instructions")
+        .thinking(Thinking::Low)
+        .responses(responses)
+        .resume(snapshot)
+        .build()?;
+    assert_eq!(
+        resumed
+            .prompt("resume prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+
+    drop((resumed, resumed_events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock HTTPS Responses server did not finish"))???;
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

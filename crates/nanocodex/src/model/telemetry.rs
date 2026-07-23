@@ -194,7 +194,7 @@ impl RunStats {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub(super) fn resolve_workspace(requested: Option<&str>) -> Result<String> {
+pub(crate) fn resolve_workspace(requested: Option<&str>) -> Result<String> {
     let requested = PathBuf::from(requested.unwrap_or("."));
     let resolved =
         std::fs::canonicalize(&requested).map_err(|source| NanocodexError::ResolveWorkspace {
@@ -217,7 +217,7 @@ pub(super) fn resolve_workspace(requested: Option<&str>) -> Result<String> {
     clippy::unnecessary_wraps,
     reason = "matches the native workspace-resolution contract"
 )]
-pub(super) fn resolve_workspace(requested: Option<&str>) -> Result<String> {
+pub(crate) fn resolve_workspace(requested: Option<&str>) -> Result<String> {
     Ok(requested.unwrap_or(".").to_owned())
 }
 

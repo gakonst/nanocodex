@@ -22,7 +22,19 @@ export type AgentOptions = {
   fastMode?: boolean | undefined;
   sessionId?: string | undefined;
   thinking?: Thinking | undefined;
+  resume?: SessionSnapshot | undefined;
 };
+
+export type SessionSnapshot = Readonly<{
+  version: number;
+  model: string;
+  lineage_id: string;
+  prompt_cache_key: string;
+  workspace: string;
+  request_prefix: readonly Record<string, unknown>[];
+  canonical_context: Record<string, unknown>;
+  history: readonly Record<string, unknown>[];
+}>;
 
 export type ForkOptions = { at?: Turn | undefined };
 export type WatchEventsOptions = { includeAllSessions?: boolean | undefined };
@@ -65,6 +77,7 @@ export type DefaultAgent = Agent<AgentActions>;
 export type Turn<agent extends Agent<object> = Agent<object>> = Readonly<{
   readonly agent: agent;
   result(): Promise<string>;
+  snapshot(): SessionSnapshot;
   steer(options: { input: PromptInput }): Promise<void>;
   cancel(): Promise<void>;
   dispose(): void;

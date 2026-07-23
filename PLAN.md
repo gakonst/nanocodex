@@ -26,6 +26,12 @@ default so its completed threads can be handed off to `codex resume`.
 - Follow-on prompts automatically reuse the complete retained conversation.
   Callers never pass previous final messages, response IDs, reasoning items, or
   tool results back into the session.
+- Completed results can produce versioned serializable session snapshots.
+  Applications own snapshot storage and retention; resuming restores typed
+  history and cache lineage into fresh runtime resources. Snapshots complement
+  Codex-compatible rollouts and do not persist provider response IDs. Native
+  snapshots and Codex rollout appends project one immutable committed session
+  boundary rather than owning parallel conversation histories.
 - The default is one fixed model contract with medium thinking, the standard
   instructions, built-in tools, a persistent Responses WebSocket, and bounded
   typed retry/reconnect policy. Native callers may instead fix HTTPS/SSE,

@@ -15,6 +15,7 @@ use tower::Service;
 use tracing::{Instrument, info, info_span};
 use web_time::Instant;
 
+use super::context_manager::has_well_formed_tool_calls;
 use super::{
     CompactionCompleted, CompactionFailed, CompactionStarted, ModelCallCompleted, ModelCallFailed,
     ModelCallStarted, RunError, RunStarted, RunStats, RunSteered, ToolCallArguments, ToolCallEvent,
@@ -69,15 +70,21 @@ pub(crate) struct CompletedModelTurn {
 pub(crate) struct ModelCheckpoint {
     workspace: String,
     conversation: ConversationState,
+    request_prefix: Arc<[ResponseItem]>,
+    prompt_cache_key: Arc<str>,
     preserve_inherited_delta: bool,
     global_instructions: Option<Arc<str>>,
+}
+
+pub(crate) struct PreparedCheckpoint {
+    pub(crate) checkpoint: ModelCheckpoint,
+    pub(crate) runtime: ToolRuntime,
 }
 
 impl ModelCheckpoint {
     pub(crate) fn workspace(&self) -> &str {
         &self.workspace
     }
-
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn history(&self) -> nanocodex_core::responses::ResponseHistory {
         self.conversation.shared_history()
@@ -86,6 +93,39 @@ impl ModelCheckpoint {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) const fn history_revision(&self) -> u64 {
         self.conversation.history_revision
+    }
+
+    pub(crate) fn request_prefix(&self) -> &[ResponseItem] {
+        &self.request_prefix
+    }
+
+    pub(crate) fn prompt_cache_key(&self) -> &str {
+        &self.prompt_cache_key
+    }
+
+    pub(crate) fn canonical_context(&self) -> &ResponseItem {
+        &self.conversation.canonical_context
+    }
+
+    pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
+        self.conversation.flattened_history()
+    }
+
+    pub(crate) fn resume(
+        workspace: String,
+        request_prefix: Arc<[ResponseItem]>,
+        prompt_cache_key: Arc<str>,
+        canonical_context: ResponseItem,
+        history: Vec<ResponseItem>,
+    ) -> Result<Self> {
+        Ok(Self {
+            workspace,
+            conversation: ConversationState::resume(canonical_context, history)?,
+            request_prefix,
+            prompt_cache_key,
+            preserve_inherited_delta: false,
+            global_instructions: None,
+        })
     }
 }
 
@@ -262,6 +302,40 @@ impl ConversationState {
         })
     }
 
+    fn resume(canonical_context: ResponseItem, history: Vec<ResponseItem>) -> Result<Self> {
+        if history.is_empty() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "conversation history must not be empty".to_owned(),
+            ));
+        }
+        if !canonical_context.is_user_message() {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "canonical context must be a user message".to_owned(),
+            ));
+        }
+        if !has_well_formed_tool_calls(&history) {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "conversation history contains an unmatched or misordered tool call".to_owned(),
+            ));
+        }
+        let history_len = history.len();
+        let mut context = ContextManager::new(history);
+        if context.len() != history_len {
+            return Err(NanocodexError::InvalidSessionSnapshot(
+                "conversation history contains an unsupported item".to_owned(),
+            ));
+        }
+        context.commit_tail();
+        let delta_start = context.len();
+        Ok(Self {
+            canonical_context: Arc::new(canonical_context),
+            context,
+            delta_start,
+            previous_response_id: None,
+            history_revision: 0,
+        })
+    }
+
     fn flattened_history(&self) -> Vec<ResponseItem> {
         self.context.flattened_items()
     }
@@ -367,16 +441,21 @@ impl<S> ModelRun<S> {
         transport_stats: Arc<TransportStats>,
         tools: Tools,
         prompt_cache: ModelPromptCache,
-        checkpoint: ModelCheckpoint,
+        prepared: PreparedCheckpoint,
     ) -> Self {
-        let runtime = tool_runtime(&checkpoint.workspace, &config, &tools);
+        let PreparedCheckpoint {
+            checkpoint,
+            runtime,
+        } = prepared;
         let active_tools = runtime.control();
-        let factory = attempt_factory(
-            &events,
-            &transport_stats,
-            prompt_cache.key(),
-            &runtime,
-            config.system_prompt(),
+        let factory = ResponsesAttemptFactory::new(
+            RequestProfile::new(
+                events.request_id(),
+                checkpoint.prompt_cache_key.to_string(),
+                Arc::clone(&checkpoint.request_prefix),
+            ),
+            events.clone(),
+            Arc::clone(&transport_stats),
         );
         let thinking = config.thinking;
         let fast_mode = config.fast_mode;
@@ -426,6 +505,56 @@ impl<S> ModelRun<S> {
     fn load_agent_instructions(&self, workspace: &str) -> Result<Option<String>> {
         load_instructions(Path::new(workspace), self.global_instructions.as_deref())
     }
+}
+
+pub(crate) fn prepare_checkpoint(
+    checkpoint: ModelCheckpoint,
+    config: &ModelConfig,
+    tools: &Tools,
+) -> PreparedCheckpoint {
+    let runtime = tool_runtime(checkpoint.workspace(), config, tools);
+    PreparedCheckpoint {
+        checkpoint,
+        runtime,
+    }
+}
+
+pub(crate) fn prepare_resumed_checkpoint(
+    checkpoint: ModelCheckpoint,
+    config: &ModelConfig,
+    tools: &Tools,
+    session_id: &str,
+) -> Result<PreparedCheckpoint> {
+    let prepared = prepare_checkpoint(checkpoint, config, tools);
+    #[cfg(not(target_family = "wasm"))]
+    let tool_specs = {
+        let _ = session_id;
+        prepared.runtime.model_specs()
+    };
+    #[cfg(target_family = "wasm")]
+    let tool_specs = prepared.runtime.model_specs(session_id);
+    let expected = request_profile(
+        "resume-validation",
+        "resume-validation",
+        tool_specs,
+        config.system_prompt(),
+    );
+    let expected = serde_json::to_vec(expected.prefix()).map_err(|error| {
+        NanocodexError::InvalidSessionSnapshot(format!(
+            "failed to validate the request prefix: {error}"
+        ))
+    })?;
+    let stored = serde_json::to_vec(prepared.checkpoint.request_prefix()).map_err(|error| {
+        NanocodexError::InvalidSessionSnapshot(format!(
+            "failed to validate the stored request prefix: {error}"
+        ))
+    })?;
+    if expected != stored {
+        return Err(NanocodexError::InvalidSessionSnapshot(
+            "instructions or tool definitions do not match the resumed session".to_owned(),
+        ));
+    }
+    Ok(prepared)
 }
 
 impl<S> ModelRun<S>
@@ -690,6 +819,8 @@ where
         Ok(ModelCheckpoint {
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
+            request_prefix: session.factory.profile().shared_prefix(),
+            prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta: false,
             global_instructions: self.global_instructions.clone(),
         })
@@ -734,6 +865,8 @@ where
         Ok(ModelCheckpoint {
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
+            request_prefix: session.factory.profile().shared_prefix(),
+            prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta: false,
             global_instructions: self.global_instructions.clone(),
         })
@@ -748,6 +881,8 @@ where
         snapshots.send_replace(Some(ModelCheckpoint {
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
+            request_prefix: session.factory.profile().shared_prefix(),
+            prompt_cache_key: Arc::from(session.factory.profile().prompt_cache_key()),
             preserve_inherited_delta: true,
             global_instructions: global_instructions.cloned(),
         }));
