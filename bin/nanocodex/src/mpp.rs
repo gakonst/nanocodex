@@ -47,6 +47,8 @@ const DEFAULT_MPP_WEBSOCKET_URL: &str = "wss://openai.mpp.tempo.xyz/v1/responses
 const DEFAULT_TEMPO_RPC_URL: &str = "https://rpc.mainnet.tempo.xyz";
 const DEFAULT_TEMPO_PAY_WITH: &str = "0x20c0000000000000000000000000000000000000";
 const DEFAULT_TEMPO_SWAP_SLIPPAGE_BPS: u16 = 100;
+const DEFAULT_SESSION_DEPOSIT: u128 = 5_000_000;
+const DEFAULT_TOP_UP_AMOUNT: u128 = 5_000_000;
 // Five $5 refill quanta while retaining a finite client-side authorization cap.
 const DEFAULT_MAX_DEPOSIT: u128 = 25_000_000;
 const DEFAULT_MAX_EGRESS_CHARGE: u128 = 100_000;
@@ -139,6 +141,15 @@ pub(crate) struct MppArgs {
     )]
     max_deposit: u128,
 
+    /// Preferred automatic session top-up in token atomic units.
+    #[arg(
+        long = "provider.tempo.top-up-amount",
+        global = true,
+        env = "NANOCODEX_PROVIDER_TEMPO_TOP_UP_AMOUNT",
+        default_value_t = DEFAULT_TOP_UP_AMOUNT
+    )]
+    top_up_amount: u128,
+
     /// Maximum one-shot egress charge in token atomic units.
     #[arg(
         long = "provider.tempo.egress-max-charge",
@@ -211,8 +222,9 @@ impl MppArgs {
             })
             .with_authorized_signer(wallet.access_key)
             .with_channel_store(Arc::new(store))
-            .with_default_deposit(self.max_deposit)
+            .with_default_deposit(DEFAULT_SESSION_DEPOSIT)
             .with_max_deposit(self.max_deposit)
+            .with_top_up_amount(self.top_up_amount)
             .with_autoswap(autoswap);
         let mut management_headers = reqwest13::header::HeaderMap::new();
         if let Some(api_key) = &self.mpp_api_key {
@@ -743,6 +755,7 @@ mod tests {
             pay_with: DEFAULT_TEMPO_PAY_WITH.to_owned(),
             swap_slippage_bps: DEFAULT_TEMPO_SWAP_SLIPPAGE_BPS,
             max_deposit: DEFAULT_MAX_DEPOSIT,
+            top_up_amount: DEFAULT_TOP_UP_AMOUNT,
             egress_max_charge: DEFAULT_MAX_EGRESS_CHARGE,
             mpp_api_key: None,
         }
