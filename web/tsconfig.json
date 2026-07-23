@@ -11,6 +11,7 @@
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "preserveSymlinks": true,
     "baseUrl": ".",
     "paths": {
       "react": ["./node_modules/@types/react/index.d.ts"],

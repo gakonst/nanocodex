@@ -180,6 +180,7 @@ enum Command {
     Prompt {
         key: TurnKey,
         prompt: Prompt,
+        thinking: Option<Thinking>,
         parent: Option<tracing::Span>,
         result: oneshot::Sender<Result<TurnResult>>,
     },
@@ -199,17 +200,23 @@ enum Command {
     Spawn {
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },
+    SetThinking {
+        thinking: Thinking,
+        result: oneshot::Sender<Result<()>>,
+    },
 }
 
 enum QueuedTurn {
     Pending {
         key: TurnKey,
         prompt: Prompt,
+        thinking: Thinking,
         parent: Option<tracing::Span>,
         result: oneshot::Sender<Result<TurnResult>>,
     },
     Cancelled {
         prompt: Prompt,
+        thinking: Thinking,
         parent: Option<tracing::Span>,
         result: oneshot::Sender<Result<TurnResult>>,
     },
@@ -350,6 +357,7 @@ impl Nanocodex {
             .send(Command::Prompt {
                 key,
                 prompt,
+                thinking: None,
                 parent,
                 result,
             })
@@ -365,6 +373,22 @@ impl Nanocodex {
             },
             result: receiver,
         })
+    }
+
+    /// Changes the reasoning effort for subsequently accepted turns.
+    ///
+    /// An active turn and prompts already queued by the driver retain the
+    /// effort they captured when accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the agent driver has stopped.
+    pub async fn set_thinking(&self, thinking: Thinking) -> Result<()> {
+        request_command(&self.commands, |result| Command::SetThinking {
+            thinking,
+            result,
+        })
+        .await
     }
 
     /// Starts a clean sibling agent with the same private configuration,
@@ -764,10 +788,7 @@ where
         self.tools.start_providers();
         let session_id = self.events.request_id().to_owned();
         let rollout = self.rollout.take();
-        let reasoning = ReasoningSettings {
-            mode: self.spawner.config.reasoning_mode,
-            effort: self.spawner.config.thinking,
-        };
+        let mut default_thinking = self.spawner.config.thinking;
         let inherited_checkpoint = self.initial_checkpoint.as_ref().map(|checkpoint| {
             Arc::new(CommittedCheckpoint {
                 lineage_id: Arc::clone(&self.spawner.lineage_id),
@@ -813,18 +834,21 @@ where
                         QueuedTurn::Pending {
                             key,
                             prompt,
+                            thinking,
                             parent,
                             result,
                         } => {
                             break Command::Prompt {
                                 key,
                                 prompt,
+                                thinking: Some(thinking),
                                 parent,
                                 result,
                             };
                         }
                         QueuedTurn::Cancelled {
                             prompt,
+                            thinking,
                             parent,
                             result,
                         } => {
@@ -840,7 +864,10 @@ where
                                 session_id.as_str(),
                                 self.spawner.lineage_id.as_ref(),
                                 &self.origin,
-                                reasoning,
+                                ReasoningSettings {
+                                    mode: self.spawner.config.reasoning_mode,
+                                    effort: thinking,
+                                },
                                 turn_index,
                                 prompt.instruction.text_bytes(),
                             );
@@ -858,8 +885,11 @@ where
                                 });
                             }
                             let _guard = turn_span.enter();
-                            model
-                                .emit_cancelled_before_start(&prompt, self.workspace.as_deref())?;
+                            model.emit_cancelled_before_start(
+                                &prompt,
+                                self.workspace.as_deref(),
+                                thinking,
+                            )?;
                             drop(result.send(Err(NanocodexError::TurnCancelled)));
                             continue;
                         }
@@ -877,19 +907,27 @@ where
             let Command::Prompt {
                 key,
                 prompt,
+                thinking,
                 parent,
                 result,
             } = command
             else {
+                if let Command::SetThinking { thinking, result } = command {
+                    default_thinking = thinking;
+                    drop(result.send(Ok(())));
+                    continue;
+                }
                 handle_idle_command(
                     command,
                     latest_fork_checkpoint.as_ref(),
                     &self.spawner,
+                    default_thinking,
                     session_id.as_str(),
                     self.workspace.clone(),
                 );
                 continue;
             };
+            let thinking = thinking.unwrap_or(default_thinking);
             turn_index += 1;
             let prompt_content = tracing::enabled!(
                 target: "nanocodex",
@@ -902,7 +940,10 @@ where
                 session_id.as_str(),
                 self.spawner.lineage_id.as_ref(),
                 &self.origin,
-                reasoning,
+                ReasoningSettings {
+                    mode: self.spawner.config.reasoning_mode,
+                    effort: thinking,
+                },
                 turn_index,
                 prompt.instruction.text_bytes(),
             );
@@ -929,6 +970,7 @@ where
                     .execute(
                         prompt,
                         self.workspace.clone(),
+                        thinking,
                         steer_rx,
                         cancel_rx,
                         fork_snapshots,
@@ -959,12 +1001,14 @@ where
                             Some(Command::Prompt {
                                 key,
                                 prompt,
+                                thinking: _,
                                 parent,
                                 result,
                             }) => {
                                 queued_turns.push_back(QueuedTurn::Pending {
                                     key,
                                     prompt,
+                                    thinking: default_thinking,
                                     parent,
                                     result,
                                 });
@@ -1010,9 +1054,14 @@ where
                                     command,
                                     latest_fork_checkpoint.as_ref(),
                                     &self.spawner,
+                                    default_thinking,
                                     session_id.as_str(),
                                     self.workspace.clone(),
                                 );
+                            }
+                            Some(Command::SetThinking { thinking, result }) => {
+                                default_thinking = thinking;
+                                drop(result.send(Ok(())));
                             }
                             None => commands_open = false,
                         }
@@ -1167,6 +1216,7 @@ fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) 
     };
     let QueuedTurn::Pending {
         prompt,
+        thinking,
         parent,
         result,
         ..
@@ -1178,6 +1228,7 @@ fn cancel_queued_turn(queued_turns: &mut VecDeque<QueuedTurn>, target: TurnKey) 
         position,
         QueuedTurn::Cancelled {
             prompt,
+            thinking,
             parent,
             result,
         },
@@ -1189,6 +1240,7 @@ fn handle_idle_command<S>(
     command: Command,
     latest: Option<&Arc<CommittedCheckpoint>>,
     spawner: &BranchSpawner<S>,
+    thinking: Thinking,
     session_id: &str,
     workspace: Option<Arc<str>>,
 ) where
@@ -1201,17 +1253,20 @@ fn handle_idle_command<S>(
             let checkpoint = checkpoint.or_else(|| latest.cloned());
             let outcome = checkpoint
                 .ok_or(NanocodexError::ForkBeforeCompletedTurn)
-                .and_then(|checkpoint| spawner.spawn_fork(&checkpoint, session_id));
+                .and_then(|checkpoint| spawner.spawn_fork(&checkpoint, session_id, thinking));
             drop(result.send(outcome));
         }
         Command::Spawn { result } => {
-            drop(result.send(spawner.spawn_clean(workspace, session_id)));
+            drop(result.send(spawner.spawn_clean(workspace, session_id, thinking)));
         }
         Command::Steer { result, .. } => {
             drop(result.send(Err(NanocodexError::TurnNotSteerable)));
         }
         Command::Cancel { result, .. } => {
             drop(result.send(Err(NanocodexError::TurnNotCancellable)));
+        }
+        Command::SetThinking { result, .. } => {
+            drop(result.send(Ok(())));
         }
         Command::Prompt { .. } => {}
     }
@@ -1227,10 +1282,14 @@ where
         &self,
         checkpoint: &CommittedCheckpoint,
         parent_session_id: &str,
+        thinking: Thinking,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = new_session_id();
         let workspace = Some(Arc::<str>::from(checkpoint.model.workspace()));
         let mut spawner = self.clone();
+        let mut config = (*spawner.config).clone();
+        config.thinking = thinking;
+        spawner.config = Arc::new(config);
         spawner.depth = self.depth.saturating_add(1);
         spawn_agent_driver(
             spawner,
@@ -1251,11 +1310,14 @@ where
         &self,
         workspace: Option<Arc<str>>,
         parent_session_id: &str,
+        thinking: Thinking,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = new_session_id();
         let depth = self.depth.saturating_add(1);
+        let mut config = (*self.config).clone();
+        config.thinking = thinking;
         let spawner = Self {
-            config: Arc::clone(&self.config),
+            config: Arc::new(config),
             tools: self.tools.clone(),
             lineage_id: Arc::from(session_id.as_str()),
             prompt_cache_key: self.prompt_cache_key.as_ref().map(Arc::clone),
