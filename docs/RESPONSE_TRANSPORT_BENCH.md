@@ -90,9 +90,10 @@ For each request the JSON report records:
 - input, cached-input, cache-write, and output tokens;
 - WebSocket setup time where applicable.
 
-It also records chain wall time, local fork-snapshot clone time, and concurrent
-mainline-plus-forks wall time. Every assistant reply is checked against an
-exact expected token. Stored responses are deleted at the end unless
+It also normalizes cold start-to-first-event and completion, warm reused-client
+medians, local fork-snapshot clone time, fresh-fork setup and start timing, and
+concurrent mainline-plus-forks wall time. Every assistant reply is checked
+against an exact expected token. Stored responses are deleted at the end unless
 `FORK_BENCH_RETAIN=1`.
 
 Run the complete default matrix with:
@@ -120,51 +121,86 @@ OPENAI_RESPONSES_WEBSOCKET_URL
 
 Repeated runs rotate variant order to reduce a fixed ordering bias.
 
-## July 22, 2026 snapshot
+## July 23, 2026 ten-turn rerun
 
-The retained local report is
-`.nanocodex/benchmarks/response-transport-repeated.json` and is intentionally
-outside Git. The release-build workload used two chain turns, forks from both
-turns, one simultaneous mainline continuation, 600 deterministic prefix facts,
-and three order-rotated repetitions. The table reports medians across the three
-trials; response and first-event medians include every request in that phase.
+The retained raw reports are
+`.nanocodex/benchmarks/response-transport-10turn-rerun.json` and
+`.nanocodex/benchmarks/response-transport-10turn-ws-store-replay-replacement.json`;
+they are intentionally outside Git. The release-build workload used ten chain
+turns, historical forks from turns 3, 6, and 9, one simultaneous mainline
+continuation, 600 deterministic prefix facts, and three successful samples per
+variant. Variant order rotated between repetitions. One `ws-store-replay`
+sample was rejected after a transient peer TLS EOF and replaced with a clean
+targeted sample; it is not included in the medians.
 
-| Variant | Chain request bytes | Chain response | Chain first event | Mean fork request bytes | Fork response | Mainline + forks wall |
+Cold timing starts before fresh transport setup and includes the first request.
+For WebSocket this includes the handshake; for HTTPS the first request includes
+connection establishment. Warm medians cover chain turns 2 through 10 on the
+reused WebSocket or pooled HTTPS client. Compilation and process startup are
+excluded.
+
+| Variant | Cold first event | Cold complete | Warm first event | Warm complete | 10-turn request bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `ws-store-checkpoint` | 679 ms | 1,847 ms | 80 ms | 1,047 ms | 32,974 |
+| `ws-store-replay` | 657 ms | 2,202 ms | 151 ms | 1,243 ms | 277,051 |
+| `ws-ephemeral-connection` | 587 ms | 1,380 ms | 99 ms | 955 ms | 33,104 |
+| `ws-ephemeral-replay` | 610 ms | 1,564 ms | 97 ms | 920 ms | 277,181 |
+| `https-store-checkpoint` | 400 ms | 1,211 ms | 369 ms | 1,241 ms | 32,154 |
+| `https-store-replay` | 374 ms | 1,944 ms | 361 ms | 1,315 ms | 276,231 |
+| `https-ephemeral-replay` | 405 ms | 1,260 ms | 277 ms | 1,051 ms | 276,361 |
+
+Fork snapshot cloning is the local cost before transport work. Fork
+start-to-first and start-to-complete include each branch's fresh transport
+setup and request. HTTPS setup rounds to zero because cloning the pooled client
+is local; any new network connection remains inside start-to-first. Race wall
+is the concurrent completion time for one mainline request and all three
+forks.
+
+| Variant | Clone per fork | Fork setup | Fork first event | Fork complete | Three-fork bytes | Mainline + forks wall |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `ws-store-checkpoint` | 26,907 | 1,116 ms | 124 ms | 785 | 1,290 ms | 1,759 ms |
-| `ws-store-replay` | 52,616 | 1,226 ms | 140 ms | 26,681 | 1,556 ms | 2,179 ms |
-| `ws-ephemeral-connection` | 26,933 | 1,089 ms | 122 ms | 26,706 | 2,180 ms | 2,935 ms |
-| `ws-ephemeral-replay` | 52,642 | 898 ms | 118 ms | 26,694 | 867 ms | 1,467 ms |
-| `https-store-checkpoint` | 26,743 | 1,073 ms | 342 ms | 703 | 1,385 ms | 1,712 ms |
-| `https-store-replay` | 52,452 | 936 ms | 350 ms | 26,599 | 1,608 ms | 1,728 ms |
-| `https-ephemeral-replay` | 52,478 | 946 ms | 308 ms | 26,612 | 1,387 ms | 1,671 ms |
+| `ws-store-checkpoint` | 0.4 µs | 910 ms | 1,069 ms | 2,281 ms | 2,346 | 2,489 ms |
+| `ws-store-replay` | 0.4 µs | 971 ms | 1,135 ms | 2,040 ms | 84,759 | 2,217 ms |
+| `ws-ephemeral-connection` | 0.4 µs | 912 ms | 1,012 ms | 1,800 ms | 84,834 | 3,673 ms |
+| `ws-ephemeral-replay` | 0.4 µs | 832 ms | 999 ms | 2,047 ms | 84,798 | 2,376 ms |
+| `https-store-checkpoint` | 0.3 µs | <0.1 ms | 392 ms | 1,713 ms | 2,100 | 1,830 ms |
+| `https-store-replay` | 0.3 µs | <0.1 ms | 436 ms | 1,129 ms | 84,513 | 1,380 ms |
+| `https-ephemeral-replay` | 0.3 µs | <0.1 ms | 373 ms | 1,372 ms | 84,552 | 3,427 ms |
 
-The stable findings from this small workload are:
+Every policy reported the same median model usage for the complete 14-request
+workload: 120,201 input tokens, including 111,363 cache reads and 8,796 cache
+writes, plus 104 output tokens. Cache reads were therefore 92.6% of input.
+At the published standard GPT-5.6 Sol rates of $5 per million uncached input
+tokens and $30 per million output tokens, with cache reads at a 90% discount
+and cache writes at 1.25 times uncached input, the estimated cost is $0.114 per
+variant workload. The 21 successful samples cost an estimated $2.39, excluding
+the rejected partial request. Account-specific or priority pricing may differ.
+See [OpenAI's GPT-5.6 pricing](https://openai.com/index/gpt-5-6/#availability-and-pricing).
 
-1. A stored response checkpoint reduced each fork request from about 26.6 KiB
-   to 0.7-0.8 KiB, a roughly 97% reduction. Incremental mainline chaining
-   roughly halved the two-turn request total because the initial request still
-   carried the complete prefix.
-2. `store: false` did not prevent delta requests on the persistent WebSocket,
-   but fresh forks had to rebroadcast their complete committed histories.
-3. Prompt caching was unchanged across the matrix: every chain reported 8,451
-   cached tokens out of 16,933 input tokens (49.9%). Storage and replay policy
-   did not improve this workload's cache-token ratio.
-4. WebSocket first-event latency was consistently lower: roughly 118-140 ms
-   on the chain versus 308-350 ms over HTTPS. A new WebSocket cost roughly
-   359-401 ms for the root and 468-499 ms for each fresh fork, so the benefit is
-   naturally strongest on a long-lived mainline and weaker for one-shot forks.
-5. Local checkpoint cloning took about 0.6-1.2 microseconds. Full-history JSON
-   encoding was about 18-20 microseconds at this size. These local costs were
-   negligible beside transport and inference, while request volume remained a
-   material scaling difference.
+The stable findings are:
 
-End-to-end model completion and concurrent fork latency varied substantially
-between repetitions, including multi-second backend outliers. The snapshot is
-strong evidence for byte volume, cache behavior, connection setup, and
-first-event behavior; it is not enough evidence that `store` itself changes
-model generation latency. Larger histories and more repetitions should be used
-before making a release-level latency claim.
+1. A stored response checkpoint reduced three historical-fork requests from
+   about 84.5 KiB to 2.1-2.3 KiB, a roughly 97% reduction. Incremental chaining
+   reduced ten-turn mainline request volume by about 88%.
+2. `store: false` still permits connection-local delta requests on a persistent
+   WebSocket, but a fresh fork must replay complete committed history. HTTPS
+   with `store: false` must replay on every request.
+3. Transport, storage, and replay policy did not change model token usage,
+   cache reads, cache writes, or estimated API cost in this workload. Their
+   measurable effect was client wire volume and latency shape.
+4. Warm WebSocket first-event latency was 80-151 ms, materially lower than
+   HTTPS at 277-369 ms. Cold WebSocket first-event latency was slower because
+   its explicit handshake brought the total to 587-679 ms, versus 374-405 ms
+   for the first HTTPS event.
+5. Creating the local immutable fork snapshot remained effectively free at
+   0.3-0.4 microseconds per fork. A fresh WebSocket fork was dominated by an
+   0.8-1.0 second handshake; HTTPS forks reached their first event in
+   373-436 ms.
+
+End-to-end completion and concurrent race latency varied substantially between
+repetitions, including multi-second backend outliers. The rerun is strong
+evidence for byte volume, cache behavior, connection setup, and first-event
+behavior; it is not evidence that `store` itself changes model generation
+speed.
 
 ## Design implication
 

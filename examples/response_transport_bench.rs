@@ -186,6 +186,8 @@ struct ResponseMeasurement {
 struct BranchMeasurement {
     from_turn: usize,
     setup_ms: f64,
+    start_to_first_event_ms: f64,
+    start_to_completion_ms: f64,
     response: ResponseMeasurement,
 }
 
@@ -197,12 +199,20 @@ struct VariantMeasurement {
     chain_history: HistoryPolicy,
     fork_history: HistoryPolicy,
     root_setup_ms: f64,
+    cold_start_to_first_event_ms: f64,
+    cold_start_to_completion_ms: f64,
+    warm_median_time_to_first_event_ms: f64,
+    warm_median_response_ms: f64,
     chain_wall_ms: f64,
     chain_median_response_ms: f64,
     chain_request_bytes: usize,
     chain_usage: Usage,
     chain: Vec<ResponseMeasurement>,
     fork_snapshot_clone_us: f64,
+    fork_snapshot_clone_per_fork_us: f64,
+    fork_median_setup_ms: f64,
+    fork_median_start_to_first_event_ms: f64,
+    fork_median_start_to_completion_ms: f64,
     mainline_and_forks_wall_ms: f64,
     mainline: Vec<ResponseMeasurement>,
     branches: Vec<BranchMeasurement>,
@@ -400,7 +410,7 @@ async fn main() -> Result<()> {
     }
 
     let report = BenchmarkReport {
-        schema_version: 1,
+        schema_version: 2,
         model: MODEL,
         run_id,
         turns: config.turns,
@@ -561,11 +571,29 @@ fn build_variant_measurement(
     branches: &[BranchRun],
 ) -> Result<VariantMeasurement> {
     let chain_responses = chain_measurements(chain)?;
+    let cold = chain_responses
+        .first()
+        .ok_or_else(|| eyre!("chain produced no cold response measurement"))?;
+    let warm = chain_responses.get(1..).unwrap_or_default();
     let mut chain_latencies = chain_responses
         .iter()
         .map(|response| response.response_ms)
         .collect::<Vec<_>>();
     chain_latencies.sort_by(f64::total_cmp);
+    let warm_median_response_ms = median_sorted(warm.iter().map(|response| response.response_ms));
+    let warm_median_time_to_first_event_ms =
+        median_sorted(warm.iter().map(|response| response.time_to_first_event_ms));
+    let fork_median_setup_ms = median_sorted(
+        branches
+            .iter()
+            .map(|branch| duration_ms(branch.setup_latency)),
+    );
+    let fork_median_start_to_first_event_ms = median_sorted(branches.iter().map(|branch| {
+        duration_ms(branch.setup_latency) + duration_ms(branch.response.time_to_first_event)
+    }));
+    let fork_median_start_to_completion_ms = median_sorted(branches.iter().map(|branch| {
+        duration_ms(branch.setup_latency) + duration_ms(branch.response.response_latency)
+    }));
     let chain_request_bytes = chain_responses
         .iter()
         .map(|response| response.request_bytes)
@@ -581,12 +609,21 @@ fn build_variant_measurement(
         chain_history: variant.chain_history,
         fork_history: variant.fork_history,
         root_setup_ms: duration_ms(chain.connection.setup_latency),
+        cold_start_to_first_event_ms: duration_ms(chain.connection.setup_latency)
+            + cold.time_to_first_event_ms,
+        cold_start_to_completion_ms: duration_ms(chain.connection.setup_latency) + cold.response_ms,
+        warm_median_time_to_first_event_ms,
+        warm_median_response_ms,
         chain_wall_ms: duration_ms(chain_wall),
         chain_median_response_ms: median(&chain_latencies),
         chain_request_bytes,
         chain_usage,
         chain: chain_responses,
         fork_snapshot_clone_us: duration_us(snapshot_clone),
+        fork_snapshot_clone_per_fork_us: duration_us(snapshot_clone) / usize_to_f64(branches.len()),
+        fork_median_setup_ms,
+        fork_median_start_to_first_event_ms,
+        fork_median_start_to_completion_ms,
         mainline_and_forks_wall_ms: duration_ms(race_wall),
         mainline: mainline
             .responses
@@ -598,6 +635,10 @@ fn build_variant_measurement(
             .map(|branch| BranchMeasurement {
                 from_turn: branch.from_turn,
                 setup_ms: duration_ms(branch.setup_latency),
+                start_to_first_event_ms: duration_ms(branch.setup_latency)
+                    + duration_ms(branch.response.time_to_first_event),
+                start_to_completion_ms: duration_ms(branch.setup_latency)
+                    + duration_ms(branch.response.response_latency),
                 response: branch.response.measurement(),
             })
             .collect(),
@@ -1166,19 +1207,16 @@ fn print_variant_summary(measurement: &VariantMeasurement) {
         .iter()
         .map(|branch| branch.response.request_bytes)
         .sum();
-    let fork_median = {
-        let mut values = measurement
-            .branches
-            .iter()
-            .map(|branch| branch.response.response_ms)
-            .collect::<Vec<_>>();
-        values.sort_by(f64::total_cmp);
-        median(&values)
-    };
     println!(
-        "  chain: {:>8.1} ms wall, {:>7.1} ms median response, {:>8} request B, {:>5.1}% cached",
+        "  cold: {:>7.1} ms first event, {:>7.1} ms complete; warm: {:>7.1} ms first event, {:>7.1} ms complete",
+        measurement.cold_start_to_first_event_ms,
+        measurement.cold_start_to_completion_ms,
+        measurement.warm_median_time_to_first_event_ms,
+        measurement.warm_median_response_ms,
+    );
+    println!(
+        "  chain: {:>8.1} ms wall, {:>8} request B, {:>5.1}% cached",
         measurement.chain_wall_ms,
-        measurement.chain_median_response_ms,
         measurement.chain_request_bytes,
         percentage(
             measurement.chain_usage.cached,
@@ -1186,11 +1224,15 @@ fn print_variant_summary(measurement: &VariantMeasurement) {
         )
     );
     println!(
-        "  race:  {:>8.1} ms mainline + forks, {:>7.1} ms median fork response, {:>8} fork request B, snapshot clone {:.1} us",
-        measurement.mainline_and_forks_wall_ms,
-        fork_median,
-        fork_bytes,
-        measurement.fork_snapshot_clone_us
+        "  forks: {:>7.1} ms start-to-first, {:>7.1} ms start-to-complete, {:>7.1} ms setup, {:.1} us local clone/fork",
+        measurement.fork_median_start_to_first_event_ms,
+        measurement.fork_median_start_to_completion_ms,
+        measurement.fork_median_setup_ms,
+        measurement.fork_snapshot_clone_per_fork_us,
+    );
+    println!(
+        "  race:  {:>8.1} ms mainline + forks, {:>8} fork request B",
+        measurement.mainline_and_forks_wall_ms, fork_bytes,
     );
 }
 
@@ -1319,6 +1361,12 @@ fn median(values: &[f64]) -> f64 {
     }
 }
 
+fn median_sorted(values: impl Iterator<Item = f64>) -> f64 {
+    let mut values = values.collect::<Vec<_>>();
+    values.sort_by(f64::total_cmp);
+    median(&values)
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn percentage(part: u64, whole: u64) -> f64 {
     if whole == 0 {
@@ -1336,6 +1384,11 @@ fn duration_ms(duration: Duration) -> f64 {
 #[allow(clippy::cast_precision_loss)]
 fn duration_us(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000_000.0
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn usize_to_f64(value: usize) -> f64 {
+    value as f64
 }
 
 #[cfg(test)]
