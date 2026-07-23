@@ -745,7 +745,6 @@ enum EntryContent {
     Tool(ToolActivity),
 }
 
-#[derive(Clone)]
 struct ToolActivity {
     call_id: String,
     name: String,
@@ -757,24 +756,32 @@ struct ToolActivity {
     highlighted_source: Option<Vec<Line<'static>>>,
     patch: Option<PatchPresentation>,
     plain_detail: Option<StreamingText>,
+    cached_layout: Mutex<Option<Box<CachedToolLayout>>>,
     details_expanded: Arc<AtomicBool>,
 }
 
 struct MarkdownContent {
     source: String,
     streaming: bool,
+    plain_streaming: bool,
     base_style: Style,
     show_header: bool,
-    cached: Mutex<Option<RenderedMarkdown>>,
+    cached: Mutex<Option<RenderedText>>,
 }
 
 #[derive(Clone)]
-struct RenderedMarkdown {
+struct RenderedText {
     width: u16,
     text: Text<'static>,
     line_heights: Vec<usize>,
     prewrapped_lines: Vec<Option<Vec<Line<'static>>>>,
     height: usize,
+}
+
+#[derive(Clone)]
+struct CachedToolLayout {
+    expanded: bool,
+    rendered: RenderedText,
 }
 
 struct StreamingText {
@@ -818,11 +825,36 @@ impl Clone for StreamingLine {
     }
 }
 
+impl Clone for ToolActivity {
+    fn clone(&self) -> Self {
+        Self {
+            call_id: self.call_id.clone(),
+            name: self.name.clone(),
+            arguments: self.arguments.clone(),
+            status: self.status,
+            duration_ns: self.duration_ns,
+            result: self.result.clone(),
+            children: self.children.clone(),
+            highlighted_source: self.highlighted_source.clone(),
+            patch: self.patch.clone(),
+            plain_detail: self.plain_detail.clone(),
+            cached_layout: Mutex::new(
+                self.cached_layout
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            ),
+            details_expanded: Arc::clone(&self.details_expanded),
+        }
+    }
+}
+
 impl Clone for MarkdownContent {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
             streaming: self.streaming,
+            plain_streaming: self.plain_streaming,
             base_style: self.base_style,
             show_header: self.show_header,
             cached: Mutex::new(
@@ -1053,6 +1085,10 @@ impl TranscriptEntry {
             return;
         };
         tool.plain_detail = None;
+        *tool
+            .cached_layout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         tool.children.push(ToolActivity::new(
             call_id,
             name,
@@ -1090,6 +1126,10 @@ impl TranscriptEntry {
         target.duration_ns = duration_ns;
         target.result = result;
         target.refresh_plain_detail();
+        *target
+            .cached_layout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         self.cached_height.store(0, Ordering::Relaxed);
     }
 }
@@ -1121,6 +1161,7 @@ impl ToolActivity {
             highlighted_source,
             patch,
             plain_detail,
+            cached_layout: Mutex::new(None),
             details_expanded,
         }
     }
@@ -1151,9 +1192,7 @@ impl ToolActivity {
                 .max(1);
             return header_height.saturating_add(detail.height(width));
         }
-        Paragraph::new(self.text(width))
-            .wrap(Wrap { trim: false })
-            .line_count(width)
+        self.with_rendered(width, |rendered| rendered.height)
     }
 
     fn render(
@@ -1165,13 +1204,9 @@ impl ToolActivity {
         selected: bool,
     ) {
         if !self.uses_plain_detail() {
-            let mut paragraph = Paragraph::new(self.text(area.width)).wrap(Wrap { trim: false });
-            if selected {
-                paragraph = paragraph.style(Style::default().add_modifier(Modifier::REVERSED));
-            }
-            paragraph
-                .scroll((saturating_u16(scroll), 0))
-                .render(area, buffer);
+            self.with_rendered(area.width, |rendered| {
+                rendered.render(area, buffer, scroll, total_height, selected);
+            });
             return;
         }
         let Some(detail) = &self.plain_detail else {
@@ -1213,6 +1248,27 @@ impl ToolActivity {
             total_height.saturating_sub(header_height),
             selected,
         );
+    }
+
+    fn with_rendered<R>(&self, width: u16, read: impl FnOnce(&RenderedText) -> R) -> R {
+        let expanded = self.details_expanded.load(Ordering::Relaxed);
+        let mut cached = self
+            .cached_layout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if cached
+            .as_ref()
+            .is_some_and(|layout| layout.expanded != expanded || layout.rendered.width != width)
+        {
+            *cached = None;
+        }
+        let layout = cached.get_or_insert_with(|| {
+            Box::new(CachedToolLayout {
+                expanded,
+                rendered: RenderedText::new(self.text(width), width),
+            })
+        });
+        read(&layout.rendered)
     }
 
     fn plain_header_line(&self) -> Line<'static> {
@@ -1379,34 +1435,31 @@ fn child_lines(child: &ToolActivity, last: bool, width: u16) -> Vec<Line<'static
     let (icon, color) = tool_style(child.status);
     let connector = if last { "  └─" } else { "  ├─" };
     let argument_lines = child.arguments.lines().collect::<Vec<_>>();
-    let mut detail = if let Some(patch) = &child.patch {
-        patch.summary.clone()
+    let detail_style = Style::default().fg(Color::DarkGray);
+    let mut detail = Vec::new();
+    if let Some(patch) = &child.patch {
+        push_styled_detail(&mut detail, patch.summary.clone(), detail_style);
     } else if argument_lines.len() <= 1 {
-        child.arguments.clone()
-    } else {
-        String::new()
-    };
+        push_styled_detail(&mut detail, child.arguments.clone(), detail_style);
+    }
     if let Some(duration_ns) = child.duration_ns {
-        push_detail(&mut detail, &format_duration(duration_ns));
+        push_styled_detail(&mut detail, format_duration(duration_ns), detail_style);
     }
     if let Some(result) = child.result.as_deref().filter(|result| !result.is_empty()) {
-        push_detail(&mut detail, result);
+        push_styled_detail(&mut detail, result.to_owned(), detail_style);
     }
-    let mut lines = vec![Line::from(vec![
+    let mut header = vec![
         Span::styled(connector, Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!(" {icon} {}", child.name),
             Style::default().fg(color),
         ),
-        Span::styled(
-            if detail.is_empty() {
-                String::new()
-            } else {
-                format!("  {detail}")
-            },
-            Style::default().fg(Color::DarkGray),
-        ),
-    ])];
+    ];
+    if !detail.is_empty() {
+        header.push(Span::styled("  ", detail_style));
+        header.extend(detail);
+    }
+    let mut lines = vec![Line::from(header)];
     if let Some(patch) = &child.patch {
         let continuation = if last { "     " } else { "  │  " };
         let prefix_width = u16::try_from(continuation.len()).unwrap_or(u16::MAX);
@@ -1422,6 +1475,16 @@ fn child_lines(child: &ToolActivity, last: bool, width: u16) -> Vec<Line<'static
         }
     }
     lines
+}
+
+fn push_styled_detail(target: &mut Vec<Span<'static>>, detail: String, style: Style) {
+    if detail.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push(Span::styled(" · ", style));
+    }
+    target.push(Span::styled(detail, style));
 }
 
 fn prefixed_patch_lines(lines: &[Line<'static>], prefix: &'static str) -> Vec<Line<'static>> {
@@ -1452,6 +1515,95 @@ fn compact_activity_preview(detail: &str) -> String {
     preview
 }
 
+fn is_plain_streaming_markdown(source: &str) -> bool {
+    !source.bytes().any(|byte| {
+        matches!(
+            byte,
+            b'\r'
+                | b'\\'
+                | b'`'
+                | b'*'
+                | b'_'
+                | b'['
+                | b']'
+                | b'<'
+                | b'>'
+                | b'#'
+                | b'&'
+                | b'!'
+                | b'|'
+                | b'~'
+                | b'='
+                | b'{'
+                | b'}'
+        )
+    }) && source.lines().all(plain_markdown_line)
+}
+
+fn plain_markdown_extension_is_safe(source: &str, delta: &str) -> bool {
+    if !is_plain_streaming_markdown(delta) {
+        return false;
+    }
+    if delta.contains("\n\n") {
+        let one_boundary = source.ends_with('\n')
+            && !source.ends_with("\n\n")
+            && delta.starts_with('\n')
+            && !delta[1..].contains("\n\n");
+        if !one_boundary {
+            return false;
+        }
+    }
+    if source.ends_with("\n\n") && delta.starts_with('\n') {
+        return false;
+    }
+    let previous = source.rsplit('\n').next().unwrap_or_default();
+    let next = delta.split('\n').next().unwrap_or_default();
+    let trimmed = previous.trim_start_matches(' ');
+    let next_bytes = next.as_bytes();
+    if trimmed.bytes().all(|byte| byte.is_ascii_digit())
+        && !trimmed.is_empty()
+        && (next_bytes.starts_with(b". ") || next_bytes.starts_with(b") "))
+    {
+        return false;
+    }
+    if matches!(trimmed, "-" | "+") && next.starts_with(' ') {
+        return false;
+    }
+    if trimmed.bytes().all(|byte| byte == b'-')
+        && trimmed
+            .len()
+            .saturating_add(next.bytes().take_while(|byte| *byte == b'-').count())
+            >= 3
+    {
+        return false;
+    }
+    if previous.bytes().all(|byte| byte == b' ')
+        && previous
+            .len()
+            .saturating_add(next.bytes().take_while(|byte| *byte == b' ').count())
+            >= 4
+    {
+        return false;
+    }
+    true
+}
+
+fn plain_markdown_line(line: &str) -> bool {
+    if !line.is_empty() && line.trim().is_empty() {
+        return false;
+    }
+    let indent = line.bytes().take_while(|byte| *byte == b' ').count();
+    if indent >= 4 {
+        return false;
+    }
+    let line = &line[indent..];
+    if line.starts_with("- ") || line.starts_with("+ ") || line.starts_with("---") {
+        return false;
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    digits == 0 || !line[digits..].starts_with(". ") && !line[digits..].starts_with(") ")
+}
+
 fn format_duration(duration_ns: u64) -> String {
     if duration_ns < 1_000_000 {
         format!("{}µs", duration_ns / 1_000)
@@ -1468,6 +1620,7 @@ impl MarkdownContent {
         Self {
             source: source.to_owned(),
             streaming: false,
+            plain_streaming: false,
             base_style: Style::default(),
             show_header: true,
             cached: Mutex::new(None),
@@ -1478,6 +1631,7 @@ impl MarkdownContent {
         Self {
             source: source.to_owned(),
             streaming: true,
+            plain_streaming: is_plain_streaming_markdown(source),
             base_style: Style::default(),
             show_header: true,
             cached: Mutex::new(None),
@@ -1488,6 +1642,7 @@ impl MarkdownContent {
         Self {
             source: format!("• {}", indent_reasoning(source)),
             streaming: true,
+            plain_streaming: false,
             base_style: Style::default().add_modifier(Modifier::DIM),
             show_header: false,
             cached: Mutex::new(None),
@@ -1495,8 +1650,40 @@ impl MarkdownContent {
     }
 
     fn append(&mut self, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
+        let incremental = self.plain_streaming
+            && plain_markdown_extension_is_safe(&self.source, delta)
+            && self.show_header;
+        let starts_new_paragraph = self.source.ends_with("\n\n")
+            || (self.source.ends_with('\n') && delta.starts_with('\n'));
+        let paragraph_delta = if self.source.ends_with('\n') && delta.starts_with('\n') {
+            &delta[1..]
+        } else {
+            delta
+        };
+        let tail_start = self
+            .source
+            .rfind('\n')
+            .map_or(0, |index| index.saturating_add(1));
+        let replace_tail = !self.source.is_empty() && !self.source.ends_with('\n');
         self.source.push_str(delta);
-        *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.plain_streaming = incremental;
+        let mut cached = self.cached.lock().unwrap_or_else(PoisonError::into_inner);
+        if incremental && let Some(rendered) = cached.as_mut() {
+            if starts_new_paragraph {
+                rendered.append_plain_paragraph(paragraph_delta, self.base_style);
+            } else {
+                rendered.replace_plain_tail(
+                    replace_tail,
+                    &self.source[tail_start..],
+                    self.base_style,
+                );
+            }
+        } else {
+            *cached = None;
+        }
     }
 
     fn append_reasoning(&mut self, delta: &str) {
@@ -1507,6 +1694,7 @@ impl MarkdownContent {
     fn finalize(&mut self, source: &str) {
         source.clone_into(&mut self.source);
         self.streaming = false;
+        self.plain_streaming = false;
         *self.cached.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
@@ -1531,64 +1719,11 @@ impl MarkdownContent {
             return;
         }
         self.with_rendered(area.width, |rendered| {
-            let Some((first, mut line_top)) = rendered.line_at_visual_row(scroll, total_height)
-            else {
-                return;
-            };
-            let viewport_bottom = scroll.saturating_add(usize::from(area.height));
-            let mut index = first;
-            while index < rendered.text.lines.len() {
-                let line_height = rendered.line_height(index);
-                let line_bottom = line_top.saturating_add(line_height);
-                if line_top >= viewport_bottom {
-                    break;
-                }
-                let visible_top = line_top.max(scroll);
-                let visible_bottom = line_bottom.min(viewport_bottom);
-                if visible_top < visible_bottom {
-                    let line_area = Rect::new(
-                        area.x,
-                        area.y.saturating_add(saturating_u16(visible_top - scroll)),
-                        area.width,
-                        saturating_u16(visible_bottom - visible_top),
-                    );
-                    if let Some(rows) = rendered.prewrapped_lines[index].as_deref() {
-                        for (screen_y, row) in rows
-                            .iter()
-                            .skip(visible_top.saturating_sub(line_top))
-                            .take(usize::from(line_area.height))
-                            .enumerate()
-                        {
-                            row.clone().render(
-                                Rect::new(
-                                    line_area.x,
-                                    line_area.y.saturating_add(saturating_u16(screen_y)),
-                                    line_area.width,
-                                    1,
-                                ),
-                                buffer,
-                            );
-                        }
-                    } else {
-                        let mut line = rendered.text.lines[index].clone();
-                        line.alignment = line.alignment.or(rendered.text.alignment);
-                        Paragraph::new(line)
-                            .style(rendered.text.style)
-                            .wrap(Wrap { trim: false })
-                            .scroll((saturating_u16(visible_top.saturating_sub(line_top)), 0))
-                            .render(line_area, buffer);
-                    }
-                }
-                line_top = line_bottom;
-                index = index.saturating_add(1);
-            }
-            if selected {
-                buffer.set_style(area, Style::default().add_modifier(Modifier::REVERSED));
-            }
+            rendered.render(area, buffer, scroll, total_height, selected);
         });
     }
 
-    fn with_rendered<R>(&self, width: u16, read: impl FnOnce(&RenderedMarkdown) -> R) -> R {
+    fn with_rendered<R>(&self, width: u16, read: impl FnOnce(&RenderedText) -> R) -> R {
         let mut cached = self.cached.lock().unwrap_or_else(PoisonError::into_inner);
         if cached
             .as_ref()
@@ -1619,43 +1754,141 @@ impl MarkdownContent {
                 }
             }
             text.style = self.base_style;
-            let mut line_heights = Vec::with_capacity(text.lines.len());
-            let mut prewrapped_lines = Vec::with_capacity(text.lines.len());
-            for line in &text.lines {
-                let cache_rows = line
-                    .spans
-                    .iter()
-                    .map(|span| span.content.len())
-                    .sum::<usize>()
-                    > 4_096;
-                if cache_rows {
-                    let rows = wrap_styled_line(line, text.style, text.alignment, width);
-                    line_heights.push(rows.len());
-                    prewrapped_lines.push(Some(rows));
-                } else {
-                    line_heights.push(
-                        Paragraph::new(line.clone())
-                            .wrap(Wrap { trim: false })
-                            .line_count(width)
-                            .max(1),
-                    );
-                    prewrapped_lines.push(None);
-                }
-            }
-            let height = line_heights.iter().copied().sum();
-            RenderedMarkdown {
-                width,
-                text,
-                line_heights,
-                prewrapped_lines,
-                height,
-            }
+            RenderedText::new(text, width)
         });
         read(rendered)
     }
 }
 
-impl RenderedMarkdown {
+impl RenderedText {
+    fn new(text: Text<'static>, width: u16) -> Self {
+        let mut line_heights = Vec::with_capacity(text.lines.len());
+        let mut prewrapped_lines = Vec::with_capacity(text.lines.len());
+        for line in &text.lines {
+            let (height, rows) = rendered_line_layout(line, &text, width);
+            line_heights.push(height);
+            prewrapped_lines.push(rows);
+        }
+        let height = line_heights.iter().copied().sum();
+        Self {
+            width,
+            text,
+            line_heights,
+            prewrapped_lines,
+            height,
+        }
+    }
+
+    fn replace_plain_tail(&mut self, replace_tail: bool, tail: &str, base_style: Style) {
+        self.pop_line();
+        if replace_tail {
+            self.pop_line();
+        }
+        for line in tail.split_terminator('\n') {
+            self.push_line(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(line.to_owned(), Style::default().fg(Color::White)),
+            ]));
+        }
+        self.text.style = base_style;
+        self.push_line(Line::raw(""));
+    }
+
+    fn append_plain_paragraph(&mut self, paragraph: &str, base_style: Style) {
+        self.pop_line();
+        self.push_line(Line::raw(""));
+        for line in paragraph.split_terminator('\n') {
+            self.push_line(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(line.to_owned(), Style::default().fg(Color::White)),
+            ]));
+        }
+        self.text.style = base_style;
+        self.push_line(Line::raw(""));
+    }
+
+    fn pop_line(&mut self) {
+        let _ = self.text.lines.pop();
+        if let Some(height) = self.line_heights.pop() {
+            self.height = self.height.saturating_sub(height);
+        }
+        let _ = self.prewrapped_lines.pop();
+    }
+
+    fn push_line(&mut self, line: Line<'static>) {
+        let (height, rows) = rendered_line_layout(&line, &self.text, self.width);
+        self.height = self.height.saturating_add(height);
+        self.text.lines.push(line);
+        self.line_heights.push(height);
+        self.prewrapped_lines.push(rows);
+    }
+
+    fn render(
+        &self,
+        area: Rect,
+        buffer: &mut Buffer,
+        scroll: usize,
+        total_height: usize,
+        selected: bool,
+    ) {
+        if area.is_empty() {
+            return;
+        }
+        let Some((first, mut line_top)) = self.line_at_visual_row(scroll, total_height) else {
+            return;
+        };
+        let viewport_bottom = scroll.saturating_add(usize::from(area.height));
+        let mut index = first;
+        while index < self.text.lines.len() {
+            let line_height = self.line_height(index);
+            let line_bottom = line_top.saturating_add(line_height);
+            if line_top >= viewport_bottom {
+                break;
+            }
+            let visible_top = line_top.max(scroll);
+            let visible_bottom = line_bottom.min(viewport_bottom);
+            if visible_top < visible_bottom {
+                let line_area = Rect::new(
+                    area.x,
+                    area.y.saturating_add(saturating_u16(visible_top - scroll)),
+                    area.width,
+                    saturating_u16(visible_bottom - visible_top),
+                );
+                if let Some(rows) = self.prewrapped_lines[index].as_deref() {
+                    for (screen_y, row) in rows
+                        .iter()
+                        .skip(visible_top.saturating_sub(line_top))
+                        .take(usize::from(line_area.height))
+                        .enumerate()
+                    {
+                        row.clone().render(
+                            Rect::new(
+                                line_area.x,
+                                line_area.y.saturating_add(saturating_u16(screen_y)),
+                                line_area.width,
+                                1,
+                            ),
+                            buffer,
+                        );
+                    }
+                } else {
+                    let mut line = self.text.lines[index].clone();
+                    line.alignment = line.alignment.or(self.text.alignment);
+                    Paragraph::new(line)
+                        .style(self.text.style)
+                        .wrap(Wrap { trim: false })
+                        .scroll((saturating_u16(visible_top.saturating_sub(line_top)), 0))
+                        .render(line_area, buffer);
+                }
+            }
+            line_top = line_bottom;
+            index = index.saturating_add(1);
+        }
+        if selected {
+            buffer.set_style(area, Style::default().add_modifier(Modifier::REVERSED));
+        }
+    }
+
     fn line_height(&self, index: usize) -> usize {
         self.line_heights[index]
     }
@@ -1687,6 +1920,31 @@ impl RenderedMarkdown {
             bottom = top;
         }
         None
+    }
+}
+
+fn rendered_line_layout(
+    line: &Line<'static>,
+    text: &Text<'static>,
+    width: u16,
+) -> (usize, Option<Vec<Line<'static>>>) {
+    let cache_rows = line
+        .spans
+        .iter()
+        .map(|span| span.content.len())
+        .sum::<usize>()
+        > 4_096;
+    if cache_rows {
+        let rows = wrap_styled_line(line, text.style, text.alignment, width);
+        (rows.len(), Some(rows))
+    } else {
+        (
+            Paragraph::new(line.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1),
+            None,
+        )
     }
 }
 
@@ -2149,6 +2407,74 @@ mod tests {
             let mut actual = Buffer::empty(area);
             markdown.render(area, &mut actual, scroll, height, false);
             assert_eq!(actual, expected, "scroll={scroll}");
+        }
+    }
+
+    #[test]
+    fn streaming_plain_markdown_append_matches_a_fresh_parse() {
+        for (source, delta) in [
+            ("plain words", " added words"),
+            ("first line\nsecond line", "\nthird λ line"),
+            ("first paragraph\n", "\nsecond paragraph"),
+            ("first paragraph\n\nsecond", " paragraph"),
+            ("first paragraph\n\n", "second paragraph"),
+            ("1", " item"),
+            ("1", ". ordered item"),
+            ("-", " list item"),
+            ("plain", "\n\n# heading"),
+        ] {
+            for width in [20, 80] {
+                let mut incremental = MarkdownContent::streaming(source);
+                let _ = incremental.height(width);
+                incremental.append(delta);
+
+                let fresh = MarkdownContent::streaming(&format!("{source}{delta}"));
+                assert_eq!(
+                    incremental.materialized_text(width),
+                    fresh.materialized_text(width),
+                    "source={source:?} delta={delta:?} width={width}",
+                );
+                assert_eq!(incremental.height(width), fresh.height(width));
+            }
+        }
+    }
+
+    #[test]
+    fn long_nested_tool_result_cache_matches_full_paragraph_scrolling() {
+        let details_expanded = Arc::new(AtomicBool::new(true));
+        let mut tool = ToolActivity::new(
+            "code-mode-1".to_owned(),
+            "exec".to_owned(),
+            "text(await tools.exec_command({ cmd: 'render report' }));".to_owned(),
+            ToolStatus::Completed,
+            Arc::clone(&details_expanded),
+        );
+        let mut child = ToolActivity::new(
+            "code-mode-1/code-1".to_owned(),
+            "exec_command".to_owned(),
+            "render report".to_owned(),
+            ToolStatus::Completed,
+            details_expanded,
+        );
+        child.duration_ns = Some(1_000_000);
+        child.result = Some("styled λ output ".repeat(20_000));
+        child.refresh_plain_detail();
+        tool.children.push(child);
+
+        for width in [40, 120] {
+            let height = tool.height(width);
+            for scroll in [0, height / 2, height.saturating_sub(8)] {
+                let area = Rect::new(0, 0, width, 8);
+                let mut expected = Buffer::empty(area);
+                Paragraph::new(tool.text(width))
+                    .wrap(Wrap { trim: false })
+                    .scroll((saturating_u16(scroll), 0))
+                    .render(area, &mut expected);
+
+                let mut actual = Buffer::empty(area);
+                tool.render(area, &mut actual, scroll, height, false);
+                assert_eq!(actual, expected, "width={width} scroll={scroll}");
+            }
         }
     }
 

@@ -1242,6 +1242,82 @@ mod tui {
                     .expect("cached large-result benchmark frame should render");
             });
         });
+
+        let nested_result = sized_text(269 * 1_024, 19);
+        let nested_transcript = || {
+            let mut transcript = Transcript::default();
+            transcript.push(TranscriptItem::Tool {
+                call_id: "code-mode-1".to_owned(),
+                name: "exec".to_owned(),
+                arguments: "text(await tools.exec_command({ cmd: 'render report' }));".to_owned(),
+                status: ToolStatus::Completed,
+            });
+            assert!(transcript.push_tool_child(
+                "code-mode-1/code-1".to_owned(),
+                "exec_command".to_owned(),
+                "render report".to_owned(),
+                ToolStatus::Completed,
+            ));
+            assert!(transcript.set_tool_result(
+                "code-mode-1/code-1",
+                ToolStatus::Completed,
+                Some(1_000_000),
+                Some(nested_result.clone()),
+            ));
+            transcript
+        };
+        criterion.bench_function(
+            "tui_tool_tree/nested_result_269k_first_frame/120x40",
+            |bencher| {
+                bencher.iter_batched(
+                    || {
+                        let transcript = nested_transcript();
+                        let terminal = Terminal::new(TestBackend::new(120, 40))
+                            .expect("nested large-result benchmark terminal should initialize");
+                        (transcript, terminal)
+                    },
+                    |(transcript, mut terminal)| {
+                        terminal
+                            .draw(|frame| {
+                                frame.render_widget(
+                                    transcript.widget(0, None, None, "empty"),
+                                    frame.area(),
+                                );
+                            })
+                            .expect("nested large-result first frame should render");
+                        black_box((transcript, terminal));
+                    },
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+
+        let nested_transcript = nested_transcript();
+        let mut nested_terminal = Terminal::new(TestBackend::new(120, 40))
+            .expect("cached nested-result benchmark terminal should initialize");
+        nested_terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    nested_transcript.widget(0, None, None, "empty"),
+                    frame.area(),
+                );
+            })
+            .expect("initial nested large-result benchmark frame should render");
+        criterion.bench_function(
+            "tui_tool_tree/nested_result_269k_cached_frame/120x40",
+            |bencher| {
+                bencher.iter(|| {
+                    nested_terminal
+                        .draw(|frame| {
+                            frame.render_widget(
+                                nested_transcript.widget(0, None, None, "empty"),
+                                frame.area(),
+                            );
+                        })
+                        .expect("cached nested large-result frame should render");
+                });
+            },
+        );
     }
 
     pub(super) fn folded_tool_benchmarks(criterion: &mut Criterion) {
