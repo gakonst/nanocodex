@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nanocodex::{AgentEvent, AgentEventKind, Prompt, UserInput};
+use nanocodex::{AgentEvent, AgentEventKind, Prompt, Thinking, UserInput};
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
@@ -28,6 +28,41 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 const CANCEL_CONFIRMATION_WINDOW: Duration = Duration::from_secs(1);
 const SMOOTH_SCROLL_BACKLOG_ROWS: usize = 8;
 const MAX_SMOOTH_SCROLL_CATCH_UP_ROWS: usize = 32;
+
+pub(super) const STANDARD_THINKING_OPTIONS: [(Thinking, &str, &str); 4] = [
+    (
+        Thinking::Low,
+        "Low",
+        "Fast responses with lighter reasoning",
+    ),
+    (
+        Thinking::Medium,
+        "Medium",
+        "Balances speed and reasoning depth for everyday tasks",
+    ),
+    (
+        Thinking::High,
+        "High",
+        "Greater reasoning depth for complex problems",
+    ),
+    (
+        Thinking::Xhigh,
+        "Extra high",
+        "Extra high reasoning depth for complex problems",
+    ),
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ReasoningPicker {
+    Standard { selected: usize },
+    Advanced,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ReasoningPickerAction {
+    OpenedAdvanced,
+    Selected(Thinking),
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AttachedImage {
@@ -1038,6 +1073,9 @@ pub(super) struct App {
     cancel_confirmation: Option<CancelConfirmation>,
     screen_selection: ScreenSelection,
     tool_details_expanded: bool,
+    fast_mode: bool,
+    thinking: Thinking,
+    reasoning_picker: Option<ReasoningPicker>,
 }
 
 #[derive(Clone, Copy)]
@@ -1086,7 +1124,15 @@ impl App {
             cancel_confirmation: None,
             screen_selection: ScreenSelection::default(),
             tool_details_expanded: true,
+            fast_mode: false,
+            thinking: Thinking::default(),
+            reasoning_picker: None,
         }
+    }
+
+    pub(super) const fn with_thinking(mut self, thinking: Thinking) -> Self {
+        self.thinking = thinking;
+        self
     }
 
     pub(super) fn insert_char(&mut self, character: char) {
@@ -2364,6 +2410,83 @@ impl App {
         if let Some(conversation) = self.conversation_mut(self.focus) {
             conversation.status = status.into();
         }
+    }
+
+    pub(super) const fn fast_mode(&self) -> bool {
+        self.fast_mode
+    }
+
+    pub(super) fn fast_mode_changed(&mut self, enabled: bool) {
+        self.fast_mode = enabled;
+    }
+
+    pub(super) fn fast_mode_change_failed(&mut self, error: &str) {
+        self.push_active_error(format!("Could not change fast mode: {error}"));
+        self.set_active_status("Fast mode unchanged");
+    }
+
+    pub(super) const fn thinking(&self) -> Thinking {
+        self.thinking
+    }
+
+    pub(super) const fn reasoning_picker(&self) -> Option<ReasoningPicker> {
+        self.reasoning_picker
+    }
+
+    pub(super) fn open_reasoning_picker(&mut self) {
+        let selected = STANDARD_THINKING_OPTIONS
+            .iter()
+            .position(|(thinking, _, _)| *thinking == self.thinking)
+            .unwrap_or(STANDARD_THINKING_OPTIONS.len());
+        self.reasoning_picker = Some(ReasoningPicker::Standard { selected });
+    }
+
+    pub(super) fn move_reasoning_picker(&mut self, direction: isize) {
+        let Some(ReasoningPicker::Standard { selected }) = &mut self.reasoning_picker else {
+            return;
+        };
+        let count = STANDARD_THINKING_OPTIONS.len() + 1;
+        *selected = selected
+            .saturating_add_signed(direction)
+            .min(count.saturating_sub(1));
+    }
+
+    pub(super) fn confirm_reasoning_picker(&mut self) -> Option<ReasoningPickerAction> {
+        match self.reasoning_picker? {
+            ReasoningPicker::Standard { selected }
+                if selected == STANDARD_THINKING_OPTIONS.len() =>
+            {
+                self.reasoning_picker = Some(ReasoningPicker::Advanced);
+                Some(ReasoningPickerAction::OpenedAdvanced)
+            }
+            ReasoningPicker::Standard { selected } => {
+                let (thinking, _, _) = STANDARD_THINKING_OPTIONS[selected];
+                self.reasoning_picker = None;
+                Some(ReasoningPickerAction::Selected(thinking))
+            }
+            ReasoningPicker::Advanced => {
+                self.reasoning_picker = None;
+                Some(ReasoningPickerAction::Selected(Thinking::Max))
+            }
+        }
+    }
+
+    pub(super) fn back_reasoning_picker(&mut self) {
+        self.reasoning_picker = match self.reasoning_picker {
+            Some(ReasoningPicker::Advanced) => Some(ReasoningPicker::Standard {
+                selected: STANDARD_THINKING_OPTIONS.len(),
+            }),
+            Some(ReasoningPicker::Standard { .. }) | None => None,
+        };
+    }
+
+    pub(super) fn thinking_changed(&mut self, thinking: Thinking) {
+        self.thinking = thinking;
+    }
+
+    pub(super) fn thinking_change_failed(&mut self, error: &str) {
+        self.push_active_error(format!("Could not change reasoning: {error}"));
+        self.set_active_status("Reasoning unchanged");
     }
 
     pub(super) fn push_active_error(&mut self, error: impl Into<String>) {

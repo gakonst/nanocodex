@@ -26,7 +26,8 @@ use crossterm::event::{
 use eyre::{Result, WrapErr};
 use futures_util::StreamExt;
 use nanocodex::{
-    AgentEvent, AgentEvents, Nanocodex, NanocodexError, TimedAgentEvent, TurnControl, TurnResult,
+    AgentEvent, AgentEvents, Nanocodex, NanocodexError, Thinking, TimedAgentEvent, TurnControl,
+    TurnResult,
 };
 use tokio::{
     sync::mpsc,
@@ -35,7 +36,7 @@ use tokio::{
 use tracing::{Instrument, info_span};
 
 use self::{
-    app::{App, EscapeAction, PaneId, SubmittedPrompt},
+    app::{App, EscapeAction, PaneId, ReasoningPickerAction, SubmittedPrompt},
     notification::Notifier,
     scheduler::{RenderScheduler, STREAM_FRAME_INTERVAL},
     telemetry::{StreamTelemetry, ViewTelemetry},
@@ -91,6 +92,12 @@ enum WorkerCommand {
     },
     SwitchMainBranch {
         id: u64,
+    },
+    SetFastMode {
+        enabled: bool,
+    },
+    SetThinking {
+        thinking: Thinking,
     },
 }
 
@@ -178,6 +185,18 @@ enum WorkerEvent {
     },
     MainBranchEventStreamClosed {
         id: u64,
+    },
+    FastModeChanged {
+        enabled: bool,
+    },
+    FastModeChangeFailed {
+        error: String,
+    },
+    ThinkingChanged {
+        thinking: Thinking,
+    },
+    ThinkingChangeFailed {
+        error: String,
     },
 }
 
@@ -443,6 +462,9 @@ enum Submission {
     CloseBtw,
     Cancel,
     Trace,
+    Fast(Option<bool>),
+    ReasoningPicker,
+    InvalidCommand(String),
 }
 
 #[allow(
@@ -450,6 +472,7 @@ enum Submission {
     reason = "the ordered terminal, agent, worker, and render event loop is intentionally cohesive"
 )]
 pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Result<()> {
+    let initial_thinking = config.thinking();
     let cwd = resolve_cwd(&config)?;
     let configured = config.build().await?;
     let agent = configured.handle;
@@ -464,7 +487,10 @@ pub(crate) async fn run(config: AgentArgs, initial_prompt: Option<String>) -> Re
     let mut terminal = TerminalSession::enter().wrap_err("failed to initialize the terminal")?;
     let mut input_events = EventStream::new();
     let mut ticker = ui_ticker();
-    let mut ui = UiModel::new(App::new(cwd), Arc::clone(&root_session_id));
+    let mut ui = UiModel::new(
+        App::new(cwd).with_thinking(initial_thinking),
+        Arc::clone(&root_session_id),
+    );
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut stream_telemetry = StreamTelemetry::default();
     let mut view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));
@@ -812,6 +838,10 @@ fn handle_worker_update(
         WorkerEvent::MainBranchEventStreamClosed { id } => {
             app.main_branch_event_stream_closed(id);
         }
+        WorkerEvent::FastModeChanged { enabled } => app.fast_mode_changed(enabled),
+        WorkerEvent::FastModeChangeFailed { error } => app.fast_mode_change_failed(&error),
+        WorkerEvent::ThinkingChanged { thinking } => app.thinking_changed(thinking),
+        WorkerEvent::ThinkingChangeFailed { error } => app.thinking_change_failed(&error),
     }
     Ok(())
 }
@@ -902,7 +932,53 @@ impl AgentWorker {
                     .await;
             }
             WorkerCommand::SwitchMainBranch { id } => self.switch_main_branch(id),
+            WorkerCommand::SetFastMode { enabled } => self.set_fast_mode(enabled).await,
+            WorkerCommand::SetThinking { thinking } => self.set_thinking(thinking).await,
         }
+    }
+
+    async fn set_fast_mode(&mut self, enabled: bool) {
+        let mut result = self.main.agent.set_fast_mode(enabled).await;
+        for branch in &self.archived_main {
+            if result.is_ok() {
+                result = branch.agent.set_fast_mode(enabled).await;
+            }
+        }
+        if let Some(branch) = &self.btw
+            && result.is_ok()
+        {
+            result = branch.agent.set_fast_mode(enabled).await;
+        }
+
+        let update = match result {
+            Ok(()) => WorkerEvent::FastModeChanged { enabled },
+            Err(error) => WorkerEvent::FastModeChangeFailed {
+                error: error.to_string(),
+            },
+        };
+        drop(self.updates.send(update));
+    }
+
+    async fn set_thinking(&mut self, thinking: Thinking) {
+        let mut result = self.main.agent.set_thinking(thinking).await;
+        for branch in &self.archived_main {
+            if result.is_ok() {
+                result = branch.agent.set_thinking(thinking).await;
+            }
+        }
+        if let Some(branch) = &self.btw
+            && result.is_ok()
+        {
+            result = branch.agent.set_thinking(thinking).await;
+        }
+
+        let update = match result {
+            Ok(()) => WorkerEvent::ThinkingChanged { thinking },
+            Err(error) => WorkerEvent::ThinkingChangeFailed {
+                error: error.to_string(),
+            },
+        };
+        drop(self.updates.send(update));
     }
 
     async fn prompt(&mut self, target: PaneId, prompt_id: u64, prompt: SubmittedPrompt) {
@@ -1688,6 +1764,10 @@ fn handle_key(
         return Ok(TerminalAction::Redraw);
     }
 
+    if let Some(action) = handle_reasoning_picker_key(key, app, commands)? {
+        return Ok(action);
+    }
+
     if let Some(action) = handle_inline_historical_editor_key(key, app, commands)? {
         return Ok(action);
     }
@@ -1781,6 +1861,35 @@ fn handle_key(
         | KeyCode::Modifier(_) => {}
     }
     Ok(TerminalAction::Redraw)
+}
+
+fn handle_reasoning_picker_key(
+    key: KeyEvent,
+    app: &mut App,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<Option<TerminalAction>> {
+    if app.reasoning_picker().is_none() {
+        return Ok(None);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Ok(Some(TerminalAction::Quit));
+    }
+    if key.modifiers.is_empty() {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => app.move_reasoning_picker(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.move_reasoning_picker(1),
+            KeyCode::Enter => {
+                if let Some(ReasoningPickerAction::Selected(thinking)) =
+                    app.confirm_reasoning_picker()
+                {
+                    send_command(commands, WorkerCommand::SetThinking { thinking })?;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => app.back_reasoning_picker(),
+            _ => {}
+        }
+    }
+    Ok(Some(TerminalAction::Redraw))
 }
 
 fn handle_escape_key(app: &mut App, commands: &mpsc::UnboundedSender<WorkerCommand>) -> Result<()> {
@@ -2112,6 +2221,12 @@ fn submit(
                 Err(error) => app.push_active_error(format!("failed to open Jaeger: {error}")),
             }
         }
+        Submission::Fast(enabled) => {
+            let enabled = enabled.unwrap_or(!app.fast_mode());
+            send_command(commands, WorkerCommand::SetFastMode { enabled })?;
+        }
+        Submission::ReasoningPicker => app.open_reasoning_picker(),
+        Submission::InvalidCommand(error) => app.push_active_error(error),
     }
     Ok(())
 }
@@ -2147,6 +2262,22 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
     }
     if trimmed == "/trace" {
         return Submission::Trace;
+    }
+    if trimmed == "/fast" {
+        return Submission::Fast(None);
+    }
+    if let Some(argument) = trimmed.strip_prefix("/fast ") {
+        return match argument.trim() {
+            "on" => Submission::Fast(Some(true)),
+            "off" => Submission::Fast(Some(false)),
+            _ => Submission::InvalidCommand("Usage: /fast [on|off]".to_owned()),
+        };
+    }
+    if matches!(trimmed, "/model" | "/thinking") {
+        return Submission::ReasoningPicker;
+    }
+    if trimmed.starts_with("/model ") || trimmed.starts_with("/thinking ") {
+        return Submission::InvalidCommand("Usage: /model or /thinking".to_owned());
     }
     Submission::Prompt(input)
 }
@@ -2259,6 +2390,28 @@ mod tests {
             classify_submission(" /trace ".to_owned()),
             Submission::Trace
         );
+        assert_eq!(classify_submission("/fast"), Submission::Fast(None));
+        assert_eq!(
+            classify_submission(" /fast on "),
+            Submission::Fast(Some(true))
+        );
+        assert_eq!(
+            classify_submission("/fast off"),
+            Submission::Fast(Some(false))
+        );
+        assert_eq!(
+            classify_submission("/fast turbo"),
+            Submission::InvalidCommand("Usage: /fast [on|off]".to_owned())
+        );
+        assert_eq!(classify_submission("/model"), Submission::ReasoningPicker);
+        assert_eq!(
+            classify_submission(" /thinking "),
+            Submission::ReasoningPicker
+        );
+        assert_eq!(
+            classify_submission("/thinking high"),
+            Submission::InvalidCommand("Usage: /model or /thinking".to_owned())
+        );
         assert_eq!(
             classify_submission("/btw-not-a-command".to_owned()),
             Submission::Prompt("/btw-not-a-command".into())
@@ -2267,6 +2420,55 @@ mod tests {
             classify_submission("/trace-this".to_owned()),
             Submission::Prompt("/trace-this".into())
         );
+        assert_eq!(
+            classify_submission("/fastest"),
+            Submission::Prompt("/fastest".into())
+        );
+        assert_eq!(
+            classify_submission("/modeling"),
+            Submission::Prompt("/modeling".into())
+        );
+    }
+
+    #[test]
+    fn reasoning_picker_changes_subsequent_turn_effort() {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.open_reasoning_picker();
+
+        handle_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut app,
+            "main-session",
+            &commands,
+        )
+        .unwrap();
+        handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+            "main-session",
+            &commands,
+        )
+        .unwrap();
+
+        assert!(app.reasoning_picker().is_none());
+        assert!(matches!(
+            worker.try_recv(),
+            Ok(WorkerCommand::SetThinking {
+                thinking: Thinking::High
+            })
+        ));
+        assert_eq!(app.thinking(), Thinking::Medium);
+
+        handle_worker_update(
+            &mut app,
+            WorkerEvent::ThinkingChanged {
+                thinking: Thinking::High,
+            },
+            &commands,
+        )
+        .unwrap();
+        assert_eq!(app.thinking(), Thinking::High);
     }
 
     #[test]

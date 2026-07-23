@@ -128,6 +128,10 @@ impl AgentArgs {
         self.mpp.is_enabled()
     }
 
+    pub(crate) const fn thinking(&self) -> Thinking {
+        self.thinking
+    }
+
     pub(crate) async fn build(self) -> Result<ConfiguredAgent> {
         let codex_home = default_codex_home()?;
         let rollout = self.rollouts.then(|| codex_home.clone());

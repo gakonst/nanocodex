@@ -274,6 +274,32 @@ mod tui {
         (app, terminal, output_bytes)
     }
 
+    fn fast_mode_toggle_setup() -> (App, OutputTerminal, Rc<Cell<u64>>) {
+        let mut app = App::new("/workspace/nanocodex".into());
+        let (mut terminal, output_bytes) = output_terminal();
+        terminal
+            .draw(|frame| view::render(frame, &mut app))
+            .expect("initial footer frame should render");
+        app.fast_mode_changed(true);
+        (app, terminal, output_bytes)
+    }
+
+    fn draw_fast_mode_toggle(
+        app: &mut App,
+        terminal: &mut OutputTerminal,
+        output_bytes: &Cell<u64>,
+    ) -> DrawMetrics {
+        let bytes_before = output_bytes.get();
+        terminal.backend_mut().changed_cells = 0;
+        terminal
+            .draw(|frame| view::render(frame, app))
+            .expect("fast-mode footer frame should render");
+        DrawMetrics {
+            changed_cells: terminal.backend().changed_cells,
+            output_bytes: output_bytes.get().saturating_sub(bytes_before),
+        }
+    }
+
     pub(super) fn render_benchmarks(criterion: &mut Criterion) {
         let mut group = criterion.benchmark_group("tui_trace_render");
         for shape in TRACE_SHAPES {
@@ -646,6 +672,38 @@ mod tui {
                             draw_catch_up_frame(&mut app, &mut terminal, output_bytes.as_ref());
                         black_box(metrics);
                         (app, terminal, output_bytes)
+                    },
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+
+        let (mut app, mut terminal, output_bytes) = fast_mode_toggle_setup();
+        let sample = draw_fast_mode_toggle(&mut app, &mut terminal, output_bytes.as_ref());
+        assert!(
+            sample.changed_cells <= 48,
+            "footer changed {} cells",
+            sample.changed_cells
+        );
+        assert!(
+            sample.output_bytes <= 256,
+            "footer wrote {} bytes",
+            sample.output_bytes
+        );
+        group.bench_function(
+            format!(
+                "fast_mode_toggle_{}cells_{}bytes/120x40",
+                sample.changed_cells, sample.output_bytes
+            ),
+            |bencher| {
+                bencher.iter_batched(
+                    fast_mode_toggle_setup,
+                    |(mut app, mut terminal, output_bytes)| {
+                        black_box(draw_fast_mode_toggle(
+                            &mut app,
+                            &mut terminal,
+                            output_bytes.as_ref(),
+                        ));
                     },
                     BatchSize::LargeInput,
                 );

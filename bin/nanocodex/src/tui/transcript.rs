@@ -10,7 +10,7 @@ use std::{
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Position, Rect},
+    layout::{Alignment, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
@@ -1068,11 +1068,18 @@ impl TranscriptEntry {
             EntryContent::Static(text) => {
                 let mut paragraph = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
                 if selected {
-                    paragraph = paragraph.style(Style::default().add_modifier(Modifier::REVERSED));
+                    paragraph = paragraph.style(if matches!(self.kind, EntryKind::User) {
+                        Style::default().bg(Color::Indexed(8))
+                    } else {
+                        Style::default().add_modifier(Modifier::REVERSED)
+                    });
                 }
                 paragraph
                     .scroll((saturating_u16(scroll), 0))
                     .render(area, buffer);
+                if selected && matches!(self.kind, EntryKind::User) {
+                    render_selected_user_affordance(area, buffer, scroll);
+                }
             }
             EntryContent::Markdown(markdown) => {
                 markdown.render(area, buffer, scroll, total_height, selected);
@@ -2455,6 +2462,23 @@ fn message_text(title: &'static str, title_style: Style, message: &str) -> Text<
     Text::from(lines)
 }
 
+fn render_selected_user_affordance(area: Rect, buffer: &mut Buffer, scroll: usize) {
+    const HINT: &str = "e to edit";
+    if scroll == 0 && area.width > saturating_u16(HINT.len() + 4) {
+        let hint_width = saturating_u16(HINT.len());
+        let hint_area = Rect::new(
+            area.right().saturating_sub(hint_width + 1),
+            area.y,
+            hint_width,
+            1,
+        );
+        Paragraph::new(HINT)
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(Color::Yellow).bg(Color::Indexed(8)))
+            .render(hint_area, buffer);
+    }
+}
+
 fn indent_reasoning(source: &str) -> String {
     source.replace('\n', "\n  ")
 }
@@ -3084,20 +3108,14 @@ mod tests {
             .render(area, &mut buffer);
 
         assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "›");
-        assert!(
-            buffer
-                .cell((0, 0))
-                .unwrap()
-                .modifier
-                .contains(ratatui::style::Modifier::REVERSED)
-        );
-        assert!(
-            !buffer
-                .cell((0, 3))
-                .unwrap()
-                .modifier
-                .contains(ratatui::style::Modifier::REVERSED)
-        );
+        assert_eq!(buffer.cell((0, 0)).unwrap().bg, Color::Indexed(8));
+        assert_eq!(buffer.cell((0, 2)).unwrap().bg, Color::Indexed(8));
+        assert_eq!(buffer.cell((0, 3)).unwrap().bg, Color::Reset);
+        let header = buffer.content[..20]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(header.contains("e to edit"));
     }
 
     #[test]
@@ -3115,13 +3133,8 @@ mod tests {
 
         assert_eq!(buffer.cell((0, 0)).unwrap().symbol(), "●");
         assert_eq!(buffer.cell((0, 3)).unwrap().symbol(), "›");
-        assert!(
-            buffer
-                .cell((0, 3))
-                .unwrap()
-                .modifier
-                .contains(ratatui::style::Modifier::REVERSED)
-        );
+        assert_eq!(buffer.cell((0, 3)).unwrap().bg, Color::Indexed(8));
+        assert_eq!(buffer.cell((0, 5)).unwrap().bg, Color::Indexed(8));
         assert_eq!(buffer.cell((0, 6)).unwrap().symbol(), "●");
     }
 
