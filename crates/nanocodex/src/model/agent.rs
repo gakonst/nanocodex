@@ -19,7 +19,7 @@ use super::{
     CompactionCompleted, CompactionFailed, CompactionStarted, ModelCallCompleted, ModelCallFailed,
     ModelCallStarted, RunError, RunStarted, RunStats, RunSteered, ToolCallArguments, ToolCallEvent,
     ToolResultEvent, WarmupCompleted, WarmupFailed, WarmupStarted,
-    agents_md::load_project_instructions,
+    agents_md::load_instructions,
     compaction,
     context_manager::ContextManager,
     display_endpoint, elapsed_ns,
@@ -50,6 +50,7 @@ pub(crate) struct ModelRun<S> {
     tool_call_indices: HashMap<Box<str>, u32>,
     tools: Tools,
     prompt_cache: ModelPromptCache,
+    global_instructions: Option<Arc<str>>,
 }
 
 pub(crate) enum ModelTurnOutcome {
@@ -67,6 +68,7 @@ pub(crate) struct ModelCheckpoint {
     workspace: String,
     conversation: ConversationState,
     preserve_inherited_delta: bool,
+    global_instructions: Option<Arc<str>>,
 }
 
 impl ModelCheckpoint {
@@ -224,6 +226,7 @@ impl<S> ModelRun<S> {
         transport_stats: Arc<TransportStats>,
         tools: Tools,
         prompt_cache: ModelPromptCache,
+        global_instructions: Option<Arc<str>>,
     ) -> Self {
         Self {
             events,
@@ -239,6 +242,7 @@ impl<S> ModelRun<S> {
             tool_call_indices: HashMap::new(),
             tools,
             prompt_cache,
+            global_instructions,
         }
     }
 
@@ -280,6 +284,7 @@ impl<S> ModelRun<S> {
             tool_call_indices: HashMap::new(),
             tools,
             prompt_cache,
+            global_instructions: checkpoint.global_instructions,
         }
     }
 
@@ -291,6 +296,10 @@ impl<S> ModelRun<S> {
             tools,
             self.config.system_prompt(),
         )
+    }
+
+    fn load_agent_instructions(&self, workspace: &str) -> Result<Option<String>> {
+        load_instructions(Path::new(workspace), self.global_instructions.as_deref())
     }
 }
 
@@ -453,7 +462,7 @@ where
             session
         } else {
             let workspace = resolve_workspace(requested_workspace.as_deref())?;
-            let project_instructions = load_project_instructions(Path::new(&workspace))?;
+            let project_instructions = self.load_agent_instructions(&workspace)?;
             let tools = tool_runtime(&workspace, &self.config, &self.tools);
             self.active_tools = Some(tools.control());
             let factory = self.attempt_factory(&tools);
@@ -472,7 +481,11 @@ where
                 conversation,
                 preserve_inherited_delta: false,
             };
-            Self::publish_fork_snapshot(&mut session, fork_snapshots);
+            Self::publish_fork_snapshot(
+                &mut session,
+                fork_snapshots,
+                self.global_instructions.as_ref(),
+            );
             let warmup = {
                 let warmup = self.perform_warmup(&session.factory);
                 tokio::pin!(warmup);
@@ -531,6 +544,7 @@ where
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
             preserve_inherited_delta: false,
+            global_instructions: self.global_instructions.clone(),
         })
     }
 
@@ -573,18 +587,21 @@ where
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
             preserve_inherited_delta: false,
+            global_instructions: self.global_instructions.clone(),
         })
     }
 
     fn publish_fork_snapshot(
         session: &mut ModelSessionState,
         snapshots: &watch::Sender<Option<ModelCheckpoint>>,
+        global_instructions: Option<&Arc<str>>,
     ) {
         session.conversation.context.commit_tail();
         snapshots.send_replace(Some(ModelCheckpoint {
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
             preserve_inherited_delta: true,
+            global_instructions: global_instructions.cloned(),
         }));
     }
 
@@ -602,7 +619,7 @@ where
                 self.drain_steers(&mut session.conversation, &mut steers)
                     .await?;
             }
-            Self::publish_fork_snapshot(session, fork_snapshots);
+            Self::publish_fork_snapshot(session, fork_snapshots, self.global_instructions.as_ref());
             let call_index = self.stats.model_calls + 1;
             let response = self
                 .perform_model_call(call_index, &session.conversation, &session.factory)
@@ -853,7 +870,7 @@ where
                 factory,
             )
             .await?;
-        let project_instructions = load_project_instructions(Path::new(project_workspace))?;
+        let project_instructions = self.load_agent_instructions(project_workspace)?;
         let canonical_context =
             task_context(working_directory, shell, project_instructions.as_deref());
         conversation.install_compaction(item, canonical_context, factory.profile().prefix());

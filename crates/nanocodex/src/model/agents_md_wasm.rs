@@ -6,8 +6,9 @@ use crate::NanocodexError;
     clippy::unnecessary_wraps,
     reason = "matches the native instruction-loader contract"
 )]
-pub(super) fn load_project_instructions(
+pub(super) fn load_instructions(
     _workspace: &Path,
+    _global_instructions: Option<&str>,
 ) -> Result<Option<String>, NanocodexError> {
     Ok(None)
 }

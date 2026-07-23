@@ -432,6 +432,7 @@ let responses = Responses::builder()
     .build();
 
 let (agent, events) = Nanocodex::builder(api_key)
+    .codex_home("/home/me/.codex")
     .instructions("You are a concise repository maintenance agent.")
     .thinking(Thinking::Medium)
     .workspace("/work/project")
@@ -440,8 +441,11 @@ let (agent, events) = Nanocodex::builder(api_key)
     .build()?;
 ```
 
-Native applications can opt into a Codex-compatible committed-history rollout.
-The agent session ID is also the UUID accepted by `codex resume`:
+Configuring a Codex home loads its `AGENTS.override.md` or `AGENTS.md` before
+workspace-scoped project instructions. Native applications can also opt into a
+Codex-compatible committed-history rollout; rollout configuration implies the
+same Codex home. The agent session ID is also the UUID accepted by
+`codex resume`:
 
 ```rust
 use nanocodex::{Nanocodex, RolloutConfig};

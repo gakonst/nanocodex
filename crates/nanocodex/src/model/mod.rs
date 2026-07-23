@@ -9,6 +9,9 @@ mod context_manager;
 mod input;
 mod telemetry;
 
+#[cfg(not(target_family = "wasm"))]
+pub(crate) use agents_md::load_global_instructions;
+
 use telemetry::{
     CompactionCompleted, CompactionFailed, CompactionStarted, ModelCallCompleted, ModelCallFailed,
     ModelCallStarted, RunError, RunStarted, RunStats, RunSteered, ToolCallArguments, ToolCallEvent,

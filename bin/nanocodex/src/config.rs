@@ -102,7 +102,8 @@ impl AgentArgs {
     }
 
     pub(crate) fn build(self) -> Result<ConfiguredAgent> {
-        let rollout = self.rollouts.then(default_codex_home).transpose()?;
+        let codex_home = default_codex_home()?;
+        let rollout = self.rollouts.then(|| codex_home.clone());
         let auth = select_auth(self.api_key, self.auth_file, environment_api_key()?)?;
         let mut responses = Responses::builder();
         if let Some(websocket_url) = self.websocket_url {
@@ -124,6 +125,7 @@ impl AgentArgs {
             .reasoning_mode(self.reasoning_mode)
             .thinking(self.thinking)
             .workspace(self.cwd)
+            .codex_home(codex_home)
             .responses(responses);
         let builder = if let Some(codex_home) = rollout {
             builder.rollout(RolloutConfig::new(codex_home))
