@@ -18,6 +18,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use super::app::PlanStepStatus;
 use super::composer::ComposerLayout;
 use super::diff::{PatchPresentation, present_apply_patch};
 use super::markdown::{
@@ -41,6 +42,10 @@ pub(super) enum TranscriptItem {
         name: String,
         arguments: String,
         status: ToolStatus,
+    },
+    Plan {
+        explanation: Option<String>,
+        steps: Vec<(String, PlanStepStatus)>,
     },
     Error(String),
 }
@@ -727,6 +732,7 @@ enum EntryKind {
     Reasoning,
     Assistant,
     Tool { call_id: String },
+    Plan,
     Error,
 }
 
@@ -919,6 +925,11 @@ impl TranscriptEntry {
                     status,
                     tool_details_expanded,
                 )),
+            ),
+            TranscriptItem::Plan { explanation, steps } => (
+                EntryKind::Plan,
+                None,
+                EntryContent::Static(plan_text(explanation.as_deref(), &steps)),
             ),
             TranscriptItem::Error(message) => (
                 EntryKind::Error,
@@ -1345,7 +1356,9 @@ impl ToolActivity {
 
         let mut lines = vec![tool_header_line(icon, color, display_name, &details)];
 
-        if let Some(highlighted_source) = &self.highlighted_source {
+        if self.children.is_empty()
+            && let Some(highlighted_source) = &self.highlighted_source
+        {
             lines.push(Line::styled(
                 format!("  ┌─ javascript · {} LOC", code_line_count(&self.arguments)),
                 Style::default().fg(Color::DarkGray),
@@ -1448,12 +1461,14 @@ fn child_lines(child: &ToolActivity, last: bool, width: u16) -> Vec<Line<'static
     if let Some(result) = child.result.as_deref().filter(|result| !result.is_empty()) {
         push_styled_detail(&mut detail, result.to_owned(), detail_style);
     }
+    let child_name = match (child.name.as_str(), child.status) {
+        ("exec_command", ToolStatus::Running) => "Running",
+        ("exec_command", _) => "Ran",
+        _ => child.name.as_str(),
+    };
     let mut header = vec![
         Span::styled(connector, Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!(" {icon} {}", child.name),
-            Style::default().fg(color),
-        ),
+        Span::styled(format!(" {icon} {child_name}"), Style::default().fg(color)),
     ];
     if !detail.is_empty() {
         header.push(Span::styled("  ", detail_style));
@@ -1485,6 +1500,50 @@ fn push_styled_detail(target: &mut Vec<Span<'static>>, detail: String, style: St
         target.push(Span::styled(" · ", style));
     }
     target.push(Span::styled(detail, style));
+}
+
+fn plan_text(explanation: Option<&str>, steps: &[(String, PlanStepStatus)]) -> Text<'static> {
+    let explanation = explanation.map(str::trim).filter(|text| !text.is_empty());
+    let mut lines = vec![Line::from(vec![
+        Span::styled("• ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "Updated Plan",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ])];
+    if let Some(explanation) = explanation {
+        lines.push(Line::styled(
+            format!("  └ {explanation}"),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ));
+    }
+    for (index, (step, status)) in steps.iter().enumerate() {
+        let prefix = if index == 0 && explanation.is_none() {
+            "  └ "
+        } else {
+            "    "
+        };
+        let (marker, style) = match status {
+            PlanStepStatus::Completed => (
+                "✔ ",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::CROSSED_OUT),
+            ),
+            PlanStepStatus::InProgress => (
+                "□ ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            PlanStepStatus::Pending => ("□ ", Style::default().fg(Color::DarkGray)),
+        };
+        lines.push(Line::styled(format!("{prefix}{marker}{step}"), style));
+    }
+    lines.push(Line::raw(""));
+    Text::from(lines)
 }
 
 fn prefixed_patch_lines(lines: &[Line<'static>], prefix: &'static str) -> Vec<Line<'static>> {
@@ -2584,9 +2643,9 @@ mod tests {
             .unwrap();
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("✓ Code Mode  2 calls · 120ms · overlapping"));
-        assert!(rendered.contains("┌─ javascript · 2 LOC"));
-        assert!(rendered.contains("const tasks = [\"test\", \"patch\"]"));
-        assert!(rendered.contains("├─ ✓ exec_command  90ms · exit 0"));
+        assert!(!rendered.contains("javascript"));
+        assert!(!rendered.contains("const tasks"));
+        assert!(rendered.contains("├─ ✓ Ran  90ms · exit 0"));
         assert!(rendered.contains("cargo test \\"));
         assert!(rendered.contains("--workspace"));
         assert!(rendered.contains("└─ ✓ apply_patch  src/main.rs · 80ms · applied"));

@@ -179,6 +179,7 @@ pub(super) struct Conversation {
     streamed_this_turn: bool,
     pending_run_error: Option<String>,
     hidden_terminal_polls: HashMap<String, String>,
+    hidden_plan_calls: HashSet<String>,
     pub(super) queued_prompts: VecDeque<String>,
     queued_prompt_ids: VecDeque<u64>,
     displayed_queued_prompt: Option<u64>,
@@ -205,6 +206,7 @@ impl Conversation {
             streamed_this_turn: false,
             pending_run_error: None,
             hidden_terminal_polls: HashMap::new(),
+            hidden_plan_calls: HashSet::new(),
             queued_prompts: VecDeque::new(),
             queued_prompt_ids: VecDeque::new(),
             displayed_queued_prompt: None,
@@ -305,6 +307,7 @@ impl Conversation {
                 self.streamed_this_turn = false;
                 self.pending_run_error = None;
                 self.hidden_terminal_polls.clear();
+                self.hidden_plan_calls.clear();
                 "Thinking...".clone_into(&mut self.status);
             }
             AgentEventKind::RunSteered => {
@@ -380,6 +383,21 @@ impl Conversation {
         let Ok(payload) = event.decode_payload::<ToolCallPayload>() else {
             return false;
         };
+        if payload.tool == "update_plan"
+            && let Ok(update) =
+                serde_json::from_value::<PlanUpdatePayload>(payload.arguments.clone())
+        {
+            self.hidden_plan_calls.insert(payload.call_id);
+            self.push_output(TranscriptItem::Plan {
+                explanation: update.explanation,
+                steps: update
+                    .plan
+                    .into_iter()
+                    .map(|item| (item.step, item.status))
+                    .collect(),
+            });
+            return true;
+        }
         if is_empty_terminal_poll(&payload.tool, &payload.arguments) {
             let arguments = summarize_tool_arguments(&payload.tool, &payload.arguments);
             self.hidden_terminal_polls
@@ -420,27 +438,13 @@ impl Conversation {
             "cancelled" => ToolStatus::Cancelled,
             _ => ToolStatus::Failed,
         };
-        if let Some(arguments) = self.hidden_terminal_polls.remove(&payload.call_id) {
-            if status == ToolStatus::Completed {
-                return false;
-            }
-            let call_id = payload.call_id.clone();
-            if self.transcript.has_tool_parent(&call_id) {
-                self.note_tail_will_change();
-                let _ = self.transcript.push_tool_child(
-                    call_id,
-                    "terminal wait".to_owned(),
-                    arguments,
-                    status,
-                );
-            } else {
-                self.push_output(TranscriptItem::Tool {
-                    call_id,
-                    name: "terminal wait".to_owned(),
-                    arguments,
-                    status,
-                });
-            }
+        if self
+            .hidden_terminal_polls
+            .remove(&payload.call_id)
+            .is_some()
+            || self.hidden_plan_calls.remove(&payload.call_id)
+        {
+            return false;
         }
         let result = payload
             .result
@@ -2465,6 +2469,27 @@ struct ToolResultPayload {
     result: Option<Value>,
 }
 
+#[derive(Deserialize)]
+struct PlanUpdatePayload {
+    #[serde(default)]
+    explanation: Option<String>,
+    plan: Vec<PlanUpdateItem>,
+}
+
+#[derive(Deserialize)]
+struct PlanUpdateItem {
+    step: String,
+    status: PlanStepStatus,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PlanStepStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
 fn summarize_tool_arguments(tool: &str, arguments: &Value) -> String {
     if tool == "exec"
         && let Some(source) = arguments.as_str()
@@ -3699,9 +3724,61 @@ mod tests {
         assert!(!rendered.contains("write_stdin"));
         assert!(rendered.contains("terminal input"));
         assert!(rendered.contains("session 7 · Ctrl-C"));
-        assert!(rendered.contains("terminal wait"));
-        assert!(rendered.contains("unknown session 99"));
+        assert!(!rendered.contains("terminal wait"));
+        assert!(!rendered.contains("unknown session 99"));
         assert!(!app.main.hidden_terminal_polls.contains_key("call-1/code-1"));
+        assert!(!app.main.hidden_terminal_polls.contains_key("call-1/code-3"));
+    }
+
+    #[test]
+    fn plan_updates_render_as_checklists_instead_of_tools() {
+        let mut app = App::new(".".into());
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolCall,
+            &json!({
+                "call_id": "call-plan",
+                "tool": "update_plan",
+                "arguments": {
+                    "explanation": "Adapting the work",
+                    "plan": [
+                        { "step": "Inspect", "status": "completed" },
+                        { "step": "Implement", "status": "in_progress" },
+                        { "step": "Verify", "status": "pending" }
+                    ]
+                }
+            }),
+        ));
+        app.main.on_agent_event(&event(
+            AgentEventKind::ToolResult,
+            &json!({
+                "call_id": "call-plan",
+                "tool": "update_plan",
+                "status": "completed",
+                "result": "Plan updated"
+            }),
+        ));
+
+        let area = Rect::new(0, 0, 80, 8);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .chunks(usize::from(area.width))
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Updated Plan"));
+        assert!(rendered.contains("✔ Inspect"));
+        assert!(rendered.contains("□ Implement"));
+        assert!(!rendered.contains("update_plan"));
+        assert!(!app.main.hidden_plan_calls.contains("call-plan"));
     }
 
     #[test]
