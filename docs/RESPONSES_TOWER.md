@@ -146,6 +146,10 @@ cargo bench -p nanocodex-service --bench tower_responses
 Add `NANOCODEX_BENCH_EVENTS=/path/to/events.jsonl` to include a retained JSONL
 trace without checking private runtime data into the repository.
 
+The live [transport and storage benchmark](RESPONSE_TRANSPORT_BENCH.md) compares
+WebSocket and HTTPS/SSE, stored checkpoints and `store: false`, full history
+replay, and concurrent historical forks.
+
 ## Invariants
 
 - A partial response commits no history and executes no tool.

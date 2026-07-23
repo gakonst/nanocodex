@@ -57,6 +57,10 @@ name = "fork-checkpoint-bench"
 path = "fork_checkpoint_bench.rs"
 
 [[bin]]
+name = "response-transport-bench"
+path = "response_transport_bench.rs"
+
+[[bin]]
 name = "codex-parity-bench"
 path = "codex_parity_bench.rs"
 
