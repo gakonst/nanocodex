@@ -251,12 +251,27 @@ nanocodex auth status
 nanocodex
 ```
 
-Plain `nanocodex` and `nanocodex run` prefer `OPENAI_API_KEY`; direct binary runs
-load it from the nearest `.env` automatically. An explicit `--api-key` overrides
-both automatic sources. Without an API key, the CLI falls back to the stored
-subscription session. To select `ChatGPT` explicitly while a key is available,
-pass `NANOCODEX_AUTH_FILE` or `--auth-file`. `nanocodex auth logout` removes the
-shared file and therefore logs both Codex and Nanocodex out.
+Plain `nanocodex` and `nanocodex run` prefer an existing Codex subscription
+session in `$CODEX_HOME/auth.json` (normally `~/.codex/auth.json`). If that file
+is absent, the CLI falls back to `OPENAI_API_KEY`; direct binary runs load the
+key from the nearest `.env` automatically. An explicit `--api-key` overrides
+both automatic sources, while `NANOCODEX_AUTH_FILE` or `--auth-file` selects a
+specific subscription file. A present but invalid auth file fails visibly
+instead of silently incurring API-key charges. `nanocodex auth logout` removes
+the shared file and therefore logs both Codex and Nanocodex out.
+
+The default Responses policy depends on the selected authorization:
+
+| Authorization | Default transport | Default `store` | Default history |
+| --- | --- | ---: | --- |
+| ChatGPT subscription | WebSocket | `false` | connection-local incremental |
+| API key | WebSocket | `true` | stored incremental |
+
+Selecting HTTPS keeps API-key sessions stored and incremental. ChatGPT HTTPS
+remains `store: false` and automatically switches to complete client-history
+replay because it has no connection-local checkpoint. Explicit
+`--store-responses` and `--responses-history` values override these defaults
+when the combination is supported.
 
 Library consumers own their login UX and can reuse the same managed session:
 
@@ -538,10 +553,10 @@ edit:
 ```sh
 curl -fsSL https://nanocodex.paradigm.xyz | bash
 
-# OPENAI_API_KEY is loaded from the nearest .env by default.
+# Reuse an existing Codex login, or fall back to OPENAI_API_KEY when absent.
 nanocodex
 
-# Or explicitly use the same subscription store Codex uses.
+# Create or explicitly select the same subscription store Codex uses.
 nanocodex auth login
 nanocodex --auth-file "${CODEX_HOME:-$HOME/.codex}/auth.json"
 ```

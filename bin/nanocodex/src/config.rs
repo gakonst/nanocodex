@@ -25,7 +25,7 @@ pub(crate) struct ConfiguredAgent {
     reason = "independent CLI feature toggles are not one state machine"
 )]
 pub(crate) struct AgentArgs {
-    /// Explicit `OpenAI` API key override. Otherwise `OPENAI_API_KEY` is preferred.
+    /// Explicit `OpenAI` API key override.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     api_key: Option<String>,
 
@@ -183,16 +183,40 @@ fn select_auth(
     auth_file: Option<PathBuf>,
     environment_api_key: Option<String>,
 ) -> Result<OpenAiAuth> {
+    select_auth_with_default(
+        explicit_api_key,
+        auth_file,
+        environment_api_key,
+        default_auth_file,
+    )
+}
+
+fn select_auth_with_default<F>(
+    explicit_api_key: Option<String>,
+    auth_file: Option<PathBuf>,
+    environment_api_key: Option<String>,
+    resolve_default_auth_file: F,
+) -> Result<OpenAiAuth>
+where
+    F: FnOnce() -> Result<PathBuf>,
+{
     if let Some(api_key) = explicit_api_key {
         return Ok(OpenAiAuth::api_key(api_key));
     }
     if let Some(auth_file) = auth_file {
         return load_subscription_auth(&auth_file);
     }
+    let auth_file = resolve_default_auth_file()?;
+    if auth_file
+        .try_exists()
+        .wrap_err_with(|| format!("failed to inspect {}", auth_file.display()))?
+    {
+        return load_subscription_auth(&auth_file);
+    }
     if let Some(api_key) = environment_api_key {
         return Ok(OpenAiAuth::api_key(api_key));
     }
-    load_subscription_auth(&default_auth_file()?)
+    load_subscription_auth(&auth_file)
 }
 
 fn environment_api_key() -> Result<Option<String>> {
@@ -249,7 +273,7 @@ mod tests {
     use clap::CommandFactory;
     use nanocodex::OpenAiAuthMode;
 
-    use super::select_auth;
+    use super::{select_auth, select_auth_with_default};
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -259,6 +283,22 @@ mod tests {
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    fn write_chatgpt_auth(path: &std::path::Path) {
+        std::fs::write(
+            path,
+            br#"{
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": "header.e30.signature",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "account_id": "account-1"
+                }
+            }"#,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -318,10 +358,41 @@ mod tests {
     }
 
     #[test]
-    fn environment_key_is_the_automatic_default() {
-        let auth = select_auth(None, None, Some("environment-key".into())).unwrap();
+    fn default_chatgpt_auth_precedes_the_environment_key() {
+        let auth_file = auth_file();
+        write_chatgpt_auth(&auth_file);
+
+        let auth = select_auth_with_default(None, None, Some("environment-key".into()), || {
+            Ok(auth_file.clone())
+        })
+        .unwrap();
+
+        assert_eq!(auth.mode(), OpenAiAuthMode::ChatGpt);
+        std::fs::remove_file(auth_file).unwrap();
+    }
+
+    #[test]
+    fn environment_key_is_used_when_the_default_auth_file_is_missing() {
+        let auth_file = auth_file();
+        let auth =
+            select_auth_with_default(None, None, Some("environment-key".into()), || Ok(auth_file))
+                .unwrap();
 
         assert_eq!(auth.mode(), OpenAiAuthMode::ApiKey);
+    }
+
+    #[test]
+    fn invalid_default_auth_does_not_silently_fall_back_to_a_key() {
+        let auth_file = auth_file();
+        std::fs::write(&auth_file, b"{}").unwrap();
+
+        let error = select_auth_with_default(None, None, Some("environment-key".into()), || {
+            Ok(auth_file.clone())
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("no ChatGPT tokens"));
+        std::fs::remove_file(auth_file).unwrap();
     }
 
     #[test]
