@@ -40,11 +40,16 @@ use hudsucker::{
 };
 use mpp::client::{AcceptPaymentPolicy, ClientEvent, ClientEvents, Fetch, PaymentProvider};
 use tempfile::TempDir;
-use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
+use tokio::{
+    net::TcpListener,
+    sync::{Semaphore, oneshot},
+    task::JoinHandle,
+};
 use tracing::Instrument as _;
 
 const DEFAULT_MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MAX_PAYMENT_RETRIES: usize = 4;
+const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 32;
 const CA_FILENAME: &str = "mpp-egress-ca.pem";
 const MPP_REQUEST_ID: &str = "mpp-request-id";
 
@@ -55,6 +60,12 @@ pub struct EgressPolicy {
     pub max_request_bytes: usize,
     /// Maximum number of distinct payment challenges accepted for one request.
     pub max_payment_retries: usize,
+    /// Maximum number of requests concurrently forwarded to origin services.
+    ///
+    /// Additional child requests wait locally before receiving a payment
+    /// challenge, so challenge lifetimes are not consumed behind payment-state
+    /// serialization.
+    pub max_concurrent_requests: usize,
 }
 
 impl Default for EgressPolicy {
@@ -62,6 +73,7 @@ impl Default for EgressPolicy {
         Self {
             max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
             max_payment_retries: DEFAULT_MAX_PAYMENT_RETRIES,
+            max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
         }
     }
 }
@@ -100,6 +112,11 @@ impl MppEgress {
                 "max_payment_retries must be greater than zero",
             ));
         }
+        if policy.max_concurrent_requests == 0 {
+            return Err(EgressError::InvalidPolicy(
+                "max_concurrent_requests must be greater than zero",
+            ));
+        }
 
         let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
             .await
@@ -124,10 +141,12 @@ impl MppEgress {
             STANDARD.encode(format!("nanocodex:{proxy_password}"))
         );
         let proxy_url = format!("http://nanocodex:{proxy_password}@{address}");
+        let origin_permits = Arc::new(Semaphore::new(policy.max_concurrent_requests));
         let handler = PaymentHandler {
             provider,
             client,
             policy,
+            origin_permits,
             proxy_authorization: proxy_authorization.clone(),
             authenticated_clients: Arc::new(Mutex::new(HashSet::new())),
             request_id_prefix: random_identifier(),
@@ -232,6 +251,7 @@ struct PaymentHandler<P> {
     provider: P,
     client: reqwest::Client,
     policy: EgressPolicy,
+    origin_permits: Arc<Semaphore>,
     proxy_authorization: String,
     authenticated_clients: Arc<Mutex<HashSet<SocketAddr>>>,
     request_id_prefix: String,
@@ -364,11 +384,26 @@ where
             MPP_REQUEST_ID,
             HeaderValue::from_str(logical_request_id).map_err(ForwardError::RequestId)?,
         );
+        let queued = self.origin_permits.available_permits() == 0;
+        if queued {
+            tracing::info!(
+                target: "mpp_egress",
+                stage = "mpp.egress.origin.request.queued",
+                origin.max_concurrent_requests = self.policy.max_concurrent_requests,
+                "MPP egress queued the request before contacting its origin"
+            );
+        }
+        let _origin_permit = self
+            .origin_permits
+            .acquire()
+            .await
+            .map_err(|_| ForwardError::Unavailable)?;
         tracing::info!(
             target: "mpp_egress",
             stage = "mpp.egress.origin.request.started",
             http.request.body.size = body.len(),
             payment.max_retries = self.policy.max_payment_retries,
+            request.queued = queued,
             "MPP egress sent the original request"
         );
 
@@ -746,6 +781,8 @@ enum ForwardError {
     RequestTooLarge,
     #[error("failed to encode the MPP request ID")]
     RequestId(#[source] hudsucker::hyper::header::InvalidHeaderValue),
+    #[error("MPP egress stopped while the request was queued")]
+    Unavailable,
     #[error("MPP payment request failed: {0}")]
     Payment(#[source] mpp::client::HttpError),
 }
@@ -765,6 +802,7 @@ mod tests {
         response::IntoResponse,
         routing::{get, post},
     };
+    use futures_util::future::join_all;
     use mpp::{
         Base64UrlJson, MppError, PaymentChallenge, PaymentCredential, PaymentPayload,
         format_www_authenticate,
@@ -881,6 +919,71 @@ mod tests {
 
         assert_eq!(response.status(), AxumStatus::OK);
         assert_eq!(response.text().await.unwrap(), "plain");
+        egress.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn queues_excess_requests_before_contacting_the_origin() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(Semaphore::new(0));
+        let app = Router::new().route(
+            "/bounded",
+            get({
+                let active = Arc::clone(&active);
+                let maximum = Arc::clone(&maximum);
+                let started = Arc::clone(&started);
+                let gate = Arc::clone(&gate);
+                move || {
+                    let active = Arc::clone(&active);
+                    let maximum = Arc::clone(&maximum);
+                    let started = Arc::clone(&started);
+                    let gate = Arc::clone(&gate);
+                    async move {
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum.fetch_max(current, Ordering::SeqCst);
+                        started.notify_one();
+                        let permit = gate.acquire().await.unwrap();
+                        permit.forget();
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        "bounded"
+                    }
+                }
+            }),
+        );
+        let origin = spawn_origin(app).await;
+        let egress = MppEgress::start(
+            MockProvider::default(),
+            EgressPolicy {
+                max_concurrent_requests: 3,
+                ..EgressPolicy::default()
+            },
+        )
+        .await
+        .unwrap();
+        let client = proxied_client(&egress);
+        let requests = (0..12).map(|_| {
+            let client = client.clone();
+            let url = format!("{origin}/bounded");
+            tokio::spawn(async move { client.get(url).send().await.unwrap().status() })
+        });
+        let requests = requests.collect::<Vec<_>>();
+
+        while maximum.load(Ordering::SeqCst) < 3 {
+            started.notified().await;
+        }
+        assert_eq!(maximum.load(Ordering::SeqCst), 3);
+        assert_eq!(active.load(Ordering::SeqCst), 3);
+
+        gate.add_permits(12);
+        let statuses = join_all(requests)
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        assert!(statuses.iter().all(|status| *status == AxumStatus::OK));
+        assert_eq!(maximum.load(Ordering::SeqCst), 3);
         egress.shutdown().await.unwrap();
     }
 
