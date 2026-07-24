@@ -301,6 +301,22 @@ where
         self.provider.pay(challenge).await
     }
 
+    async fn commit_payment(
+        &self,
+        challenge: &PaymentChallenge,
+        credential: &PaymentCredential,
+    ) -> Result<(), MppError> {
+        self.provider.commit_payment(challenge, credential).await
+    }
+
+    async fn rollback_payment(
+        &self,
+        challenge: &PaymentChallenge,
+        credential: &PaymentCredential,
+    ) -> Result<(), MppError> {
+        self.provider.rollback_payment(challenge, credential).await
+    }
+
     fn accept_payment_header(&self) -> Option<String> {
         self.provider.accept_payment_header()
     }
@@ -470,6 +486,22 @@ impl PaymentProvider for NativeSession {
                 challenge,
             )
             .await
+    }
+
+    async fn commit_payment(
+        &self,
+        challenge: &PaymentChallenge,
+        credential: &PaymentCredential,
+    ) -> Result<(), MppError> {
+        self.session.commit_payment(challenge, credential).await
+    }
+
+    async fn rollback_payment(
+        &self,
+        challenge: &PaymentChallenge,
+        credential: &PaymentCredential,
+    ) -> Result<(), MppError> {
+        self.session.rollback_payment(challenge, credential).await
     }
 
     fn accept_payment_header(&self) -> Option<String> {
@@ -791,6 +823,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockChargeProvider {
         payments: Arc<AtomicUsize>,
+        commits: Arc<AtomicUsize>,
+        rollbacks: Arc<AtomicUsize>,
     }
 
     impl PaymentProvider for MockChargeProvider {
@@ -804,6 +838,24 @@ mod tests {
                 challenge.to_echo(),
                 PaymentPayload::hash("paid"),
             ))
+        }
+
+        async fn commit_payment(
+            &self,
+            _: &PaymentChallenge,
+            _: &PaymentCredential,
+        ) -> Result<(), MppError> {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn rollback_payment(
+            &self,
+            _: &PaymentChallenge,
+            _: &PaymentCredential,
+        ) -> Result<(), MppError> {
+            self.rollbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -862,6 +914,31 @@ mod tests {
 
         assert!(matches!(error, MppError::AmountExceedsMax { .. }));
         assert_eq!(payments.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn capped_charge_provider_forwards_payment_lifecycle() {
+        let inner = MockChargeProvider::default();
+        let commits = Arc::clone(&inner.commits);
+        let rollbacks = Arc::clone(&inner.rollbacks);
+        let provider = CappedChargeProvider {
+            provider: inner,
+            max_charge: 100,
+        };
+        let challenge = charge_challenge("100");
+        let credential = provider.pay(&challenge).await.unwrap();
+
+        provider
+            .commit_payment(&challenge, &credential)
+            .await
+            .unwrap();
+        provider
+            .rollback_payment(&challenge, &credential)
+            .await
+            .unwrap();
+
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert_eq!(rollbacks.load(Ordering::SeqCst), 1);
     }
 
     #[test]
