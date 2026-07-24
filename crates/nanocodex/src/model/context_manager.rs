@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use nanocodex_core::{
-    ContentItem, FunctionOutputBody, FunctionOutputContent, MessageRole, ResponseItem, Usage,
-    responses::ResponseHistory,
+    ContentItem, FunctionOutputBody, FunctionOutputContent, MessageRole, ResponseItem,
+    ResponseItemId, Usage, responses::ResponseHistory,
 };
 
 use super::compaction;
@@ -52,11 +52,12 @@ impl ContextManager {
     }
 
     pub(super) fn record_items(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
-        for item in items
+        for mut item in items
             .into_iter()
             .filter(is_api_item)
             .map(truncate_tool_output)
         {
+            assign_missing_response_item_id(&mut item);
             self.track_call_id(&item);
             self.items.push(item);
         }
@@ -79,9 +80,10 @@ impl ContextManager {
 
     pub(super) fn replace_and_recompute(
         &mut self,
-        items: Vec<ResponseItem>,
+        mut items: Vec<ResponseItem>,
         prefix: &[ResponseItem],
     ) {
+        assign_missing_response_item_ids(&mut items);
         self.items.replace(items);
         let total_tokens = prefix
             .iter()
@@ -260,6 +262,37 @@ impl ContextManager {
     }
 }
 
+pub(super) fn assign_missing_response_item_ids(items: &mut [ResponseItem]) {
+    for item in items {
+        assign_missing_response_item_id(item);
+    }
+}
+
+pub(super) fn assign_missing_response_item_id(item: &mut ResponseItem) {
+    if item.id().is_some_and(|id| !id.is_empty()) {
+        return;
+    }
+    let Some(prefix) = item.id_prefix() else {
+        return;
+    };
+    item.set_id(Some(new_response_item_id(prefix)));
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn new_response_item_id(prefix: &str) -> ResponseItemId {
+    ResponseItemId::with_suffix(prefix, uuid::Uuid::now_v7())
+}
+
+#[cfg(target_family = "wasm")]
+fn new_response_item_id(prefix: &str) -> ResponseItemId {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let nonce = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ResponseItemId::with_suffix(
+        prefix,
+        format_args!("nanocodex-wasm-{:x}-{nonce}", js_sys::Date::now().to_bits()),
+    )
+}
+
 pub(super) fn has_well_formed_tool_calls(items: &[ResponseItem]) -> bool {
     let mut function_calls = HashSet::new();
     let mut function_outputs = HashSet::new();
@@ -425,6 +458,25 @@ mod tests {
         let context = ContextManager::new(vec![message("hello")]);
         let prompt = context.prompt_items();
         assert_eq!(prompt.len(), 1);
+    }
+
+    #[test]
+    fn history_assigns_ids_once_and_preserves_them_across_checkpoints() {
+        let mut context = ContextManager::new(vec![message("hello")]);
+        let id = context
+            .flattened_items()
+            .into_iter()
+            .next()
+            .and_then(|item| item.id().cloned())
+            .expect("history item should have an ID");
+        assert!(id.as_str().starts_with("msg_"));
+
+        context.commit_tail();
+        let checkpoint = context.shared_items();
+        assert_eq!(
+            checkpoint.iter().next().and_then(ResponseItem::id),
+            Some(&id)
+        );
     }
 
     #[test]

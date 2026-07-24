@@ -142,7 +142,7 @@ impl SessionSnapshot {
         let prompt_cache_key = Arc::<str>::from(self.prompt_cache_key);
         let checkpoint = ModelCheckpoint::resume(
             self.workspace,
-            Arc::from(self.request_prefix),
+            self.request_prefix,
             Arc::clone(&prompt_cache_key),
             self.canonical_context,
             self.history,

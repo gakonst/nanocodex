@@ -33,8 +33,8 @@ pub use nanocodex_core::{
     LocalShellExecAction, LocalShellStatus, MODEL, MessagePhase, MessageRole, OpenAiAuth,
     OpenAiAuthError, OpenAiAuthMode, OutputTextAnnotation, OutputTextLogprob, OutputTextTopLogprob,
     Prompt, PromptInput, ReasoningContent, ReasoningMode, ReasoningSummary, ResponseItem,
-    ResponsesHistory, ResponsesTransport, Thinking, TimedAgentEvent, ToolCaller, ToolDefinition,
-    Usage, UserInput, WebSearchAction, monotonic_now_ns,
+    ResponseItemId, ResponsesHistory, ResponsesTransport, Thinking, TimedAgentEvent, ToolCaller,
+    ToolDefinition, Usage, UserInput, WebSearchAction, monotonic_now_ns,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use nanocodex_macros::tool;

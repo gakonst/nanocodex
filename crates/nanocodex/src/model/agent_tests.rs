@@ -1164,20 +1164,27 @@ async fn unsupported_direct_tools_return_failed_results_to_the_model() -> Result
         let input = continuation["input"]
             .as_array()
             .ok_or_else(|| eyre!("continuation input was not an array"))?;
+        assert_eq!(input[0]["type"], "custom_tool_call_output");
+        assert_eq!(input[0]["call_id"], "call-custom");
         assert_eq!(
-            input,
-            &[
-                json!({
-                    "type": "custom_tool_call_output",
-                    "call_id": "call-custom",
-                    "output": "unsupported custom tool call: missing_custom"
-                }),
-                json!({
-                    "type": "function_call_output",
-                    "call_id": "call-function",
-                    "output": "unsupported call: example::missing_function"
-                }),
-            ]
+            input[0]["output"],
+            "unsupported custom tool call: missing_custom"
+        );
+        assert!(
+            input[0]["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("ctco_"))
+        );
+        assert_eq!(input[1]["type"], "function_call_output");
+        assert_eq!(input[1]["call_id"], "call-function");
+        assert_eq!(
+            input[1]["output"],
+            "unsupported call: example::missing_function"
+        );
+        assert!(
+            input[1]["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("fco_"))
         );
         send_final(&mut socket, "resp-final").await
     });
@@ -1693,6 +1700,11 @@ async fn reconnect_drops_previous_response_id_and_replays_full_history() -> Resu
         assert_eq!(replay["input"][5]["type"], "custom_tool_call");
         assert!(replay["input"][5].get("id").is_none());
         assert_eq!(replay["input"][6]["type"], "custom_tool_call_output");
+        assert!(
+            replay["input"][6]["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("ctco_"))
+        );
         send_final(&mut second, "resp-final").await
     });
 
@@ -2087,6 +2099,10 @@ async fn active_boundary_fork_sends_tool_and_steer_delta_then_replays_on_checkpo
         assert_eq!(continuation["input"].as_array().map(Vec::len), Some(2));
         assert_eq!(continuation["input"][0]["type"], "custom_tool_call_output");
         assert!(continuation["input"][0].to_string().contains("shit"));
+        let tool_output_id = continuation["input"][0]["id"]
+            .as_str()
+            .ok_or_else(|| eyre!("root continuation omitted the tool output ID"))?
+            .to_owned();
         assert_eq!(
             continuation["input"][1]["content"][0]["text"],
             "print shat instead"
@@ -2102,6 +2118,7 @@ async fn active_boundary_fork_sends_tool_and_steer_delta_then_replays_on_checkpo
         assert_eq!(incremental["input"].as_array().map(Vec::len), Some(3));
         assert_eq!(incremental["input"][0]["type"], "custom_tool_call_output");
         assert!(incremental["input"][0].to_string().contains("shit"));
+        assert_eq!(incremental["input"][0]["id"], tool_output_id);
         assert_eq!(
             incremental["input"][1]["content"][0]["text"],
             "print shat instead"
@@ -2124,6 +2141,15 @@ async fn active_boundary_fork_sends_tool_and_steer_delta_then_replays_on_checkpo
 
         let replay = next_json(&mut branch).await?;
         assert!(replay.get("previous_response_id").is_none());
+        let replay_tool_output = replay["input"]
+            .as_array()
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item["type"] == "custom_tool_call_output" && item["call_id"] == "call-exec"
+                })
+            })
+            .ok_or_else(|| eyre!("full replay omitted the inherited tool output"))?;
+        assert_eq!(replay_tool_output["id"], tool_output_id);
         let replay_text = replay.to_string();
         assert!(replay_text.contains("active root prompt"));
         assert!(replay_text.contains("call-exec"));
@@ -2759,6 +2785,18 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     let encoded = serde_json::to_vec(&first.snapshot())?;
     agent.flush_rollout().await?;
     let snapshot_json = serde_json::from_slice::<Value>(&encoded)?;
+    assert!(
+        snapshot_json["request_prefix"]
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| item["id"].is_string()))
+    );
+    assert!(
+        snapshot_json["history"]
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| {
+                item.get("id").is_some_and(Value::is_string) || item["type"] == "compaction_trigger"
+            }))
+    );
     let rollout_history = std::fs::read_to_string(rollout_path)?
         .lines()
         .map(serde_json::from_str::<Value>)

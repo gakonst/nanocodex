@@ -106,9 +106,8 @@ fn rewrite_tool_output(item: &mut ResponseItem) -> bool {
 pub(super) fn install_history(
     history: &[ResponseItem],
     initial_context: &[ResponseItem],
-    mut compaction: ResponseItem,
+    compaction: ResponseItem,
 ) -> Vec<ResponseItem> {
-    compaction.strip_id();
     let retained = history
         .iter()
         .filter(|item| item.is_user_message() && !is_contextual_user_message(item))
@@ -450,8 +449,8 @@ mod tests {
             serde_json::to_value(latest).unwrap()
         );
         assert!(matches!(
-            installed[4],
-            ResponseItem::Compaction { id: None, .. }
+            &installed[4],
+            ResponseItem::Compaction { id: Some(id), .. } if id.as_str() == "cmp-id"
         ));
     }
 

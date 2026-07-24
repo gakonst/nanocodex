@@ -1,5 +1,7 @@
 //! Conversation items sent to and received from the Responses protocol.
 
+use std::{fmt, ops::Deref};
+
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -9,19 +11,84 @@ use super::{
     ReasoningSummary, ToolCaller, ToolDefinition, WebSearchAction,
 };
 
+/// A stable Responses API item identifier.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct ResponseItemId(Box<str>);
+
+impl ResponseItemId {
+    #[must_use]
+    pub fn with_suffix(prefix: &str, suffix: impl fmt::Display) -> Self {
+        Self(format!("{prefix}_{suffix}").into_boxed_str())
+    }
+
+    #[must_use]
+    pub fn from_server(value: impl Into<Box<str>>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[must_use]
+    pub fn is_prefixed(&self) -> bool {
+        self.split_once('_')
+            .is_some_and(|(prefix, suffix)| !prefix.is_empty() && !suffix.is_empty())
+    }
+}
+
+impl Deref for ResponseItemId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for ResponseItemId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for ResponseItemId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<String> for ResponseItemId {
+    fn from(value: String) -> Self {
+        Self(value.into_boxed_str())
+    }
+}
+
+impl From<&str> for ResponseItemId {
+    fn from(value: &str) -> Self {
+        Self(value.into())
+    }
+}
+
 /// A strongly typed conversation item sent to or received from the Responses API.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
     AdditionalTools {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         role: MessageRole,
         tools: Vec<ToolDefinition>,
     },
     Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         role: MessageRole,
         content: Vec<ContentItem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -33,7 +100,7 @@ pub enum ResponseItem {
     },
     AgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         author: Box<str>,
         recipient: Box<str>,
         content: SmallVec<[AgentMessageContent; 1]>,
@@ -42,7 +109,7 @@ pub enum ResponseItem {
     },
     Reasoning {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         #[serde(default)]
         summary: Vec<ReasoningSummary>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,7 +123,7 @@ pub enum ResponseItem {
     },
     LocalShellCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         call_id: Option<Box<str>>,
         status: LocalShellStatus,
@@ -66,7 +133,7 @@ pub enum ResponseItem {
     },
     FunctionCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         name: Box<str>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<Box<str>>,
@@ -83,7 +150,7 @@ pub enum ResponseItem {
     },
     FunctionCallOutput {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         call_id: Box<str>,
         output: FunctionOutputBody,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,7 +164,7 @@ pub enum ResponseItem {
     },
     ToolSearchCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         call_id: Option<Box<str>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,7 +176,7 @@ pub enum ResponseItem {
     },
     CustomToolCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<ItemStatus>,
         call_id: Box<str>,
@@ -126,7 +193,7 @@ pub enum ResponseItem {
     },
     CustomToolCallOutput {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         call_id: Box<str>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<Box<str>>,
@@ -142,7 +209,7 @@ pub enum ResponseItem {
     },
     ToolSearchOutput {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         call_id: Option<Box<str>>,
         status: Box<str>,
@@ -153,7 +220,7 @@ pub enum ResponseItem {
     },
     WebSearchCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<Box<str>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,7 +230,7 @@ pub enum ResponseItem {
     },
     ImageGenerationCall {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         status: Box<str>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         revised_prompt: Option<Box<str>>,
@@ -174,7 +241,7 @@ pub enum ResponseItem {
     #[serde(alias = "compaction_summary")]
     Compaction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         encrypted_content: Box<str>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         created_by: Option<Box<str>>,
@@ -184,7 +251,7 @@ pub enum ResponseItem {
     CompactionTrigger {},
     ContextCompaction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        id: Option<Box<str>>,
+        id: Option<ResponseItemId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_content: Option<Box<str>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,8 +330,9 @@ impl ResponseItem {
         )
     }
 
-    /// Removes a server-assigned item ID before replaying local history.
-    pub fn strip_id(&mut self) {
+    /// Returns the Responses API item ID, if present.
+    #[must_use]
+    pub fn id(&self) -> Option<&ResponseItemId> {
         match self {
             Self::AdditionalTools { id, .. }
             | Self::Message { id, .. }
@@ -280,9 +348,58 @@ impl ResponseItem {
             | Self::WebSearchCall { id, .. }
             | Self::ImageGenerationCall { id, .. }
             | Self::Compaction { id, .. }
-            | Self::ContextCompaction { id, .. } => *id = None,
+            | Self::ContextCompaction { id, .. } => id.as_ref(),
+            Self::CompactionTrigger {} | Self::Other(_) => None,
+        }
+    }
+
+    /// Sets or clears the Responses API item ID for variants that carry one.
+    pub fn set_id(&mut self, new_id: Option<ResponseItemId>) {
+        match self {
+            Self::AdditionalTools { id, .. }
+            | Self::Message { id, .. }
+            | Self::AgentMessage { id, .. }
+            | Self::Reasoning { id, .. }
+            | Self::LocalShellCall { id, .. }
+            | Self::FunctionCall { id, .. }
+            | Self::FunctionCallOutput { id, .. }
+            | Self::ToolSearchCall { id, .. }
+            | Self::CustomToolCall { id, .. }
+            | Self::CustomToolCallOutput { id, .. }
+            | Self::ToolSearchOutput { id, .. }
+            | Self::WebSearchCall { id, .. }
+            | Self::ImageGenerationCall { id, .. }
+            | Self::Compaction { id, .. }
+            | Self::ContextCompaction { id, .. } => *id = new_id,
             Self::CompactionTrigger {} | Self::Other(_) => {}
         }
+    }
+
+    /// Returns the Responses API item ID prefix for variants that carry an ID.
+    #[must_use]
+    pub const fn id_prefix(&self) -> Option<&'static str> {
+        match self {
+            Self::AdditionalTools { .. } => Some("at"),
+            Self::Message { .. } => Some("msg"),
+            Self::AgentMessage { .. } => Some("amsg"),
+            Self::Reasoning { .. } => Some("rs"),
+            Self::LocalShellCall { .. } => Some("lsh"),
+            Self::FunctionCall { .. } => Some("fc"),
+            Self::FunctionCallOutput { .. } => Some("fco"),
+            Self::ToolSearchCall { .. } => Some("tsc"),
+            Self::CustomToolCall { .. } => Some("ctc"),
+            Self::CustomToolCallOutput { .. } => Some("ctco"),
+            Self::ToolSearchOutput { .. } => Some("tso"),
+            Self::WebSearchCall { .. } => Some("ws"),
+            Self::ImageGenerationCall { .. } => Some("ig"),
+            Self::Compaction { .. } | Self::ContextCompaction { .. } => Some("cmp"),
+            Self::CompactionTrigger {} | Self::Other(_) => None,
+        }
+    }
+
+    /// Removes the item ID from a derived copy that starts a separate history.
+    pub fn strip_id(&mut self) {
+        self.set_id(None);
     }
 }
 
@@ -314,6 +431,16 @@ mod tests {
             serde_json::to_value(&item).unwrap(),
             serde_json::from_str::<Value>(unknown).unwrap()
         );
+    }
+
+    #[test]
+    fn response_item_ids_distinguish_client_prefixes_from_server_ids() {
+        let client = ResponseItemId::with_suffix("msg", "stable");
+        let server = ResponseItemId::from_server("server-item-id");
+
+        assert_eq!(client.as_str(), "msg_stable");
+        assert!(client.is_prefixed());
+        assert!(!server.is_prefixed());
     }
 
     #[test]

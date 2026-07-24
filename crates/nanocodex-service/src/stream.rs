@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use nanocodex_core::{
     AgentEventKind, ContentItem, EventSink, MessagePhase, MessageRole, ResponseItem,
-    monotonic_now_ns,
+    ResponseItemId, monotonic_now_ns,
     responses::{ServerEvent, Usage},
 };
 use serde::Serialize;
@@ -95,7 +95,7 @@ struct AssistantMessage<'a> {
 }
 
 struct AssistantStreamItem {
-    item_id: Option<Box<str>>,
+    item_id: Option<ResponseItemId>,
     phase: Option<MessagePhase>,
 }
 

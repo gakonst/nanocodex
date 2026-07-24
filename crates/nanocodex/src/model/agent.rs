@@ -1,8 +1,8 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use nanocodex_core::{
-    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, ResponsesTransport,
-    Thinking, ToolDefinition, Usage, responses::RequestProfile,
+    AgentEventKind, EventSink, MODEL, ModelConfig, Prompt, ResponseItem, ResponseItemId,
+    ResponsesTransport, Thinking, ToolDefinition, Usage, responses::RequestProfile,
 };
 use nanocodex_service::{
     CodeCall, CodeCallKind, ResponsesAttempt, ResponsesAttemptFactory, ResponsesClient,
@@ -15,7 +15,9 @@ use tower::Service;
 use tracing::{Instrument, info, info_span};
 use web_time::Instant;
 
-use super::context_manager::has_well_formed_tool_calls;
+use super::context_manager::{
+    assign_missing_response_item_id, assign_missing_response_item_ids, has_well_formed_tool_calls,
+};
 use super::{
     CompactionCompleted, CompactionFailed, CompactionStarted, ModelCallCompleted, ModelCallFailed,
     ModelCallStarted, RunError, RunStarted, RunStats, RunSteered, ToolCallArguments, ToolCallEvent,
@@ -113,15 +115,16 @@ impl ModelCheckpoint {
 
     pub(crate) fn resume(
         workspace: String,
-        request_prefix: Arc<[ResponseItem]>,
+        mut request_prefix: Vec<ResponseItem>,
         prompt_cache_key: Arc<str>,
         canonical_context: ResponseItem,
         history: Vec<ResponseItem>,
     ) -> Result<Self> {
+        assign_request_prefix_ids(&mut request_prefix);
         Ok(Self {
             workspace,
             conversation: ConversationState::resume(canonical_context, history)?,
-            request_prefix,
+            request_prefix: Arc::from(request_prefix),
             prompt_cache_key,
             preserve_inherited_delta: false,
             global_instructions: None,
@@ -301,7 +304,8 @@ struct ConversationState {
 }
 
 impl ConversationState {
-    fn new(history: Vec<ResponseItem>) -> Result<Self> {
+    fn new(mut history: Vec<ResponseItem>) -> Result<Self> {
+        assign_missing_response_item_ids(&mut history);
         let canonical_context = history
             .iter()
             .find(|item| item.is_user_message())
@@ -318,7 +322,7 @@ impl ConversationState {
         })
     }
 
-    fn resume(canonical_context: ResponseItem, history: Vec<ResponseItem>) -> Result<Self> {
+    fn resume(mut canonical_context: ResponseItem, mut history: Vec<ResponseItem>) -> Result<Self> {
         if history.is_empty() {
             return Err(NanocodexError::InvalidSessionSnapshot(
                 "conversation history must not be empty".to_owned(),
@@ -329,6 +333,8 @@ impl ConversationState {
                 "canonical context must be a user message".to_owned(),
             ));
         }
+        assign_missing_response_item_id(&mut canonical_context);
+        assign_missing_response_item_ids(&mut history);
         if !has_well_formed_tool_calls(&history) {
             return Err(NanocodexError::InvalidSessionSnapshot(
                 "conversation history contains an unmatched or misordered tool call".to_owned(),
@@ -557,12 +563,16 @@ pub(crate) fn prepare_resumed_checkpoint(
         tool_specs,
         config.system_prompt(),
     );
-    let expected = serde_json::to_vec(expected.prefix()).map_err(|error| {
-        NanocodexError::InvalidSessionSnapshot(format!(
-            "failed to validate the request prefix: {error}"
-        ))
-    })?;
-    let stored = serde_json::to_vec(prepared.checkpoint.request_prefix()).map_err(|error| {
+    let expected =
+        serde_json::to_vec(&without_response_item_ids(expected.prefix())).map_err(|error| {
+            NanocodexError::InvalidSessionSnapshot(format!(
+                "failed to validate the request prefix: {error}"
+            ))
+        })?;
+    let stored = serde_json::to_vec(&without_response_item_ids(
+        prepared.checkpoint.request_prefix(),
+    ))
+    .map_err(|error| {
         NanocodexError::InvalidSessionSnapshot(format!(
             "failed to validate the stored request prefix: {error}"
         ))
@@ -573,6 +583,17 @@ pub(crate) fn prepare_resumed_checkpoint(
         ));
     }
     Ok(prepared)
+}
+
+fn without_response_item_ids(items: &[ResponseItem]) -> Vec<ResponseItem> {
+    items
+        .iter()
+        .cloned()
+        .map(|mut item| {
+            item.strip_id();
+            item
+        })
+        .collect()
 }
 
 impl<S> ModelRun<S>
@@ -958,9 +979,7 @@ where
             let end_turn = response.end_turn;
             let final_message = response.final_message;
             let code_calls = response.code_calls;
-            session
-                .conversation
-                .append(response.output_items.into_iter().map(strip_item_id));
+            session.conversation.append(response.output_items);
             can_drain_steers = true;
 
             if code_calls.is_empty() {
@@ -1789,30 +1808,43 @@ fn record_model_response(span: &tracing::Span, response: &TurnResult) {
     );
 }
 
-fn strip_item_id(mut item: ResponseItem) -> ResponseItem {
-    item.strip_id();
-    item
-}
-
 fn request_profile(
     session_id: &str,
     prompt_cache_key: &str,
     tool_specs: Vec<ToolDefinition>,
     system_prompt: &str,
 ) -> RequestProfile {
-    RequestProfile::new(
-        session_id,
-        prompt_cache_key,
-        Arc::from([
-            ResponseItem::additional_tools(tool_specs),
-            ResponseItem::message(
-                nanocodex_core::MessageRole::Developer,
-                [nanocodex_core::ContentItem::InputText {
-                    text: system_prompt.into(),
-                }],
-            ),
-        ]),
-    )
+    let mut prefix = [
+        ResponseItem::additional_tools(tool_specs),
+        ResponseItem::message(
+            nanocodex_core::MessageRole::Developer,
+            [nanocodex_core::ContentItem::InputText {
+                text: system_prompt.into(),
+            }],
+        ),
+    ];
+    assign_request_prefix_ids(&mut prefix);
+    RequestProfile::new(session_id, prompt_cache_key, Arc::from(prefix))
+}
+
+fn assign_request_prefix_ids(prefix: &mut [ResponseItem]) {
+    for item in prefix {
+        if item.id().is_some_and(|id| !id.is_empty()) {
+            continue;
+        }
+        let Some((item_prefix, suffix)) = (match item {
+            ResponseItem::AdditionalTools { .. } => Some(("at", "nanocodex-tools")),
+            ResponseItem::Message {
+                role: nanocodex_core::MessageRole::Developer,
+                ..
+            } => Some(("msg", "nanocodex-instructions")),
+            _ => None,
+        }) else {
+            assign_missing_response_item_id(item);
+            continue;
+        };
+        item.set_id(Some(ResponseItemId::with_suffix(item_prefix, suffix)));
+    }
 }
 
 fn attempt_factory(

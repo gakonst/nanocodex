@@ -16,6 +16,6 @@ pub use event::{
     CompletedResponse, InputTokenDetails, OutputTokenDetails, ServerEvent, Usage, WarmupResponse,
     WarmupServerEvent,
 };
-pub use item::ResponseItem;
+pub use item::{ResponseItem, ResponseItemId};
 pub use request::{RequestProfile, ResponseCreate, ResponseHistory, ResponsesInput};
 pub use tool::{CustomToolFormat, JsonSchema, JsonValue, ToolDefinition};

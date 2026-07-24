@@ -330,9 +330,26 @@ impl Serialize for ResponsesInput<'_> {
     {
         let mut sequence = serializer.serialize_seq(Some(self.len()))?;
         for item in self.iter() {
-            sequence.serialize_element(item)?;
+            sequence.serialize_element(&RequestResponseItem(item))?;
         }
         sequence.end()
+    }
+}
+
+struct RequestResponseItem<'a>(&'a ResponseItem);
+
+impl Serialize for RequestResponseItem<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if self.0.id().is_some_and(|id| !id.is_prefixed()) {
+            let mut item = self.0.clone();
+            item.set_id(None);
+            item.serialize(serializer)
+        } else {
+            self.0.serialize(serializer)
+        }
     }
 }
 
@@ -515,6 +532,56 @@ mod tests {
         assert!(request["reasoning"].get("summary").is_none());
         assert!(request["reasoning"].get("mode").is_none());
         assert!(request.get("context_management").is_none());
+    }
+
+    #[test]
+    fn request_serialization_preserves_client_ids_and_only_omits_unprefixed_server_ids() {
+        let mut client_item = ResponseItem::message(
+            MessageRole::User,
+            [ContentItem::InputText {
+                text: "client".into(),
+            }],
+        );
+        client_item.set_id(Some(super::super::ResponseItemId::with_suffix(
+            "msg", "stable",
+        )));
+        let mut server_item = ResponseItem::message(
+            MessageRole::Assistant,
+            [ContentItem::OutputText {
+                text: "server".into(),
+                annotations: None,
+                logprobs: None,
+            }],
+        );
+        server_item.set_id(Some(super::super::ResponseItemId::from_server(
+            "server-item-id",
+        )));
+        let history = ResponseHistory::new(vec![client_item, server_item]);
+        let config = ModelConfig::default();
+        let profile = RequestProfile::new("agent", "lineage", Arc::from([]));
+
+        let request = serde_json::to_value(ResponseCreate::generation(
+            &config,
+            Thinking::Medium,
+            false,
+            ResponsesInput::history(&[], &history, None),
+            None,
+            &profile,
+            None,
+        ))
+        .expect("request should serialize");
+
+        assert_eq!(request["input"][0]["id"], "msg_stable");
+        assert!(request["input"][1].get("id").is_none());
+        assert_eq!(
+            history
+                .iter()
+                .nth(1)
+                .and_then(ResponseItem::id)
+                .map(super::super::ResponseItemId::as_str),
+            Some("server-item-id"),
+            "outbound preparation must not mutate authoritative history"
+        );
     }
 
     #[test]
