@@ -1829,11 +1829,16 @@ fn request_profile(
 
 fn assign_request_prefix_ids(prefix: &mut [ResponseItem]) {
     for item in prefix {
+        // Responses Lite rejects client-defined IDs on `additional_tools` even
+        // though ordinary client-authored messages retain stable IDs.
+        if matches!(item, ResponseItem::AdditionalTools { .. }) {
+            item.strip_id();
+            continue;
+        }
         if item.id().is_some_and(|id| !id.is_empty()) {
             continue;
         }
         let Some((item_prefix, suffix)) = (match item {
-            ResponseItem::AdditionalTools { .. } => Some(("at", "nanocodex-tools")),
             ResponseItem::Message {
                 role: nanocodex_core::MessageRole::Developer,
                 ..
