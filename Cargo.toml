@@ -32,7 +32,7 @@ getrandom = "0.3.4"
 http = "1.3.1"
 http-body-util = "0.1.3"
 hudsucker = { version = "0.25.0", default-features = false, features = ["rcgen-ca", "rustls-client"] }
-mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "cdaef22ecc0f8c1ab7c48d7e52c04725a694b820", default-features = false }
+mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "77330d1029c36859754430082b93e214cd2f2feb", default-features = false }
 mpp-egress = { version = "0.1.0", path = "crates/mpp-egress" }
 nanocodex = { version = "0.1.1", path = "crates/nanocodex" }
 nanocodex-core = { version = "0.1.1", path = "crates/nanocodex-core" }
