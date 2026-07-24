@@ -802,7 +802,7 @@ mod tests {
         response::IntoResponse,
         routing::{get, post},
     };
-    use futures_util::future::join_all;
+    use futures_util::{StreamExt, future::join_all, stream};
     use mpp::{
         Base64UrlJson, MppError, PaymentChallenge, PaymentCredential, PaymentPayload,
         format_www_authenticate,
@@ -836,6 +836,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockProvider {
         payments: Arc<AtomicUsize>,
+        commits: Arc<AtomicUsize>,
+        rollbacks: Arc<AtomicUsize>,
     }
 
     impl PaymentProvider for MockProvider {
@@ -849,6 +851,24 @@ mod tests {
                 challenge.to_echo(),
                 PaymentPayload::hash("test-payment"),
             ))
+        }
+
+        async fn commit_payment(
+            &self,
+            _: &PaymentChallenge,
+            _: &PaymentCredential,
+        ) -> Result<(), MppError> {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn rollback_payment(
+            &self,
+            _: &PaymentChallenge,
+            _: &PaymentCredential,
+        ) -> Result<(), MppError> {
+            self.rollbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -883,6 +903,52 @@ mod tests {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap()
+    }
+
+    type PaidObservation = (String, Vec<u8>, bool);
+
+    async fn spawn_recording_paid_origin(
+        calls: Arc<AtomicUsize>,
+        observations: Arc<StdMutex<Vec<PaidObservation>>>,
+    ) -> String {
+        let challenge = challenge_header();
+        let app = Router::new().route(
+            "/paid",
+            post(move |request: Request<AxumBody>| {
+                let calls = Arc::clone(&calls);
+                let observations = Arc::clone(&observations);
+                let challenge = challenge.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let request_id = request
+                        .headers()
+                        .get(MPP_REQUEST_ID)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned();
+                    let paid = request.headers().contains_key("authorization");
+                    let body = axum::body::to_bytes(request.into_body(), 1024)
+                        .await
+                        .unwrap();
+                    observations
+                        .lock()
+                        .unwrap()
+                        .push((request_id, body.to_vec(), paid));
+                    if paid {
+                        (AxumStatus::OK, "paid").into_response()
+                    } else {
+                        (
+                            AxumStatus::PAYMENT_REQUIRED,
+                            [(WWW_AUTHENTICATE, challenge)],
+                            "payment required",
+                        )
+                            .into_response()
+                    }
+                }
+            }),
+        );
+        spawn_origin(app).await
     }
 
     #[tokio::test]
@@ -1052,6 +1118,89 @@ mod tests {
             let request_ids = request_ids.lock().unwrap();
             assert_eq!(request_ids.len(), 2);
             assert_eq!(request_ids[0], request_ids[1]);
+        }
+        egress.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pays_and_replays_ten_thousand_bounded_parallel_requests_exactly_once() {
+        const REQUESTS: usize = 10_000;
+        const CONCURRENCY: usize = 100;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observations = Arc::new(StdMutex::new(Vec::with_capacity(REQUESTS * 2)));
+        let origin =
+            spawn_recording_paid_origin(Arc::clone(&calls), Arc::clone(&observations)).await;
+        let provider = MockProvider::default();
+        let payments = Arc::clone(&provider.payments);
+        let commits = Arc::clone(&provider.commits);
+        let rollbacks = Arc::clone(&provider.rollbacks);
+        let egress = MppEgress::start(
+            provider,
+            EgressPolicy {
+                max_concurrent_requests: CONCURRENCY,
+                ..EgressPolicy::default()
+            },
+        )
+        .await
+        .unwrap();
+        let client = proxied_client(&egress);
+
+        let responses = stream::iter(0..REQUESTS)
+            .map(|index| {
+                let client = client.clone();
+                let url = format!("{origin}/paid");
+                async move {
+                    let response = client
+                        .post(url)
+                        .body(format!("body-{index}"))
+                        .send()
+                        .await
+                        .unwrap();
+                    let status = response.status();
+                    let body = response.text().await.unwrap();
+                    (status, body)
+                }
+            })
+            .buffer_unordered(CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+
+        let status_counts = responses.iter().fold(
+            std::collections::BTreeMap::new(),
+            |mut counts, (status, _)| {
+                *counts.entry(status.as_u16()).or_insert(0_usize) += 1;
+                counts
+            },
+        );
+        let error_counts = responses
+            .iter()
+            .filter(|(status, _)| !status.is_success())
+            .fold(
+                std::collections::BTreeMap::new(),
+                |mut counts, (_, body)| {
+                    *counts.entry(body).or_insert(0_usize) += 1;
+                    counts
+                },
+            );
+        assert_eq!(
+            status_counts,
+            std::collections::BTreeMap::from([(200, REQUESTS)]),
+            "error_counts={error_counts:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), REQUESTS * 2);
+        assert_eq!(payments.load(Ordering::SeqCst), REQUESTS);
+        assert_eq!(commits.load(Ordering::SeqCst), REQUESTS);
+        assert_eq!(rollbacks.load(Ordering::SeqCst), 0);
+        {
+            let mut observations = observations.lock().unwrap().clone();
+            observations.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+            assert_eq!(observations.len(), REQUESTS * 2);
+            for pair in observations.chunks_exact(2) {
+                assert_eq!(pair[0].0, pair[1].0);
+                assert_eq!(pair[0].1, pair[1].1);
+                assert_ne!(pair[0].2, pair[1].2);
+            }
         }
         egress.shutdown().await.unwrap();
     }
