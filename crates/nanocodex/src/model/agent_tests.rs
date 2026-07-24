@@ -1911,9 +1911,8 @@ async fn sol_compacts_before_sampling_a_follow_on_turn() -> Result<()> {
 
         let compact = next_json(&mut socket).await?;
         assert_eq!(compact["previous_response_id"], "resp-first");
-        assert_eq!(compact["input"].as_array().map(Vec::len), Some(2));
-        assert!(compact["input"][0].to_string().contains("second prompt"));
-        assert_eq!(compact["input"][1], json!({ "type": "compaction_trigger" }));
+        assert_eq!(compact["input"], json!([{ "type": "compaction_trigger" }]));
+        assert!(!compact.to_string().contains("second prompt"));
         send_json(
             &mut socket,
             json!({
@@ -1935,12 +1934,20 @@ async fn sol_compacts_before_sampling_a_follow_on_turn() -> Result<()> {
         let second = next_json(&mut socket).await?;
         assert!(second.get("previous_response_id").is_none());
         assert!(second.to_string().contains("second prompt"));
+        let second_input = second["input"]
+            .as_array()
+            .ok_or_else(|| eyre!("follow-on request input was not an array"))?;
         assert_eq!(
-            second["input"].as_array().and_then(|items| items.last()),
+            second_input.get(second_input.len().saturating_sub(2)),
             Some(&json!({
                 "type": "compaction",
                 "encrypted_content": "opaque-summary"
             }))
+        );
+        assert!(
+            second_input
+                .last()
+                .is_some_and(|item| item.to_string().contains("second prompt"))
         );
         send_final(&mut socket, "resp-second").await
     });

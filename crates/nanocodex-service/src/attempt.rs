@@ -199,7 +199,7 @@ impl ResponsesAttempt {
         full_history: ResponseHistory,
         incremental_history: ResponseHistory,
         incremental_start: usize,
-        previous_response_id: &str,
+        previous_response_id: Option<&str>,
         trigger: ResponseItem,
         thinking: Thinking,
         fast_mode: bool,
@@ -213,14 +213,14 @@ impl ResponsesAttempt {
             incremental_history,
             incremental_start,
             tail: Some(trigger),
-            previous_response_id: Some(previous_response_id.to_owned()),
+            previous_response_id: previous_response_id.map(str::to_owned),
             thinking,
             fast_mode,
             profile,
             observer,
             attempt: 1,
             max_attempts: RESPONSE_MAX_ATTEMPTS,
-            full_replay: false,
+            full_replay: previous_response_id.is_none(),
         }
     }
 
@@ -411,7 +411,7 @@ impl ResponsesAttemptFactory {
         full_history: ResponseHistory,
         incremental_history: ResponseHistory,
         incremental_start: usize,
-        previous_response_id: &str,
+        previous_response_id: Option<&str>,
         trigger: ResponseItem,
         thinking: Thinking,
         fast_mode: bool,
@@ -434,7 +434,10 @@ impl ResponsesAttemptFactory {
 #[cfg(test)]
 mod tests {
     use super::{ResponseHistory, ResponsesAttemptFactory, TransportStats};
-    use nanocodex_core::{EventSink, Thinking, responses::RequestProfile};
+    use nanocodex_core::{
+        ContentItem, EventSink, MessageRole, ResponseItem, Thinking, responses::RequestProfile,
+    };
+    use serde_json::json;
     use std::sync::Arc;
 
     #[test]
@@ -460,5 +463,45 @@ mod tests {
         assert!(attempt.prepare_retry());
         assert_eq!(attempt.thinking(), Thinking::High);
         assert!(attempt.fast_mode());
+    }
+
+    #[test]
+    fn compaction_without_a_checkpoint_replays_authoritative_history() {
+        let (events, _receiver) = EventSink::channel("attempt-test".to_owned());
+        let factory = ResponsesAttemptFactory::new(
+            RequestProfile::new("attempt-test", "attempt-test", Arc::from([])),
+            events,
+            Arc::new(TransportStats::default()),
+        );
+        let history = ResponseHistory::new(vec![ResponseItem::message(
+            MessageRole::User,
+            [ContentItem::InputText {
+                text: "retained history".into(),
+            }],
+        )]);
+        let attempt = factory.compaction(
+            1,
+            history.clone(),
+            history,
+            1,
+            None,
+            ResponseItem::compaction_trigger(),
+            Thinking::Medium,
+            false,
+        );
+
+        assert!(attempt.is_full_replay());
+        assert_eq!(attempt.previous_response_id(), None);
+        assert_eq!(
+            serde_json::to_value(attempt.input_items().collect::<Vec<_>>()).unwrap(),
+            json!([
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "retained history" }]
+                },
+                { "type": "compaction_trigger" }
+            ])
+        );
     }
 }

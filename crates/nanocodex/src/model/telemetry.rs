@@ -79,7 +79,7 @@ pub(super) struct CompactionStarted<'a> {
     pub(super) after_model_call_index: u32,
     pub(super) active_context_tokens: u64,
     pub(super) auto_compact_token_limit: u64,
-    pub(super) previous_response_id: &'a str,
+    pub(super) previous_response_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
