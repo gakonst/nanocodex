@@ -1884,6 +1884,102 @@ async fn sol_compacts_with_a_trigger_and_installs_the_returned_context() -> Resu
 }
 
 #[tokio::test]
+async fn sol_compacts_before_sampling_a_follow_on_turn() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let first = next_json(&mut socket).await?;
+        assert!(first.to_string().contains("first prompt"));
+        send_json(
+            &mut socket,
+            completed_response_with_usage(
+                "resp-first",
+                &[json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "done" }]
+                })],
+                244_800,
+            ),
+        )
+        .await?;
+
+        let compact = next_json(&mut socket).await?;
+        assert_eq!(compact["previous_response_id"], "resp-first");
+        assert_eq!(compact["input"].as_array().map(Vec::len), Some(2));
+        assert!(compact["input"][0].to_string().contains("second prompt"));
+        assert_eq!(compact["input"][1], json!({ "type": "compaction_trigger" }));
+        send_json(
+            &mut socket,
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "id": "cmp-server-id",
+                    "type": "compaction",
+                    "encrypted_content": "opaque-summary"
+                }
+            }),
+        )
+        .await?;
+        send_json(
+            &mut socket,
+            completed_response_with_usage("resp-compact", &[], 120),
+        )
+        .await?;
+
+        let second = next_json(&mut socket).await?;
+        assert!(second.get("previous_response_id").is_none());
+        assert!(second.to_string().contains("second prompt"));
+        assert_eq!(
+            second["input"].as_array().and_then(|items| items.last()),
+            Some(&json!({
+                "type": "compaction",
+                "encrypted_content": "opaque-summary"
+            }))
+        );
+        send_final(&mut socket, "resp-second").await
+    });
+
+    let workspace = temporary_workspace("pre-turn-compaction")?;
+    let responses = Responses::builder().websocket_url(endpoint).build();
+    let (agent, events) = Nanocodex::builder("test-key")
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .responses(responses)
+        .session_id("model-test")
+        .build()?;
+    assert_eq!(
+        agent
+            .prompt("first prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+    assert_eq!(
+        agent
+            .prompt("second prompt")
+            .await?
+            .result()
+            .await?
+            .final_message,
+        "done"
+    );
+    drop((agent, events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn latest_fork_during_streaming_inherits_the_active_prompt_delta() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);

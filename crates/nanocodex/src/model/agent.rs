@@ -904,6 +904,15 @@ where
                 self.drain_steers(&mut session.conversation, &mut steers)
                     .await?;
             }
+            self.maybe_compact(
+                self.stats.model_calls,
+                &mut session.conversation,
+                &session.factory,
+                &session.workspace,
+                session.tools.working_directory(),
+                session.tools.default_shell_name(),
+            )
+            .await?;
             Self::publish_fork_snapshot(session, fork_snapshots, self.global_instructions.as_ref());
             let call_index = self.stats.model_calls + 1;
             let response = self
@@ -924,15 +933,6 @@ where
             if code_calls.is_empty() {
                 if end_turn == Some(false) {
                     session.conversation.clear_delta();
-                    self.maybe_compact(
-                        call_index,
-                        &mut session.conversation,
-                        &session.factory,
-                        &session.workspace,
-                        session.tools.working_directory(),
-                        session.tools.default_shell_name(),
-                    )
-                    .await?;
                     continue;
                 }
                 if !steers.is_empty() {
@@ -962,15 +962,6 @@ where
                     .await?;
                 session.conversation.append(output);
             }
-            self.maybe_compact(
-                call_index,
-                &mut session.conversation,
-                &session.factory,
-                &session.workspace,
-                session.tools.working_directory(),
-                session.tools.default_shell_name(),
-            )
-            .await?;
         }
     }
 
