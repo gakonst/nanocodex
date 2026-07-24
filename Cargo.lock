@@ -689,7 +689,7 @@ dependencies = [
 [[package]]
 name = "alloy-transport-mpp"
 version = "0.2.0"
-source = "git+https://github.com/tempoxyz/mpp-rs?rev=cdaef22ecc0f8c1ab7c48d7e52c04725a694b820#cdaef22ecc0f8c1ab7c48d7e52c04725a694b820"
+source = "git+https://github.com/tempoxyz/mpp-rs?rev=77330d1029c36859754430082b93e214cd2f2feb#77330d1029c36859754430082b93e214cd2f2feb"
 dependencies = [
  "alloy-json-rpc",
  "alloy-pubsub",
@@ -703,6 +703,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-tungstenite 0.28.0",
  "tracing",
@@ -3904,7 +3905,7 @@ dependencies = [
 [[package]]
 name = "mpp"
 version = "0.11.0"
-source = "git+https://github.com/tempoxyz/mpp-rs?rev=cdaef22ecc0f8c1ab7c48d7e52c04725a694b820#cdaef22ecc0f8c1ab7c48d7e52c04725a694b820"
+source = "git+https://github.com/tempoxyz/mpp-rs?rev=77330d1029c36859754430082b93e214cd2f2feb#77330d1029c36859754430082b93e214cd2f2feb"
 dependencies = [
  "alloy",
  "async-stream",
