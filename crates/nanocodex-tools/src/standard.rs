@@ -38,7 +38,7 @@ impl StandardTool {
             Self::UpdatePlan => update_plan_definition(self.name()),
             Self::ApplyPatch => ToolDefinition::custom(
                 self.name(),
-                "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+                "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
                 CustomToolFormat::grammar("lark", APPLY_PATCH_GRAMMAR),
             ),
             Self::ViewImage => view_image_definition(self.name()),
@@ -49,14 +49,14 @@ impl StandardTool {
 fn exec_command_definition(name: &'static str) -> ToolDefinition {
     ToolDefinition::function(
         name,
-        "Runs a shell command, returning output or a session ID for ongoing interaction. Live sessions are terminated when the agent ends; detach services that must remain running afterward.",
+        "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
         json!({
             "type": "object",
             "properties": {
                 "cmd": { "type": "string", "description": "Shell command to execute." },
                 "workdir": {
                     "type": "string",
-                    "description": "Working directory for the command. Defaults to the task workspace."
+                    "description": "Working directory for the command. Defaults to the turn cwd."
                 },
                 "shell": {
                     "type": "string",
@@ -64,18 +64,18 @@ fn exec_command_definition(name: &'static str) -> ToolDefinition {
                 },
                 "login": {
                     "type": "boolean",
-                    "description": "True runs with login-shell semantics; false disables them. Defaults to true."
+                    "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
                 },
                 "tty": {
                     "type": "boolean",
                     "description": "True allocates a PTY for the command; false or omitted uses plain pipes."
                 },
                 "yield_time_ms": {
-                    "type": "integer",
+                    "type": "number",
                     "description": "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
                 },
                 "max_output_tokens": {
-                    "type": "integer",
+                    "type": "number",
                     "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
                 }
             },
@@ -89,24 +89,24 @@ fn exec_command_definition(name: &'static str) -> ToolDefinition {
 fn write_stdin_definition(name: &'static str) -> ToolDefinition {
     ToolDefinition::function(
         name,
-        "Writes characters to an existing exec session and returns recent output.",
+        "Writes characters to an existing unified exec session and returns recent output.",
         json!({
             "type": "object",
             "properties": {
                 "session_id": {
-                    "type": "integer",
-                    "description": "Identifier of the running exec session."
+                    "type": "number",
+                    "description": "Identifier of the running unified exec session."
                 },
                 "chars": {
                     "type": "string",
                     "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."
                 },
                 "yield_time_ms": {
-                    "type": "integer",
+                    "type": "number",
                     "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."
                 },
                 "max_output_tokens": {
-                    "type": "integer",
+                    "type": "number",
                     "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
                 }
             },
@@ -183,7 +183,7 @@ fn view_image_definition(name: &'static str) -> ToolDefinition {
             "detail": {
                 "type": "string",
                 "enum": ["high", "original"],
-                "description": "Image detail hint returned by view_image."
+                "description": "Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved."
             }
         },
         "required": ["image_url", "detail"],
@@ -223,4 +223,76 @@ fn unified_exec_output_schema() -> serde_json::Value {
         "required": ["wall_time_seconds", "output"],
         "additionalProperties": false
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn definition(tool: StandardTool) -> serde_json::Value {
+        serde_json::to_value(tool.definition()).unwrap()
+    }
+
+    #[test]
+    fn shell_contract_matches_codex_unified_exec() {
+        let exec = definition(StandardTool::ExecCommand);
+        assert_eq!(
+            exec["description"],
+            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+        );
+        assert_eq!(
+            exec["parameters"]["properties"]["workdir"]["description"],
+            "Working directory for the command. Defaults to the turn cwd."
+        );
+        assert_eq!(
+            exec["parameters"]["properties"]["login"]["description"],
+            "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
+        );
+        assert_eq!(
+            exec["parameters"]["properties"]["yield_time_ms"]["type"],
+            "number"
+        );
+        assert_eq!(
+            exec["parameters"]["properties"]["max_output_tokens"]["type"],
+            "number"
+        );
+
+        let write = definition(StandardTool::WriteStdin);
+        assert_eq!(
+            write["description"],
+            "Writes characters to an existing unified exec session and returns recent output."
+        );
+        assert_eq!(
+            write["parameters"]["properties"]["session_id"],
+            json!({
+                "type": "number",
+                "description": "Identifier of the running unified exec session."
+            })
+        );
+        assert_eq!(
+            write["parameters"]["properties"]["yield_time_ms"]["type"],
+            "number"
+        );
+        assert_eq!(
+            write["parameters"]["properties"]["max_output_tokens"]["type"],
+            "number"
+        );
+        assert_eq!(exec["output_schema"], write["output_schema"]);
+    }
+
+    #[test]
+    fn file_and_image_contracts_match_codex() {
+        let patch = definition(StandardTool::ApplyPatch);
+        assert_eq!(
+            patch["description"],
+            "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
+        );
+        assert_eq!(patch["format"]["definition"], APPLY_PATCH_GRAMMAR);
+
+        let image = definition(StandardTool::ViewImage);
+        assert_eq!(
+            image["output_schema"]["properties"]["detail"]["description"],
+            "Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved."
+        );
+    }
 }

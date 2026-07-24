@@ -5,6 +5,16 @@ use nanocodex_core::{
 };
 use nanocodex_tools::{ToolOutputBody, ToolOutputContent};
 
+const PERMISSIONS_INSTRUCTIONS: &str = concat!(
+    "<permissions instructions>\n",
+    "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is ",
+    "`danger-full-access`: No filesystem sandboxing - all commands are permitted. Network ",
+    "access is enabled.\n",
+    "Approval policy is currently never. Do not provide the `sandbox_permissions` for any ",
+    "reason, commands will be rejected.\n",
+    "</permissions instructions>",
+);
+
 pub(in crate::model) fn task_input(
     user_content: Vec<ContentItem>,
     workspace: &str,
@@ -62,6 +72,7 @@ fn task_input_with_time_context(
     timezone: &str,
 ) -> Vec<ResponseItem> {
     vec![
+        developer_context(),
         task_context_with_time(
             workspace,
             shell,
@@ -71,6 +82,15 @@ fn task_input_with_time_context(
         ),
         ResponseItem::message(MessageRole::User, user_content),
     ]
+}
+
+pub(in crate::model) fn developer_context() -> ResponseItem {
+    ResponseItem::message(
+        MessageRole::Developer,
+        [ContentItem::InputText {
+            text: PERMISSIONS_INSTRUCTIONS.into(),
+        }],
+    )
 }
 
 fn task_context_with_time(
@@ -196,6 +216,11 @@ fn function_output(output: ToolOutputBody) -> FunctionOutputBody {
                         image_url: image_url.into_boxed_str(),
                         detail: None,
                     },
+                    ToolOutputContent::InputAudio { audio_url } => {
+                        FunctionOutputContent::InputAudio {
+                            audio_url: audio_url.into_boxed_str(),
+                        }
+                    }
                 })
                 .collect(),
         ),
@@ -224,6 +249,16 @@ mod tests {
         assert_eq!(
             serde_json::to_value(input).unwrap(),
             json!([
+                json!({
+                    "type": "message",
+                    "role": "developer",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": PERMISSIONS_INSTRUCTIONS,
+                        },
+                    ],
+                }),
                 json!({
                     "type": "message",
                     "role": "user",

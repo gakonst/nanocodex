@@ -405,6 +405,7 @@ fn truncate_output_content(items: &mut Vec<FunctionOutputContent>, token_limit: 
             }
             FunctionOutputContent::InputImage { .. }
             | FunctionOutputContent::EncryptedContent { .. } => output.push(item),
+            FunctionOutputContent::InputAudio { .. } => {}
         }
     }
     if omitted_text_items > 0 {

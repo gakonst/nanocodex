@@ -37,6 +37,9 @@ pub enum ToolOutputContent {
         image_url: String,
         detail: ImageDetail,
     },
+    InputAudio {
+        audio_url: String,
+    },
 }
 
 pub struct ToolExecution {
@@ -863,7 +866,10 @@ impl ToolRuntime {
     #[must_use]
     pub fn model_specs(&self) -> Vec<ToolDefinition> {
         vec![
-            code_mode::exec_spec(self.registry.definitions()),
+            code_mode::exec_spec(
+                self.registry.definitions(),
+                !self.registry.providers.is_empty(),
+            ),
             code_mode::wait_spec(),
         ]
     }
@@ -1203,7 +1209,8 @@ fn definition_metadata(name: &str, definition: &ToolDefinition) -> Value {
         ToolDefinition::Custom { .. } => "freeform",
     };
     json!({
-        "name": name,
+        "name": code_mode::description::normalize_identifier(name),
+        "tool_name": name,
         "description": definition.description(),
         "kind": kind,
     })

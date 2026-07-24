@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::{RuntimeEvent, ToolOutputContent};
+use super::RuntimeEvent;
 
 const BOOTSTRAP: &str = include_str!("bootstrap.js");
 
@@ -59,9 +59,14 @@ struct ExecutionState {
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     command_tx: std_mpsc::Sender<HostCommand>,
     pending_tools: HashMap<u64, (SavedFunction, SavedFunction)>,
-    pending_timeouts: HashMap<u32, SavedFunction>,
+    pending_timeouts: HashMap<u32, PendingTimeout>,
     next_tool_id: u64,
     next_timeout_id: u32,
+}
+
+struct PendingTimeout {
+    callback: SavedFunction,
+    _cancel: std_mpsc::Sender<()>,
 }
 
 #[derive(Deserialize)]
@@ -69,14 +74,10 @@ struct ExecutionState {
 enum ExecutionTerminal {
     Done {
         #[serde(default)]
-        content: Vec<ToolOutputContent>,
-        #[serde(default)]
         stored: HashMap<String, Value>,
     },
     Error {
         message: String,
-        #[serde(default)]
-        content: Vec<ToolOutputContent>,
         #[serde(default)]
         stored: HashMap<String, Value>,
     },
@@ -367,6 +368,27 @@ fn install_native_functions<'js>(
         .catch(ctx)
         .map_err(|error| format!("failed to install QuickJS tool callback: {error}"))?;
 
+    let content_state = Rc::clone(state);
+    globals
+        .set(
+            "__nanocodexContent",
+            Func::from(
+                move |ctx: Ctx<'js>, content_json: String| -> rquickjs::Result<()> {
+                    let content = serde_json::from_str(&content_json).map_err(|error| {
+                        Exception::throw_type(&ctx, &format!("invalid output content: {error}"))
+                    })?;
+                    let state = content_state.borrow();
+                    let _ = state.event_tx.send(RuntimeEvent::Content {
+                        cell_id: state.execution_id,
+                        content,
+                    });
+                    Ok(())
+                },
+            ),
+        )
+        .catch(ctx)
+        .map_err(|error| format!("failed to install QuickJS content callback: {error}"))?;
+
     let notify_state = Rc::clone(state);
     globals
         .set(
@@ -386,19 +408,12 @@ fn install_native_functions<'js>(
     globals
         .set(
             "__nanocodexYield",
-            Func::from(
-                move |ctx: Ctx<'js>, content_json: String| -> rquickjs::Result<()> {
-                    let content = serde_json::from_str(&content_json).map_err(|error| {
-                        Exception::throw_type(&ctx, &format!("invalid yielded content: {error}"))
-                    })?;
-                    let state = yield_state.borrow();
-                    let _ = state.event_tx.send(RuntimeEvent::Yielded {
-                        cell_id: state.execution_id,
-                        content,
-                    });
-                    Ok(())
-                },
-            ),
+            Func::from(move || {
+                let state = yield_state.borrow();
+                let _ = state.event_tx.send(RuntimeEvent::Yielded {
+                    cell_id: state.execution_id,
+                });
+            }),
         )
         .catch(ctx)
         .map_err(|error| format!("failed to install QuickJS yield callback: {error}"))?;
@@ -418,12 +433,21 @@ fn install_native_functions<'js>(
                     state.next_timeout_id = state.next_timeout_id.saturating_add(1);
                     let execution_id = state.execution_id;
                     let command_tx = state.command_tx.clone();
-                    state
-                        .pending_timeouts
-                        .insert(id, Persistent::save(&ctx, callback));
+                    let (cancel, cancelled) = std_mpsc::channel();
+                    state.pending_timeouts.insert(
+                        id,
+                        PendingTimeout {
+                            callback: Persistent::save(&ctx, callback),
+                            _cancel: cancel,
+                        },
+                    );
                     thread::spawn(move || {
-                        thread::sleep(Duration::from_millis(delay_ms));
-                        let _ = command_tx.send(HostCommand::TimeoutFired { execution_id, id });
+                        if matches!(
+                            cancelled.recv_timeout(Duration::from_millis(delay_ms)),
+                            Err(std_mpsc::RecvTimeoutError::Timeout)
+                        ) {
+                            let _ = command_tx.send(HostCommand::TimeoutFired { execution_id, id });
+                        }
                     });
                     Ok(id)
                 },
@@ -452,10 +476,15 @@ fn remove_native_globals(ctx: &Ctx<'_>) -> Result<(), String> {
     let globals = ctx.globals();
     for name in [
         "__nanocodexTool",
+        "__nanocodexContent",
         "__nanocodexNotify",
         "__nanocodexYield",
         "__nanocodexSetTimeout",
         "__nanocodexClearTimeout",
+        "console",
+        "Atomics",
+        "SharedArrayBuffer",
+        "WebAssembly",
     ] {
         globals
             .remove(name)
@@ -502,19 +531,13 @@ fn send_terminal(
 ) -> Result<(), String> {
     let state = state.borrow();
     let event = match terminal {
-        ExecutionTerminal::Done { content, stored } => RuntimeEvent::Done {
+        ExecutionTerminal::Done { stored } => RuntimeEvent::Done {
             cell_id: state.execution_id,
-            content,
             stored,
         },
-        ExecutionTerminal::Error {
-            message,
-            content,
-            stored,
-        } => RuntimeEvent::Error {
+        ExecutionTerminal::Error { message, stored } => RuntimeEvent::Error {
             cell_id: state.execution_id,
             message,
-            content,
             stored,
         },
     };
@@ -553,11 +576,12 @@ fn invoke_timeout(
     state: &Rc<RefCell<ExecutionState>>,
     id: u32,
 ) -> Result<(), String> {
-    let callback = state.borrow_mut().pending_timeouts.remove(&id);
-    let Some(callback) = callback else {
+    let timeout = state.borrow_mut().pending_timeouts.remove(&id);
+    let Some(timeout) = timeout else {
         return Ok(());
     };
-    let callback = callback
+    let callback = timeout
+        .callback
         .restore(ctx)
         .map_err(|error| format!("failed to restore QuickJS timeout callback: {error}"))?;
     callback

@@ -105,7 +105,7 @@ fn rewrite_tool_output(item: &mut ResponseItem) -> bool {
 
 pub(super) fn install_history(
     history: &[ResponseItem],
-    canonical_context: &ResponseItem,
+    initial_context: &[ResponseItem],
     mut compaction: ResponseItem,
 ) -> Vec<ResponseItem> {
     compaction.strip_id();
@@ -116,7 +116,10 @@ pub(super) fn install_history(
         .collect();
     let mut installed = truncate_retained_messages(retained, RETAINED_MESSAGE_TOKEN_BUDGET);
     let insertion_index = installed.len().saturating_sub(1);
-    installed.insert(insertion_index, canonical_context.clone());
+    installed.splice(
+        insertion_index..insertion_index,
+        initial_context.iter().cloned(),
+    );
     installed.push(compaction);
     installed
 }
@@ -397,6 +400,12 @@ mod tests {
 
     #[test]
     fn installed_history_retains_user_inputs_and_reinjects_context() {
+        let permissions = ResponseItem::message(
+            nanocodex_core::MessageRole::Developer,
+            [ContentItem::InputText {
+                text: "<permissions instructions>...</permissions instructions>".into(),
+            }],
+        );
         let initial =
             message("<environment_context>\n<cwd>/workspace</cwd>\n</environment_context>");
         let first = message("do the task");
@@ -418,22 +427,30 @@ mod tests {
             r#"{"id":"cmp-id","type":"compaction","encrypted_content":"opaque"}"#,
         )
         .unwrap();
-        let installed = install_history(&history, &initial, compaction);
-        assert_eq!(installed.len(), 4);
+        let installed = install_history(
+            &history,
+            &[permissions.clone(), initial.clone()],
+            compaction,
+        );
+        assert_eq!(installed.len(), 5);
         assert_eq!(
             serde_json::to_value(&installed[0]).unwrap(),
             serde_json::to_value(first).unwrap()
         );
         assert_eq!(
             serde_json::to_value(&installed[1]).unwrap(),
-            serde_json::to_value(initial).unwrap()
+            serde_json::to_value(permissions).unwrap()
         );
         assert_eq!(
             serde_json::to_value(&installed[2]).unwrap(),
+            serde_json::to_value(initial).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&installed[3]).unwrap(),
             serde_json::to_value(latest).unwrap()
         );
         assert!(matches!(
-            installed[3],
+            installed[4],
             ResponseItem::Compaction { id: None, .. }
         ));
     }

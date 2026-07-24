@@ -47,6 +47,9 @@ pub enum ToolOutputContent {
         image_url: String,
         detail: ImageDetail,
     },
+    InputAudio {
+        audio_url: String,
+    },
 }
 
 #[derive(Clone, Copy)]

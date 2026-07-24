@@ -3,17 +3,23 @@ use serde_json::json;
 
 use super::description;
 
-const GRAMMAR: &str = r"start: pragma_source | plain_source
+const GRAMMAR: &str = r"
+start: pragma_source | plain_source
 pragma_source: PRAGMA_LINE NEWLINE SOURCE
 plain_source: SOURCE
+
 PRAGMA_LINE: /[ \t]*\/\/ @exec:[^\r\n]*/
 NEWLINE: /\r?\n/
-SOURCE: /[\s\S]+/";
+SOURCE: /[\s\S]+/
+";
 
-pub(crate) fn exec_spec(definitions: &[ToolDefinition]) -> ToolDefinition {
+pub(crate) fn exec_spec(
+    definitions: &[ToolDefinition],
+    has_deferred_tools: bool,
+) -> ToolDefinition {
     ToolDefinition::custom(
         "exec",
-        description::exec_description(definitions),
+        description::exec_description(definitions, has_deferred_tools),
         CustomToolFormat::grammar("lark", GRAMMAR),
     )
 }

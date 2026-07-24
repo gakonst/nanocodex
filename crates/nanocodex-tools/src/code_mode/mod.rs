@@ -1,4 +1,4 @@
-mod description;
+pub(crate) mod description;
 mod embedded;
 mod output;
 mod spec;
@@ -121,15 +121,12 @@ enum CellUpdate {
         call: NestedToolCall,
     },
     Notification(CodeModeNotification),
-    Yielded {
-        content: Vec<ToolOutputContent>,
-    },
-    Completed {
-        content: Vec<ToolOutputContent>,
-    },
+    Content(ToolOutputContent),
+    Yielded,
+    Completed,
+    Terminated,
     ScriptFailed {
         message: String,
-        content: Vec<ToolOutputContent>,
     },
     HostFailed(String),
 }
@@ -188,19 +185,20 @@ enum RuntimeEvent {
         cell_id: u64,
         text: String,
     },
+    Content {
+        cell_id: u64,
+        content: ToolOutputContent,
+    },
     Yielded {
         cell_id: u64,
-        content: Vec<ToolOutputContent>,
     },
     Done {
         cell_id: u64,
-        content: Vec<ToolOutputContent>,
         stored: HashMap<String, Value>,
     },
     Error {
         cell_id: u64,
         message: String,
-        content: Vec<ToolOutputContent>,
         stored: HashMap<String, Value>,
     },
 }
@@ -210,6 +208,7 @@ impl RuntimeEvent {
         match self {
             Self::ToolCall { cell_id, .. }
             | Self::Notify { cell_id, .. }
+            | Self::Content { cell_id, .. }
             | Self::Yielded { cell_id, .. }
             | Self::Done { cell_id, .. }
             | Self::Error { cell_id, .. } => *cell_id,
@@ -225,14 +224,13 @@ struct CompletedNestedCall {
 
 enum CellTerminal {
     Completed {
-        content: Vec<ToolOutputContent>,
         stored: HashMap<String, Value>,
     },
     ScriptFailed {
         message: String,
-        content: Vec<ToolOutputContent>,
         stored: HashMap<String, Value>,
     },
+    Terminated,
 }
 
 struct HostFailure {
@@ -353,7 +351,7 @@ impl CodeModeRuntime {
         let (execution, running) = observe_cell(
             &mut cell,
             started_at,
-            yield_after,
+            ObservationMode::YieldAfter(yield_after),
             Some(output_token_budget),
             extend_for_nested_calls,
             observer,
@@ -402,22 +400,24 @@ impl CodeModeRuntime {
         let Some(mut live_cell) = self.cells.lock().await.live_cells.remove(&cell_id) else {
             return failed_execution(
                 started_at,
-                &format!("exec cell {cell_id} was not found"),
+                &format!("exec cell {cell_id} not found"),
                 Vec::new(),
             );
         };
         let continued_output_token_budget = live_cell.output_token_budget;
         if arguments.terminate {
-            live_cell.terminate().await;
-            return CodeModeExecution {
-                output: ToolOutputBody::Text(format!(
-                    "Script terminated\nWall time {:.1} seconds\nOutput:\nexec cell {cell_id} was terminated",
-                    started_at.elapsed().as_secs_f64()
-                )),
-                success: true,
-                nested_calls: Vec::new(),
-                notifications: Vec::new(),
-            };
+            live_cell.request_terminate();
+            let (execution, _) = observe_cell(
+                &mut live_cell,
+                started_at,
+                ObservationMode::Terminate,
+                Some(continued_output_token_budget),
+                false,
+                observer,
+            )
+            .await;
+            live_cell.join().await;
+            return execution;
         }
         let yield_time = Duration::from_millis(
             arguments
@@ -432,7 +432,7 @@ impl CodeModeRuntime {
         let (execution, running) = observe_cell(
             &mut live_cell,
             started_at,
-            yield_time,
+            ObservationMode::YieldAfter(yield_time),
             Some(output_token_budget),
             false,
             observer,
@@ -641,10 +641,14 @@ impl LiveCell {
     }
 
     async fn terminate(&mut self) {
+        self.request_terminate();
+        self.join().await;
+    }
+
+    fn request_terminate(&mut self) {
         if let Some(terminate) = self.terminate.take() {
             let _ = terminate.send(());
         }
-        self.join().await;
     }
 
     async fn join(&mut self) {
@@ -669,27 +673,41 @@ impl Drop for LiveCell {
     }
 }
 
+enum ObservationMode {
+    YieldAfter(Duration),
+    Terminate,
+}
+
 // Keep every lifecycle update in one exhaustive, order-preserving observation loop.
 #[allow(clippy::too_many_lines)]
 async fn observe_cell(
     cell: &mut LiveCell,
     started_at: Instant,
-    yield_after: Duration,
+    mode: ObservationMode,
     max_output_tokens: Option<usize>,
     extend_for_nested_calls: bool,
     observer: &mut dyn CodeModeObserver,
 ) -> (CodeModeExecution, bool) {
+    let (yield_after, terminating) = match mode {
+        ObservationMode::YieldAfter(yield_after) => (Some(yield_after), false),
+        ObservationMode::Terminate => (None, true),
+    };
+    let mut content = Vec::new();
     let mut nested_calls = Vec::new();
     let mut notifications = Vec::new();
-    let yield_timer = tokio::time::sleep(yield_after);
-    tokio::pin!(yield_timer);
+    let mut yield_timer = yield_after.map(|yield_after| Box::pin(tokio::time::sleep(yield_after)));
     loop {
         let update = tokio::select! {
-            () = &mut yield_timer => {
+            () = async {
+                match yield_timer.as_mut() {
+                    Some(timer) => timer.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 return running_observation(
                     cell.id,
                     started_at,
-                    Vec::new(),
+                    content,
                     max_output_tokens,
                     nested_calls,
                     notifications,
@@ -704,7 +722,9 @@ async fn observe_cell(
                 input,
                 yield_after: nested_yield_after,
             }) => {
-                if let Some(nested_yield_after) = nested_yield_after {
+                if let Some(nested_yield_after) = nested_yield_after
+                    && let Some(yield_timer) = yield_timer.as_mut()
+                {
                     maybe_extend_cell_yield(
                         yield_timer.as_mut(),
                         extend_for_nested_calls,
@@ -723,7 +743,9 @@ async fn observe_cell(
                 nested_calls.push((id, call));
             }
             Some(CellUpdate::Notification(notification)) => notifications.push(notification),
-            Some(CellUpdate::Yielded { content }) => {
+            Some(CellUpdate::Content(item)) => content.push(item),
+            Some(CellUpdate::Yielded) if terminating => {}
+            Some(CellUpdate::Yielded) => {
                 return running_observation(
                     cell.id,
                     started_at,
@@ -733,7 +755,7 @@ async fn observe_cell(
                     notifications,
                 );
             }
-            Some(CellUpdate::Completed { content }) => {
+            Some(CellUpdate::Completed) => {
                 return (
                     observed_execution(
                         "Script completed",
@@ -747,10 +769,21 @@ async fn observe_cell(
                     false,
                 );
             }
-            Some(CellUpdate::ScriptFailed {
-                message,
-                mut content,
-            }) => {
+            Some(CellUpdate::Terminated) => {
+                return (
+                    observed_execution(
+                        "Script terminated",
+                        true,
+                        started_at,
+                        content,
+                        max_output_tokens,
+                        nested_calls,
+                        notifications,
+                    ),
+                    false,
+                );
+            }
+            Some(CellUpdate::ScriptFailed { message }) => {
                 content.push(ToolOutputContent::InputText {
                     text: format!("Script error:\n{message}"),
                 });
@@ -891,7 +924,7 @@ fn expose_running_shell_sessions(
             .iter()
             .filter_map(|item| match item {
                 ToolOutputContent::InputText { text } => Some(text),
-                ToolOutputContent::InputImage { .. } => None,
+                ToolOutputContent::InputImage { .. } | ToolOutputContent::InputAudio { .. } => None,
             })
             .any(|text| text_exposes_session_id(text, session_id))
         {
@@ -980,33 +1013,27 @@ impl EmbeddedHost {
                                 CodeModeNotification::new(parent_call_id, text),
                             ));
                         }
-                        RuntimeEvent::Yielded {
-                            content,
-                            ..
-                        } => {
-                            let _ = updates.send(CellUpdate::Yielded { content });
+                        RuntimeEvent::Content { content, .. } => {
+                            let _ = updates.send(CellUpdate::Content(content));
+                        }
+                        RuntimeEvent::Yielded { .. } => {
+                            let _ = updates.send(CellUpdate::Yielded);
                         }
                         RuntimeEvent::Done {
-                            content,
                             stored,
                             ..
                         } => {
                             tracing::Span::current().record("runtime.event_count", event_count);
-                            return Ok(CellTerminal::Completed {
-                                content,
-                                stored,
-                            });
+                            return Ok(CellTerminal::Completed { stored });
                         }
                         RuntimeEvent::Error {
                             message,
-                            content,
                             stored,
                             ..
                         } => {
                             tracing::Span::current().record("runtime.event_count", event_count);
                             return Ok(CellTerminal::ScriptFailed {
                                 message,
-                                content,
                                 stored,
                             });
                         }
@@ -1069,29 +1096,26 @@ async fn run_cell_actor(
 ) {
     let started_at = Instant::now();
     let host_wait_started_at = Instant::now();
-    let mut shared_host = shared_host.lock().await;
-    tracing::Span::current().record(
-        "host.wait_ns",
-        u64::try_from(host_wait_started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
-    );
-    let reused = shared_host.host.is_some();
-    tracing::Span::current().record("host.reused", reused);
-    let mut host = match shared_host.host.take() {
-        Some(host) => host,
-        None => match spawn_host() {
-            Ok(host) => host,
-            Err(message) => {
-                tracing::Span::current().record("status", "failed");
-                tracing::Span::current().record("otel.status_code", "ERROR");
-                tracing::Span::current().record(
-                    "duration_ns",
-                    u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
-                );
-                let _ = updates.send(CellUpdate::HostFailed(message));
-                return;
-            }
-        },
+    let (mut host, reused) = {
+        let mut shared_host = shared_host.lock().await;
+        let reused = shared_host.host.is_some();
+        let host = match shared_host.host.take() {
+            Some(host) => host,
+            None => match spawn_host() {
+                Ok(host) => host,
+                Err(message) => {
+                    tracing::Span::current().record("status", "failed");
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    record_elapsed("duration_ns", started_at);
+                    let _ = updates.send(CellUpdate::HostFailed(message));
+                    return;
+                }
+            },
+        };
+        (host, reused)
     };
+    record_elapsed("host.wait_ns", host_wait_started_at);
+    tracing::Span::current().record("host.reused", reused);
     let run = async {
         host.start_cell(cell_id, &source, stored, tools.nested_tool_metadata())
             .map_err(HostFailure::new)?;
@@ -1107,56 +1131,61 @@ async fn run_cell_actor(
     };
     let terminal = tokio::select! {
         biased;
+        terminal = run => terminal,
         _ = &mut terminate => {
             let termination_started_at = Instant::now();
             host.terminate().await;
-            tracing::Span::current().record(
-                "host.termination_ns",
-                u64::try_from(termination_started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
-            );
-            tracing::Span::current().record("status", "cancelled");
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::Span::current().record(
-                "duration_ns",
-                u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
-            );
-            return;
+            record_elapsed("host.termination_ns", termination_started_at);
+            Ok(CellTerminal::Terminated)
         }
-        terminal = run => terminal,
     };
-    let success = matches!(terminal, Ok(CellTerminal::Completed { .. }));
-    tracing::Span::current().record("status", if success { "completed" } else { "failed" });
-    tracing::Span::current().record("otel.status_code", if success { "OK" } else { "ERROR" });
-    let host_healthy = terminal.is_ok();
+    let (status, otel_status) = match &terminal {
+        Ok(CellTerminal::Completed { .. }) => ("completed", "OK"),
+        Ok(CellTerminal::Terminated) => ("cancelled", "ERROR"),
+        Ok(CellTerminal::ScriptFailed { .. }) | Err(_) => ("failed", "ERROR"),
+    };
+    tracing::Span::current().record("status", status);
+    tracing::Span::current().record("otel.status_code", otel_status);
+    let terminated = matches!(&terminal, Ok(CellTerminal::Terminated));
+    let host_healthy = matches!(
+        &terminal,
+        Ok(CellTerminal::Completed { .. } | CellTerminal::ScriptFailed { .. })
+    );
     match terminal {
-        Ok(CellTerminal::Completed { content, stored }) => {
+        Ok(CellTerminal::Completed { stored }) => {
             shared_stored.lock().await.extend(stored);
-            let _ = updates.send(CellUpdate::Completed { content });
+            let _ = updates.send(CellUpdate::Completed);
         }
-        Ok(CellTerminal::ScriptFailed {
-            message,
-            content,
-            stored,
-        }) => {
+        Ok(CellTerminal::ScriptFailed { message, stored }) => {
             shared_stored.lock().await.extend(stored);
-            let _ = updates.send(CellUpdate::ScriptFailed { message, content });
+            let _ = updates.send(CellUpdate::ScriptFailed { message });
+        }
+        Ok(CellTerminal::Terminated) => {
+            let _ = updates.send(CellUpdate::Terminated);
         }
         Err(failure) => {
             let _ = updates.send(CellUpdate::HostFailed(failure.message));
         }
     }
     if host_healthy {
-        shared_host.host = Some(host);
-    } else {
+        let mut shared_host = shared_host.lock().await;
+        if shared_host.host.is_none() {
+            shared_host.host = Some(host);
+        } else {
+            drop(shared_host);
+            host.terminate().await;
+        }
+    } else if !terminated {
         let termination_started_at = Instant::now();
         host.terminate().await;
-        tracing::Span::current().record(
-            "host.termination_ns",
-            u64::try_from(termination_started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
-        );
+        record_elapsed("host.termination_ns", termination_started_at);
     }
+    record_elapsed("duration_ns", started_at);
+}
+
+fn record_elapsed(field: &'static str, started_at: Instant) {
     tracing::Span::current().record(
-        "duration_ns",
+        field,
         u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
     );
 }

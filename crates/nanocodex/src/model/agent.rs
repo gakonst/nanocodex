@@ -25,8 +25,8 @@ use super::{
     context_manager::ContextManager,
     display_endpoint, elapsed_ns,
     input::{
-        custom_tool_notification, custom_tool_output, function_tool_output, task_context,
-        task_input, turn_aborted,
+        custom_tool_notification, custom_tool_output, developer_context, function_tool_output,
+        task_context, task_input, turn_aborted,
     },
     resolve_workspace, terminal_payload,
 };
@@ -286,13 +286,13 @@ struct ConversationState {
 
 impl ConversationState {
     fn new(history: Vec<ResponseItem>) -> Result<Self> {
-        let canonical_context =
-            history
-                .first()
-                .cloned()
-                .ok_or(NanocodexError::MalformedResponse {
-                    detail: "task input did not include initial context",
-                })?;
+        let canonical_context = history
+            .iter()
+            .find(|item| item.is_user_message())
+            .cloned()
+            .ok_or(NanocodexError::MalformedResponse {
+                detail: "task input did not include initial context",
+            })?;
         Ok(Self {
             canonical_context: Arc::new(canonical_context),
             context: ContextManager::new(history),
@@ -368,11 +368,13 @@ impl ConversationState {
     fn install_compaction(
         &mut self,
         item: ResponseItem,
+        canonical_developer_context: ResponseItem,
         canonical_context: ResponseItem,
         request_prefix: &[ResponseItem],
     ) {
+        let initial_context = [canonical_developer_context, canonical_context.clone()];
         let history =
-            compaction::install_history(&self.context.flattened_items(), &canonical_context, item);
+            compaction::install_history(&self.context.flattened_items(), &initial_context, item);
         self.canonical_context = Arc::new(canonical_context);
         self.context.replace_and_recompute(history, request_prefix);
         self.delta_start = 0;
@@ -1160,7 +1162,12 @@ where
         let project_instructions = self.load_agent_instructions(project_workspace)?;
         let canonical_context =
             task_context(working_directory, shell, project_instructions.as_deref());
-        conversation.install_compaction(item, canonical_context, factory.profile().prefix());
+        conversation.install_compaction(
+            item,
+            developer_context(),
+            canonical_context,
+            factory.profile().prefix(),
+        );
         Ok(())
     }
 

@@ -429,7 +429,7 @@ impl<'a> ResponseCreate<'a> {
             reasoning: ReasoningControls {
                 mode: config.reasoning_mode.request_value(),
                 effort: policy.thinking.as_str(),
-                summary: "detailed",
+                summary: None,
                 context: "all_turns",
             },
             store: config.store_responses,
@@ -460,7 +460,8 @@ struct ReasoningControls {
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<&'static str>,
     effort: &'static str,
-    summary: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'static str>,
     context: &'static str,
 }
 
@@ -511,7 +512,7 @@ mod tests {
         assert_eq!(request["generate"], false);
         assert!(request.get("tools").is_none());
         assert!(request.get("instructions").is_none());
-        assert_eq!(request["reasoning"]["summary"], json!("detailed"));
+        assert!(request["reasoning"].get("summary").is_none());
         assert!(request["reasoning"].get("mode").is_none());
         assert!(request.get("context_management").is_none());
     }

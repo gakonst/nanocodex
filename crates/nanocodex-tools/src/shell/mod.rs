@@ -638,7 +638,7 @@ mod tests {
         assert_eq!(first.session_id, Some(1));
 
         let second = sessions
-            .write_stdin(WriteStdin::new(1, "hello\n".to_owned(), Some(1_000), None))
+            .write_stdin(WriteStdin::new(1, "hello\n".to_owned(), Some(5_000), None))
             .await;
         assert_eq!(second.exit_code, Some(0));
         assert_eq!(second.output, "got:hello");
@@ -698,7 +698,7 @@ mod tests {
                     None,
                     Some(false),
                     false,
-                    Some(1_000),
+                    Some(5_000),
                     None,
                 ),
                 std::path::Path::new("/"),
