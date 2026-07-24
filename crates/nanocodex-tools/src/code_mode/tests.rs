@@ -776,12 +776,14 @@ async fn termination_returns_unobserved_output_since_the_last_yield() -> Result<
     let workspace = temporary_workspace("terminated-cell-output")?;
     let tools = test_tools(&workspace);
     let history = Vec::new();
+    let after_ready = workspace.join("after-ready");
     let yielded = tools
         .execute_code(
             r#"
 text("before");
 yield_control();
 text("after");
+await tools.exec_command({cmd: "touch after-ready", login: false});
 await new Promise(() => {});
 "#,
             test_context(&history),
@@ -790,6 +792,12 @@ await new Promise(() => {});
 
     assert!(yielded.success, "{}", execution_output(&yielded));
     assert!(execution_output(&yielded).contains("before"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !after_ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
     let terminated = tools
         .wait_for_code(
             r#"{"cell_id":"1","terminate":true}"#,
