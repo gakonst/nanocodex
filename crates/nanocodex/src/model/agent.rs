@@ -147,6 +147,22 @@ struct ModelSessionState {
     preserve_inherited_delta: bool,
 }
 
+impl ModelSessionState {
+    fn validate_workspace(&self, requested: Option<&str>) -> Result<()> {
+        let Some(requested) = requested else {
+            return Ok(());
+        };
+        let requested = resolve_workspace(Some(requested))?;
+        if requested != self.workspace {
+            return Err(NanocodexError::WorkspaceChanged {
+                current: self.workspace.clone(),
+                requested,
+            });
+        }
+        Ok(())
+    }
+}
+
 struct ActiveToolCall {
     call_id: String,
     name: String,
@@ -701,6 +717,41 @@ where
         }
     }
 
+    async fn prepare_follow_on_turn(
+        &mut self,
+        session: &mut ModelSessionState,
+        task: &Prompt,
+        cancel: &mut tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<bool> {
+        let compacted = {
+            let compaction = self.maybe_compact(
+                self.stats.model_calls,
+                &mut session.conversation,
+                &session.factory,
+                &session.workspace,
+                session.tools.working_directory(),
+                session.tools.default_shell_name(),
+            );
+            tokio::pin!(compaction);
+            tokio::select! {
+                biased;
+                _ = &mut *cancel => return Ok(false),
+                outcome = &mut compaction => outcome?,
+            }
+        };
+        if compacted || session.preserve_inherited_delta {
+            session.preserve_inherited_delta = false;
+        } else {
+            session.conversation.clear_delta();
+        }
+        let user_content = prepare_user_input(&task.instruction).await;
+        session.conversation.append([ResponseItem::message(
+            nanocodex_core::MessageRole::User,
+            user_content,
+        )]);
+        Ok(true)
+    }
+
     async fn execute_task(
         &mut self,
         task: Prompt,
@@ -710,33 +761,24 @@ where
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTaskOutcome> {
         let mut session = if let Some(mut session) = self.session.take() {
-            if let Some(requested) = requested_workspace.as_deref() {
-                let resolved = match resolve_workspace(Some(requested)) {
-                    Ok(resolved) => resolved,
-                    Err(error) => {
-                        self.session = Some(session);
-                        return Err(error);
-                    }
-                };
-                if resolved != session.workspace {
-                    let current = session.workspace.clone();
+            if let Err(error) = session.validate_workspace(requested_workspace.as_deref()) {
+                self.session = Some(session);
+                return Err(error);
+            }
+            match self
+                .prepare_follow_on_turn(&mut session, &task, cancel)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
                     self.session = Some(session);
-                    return Err(NanocodexError::WorkspaceChanged {
-                        current,
-                        requested: resolved,
-                    });
+                    return Ok(ModelTaskOutcome::Cancelled);
+                }
+                Err(error) => {
+                    self.session = Some(session);
+                    return Err(error);
                 }
             }
-            let user_content = prepare_user_input(&task.instruction).await;
-            if session.preserve_inherited_delta {
-                session.preserve_inherited_delta = false;
-            } else {
-                session.conversation.clear_delta();
-            }
-            session.conversation.append([ResponseItem::message(
-                nanocodex_core::MessageRole::User,
-                user_content,
-            )]);
             session
         } else {
             let workspace = resolve_workspace(requested_workspace.as_deref())?;
@@ -939,6 +981,15 @@ where
                     // The completed response is retained by previous_response_id;
                     // the next delta contains only newly drained steer messages.
                     session.conversation.clear_delta();
+                    self.maybe_compact(
+                        call_index,
+                        &mut session.conversation,
+                        &session.factory,
+                        &session.workspace,
+                        session.tools.working_directory(),
+                        session.tools.default_shell_name(),
+                    )
+                    .await?;
                     continue;
                 }
                 if let Some(message) = final_message {
@@ -1134,20 +1185,16 @@ where
         project_workspace: &str,
         working_directory: &str,
         shell: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(auto_compact_token_limit) = compaction::auto_compact_token_limit(MODEL) else {
-            return Ok(());
+            return Ok(false);
         };
         let active_context_tokens =
             conversation.active_context_tokens(self.server_reasoning_included);
         if active_context_tokens < auto_compact_token_limit {
-            return Ok(());
+            return Ok(false);
         }
-        let previous_response_id = conversation.previous_response_id.as_deref().ok_or(
-            NanocodexError::MalformedResponse {
-                detail: "compaction did not have a previous response ID",
-            },
-        )?;
+        let previous_response_id = conversation.previous_response_id.as_deref();
         let (item, _usage) = self
             .perform_compaction(
                 after_model_call_index,
@@ -1168,7 +1215,7 @@ where
             canonical_context,
             factory.profile().prefix(),
         );
-        Ok(())
+        Ok(true)
     }
 
     async fn perform_warmup(
@@ -1414,7 +1461,7 @@ where
         after_model_call_index: u32,
         history: nanocodex_core::responses::ResponseHistory,
         incremental_start: usize,
-        previous_response_id: &str,
+        previous_response_id: Option<&str>,
         active_context_tokens: u64,
         auto_compact_token_limit: u64,
         factory: &ResponsesAttemptFactory,
