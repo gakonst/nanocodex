@@ -198,6 +198,54 @@ fn insert_server(
     Ok(())
 }
 
+fn server_mut<'a>(
+    servers: &'a mut BTreeMap<String, ServerConfig>,
+    name: &str,
+    option: &str,
+) -> Result<&'a mut ServerConfig> {
+    servers
+        .get_mut(name)
+        .ok_or_else(|| eyre::eyre!("{option} references unknown MCP server `{name}`"))
+}
+
+impl FromStr for NamedValue {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (name, value) = value
+            .split_once('=')
+            .ok_or_else(|| "expected NAME=VALUE".to_owned())?;
+        if name.is_empty() || value.is_empty() {
+            return Err("name and value must not be empty".to_owned());
+        }
+        Ok(Self {
+            name: name.to_owned(),
+            value: value.to_owned(),
+        })
+    }
+}
+
+impl FromStr for NamedHeaderValue {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (server_and_header, value) = value
+            .split_once('=')
+            .ok_or_else(|| "expected NAME:HEADER=ENV".to_owned())?;
+        let (name, header) = server_and_header
+            .split_once(':')
+            .ok_or_else(|| "expected NAME:HEADER=ENV".to_owned())?;
+        if name.is_empty() || header.is_empty() || value.is_empty() {
+            return Err("server, header, and environment variable must not be empty".to_owned());
+        }
+        Ok(Self {
+            name: name.to_owned(),
+            header: header.to_owned(),
+            value: value.to_owned(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,53 +337,5 @@ mod tests {
             with_defaults.len(),
             with_defaults.len() - baseline.len()
         );
-    }
-}
-
-fn server_mut<'a>(
-    servers: &'a mut BTreeMap<String, ServerConfig>,
-    name: &str,
-    option: &str,
-) -> Result<&'a mut ServerConfig> {
-    servers
-        .get_mut(name)
-        .ok_or_else(|| eyre::eyre!("{option} references unknown MCP server `{name}`"))
-}
-
-impl FromStr for NamedValue {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (name, value) = value
-            .split_once('=')
-            .ok_or_else(|| "expected NAME=VALUE".to_owned())?;
-        if name.is_empty() || value.is_empty() {
-            return Err("name and value must not be empty".to_owned());
-        }
-        Ok(Self {
-            name: name.to_owned(),
-            value: value.to_owned(),
-        })
-    }
-}
-
-impl FromStr for NamedHeaderValue {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (server_and_header, value) = value
-            .split_once('=')
-            .ok_or_else(|| "expected NAME:HEADER=ENV".to_owned())?;
-        let (name, header) = server_and_header
-            .split_once(':')
-            .ok_or_else(|| "expected NAME:HEADER=ENV".to_owned())?;
-        if name.is_empty() || header.is_empty() || value.is_empty() {
-            return Err("server, header, and environment variable must not be empty".to_owned());
-        }
-        Ok(Self {
-            name: name.to_owned(),
-            header: header.to_owned(),
-            value: value.to_owned(),
-        })
     }
 }
