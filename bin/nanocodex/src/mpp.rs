@@ -1,4 +1,5 @@
 use std::{
+    error::Error as StdError,
     net::TcpListener as StdTcpListener,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -6,8 +7,8 @@ use std::{
 };
 
 use alloy_transport_mpp::{
-    CloseProvider, CloseRequest, MppApplicationWs, MppApplicationWsConnect, VoucherProvider,
-    VoucherRequest,
+    CloseProvider, CloseRequest, MppApplicationWs, MppApplicationWsConnect, MppWsError,
+    VoucherProvider, VoucherRequest,
 };
 use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
 use eyre::{Context, Result, eyre};
@@ -574,7 +575,9 @@ async fn serve(
                 };
                 let config = Arc::clone(&config);
                 let bridge_shutdown = bridge_shutdown_tx.subscribe();
-                bridges.spawn(async move { bridge(stream, &config, bridge_shutdown).await });
+                bridges.spawn(async move {
+                    Box::pin(bridge(stream, &config, bridge_shutdown)).await
+                });
             }
             completed = bridges.join_next(), if !bridges.is_empty() => {
                 record_bridge_result(completed);
@@ -613,7 +616,7 @@ async fn bridge(
 ) -> Result<()> {
     let downstream_headers = Arc::new(Mutex::new(None));
     let captured = Arc::clone(&downstream_headers);
-    let downstream = accept_hdr_async(stream, move |request: &Request, response: Response| {
+    let mut downstream = accept_hdr_async(stream, move |request: &Request, response: Response| {
         if let Ok(mut headers) = captured.lock() {
             *headers = Some(request.headers().clone());
         }
@@ -654,10 +657,16 @@ async fn bridge(
             HeaderValue::from_str(api_key)?,
         );
     }
-    let upstream = connector
-        .connect()
-        .await
-        .wrap_err("failed to open the paid MPP WebSocket")?;
+    let upstream = match connector.connect().await {
+        Ok(upstream) => upstream,
+        Err(error) if is_terminal_mpp_error(&error) => {
+            send_terminal_mpp_error(&mut downstream, &error).await?;
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(error).wrap_err("failed to open the paid MPP WebSocket");
+        }
+    };
     relay(downstream, upstream, shutdown).await
 }
 
@@ -696,7 +705,16 @@ async fn relay(
                 }
             },
             outbound = upstream.next() => {
-                let text = outbound.wrap_err("paid MPP WebSocket receive failed")?;
+                let text = match outbound {
+                    Ok(text) => text,
+                    Err(error) if is_terminal_mpp_error(&error) => {
+                        send_terminal_mpp_error(&mut downstream, &error).await?;
+                        break Ok(());
+                    }
+                    Err(error) => {
+                        break Err(error).wrap_err("paid MPP WebSocket receive failed");
+                    }
+                };
                 if let Err(error) = downstream.send(Message::Text(text.into())).await {
                     if *shutdown.borrow() {
                         break Ok(());
@@ -711,6 +729,55 @@ async fn relay(
         .await
         .wrap_err("failed to disconnect the paid MPP WebSocket")?;
     relay_result
+}
+
+fn is_terminal_mpp_error(error: &MppWsError) -> bool {
+    matches!(
+        error,
+        MppWsError::ProbeStatus { .. }
+            | MppWsError::UnsupportedChallenge
+            | MppWsError::Payment(_)
+            | MppWsError::InvalidHeader(_)
+            | MppWsError::MalformedFrame(_)
+            | MppWsError::PaymentError { .. }
+    )
+}
+
+async fn send_terminal_mpp_error(
+    downstream: &mut WebSocketStream<TcpStream>,
+    error: &MppWsError,
+) -> Result<()> {
+    let event = terminal_mpp_error_event(error);
+    downstream
+        .send(Message::Text(event.into()))
+        .await
+        .wrap_err("failed to send the MPP error to the Responses client")?;
+    downstream
+        .close(None)
+        .await
+        .wrap_err("failed to close the Responses WebSocket after an MPP error")
+}
+
+fn terminal_mpp_error_event(error: &MppWsError) -> String {
+    serde_json::json!({
+        "type": "error",
+        "error": {
+            "code": "mpp_payment_failed",
+            "message": error_chain(error),
+        }
+    })
+    .to_string()
+}
+
+fn error_chain(error: &(dyn StdError + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 #[cfg(test)]
@@ -820,5 +887,27 @@ mod tests {
     fn preserves_mppx_websocket_namespace() {
         let namespace = websocket_origin("wss://openai.mpp.tempo.xyz/v1/responses").unwrap();
         assert_eq!(namespace, "wss://openai.mpp.tempo.xyz");
+    }
+
+    #[test]
+    fn deterministic_mpp_failures_become_terminal_api_errors() {
+        let error = MppWsError::Payment(MppError::InvalidConfig(
+            "insufficient balance for session top-up".to_owned(),
+        ));
+
+        assert!(is_terminal_mpp_error(&error));
+        let event: serde_json::Value =
+            serde_json::from_str(&terminal_mpp_error_event(&error)).unwrap();
+        assert_eq!(event["type"], "error");
+        assert_eq!(event["error"]["code"], "mpp_payment_failed");
+        assert_eq!(
+            event["error"]["message"],
+            "MPP payment failed: Invalid configuration: insufficient balance for session top-up"
+        );
+    }
+
+    #[test]
+    fn transport_closures_remain_retryable() {
+        assert!(!is_terminal_mpp_error(&MppWsError::Closed));
     }
 }

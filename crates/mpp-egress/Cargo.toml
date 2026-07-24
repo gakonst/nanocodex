@@ -15,7 +15,7 @@ base64.workspace = true
 futures-util.workspace = true
 http-body-util.workspace = true
 hudsucker.workspace = true
-mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "2c861ba4632d485785ad41fefc0fdfbcd50b0f18", default-features = false, features = ["client"] }
+mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "cdaef22ecc0f8c1ab7c48d7e52c04725a694b820", default-features = false, features = ["client"] }
 rand.workspace = true
 reqwest = { package = "reqwest", version = "0.13", default-features = false, features = ["native-tls", "stream"] }
 tempfile.workspace = true
