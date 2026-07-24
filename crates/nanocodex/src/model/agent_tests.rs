@@ -14,8 +14,9 @@ use tokio::{
 use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
 use crate::{
-    AgentHandle, Nanocodex, NanocodexError, OpenAiAuth, Prompt, Responses, ResponsesError,
-    ResponsesHistory, ResponsesTransport, RolloutConfig, SessionSnapshot, Thinking, Tools,
+    AgentHandle, Nanocodex, NanocodexError, OpenAiAuth, Prompt, ResponseItem, ResponseItemId,
+    Responses, ResponsesError, ResponsesHistory, ResponsesTransport, RolloutConfig,
+    SessionSnapshot, Thinking, Tools,
 };
 
 #[derive(Clone)]
@@ -56,6 +57,16 @@ impl nanocodex_core::OpenAiAuthSource for StaticChatGptAuth {
 
 fn chatgpt_auth() -> OpenAiAuth {
     OpenAiAuth::managed_chatgpt(Arc::new(StaticChatGptAuth))
+}
+
+#[test]
+fn additional_tools_never_carry_client_defined_ids() {
+    let mut prefix = [ResponseItem::additional_tools(Vec::new())];
+    prefix[0].set_id(Some(ResponseItemId::with_suffix("at", "legacy")));
+
+    super::assign_request_prefix_ids(&mut prefix);
+
+    assert!(prefix[0].id().is_none());
 }
 
 #[tokio::test]
@@ -2752,6 +2763,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
         assert!(replay.get("previous_response_id").is_none());
         assert_eq!(replay["prompt_cache_key"], "durable-cache");
         assert_eq!(replay["input"][0]["type"], "additional_tools");
+        assert!(replay["input"][0].get("id").is_none());
         assert_eq!(replay["input"][1]["role"], "developer");
         assert_eq!(
             replay["input"][1]["content"][0]["text"],
@@ -2785,11 +2797,12 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     let encoded = serde_json::to_vec(&first.snapshot())?;
     agent.flush_rollout().await?;
     let snapshot_json = serde_json::from_slice::<Value>(&encoded)?;
-    assert!(
-        snapshot_json["request_prefix"]
-            .as_array()
-            .is_some_and(|items| items.iter().all(|item| item["id"].is_string()))
-    );
+    let request_prefix = snapshot_json["request_prefix"]
+        .as_array()
+        .ok_or_else(|| eyre!("snapshot request prefix was not an array"))?;
+    assert_eq!(request_prefix[0]["type"], "additional_tools");
+    assert!(request_prefix[0].get("id").is_none());
+    assert!(request_prefix[1]["id"].is_string());
     assert!(
         snapshot_json["history"]
             .as_array()
@@ -2966,6 +2979,7 @@ fn assert_warmup(warmup: &Value) {
     assert_eq!(warmup["prompt_cache_key"], "model-test");
     assert_eq!(warmup["input"].as_array().map(Vec::len), Some(2));
     assert_eq!(warmup["input"][0]["type"], "additional_tools");
+    assert!(warmup["input"][0].get("id").is_none());
     assert_eq!(warmup["input"][0]["role"], "developer");
     assert_eq!(warmup["input"][0]["tools"][0]["type"], "custom");
     assert_eq!(warmup["input"][0]["tools"][0]["name"], "exec");
