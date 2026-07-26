@@ -66,6 +66,10 @@ test-wasm: build-wasm
     npm test --prefix js/bindings
     npm test --prefix js/react
 
+# Run the framework-independent JS transcript reducer tests (requires Node >=22.13).
+test-tui:
+    npm test --prefix js/tui
+
 # Run custom JavaScript tooling and a follow-on through Node-hosted WASM.
 smoke-wasm-node: build-wasm
     npm ci --prefix examples/node
@@ -272,6 +276,7 @@ view jobs=default_jobs:
 check:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo check -p nanocodex-examples --bins --locked
     cargo test --workspace
     .venv/bin/python -m unittest discover -s harbor_adapter -p 'test_*.py'
     .venv/bin/python -m compileall -q harbor_adapter
