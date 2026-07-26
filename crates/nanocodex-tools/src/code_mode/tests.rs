@@ -1502,6 +1502,49 @@ fn model_description_uses_codex_style_declarations() {
     std::fs::remove_dir_all(workspace).expect("temporary workspace should be removable");
 }
 
+#[tokio::test]
+async fn embedded_quickjs_lacks_icu_locale_apis() -> Result<()> {
+    // Stock Codex Code Mode uses an ICU-capable V8 build. Nanocodex embeds
+    // QuickJS without ICU, so locale-aware Date/Intl behavior is a deliberate
+    // documented difference rather than a silent shim. See docs/CODE_MODE_LOCALE.md.
+    let workspace = temporary_workspace("quickjs-locale-icu-gap")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let source = r#"
+text({
+  typeofIntl: typeof Intl,
+  toLocaleDateString: (() => {
+    try {
+      return new Date(Date.UTC(2020, 0, 15)).toLocaleDateString("de-DE");
+    } catch (error) {
+      return `ERR:${String(error)}`;
+    }
+  })(),
+  numberFormat: (() => {
+    try {
+      return new Intl.NumberFormat("de-DE").format(1234.5);
+    } catch (error) {
+      return `ERR:${String(error)}`;
+    }
+  })(),
+});
+"#;
+    let execution = tools.execute_code(source, test_context(&history)).await;
+    assert!(execution.success, "{}", execution_output(&execution));
+    let payload: Value = serde_json::from_str(emitted_text(&execution)?)?;
+    assert_eq!(payload["typeofIntl"], "undefined");
+    assert_eq!(payload["toLocaleDateString"], "01/15/2020");
+    assert!(
+        payload["numberFormat"]
+            .as_str()
+            .is_some_and(|value| value.contains("Intl is not defined")),
+        "expected Intl.NumberFormat to fail without ICU, got {}",
+        payload["numberFormat"]
+    );
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
 fn emitted_text(execution: &CodeModeExecution) -> Result<&str> {
     let ToolOutputBody::Content(content) = &execution.output else {
         return Err(eyre!("code-mode execution did not emit content"));

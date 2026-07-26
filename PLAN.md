@@ -447,7 +447,10 @@ contract; do not import that app/session subsystem without a measured backend
 behavior that requires it. The known runtime-semantic difference is
 locale-aware `Date`/`Intl`: stock Code Mode's V8 build includes ICU, while the
 embedded QuickJS runtime does not. Exact parity for that surface requires an
-ICU-capable runtime rather than a partial locale shim. The local
+ICU-capable runtime rather than a partial locale shim. The measured QuickJS
+behavior and contributor guidance live in
+[`docs/CODE_MODE_LOCALE.md`](docs/CODE_MODE_LOCALE.md), with a regression in
+`embedded_quickjs_lacks_icu_locale_apis`. The local
 `benchmarks/codex_request_parity.py` differential now exercises basic tools,
 continued PTY shells, bounded shell output, tool failures, images, WebSocket
 reconnect/replay, automatic compaction, and process cancellation against a
