@@ -74,6 +74,10 @@ test-wasm: build-wasm
     npm test --prefix js/bindings
     npm test --prefix js/react
 
+# Run website worker tests and the shared JS transcript reducer suite (Node >=22.13).
+test-web:
+    npm test --prefix web
+
 # Run custom JavaScript tooling and a follow-on through Node-hosted WASM.
 smoke-wasm-node: build-wasm
     npm ci --prefix examples/node

@@ -155,6 +155,8 @@ jobs:
           name: nanocodex-web-wasm
           path: js/bindings/pkg-web
       - run: npm ci --prefix web
+      - name: Run website worker and transcript tests
+        run: npm test --prefix web
       - name: Type-check and build the website
         working-directory: web
         run: npm run typecheck && npx --no-install vite build
