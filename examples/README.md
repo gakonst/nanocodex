@@ -27,6 +27,8 @@ cargo run -p nanocodex-examples --bin mcp
 just smoke-python
 just smoke-wasm-node
 just build-react-example
+just check-browser-cdn
+# optional static serve: python -m http.server 8080 --directory examples/browser-cdn
 ```
 
 The live programs require `OPENAI_API_KEY`. The browser example instead asks

@@ -195,7 +195,7 @@ manager or build step:
 
 ```html
 <script type="module">
-  import { Agent } from "https://cdn.jsdelivr.net/npm/nanocodex@0.1.0/browser/index.mjs";
+  import { Agent } from "https://cdn.jsdelivr.net/npm/nanocodex@0.2.0/browser/index.mjs";
   const agent = await Agent.create({ websocketUrl: "/api/responses" });
   console.log(await agent.turn.prompt({ input: "Hello." }).result());
 </script>

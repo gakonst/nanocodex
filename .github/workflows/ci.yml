@@ -81,6 +81,8 @@ jobs:
           tool: cargo-deny
       - run: cargo deny check
       - uses: crate-ci/typos@96d9af6217dc2855210655af7e1ff19d23d4e593 # v1
+      - name: Check browser-cdn CDN pin
+        run: ./scripts/check-browser-cdn.sh
 
   bindings:
     name: Python, Node, and browser bindings
