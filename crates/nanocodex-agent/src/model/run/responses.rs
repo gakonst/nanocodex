@@ -24,7 +24,7 @@ where
             AgentEventKind::ModelCallStarted,
             ModelCallStarted {
                 call_index,
-                model: MODEL,
+                model: self.config.model(),
                 reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.thinking.as_str(),
                 previous_response_id: previous_response_id.as_deref(),
@@ -41,6 +41,7 @@ where
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
+            self.config.model(),
             call_index,
             self.config.reasoning_mode.as_str(),
             self.thinking.as_str(),
@@ -83,7 +84,7 @@ where
         span.record("otel.status_code", "OK");
         span.record("duration_ns", duration_ns);
         if let Some(usage) = &response.usage {
-            record_usage(&span, usage, self.fast_mode);
+            record_usage(&span, usage, self.fast_mode, self.config.estimate_cost);
         }
         self.stats.model_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
@@ -94,7 +95,7 @@ where
             AgentEventKind::ModelCallCompleted,
             ModelCallCompleted {
                 call_index,
-                model: MODEL,
+                model: self.config.model(),
                 response_id: &response.id,
                 attempt,
                 connection_generation,
@@ -122,7 +123,7 @@ where
             AgentEventKind::ModelCallFailed,
             ModelCallFailed {
                 call_index,
-                model: MODEL,
+                model: self.config.model(),
                 duration_ns,
                 error: &message,
             },
@@ -215,6 +216,7 @@ pub(super) fn model_tool_span(call: &CodeCall, call_index: u32) -> tracing::Span
 }
 
 pub(super) fn owned_code_context(
+    model: &str,
     call: &CodeCall,
     history: Option<Arc<Vec<ResponseItem>>>,
     session_id: &str,
@@ -226,7 +228,7 @@ pub(super) fn owned_code_context(
         detail: "exec call did not have an owned history snapshot",
     })?;
     Ok(Some(OwnedToolContext::new(
-        MODEL,
+        model,
         session_id,
         &call.call_id,
         history,
@@ -263,6 +265,7 @@ pub(super) fn record_indexed_span_content(
 }
 
 pub(super) fn model_call_span(
+    model: &str,
     call_index: u32,
     reasoning_mode: &str,
     reasoning_effort: &str,
@@ -275,7 +278,7 @@ pub(super) fn model_call_span(
         "model.call",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
-        model = MODEL,
+        model,
         reasoning.mode = reasoning_mode,
         reasoning.effort = reasoning_effort,
         model.call_index = call_index,
@@ -315,7 +318,7 @@ pub(super) fn warmup_span(config: &ModelConfig) -> tracing::Span {
         "model.warmup",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
-        model = MODEL,
+        model = config.model(),
         system_prompt.bytes = config.system_prompt().len(),
         warmup.source = tracing::field::Empty,
         status = tracing::field::Empty,
@@ -332,6 +335,7 @@ pub(super) fn warmup_span(config: &ModelConfig) -> tracing::Span {
 }
 
 pub(super) fn compaction_span(
+    model: &str,
     after_model_call_index: u32,
     input_item_count: usize,
     input_bytes: usize,
@@ -341,6 +345,7 @@ pub(super) fn compaction_span(
         "model.compaction",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
+        model,
         after_model_call_index,
         model.input.item_count = input_item_count,
         model.input.bytes = input_bytes,
@@ -358,7 +363,12 @@ pub(super) fn compaction_span(
     )
 }
 
-pub(super) fn record_usage(span: &tracing::Span, usage: &Usage, fast_mode: bool) {
+pub(super) fn record_usage(
+    span: &tracing::Span,
+    usage: &Usage,
+    fast_mode: bool,
+    estimate_cost: bool,
+) {
     let cached_input_tokens = usage
         .input_tokens_details
         .as_ref()
@@ -377,6 +387,9 @@ pub(super) fn record_usage(span: &tracing::Span, usage: &Usage, fast_mode: bool)
     span.record("output_tokens", usage.output_tokens);
     span.record("reasoning_output_tokens", reasoning_output_tokens);
     span.record("total_tokens", usage.total_tokens);
+    if !estimate_cost {
+        return;
+    }
     let estimate = estimate(
         usage,
         if fast_mode {

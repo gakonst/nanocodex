@@ -30,6 +30,7 @@ impl DurableSession {
         })?;
         let materialized = materialize_rollout(&rollout_path, thread_id)?;
         let snapshot = SessionSnapshot::from_rollout(
+            materialized.model,
             thread_id.to_owned(),
             materialized.workspace,
             materialized.base_instructions,
@@ -154,6 +155,7 @@ fn find_rollout_path(codex_home: &Path, thread_id: &str) -> io::Result<Option<Pa
 }
 
 fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedRollout> {
+    let mut model = None;
     let mut workspace = None;
     let mut base_instructions = None;
     let mut history = Vec::new();
@@ -183,6 +185,10 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 }
                 base_instructions = payload["base_instructions"]["text"]
                     .as_str()
+                    .map(str::to_owned);
+                model = payload
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
                     .map(str::to_owned);
                 workspace = Some(
                     payload
@@ -267,6 +273,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
         )
     })?;
     Ok(MaterializedRollout {
+        model: model.unwrap_or_else(|| nanocodex_oai_api::MODEL.to_owned()),
         workspace,
         base_instructions,
         history,
@@ -276,6 +283,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
 }
 
 struct MaterializedRollout {
+    model: String,
     workspace: String,
     base_instructions: Option<String>,
     history: Vec<ResponseItem>,

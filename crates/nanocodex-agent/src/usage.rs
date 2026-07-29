@@ -39,8 +39,12 @@ pub(crate) struct TurnUsageCounts {
 }
 
 impl TurnUsage {
-    pub(crate) fn from_counts(counts: TurnUsageCounts, fast_mode: bool) -> Self {
-        let (estimated_cost, cost_status) = if counts.reported {
+    pub(crate) fn from_counts(
+        counts: TurnUsageCounts,
+        fast_mode: bool,
+        estimate_cost: bool,
+    ) -> Self {
+        let (estimated_cost, cost_status) = if counts.reported && estimate_cost {
             let usage = Usage {
                 input_tokens: counts.input_tokens,
                 input_tokens_details: Some(InputTokenDetails {
@@ -62,6 +66,8 @@ impl TurnUsage {
                 ))),
                 CostStatus::EstimatedFromUsage,
             )
+        } else if counts.reported {
+            (None, CostStatus::NotEstimated)
         } else {
             (None, CostStatus::UsageNotReported)
         };

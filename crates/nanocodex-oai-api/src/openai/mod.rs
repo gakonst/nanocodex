@@ -57,6 +57,9 @@ impl<F> OpenAi<F>
 where
     F: ResponsesServiceFactory,
 {
+    pub(crate) const fn from_parts(config: ModelConfig, factory: F) -> Self {
+        Self { config, factory }
+    }
     /// Starts a client-side managed session with stable developer
     /// instructions.
     ///

@@ -67,6 +67,7 @@ thiserror.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tempo-alloy = { workspace = true, optional = true }
+tower.workspace = true
 tracing.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true

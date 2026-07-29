@@ -155,6 +155,7 @@ struct StreamTiming {
     first_output_ns: Option<u64>,
     pipeline: ResponsePipelineStats,
     last_display_delta_received_ns: Option<u64>,
+    last_api_event_seq: Option<u64>,
 }
 
 impl StreamTiming {
@@ -180,6 +181,7 @@ impl StreamTiming {
                 inter_delta_stall_250ms_count: 0,
             },
             last_display_delta_received_ns: None,
+            last_api_event_seq: None,
         }
     }
 
@@ -219,17 +221,23 @@ struct ReceivedServerEvent {
     api_event_seq: u64,
 }
 
+pub(crate) struct SourceEvent {
+    pub(crate) received: crate::socket::ReceivedText,
+    pub(crate) decoded: Option<ServerEvent>,
+    pub(crate) emit_raw: bool,
+}
+
 pub(crate) trait ResponseEventSource {
-    async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<crate::socket::ReceivedText, ResponsesError>;
+    async fn next_event_or_idle_timeout(&mut self) -> Result<SourceEvent, ResponsesError>;
 }
 
 impl ResponseEventSource for ResponsesSocket {
-    async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<crate::socket::ReceivedText, ResponsesError> {
-        Self::next_text_or_idle_timeout(self).await
+    async fn next_event_or_idle_timeout(&mut self) -> Result<SourceEvent, ResponsesError> {
+        Ok(SourceEvent {
+            received: Self::next_text_or_idle_timeout(self).await?,
+            decoded: None,
+            emit_raw: true,
+        })
     }
 }
 
@@ -459,20 +467,26 @@ where
     S: ResponseEventSource,
 {
     let receive_started_at = Instant::now();
-    let received = source.next_text_or_idle_timeout().await?;
+    let SourceEvent {
+        received,
+        decoded,
+        emit_raw,
+    } = source.next_event_or_idle_timeout().await?;
     timing.pipeline.receive_wait_duration_ns = timing
         .pipeline
         .receive_wait_duration_ns
         .saturating_add(elapsed_ns(receive_started_at));
-    timing.pipeline.event_count = timing.pipeline.event_count.saturating_add(1);
-    timing.pipeline.socket_queue_duration_ns = timing
-        .pipeline
-        .socket_queue_duration_ns
-        .saturating_add(monotonic_now_ns().saturating_sub(received.received_ns));
-    timing.pipeline.event_bytes = timing
-        .pipeline
-        .event_bytes
-        .saturating_add(u64::try_from(received.text.len()).unwrap_or(u64::MAX));
+    if emit_raw {
+        timing.pipeline.event_count = timing.pipeline.event_count.saturating_add(1);
+        timing.pipeline.socket_queue_duration_ns = timing
+            .pipeline
+            .socket_queue_duration_ns
+            .saturating_add(monotonic_now_ns().saturating_sub(received.received_ns));
+        timing.pipeline.event_bytes = timing
+            .pipeline
+            .event_bytes
+            .saturating_add(u64::try_from(received.text.len()).unwrap_or(u64::MAX));
+    }
 
     let parse_started_at = Instant::now();
     let raw_event = parse_raw_json(received.text.as_str())?;
@@ -483,34 +497,43 @@ where
     let elapsed = elapsed_ns(timing.started_at);
     timing.first_event_ns.get_or_insert(elapsed);
 
-    tracing::trace!(
-        target: "nanocodex_oai_api",
-        direction = "inbound",
-        transport,
-        phase,
-        model.call_index = call_index,
-        api.event = %raw_event.get(),
-        "OpenAI Responses API event"
-    );
-    let emit_started_at = Instant::now();
-    let api_event_seq = observer.events.emit_with_source_sequence(
-        AgentEventKind::ApiEvent,
-        ApiEvent {
-            direction: "inbound",
+    let api_event_seq = if emit_raw {
+        tracing::trace!(
+            target: "nanocodex_oai_api",
+            direction = "inbound",
             transport,
             phase,
-            model_call_index: Some(call_index),
-            event: raw_event,
-        },
-        Some(received.received_ns),
-    )?;
-    timing.pipeline.emit_duration_ns = timing
-        .pipeline
-        .emit_duration_ns
-        .saturating_add(elapsed_ns(emit_started_at));
+            model.call_index = call_index,
+            api.event = %raw_event.get(),
+            "provider API event"
+        );
+        let emit_started_at = Instant::now();
+        let seq = observer.events.emit_with_source_sequence(
+            AgentEventKind::ApiEvent,
+            ApiEvent {
+                direction: "inbound",
+                transport,
+                phase,
+                model_call_index: Some(call_index),
+                event: raw_event,
+            },
+            Some(received.received_ns),
+        )?;
+        timing.pipeline.emit_duration_ns = timing
+            .pipeline
+            .emit_duration_ns
+            .saturating_add(elapsed_ns(emit_started_at));
+        timing.last_api_event_seq = Some(seq);
+        seq
+    } else {
+        timing.last_api_event_seq.unwrap_or_default()
+    };
 
     let decode_started_at = Instant::now();
-    let event = decode_event::<ServerEvent>(raw_event)?;
+    let event = match decoded {
+        Some(event) => event,
+        None => decode_event::<ServerEvent>(raw_event)?,
+    };
     if let Some(event) = event.normalized() {
         observer.emit_response(event).await;
     }

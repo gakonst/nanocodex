@@ -31,7 +31,7 @@ where
             history,
             context_baseline,
             checkpoint,
-        } = snapshot.into_resume()?;
+        } = snapshot.into_resume(config.model())?;
         if base_instructions
             .as_deref()
             .is_some_and(|stored| stored != config.system_prompt())
@@ -151,6 +151,8 @@ where
         &session_id_text,
         workspace.as_deref(),
         spawner.config.system_prompt(),
+        rollout_provider(spawner.config.mode()),
+        spawner.config.model(),
         origin.kind,
         origin.parent_session_id.as_deref(),
         initial_resume.as_ref().map(InitialResume::history_len),
@@ -215,6 +217,13 @@ where
     };
     spawn_driver(driver_task)?;
     Ok((agent, event_stream))
+}
+
+fn rollout_provider(mode: &str) -> &str {
+    match mode {
+        "anthropic_model" => "anthropic",
+        _ => "openai",
+    }
 }
 
 pub(super) fn validate(config: &ModelConfig, prompt_cache_key: Option<&str>) -> Result<()> {

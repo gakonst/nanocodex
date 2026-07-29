@@ -134,7 +134,7 @@ impl ResponsesHttpStream {
 }
 
 #[derive(Default)]
-struct SseDecoder {
+pub(crate) struct SseDecoder {
     bytes: Vec<u8>,
     cursor: usize,
     data: Vec<String>,
@@ -142,12 +142,12 @@ struct SseDecoder {
 }
 
 impl SseDecoder {
-    fn push(&mut self, chunk: &[u8]) {
+    pub(crate) fn push(&mut self, chunk: &[u8]) {
         self.compact();
         self.bytes.extend_from_slice(chunk);
     }
 
-    fn finish(&mut self) {
+    pub(crate) fn finish(&mut self) {
         self.finished = true;
         self.compact();
         if !self.bytes.is_empty() {
@@ -156,7 +156,7 @@ impl SseDecoder {
         self.bytes.push(b'\n');
     }
 
-    fn next(&mut self) -> Result<Option<String>, ResponsesError> {
+    pub(crate) fn next(&mut self) -> Result<Option<String>, ResponsesError> {
         loop {
             let Some(relative_newline) = self.bytes[self.cursor..]
                 .iter()
@@ -209,7 +209,7 @@ impl SseDecoder {
     }
 }
 
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
         .get(header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
@@ -217,7 +217,7 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-fn map_http_error(error: reqwest::Error) -> ResponsesError {
+pub(crate) fn map_http_error(error: reqwest::Error) -> ResponsesError {
     ResponsesError::HttpRequest {
         retryable: error.is_connect() || error.is_body(),
         timeout: error.is_timeout(),

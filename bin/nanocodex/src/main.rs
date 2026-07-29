@@ -50,7 +50,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Manage `ChatGPT` subscription login.
+    /// Manage ChatGPT or Anthropic subscription login.
     Auth(auth::Auth),
     /// Inspect or purchase Nanocodex NANOUSD credits.
     #[cfg(feature = "tempo")]
@@ -195,10 +195,52 @@ mod tests {
             .unwrap();
 
         assert!(!cli.agent.uses_tempo());
+        assert!(!cli.agent.uses_anthropic());
         assert_eq!(
             cli.agent.responses_transport(),
             nanocodex::oai::transport::ResponsesTransport::WebSocket
         );
+    }
+
+    #[test]
+    fn anthropic_provider_and_model_are_selectable() {
+        let cli = Cli::try_parse_from([
+            "nanocodex",
+            "--provider",
+            "anthropic",
+            "--anthropic-model",
+            "claude-test",
+        ])
+        .unwrap();
+
+        assert!(cli.agent.uses_anthropic());
+        assert!(!cli.agent.uses_tempo());
+    }
+
+    #[test]
+    fn legacy_openai_flag_conflicts_with_anthropic_selection() {
+        let error =
+            Cli::try_parse_from(["nanocodex", "--provider.openai", "--provider", "anthropic"])
+                .err()
+                .expect("provider selection should be exclusive");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn chatgpt_auth_file_is_not_silently_ignored_for_anthropic_login() {
+        let error = Cli::try_parse_from([
+            "nanocodex",
+            "auth",
+            "login",
+            "--anthropic",
+            "--auth-file",
+            "/tmp/auth.json",
+        ])
+        .err()
+        .expect("provider-specific auth paths should not be mixed");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

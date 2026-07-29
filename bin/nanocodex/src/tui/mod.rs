@@ -520,6 +520,7 @@ pub(crate) async fn run(
     };
     let agent = configured.handle;
     let mut agent_events = configured.events;
+    let model = configured.model;
     let root_session_id = Arc::<str>::from(agent_events.request_id());
     let child_agents = configured.child_agents;
     let mpp_adapter = configured.mpp_adapter;
@@ -538,7 +539,9 @@ pub(crate) async fn run(
     let mut terminal = TerminalSession::enter().wrap_err("failed to initialize the terminal")?;
     let mut input_events = EventStream::new();
     let mut ticker = ui_ticker();
-    let mut app = App::new(cwd).with_thinking(initial_thinking);
+    let mut app = App::new(cwd)
+        .with_model(model)
+        .with_thinking(initial_thinking);
     app.restore_transcript(restored_transcript);
     let mut ui = UiModel::new(app, Arc::clone(&root_session_id));
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());

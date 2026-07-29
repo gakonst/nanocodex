@@ -1136,6 +1136,7 @@ fn append_branch_tree(
 }
 
 pub(super) struct App {
+    model: Arc<str>,
     pub(super) cwd: PathBuf,
     pub(super) main: Conversation,
     main_branch_id: u64,
@@ -1187,6 +1188,7 @@ pub(super) enum EscapeAction {
 impl App {
     pub(super) fn new(cwd: PathBuf) -> Self {
         Self {
+            model: nanocodex::oai::MODEL.into(),
             cwd,
             main: Conversation::new("Ready"),
             main_branch_id: 0,
@@ -1217,6 +1219,15 @@ impl App {
             thinking: Thinking::default(),
             reasoning_picker: None,
         }
+    }
+
+    pub(super) fn with_model(mut self, model: Arc<str>) -> Self {
+        self.model = model;
+        self
+    }
+
+    pub(super) fn model(&self) -> &str {
+        &self.model
     }
 
     pub(super) fn restore_transcript(

@@ -30,6 +30,8 @@ impl DurabilityConfig {
         session_id: &str,
         workspace: Option<&str>,
         instructions: &str,
+        model_provider: &str,
+        model: &str,
         origin_kind: &'static str,
         parent_session_id: Option<&str>,
         resume_history_len: Option<usize>,
@@ -50,6 +52,8 @@ impl DurabilityConfig {
             session_id,
             &cwd,
             instructions,
+            model_provider,
+            model,
             RolloutOrigin {
                 kind: origin_kind,
                 parent_thread_id: parent_session_id,

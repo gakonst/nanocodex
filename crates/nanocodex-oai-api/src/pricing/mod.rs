@@ -1,9 +1,9 @@
 //! Built-in USD estimates for the supported `OpenAI` model.
 //!
-//! Nanocodex supports only [`crate::MODEL`], so callers do not configure a
-//! pricing catalog. Completed responses are priced automatically from the
-//! provider-reported token usage and the standard or priority service tier
-//! selected by the request.
+//! Direct OpenAI calls use [`crate::MODEL`], so callers do not configure a
+//! pricing catalog. Their completed responses are priced automatically from
+//! provider-reported token usage and the standard or priority service tier.
+//! Other concrete services can retain usage while marking cost as unavailable.
 //!
 //! Rates are sourced from the
 //! [OpenAI API pricing page](https://developers.openai.com/api/docs/pricing):
@@ -31,6 +31,8 @@ pub use estimate::{EstimatedUsdCost, ServiceTier, estimate};
 pub enum CostStatus {
     /// Provider usage was priced using the built-in rates.
     EstimatedFromUsage,
+    /// Provider usage was reported, but no applicable price table was selected.
+    NotEstimated,
     /// The provider omitted usage from the completed response.
     #[default]
     UsageNotReported,
@@ -45,6 +47,7 @@ impl CostStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::EstimatedFromUsage => "estimated_from_usage",
+            Self::NotEstimated => "not_estimated",
             Self::UsageNotReported => "usage_not_reported",
             Self::Other => "other",
         }

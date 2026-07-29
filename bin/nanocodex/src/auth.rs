@@ -1,8 +1,14 @@
 use std::{path::PathBuf, process::Command};
 
 use clap::{Args, Subcommand};
-use eyre::{Result, WrapErr};
-use nanocodex::oai::auth::{ChatGptLogin, chatgpt_auth_status, logout_chatgpt};
+use eyre::{Result, WrapErr, eyre};
+use nanocodex::oai::{
+    anthropic::{
+        AnthropicLogin, AnthropicOAuthConfig, anthropic_auth_status, default_anthropic_auth_file,
+        logout_anthropic,
+    },
+    auth::{ChatGptLogin, chatgpt_auth_status, logout_chatgpt},
+};
 
 use crate::config::default_auth_file;
 
@@ -14,27 +20,40 @@ pub(crate) struct Auth {
 
 #[derive(Subcommand)]
 enum AuthCommand {
-    /// Sign Codex and Nanocodex in with a `ChatGPT` subscription.
-    Login(AuthFile),
-    /// Show the locally selected `ChatGPT` account without displaying tokens.
-    Status(AuthFile),
-    /// Remove the shared credentials, logging Codex and Nanocodex out.
-    Logout(AuthFile),
+    /// Sign Nanocodex in with a subscription account.
+    Login(AuthArgs),
+    /// Show the locally selected account without displaying tokens.
+    Status(AuthArgs),
+    /// Remove the selected locally stored credentials.
+    Logout(AuthArgs),
+}
+
+#[derive(Args)]
+struct AuthArgs {
+    #[command(flatten)]
+    file: AuthFile,
+
+    /// Select the Nanocodex-owned Anthropic subscription login.
+    #[arg(long)]
+    anthropic: bool,
 }
 
 #[derive(Args)]
 struct AuthFile {
     /// Override the shared Codex `auth.json` credential file.
-    #[arg(long, env = "NANOCODEX_AUTH_FILE")]
+    #[arg(long, env = "NANOCODEX_AUTH_FILE", conflicts_with = "anthropic")]
     auth_file: Option<PathBuf>,
 }
 
 impl Auth {
     pub(crate) async fn run(self) -> Result<()> {
         match self.command {
-            AuthCommand::Login(args) => login(args.path()?).await,
-            AuthCommand::Status(args) => status(&args.path()?),
-            AuthCommand::Logout(args) => logout(&args.path()?),
+            AuthCommand::Login(args) if args.anthropic => anthropic_login().await,
+            AuthCommand::Login(args) => login(args.file.path()?).await,
+            AuthCommand::Status(args) if args.anthropic => anthropic_status().await,
+            AuthCommand::Status(args) => status(&args.file.path()?),
+            AuthCommand::Logout(args) if args.anthropic => anthropic_logout(),
+            AuthCommand::Logout(args) => logout(&args.file.path()?),
         }
     }
 }
@@ -95,6 +114,69 @@ fn logout(auth_file: &PathBuf) -> Result<()> {
     } else {
         eprintln!(
             "No ChatGPT credentials were stored at {}.",
+            auth_file.display()
+        );
+    }
+    Ok(())
+}
+
+async fn anthropic_login() -> Result<()> {
+    let auth_file = default_anthropic_auth_file()
+        .ok_or_else(|| eyre!("could not determine where to store Anthropic credentials"))?;
+    let login = AnthropicLogin::start_with_config(AnthropicOAuthConfig::from_env(), &auth_file)
+        .await
+        .wrap_err("failed to start Anthropic login")?;
+    let url = login.authorization_url().to_owned();
+    eprintln!("Open this URL to sign in with Anthropic:\n\n{url}\n");
+    if let Err(error) = open_browser(&url) {
+        eprintln!("Could not open a browser automatically ({error}). Open the URL above manually.");
+    }
+    let account = login
+        .complete()
+        .await
+        .wrap_err("Anthropic login did not complete")?;
+    let profile = account
+        .email
+        .or(account.account_id)
+        .unwrap_or_else(|| "your Anthropic account".to_owned());
+    eprintln!(
+        "Nanocodex is logged in as {profile}. Credentials saved to {}.",
+        auth_file.display()
+    );
+    Ok(())
+}
+
+async fn anthropic_status() -> Result<()> {
+    let account = anthropic_auth_status()
+        .await
+        .wrap_err("could not resolve Anthropic credentials")?;
+    println!("Logged in with Anthropic");
+    println!("Mode: {:?}", account.mode);
+    println!("Source: {}", account.source);
+    if let Some(profile) = account.profile {
+        println!("Profile: {profile}");
+    }
+    if let Some(seconds) = account.expires_in_seconds {
+        if seconds > 0 {
+            println!("Expires in: {}m {}s", seconds / 60, seconds % 60);
+        } else {
+            println!("Expires in: expired (refreshes on next use)");
+        }
+    }
+    Ok(())
+}
+
+fn anthropic_logout() -> Result<()> {
+    let auth_file = default_anthropic_auth_file()
+        .ok_or_else(|| eyre!("could not determine the Anthropic credential path"))?;
+    if logout_anthropic(&auth_file)? {
+        eprintln!(
+            "Removed Nanocodex Anthropic credentials from {}.",
+            auth_file.display()
+        );
+    } else {
+        eprintln!(
+            "No Nanocodex Anthropic credentials were stored at {}.",
             auth_file.display()
         );
     }

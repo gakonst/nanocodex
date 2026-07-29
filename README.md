@@ -53,6 +53,28 @@ version.
 PR artifacts require an authenticated `gh` CLI and an already completed
 on-demand artifact workflow for that PR.
 
+### Anthropic subscription
+
+The native CLI can sign in with the embedded Claude Code OAuth registration
+and then use Anthropic Messages with Claude Code defaults:
+
+```sh
+nanocodex auth login --anthropic
+nanocodex --provider anthropic
+```
+
+For a source checkout, replace `nanocodex` with
+`cargo +1.97 run -p nanocodex-bin --`. API keys and explicit bearer tokens are
+also supported through `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`.
+
+The default registration embeds Claude Code's client ID and scopes. Private or
+test registrations can override them with
+`NANOCODEX_ANTHROPIC_OAUTH_CLIENT_ID` and
+`NANOCODEX_ANTHROPIC_OAUTH_SCOPES`; issuer, endpoints, callback path/port, and
+credential-file overrides use the other `NANOCODEX_ANTHROPIC_OAUTH_*` and
+`NANOCODEX_ANTHROPIC_AUTH_FILE` variables. `ANTHROPIC_MODEL` and
+`ANTHROPIC_API_BASE_URL` override inference defaults.
+
 ## Minimal API Example
 
 ```rust,ignore

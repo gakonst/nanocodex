@@ -95,6 +95,42 @@ authorization.
 [`auth::chatgpt_auth_status`] inspects the selected account without exposing
 tokens, and [`auth::logout_chatgpt`] removes the stored credentials.
 
+## Anthropic Messages and subscription login
+
+> **Available on native targets.**
+
+[`anthropic::Anthropic`] supplies a concrete Messages service for the same
+generic Tower client and managed-session contracts. Its defaults select the
+Claude Code model identity, system instructions, OAuth attribution, streaming
+Messages transport, and full client-history replay:
+
+```rust,no_run
+use nanocodex_oai_api::anthropic::{Anthropic, load_anthropic_auth};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = Anthropic::client(load_anthropic_auth().await?)?;
+let mut session = client
+    .instructions("Preserve exact identifiers and answer concisely.")
+    .build()?;
+let completed = session.turn().create("Explain req_7f3.").await?;
+println!("{}", completed.output_text());
+# Ok(())
+# }
+```
+
+Credential resolution checks `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, then the Nanocodex-owned OAuth store.
+[`anthropic::AnthropicLogin`] performs the loopback PKCE login. The default
+[`anthropic::AnthropicOAuthConfig`] embeds Claude Code's public client ID and
+scopes; every registration field remains public, and the CLI applies
+`NANOCODEX_ANTHROPIC_OAUTH_*` overrides. Managed OAuth refreshes expiring
+tokens and retries one unauthorized request with the identical body.
+
+Messages has no Responses warmup, response checkpoint, or remote compaction
+operation. The recipe therefore uses HTTPS without warmup and replays
+authoritative typed history. Agent-side automatic compaction remains disabled
+for Anthropic models unless a compatible local policy is added.
+
 A [`Response`] is also a typed stream. It retains the completed aggregate
 after the stream reaches [`ResponseEvent::Completed`]:
 
@@ -166,8 +202,8 @@ prominent:
   batteries-included runtime and implementations.
 - [`auth`] owns API-key credentials plus native managed ChatGPT login,
   persistence, refresh, and logout.
-- [`pricing`] and [`events`] expose automatic `gpt-5.6-sol` cost estimates and
-  lifecycle-event components.
+- [`pricing`] and [`events`] expose automatic `gpt-5.6-sol` cost estimates,
+  explicit unpriced-provider status, and lifecycle-event components.
 - [`tower`] contains the generic attempt, response, and retry contracts.
 - [`transport`] contains WebSocket/HTTPS selection, replay policy, transport
   failures, and connection statistics.

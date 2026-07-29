@@ -6,6 +6,7 @@ pub(crate) struct MppArgs {
     /// Connect directly to `OpenAI`. This is the default provider.
     #[arg(
         long = "provider.openai",
+        id = "provider_openai",
         global = true,
         env = "NANOCODEX_PROVIDER_OPENAI",
         default_value_t = false,

@@ -4418,6 +4418,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "toml",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "two-face",

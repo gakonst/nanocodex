@@ -6,6 +6,9 @@ pub use nanocodex_agent::{
     AgentEvents, CostStatus, EstimatedUsdCost, Nanocodex, NanocodexBuilder, NanocodexError,
     ServiceTier, Turn, TurnControl, TurnResult, TurnUsage, UsdAmount,
 };
+#[cfg(not(target_family = "wasm"))]
+#[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
+pub use nanocodex_oai_api::anthropic::{Anthropic, AnthropicAuth};
 pub use nanocodex_oai_api::{OpenAi, ReasoningMode, Thinking};
 #[cfg(not(target_family = "wasm"))]
 #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
@@ -48,7 +51,7 @@ pub use nanocodex_observability as observability;
 pub mod prelude {
     #[cfg(not(target_family = "wasm"))]
     #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
-    pub use crate::tool;
+    pub use crate::{Anthropic, AnthropicAuth, tool};
     pub use crate::{Nanocodex, NanocodexBuilder, OpenAi, Tool, Tools};
 }
 

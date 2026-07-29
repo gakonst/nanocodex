@@ -8,6 +8,10 @@ compile_error!(
     "nanocodex-oai-api supports native targets and hosted wasm*-unknown-unknown targets; WASI is not yet supported"
 );
 
+/// Anthropic Messages and Claude subscription support.
+#[cfg(all(feature = "client", not(target_family = "wasm")))]
+#[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
+pub mod anthropic;
 /// Authentication sources and managed credential snapshots.
 #[cfg(feature = "client")]
 pub mod auth;

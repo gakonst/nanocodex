@@ -4,20 +4,25 @@ use std::{
     sync::Arc,
 };
 
-use clap::{ArgAction, Args, builder::NonEmptyStringValueParser};
+use clap::{ArgAction, Args, ValueEnum, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
 use nanocodex::{
-    AgentEvents, Nanocodex, OpenAi, ReasoningMode, Thinking, Tools,
+    AgentEvents, Anthropic, Nanocodex, OpenAi, ReasoningMode, Thinking, Tools,
     agent::{
         rollout::{DurableSession, RolloutConfig},
         session::{SessionId, SessionSnapshot},
     },
     oai::{
+        __private::ResponsesServiceFactory,
+        ResponseError,
+        anthropic::{ANTHROPIC_MODEL, load_anthropic_auth},
         auth::{OpenAiAuth, OpenAiAuthMode},
+        tower::{ResponsesAttempt, ResponsesServiceResponse},
         transport::ResponsesTransport,
     },
     tools::mcp::McpHandle,
 };
+use tower::Service;
 
 use crate::mcp::{ConfiguredMcp, McpArgs};
 use crate::mpp::{MppAdapter, MppArgs};
@@ -27,6 +32,7 @@ use crate::vm::{ConfiguredVm, VmArgs};
 pub(crate) struct ConfiguredAgent {
     pub(crate) handle: Nanocodex,
     pub(crate) events: AgentEvents,
+    pub(crate) model: Arc<str>,
     pub(crate) child_agents: Option<Arc<ChildAgents>>,
     pub(crate) mpp_adapter: Option<MppAdapter>,
     pub(crate) mcp: Option<McpHandle>,
@@ -38,6 +44,14 @@ struct SessionBuild {
     session_id: Option<SessionId>,
     snapshot: Option<SessionSnapshot>,
     rollout: Option<RolloutConfig>,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq, ValueEnum)]
+enum Provider {
+    #[default]
+    #[value(name = "openai")]
+    OpenAi,
+    Anthropic,
 }
 
 #[derive(Args)]
@@ -125,6 +139,23 @@ pub(crate) struct AgentArgs {
     #[arg(long, env = "OPENAI_API_BASE_URL")]
     api_base_url: Option<String>,
 
+    /// Model service used for agent inference.
+    #[arg(
+        long,
+        env = "NANOCODEX_PROVIDER",
+        default_value = "openai",
+        conflicts_with = "provider_openai"
+    )]
+    provider: Provider,
+
+    /// Anthropic Messages model override.
+    #[arg(long, env = "ANTHROPIC_MODEL")]
+    anthropic_model: Option<String>,
+
+    /// Anthropic Messages API base override.
+    #[arg(long, env = "ANTHROPIC_API_BASE_URL")]
+    anthropic_api_base_url: Option<String>,
+
     #[command(flatten)]
     mcp: McpArgs,
 
@@ -140,6 +171,11 @@ impl AgentArgs {
     #[cfg(test)]
     pub(crate) const fn uses_tempo(&self) -> bool {
         self.mpp.is_enabled()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn uses_anthropic(&self) -> bool {
+        matches!(self.provider, Provider::Anthropic)
     }
 
     pub(crate) const fn thinking(&self) -> Thinking {
@@ -176,40 +212,35 @@ impl AgentArgs {
         let responses_transport = self.responses_transport();
         let session = prepare_session_build(self.cwd, self.rollouts, &codex_home, durable)?;
         let mpp_enabled = self.mpp.is_enabled();
+        if mpp_enabled && matches!(self.provider, Provider::Anthropic) {
+            return Err(eyre!(
+                "the Tempo provider cannot be combined with --provider anthropic"
+            ));
+        }
         if mpp_enabled && !matches!(responses_transport, ResponsesTransport::Https) {
             return Err(eyre!(
                 "the Tempo provider currently supports HTTPS Responses with Charge only"
             ));
         }
-        let auth = if mpp_enabled {
-            OpenAiAuth::api_key("tempo-proxy")
+        let auth = if matches!(self.provider, Provider::OpenAi) {
+            Some(if mpp_enabled {
+                OpenAiAuth::api_key("tempo-proxy")
+            } else {
+                select_auth(self.api_key, self.auth_file, environment_api_key()?)?
+            })
         } else {
-            select_auth(self.api_key, self.auth_file, environment_api_key()?)?
+            None
         };
-        let direct_websocket_url = direct_websocket_url(self.websocket_url, auth.mode());
+        let anthropic_auth = if matches!(self.provider, Provider::Anthropic) {
+            Some(
+                load_anthropic_auth()
+                    .await
+                    .wrap_err("failed to resolve Anthropic credentials")?,
+            )
+        } else {
+            None
+        };
         let mpp_adapter = self.mpp.start().await?;
-        let mut openai = OpenAi::builder(auth)
-            .transport(responses_transport)
-            .websocket_url(direct_websocket_url);
-        if mpp_enabled {
-            openai = openai.max_attempts(NonZeroU32::MIN);
-        }
-        if let Some(store) = self.store_responses {
-            openai = openai.store(store);
-        }
-        let api_base_url = selected_api_base_url(
-            self.api_base_url,
-            mpp_adapter.as_ref().map(MppAdapter::api_base_url),
-        );
-        if let Some(api_base_url) = api_base_url {
-            openai = openai.api_base_url(api_base_url);
-        }
-        if matches!(responses_transport, ResponsesTransport::Https)
-            && let Some(mpp_adapter) = &mpp_adapter
-        {
-            openai = openai.http_client(mpp_adapter.responses_http_client()?);
-        }
-        let openai = openai.build()?;
         let configured_vm = vm.start().await?;
         let mut tools = configured_vm
             .as_ref()
@@ -228,44 +259,131 @@ impl AgentArgs {
         }
         let tools = tools.build()?;
         let child_agents = self.subagents.then(|| Arc::new(ChildAgents::default()));
-        let mut builder = Nanocodex::builder(openai)
-            .reasoning_mode(self.reasoning_mode)
-            .thinking(self.thinking)
-            .workspace(session.workspace)
-            .codex_home(codex_home);
-        if let Some(session_id) = session.session_id {
-            builder = builder.session_id(session_id);
-        }
-        if let Some(snapshot) = session.snapshot {
-            builder = builder.resume(snapshot);
-        }
-        if let Some(rollout) = session.rollout {
-            builder = builder.rollout(rollout);
-        }
-        let builder = if let Some(child_agents) = &child_agents {
-            let tools = tools;
-            let child_agents = Arc::downgrade(child_agents);
-            builder.tools_factory(move |agent| {
-                subagents::with_subagents(tools.clone(), agent, child_agents.clone())
-            })
-        } else {
-            builder.tools(tools)
-        };
-        let builder = if let Some(instructions) = self.instructions {
-            builder.instructions(instructions)
-        } else {
-            builder
-        };
-        let (handle, events) = builder.build()?;
-        Ok(ConfiguredAgent {
-            handle,
-            events,
+        let common = CommonAgentBuild {
+            session,
+            codex_home,
+            tools,
             child_agents,
             mpp_adapter,
             mcp: mcp_handle,
             vm: configured_vm,
-        })
+            reasoning_mode: self.reasoning_mode,
+            thinking: self.thinking,
+            instructions: self.instructions,
+        };
+        if let Some(anthropic_auth) = anthropic_auth {
+            let model: Arc<str> = self
+                .anthropic_model
+                .unwrap_or_else(|| ANTHROPIC_MODEL.to_owned())
+                .into();
+            let mut anthropic = Anthropic::builder(anthropic_auth).model(Arc::clone(&model));
+            if let Some(api_base_url) = self.anthropic_api_base_url {
+                anthropic = anthropic.api_base_url(api_base_url);
+            }
+            configure_agent(anthropic.build()?, model, common)
+        } else {
+            let auth = auth.ok_or_else(|| eyre!("OpenAI authorization was not resolved"))?;
+            let direct_websocket_url = direct_websocket_url(self.websocket_url, auth.mode());
+            let mut openai = OpenAi::builder(auth)
+                .transport(responses_transport)
+                .websocket_url(direct_websocket_url);
+            if mpp_enabled {
+                openai = openai.max_attempts(NonZeroU32::MIN);
+            }
+            if let Some(store) = self.store_responses {
+                openai = openai.store(store);
+            }
+            let api_base_url = selected_api_base_url(
+                self.api_base_url,
+                common.mpp_adapter.as_ref().map(MppAdapter::api_base_url),
+            );
+            if let Some(api_base_url) = api_base_url {
+                openai = openai.api_base_url(api_base_url);
+            }
+            if matches!(responses_transport, ResponsesTransport::Https)
+                && let Some(mpp_adapter) = &common.mpp_adapter
+            {
+                openai = openai.http_client(mpp_adapter.responses_http_client()?);
+            }
+            configure_agent(openai.build()?, nanocodex::oai::MODEL.into(), common)
+        }
     }
+}
+
+struct CommonAgentBuild {
+    session: SessionBuild,
+    codex_home: PathBuf,
+    tools: Tools,
+    child_agents: Option<Arc<ChildAgents>>,
+    mpp_adapter: Option<MppAdapter>,
+    mcp: Option<McpHandle>,
+    vm: Option<ConfiguredVm>,
+    reasoning_mode: ReasoningMode,
+    thinking: Thinking,
+    instructions: Option<String>,
+}
+
+fn configure_agent<F>(
+    client: OpenAi<F>,
+    model: Arc<str>,
+    common: CommonAgentBuild,
+) -> Result<ConfiguredAgent>
+where
+    F: ResponsesServiceFactory + Send + Sync + 'static,
+    F::Service: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + Send + 'static,
+    <F::Service as Service<ResponsesAttempt>>::Error: Into<ResponseError> + Send + 'static,
+    <F::Service as Service<ResponsesAttempt>>::Future: Send,
+{
+    let CommonAgentBuild {
+        session,
+        codex_home,
+        tools,
+        child_agents,
+        mpp_adapter,
+        mcp,
+        vm,
+        reasoning_mode,
+        thinking,
+        instructions,
+    } = common;
+    let mut builder = Nanocodex::builder(client)
+        .reasoning_mode(reasoning_mode)
+        .thinking(thinking)
+        .workspace(session.workspace)
+        .codex_home(codex_home);
+    if let Some(session_id) = session.session_id {
+        builder = builder.session_id(session_id);
+    }
+    if let Some(snapshot) = session.snapshot {
+        builder = builder.resume(snapshot);
+    }
+    if let Some(rollout) = session.rollout {
+        builder = builder.rollout(rollout);
+    }
+    let builder = if let Some(child_agents) = &child_agents {
+        let tools = tools;
+        let child_agents = Arc::downgrade(child_agents);
+        builder.tools_factory(move |agent| {
+            subagents::with_subagents(tools.clone(), agent, child_agents.clone())
+        })
+    } else {
+        builder.tools(tools)
+    };
+    let builder = if let Some(instructions) = instructions {
+        builder.instructions(instructions)
+    } else {
+        builder
+    };
+    let (handle, events) = builder.build()?;
+    Ok(ConfiguredAgent {
+        handle,
+        events,
+        model,
+        child_agents,
+        mpp_adapter,
+        mcp,
+        vm,
+    })
 }
 
 fn prepare_session_build(

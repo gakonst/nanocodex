@@ -23,7 +23,7 @@ use nanocodex_oai_api::{
         EventSink, ManagedSessionState, ModelConfig, ResponsesAttemptFactory,
         assign_missing_response_item_id, compaction, with_code_mode_tool_names,
     },
-    CONTEXT_WINDOW_TOKENS, MODEL, Prompt, Thinking,
+    CONTEXT_WINDOW_TOKENS, Prompt, Thinking,
     events::AgentEventKind,
     pricing::{ServiceTier, estimate},
     responses::{ContentItem, MessageRole, RequestProfile, ResponseItem, ToolDefinition, Usage},
@@ -116,6 +116,7 @@ pub(crate) struct CompletedModelTurn {
 
 #[derive(Clone)]
 pub(crate) struct ModelCheckpoint {
+    model: Arc<str>,
     workspace: String,
     conversation: ConversationState,
     request_prefix: Arc<[ResponseItem]>,
@@ -141,6 +142,10 @@ pub(crate) struct HistoryCheckpoint {
 }
 
 impl ModelCheckpoint {
+    pub(crate) fn model(&self) -> &str {
+        &self.model
+    }
+
     pub(crate) fn workspace(&self) -> &str {
         &self.workspace
     }
@@ -173,7 +178,12 @@ impl ModelCheckpoint {
         &self.context_baseline
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "resume validates and owns one complete persisted model boundary"
+    )]
     pub(crate) fn resume(
+        model: Arc<str>,
         workspace: String,
         mut request_prefix: Vec<ResponseItem>,
         prompt_cache_key: Arc<str>,
@@ -186,6 +196,7 @@ impl ModelCheckpoint {
         let context_baseline =
             context_baseline.unwrap_or_else(|| ContextBaseline::reconstruct(&history));
         Ok(Self {
+            model,
             workspace,
             conversation: ConversationState::resume(canonical_context, history)?,
             request_prefix: Arc::from(request_prefix),
@@ -276,6 +287,7 @@ impl<S> ModelRun<S> {
             started_at: Instant::now(),
             stats: RunStats::default(),
             session: Some(ModelSessionState {
+                model: checkpoint.model,
                 workspace: checkpoint.workspace,
                 tools: runtime,
                 factory,
@@ -330,6 +342,7 @@ impl<S> ModelRun<S> {
             .capture(tools.working_directory(), tools.default_shell_name())
             .full_item();
         Ok(ModelSessionState {
+            model: Arc::clone(&self.config.model),
             workspace,
             tools,
             factory,
@@ -445,6 +458,7 @@ pub(crate) fn prepare_history_checkpoint(
     .prefix()
     .to_vec();
     let checkpoint = ModelCheckpoint::resume(
+        Arc::clone(&config.model),
         workspace,
         request_prefix,
         prompt_cache_key,

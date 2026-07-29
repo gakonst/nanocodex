@@ -38,8 +38,8 @@ where
             .conversation
             .previous_response_id()
             .map(str::to_owned);
-        let auto_compact_token_limit =
-            compaction::auto_compact_token_limit(MODEL).unwrap_or(CONTEXT_WINDOW_TOKENS);
+        let auto_compact_token_limit = compaction::auto_compact_token_limit(self.config.model())
+            .unwrap_or(CONTEXT_WINDOW_TOKENS);
         let compacted = {
             let compaction = self.perform_compaction(
                 self.stats.model_calls,
@@ -107,8 +107,8 @@ where
         self.events.emit(
             AgentEventKind::RunStarted,
             RunStarted {
-                mode: "openai_model",
-                model: MODEL,
+                mode: self.config.mode(),
+                model: self.config.model(),
                 reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.thinking.as_str(),
                 transport: self.config.responses_transport.as_str(),
@@ -122,7 +122,9 @@ where
         let message = error.to_string();
         self.events
             .emit(AgentEventKind::RunError, RunError { message: &message })?;
-        let usage = self.stats.turn_usage(self.fast_mode);
+        let usage = self
+            .stats
+            .turn_usage(self.fast_mode, self.config.estimate_cost);
         record_turn_usage(&tracing::Span::current(), &usage);
         self.events.emit(
             AgentEventKind::RunFailed,
@@ -161,8 +163,8 @@ where
         self.events.emit(
             AgentEventKind::RunStarted,
             RunStarted {
-                mode: "openai_model",
-                model: MODEL,
+                mode: self.config.mode(),
+                model: self.config.model(),
                 reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.thinking.as_str(),
                 transport: self.config.responses_transport.as_str(),
@@ -188,7 +190,9 @@ where
             Ok(ModelTaskOutcome::Completed(message)) => {
                 self.stats
                     .apply_transport(self.transport_stats.since(transport_before));
-                let usage = self.stats.turn_usage(self.fast_mode);
+                let usage = self
+                    .stats
+                    .turn_usage(self.fast_mode, self.config.estimate_cost);
                 record_turn_usage(&tracing::Span::current(), &usage);
                 self.events.emit(
                     AgentEventKind::RunCompleted,
@@ -220,7 +224,9 @@ where
                     .emit(AgentEventKind::RunError, RunError { message: &message })?;
                 self.stats
                     .apply_transport(self.transport_stats.since(transport_before));
-                let usage = self.stats.turn_usage(self.fast_mode);
+                let usage = self
+                    .stats
+                    .turn_usage(self.fast_mode, self.config.estimate_cost);
                 record_turn_usage(&tracing::Span::current(), &usage);
                 self.events.emit(
                     AgentEventKind::RunFailed,
@@ -277,7 +283,9 @@ where
                     .emit(AgentEventKind::RunError, RunError { message: &message })?;
                 self.stats
                     .apply_transport(self.transport_stats.since(transport_before));
-                let usage = self.stats.turn_usage(self.fast_mode);
+                let usage = self
+                    .stats
+                    .turn_usage(self.fast_mode, self.config.estimate_cost);
                 record_turn_usage(&tracing::Span::current(), &usage);
                 self.events.emit(
                     AgentEventKind::RunFailed,
@@ -422,6 +430,7 @@ where
             context.establish(context_snapshot);
             let conversation = ConversationState::new(history)?;
             let mut session = ModelSessionState {
+                model: Arc::clone(&self.config.model),
                 workspace,
                 tools,
                 factory,
@@ -575,6 +584,7 @@ where
         global_instructions: Option<Arc<str>>,
     ) -> ModelCheckpoint {
         ModelCheckpoint {
+            model: Arc::clone(&session.model),
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
             request_prefix: session.factory.profile().shared_prefix(),
@@ -592,6 +602,7 @@ where
     ) {
         session.conversation.commit_tail();
         snapshots.send_replace(Some(ModelCheckpoint {
+            model: Arc::clone(&session.model),
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
             request_prefix: session.factory.profile().shared_prefix(),
