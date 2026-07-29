@@ -1,7 +1,6 @@
 use super::*;
 
 pub(super) struct ModelSessionState {
-    pub(super) model: Arc<str>,
     pub(super) workspace: String,
     pub(super) tools: ToolRuntime,
     pub(super) factory: ResponsesAttemptFactory,

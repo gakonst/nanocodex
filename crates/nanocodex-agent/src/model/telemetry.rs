@@ -221,7 +221,7 @@ pub(super) fn terminal_payload<'a>(
 ) -> TerminalPayload<'a> {
     TerminalPayload {
         status: terminal_status,
-        model: config.model(),
+        model: nanocodex_oai_api::MODEL,
         reasoning_mode: config.reasoning_mode.as_str(),
         effort: thinking.as_str(),
         transport: config.responses_transport.as_str(),

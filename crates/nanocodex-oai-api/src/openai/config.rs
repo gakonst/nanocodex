@@ -36,10 +36,6 @@ pub struct ModelConfig {
     pub host_transport: Option<Arc<dyn crate::transport::host::HostTransport>>,
     /// Immutable harness system prompt serialized before session instructions.
     pub system_prompt: Arc<str>,
-    /// Provider model name used for lifecycle metadata and context policy.
-    pub model: Arc<str>,
-    /// Stable provider mode emitted in model lifecycle records.
-    pub mode: &'static str,
     /// Whether the built-in OpenAI price table applies to reported usage.
     pub estimate_cost: bool,
 }
@@ -55,18 +51,6 @@ impl ModelConfig {
     #[must_use]
     pub fn system_prompt(&self) -> &str {
         &self.system_prompt
-    }
-
-    /// Returns the configured provider model name.
-    #[must_use]
-    pub fn model(&self) -> &str {
-        &self.model
-    }
-
-    /// Returns the stable provider lifecycle mode.
-    #[must_use]
-    pub const fn mode(&self) -> &'static str {
-        self.mode
     }
 
     /// Returns the `OpenAI` tool-search endpoint derived from the base URL.
@@ -91,8 +75,6 @@ impl Default for ModelConfig {
             #[cfg(any(target_family = "wasm", docsrs))]
             host_transport: None,
             system_prompt: SYSTEM_PROMPT.into(),
-            model: crate::MODEL.into(),
-            mode: "openai_model",
             estimate_cost: true,
         }
     }

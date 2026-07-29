@@ -189,9 +189,9 @@ impl AnthropicAuth {
 
     /// Wraps a static OAuth access token that this process will not refresh.
     ///
-    /// Prefer the managed constructor in the `nanocodex` crate for anything long-lived:
-    /// OAuth access tokens are short lived, and a static token simply starts failing
-    /// once it expires.
+    /// Prefer [`load_anthropic_auth`](crate::load_anthropic_auth) for anything
+    /// long-lived: OAuth access tokens are short lived, and a static token
+    /// simply starts failing once it expires.
     #[must_use]
     pub fn oauth_token(access_token: impl Into<Arc<str>>) -> Self {
         let source = StaticOAuthAuth {

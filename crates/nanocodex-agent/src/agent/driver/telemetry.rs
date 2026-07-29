@@ -23,16 +23,11 @@ pub(super) fn agent_compact_span(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the turn root records explicit lifecycle identity without an intermediate bag"
-)]
 pub(super) fn agent_turn_span(
     parent: Option<&tracing::Span>,
     session_id: &str,
     lineage_id: &str,
     origin: &AgentOrigin,
-    model: &str,
     reasoning: ReasoningSettings,
     turn_index: u64,
     prompt_bytes: usize,
@@ -51,7 +46,7 @@ pub(super) fn agent_turn_span(
         agent.origin = origin.kind,
         agent.depth = origin.depth,
         trace.parented = parented,
-        model,
+        model = nanocodex_oai_api::MODEL,
         reasoning.mode = reasoning.mode.as_str(),
         reasoning.effort = reasoning.effort.as_str(),
         thinking = reasoning.effort.as_str(),

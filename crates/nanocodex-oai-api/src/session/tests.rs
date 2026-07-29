@@ -12,7 +12,7 @@ use ::tower::Service;
 use futures_util::TryStreamExt;
 
 use crate::{
-    responses::{ContentItem, MessageRole},
+    responses::{ContentItem, MessageRole, Usage},
     session::SessionId,
     tower::{
         CompactionOutput, GenerationOutput, ResponsePipelineStats, ResponsesAttemptKind,
@@ -122,9 +122,47 @@ async fn response_stream_and_future_share_one_completed_operation() {
 
 #[test]
 fn missing_usage_never_becomes_a_zero_cost_estimate() {
-    let (estimate, status) = estimate_cost(None, false);
+    let (estimate, status) = estimate_cost(None, false, true);
     assert!(estimate.is_none());
     assert_eq!(status, crate::CostStatus::UsageNotReported);
+}
+
+#[test]
+fn reported_usage_can_explicitly_skip_the_openai_price_table() {
+    let usage = Usage {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        ..Usage::default()
+    };
+    let (estimate, status) = estimate_cost(Some(&usage), false, false);
+    assert!(estimate.is_none());
+    assert_eq!(status, crate::CostStatus::NotEstimated);
+}
+
+#[tokio::test]
+async fn custom_service_cost_policy_reaches_managed_sessions() {
+    let calls = Arc::new(AtomicU32::new(0));
+    let factory_calls = Arc::clone(&calls);
+    let openai = OpenAi::builder("test-key")
+        .estimate_cost(false)
+        .service(move || Scripted {
+            calls: Arc::clone(&factory_calls),
+        })
+        .build()
+        .unwrap();
+    let mut session = openai
+        .instructions("Answer only from supplied facts.")
+        .build()
+        .unwrap();
+    let completed = session
+        .turn()
+        .create("The region is us-west-2.")
+        .await
+        .unwrap();
+
+    assert!(completed.estimated_cost().is_none());
+    assert_eq!(completed.cost_status(), crate::CostStatus::NotEstimated);
 }
 
 #[derive(Debug)]

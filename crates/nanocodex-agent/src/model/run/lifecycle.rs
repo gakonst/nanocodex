@@ -43,9 +43,7 @@ where
         context: CompactionContext<'_>,
     ) -> Result<bool> {
         let CompactionContext { snapshot, phase } = context;
-        let Some(auto_compact_token_limit) =
-            compaction::auto_compact_token_limit(self.config.model())
-        else {
+        let Some(auto_compact_token_limit) = compaction::auto_compact_token_limit(MODEL) else {
             return Ok(false);
         };
         let active_context_tokens = conversation.active_context_tokens();
@@ -100,7 +98,7 @@ where
         self.events.emit(
             AgentEventKind::ModelWarmupStarted,
             WarmupStarted {
-                model: self.config.model(),
+                model: MODEL,
                 prompt_cache_key: factory.profile().prompt_cache_key(),
             },
         )?;
@@ -110,10 +108,7 @@ where
         }
         let shared_prompt_cache = self.prompt_cache.shared().cloned();
         let outcome = if let Some(cache) = shared_prompt_cache {
-            match cache
-                .entry(self.prompt_cache.model(), factory.profile())
-                .await
-            {
+            match cache.entry(factory.profile()).await {
                 Ok(entry) => {
                     let mut execution = None;
                     let initialized = entry
@@ -269,12 +264,7 @@ where
             self.fast_mode,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
-        let span = compaction_span(
-            self.config.model(),
-            after_model_call_index,
-            input_item_count,
-            input_bytes,
-        );
+        let span = compaction_span(after_model_call_index, input_item_count, input_bytes);
         if let Some(input_content) = &input_content {
             record_span_content(&span, "model.input", input_content);
         }

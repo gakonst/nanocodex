@@ -31,7 +31,7 @@ where
             history,
             context_baseline,
             checkpoint,
-        } = snapshot.into_resume(config.model())?;
+        } = snapshot.into_resume()?;
         if base_instructions
             .as_deref()
             .is_some_and(|stored| stored != config.system_prompt())
@@ -151,8 +151,6 @@ where
         &session_id_text,
         workspace.as_deref(),
         spawner.config.system_prompt(),
-        "openai",
-        spawner.config.model(),
         origin.kind,
         origin.parent_session_id.as_deref(),
         initial_resume.as_ref().map(InitialResume::history_len),

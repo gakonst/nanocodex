@@ -51,11 +51,8 @@ where
             .prompt_cache_key
             .as_ref()
             .map_or_else(|| Arc::clone(&self.spawner.lineage_id), Arc::clone);
-        let prompt_cache = ModelPromptCache::new(
-            Arc::clone(&self.spawner.config.model),
-            prompt_cache_key,
-            self.spawner.shared_prompt_cache.clone(),
-        );
+        let prompt_cache =
+            ModelPromptCache::new(prompt_cache_key, self.spawner.shared_prompt_cache.clone());
         let mut model = if let Some(initial) = self.initial_model.take() {
             ModelRun::from_checkpoint(
                 self.events.clone(),
@@ -129,7 +126,6 @@ where
                                 session_id.as_str(),
                                 self.spawner.lineage_id.as_ref(),
                                 &self.origin,
-                                self.spawner.config.model(),
                                 ReasoningSettings {
                                     mode: self.spawner.config.reasoning_mode,
                                     effort: thinking,
@@ -424,7 +420,6 @@ where
                 session_id.as_str(),
                 self.spawner.lineage_id.as_ref(),
                 &self.origin,
-                self.spawner.config.model(),
                 ReasoningSettings {
                     mode: self.spawner.config.reasoning_mode,
                     effort: thinking,

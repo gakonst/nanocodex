@@ -597,7 +597,11 @@ where
         .final_message
         .unwrap_or_else(|| output_text(&output))
         .into();
-    let (estimated_cost, cost_status) = estimate_cost(response.usage.as_ref(), session.fast_mode);
+    let (estimated_cost, cost_status) = estimate_cost(
+        response.usage.as_ref(),
+        session.fast_mode,
+        session.estimate_cost,
+    );
     let completed = CompletedResponse {
         output,
         output_text,
@@ -721,7 +725,11 @@ where
     session.state = candidate;
     session.canonical_context_reinjection_pending = !mid_turn;
 
-    let (estimated_cost, cost_status) = estimate_cost(response.usage.as_ref(), session.fast_mode);
+    let (estimated_cost, cost_status) = estimate_cost(
+        response.usage.as_ref(),
+        session.fast_mode,
+        session.estimate_cost,
+    );
     Ok(CompletedCompaction {
         usage: response.usage,
         estimated_cost,
@@ -873,8 +881,10 @@ fn finish_response_span(span: &tracing::Span, started_at: Instant, error: Option
 pub(super) fn estimate_cost(
     usage: Option<&Usage>,
     fast_mode: bool,
+    enabled: bool,
 ) -> (Option<crate::EstimatedUsdCost>, crate::CostStatus) {
     match usage {
+        Some(_) if !enabled => (None, crate::CostStatus::NotEstimated),
         Some(usage) => (
             Some(crate::pricing::estimate(
                 usage,

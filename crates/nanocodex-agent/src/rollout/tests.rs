@@ -41,8 +41,6 @@ fn recorder(home: &Path) -> RolloutRecorder {
         "019c0d31-c308-7d91-bff4-5dca82d15ac6",
         Path::new("/worktree"),
         "base instructions",
-        "openai",
-        nanocodex_oai_api::MODEL,
         RolloutOrigin {
             kind: "root",
             parent_thread_id: None,
@@ -141,7 +139,6 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
     );
     assert_eq!(session.rollout_path(), path.canonicalize().unwrap());
     let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
-    assert_eq!(snapshot["model"], nanocodex_oai_api::MODEL);
     assert!(snapshot.get("request_prefix").is_none());
     assert_eq!(snapshot["history"].as_array().map(Vec::len), Some(2));
     let history = snapshot["history"].to_string();
@@ -156,48 +153,6 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
             RolloutTranscriptItem::Assistant("visible answer".to_owned()),
         ]
     );
-}
-
-#[test]
-fn loads_the_recorded_provider_model() {
-    let home = tempdir().expect("temporary Codex home");
-    let thread_id = "019c0d31-c308-7d91-bff4-5dca82d15ac6";
-    let directory = home.path().join("sessions/2026/07/24");
-    std::fs::create_dir_all(&directory).expect("create rollout directory");
-    let path = directory.join(format!("rollout-2026-07-24T12-00-00-{thread_id}.jsonl"));
-    let mut file = File::create(&path).expect("create Nanocodex rollout");
-    for value in [
-        serde_json::json!({
-            "timestamp": "2026-07-24T12:00:00Z",
-            "type": "session_meta",
-            "payload": {
-                "id": thread_id,
-                "cwd": home.path(),
-                "model_provider": "anthropic",
-                "model": "claude-opus-5",
-                "history_mode": "legacy",
-                "context_window": {"window_id": "window-1"}
-            }
-        }),
-        serde_json::json!({
-            "timestamp": "2026-07-24T12:00:01Z",
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "retained"}]
-            }
-        }),
-    ] {
-        write_line(&mut file, &value).expect("write rollout line");
-    }
-    file.flush().expect("flush rollout");
-
-    let session = RolloutConfig::new(home.path())
-        .load_session(thread_id)
-        .expect("load Nanocodex rollout");
-    let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
-    assert_eq!(snapshot["model"], "claude-opus-5");
 }
 
 #[test]
@@ -317,8 +272,6 @@ async fn writes_codex_rollout_envelope_and_committed_items() {
         "019c0d31-c308-7d91-bff4-5dca82d15ac6"
     );
     assert_eq!(lines[0]["payload"]["source"], "cli");
-    assert_eq!(lines[0]["payload"]["model_provider"], "openai");
-    assert_eq!(lines[0]["payload"]["model"], nanocodex_oai_api::MODEL);
     assert_eq!(lines[0]["payload"]["history_mode"], "legacy");
     assert!(lines[0]["payload"]["context_window"]["window_id"].is_string());
     assert_eq!(lines[1]["type"], "event_msg");
@@ -417,8 +370,6 @@ async fn resumed_writer_repairs_a_rollout_behind_the_durable_boundary() {
         "019c0d31-c308-7d91-bff4-5dca82d15ac6",
         Path::new("/worktree"),
         "base instructions",
-        "openai",
-        nanocodex_oai_api::MODEL,
         RolloutOrigin {
             kind: "resume",
             parent_thread_id: None,
@@ -497,8 +448,6 @@ async fn fork_metadata_retains_parent_identity() {
         "019c0d31-c308-7d91-bff4-5dca82d15ac6",
         Path::new("/worktree"),
         "base instructions",
-        "openai",
-        nanocodex_oai_api::MODEL,
         RolloutOrigin {
             kind: "fork",
             parent_thread_id: Some(parent),

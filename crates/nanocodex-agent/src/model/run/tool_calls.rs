@@ -109,7 +109,6 @@ impl NestedToolEventObserver<'_> {
 }
 
 async fn execute_code_call(
-    model: &str,
     tools: &ToolRuntime,
     call: &CodeCall,
     owned_context: Option<OwnedToolContext>,
@@ -124,7 +123,7 @@ async fn execute_code_call(
             .await
     } else {
         let context = ToolContext::new(
-            model,
+            MODEL,
             session_id,
             &call.call_id,
             &[],
@@ -161,7 +160,6 @@ where
 
         let gate = Arc::new(RwLock::new(()));
         let events = self.events.clone();
-        let model = Arc::clone(&self.config.model);
         let tool_call_indices = self.tool_call_indices.clone();
         let session_id = events.request_id().to_owned();
         let mut executions = prepared
@@ -170,7 +168,6 @@ where
                 let gate = Arc::clone(&gate);
                 let history = history.clone();
                 let events = events.clone();
-                let model = Arc::clone(&model);
                 let tool_call_indices = tool_call_indices.clone();
                 let session_id = session_id.clone();
                 async move {
@@ -184,7 +181,6 @@ where
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .replace(Instant::now());
                             Self::execute_model_tool_call(
-                                &model,
                                 tools,
                                 &events,
                                 &tool_call_indices,
@@ -205,7 +201,6 @@ where
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .replace(Instant::now());
                             Self::execute_model_tool_call(
-                                &model,
                                 tools,
                                 &events,
                                 &tool_call_indices,
@@ -404,7 +399,6 @@ where
 
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn execute_model_tool_call(
-        model: &str,
         tools: &ToolRuntime,
         events: &EventSink,
         tool_call_indices: &HashMap<Box<str>, u32>,
@@ -440,7 +434,7 @@ where
         }
         if matches!(call.kind, CodeCallKind::Function) && call.namespace.is_some() {
             let context = ToolContext::new(
-                model,
+                MODEL,
                 session_id,
                 &call.call_id,
                 &[],
@@ -478,7 +472,7 @@ where
         if matches!(call.kind, CodeCallKind::ToolSearch) {
             let search_history = history.as_deref().map_or(&[][..], Vec::as_slice);
             let context = ToolContext::new(
-                model,
+                MODEL,
                 session_id,
                 &call.call_id,
                 search_history,
@@ -521,7 +515,7 @@ where
                 metadata: execution.metadata,
             });
         }
-        let owned_context = owned_code_context(model, &call, history, session_id)?;
+        let owned_context = owned_code_context(&call, history, session_id)?;
         let mut observer = NestedToolEventObserver {
             events,
             tool_call_indices,
@@ -531,7 +525,6 @@ where
             error: None,
         };
         let mut execution = execute_code_call(
-            model,
             tools,
             &call,
             owned_context,

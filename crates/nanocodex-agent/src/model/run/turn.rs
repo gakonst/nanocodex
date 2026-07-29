@@ -38,8 +38,8 @@ where
             .conversation
             .previous_response_id()
             .map(str::to_owned);
-        let auto_compact_token_limit = compaction::auto_compact_token_limit(self.config.model())
-            .unwrap_or(CONTEXT_WINDOW_TOKENS);
+        let auto_compact_token_limit =
+            compaction::auto_compact_token_limit(MODEL).unwrap_or(CONTEXT_WINDOW_TOKENS);
         let compacted = {
             let compaction = self.perform_compaction(
                 self.stats.model_calls,
@@ -107,8 +107,8 @@ where
         self.events.emit(
             AgentEventKind::RunStarted,
             RunStarted {
-                mode: self.config.mode(),
-                model: self.config.model(),
+                mode: "openai_model",
+                model: MODEL,
                 reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.thinking.as_str(),
                 transport: self.config.responses_transport.as_str(),
@@ -163,8 +163,8 @@ where
         self.events.emit(
             AgentEventKind::RunStarted,
             RunStarted {
-                mode: self.config.mode(),
-                model: self.config.model(),
+                mode: "openai_model",
+                model: MODEL,
                 reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.thinking.as_str(),
                 transport: self.config.responses_transport.as_str(),
@@ -430,7 +430,6 @@ where
             context.establish(context_snapshot);
             let conversation = ConversationState::new(history)?;
             let mut session = ModelSessionState {
-                model: Arc::clone(&self.config.model),
                 workspace,
                 tools,
                 factory,
@@ -584,7 +583,6 @@ where
         global_instructions: Option<Arc<str>>,
     ) -> ModelCheckpoint {
         ModelCheckpoint {
-            model: Arc::clone(&session.model),
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
             request_prefix: session.factory.profile().shared_prefix(),
@@ -602,7 +600,6 @@ where
     ) {
         session.conversation.commit_tail();
         snapshots.send_replace(Some(ModelCheckpoint {
-            model: Arc::clone(&session.model),
             workspace: session.workspace.clone(),
             conversation: session.conversation.clone(),
             request_prefix: session.factory.profile().shared_prefix(),

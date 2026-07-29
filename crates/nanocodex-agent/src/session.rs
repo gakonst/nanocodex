@@ -1,6 +1,9 @@
 use std::{fmt, sync::Arc};
 
-use nanocodex_oai_api::responses::{MessageRole, ResponseItem};
+use nanocodex_oai_api::{
+    MODEL,
+    responses::{MessageRole, ResponseItem},
+};
 
 pub use nanocodex_oai_api::session::SessionId;
 
@@ -49,7 +52,7 @@ impl CommittedSession {
     pub(crate) fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
             version: SESSION_SNAPSHOT_VERSION,
-            model: self.model.model().to_owned(),
+            model: MODEL.to_owned(),
             lineage_id: self.lineage_id.to_string(),
             prompt_cache_key: self.model.prompt_cache_key().to_owned(),
             workspace: self.model.workspace().to_owned(),
@@ -101,7 +104,6 @@ impl fmt::Debug for SessionSnapshot {
 impl SessionSnapshot {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn from_rollout(
-        model: String,
         thread_id: String,
         workspace: String,
         base_instructions: Option<String>,
@@ -119,7 +121,7 @@ impl SessionSnapshot {
             })?;
         Ok(Self {
             version: SESSION_SNAPSHOT_VERSION,
-            model,
+            model: MODEL.to_owned(),
             lineage_id: thread_id.clone(),
             prompt_cache_key: thread_id,
             workspace,
@@ -143,17 +145,17 @@ impl SessionSnapshot {
         &self.workspace
     }
 
-    pub(crate) fn into_resume(self, expected_model: &str) -> Result<SessionResume> {
+    pub(crate) fn into_resume(self) -> Result<SessionResume> {
         if self.version != SESSION_SNAPSHOT_VERSION {
             return Err(NanocodexError::InvalidSessionSnapshot(format!(
                 "unsupported format version {}; expected {SESSION_SNAPSHOT_VERSION}",
                 self.version
             )));
         }
-        if self.model != expected_model {
+        if self.model != MODEL {
             return Err(NanocodexError::InvalidSessionSnapshot(format!(
-                "snapshot model {} is incompatible with {expected_model}",
-                self.model,
+                "snapshot model {} is incompatible with {MODEL}",
+                self.model
             )));
         }
         if self.lineage_id.trim().is_empty() {
@@ -196,7 +198,6 @@ impl SessionSnapshot {
             .request_prefix
             .map(|request_prefix| {
                 ModelCheckpoint::resume(
-                    Arc::from(self.model.clone()),
                     self.workspace.clone(),
                     request_prefix,
                     Arc::clone(&prompt_cache_key),

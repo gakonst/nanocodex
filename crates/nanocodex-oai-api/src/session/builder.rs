@@ -145,6 +145,7 @@ where
             next_logical_turn: 1,
             thinking: config.thinking,
             fast_mode: config.fast_mode,
+            estimate_cost: config.estimate_cost,
             transport_stats: Arc::new(TransportStats::default()),
         })
     }
@@ -176,6 +177,7 @@ pub struct Session<S> {
     next_logical_turn: u64,
     pub(super) thinking: Thinking,
     pub(super) fast_mode: bool,
+    pub(super) estimate_cost: bool,
     pub(super) transport_stats: Arc<TransportStats>,
 }
 

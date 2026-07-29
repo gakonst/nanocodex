@@ -176,18 +176,12 @@ impl RolloutTurn {
 }
 
 impl RolloutRecorder {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "rollout creation serializes one explicit session metadata boundary"
-    )]
     pub(crate) fn create(
         runtime: &Handle,
         config: &RolloutConfig,
         thread_id: &str,
         cwd: &Path,
         instructions: &str,
-        model_provider: &str,
-        model: &str,
         origin: RolloutOrigin<'_>,
         resume_history_len: Option<usize>,
     ) -> io::Result<Self> {
@@ -226,8 +220,7 @@ impl RolloutRecorder {
             cli_version: env!("CARGO_PKG_VERSION").to_owned(),
             source: "cli",
             thread_source: "user",
-            model_provider,
-            model,
+            model_provider: "openai",
             base_instructions: BaseInstructions {
                 text: instructions.to_owned(),
             },

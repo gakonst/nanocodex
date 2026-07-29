@@ -2,7 +2,7 @@
 //!
 //! Nanocodex's agent loop, rollout, and compaction are written against Responses items
 //! and [`ServerEvent`]. Rather than teach every layer a second protocol, the Anthropic
-//! provider translates at the transport boundary: requests are built from the same
+//! adapter translates at the transport boundary: requests are built from the same
 //! [`ResponseItem`] history, and streaming events are rewritten into [`ServerEvent`].
 
 use std::collections::{BTreeMap, BTreeSet};

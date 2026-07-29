@@ -24,7 +24,7 @@ where
             AgentEventKind::ModelCallStarted,
             ModelCallStarted {
                 call_index,
-                model: self.config.model(),
+                model: MODEL,
                 reasoning_mode: self.config.reasoning_mode.as_str(),
                 effort: self.thinking.as_str(),
                 previous_response_id: previous_response_id.as_deref(),
@@ -41,7 +41,6 @@ where
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
-            self.config.model(),
             call_index,
             self.config.reasoning_mode.as_str(),
             self.thinking.as_str(),
@@ -95,7 +94,7 @@ where
             AgentEventKind::ModelCallCompleted,
             ModelCallCompleted {
                 call_index,
-                model: self.config.model(),
+                model: MODEL,
                 response_id: &response.id,
                 attempt,
                 connection_generation,
@@ -123,7 +122,7 @@ where
             AgentEventKind::ModelCallFailed,
             ModelCallFailed {
                 call_index,
-                model: self.config.model(),
+                model: MODEL,
                 duration_ns,
                 error: &message,
             },
@@ -216,7 +215,6 @@ pub(super) fn model_tool_span(call: &CodeCall, call_index: u32) -> tracing::Span
 }
 
 pub(super) fn owned_code_context(
-    model: &str,
     call: &CodeCall,
     history: Option<Arc<Vec<ResponseItem>>>,
     session_id: &str,
@@ -228,7 +226,7 @@ pub(super) fn owned_code_context(
         detail: "exec call did not have an owned history snapshot",
     })?;
     Ok(Some(OwnedToolContext::new(
-        model,
+        MODEL,
         session_id,
         &call.call_id,
         history,
@@ -265,7 +263,6 @@ pub(super) fn record_indexed_span_content(
 }
 
 pub(super) fn model_call_span(
-    model: &str,
     call_index: u32,
     reasoning_mode: &str,
     reasoning_effort: &str,
@@ -278,7 +275,7 @@ pub(super) fn model_call_span(
         "model.call",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
-        model,
+        model = MODEL,
         reasoning.mode = reasoning_mode,
         reasoning.effort = reasoning_effort,
         model.call_index = call_index,
@@ -318,7 +315,7 @@ pub(super) fn warmup_span(config: &ModelConfig) -> tracing::Span {
         "model.warmup",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
-        model = config.model(),
+        model = MODEL,
         system_prompt.bytes = config.system_prompt().len(),
         warmup.source = tracing::field::Empty,
         status = tracing::field::Empty,
@@ -335,7 +332,6 @@ pub(super) fn warmup_span(config: &ModelConfig) -> tracing::Span {
 }
 
 pub(super) fn compaction_span(
-    model: &str,
     after_model_call_index: u32,
     input_item_count: usize,
     input_bytes: usize,
@@ -345,7 +341,6 @@ pub(super) fn compaction_span(
         "model.compaction",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
-        model,
         after_model_call_index,
         model.input.item_count = input_item_count,
         model.input.bytes = input_bytes,

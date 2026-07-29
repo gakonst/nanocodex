@@ -10,7 +10,7 @@ pub(super) struct RolloutLine<T> {
 #[derive(Serialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub(super) enum RolloutItem<'a> {
-    SessionMeta(&'a SessionMeta<'a>),
+    SessionMeta(&'a SessionMeta),
     #[serde(rename = "event_msg")]
     Event(&'a CodexEvent<'a>),
     ResponseItem(&'a ResponseItem),
@@ -119,7 +119,7 @@ pub(super) struct SessionContextWindow {
 }
 
 #[derive(Serialize)]
-pub(super) struct SessionMeta<'a> {
+pub(super) struct SessionMeta {
     pub(super) session_id: String,
     pub(super) id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,8 +132,7 @@ pub(super) struct SessionMeta<'a> {
     pub(super) cli_version: String,
     pub(super) source: &'static str,
     pub(super) thread_source: &'static str,
-    pub(super) model_provider: &'a str,
-    pub(super) model: &'a str,
+    pub(super) model_provider: &'static str,
     pub(super) base_instructions: BaseInstructions,
     pub(super) history_mode: &'static str,
     pub(super) context_window: SessionContextWindow,
