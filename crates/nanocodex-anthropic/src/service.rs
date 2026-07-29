@@ -178,7 +178,7 @@ impl AnthropicService {
                     }
                     .into());
                 }
-                emit_normalized(&request, &event).await;
+                emit_normalized(&request, &event).await?;
                 match event {
                     ServerEvent::OutputItemDone { item } => done_items.push(item),
                     ServerEvent::Completed { mut response } => {
@@ -261,7 +261,10 @@ fn trace_outbound(body: &str, call_index: Option<u32>, replay: bool) {
     );
 }
 
-async fn emit_normalized(request: &ResponsesAttempt, event: &ServerEvent) {
+async fn emit_normalized(
+    request: &ResponsesAttempt,
+    event: &ServerEvent,
+) -> Result<(), ResponsesServiceError> {
     let normalized = match event {
         ServerEvent::Created { .. } => Some(ResponseEvent::Created),
         ServerEvent::OutputItemAdded { item, .. } => {
@@ -289,8 +292,9 @@ async fn emit_normalized(request: &ResponsesAttempt, event: &ServerEvent) {
         _ => None,
     };
     if let Some(event) = normalized {
-        request.emit(event).await;
+        request.emit(event).await?;
     }
+    Ok(())
 }
 
 const fn is_output_event(event: &ServerEvent) -> bool {

@@ -242,11 +242,11 @@ impl<F> OpenAiBuilder<F> {
     ///
     /// ```no_run
     /// use nanocodex_oai_api::{
-    ///     OpenAi, ResponseError, ResponseEvent,
+    ///     OpenAi, ResponseEvent,
     ///     responses::{ContentItem, MessageRole, ResponseItem},
     ///     tower::{
     ///         GenerationOutput, ResponsePipelineStats, ResponsesAttempt,
-    ///         ResponsesOutput, ResponsesServiceResponse,
+    ///         ResponsesOutput, ResponsesServiceError, ResponsesServiceResponse,
     ///     },
     /// };
     /// use tower::service_fn;
@@ -259,12 +259,12 @@ impl<F> OpenAiBuilder<F> {
     ///                 .emit(ResponseEvent::OutputTextDelta(
     ///                     "served by the adapter".to_owned(),
     ///                 ))
-    ///                 .await;
+    ///                 .await?;
     ///             let item = ResponseItem::message(
     ///                 MessageRole::Assistant,
     ///                 [ContentItem::output_text("served by the adapter")],
     ///             );
-    ///             Ok::<_, ResponseError>(ResponsesServiceResponse::new(
+    ///             Ok::<_, ResponsesServiceError>(ResponsesServiceResponse::new(
     ///                 ResponsesOutput::Generation(GenerationOutput {
     ///                     id: "resp_adapter_01".to_owned(),
     ///                     status: "completed".to_owned(),

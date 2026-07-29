@@ -327,6 +327,8 @@ async fn messages_stream_runs_through_the_owned_agent_without_a_warmup() {
 
     let mut started = None;
     let mut completed = None;
+    let mut assistant_deltas = String::new();
+    let mut assistant_message = None;
     while let Some(event) = events.recv().await {
         if event.kind == AgentEventKind::RunStarted {
             started = Some(
@@ -340,6 +342,16 @@ async fn messages_stream_runs_through_the_owned_agent_without_a_warmup() {
                     .expect("run.completed payload"),
             );
         }
+        if event.kind == AgentEventKind::AssistantDelta {
+            let payload = serde_json::from_str::<serde_json::Value>(event.payload.get())
+                .expect("assistant.delta payload");
+            assistant_deltas.push_str(payload["text"].as_str().expect("assistant delta text"));
+        }
+        if event.kind == AgentEventKind::AssistantMessage {
+            let payload = serde_json::from_str::<serde_json::Value>(event.payload.get())
+                .expect("assistant.message payload");
+            assistant_message = payload["text"].as_str().map(str::to_owned);
+        }
         if event.kind.is_terminal() {
             break;
         }
@@ -349,6 +361,8 @@ async fn messages_stream_runs_through_the_owned_agent_without_a_warmup() {
     assert_eq!(started["model"], nanocodex_oai_api::MODEL);
     assert_eq!(started["transport"], "responses_https_sse");
     assert!(completed.is_some());
+    assert_eq!(assistant_deltas, "Hello from Anthropic.");
+    assert_eq!(assistant_message.as_deref(), Some("Hello from Anthropic."));
 
     let captured = captured.lock().await;
     assert!(captured.target.starts_with("POST /v1/messages "));

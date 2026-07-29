@@ -54,7 +54,8 @@ impl Service<crate::ResponsesAttempt> for Scripted {
         Box::pin(async move {
             request
                 .emit(ResponseEvent::OutputTextDelta(format!("answer-{call}")))
-                .await;
+                .await
+                .expect("emit response delta");
             Ok(
                 ResponsesServiceResponse::new(ResponsesOutput::Generation(GenerationOutput {
                     id: format!("resp-{call}"),
@@ -764,7 +765,8 @@ impl Service<crate::ResponsesAttempt> for FailingScripted {
         Box::pin(async move {
             request
                 .emit(ResponseEvent::OutputTextDelta("uncommitted".to_owned()))
-                .await;
+                .await
+                .expect("emit response delta");
             Err(ResponseError::service(std::io::Error::other(
                 "scripted failure",
             )))

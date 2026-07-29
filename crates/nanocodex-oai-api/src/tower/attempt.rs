@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::{
-    AgentEventKind, EventError, EventSink, ResponseEvent, ResponseItem, ResponsesTransport,
-    Thinking,
+    AgentEventKind, ContentItem, EventError, EventSink, MessagePhase, MessageRole, ResponseEvent,
+    ResponseItem, ResponsesTransport, Thinking,
     responses::{RequestProfile, ResponseHistory, ResponsesInput, WarmupResponse},
     tower::transport_policy::SessionTransport,
 };
@@ -63,6 +63,28 @@ impl ResponsesObserver {
             drop(events.send(event).await);
         }
     }
+}
+
+#[derive(Serialize)]
+struct CallerServiceAssistantDelta<'a> {
+    model_call_index: u32,
+    item_id: Option<&'a str>,
+    phase: Option<MessagePhase>,
+    text: &'a str,
+}
+
+#[derive(Serialize)]
+struct CallerServiceAssistantMessage<'a> {
+    model_call_index: u32,
+    item_id: Option<&'a str>,
+    phase: Option<MessagePhase>,
+    text: String,
+}
+
+#[derive(Serialize)]
+struct CallerServiceReasoningDelta<'a> {
+    model_call_index: u32,
+    text: &'a str,
 }
 
 /// Shared atomic counters for one transport family.
@@ -335,8 +357,60 @@ impl ResponsesAttempt {
     /// use this method when they can expose live provider events. A service
     /// that only returns a completed aggregate may omit it; the managed
     /// response stream synthesizes its terminal completion event.
-    pub async fn emit(&self, event: ResponseEvent) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a corresponding agent event cannot be encoded.
+    pub async fn emit(&self, event: ResponseEvent) -> Result<(), EventError> {
+        self.emit_agent_event(&event)?;
         self.observer.emit_response(event).await;
+        Ok(())
+    }
+
+    fn emit_agent_event(&self, event: &ResponseEvent) -> Result<(), EventError> {
+        let Some(model_call_index) = self.call_index else {
+            return Ok(());
+        };
+        match event {
+            ResponseEvent::OutputTextDelta(text) => self.observer.emit(
+                AgentEventKind::AssistantDelta,
+                CallerServiceAssistantDelta {
+                    model_call_index,
+                    item_id: None,
+                    phase: None,
+                    text,
+                },
+            ),
+            ResponseEvent::ReasoningSummaryDelta { delta, .. } => self.observer.emit(
+                AgentEventKind::ReasoningSummaryDelta,
+                CallerServiceReasoningDelta {
+                    model_call_index,
+                    text: delta,
+                },
+            ),
+            ResponseEvent::OutputItemDone(ResponseItem::Message {
+                id,
+                role: MessageRole::Assistant,
+                content,
+                phase,
+                ..
+            }) => self.observer.emit(
+                AgentEventKind::AssistantMessage,
+                CallerServiceAssistantMessage {
+                    model_call_index,
+                    item_id: id.as_deref(),
+                    phase: *phase,
+                    text: content
+                        .iter()
+                        .filter_map(|part| match part {
+                            ContentItem::OutputText { text, .. } => Some(text.as_ref()),
+                            _ => None,
+                        })
+                        .collect(),
+                },
+            ),
+            _ => Ok(()),
+        }
     }
 
     /// Returns the exact number of input items this physical attempt will send.
