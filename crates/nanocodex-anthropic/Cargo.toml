@@ -1,0 +1,43 @@
+[package]
+name = "nanocodex-anthropic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "Embedded Anthropic Messages adapter for Nanocodex's OpenAI Responses contract"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["-D", "warnings"]
+
+[dependencies]
+base64.workspace = true
+getrandom.workspace = true
+http.workspace = true
+nanocodex-oai-api.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "sync", "time"] }
+tower.workspace = true
+tracing.workspace = true
+url.workspace = true
+web-time.workspace = true
+
+[dev-dependencies]
+nanocodex-agent.workspace = true
+nanocodex-tools.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

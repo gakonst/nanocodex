@@ -1,15 +1,19 @@
 use std::{num::NonZeroU32, sync::Arc};
 
-use super::{AnthropicAuth, service::AnthropicServiceFactory};
-use crate::{
-    OpenAi, OpenAiAuth, ResponsesHistory, ResponsesRetryPolicy, ResponsesTransport,
-    openai::ModelConfig,
+use super::{
+    AnthropicAuth,
+    service::{AnthropicResponsesService, AnthropicService, retrying},
+};
+use nanocodex_oai_api::{
+    OpenAi, OpenAiError,
+    auth::OpenAiAuth,
+    tower::{CallerServiceFactory, ResponsesRetryPolicy},
+    transport::{ResponsesHistory, ResponsesTransport},
 };
 
 /// Default Claude model used by the Messages client.
 pub const ANTHROPIC_MODEL: &str = "claude-opus-5";
 const ANTHROPIC_API_BASE_URL: &str = "https://api.anthropic.com/v1";
-const ANTHROPIC_SYSTEM_PROMPT: &str = include_str!("../../prompts/anthropic_system.md");
 
 /// Namespace for constructing an Anthropic-backed Nanocodex client recipe.
 pub struct Anthropic;
@@ -33,7 +37,12 @@ impl Anthropic {
     /// # Errors
     ///
     /// Returns an error when the supplied credential is unavailable.
-    pub fn client(auth: AnthropicAuth) -> Result<OpenAi<AnthropicServiceFactory>, AnthropicError> {
+    pub fn client(
+        auth: AnthropicAuth,
+    ) -> Result<
+        OpenAi<CallerServiceFactory<impl Fn() -> AnthropicResponsesService + Clone>>,
+        AnthropicError,
+    > {
         Self::builder(auth).build()
     }
 }
@@ -89,7 +98,12 @@ impl AnthropicBuilder {
     /// # Errors
     ///
     /// Returns an error for unavailable credentials or empty endpoint/model policy.
-    pub fn build(self) -> Result<OpenAi<AnthropicServiceFactory>, AnthropicError> {
+    pub fn build(
+        self,
+    ) -> Result<
+        OpenAi<CallerServiceFactory<impl Fn() -> AnthropicResponsesService + Clone>>,
+        AnthropicError,
+    > {
         self.auth.validate()?;
         if self.api_base_url.trim().is_empty() {
             return Err(AnthropicError::InvalidConfiguration(
@@ -107,30 +121,22 @@ impl AnthropicBuilder {
             ));
         }
 
-        let config = ModelConfig {
-            // The custom service owns Anthropic auth. This private placeholder is never
-            // serialized or used by a transport.
-            auth: OpenAiAuth::api_key("anthropic-custom-service"),
-            responses_transport: ResponsesTransport::Https,
-            responses_history: ResponsesHistory::FullReplay,
-            store_responses: false,
-            api_base_url: self.api_base_url.clone(),
-            websocket_url: String::new(),
-            system_prompt: ANTHROPIC_SYSTEM_PROMPT.into(),
-            model: Arc::clone(&self.model),
-            mode: "anthropic_model",
-            estimate_cost: false,
-            ..ModelConfig::default()
-        };
-        let factory = AnthropicServiceFactory::new(
+        let max_attempts = self.max_attempts;
+        let service = AnthropicService::new(
             self.auth,
             self.model,
             self.api_base_url,
             self.max_tokens,
-            self.max_attempts,
             self.http_client,
         );
-        Ok(OpenAi::from_parts(config, factory))
+        OpenAi::builder(OpenAiAuth::api_key("anthropic-oapi-adapter"))
+            .transport(ResponsesTransport::Https)
+            .history(ResponsesHistory::FullReplay)
+            .store(false)
+            .estimate_cost(false)
+            .service(move || retrying(service.clone(), max_attempts))
+            .build()
+            .map_err(Into::into)
     }
 }
 
@@ -140,6 +146,9 @@ pub enum AnthropicError {
     /// Credentials cannot currently provide authorization.
     #[error(transparent)]
     Authorization(#[from] super::AnthropicAuthError),
+    /// The embedded OpenAI Responses client rejected its wrapper configuration.
+    #[error(transparent)]
+    OpenAi(#[from] OpenAiError),
     /// Two client policies cannot be satisfied together.
     #[error("invalid Anthropic client configuration: {0}")]
     InvalidConfiguration(&'static str),

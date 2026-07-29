@@ -316,6 +316,19 @@ impl ResponsesAttempt {
         self.input().iter()
     }
 
+    /// Iterates over the complete authoritative input for a full-history replay.
+    ///
+    /// Responses-compatible services that do not implement provider-side
+    /// continuation IDs can use this view on every physical attempt.
+    pub fn full_replay_input_items(&self) -> impl Iterator<Item = &ResponseItem> {
+        ResponsesInput::history(
+            self.profile.prefix(),
+            &self.full_history,
+            self.tail.as_ref(),
+        )
+        .iter()
+    }
+
     /// Emits one normalized event for callers streaming this attempt.
     ///
     /// Custom Tower services installed with [`crate::OpenAiBuilder::service`]

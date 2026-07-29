@@ -56,7 +56,10 @@ on-demand artifact workflow for that PR.
 ### Anthropic subscription
 
 The native CLI can sign in with the embedded Claude Code OAuth registration
-and then use Anthropic Messages with Claude Code defaults:
+and then use Anthropic Messages with Claude Code defaults. The
+`nanocodex-anthropic` crate installs an in-process Responses-compatible Tower
+service, so the agent continues through the ordinary `OpenAi` client without a
+loopback proxy:
 
 ```sh
 nanocodex auth login --anthropic

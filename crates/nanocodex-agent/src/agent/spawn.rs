@@ -151,7 +151,7 @@ where
         &session_id_text,
         workspace.as_deref(),
         spawner.config.system_prompt(),
-        rollout_provider(spawner.config.mode()),
+        "openai",
         spawner.config.model(),
         origin.kind,
         origin.parent_session_id.as_deref(),
@@ -217,13 +217,6 @@ where
     };
     spawn_driver(driver_task)?;
     Ok((agent, event_stream))
-}
-
-fn rollout_provider(mode: &str) -> &str {
-    match mode {
-        "anthropic_model" => "anthropic",
-        _ => "openai",
-    }
 }
 
 pub(super) fn validate(config: &ModelConfig, prompt_cache_key: Option<&str>) -> Result<()> {

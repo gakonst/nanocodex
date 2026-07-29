@@ -1,37 +1,25 @@
+//! Native Anthropic Messages HTTP/SSE transport.
+
 use std::time::Duration;
 
-use crate::{OpenAiAuthSnapshot, monotonic_now_ns};
 use http::header;
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::Utf8Bytes;
 
-use crate::{EncodedRequest, ResponsesError, socket::ReceivedText};
+use super::{ANTHROPIC_VERSION, AnthropicAuthSnapshot, wire::StreamEvent};
+use nanocodex_oai_api::transport::ResponsesError;
 
 const EVENT_IDLE_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_millis(100)
 } else {
     Duration::from_mins(5)
 };
-const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
-const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 
 #[derive(Clone)]
-pub(crate) struct ResponsesHttp {
+pub(crate) struct AnthropicHttp {
     client: reqwest::Client,
 }
 
-pub(crate) struct ResponsesHttpStream {
-    response: reqwest::Response,
-    decoder: SseDecoder,
-    ended: bool,
-}
-
-pub(crate) struct HttpMetadata {
-    pub(crate) reasoning_included: bool,
-    pub(crate) turn_state: Option<String>,
-}
-
-impl ResponsesHttp {
+impl AnthropicHttp {
     pub(crate) const fn new(client: reqwest::Client) -> Self {
         Self { client }
     }
@@ -39,86 +27,66 @@ impl ResponsesHttp {
     pub(crate) async fn send(
         &self,
         api_base_url: &str,
-        auth: &OpenAiAuthSnapshot,
-        session_id: &str,
-        turn_state: Option<&str>,
-        request: &EncodedRequest,
-    ) -> Result<(ResponsesHttpStream, HttpMetadata), ResponsesError> {
-        let endpoint = format!("{}/responses", api_base_url.trim_end_matches('/'));
+        auth: &AnthropicAuthSnapshot,
+        body: String,
+    ) -> Result<AnthropicStream, ResponsesError> {
+        let endpoint = format!("{}/messages", api_base_url.trim_end_matches('/'));
+        let (auth_header, auth_value) = auth.authorization_header();
         let mut builder = self
             .client
             .post(endpoint)
-            .bearer_auth(auth.bearer())
+            .header(auth_header, auth_value)
+            .header("anthropic-version", ANTHROPIC_VERSION)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "text/event-stream")
-            .header(RESPONSES_LITE_HEADER, "true")
-            .header("session-id", session_id)
-            .header("thread-id", session_id)
-            .header("x-client-request-id", session_id)
             .header(
                 header::USER_AGENT,
-                concat!("nanocodex/", env!("CARGO_PKG_VERSION")),
+                concat!("nanocodex-anthropic/", env!("CARGO_PKG_VERSION")),
             )
-            .body(request.raw().get().to_owned());
-        if let Some(account_id) = auth.account_id() {
-            builder = builder.header("ChatGPT-Account-ID", account_id);
+            .body(body);
+        if let Some(beta) = auth.beta() {
+            builder = builder.header("anthropic-beta", beta);
         }
-        if auth.is_fedramp() {
-            builder = builder.header("X-OpenAI-Fedramp", "true");
-        }
-        if let Some(turn_state) =
-            turn_state.and_then(|value| header::HeaderValue::from_bytes(value.as_bytes()).ok())
-        {
-            builder = builder.header(TURN_STATE_HEADER, turn_state);
-        }
+
         let response = builder.send().await.map_err(map_http_error)?;
         let status = response.status();
         if !status.is_success() {
             let retry_after = retry_after(response.headers());
-            let body = response.text().await.unwrap_or_default();
+            let body = response.text().await.map_err(map_http_error)?;
             return Err(ResponsesError::HttpRejected {
                 status: status.as_u16(),
                 body,
                 retry_after,
             });
         }
-        let metadata = HttpMetadata {
-            reasoning_included: response.headers().contains_key("x-reasoning-included"),
-            turn_state: response
-                .headers()
-                .get(TURN_STATE_HEADER)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned),
-        };
-        Ok((
-            ResponsesHttpStream {
-                response,
-                decoder: SseDecoder::default(),
-                ended: false,
-            },
-            metadata,
-        ))
+        Ok(AnthropicStream {
+            response,
+            decoder: SseDecoder::default(),
+            ended: false,
+        })
     }
 }
 
-impl ResponsesHttpStream {
-    pub(crate) async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<ReceivedText, ResponsesError> {
-        timeout(EVENT_IDLE_TIMEOUT, self.next_text())
+pub(crate) struct AnthropicStream {
+    response: reqwest::Response,
+    decoder: SseDecoder,
+    ended: bool,
+}
+
+impl AnthropicStream {
+    pub(crate) async fn next(&mut self) -> Result<(String, StreamEvent), ResponsesError> {
+        timeout(EVENT_IDLE_TIMEOUT, self.next_inner())
             .await
             .map_err(|_| ResponsesError::IdleTimeout {
                 seconds: EVENT_IDLE_TIMEOUT.as_secs(),
             })?
     }
 
-    async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
+    async fn next_inner(&mut self) -> Result<(String, StreamEvent), ResponsesError> {
         loop {
-            if let Some(text) = self.decoder.next()? {
-                return Ok(ReceivedText {
-                    text: Utf8Bytes::from(text),
-                    received_ns: monotonic_now_ns(),
-                });
+            if let Some(raw) = self.decoder.next()? {
+                let event = serde_json::from_str(&raw).map_err(ResponsesError::InvalidJson)?;
+                return Ok((raw, event));
             }
             if self.ended {
                 return Err(ResponsesError::UnexpectedEnd);
@@ -232,43 +200,13 @@ mod tests {
     #[test]
     fn decodes_fragmented_and_multiline_sse_events() {
         let mut decoder = SseDecoder::default();
-        decoder.push(b": keepalive\n\ndata: {\"type\":\"response.");
-        assert_eq!(decoder.next().unwrap(), None);
-        decoder.push(b"created\"}\r\n\r\ndata: first\ndata: second\n\n");
+        decoder.push(b": keepalive\n\ndata: {\"type\":\"message_");
+        assert!(decoder.next().unwrap().is_none());
+        decoder.push(b"stop\"}\r\n\r\ndata: first\ndata: second\n\n");
         assert_eq!(
             decoder.next().unwrap().as_deref(),
-            Some("{\"type\":\"response.created\"}")
+            Some("{\"type\":\"message_stop\"}")
         );
         assert_eq!(decoder.next().unwrap().as_deref(), Some("first\nsecond"));
-        assert_eq!(decoder.next().unwrap(), None);
-    }
-
-    #[test]
-    fn skips_done_and_flushes_an_unterminated_final_event() {
-        let mut decoder = SseDecoder::default();
-        decoder.push(b"data: [DONE]\n\ndata: final");
-        decoder.finish();
-        assert_eq!(decoder.next().unwrap().as_deref(), Some("final"));
-        assert_eq!(decoder.next().unwrap(), None);
-    }
-
-    #[test]
-    fn decodes_many_events_from_one_chunk_without_repacking_each_line() {
-        let mut body = String::new();
-        for index in 0..4_096 {
-            body.push_str("data: event-");
-            body.push_str(&index.to_string());
-            body.push_str("\n\n");
-        }
-
-        let mut decoder = SseDecoder::default();
-        decoder.push(body.as_bytes());
-        for index in 0..4_096 {
-            assert_eq!(
-                decoder.next().unwrap().as_deref(),
-                Some(format!("event-{index}").as_str())
-            );
-        }
-        assert_eq!(decoder.next().unwrap(), None);
     }
 }

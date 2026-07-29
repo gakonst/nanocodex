@@ -14,6 +14,7 @@ done
 public_packages='[
   "nanocodex",
   "nanocodex-agent",
+  "nanocodex-anthropic",
   "nanocodex-oai-api",
   "nanocodex-observability",
   "nanocodex-tools",
@@ -39,7 +40,7 @@ assert_snapshot() {
   exit 1
 }
 
-expected_packages=$'nanocodex\nnanocodex-agent\nnanocodex-oai-api\nnanocodex-observability\nnanocodex-tools\nnanocodex-tools-macros'
+expected_packages=$'nanocodex\nnanocodex-agent\nnanocodex-anthropic\nnanocodex-oai-api\nnanocodex-observability\nnanocodex-tools\nnanocodex-tools-macros'
 actual_packages="$(
   jq -r '
     .packages[]
@@ -49,7 +50,7 @@ actual_packages="$(
 )"
 assert_snapshot "public package set" "$expected_packages" "$actual_packages"
 
-expected_edges=$'nanocodex\tnanocodex-agent\tnormal\tall\nnanocodex\tnanocodex-oai-api\tnormal\tall\nnanocodex\tnanocodex-observability\tnormal\tcfg(not(target_family = "wasm"))\nnanocodex\tnanocodex-tools\tnormal\tall\nnanocodex-agent\tnanocodex-oai-api\tnormal\tall\nnanocodex-agent\tnanocodex-tools\tnormal\tall\nnanocodex-tools\tnanocodex-oai-api\tnormal\tall\nnanocodex-tools\tnanocodex-tools-macros\tnormal\tcfg(not(target_family = "wasm"))'
+expected_edges=$'nanocodex\tnanocodex-agent\tnormal\tall\nnanocodex\tnanocodex-oai-api\tnormal\tall\nnanocodex\tnanocodex-observability\tnormal\tcfg(not(target_family = "wasm"))\nnanocodex\tnanocodex-tools\tnormal\tall\nnanocodex-agent\tnanocodex-oai-api\tnormal\tall\nnanocodex-agent\tnanocodex-tools\tnormal\tall\nnanocodex-anthropic\tnanocodex-oai-api\tnormal\tall\nnanocodex-tools\tnanocodex-oai-api\tnormal\tall\nnanocodex-tools\tnanocodex-tools-macros\tnormal\tcfg(not(target_family = "wasm"))'
 actual_edges="$(
   jq -r --argjson public "$public_packages" '
     .packages[]

@@ -1,6 +1,6 @@
 //! Anthropic credential resolution.
 //!
-//! Nanocodex accepts explicit environment credentials or its owned, refreshing OAuth
+//! The adapter accepts explicit environment credentials or its owned, refreshing OAuth
 //! login. Claude Code does not expose a supported command or profile store for another
 //! client to borrow its access token, so no CLI credential scraping is attempted.
 

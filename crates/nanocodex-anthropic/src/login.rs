@@ -1,6 +1,6 @@
 //! Nanocodex-owned Anthropic OAuth login and credential store.
 //!
-//! This mirrors [`crate::ChatGptLogin`]: an authorization-code login with PKCE over a
+//! This mirrors [`nanocodex_oai_api::auth::ChatGptLogin`]: an authorization-code login with PKCE over a
 //! loopback callback, an atomically written `0600` credential file, and in-process
 //! refresh with the same revision-counted concurrency handling. Once a session is
 //! logged in this way, no external CLI is involved at runtime.

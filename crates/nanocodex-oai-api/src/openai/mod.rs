@@ -57,9 +57,6 @@ impl<F> OpenAi<F>
 where
     F: ResponsesServiceFactory,
 {
-    pub(crate) const fn from_parts(config: ModelConfig, factory: F) -> Self {
-        Self { config, factory }
-    }
     /// Starts a client-side managed session with stable developer
     /// instructions.
     ///
@@ -164,6 +161,16 @@ impl<F> OpenAiBuilder<F> {
     #[must_use]
     pub const fn fast_mode(mut self, enabled: bool) -> Self {
         self.config.fast_mode = enabled;
+        self
+    }
+
+    /// Controls whether reported usage is priced with the built-in OpenAI rate table.
+    ///
+    /// Custom Responses-compatible services should disable this when their
+    /// upstream model is not covered by that table.
+    #[must_use]
+    pub const fn estimate_cost(mut self, enabled: bool) -> Self {
+        self.config.estimate_cost = enabled;
         self
     }
 

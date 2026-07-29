@@ -12,9 +12,10 @@ use serde_json::{Map, Value};
 
 use super::wire::{
     ContentBlock, Delta, ImageSource, InputBlock, InputMessage, MessageUsage, MessagesRequest,
-    OutputConfig, Role, StreamEvent, SystemBlock, ThinkingConfig, ToolSpec,
+    OutputConfig, Role, StreamEvent, SystemBlock, ThinkingConfig, ToolResultBlock,
+    ToolResultContent, ToolSpec,
 };
-use crate::{
+use nanocodex_oai_api::{
     Thinking,
     responses::{
         CompletedResponse, ContentItem, FunctionOutputBody, FunctionOutputContent,
@@ -51,6 +52,9 @@ pub fn build_request<'a>(
     // request's tool set is the union of the explicit list and any declared inline.
     let mut specs: Vec<ToolSpec> = tools.iter().filter_map(tool_spec).collect();
     for item in items {
+        if is_embedded_openai_system_prompt(item) {
+            continue;
+        }
         if let ResponseItem::AdditionalTools { tools, .. } = item {
             for tool in tools {
                 if !specs.iter().any(|spec| spec.name == tool.name())
@@ -243,7 +247,7 @@ fn append_item(builder: &mut MessageBuilder, system: &mut Vec<SystemBlock>, item
                 Role::User,
                 InputBlock::ToolResult {
                     tool_use_id: call_id.to_string(),
-                    content: flatten_output(output),
+                    content: tool_result_content(output),
                     is_error: matches!(status, Some(ItemStatus::Failed)),
                 },
             );
@@ -345,19 +349,19 @@ const fn content_text(item: &ContentItem) -> Option<&str> {
 
 /// Accepts both remote URLs and `data:` URIs, which Anthropic models differently.
 fn image_block(image_url: &str) -> Option<InputBlock> {
+    image_source(image_url).map(|source| InputBlock::Image { source })
+}
+
+fn image_source(image_url: &str) -> Option<ImageSource> {
     let Some(rest) = image_url.strip_prefix("data:") else {
-        return Some(InputBlock::Image {
-            source: ImageSource::Url {
-                url: image_url.to_owned(),
-            },
+        return Some(ImageSource::Url {
+            url: image_url.to_owned(),
         });
     };
     let (media_type, data) = rest.split_once(";base64,")?;
-    Some(InputBlock::Image {
-        source: ImageSource::Base64 {
-            media_type: media_type.to_owned(),
-            data: data.to_owned(),
-        },
+    Some(ImageSource::Base64 {
+        media_type: media_type.to_owned(),
+        data: data.to_owned(),
     })
 }
 
@@ -376,20 +380,40 @@ fn parse_arguments(arguments: &str) -> Value {
     Value::Object(raw)
 }
 
-fn flatten_output(output: &FunctionOutputBody) -> String {
+fn tool_result_content(output: &FunctionOutputBody) -> ToolResultContent {
     match output {
-        FunctionOutputBody::Text(text) => text.to_string(),
-        FunctionOutputBody::Content(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                FunctionOutputContent::InputText { text } => Some(text.to_string()),
-                FunctionOutputContent::EncryptedContent { .. }
-                | FunctionOutputContent::InputImage { .. }
-                | FunctionOutputContent::InputAudio { .. } => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        FunctionOutputBody::Text(text) => ToolResultContent::Text(text.to_string()),
+        FunctionOutputBody::Content(items) => ToolResultContent::Blocks(
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    FunctionOutputContent::InputText { text } => Some(ToolResultBlock::Text {
+                        text: text.to_string(),
+                    }),
+                    FunctionOutputContent::InputImage { image_url, .. } => {
+                        image_source(image_url).map(|source| ToolResultBlock::Image { source })
+                    }
+                    FunctionOutputContent::EncryptedContent { .. }
+                    | FunctionOutputContent::InputAudio { .. } => None,
+                })
+                .collect(),
+        ),
     }
+}
+
+fn is_embedded_openai_system_prompt(item: &ResponseItem) -> bool {
+    const OPENAI_SYSTEM_PROMPT_PREFIX: &str = "You are Codex, an agent based on GPT-5.";
+
+    matches!(
+        item,
+        ResponseItem::Message {
+            role: MessageRole::Developer,
+            content,
+            ..
+        } if content.iter().any(|item| {
+            content_text(item).is_some_and(|text| text.starts_with(OPENAI_SYSTEM_PROMPT_PREFIX))
+        })
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -739,12 +763,14 @@ fn custom_tool_input(arguments: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_MAX_TOKENS, StreamTranslator, build_request};
-    use crate::{
+    use crate::wire::{
+        InputBlock, Role, StreamEvent, ThinkingConfig, ToolResultBlock, ToolResultContent,
+    };
+    use nanocodex_oai_api::{
         Thinking,
-        anthropic::wire::{InputBlock, Role, StreamEvent, ThinkingConfig},
         responses::{
-            ContentItem, FunctionOutputBody, ItemStatus, MessageRole, ResponseItem, ServerEvent,
-            ToolDefinition,
+            ContentItem, FunctionOutputBody, FunctionOutputContent, ItemStatus, MessageRole,
+            ResponseItem, ServerEvent, ToolDefinition,
         },
     };
 
@@ -886,6 +912,75 @@ mod tests {
             panic!("expected a tool result");
         };
         assert!(is_error);
+    }
+
+    #[test]
+    fn image_tool_results_remain_multimodal() {
+        let items = vec![
+            user("inspect it"),
+            call("toolu_1", "image", "{}"),
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "toolu_1".into(),
+                output: FunctionOutputBody::Content(vec![
+                    FunctionOutputContent::InputText {
+                        text: "screenshot".into(),
+                    },
+                    FunctionOutputContent::InputImage {
+                        image_url: "data:image/png;base64,AAAA".into(),
+                        detail: None,
+                    },
+                ]),
+                caller: None,
+                status: None,
+                created_by: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ];
+        let request = build_request(
+            "claude-opus-5",
+            DEFAULT_MAX_TOKENS,
+            Thinking::High,
+            "",
+            &items,
+            &[],
+        );
+        let InputBlock::ToolResult {
+            content: ToolResultContent::Blocks(blocks),
+            ..
+        } = &request.messages[2].content[0]
+        else {
+            panic!("expected multimodal tool result");
+        };
+        assert!(matches!(blocks[0], ToolResultBlock::Text { .. }));
+        assert!(matches!(blocks[1], ToolResultBlock::Image { .. }));
+    }
+
+    #[test]
+    fn embedded_openai_prompt_is_replaced_by_the_anthropic_prompt() {
+        let items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: MessageRole::Developer,
+                content: vec![ContentItem::InputText {
+                    text: "You are Codex, an agent based on GPT-5. Internal details.".into(),
+                }],
+                status: None,
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            user("hello"),
+        ];
+        let request = build_request(
+            "claude-opus-5",
+            DEFAULT_MAX_TOKENS,
+            Thinking::High,
+            "You are Claude Code.",
+            &items,
+            &[],
+        );
+        assert_eq!(request.system.len(), 1);
+        assert_eq!(request.system[0].text, "You are Claude Code.");
     }
 
     #[test]

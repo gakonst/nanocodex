@@ -1,3 +1,6 @@
+#![doc = include_str!("../README.md")]
+#![deny(missing_docs, rustdoc::broken_intra_doc_links)]
+
 //! Anthropic Messages client, OAuth login, and Responses-model translation.
 
 mod auth;
@@ -22,4 +25,4 @@ pub use login::{
 pub use resolve::{
     AnthropicAuthStatus, AnthropicSetupError, anthropic_auth_status, load_anthropic_auth,
 };
-pub use service::{AnthropicService, AnthropicServiceFactory};
+pub use service::{AnthropicResponsesService, AnthropicService};

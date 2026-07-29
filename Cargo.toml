@@ -5,6 +5,7 @@ members = [
     "bin/nanousd-api",
     "crates/nanocodex",
     "crates/nanocodex-agent",
+    "crates/nanocodex-anthropic",
     "crates/experimental/nanocodex-vm",
     "crates/nanocodex-oai-api",
     "crates/nanocodex-observability",
@@ -62,6 +63,7 @@ krun = { package = "libkrun", version = "=2.0.0-dev", git = "https://github.com/
 mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "5caad442edeab796821b7f3bb009ab6945106e35", default-features = false }
 nanocodex = { version = "0.3.0", path = "crates/nanocodex" }
 nanocodex-agent = { version = "0.3.0", path = "crates/nanocodex-agent" }
+nanocodex-anthropic = { version = "0.3.0", path = "crates/nanocodex-anthropic" }
 nanocodex-vm = { version = "0.3.0", path = "crates/experimental/nanocodex-vm" }
 nanocodex-oai-api = { version = "0.3.0", path = "crates/nanocodex-oai-api" }
 nanocodex-observability = { version = "0.3.0", path = "crates/nanocodex-observability" }

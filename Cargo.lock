@@ -4374,6 +4374,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocodex-anthropic"
+version = "0.3.0"
+dependencies = [
+ "base64",
+ "getrandom 0.4.3",
+ "http",
+ "nanocodex-agent",
+ "nanocodex-oai-api",
+ "nanocodex-tools",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+ "web-time",
+]
+
+[[package]]
 name = "nanocodex-bin"
 version = "0.3.0"
 dependencies = [
@@ -4396,6 +4419,7 @@ dependencies = [
  "image",
  "mpp",
  "nanocodex",
+ "nanocodex-anthropic",
  "nanocodex-observability",
  "nanocodex-tools",
  "nanocodex-vm",

@@ -7,7 +7,7 @@ use std::{
 use clap::{ArgAction, Args, ValueEnum, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
 use nanocodex::{
-    AgentEvents, Anthropic, Nanocodex, OpenAi, ReasoningMode, Thinking, Tools,
+    AgentEvents, Nanocodex, OpenAi, ReasoningMode, Thinking, Tools,
     agent::{
         rollout::{DurableSession, RolloutConfig},
         session::{SessionId, SessionSnapshot},
@@ -15,13 +15,13 @@ use nanocodex::{
     oai::{
         __private::ResponsesServiceFactory,
         ResponseError,
-        anthropic::{ANTHROPIC_MODEL, load_anthropic_auth},
         auth::{OpenAiAuth, OpenAiAuthMode},
         tower::{ResponsesAttempt, ResponsesServiceResponse},
         transport::ResponsesTransport,
     },
     tools::mcp::McpHandle,
 };
+use nanocodex_anthropic::{ANTHROPIC_MODEL, Anthropic, load_anthropic_auth};
 use tower::Service;
 
 use crate::mcp::{ConfiguredMcp, McpArgs};

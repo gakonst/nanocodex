@@ -2,12 +2,10 @@ use std::{path::PathBuf, process::Command};
 
 use clap::{Args, Subcommand};
 use eyre::{Result, WrapErr, eyre};
-use nanocodex::oai::{
-    anthropic::{
-        AnthropicLogin, AnthropicOAuthConfig, anthropic_auth_status, default_anthropic_auth_file,
-        logout_anthropic,
-    },
-    auth::{ChatGptLogin, chatgpt_auth_status, logout_chatgpt},
+use nanocodex::oai::auth::{ChatGptLogin, chatgpt_auth_status, logout_chatgpt};
+use nanocodex_anthropic::{
+    AnthropicLogin, AnthropicOAuthConfig, anthropic_auth_status, default_anthropic_auth_file,
+    logout_anthropic,
 };
 
 use crate::config::default_auth_file;

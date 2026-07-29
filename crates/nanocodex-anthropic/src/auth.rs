@@ -1,6 +1,6 @@
 //! Anthropic authorization shared by one agent family and its branches.
 //!
-//! This mirrors [`crate::OpenAiAuth`]: the concrete credential store, OAuth login, and
+//! This mirrors [`nanocodex_oai_api::OpenAiAuth`]: the concrete credential store, OAuth login, and
 //! refresh live beside this transport-free handle, which the service layer consumes.
 
 use std::{

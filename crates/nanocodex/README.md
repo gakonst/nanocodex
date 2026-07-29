@@ -40,39 +40,12 @@ not wait for the turn's optional event stream to be consumed. Follow-on prompts
 reuse the same retained context and transport without asking the caller to
 manage response IDs or history.
 
-### Anthropic and Claude subscriptions
-
-Native callers can substitute the concrete Anthropic recipe without changing
-the owned agent lifecycle:
-
-```rust,no_run
-use nanocodex::{Anthropic, Nanocodex};
-use nanocodex::oai::anthropic::load_anthropic_auth;
-
-# async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let client = Anthropic::client(load_anthropic_auth().await?)?;
-let (agent, _events) = Nanocodex::builder(client)
-    .workspace(std::env::current_dir()?)
-    .build()?;
-
-let result = agent.prompt("Inspect the repository status.").await?.await?;
-println!("{}", result.final_message());
-# Ok(())
-# }
-```
-
-`load_anthropic_auth` checks `ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN`, then the Nanocodex-owned subscription login. The
-Anthropic recipe uses HTTPS full-history replay, Claude Code instructions,
-Messages streaming, and Anthropic authentication recovery while retaining the
-same typed turns, events, tools, snapshots, and branching API.
-
 ## Usage and USD estimates
 
 Every completed turn reports aggregate provider usage. Cost remains explicit:
 Nanocodex applies OpenAI's published `gpt-5.6-sol` standard or priority rates
-automatically. Anthropic usage retains exact token totals but is marked
-`not_estimated`; omitted provider usage remains distinguishable from zero.
+automatically. A custom Responses-compatible service can disable that estimate;
+omitted provider usage remains distinguishable from zero.
 
 ```rust,no_run
 use nanocodex::{Nanocodex, OpenAi};

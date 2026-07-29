@@ -1,4 +1,4 @@
-//! Wire types for the Anthropic Messages API.
+//! Private wire types for the Anthropic Messages API.
 //!
 //! Request types serialize; streaming event types deserialize. Deserialized types
 //! deliberately tolerate unknown fields so that new server-side block and delta kinds
@@ -96,7 +96,7 @@ pub enum InputBlock {
     },
     ToolResult {
         tool_use_id: String,
-        content: String,
+        content: ToolResultContent,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
@@ -107,6 +107,20 @@ pub enum InputBlock {
     RedactedThinking {
         data: String,
     },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum ToolResultContent {
+    Text(String),
+    Blocks(Vec<ToolResultBlock>),
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolResultBlock {
+    Text { text: String },
+    Image { source: ImageSource },
 }
 
 #[derive(Clone, Debug, Serialize)]

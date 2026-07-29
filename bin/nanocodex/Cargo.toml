@@ -45,6 +45,7 @@ http-body-util = { workspace = true, optional = true }
 hudsucker = { workspace = true, optional = true }
 image.workspace = true
 nanocodex.workspace = true
+nanocodex-anthropic.workspace = true
 nanocodex-observability.workspace = true
 nanocodex-vm.workspace = true
 nix = { workspace = true, optional = true }
