@@ -77,6 +77,7 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
                 "id": thread_id,
                 "cwd": home.path(),
                 "originator": "codex-tui",
+                "base_instructions": {"text": "retained Codex instructions"},
                 "history_mode": "legacy",
                 "context_window": {"window_id": "window-1"}
             }
@@ -91,6 +92,18 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
                 "model": "gpt-5.5",
                 "effort": "high",
                 "summary": "auto"
+            }
+        }),
+        serde_json::json!({
+            "timestamp": "2026-07-24T12:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "# AGENTS.md instructions for /worktree\n\ninjected context"
+                }]
             }
         }),
         serde_json::json!({
@@ -196,6 +209,11 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
     );
     assert_eq!(session.rollout_path(), path.canonicalize().unwrap());
     assert_eq!(session.model(), Model::Sol);
+    assert!(!session.recorded_by_nanocodex());
+    assert_eq!(
+        session.base_instructions(),
+        Some("retained Codex instructions")
+    );
     let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
     assert!(snapshot.get("request_prefix").is_none());
     assert_eq!(snapshot["history"].as_array().map(Vec::len), Some(2));
@@ -211,6 +229,86 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
             RolloutTranscriptItem::Assistant("visible answer".to_owned()),
         ]
     );
+}
+
+#[test]
+fn session_listing_deduplicates_roots_and_omits_child_rollouts() {
+    let home = tempdir().expect("temporary Codex home");
+    let root_id = "019c0d31-c308-7d91-bff4-5dca82d15ac6";
+    let child_id = "019c0d31-c308-7d91-bff4-5dca82d15ac7";
+    let active = home.path().join("sessions/2026/07/24");
+    let archived = home.path().join("archived_sessions");
+    std::fs::create_dir_all(&active).expect("create active directory");
+    std::fs::create_dir_all(&archived).expect("create archive directory");
+
+    let root_path = active.join(format!("rollout-2026-07-24T12-00-00-{root_id}.jsonl"));
+    let mut root = File::create(&root_path).expect("create root rollout");
+    for value in [
+        serde_json::json!({
+            "type": "session_meta",
+            "payload": {
+                "id": root_id,
+                "cwd": home.path(),
+                "source": "cli",
+                "thread_source": "user",
+                "history_mode": "legacy"
+            }
+        }),
+        serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "# AGENTS.md instructions for /worktree"}]
+            }
+        }),
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "actual task"}
+        }),
+    ] {
+        write_line(&mut root, &value).expect("write root rollout");
+    }
+    root.flush().expect("flush root rollout");
+    std::fs::copy(
+        &root_path,
+        archived.join(format!("rollout-2026-07-24T13-00-00-{root_id}.jsonl")),
+    )
+    .expect("copy duplicate root rollout");
+
+    let child_path = active.join(format!("rollout-2026-07-24T12-30-00-{child_id}.jsonl"));
+    let mut child = File::create(child_path).expect("create child rollout");
+    for value in [
+        serde_json::json!({
+            "type": "session_meta",
+            "payload": {
+                "id": child_id,
+                "cwd": home.path(),
+                "parent_thread_id": root_id,
+                "source": {"subagent": {"other": "guardian"}},
+                "thread_source": "subagent",
+                "history_mode": "legacy"
+            }
+        }),
+        serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "internal child task"}]
+            }
+        }),
+    ] {
+        write_line(&mut child, &value).expect("write child rollout");
+    }
+    child.flush().expect("flush child rollout");
+
+    let sessions = RolloutConfig::new(home.path())
+        .list_sessions()
+        .expect("list root sessions");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].thread_id(), root_id);
+    assert_eq!(sessions[0].first_prompt(), Some("actual task"));
 }
 
 #[test]

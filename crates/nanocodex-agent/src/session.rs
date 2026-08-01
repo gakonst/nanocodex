@@ -160,6 +160,10 @@ impl SessionSnapshot {
         &self.workspace
     }
 
+    pub(crate) fn base_instructions(&self) -> Option<&str> {
+        self.base_instructions.as_deref()
+    }
+
     pub(crate) fn into_resume(self) -> Result<SessionResume> {
         if self.version != SESSION_SNAPSHOT_VERSION {
             return Err(NanocodexError::InvalidSessionSnapshot(format!(

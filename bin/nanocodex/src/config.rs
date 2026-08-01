@@ -41,6 +41,7 @@ struct SessionBuild {
     session_id: Option<SessionId>,
     snapshot: Option<SessionSnapshot>,
     rollout: Option<RolloutConfig>,
+    base_instructions: Option<String>,
 }
 
 #[derive(Args, Clone)]
@@ -285,7 +286,7 @@ impl AgentArgs {
         } else {
             builder.tools(tools)
         };
-        let builder = if let Some(instructions) = self.instructions {
+        let builder = if let Some(instructions) = self.instructions.or(session.base_instructions) {
             builder.instructions(instructions)
         } else {
             builder
@@ -316,6 +317,7 @@ fn prepare_session_build(
             session_id: None,
             snapshot: None,
             rollout: rollouts.then(|| RolloutConfig::new(codex_home)),
+            base_instructions: None,
         });
     };
     let restored = Path::new(session.workspace())
@@ -333,16 +335,27 @@ fn prepare_session_build(
             ));
         }
     }
+    let base_instructions = session.base_instructions().map(str::to_owned);
+    let continues_in_place = session.recorded_by_nanocodex();
     let (session_id, snapshot, rollout) = session.into_parts();
     Ok(SessionBuild {
         workspace: restored,
-        session_id: Some(
-            session_id
-                .parse()
-                .wrap_err("resumed Codex thread ID is not UUIDv7")?,
-        ),
+        session_id: continues_in_place
+            .then(|| {
+                session_id
+                    .parse()
+                    .wrap_err("resumed Codex thread ID is not UUIDv7")
+            })
+            .transpose()?,
         snapshot: Some(snapshot),
-        rollout: rollouts.then_some(rollout),
+        rollout: rollouts.then(|| {
+            if continues_in_place {
+                rollout
+            } else {
+                RolloutConfig::new(codex_home)
+            }
+        }),
+        base_instructions,
     })
 }
 

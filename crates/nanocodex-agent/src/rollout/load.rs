@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 /// Lightweight metadata used to discover a resumable rollout before loading it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,6 +49,7 @@ pub struct DurableSession {
     model: Model,
     snapshot: SessionSnapshot,
     transcript: Vec<RolloutTranscriptItem>,
+    recorded_by_nanocodex: bool,
 }
 
 impl DurableSession {
@@ -81,6 +83,7 @@ impl DurableSession {
             model: materialized.model,
             snapshot,
             transcript: materialized.transcript,
+            recorded_by_nanocodex: materialized.recorded_by_nanocodex,
         })
     }
 
@@ -94,6 +97,18 @@ impl DurableSession {
     #[must_use]
     pub fn workspace(&self) -> &str {
         self.snapshot.workspace()
+    }
+
+    /// Returns the stable instructions retained by the originating session.
+    #[must_use]
+    pub fn base_instructions(&self) -> Option<&str> {
+        self.snapshot.base_instructions()
+    }
+
+    /// Returns whether this rollout can be continued in place by Nanocodex.
+    #[must_use]
+    pub const fn recorded_by_nanocodex(&self) -> bool {
+        self.recorded_by_nanocodex
     }
 
     /// Returns the model selected at the latest committed rollout boundary.
@@ -159,10 +174,17 @@ pub(super) fn list_sessions(codex_home: &Path) -> io::Result<Vec<DurableSessionS
     ] {
         collect_rollout_paths(&root, &mut paths)?;
     }
-    let mut sessions = Vec::with_capacity(paths.len());
+    let mut sessions = HashMap::with_capacity(paths.len());
     for path in paths {
         match summarize_rollout(&path) {
-            Ok(session) => sessions.push(session),
+            Ok(session) => {
+                let replace = sessions.get(session.thread_id()).is_none_or(
+                    |existing: &DurableSessionSummary| session.updated_at() > existing.updated_at(),
+                );
+                if replace {
+                    sessions.insert(session.thread_id().to_owned(), session);
+                }
+            }
             Err(error)
                 if matches!(
                     error.kind(),
@@ -171,6 +193,7 @@ pub(super) fn list_sessions(codex_home: &Path) -> io::Result<Vec<DurableSessionS
             Err(error) => return Err(error),
         }
     }
+    let mut sessions = sessions.into_values().collect::<Vec<_>>();
     sessions.sort_by(|left, right| {
         right
             .updated_at
@@ -216,7 +239,8 @@ fn summarize_rollout(path: &Path) -> io::Result<DurableSessionSummary> {
     })?;
     let mut thread_id = None;
     let mut workspace = None;
-    let mut first_prompt = None;
+    let mut first_event_prompt = None;
+    let mut first_response_prompt = None;
     for (index, line) in BufReader::new(File::open(path)?).lines().enumerate() {
         let line = line?;
         let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
@@ -243,25 +267,27 @@ fn summarize_rollout(path: &Path) -> io::Result<DurableSessionSummary> {
                     ));
                 }
                 validate_legacy_history_mode(payload)?;
+                validate_root_session(payload)?;
                 thread_id = id.map(str::to_owned);
                 workspace = payload
                     .get("cwd")
                     .and_then(serde_json::Value::as_str)
                     .map(PathBuf::from);
             }
-            Some("event_msg") if first_prompt.is_none() => {
+            Some("event_msg") if first_event_prompt.is_none() => {
                 if let Some(RolloutTranscriptItem::User(prompt)) =
                     visible_rollout_event(&value["payload"])
                 {
-                    first_prompt = Some(prompt);
+                    first_event_prompt = Some(prompt);
                 }
             }
-            Some("response_item") if first_prompt.is_none() => {
-                first_prompt = visible_response_prompt(&value["payload"]);
+            Some("response_item") if first_response_prompt.is_none() => {
+                first_response_prompt = visible_response_prompt(&value["payload"])
+                    .filter(|prompt| !is_injected_context(prompt));
             }
             _ => {}
         }
-        if workspace.is_some() && first_prompt.is_some() {
+        if workspace.is_some() && first_event_prompt.is_some() {
             break;
         }
     }
@@ -283,21 +309,52 @@ fn summarize_rollout(path: &Path) -> io::Result<DurableSessionSummary> {
             ),
         )
     })?;
-    let first_prompt = first_prompt.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Codex rollout {} has no resumable user prompt",
-                path.display()
-            ),
-        )
-    })?;
+    let first_prompt = first_event_prompt
+        .or(first_response_prompt)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Codex rollout {} has no resumable user prompt",
+                    path.display()
+                ),
+            )
+        })?;
     Ok(DurableSessionSummary {
         thread_id,
         workspace,
         updated_at: std::fs::metadata(path)?.modified()?,
         first_prompt: Some(first_prompt),
     })
+}
+
+fn validate_root_session(payload: &serde_json::Value) -> io::Result<()> {
+    let is_child = payload
+        .get("parent_thread_id")
+        .is_some_and(|value| !value.is_null())
+        || payload
+            .get("forked_from_id")
+            .is_some_and(|value| !value.is_null())
+        || payload
+            .get("thread_source")
+            .and_then(serde_json::Value::as_str)
+            == Some("subagent")
+        || payload
+            .get("source")
+            .and_then(|source| source.get("subagent"))
+            .is_some();
+    if is_child {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "child and fork rollouts are not top-level resumable sessions",
+        ));
+    }
+    Ok(())
+}
+
+fn is_injected_context(prompt: &str) -> bool {
+    prompt.starts_with("# AGENTS.md instructions for ")
+        || prompt.starts_with("<environment_context>")
 }
 
 fn visible_response_prompt(payload: &serde_json::Value) -> Option<String> {
@@ -365,10 +422,16 @@ fn find_rollout_path(codex_home: &Path, thread_id: &str) -> io::Result<Option<Pa
 fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedRollout> {
     let mut workspace = None;
     let mut base_instructions = None;
+    let mut recorded_by_nanocodex = false;
     let mut history = Vec::new();
+    let mut pending_history = Vec::new();
     let mut transcript = Vec::new();
+    let mut pending_transcript = Vec::new();
     let mut context_baseline = None;
+    let mut pending_context_baseline = None;
     let mut model = Model::Sol;
+    let mut pending_model = None;
+    let mut active_turn = false;
     for (index, line) in BufReader::new(File::open(path)?).lines().enumerate() {
         let line = line?;
         let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
@@ -394,6 +457,10 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 base_instructions = payload["base_instructions"]["text"]
                     .as_str()
                     .map(str::to_owned);
+                recorded_by_nanocodex = payload
+                    .get("originator")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("nanocodex");
                 workspace = Some(
                     payload
                         .get("cwd")
@@ -408,8 +475,13 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 );
             }
             Some("response_item") => {
+                let target_transcript = if active_turn {
+                    &mut pending_transcript
+                } else {
+                    &mut transcript
+                };
                 if let Some(item) = visible_tool_call(&value["payload"]) {
-                    transcript.push(item);
+                    target_transcript.push(item);
                 }
                 let item = serde_json::from_value(value["payload"].clone()).map_err(|error| {
                     io::Error::new(
@@ -421,7 +493,11 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                         ),
                     )
                 })?;
-                history.push(item);
+                if active_turn {
+                    pending_history.push(item);
+                } else {
+                    history.push(item);
+                }
             }
             Some("compacted") => {
                 history = serde_json::from_value(value["payload"]["replacement_history"].clone())
@@ -435,34 +511,79 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                         ),
                     )
                 })?;
+                pending_history.clear();
                 context_baseline = None;
+                pending_context_baseline = None;
             }
             Some("turn_context") => {
                 if let Some(selected) = value["payload"]["model"]
                     .as_str()
                     .and_then(|model| model.parse().ok())
                 {
-                    model = selected;
+                    if active_turn {
+                        pending_model = Some(selected);
+                    } else {
+                        model = selected;
+                    }
                 }
             }
             Some("world_state") => {
                 if let Some(state) = value["payload"]["state"].get("nanocodex_context") {
-                    context_baseline =
-                        Some(serde_json::from_value(state.clone()).map_err(|error| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "failed to decode context snapshot at {} line {}: {error}",
-                                    path.display(),
-                                    index + 1
-                                ),
-                            )
-                        })?);
+                    let state = serde_json::from_value(state.clone()).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "failed to decode context snapshot at {} line {}: {error}",
+                                path.display(),
+                                index + 1
+                            ),
+                        )
+                    })?;
+                    if active_turn {
+                        pending_context_baseline = Some(state);
+                    } else {
+                        context_baseline = Some(state);
+                    }
                 }
             }
             Some("event_msg") => {
-                if let Some(item) = visible_rollout_event(&value["payload"]) {
-                    transcript.push(item);
+                let payload = &value["payload"];
+                match payload.get("type").and_then(serde_json::Value::as_str) {
+                    Some("task_started") => {
+                        active_turn = true;
+                        pending_history.clear();
+                        pending_transcript.clear();
+                        pending_context_baseline = None;
+                        pending_model = None;
+                    }
+                    Some("task_complete") => {
+                        history.append(&mut pending_history);
+                        transcript.append(&mut pending_transcript);
+                        if let Some(baseline) = pending_context_baseline.take() {
+                            context_baseline = Some(baseline);
+                        }
+                        if let Some(selected) = pending_model.take() {
+                            model = selected;
+                        }
+                        active_turn = false;
+                    }
+                    Some("turn_aborted") => {
+                        pending_history.clear();
+                        pending_transcript.clear();
+                        pending_context_baseline = None;
+                        pending_model = None;
+                        active_turn = false;
+                    }
+                    _ => {
+                        let target = if active_turn {
+                            &mut pending_transcript
+                        } else {
+                            &mut transcript
+                        };
+                        if let Some(item) = visible_rollout_event(payload) {
+                            target.push(item);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -491,6 +612,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
         history,
         transcript,
         context_baseline,
+        recorded_by_nanocodex,
     })
 }
 
@@ -501,6 +623,7 @@ struct MaterializedRollout {
     history: Vec<ResponseItem>,
     transcript: Vec<RolloutTranscriptItem>,
     context_baseline: Option<ContextBaseline>,
+    recorded_by_nanocodex: bool,
 }
 
 pub(in crate::rollout) fn visible_rollout_event(
