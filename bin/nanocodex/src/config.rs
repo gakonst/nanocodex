@@ -43,7 +43,7 @@ struct SessionBuild {
     rollout: Option<RolloutConfig>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent CLI feature toggles are not one state machine"

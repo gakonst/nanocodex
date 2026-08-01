@@ -1,5 +1,40 @@
 use super::*;
 
+/// Lightweight metadata used to discover a resumable rollout before loading it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableSessionSummary {
+    thread_id: String,
+    workspace: PathBuf,
+    updated_at: std::time::SystemTime,
+    first_prompt: Option<String>,
+}
+
+impl DurableSessionSummary {
+    /// Returns the stable thread UUID accepted by [`RolloutConfig::load_session`].
+    #[must_use]
+    pub fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+
+    /// Returns the workspace recorded when the session was created.
+    #[must_use]
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    /// Returns the rollout file's last modification time.
+    #[must_use]
+    pub const fn updated_at(&self) -> std::time::SystemTime {
+        self.updated_at
+    }
+
+    /// Returns the first visible user prompt when one has been recorded.
+    #[must_use]
+    pub fn first_prompt(&self) -> Option<&str> {
+        self.first_prompt.as_deref()
+    }
+}
+
 /// A completed model boundary materialized from a Codex-compatible rollout.
 ///
 /// This value is intentionally single-use: [`Self::into_parts`] transfers the
@@ -114,6 +149,171 @@ pub enum RolloutTranscriptItem {
         /// Serialized tool arguments sent by the model.
         arguments: String,
     },
+}
+
+pub(super) fn list_sessions(codex_home: &Path) -> io::Result<Vec<DurableSessionSummary>> {
+    let mut paths = Vec::new();
+    for root in [
+        codex_home.join("sessions"),
+        codex_home.join("archived_sessions"),
+    ] {
+        collect_rollout_paths(&root, &mut paths)?;
+    }
+    let mut sessions = Vec::with_capacity(paths.len());
+    for path in paths {
+        match summarize_rollout(&path) {
+            Ok(session) => sessions.push(session),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::Unsupported
+                ) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    sessions.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.thread_id.cmp(&left.thread_id))
+    });
+    Ok(sessions)
+}
+
+fn collect_rollout_paths(directory: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_rollout_paths(&entry.path(), paths)?;
+        } else if file_type.is_file() && rollout_thread_id(&entry.path()).is_some() {
+            paths.push(entry.path());
+        }
+    }
+    Ok(())
+}
+
+fn rollout_thread_id(path: &Path) -> Option<&str> {
+    let name = path.file_name()?.to_str()?.strip_suffix(".jsonl")?;
+    let start = name.len().checked_sub(36)?;
+    let thread_id = name.get(start..)?;
+    (name.as_bytes().get(start.checked_sub(1)?) == Some(&b'-')
+        && uuid::Uuid::parse_str(thread_id).is_ok())
+    .then_some(thread_id)
+}
+
+fn summarize_rollout(path: &Path) -> io::Result<DurableSessionSummary> {
+    let filename_thread_id = rollout_thread_id(path).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid Codex rollout filename {}", path.display()),
+        )
+    })?;
+    let mut thread_id = None;
+    let mut workspace = None;
+    let mut first_prompt = None;
+    for (index, line) in BufReader::new(File::open(path)?).lines().enumerate() {
+        let line = line?;
+        let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "failed to decode {} line {} while listing sessions: {error}",
+                    path.display(),
+                    index + 1
+                ),
+            )
+        })?;
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("session_meta") if workspace.is_none() => {
+                let payload = &value["payload"];
+                let id = payload.get("id").and_then(serde_json::Value::as_str);
+                if id != Some(filename_thread_id) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Codex rollout thread ID does not match filename {}",
+                            path.display()
+                        ),
+                    ));
+                }
+                validate_legacy_history_mode(payload)?;
+                thread_id = id.map(str::to_owned);
+                workspace = payload
+                    .get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .map(PathBuf::from);
+            }
+            Some("event_msg") if first_prompt.is_none() => {
+                if let Some(RolloutTranscriptItem::User(prompt)) =
+                    visible_rollout_event(&value["payload"])
+                {
+                    first_prompt = Some(prompt);
+                }
+            }
+            Some("response_item") if first_prompt.is_none() => {
+                first_prompt = visible_response_prompt(&value["payload"]);
+            }
+            _ => {}
+        }
+        if workspace.is_some() && first_prompt.is_some() {
+            break;
+        }
+    }
+    let thread_id = thread_id.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Codex rollout {} is missing session metadata",
+                path.display()
+            ),
+        )
+    })?;
+    let workspace = workspace.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Codex rollout {} session metadata is missing its workspace",
+                path.display()
+            ),
+        )
+    })?;
+    let first_prompt = first_prompt.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Codex rollout {} has no resumable user prompt",
+                path.display()
+            ),
+        )
+    })?;
+    Ok(DurableSessionSummary {
+        thread_id,
+        workspace,
+        updated_at: std::fs::metadata(path)?.modified()?,
+        first_prompt: Some(first_prompt),
+    })
+}
+
+fn visible_response_prompt(payload: &serde_json::Value) -> Option<String> {
+    if payload.get("type")?.as_str()? != "message" || payload.get("role")?.as_str()? != "user" {
+        return None;
+    }
+    let prompt = payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|content| {
+            content.get("type").and_then(serde_json::Value::as_str) == Some("input_text")
+        })
+        .filter_map(|content| content.get("text").and_then(serde_json::Value::as_str))
+        .collect::<String>();
+    (!prompt.is_empty()).then_some(prompt)
 }
 
 fn find_rollout_path(codex_home: &Path, thread_id: &str) -> io::Result<Option<PathBuf>> {

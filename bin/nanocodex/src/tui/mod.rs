@@ -5,6 +5,7 @@ mod diff;
 mod external_editor;
 mod markdown;
 mod notification;
+mod resume_picker;
 mod scheduler;
 mod selection;
 mod telemetry;
@@ -53,6 +54,8 @@ use self::{
     transcript::TranscriptItem,
 };
 use crate::config::AgentArgs;
+
+pub(crate) use resume_picker::select_session;
 
 const BTW_BOUNDARY: &str = r"You are answering an ephemeral BTW side question.
 Treat inherited conversation history only as reference context. Do not resume or complete an
@@ -302,6 +305,7 @@ enum TerminalAction {
     Redraw,
     Ignore,
     Quit,
+    Resume,
     ExternalEditor,
 }
 
@@ -328,6 +332,7 @@ enum UiUpdate {
     RestoreTerminalGraphics,
     Ignore,
     Quit,
+    Resume,
     ExternalEditor,
 }
 
@@ -455,6 +460,7 @@ impl UiModel {
                     TerminalAction::Redraw => Ok(UiUpdate::Redraw(RedrawPriority::Immediate)),
                     TerminalAction::Ignore => Ok(UiUpdate::Ignore),
                     TerminalAction::Quit => Ok(UiUpdate::Quit),
+                    TerminalAction::Resume => Ok(UiUpdate::Resume),
                     TerminalAction::ExternalEditor => Ok(UiUpdate::ExternalEditor),
                 }
             }
@@ -532,6 +538,7 @@ enum SubmitIntent {
 #[derive(Debug, Eq, PartialEq)]
 enum Submission {
     Prompt(SubmittedPrompt),
+    Resume,
     Btw(Option<SubmittedPrompt>),
     CloseBtw,
     Cancel,
@@ -542,6 +549,23 @@ enum Submission {
     McpLogin(String),
     McpReload(String),
     InvalidCommand(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SubmitAction {
+    Continue,
+    Resume,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum TuiExit {
+    Quit {
+        session_id: String,
+    },
+    Resume {
+        session_id: String,
+        workspace: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -561,7 +585,7 @@ pub(crate) async fn run(
     vm: crate::vm::VmArgs,
     initial_prompt: Option<String>,
     resume: Option<DurableSession>,
-) -> Result<()> {
+) -> Result<TuiExit> {
     let initial_model = resume
         .as_ref()
         .map_or_else(|| config.model(), DurableSession::model);
@@ -630,7 +654,7 @@ pub(crate) async fn run(
 
     submit_initial_prompt(&mut ui.app, &root_session_id, &worker_tx, initial_prompt)?;
 
-    let loop_result: Result<()> = async {
+    let loop_result: Result<TuiExit> = async {
         loop {
             view_telemetry.observe(&ui.app);
             render_due_frame(
@@ -662,8 +686,15 @@ pub(crate) async fn run(
                     math_renderer.reupload_all();
                     ui.app.invalidate_math_layouts();
                     scheduler.request_immediate(Instant::now());
+                } else if update == UiUpdate::Resume {
+                    break Ok(TuiExit::Resume {
+                        session_id: root_session_id.to_string(),
+                        workspace: ui.app.cwd.clone(),
+                    });
                 } else if apply_update(update, &mut scheduler) {
-                    break Ok(());
+                    break Ok(TuiExit::Quit {
+                        session_id: root_session_id.to_string(),
+                    });
                 }
             }
             event = agent_events.recv_timed(), if ui.agent_events_open => {
@@ -675,7 +706,9 @@ pub(crate) async fn run(
                     &mut agent_events,
                     event,
                 )? {
-                    return Ok(());
+                    return Ok(TuiExit::Quit {
+                        session_id: root_session_id.to_string(),
+                    });
                 }
             }
             update = update_rx.recv(), if ui.worker_updates_open => {
@@ -695,15 +728,25 @@ pub(crate) async fn run(
                         matches!(update, UiUpdate::Redraw(RedrawPriority::Streaming)),
                     );
                 }
+                if update == UiUpdate::Resume {
+                    break Ok(TuiExit::Resume {
+                        session_id: root_session_id.to_string(),
+                        workspace: ui.app.cwd.clone(),
+                    });
+                }
                 if apply_update(update, &mut scheduler) {
-                    break Ok(());
+                    break Ok(TuiExit::Quit {
+                        session_id: root_session_id.to_string(),
+                    });
                 }
             }
             _ = ticker.tick(), if ui.app.main.running
                 || ui.app.btw.as_ref().is_some_and(|btw| btw.conversation.running)
                 || ui.app.mouse_selection_needs_redraw() => {
                 if apply_update(ui.update(UiAction::Tick, &worker_tx)?, &mut scheduler) {
-                    break Ok(());
+                    break Ok(TuiExit::Quit {
+                        session_id: root_session_id.to_string(),
+                    });
                 }
             }
             _ = math_update_rx.recv() => {
@@ -719,8 +762,13 @@ pub(crate) async fn run(
     drop((terminal, worker_tx, agent_events));
     math_renderer.shutdown();
     let shutdown_result = shutdown_runtime(worker, child_agents, mpp_adapter, browser, vm).await;
-    loop_result?;
-    shutdown_result
+    let exit = loop_result?;
+    shutdown_result?;
+    Ok(exit)
+}
+
+pub(crate) fn resume_hint(session_id: &str) -> String {
+    format!("Resume this session with:\n  nanocodex resume {session_id}")
 }
 
 fn resolve_cwd(config: &AgentArgs) -> Result<PathBuf> {
@@ -731,13 +779,12 @@ fn resolve_cwd(config: &AgentArgs) -> Result<PathBuf> {
 }
 
 async fn shutdown_runtime(
-    worker: tokio::task::JoinHandle<()>,
+    worker: tokio::task::JoinHandle<Result<()>>,
     child_agents: Option<std::sync::Arc<crate::subagents::ChildAgents>>,
     mpp_adapter: Option<crate::mpp::MppAdapter>,
     browser: Option<crate::browser::ConfiguredBrowser>,
     vm: Option<crate::vm::ConfiguredVm>,
 ) -> Result<()> {
-    worker.abort();
     let worker_result = worker.await;
     if let Some(child_agents) = child_agents {
         child_agents.shutdown().await;
@@ -758,8 +805,7 @@ async fn shutdown_runtime(
         Ok(())
     };
     match worker_result {
-        Ok(()) => {}
-        Err(error) if error.is_cancelled() => {}
+        Ok(result) => result.wrap_err("failed to shut down the TUI agent worker")?,
         Err(error) => return Err(error).wrap_err("TUI agent worker failed"),
     }
     browser_shutdown_result?;
@@ -920,7 +966,7 @@ fn submit_initial_prompt(
     if let Some(prompt) = initial_prompt {
         app.input = prompt;
         app.cursor = app.input.len();
-        submit(app, root_session_id, worker, SubmitIntent::Immediate)?;
+        let _ = submit(app, root_session_id, worker, SubmitIntent::Immediate)?;
     }
     Ok(())
 }
@@ -934,7 +980,7 @@ fn apply_update(update: UiUpdate, scheduler: &mut RenderScheduler) -> bool {
         UiUpdate::Redraw(RedrawPriority::InputBurst) => scheduler.request_input_burst(now),
         UiUpdate::RedrawAnimation => scheduler.request_animation(now),
         UiUpdate::Ignore | UiUpdate::ExternalEditor => {}
-        UiUpdate::Quit => return true,
+        UiUpdate::Quit | UiUpdate::Resume => return true,
     }
     false
 }
@@ -1074,7 +1120,7 @@ fn spawn_agent_worker(
     mcp: Option<McpHandle>,
     mut commands: mpsc::UnboundedReceiver<WorkerCommand>,
     updates: mpsc::UnboundedSender<WorkerEvent>,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(async move {
         let (finished_tx, mut finished_rx) = mpsc::unbounded_channel::<FinishedTurn>();
         let mut worker = AgentWorker {
@@ -1110,6 +1156,7 @@ fn spawn_agent_worker(
             }
         }
         worker.stop_voice().await;
+        worker.shutdown_agents().await
     })
 }
 
@@ -1156,6 +1203,24 @@ struct AgentWorker {
 }
 
 impl AgentWorker {
+    async fn shutdown_agents(&self) -> Result<()> {
+        let mut first_error = None;
+        for branch in std::iter::once(&self.main).chain(&self.archived_main) {
+            if let Err(error) = branch.agent.shutdown().await
+                && first_error.is_none()
+            {
+                first_error = Some(eyre::Report::new(error));
+            }
+        }
+        if let Some(branch) = &self.btw
+            && let Err(error) = branch.agent.shutdown().await
+            && first_error.is_none()
+        {
+            first_error = Some(eyre::Report::new(error));
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
     async fn handle_command(&mut self, command: WorkerCommand) {
         match command {
             WorkerCommand::Prompt {
@@ -2286,7 +2351,13 @@ fn handle_key(
         {
             app.insert_char('\n');
         }
-        KeyCode::Enter => submit(app, root_session_id, commands, SubmitIntent::Immediate)?,
+        KeyCode::Enter => {
+            if submit(app, root_session_id, commands, SubmitIntent::Immediate)?
+                == SubmitAction::Resume
+            {
+                return Ok(TerminalAction::Resume);
+            }
+        }
         KeyCode::Char(character) => app.insert_char(character),
         KeyCode::Backspace => app.backspace(),
         KeyCode::Delete => app.delete(),
@@ -2301,7 +2372,10 @@ fn handle_key(
         KeyCode::Esc if key.kind == KeyEventKind::Repeat => {}
         KeyCode::Esc => handle_escape_key(app, commands)?,
         KeyCode::Tab if app.has_input() => {
-            submit(app, root_session_id, commands, SubmitIntent::Queue)?;
+            if submit(app, root_session_id, commands, SubmitIntent::Queue)? == SubmitAction::Resume
+            {
+                return Ok(TerminalAction::Resume);
+            }
         }
         KeyCode::Tab | KeyCode::BackTab => app.toggle_focus(),
         KeyCode::Insert
@@ -2600,11 +2674,12 @@ fn submit(
     root_session_id: &str,
     commands: &mpsc::UnboundedSender<WorkerCommand>,
     intent: SubmitIntent,
-) -> Result<()> {
+) -> Result<SubmitAction> {
     let Some(input) = app.take_submission() else {
-        return Ok(());
+        return Ok(SubmitAction::Continue);
     };
     match classify_submission(input) {
+        Submission::Resume => return Ok(SubmitAction::Resume),
         Submission::Prompt(prompt) => {
             let target = app.focus;
             if matches!(intent, SubmitIntent::Immediate) && app.is_running(target) {
@@ -2671,7 +2746,7 @@ fn submit(
         Submission::Trace => {
             let Some(session_id) = active_session_id(app, root_session_id) else {
                 app.push_active_error("BTW traces are available after the fork finishes");
-                return Ok(());
+                return Ok(SubmitAction::Continue);
             };
             match open_session_traces(session_id) {
                 Ok(()) => app.set_active_status("Opened session traces in Jaeger"),
@@ -2694,7 +2769,7 @@ fn submit(
         }
         Submission::InvalidCommand(error) => app.push_active_error(error),
     }
-    Ok(())
+    Ok(SubmitAction::Continue)
 }
 
 fn send_command(
@@ -2709,6 +2784,9 @@ fn send_command(
 fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
     let mut input = input.into();
     let trimmed = input.display().trim();
+    if trimmed == "/resume" {
+        return Submission::Resume;
+    }
     if trimmed == "/btw" {
         return Submission::Btw(None);
     }
@@ -2871,8 +2949,8 @@ mod tests {
         BTW_BOUNDARY, PaneId, RedrawPriority, Submission, TerminalAction, UiAction, UiModel,
         UiUpdate, VoiceControl, WorkerCommand, WorkerEvent, active_session_id,
         apply_main_agent_event_batch, classify_submission, handle_key, handle_worker_update,
-        paste_clipboard_image, prepare_btw_prompt, report_cancel_outcome, session_trace_url,
-        spawn_agent_worker,
+        paste_clipboard_image, prepare_btw_prompt, report_cancel_outcome, resume_hint,
+        session_trace_url, spawn_agent_worker,
     };
     use crate::tui::{
         app::App,
@@ -2911,6 +2989,7 @@ mod tests {
             classify_submission(" /trace ".to_owned()),
             Submission::Trace
         );
+        assert_eq!(classify_submission(" /resume "), Submission::Resume);
         assert_eq!(
             classify_submission(" /voice "),
             Submission::Voice(VoiceControl::Toggle)
@@ -2978,6 +3057,10 @@ mod tests {
             Submission::Prompt("/trace-this".into())
         );
         assert_eq!(
+            classify_submission("/resume-later"),
+            Submission::Prompt("/resume-later".into())
+        );
+        assert_eq!(
             classify_submission("/fastest"),
             Submission::Prompt("/fastest".into())
         );
@@ -2985,6 +3068,33 @@ mod tests {
             classify_submission("/modeling"),
             Submission::Prompt("/modeling".into())
         );
+    }
+
+    #[test]
+    fn exit_hint_prints_the_exact_resume_command() {
+        assert_eq!(
+            resume_hint("019c0d31-c308-7d91-bff4-5dca82d15ac6"),
+            "Resume this session with:\n  nanocodex resume 019c0d31-c308-7d91-bff4-5dca82d15ac6"
+        );
+    }
+
+    #[test]
+    fn resume_command_exits_into_the_session_picker() {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.input = "/resume".to_owned();
+        app.cursor = app.input.len();
+
+        let action = handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+            "main-session",
+            &commands,
+        )
+        .unwrap();
+
+        assert_eq!(action, TerminalAction::Resume);
+        assert!(worker.try_recv().is_err());
     }
 
     #[test]
@@ -3395,7 +3505,7 @@ mod tests {
         }
 
         drop(commands);
-        worker.await?;
+        worker.await??;
         Ok(())
     }
 

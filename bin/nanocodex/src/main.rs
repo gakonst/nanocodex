@@ -24,11 +24,11 @@ mod vm;
 #[path = "vm_unsupported.rs"]
 mod vm;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, builder::NonEmptyStringValueParser};
-use eyre::{Result, WrapErr};
-use nanocodex::agent::rollout::RolloutConfig;
+use eyre::{Result, WrapErr, eyre};
+use nanocodex::agent::rollout::{DurableSession, DurableSessionSummary, RolloutConfig};
 
 use config::AgentArgs;
 use observability::ObservabilityArgs;
@@ -94,9 +94,13 @@ struct RunCommand {
 
 #[derive(Args)]
 struct ResumeCommand {
-    /// Codex thread UUID to resume.
+    /// Codex thread UUID to resume. Omit it to choose from sessions interactively.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
-    thread_id: String,
+    thread_id: Option<String>,
+
+    /// Show sessions from every workspace instead of only the current repository.
+    #[arg(long, conflicts_with = "thread_id")]
+    all: bool,
 
     #[command(flatten)]
     agent: AgentArgs,
@@ -140,19 +144,123 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Resume(command)) => {
             let codex_home = config::default_codex_home()?;
-            let session = RolloutConfig::new(&codex_home)
-                .load_session(&command.thread_id)
-                .wrap_err_with(|| format!("failed to load Codex thread {}", command.thread_id))?;
+            let rollout = RolloutConfig::new(&codex_home);
+            let session = if let Some(thread_id) = command.thread_id.as_deref() {
+                rollout
+                    .load_session(thread_id)
+                    .wrap_err_with(|| format!("failed to load Codex thread {thread_id}"))?
+            } else {
+                let current =
+                    command.agent.cwd().canonicalize().wrap_err(
+                        "failed to resolve the current workspace for session discovery",
+                    )?;
+                let scope = repository_scope(&current);
+                let sessions = rollout
+                    .list_sessions()
+                    .wrap_err("failed to list resumable Codex sessions")?
+                    .into_iter()
+                    .filter(|session| command.all || session_matches_scope(session, &scope))
+                    .collect::<Vec<_>>();
+                if sessions.is_empty() {
+                    let hint = if command.all {
+                        String::new()
+                    } else {
+                        "; use `nanocodex resume --all` to search every workspace".to_owned()
+                    };
+                    return Err(eyre!(
+                        "no resumable sessions found for {}{hint}",
+                        scope.display()
+                    ));
+                }
+                let Some(thread_id) = tui::select_session(&sessions, command.all).await? else {
+                    return Ok(());
+                };
+                rollout
+                    .load_session(&thread_id)
+                    .wrap_err_with(|| format!("failed to load Codex thread {thread_id}"))?
+            };
             let workspace = PathBuf::from(session.workspace());
             let _observability = command.observability.install(true, &workspace)?;
-            tui::run(command.agent, command.vm, command.prompt, Some(session)).await
+            run_tui_session_loop(
+                command.agent,
+                command.vm,
+                command.prompt,
+                Some(session),
+                rollout,
+            )
+            .await
         }
         Some(Command::Update(command)) => command.run().await,
         None => {
             let _observability = cli.observability.install(true, cli.agent.cwd())?;
-            tui::run(cli.agent, cli.vm, cli.prompt, None).await
+            let codex_home = config::default_codex_home()?;
+            run_tui_session_loop(
+                cli.agent,
+                cli.vm,
+                cli.prompt,
+                None,
+                RolloutConfig::new(&codex_home),
+            )
+            .await
         }
     }
+}
+
+async fn run_tui_session_loop(
+    agent: AgentArgs,
+    vm: vm::VmArgs,
+    initial_prompt: Option<String>,
+    initial_session: Option<DurableSession>,
+    rollout: RolloutConfig,
+) -> Result<()> {
+    let mut prompt = initial_prompt;
+    let mut session = initial_session;
+    loop {
+        match tui::run(agent.clone(), vm.clone(), prompt.take(), session.take()).await? {
+            tui::TuiExit::Quit { session_id } => {
+                println!("{}", tui::resume_hint(&session_id));
+                return Ok(());
+            }
+            tui::TuiExit::Resume {
+                session_id,
+                workspace,
+            } => {
+                let scope = repository_scope(&workspace);
+                let sessions = rollout
+                    .list_sessions()
+                    .wrap_err("failed to list resumable Codex sessions")?
+                    .into_iter()
+                    .filter(|candidate| session_matches_scope(candidate, &scope))
+                    .collect::<Vec<_>>();
+                let selected = if sessions.is_empty() {
+                    None
+                } else {
+                    tui::select_session(&sessions, false).await?
+                };
+                let selected = selected.as_deref().unwrap_or(&session_id);
+                session = Some(
+                    rollout
+                        .load_session(selected)
+                        .wrap_err_with(|| format!("failed to load Codex thread {selected}"))?,
+                );
+            }
+        }
+    }
+}
+
+fn repository_scope(workspace: &Path) -> PathBuf {
+    workspace
+        .ancestors()
+        .find(|ancestor| ancestor.join(".git").exists())
+        .unwrap_or(workspace)
+        .to_path_buf()
+}
+
+fn session_matches_scope(session: &DurableSessionSummary, scope: &Path) -> bool {
+    session
+        .workspace()
+        .canonicalize()
+        .is_ok_and(|workspace| repository_scope(&workspace) == scope)
 }
 
 #[cfg(test)]
@@ -348,8 +456,47 @@ mod tests {
         let Some(Command::Resume(command)) = cli.command else {
             panic!("resume command was not parsed");
         };
-        assert_eq!(command.thread_id, "019c0d31-c308-7d91-bff4-5dca82d15ac6");
+        assert_eq!(
+            command.thread_id.as_deref(),
+            Some("019c0d31-c308-7d91-bff4-5dca82d15ac6")
+        );
         assert_eq!(command.prompt.as_deref(), Some("continue"));
         assert!(!command.agent.uses_tempo());
+    }
+
+    #[test]
+    fn resume_without_a_thread_id_opens_the_workspace_picker() {
+        let cli = Cli::try_parse_from(["nanocodex", "resume", "--all"]).unwrap();
+
+        let Some(Command::Resume(command)) = cli.command else {
+            panic!("resume command was not parsed");
+        };
+        assert!(command.thread_id.is_none());
+        assert!(command.all);
+    }
+
+    #[test]
+    fn resume_all_conflicts_with_an_explicit_thread_id() {
+        let error = Cli::try_parse_from([
+            "nanocodex",
+            "resume",
+            "019c0d31-c308-7d91-bff4-5dca82d15ac6",
+            "--all",
+        ])
+        .err()
+        .unwrap();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn repository_scope_uses_the_nearest_git_ancestor() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("repository");
+        let nested = repository.join("crates/example");
+        std::fs::create_dir_all(repository.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(repository_scope(&nested), repository);
     }
 }

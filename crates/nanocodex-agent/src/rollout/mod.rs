@@ -5,7 +5,7 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use load::{DurableSession, RolloutTranscriptItem};
+pub use load::{DurableSession, DurableSessionSummary, RolloutTranscriptItem};
 pub use store::RolloutInfo;
 pub(crate) use store::{RolloutOrigin, RolloutRecorder, RolloutTurn};
 
@@ -67,6 +67,21 @@ impl RolloutConfig {
     /// exist, or its rollout is malformed or incompatible.
     pub fn load_session(&self, thread_id: &str) -> io::Result<DurableSession> {
         DurableSession::load(&self.codex_home, thread_id)
+    }
+
+    /// Lists compatible Codex and Nanocodex sessions beneath this Codex home,
+    /// newest first.
+    ///
+    /// The returned summaries read only enough rollout data to support session
+    /// discovery. Loading the selected durable boundary remains explicit through
+    /// [`Self::load_session`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session directories or compatible rollout
+    /// files cannot be read. Malformed or unsupported rollouts are omitted.
+    pub fn list_sessions(&self) -> io::Result<Vec<DurableSessionSummary>> {
+        load::list_sessions(&self.codex_home)
     }
 
     pub(crate) fn resumed(mut self, rollout_path: PathBuf) -> Self {

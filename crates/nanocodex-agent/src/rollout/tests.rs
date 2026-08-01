@@ -145,10 +145,51 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
         write_line(&mut file, &value).expect("write rollout line");
     }
     file.flush().expect("flush rollout");
+    let archived_thread_id = "019c0d31-c308-7d91-bff4-5dca82d15ac7";
+    let archived_directory = home.path().join("archived_sessions");
+    std::fs::create_dir_all(&archived_directory).expect("create archived rollout directory");
+    let archived_path = archived_directory.join(format!(
+        "rollout-2026-07-24T13-00-00-{archived_thread_id}.jsonl"
+    ));
+    let archived_rollout = std::fs::read_to_string(&path)
+        .expect("read rollout for archive fixture")
+        .replace(thread_id, archived_thread_id);
+    std::fs::write(&archived_path, archived_rollout).expect("write archived rollout");
+    File::open(&path)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+        )
+        .unwrap();
+    File::open(&archived_path)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2)),
+        )
+        .unwrap();
+    std::fs::write(
+        directory.join("rollout-2026-07-24T14-00-00-019c0d31-c308-7d91-bff4-5dca82d15ac8.jsonl"),
+        "incomplete rollout line",
+    )
+    .expect("write malformed rollout");
 
-    let session = RolloutConfig::new(home.path())
-        .load_session(thread_id)
-        .expect("load Codex rollout");
+    let rollout = RolloutConfig::new(home.path());
+    let summaries = rollout.list_sessions().expect("list Codex rollouts");
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0].thread_id(), archived_thread_id);
+    assert_eq!(summaries[1].thread_id(), thread_id);
+    assert_eq!(summaries[1].workspace(), home.path());
+    assert_eq!(summaries[1].first_prompt(), Some("visible prompt"));
+    assert!(
+        summaries[1]
+            .updated_at()
+            .duration_since(std::time::UNIX_EPOCH)
+            .is_ok()
+    );
+
+    let session = rollout.load_session(thread_id).expect("load Codex rollout");
     assert_eq!(
         Path::new(session.workspace()).canonicalize().unwrap(),
         home.path().canonicalize().unwrap()

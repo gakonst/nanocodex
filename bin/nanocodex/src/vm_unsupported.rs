@@ -5,7 +5,7 @@ use eyre::{Result, eyre};
 use nanocodex::tools::ToolsBuilder;
 
 /// VM arguments retained on builds whose host cannot run libkrun.
-#[derive(Args, Default)]
+#[derive(Args, Clone, Default)]
 pub(crate) struct VmArgs {
     /// Run workspace-mutating tools in this writable VM root filesystem.
     #[arg(long = "vm", visible_alias = "vm-rootfs", value_name = "ROOTFS")]

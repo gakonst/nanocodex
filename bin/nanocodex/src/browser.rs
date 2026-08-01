@@ -32,7 +32,7 @@ enum CookieSource {
 }
 
 /// Opt-in local browser configuration for normal agent sessions.
-#[derive(Args, Default)]
+#[derive(Args, Clone, Default)]
 pub(crate) struct BrowserArgs {
     /// Expose one private browser session to Code Mode as `tools.browser`.
     ///

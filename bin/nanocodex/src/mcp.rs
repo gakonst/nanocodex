@@ -34,7 +34,7 @@ const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 3] = [
     ),
 ];
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub(crate) struct McpArgs {
     /// Load the standard `OpenAI`, Tempo, and Cloudflare MCP servers.
     #[arg(
