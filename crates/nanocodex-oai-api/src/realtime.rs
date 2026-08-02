@@ -1595,7 +1595,8 @@ fn configured_session_update(
                         "format": { "type": "audio/pcm", "rate": REALTIME_SAMPLE_RATE },
                         "transcription": {
                             "model": model,
-                            "prompt": instructions
+                            "prompt": instructions,
+                            "delay": "minimal"
                         },
                         "turn_detection": null
                     }
@@ -2947,6 +2948,10 @@ mod tests {
         assert_eq!(
             transcription["session"]["audio"]["input"]["transcription"]["prompt"],
             "delegate"
+        );
+        assert_eq!(
+            transcription["session"]["audio"]["input"]["transcription"]["delay"],
+            "minimal"
         );
         assert!(transcription["session"]["audio"]["input"]["turn_detection"].is_null());
         assert!(transcription["session"].get("tools").is_none());
