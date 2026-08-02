@@ -819,6 +819,7 @@ pub(crate) async fn run(
             _ = ticker.tick(), if ui.app.main.running
                 || ui.app.btw.as_ref().is_some_and(|btw| btw.conversation.running)
                 || ui.app.mouse_selection_needs_redraw()
+                || ui.app.dictation_notice_active()
                 || ui.dictation.is_active() => {
                 if apply_update(ui.update(UiAction::Tick, &worker_tx)?, &mut scheduler) {
                     break Ok(());
@@ -1387,17 +1388,9 @@ impl AgentWorker {
             }));
             return;
         }
-        if self
-            .dictation
-            .as_ref()
-            .is_some_and(|(_, session)| session.is_running())
-        {
-            drop(self.updates.send(WorkerEvent::DictationFailed {
-                id,
-                error: "another dictation attempt is still active".to_owned(),
-            }));
-            return;
-        }
+        // The UI only permits a new start after the previous attempt has
+        // settled. Join that retained terminal session before replacing it so
+        // an immediate retry never sees a spurious "still active" failure.
         self.stop_dictation().await;
         let Some(openai) = self.realtime.clone() else {
             drop(self.updates.send(WorkerEvent::DictationFailed {
@@ -2555,6 +2548,13 @@ impl ComposerEdit {
                 _ => None,
             };
         }
+        if key.code == KeyCode::Enter
+            && key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+        {
+            return Some(Self::Insert("\n".to_owned()));
+        }
         if key.modifiers.contains(KeyModifiers::ALT) {
             return match key.code {
                 KeyCode::Char('b') | KeyCode::Left => Some(Self::WordLeft),
@@ -2563,9 +2563,6 @@ impl ComposerEdit {
             };
         }
         match key.code {
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                Some(Self::Insert("\n".to_owned()))
-            }
             KeyCode::Char(character) => Some(Self::Insert(character.to_string())),
             KeyCode::Backspace => Some(Self::Backspace),
             KeyCode::Delete => Some(Self::Delete),
@@ -3372,6 +3369,20 @@ mod tests {
         assert_eq!(btw.scroll_from_bottom, 0);
         assert!(!btw.has_unseen_output);
         assert_eq!(app.focus, PaneId::Btw(btw_id));
+    }
+
+    #[test]
+    fn alt_enter_keeps_its_existing_newline_behavior() {
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+        assert_eq!(
+            handle_key(key, &mut app, "main-session", &commands).unwrap(),
+            TerminalAction::Redraw
+        );
+
+        assert_eq!(app.input, "\n");
     }
 
     #[test]

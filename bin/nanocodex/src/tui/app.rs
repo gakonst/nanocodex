@@ -38,6 +38,7 @@ const MAX_PATCH_ARGUMENT_CHARS: usize = 64 * 1_024;
 const MAX_PATCH_ARGUMENT_LINES: usize = 1_000;
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 const CANCEL_CONFIRMATION_WINDOW: Duration = Duration::from_secs(1);
+const DICTATION_NOTICE_DURATION: Duration = Duration::from_secs(4);
 const SMOOTH_SCROLL_BACKLOG_ROWS: usize = 8;
 const MAX_SMOOTH_SCROLL_CATCH_UP_ROWS: usize = 32;
 
@@ -201,6 +202,11 @@ struct DictationMark {
     unstable: String,
     phase: DictationPhase,
     meter: DictationMeter,
+}
+
+struct DictationNotice {
+    text: String,
+    expires_at: Instant,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1230,6 +1236,7 @@ pub(super) struct App {
     preferred_column: Option<usize>,
     draft_generation: u64,
     dictation: Option<DictationMark>,
+    dictation_notice: Option<DictationNotice>,
     next_btw_id: u64,
     next_main_branch_id: u64,
     next_input_id: u64,
@@ -1284,6 +1291,7 @@ impl App {
             preferred_column: None,
             draft_generation: 0,
             dictation: None,
+            dictation_notice: None,
             next_btw_id: 1,
             next_main_branch_id: 1,
             next_input_id: 1,
@@ -1397,6 +1405,7 @@ impl App {
             return None;
         }
         let generation = self.composer_generation();
+        self.dictation_notice = None;
         self.dictation = Some(DictationMark {
             id,
             anchor: self.cursor,
@@ -1445,12 +1454,27 @@ impl App {
     }
 
     pub(super) fn dictation_status(&self) -> Option<String> {
-        let mark = self.dictation.as_ref()?;
-        Some(match mark.phase {
-            DictationPhase::Starting => DictationPhase::STARTING_STATUS.to_owned(),
-            DictationPhase::Listening => format!("● listening {}", mark.meter.text()),
-            DictationPhase::Finishing => DictationPhase::FINISHING_STATUS.to_owned(),
-        })
+        if let Some(mark) = &self.dictation {
+            return Some(match mark.phase {
+                DictationPhase::Starting => DictationPhase::STARTING_STATUS.to_owned(),
+                DictationPhase::Listening => format!("● listening {}", mark.meter.text()),
+                DictationPhase::Finishing => DictationPhase::FINISHING_STATUS.to_owned(),
+            });
+        }
+        self.dictation_notice
+            .as_ref()
+            .map(|notice| notice.text.clone())
+    }
+
+    pub(super) fn set_dictation_notice(&mut self, text: impl Into<String>) {
+        self.dictation_notice = Some(DictationNotice {
+            text: text.into(),
+            expires_at: Instant::now() + DICTATION_NOTICE_DURATION,
+        });
+    }
+
+    pub(super) const fn dictation_notice_active(&self) -> bool {
+        self.dictation_notice.is_some()
     }
 
     pub(super) fn cancel_dictation(&mut self, id: u64) {
@@ -1475,6 +1499,7 @@ impl App {
         if !insertion.is_empty() {
             self.insert_str(&insertion);
         }
+        self.dictation_notice = None;
         true
     }
 
@@ -2627,6 +2652,13 @@ impl App {
         self.frame = self.frame.wrapping_add(1);
         let now = Instant::now();
         self.expire_cancel_confirmation(now);
+        if self
+            .dictation_notice
+            .as_ref()
+            .is_some_and(|notice| notice.expires_at < now)
+        {
+            self.dictation_notice = None;
+        }
         let _ = self.screen_selection.advance(now);
         if let Some(request) = self.screen_selection.scroll_request() {
             self.auto_scroll_mouse_selection(request);

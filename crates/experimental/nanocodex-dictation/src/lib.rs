@@ -103,18 +103,19 @@ impl DictationEvents {
         match event {
             QueuedEvent::Lifecycle(event) => event,
             QueuedEvent::Transcript => {
+                // Clear the marker before reading the latest value. A producer
+                // racing this read will either be observed here or enqueue the
+                // next marker; it cannot leave an update permanently unqueued.
+                self.transcript_pending.store(false, Ordering::Release);
                 let latest = self
                     .latest_transcript
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
-                let transcript = latest.clone();
-                self.transcript_pending.store(false, Ordering::Release);
-                DictationEvent::Transcript(transcript)
+                DictationEvent::Transcript(latest.clone())
             }
             QueuedEvent::AudioLevel => {
-                let level = self.latest_audio_level.load(Ordering::Acquire);
                 self.audio_level_pending.store(false, Ordering::Release);
-                DictationEvent::AudioLevel(level)
+                DictationEvent::AudioLevel(self.latest_audio_level.load(Ordering::Acquire))
             }
         }
     }

@@ -1119,7 +1119,8 @@ mod tui {
     }
 
     pub(super) fn composer_benchmarks(criterion: &mut Criterion) {
-        criterion.bench_function("tui_composer_render/multiline_100k/120x40", |bencher| {
+        let mut group = criterion.benchmark_group("tui_composer_render");
+        group.bench_function("multiline_100k/120x40", |bencher| {
             let mut app = App::new("/workspace/nanocodex".into());
             app.input = sized_text(100 * 1_024, 7);
             app.cursor = app.input.len();
@@ -1134,6 +1135,32 @@ mod tui {
                     .expect("composer benchmark frame should render");
             });
         });
+        group.bench_function("dictation_multiline_100k/120x40", |bencher| {
+            let mut app = App::new("/workspace/nanocodex".into());
+            app.input = sized_text(100 * 1_024, 7);
+            app.cursor = app.input.len() / 2;
+            while !app.input.is_char_boundary(app.cursor) {
+                app.cursor += 1;
+            }
+            app.begin_dictation(1)
+                .expect("dictation benchmark mark should initialize");
+            app.update_dictation(
+                1,
+                "stable words from the microphone".to_owned(),
+                "revisable streaming tail".to_owned(),
+            );
+            let mut terminal = Terminal::new(TestBackend::new(120, 40))
+                .expect("dictation composer benchmark terminal should initialize");
+            terminal
+                .draw(|frame| view::render(frame, &mut app))
+                .expect("initial dictation composer benchmark frame should render");
+            bencher.iter(|| {
+                terminal
+                    .draw(|frame| view::render(frame, &mut app))
+                    .expect("dictation composer benchmark frame should render");
+            });
+        });
+        group.finish();
     }
 
     pub(super) fn large_paste_benchmarks(criterion: &mut Criterion) {

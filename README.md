@@ -145,7 +145,8 @@ Hold Space briefly to start streaming speech into the composer, then release it
 to finalize. A normal Space tap always inserts a space. The footer shows a live
 microphone meter beside any concurrent agent activity. For longer dictation,
 press Ctrl+X followed by V to start and use the same sequence to finalize. The
-draft remains editable and Enter still submits explicitly. The equivalent
+existing draft stays untouched; completed speech is inserted at the captured
+cursor, and Enter still submits explicitly. The equivalent
 environment setting is `NANOCODEX_DICTATION=true`.
 
 Hold-Space uses terminal key-release support. Terminals with Kitty keyboard
