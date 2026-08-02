@@ -10,7 +10,7 @@ use std::time::Instant;
 use super::{
     app::{
         App, Conversation, DictationComposerView, PaneId, ReasoningPicker,
-        STANDARD_THINKING_OPTIONS,
+        STANDARD_THINKING_OPTIONS, activity_frame,
     },
     composer::ComposerLayout,
     transcript::InlineEdit,
@@ -508,20 +508,27 @@ fn render_composer(
         );
         return inner;
     }
-    let (text, cursor, unstable) = dictation_view.map_or_else(
-        || (app.input.as_str(), app.cursor, 0..0),
-        |view| (view.text.as_str(), view.cursor, view.unstable.clone()),
+    let (text, cursor, unstable, level) = dictation_view.map_or_else(
+        || (app.input.as_str(), app.cursor, 0..0, None),
+        |view| {
+            (
+                view.text.as_str(),
+                view.cursor,
+                view.unstable.clone(),
+                view.level.clone(),
+            )
+        },
     );
     let cursor = layout.cursor_position(text, cursor);
     let vertical_scroll = app.composer_scroll();
     let visible_end = vertical_scroll.saturating_add(usize::from(inner.height));
     let lines = (vertical_scroll..visible_end)
         .filter_map(|row| layout.row(row))
-        .map(|range| composer_line(text, &unstable, range.clone()))
+        .map(|range| composer_line(text, &unstable, level.as_ref(), range.clone()))
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 
-    if app.transcript_selection_active() || app.branch_navigator_active() {
+    if level.is_some() || app.transcript_selection_active() || app.branch_navigator_active() {
         return inner;
     }
 
@@ -538,29 +545,44 @@ fn render_composer(
 fn composer_line<'a>(
     text: &'a str,
     unstable: &std::ops::Range<usize>,
+    level: Option<&std::ops::Range<usize>>,
     range: std::ops::Range<usize>,
 ) -> Line<'a> {
     let revisable = range.start.max(unstable.start)..range.end.min(unstable.end);
-    if revisable.is_empty() {
+    let level = level.map(|level| range.start.max(level.start)..range.end.min(level.end));
+    if revisable.is_empty() && level.as_ref().is_none_or(std::ops::Range::is_empty) {
         return Line::raw(&text[range]);
     }
-    let mut spans = Vec::with_capacity(3);
-    if range.start < revisable.start {
-        spans.push(Span::raw(&text[range.start..revisable.start]));
+    let mut spans = Vec::with_capacity(5);
+    let mut start = range.start;
+    if !revisable.is_empty() {
+        if start < revisable.start {
+            spans.push(Span::raw(&text[start..revisable.start]));
+        }
+        spans.push(Span::styled(
+            &text[revisable.clone()],
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+        start = revisable.end;
     }
-    spans.push(Span::styled(
-        &text[revisable.clone()],
-        Style::default().add_modifier(Modifier::DIM),
-    ));
-    if revisable.end < range.end {
-        spans.push(Span::raw(&text[revisable.end..range.end]));
+    if let Some(level) = level.filter(|level| !level.is_empty()) {
+        if start < level.start {
+            spans.push(Span::raw(&text[start..level.start]));
+        }
+        spans.push(Span::styled(
+            &text[level.clone()],
+            Style::default().fg(Color::Cyan),
+        ));
+        start = level.end;
+    }
+    if start < range.end {
+        spans.push(Span::raw(&text[start..range.end]));
     }
     Line::from(spans)
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let conversation = app.active_conversation();
-    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let state = if app.branch_navigator_active() {
         "Branches — ↑/↓ or j/k switch + preview · Esc close".to_owned()
     } else if app.historical_editor_active() {
@@ -581,7 +603,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else if conversation.running {
         format!(
             "{} Working ({})",
-            spinner[app.frame % spinner.len()],
+            activity_frame(app.frame),
             format_elapsed(conversation.run_elapsed(Instant::now()))
         )
     } else {
@@ -883,7 +905,7 @@ mod tests {
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
 
-        assert!(rendered.contains("● listening ▁▁▁▁█ · "));
+        assert!(rendered.contains("listening… · "));
         assert!(rendered.contains("Working (0s)"));
     }
 
@@ -1031,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn dictation_keeps_base_draft_virtual_and_dims_revisable_text() {
+    fn dictation_keeps_base_draft_virtual_and_renders_level_at_the_insertion_point() {
         let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
         let mut app = App::new("/workspace".into());
         app.input = "prefix".to_owned();
@@ -1059,6 +1081,21 @@ mod tests {
             .expect("stable transcript should render");
         let stable = &buffer.content[stable_index];
         assert!(!stable.modifier.contains(Modifier::DIM));
+
+        app.set_dictation_started(3);
+        app.update_dictation_audio_level(3, MicrophoneLevel::MAX);
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let level_index = buffer
+            .content
+            .windows(6)
+            .position(|cells| {
+                cells.iter().map(|cell| cell.symbol()).collect::<String>() == "draft█"
+            })
+            .expect("microphone level should follow revisable text");
+        let level = &buffer.content[level_index + 5];
+        assert_eq!(level.fg, Color::Cyan);
+        assert_eq!(app.input, "prefix");
     }
 
     #[test]

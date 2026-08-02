@@ -1144,6 +1144,8 @@ mod tui {
             }
             app.begin_dictation(1)
                 .expect("dictation benchmark mark should initialize");
+            app.set_dictation_started(1);
+            app.update_dictation_audio_level(1, nanocodex_dictation::MicrophoneLevel::MAX);
             app.update_dictation(
                 1,
                 "stable words from the microphone".to_owned(),

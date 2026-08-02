@@ -736,7 +736,7 @@ mod tests {
         assert_eq!(app.input, "hello");
         assert_eq!(
             app.dictation_status().as_deref(),
-            Some("◌ starting dictation…")
+            Some("⠋ starting dictation…")
         );
         assert!(matches!(
             receiver.try_recv(),

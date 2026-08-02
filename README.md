@@ -150,8 +150,9 @@ credentials use the managed ChatGPT Realtime WebRTC path.
 
 Press Space normally to insert a space immediately. While it is held, the
 footer briefly shows `keep holding…`, then starts listening and streams speech
-into the composer. Release Space to finalize. The footer shows a live
-microphone meter beside any concurrent agent activity.
+into the composer. A one-cell microphone level follows the streamed text at its
+insertion point while the footer keeps listening visible beside any concurrent
+agent activity. Release Space to finalize.
 
 For longer dictation, start with a clear composer, type `/dictate`, and press
 Enter; press Enter again to finalize and send (or steer an active turn), Tab to

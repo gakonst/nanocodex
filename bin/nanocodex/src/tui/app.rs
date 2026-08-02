@@ -217,20 +217,20 @@ enum DictationPhase {
     Finishing,
 }
 
-impl DictationPhase {
-    const STARTING_STATUS: &'static str = "◌ starting dictation…";
-    const FINISHING_STATUS: &'static str = "◌ finishing dictation…";
+pub(super) const fn activity_frame(frame: usize) -> char {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    FRAMES[frame % FRAMES.len()]
 }
 
 struct DictationMeter {
-    history: [char; 5],
+    symbol: char,
     envelope: f64,
 }
 
 impl DictationMeter {
     const fn new() -> Self {
         Self {
-            history: ['▁'; 5],
+            symbol: '▁',
             envelope: 0.0,
         }
     }
@@ -250,12 +250,11 @@ impl DictationMeter {
         let index = (level * (SYMBOLS.len() - 1) as f64)
             .round()
             .clamp(0.0, (SYMBOLS.len() - 1) as f64) as usize;
-        self.history.rotate_left(1);
-        self.history[self.history.len() - 1] = SYMBOLS[index];
+        self.symbol = SYMBOLS[index];
     }
 
-    fn text(&self) -> String {
-        self.history.iter().collect()
+    const fn symbol(&self) -> char {
+        self.symbol
     }
 }
 
@@ -263,6 +262,7 @@ pub(super) struct DictationComposerView {
     pub(super) text: String,
     pub(super) cursor: usize,
     pub(super) unstable: Range<usize>,
+    pub(super) level: Option<Range<usize>>,
 }
 
 pub(super) struct PendingSteer {
@@ -1460,9 +1460,13 @@ impl App {
     pub(super) fn dictation_status(&self) -> Option<String> {
         if let Some(mark) = &self.dictation {
             return Some(match mark.phase {
-                DictationPhase::Starting => DictationPhase::STARTING_STATUS.to_owned(),
-                DictationPhase::Listening => format!("● listening {}", mark.meter.text()),
-                DictationPhase::Finishing => DictationPhase::FINISHING_STATUS.to_owned(),
+                DictationPhase::Starting => {
+                    format!("{} starting dictation…", activity_frame(self.frame))
+                }
+                DictationPhase::Listening => "listening…".to_owned(),
+                DictationPhase::Finishing => {
+                    format!("{} finishing dictation…", activity_frame(self.frame))
+                }
             });
         }
         if self.dictation_hold_pending {
@@ -1537,16 +1541,25 @@ impl App {
             self.input
                 .len()
                 .saturating_add(stable.len())
-                .saturating_add(unstable.len()),
+                .saturating_add(unstable.len())
+                .saturating_add('▁'.len_utf8()),
         );
         text.push_str(&self.input[..mark.anchor]);
         text.push_str(&stable);
         text.push_str(&unstable);
+        let level = if mark.phase == DictationPhase::Listening {
+            let start = text.len();
+            text.push(mark.meter.symbol());
+            Some(start..text.len())
+        } else {
+            None
+        };
         text.push_str(&self.input[mark.anchor..]);
         Some(DictationComposerView {
             text,
-            cursor: unstable_end,
+            cursor: level.as_ref().map_or(unstable_end, |level| level.end),
             unstable: stable_end..unstable_end,
+            level,
         })
     }
 
@@ -3614,6 +3627,16 @@ mod tests {
         assert_eq!(view.text, "hello beautiful day world");
         assert_eq!(&view.text[view.unstable], "day ");
 
+        app.set_dictation_started(7);
+        app.update_dictation_audio_level(7, MicrophoneLevel::MAX);
+        let view = app.dictation_composer_view().unwrap();
+        assert_eq!(view.text, "hello beautiful day █world");
+        assert_eq!(
+            view.level.as_ref().map(|level| &view.text[level.clone()]),
+            Some("█")
+        );
+        assert_eq!(app.input, "helloworld");
+
         assert!(app.commit_dictation(7, "beautiful day"));
         assert_eq!(app.input, "hello beautiful day world");
         assert_eq!(app.cursor, "hello beautiful day ".len());
@@ -3642,18 +3665,28 @@ mod tests {
         assert_eq!(app.active_conversation().status, "Working");
         assert_eq!(
             app.dictation_status(),
-            Some("◌ starting dictation…".to_owned())
+            Some("⠋ starting dictation…".to_owned())
+        );
+        app.on_tick();
+        assert_eq!(
+            app.dictation_status(),
+            Some("⠙ starting dictation…".to_owned())
         );
         app.set_dictation_started(3);
         assert_eq!(app.active_conversation().status, "Working");
-        assert_eq!(app.dictation_status(), Some("● listening ▁▁▁▁▁".to_owned()));
+        assert_eq!(app.dictation_status(), Some("listening…".to_owned()));
         app.update_dictation_audio_level(3, MicrophoneLevel::MAX);
-        assert_eq!(app.dictation_status(), Some("● listening ▁▁▁▁█".to_owned()));
+        assert_eq!(app.dictation_status(), Some("listening…".to_owned()));
+        let view = app.dictation_composer_view().unwrap();
+        assert_eq!(
+            view.level.as_ref().map(|level| &view.text[level.clone()]),
+            Some("█")
+        );
         app.set_dictation_finishing(3);
         assert_eq!(app.active_conversation().status, "Working");
         assert_eq!(
             app.dictation_status(),
-            Some("◌ finishing dictation…".to_owned())
+            Some("⠙ finishing dictation…".to_owned())
         );
 
         assert!(app.commit_dictation(3, "done"));
@@ -3666,12 +3699,12 @@ mod tests {
     fn dictation_meter_shows_recent_level_and_decays_to_silence() {
         let mut meter = DictationMeter::new();
         meter.update(MicrophoneLevel::MAX);
-        assert_eq!(meter.text(), "▁▁▁▁█");
+        assert_eq!(meter.symbol(), '█');
 
         for _ in 0..20 {
             meter.update(MicrophoneLevel::SILENCE);
         }
-        assert_eq!(meter.text(), "▁▁▁▁▁");
+        assert_eq!(meter.symbol(), '▁');
     }
     use crate::tui::transcript::TranscriptItem;
 
