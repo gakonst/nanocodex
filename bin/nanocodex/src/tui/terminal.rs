@@ -376,6 +376,9 @@ fn activate_commands(output: &mut impl io::Write, report_all_keys: bool) -> io::
         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
         | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
     if report_all_keys {
+        // TODO: Crossterm can expose a split CSI-u sequence as literal text when the initial ESC
+        // arrives in a separate read. Track upstream keyboard parsing in
+        // https://github.com/crossterm-rs/crossterm/issues/685.
         flags |= KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
     }
     drop(execute!(output, PushKeyboardEnhancementFlags(flags)));

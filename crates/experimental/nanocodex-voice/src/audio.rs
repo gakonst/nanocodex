@@ -10,11 +10,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use nanocodex::oai::realtime::{REALTIME_SAMPLE_RATE, RealtimeAudio};
-use nanocodex_dictation::{
-    CaptureError,
-    audio::LinearResampler,
-    capture::{CaptureConfig, CaptureStream, Pcm16Chunk},
-};
+use nanocodex_audio::{CaptureConfig, CaptureError, CaptureStream, LinearResampler, Pcm16Chunk};
 use tokio::sync::mpsc;
 
 use crate::{AudioConfig, AudioError};

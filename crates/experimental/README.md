@@ -3,6 +3,10 @@
 This directory contains complete Nanocodex components whose APIs are still
 being exercised and revised:
 
+- [`nanocodex-audio`](nanocodex-audio/README.md): native PCM capture, channel
+  mixing, bounded chunking, and streaming sample-rate conversion.
+- [`nanocodex-dictation`](nanocodex-dictation/README.md): engine-neutral
+  streaming dictation with native capture and OpenAI transcription.
 - [`nanocodex-voice`](nanocodex-voice/README.md): default-device desktop audio
   and an owned GPT Realtime voice-to-agent lifecycle.
 - [`nanocodex-vm`](nanocodex-vm/README.md): VM lifecycle and image preparation

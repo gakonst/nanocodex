@@ -3,7 +3,6 @@ use tokio::sync::mpsc;
 use crate::CaptureError;
 
 /// Requested microphone conversion and chunking policy.
-#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CaptureConfig {
     /// Output sample rate after conversion.
@@ -13,7 +12,6 @@ pub struct CaptureConfig {
 }
 
 /// One fixed-size mono PCM16 microphone chunk.
-#[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Pcm16Chunk {
     /// Output sample rate.
@@ -23,7 +21,6 @@ pub struct Pcm16Chunk {
 }
 
 /// Synchronous capture gate shared with an owning lifecycle handle.
-#[doc(hidden)]
 #[derive(Clone, Default)]
 pub struct CaptureGate;
 
@@ -44,19 +41,18 @@ impl CaptureGate {
     }
 }
 
-/// Unsupported-platform default-device capture placeholder.
-#[doc(hidden)]
+/// Platform availability boundary for default-device capture.
 pub struct CaptureStream;
 
 impl CaptureStream {
-    /// Returns the typed platform availability error.
+    /// Reports the platforms that provide default-device capture.
     pub fn open(
         _config: CaptureConfig,
     ) -> Result<(Self, mpsc::Receiver<Pcm16Chunk>), CaptureError> {
         Err(CaptureError::UnsupportedPlatform)
     }
 
-    /// Returns the typed platform availability error.
+    /// Reports the platforms that provide default-device capture.
     pub fn open_with_gate(
         _config: CaptureConfig,
         _gate: CaptureGate,
@@ -64,6 +60,6 @@ impl CaptureStream {
         Err(CaptureError::UnsupportedPlatform)
     }
 
-    /// No-op on unsupported platforms.
+    /// Completes the platform availability boundary.
     pub const fn stop(&self) {}
 }

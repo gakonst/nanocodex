@@ -797,6 +797,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use nanocodex_dictation::MicrophoneLevel;
     use ratatex::{PixelSize, Ratatex, TerminalProfile};
     use ratatui::{
         Terminal,
@@ -877,12 +878,12 @@ mod tests {
         app.main.running = true;
         assert!(app.begin_dictation(3).is_some());
         app.set_dictation_started(3);
-        app.update_dictation_audio_level(3, i16::MAX as u16);
+        app.update_dictation_audio_level(3, MicrophoneLevel::MAX);
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
 
-        assert!(rendered.contains("● listening ⠤⠤⠤⣿ · "));
+        assert!(rendered.contains("● listening ▁▁▁▁█ · "));
         assert!(rendered.contains("Working (0s)"));
     }
 

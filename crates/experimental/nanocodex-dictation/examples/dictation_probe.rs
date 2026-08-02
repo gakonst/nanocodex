@@ -1,16 +1,16 @@
 use std::{io, path::PathBuf, time::Instant};
 
-use nanocodex_dictation::{ChatGptDictationBuilder, DictationEvent};
+use nanocodex_dictation::{DictationEvent, openai as openai_dictation};
 use nanocodex_oai_api::{OpenAi, auth::load_chatgpt_auth};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let auth_file = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .ok_or("usage: dictation_probe /path/to/auth.json")?;
-    let auth = load_chatgpt_auth(auth_file)?;
-    let openai = OpenAi::new(auth)?;
-    let (mut session, mut events) = ChatGptDictationBuilder::new(openai).spawn()?;
+    let openai = match std::env::args_os().nth(1).map(PathBuf::from) {
+        Some(auth_file) => OpenAi::new(load_chatgpt_auth(auth_file)?)?,
+        None => OpenAi::new(std::env::var("OPENAI_API_KEY").map_err(
+            |_| "usage: OPENAI_API_KEY=... dictation_probe, or dictation_probe /path/to/auth.json",
+        )?)?,
+    };
+    let (mut session, mut events) = openai_dictation::Builder::new(openai).spawn()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

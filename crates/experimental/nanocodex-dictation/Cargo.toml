@@ -14,13 +14,11 @@ categories.workspace = true
 description = "Experimental streaming dictation sessions for Nanocodex consumers"
 
 [dependencies]
+nanocodex-audio.workspace = true
 nanocodex-oai-api = { workspace = true, features = ["realtime"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing.workspace = true
-
-[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-cpal.workspace = true
 
 [lints]
 workspace = true

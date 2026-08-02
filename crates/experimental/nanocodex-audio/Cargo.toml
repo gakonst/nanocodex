@@ -1,5 +1,5 @@
 [package]
-name = "nanocodex-voice"
+name = "nanocodex-audio"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,23 +11,15 @@ repository.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Experimental desktop GPT Realtime voice sessions for Nanocodex agents"
+description = "Experimental native PCM capture and resampling for Nanocodex consumers"
 
 [dependencies]
-futures-util.workspace = true
-nanocodex = { workspace = true, features = ["realtime"] }
-nanocodex-audio.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
-whoami.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 cpal.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true

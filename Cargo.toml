@@ -5,6 +5,7 @@ members = [
     "bin/nanousd-api",
     "crates/nanocodex",
     "crates/nanocodex-agent",
+    "crates/experimental/nanocodex-audio",
     "crates/experimental/nanocodex-browser",
     "crates/experimental/nanocodex-dictation",
     "crates/experimental/nanocodex-egress",
@@ -68,6 +69,7 @@ krun = { package = "libkrun", version = "=2.0.0-dev", git = "https://github.com/
 mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "3e37469bb19434982b433ae44ea8c713f7ea923a", default-features = false }
 nanocodex = { version = "0.3.0", path = "crates/nanocodex" }
 nanocodex-agent = { version = "0.3.0", path = "crates/nanocodex-agent" }
+nanocodex-audio = { version = "0.3.0", path = "crates/experimental/nanocodex-audio" }
 nanocodex-browser = { version = "0.3.0", path = "crates/experimental/nanocodex-browser" }
 nanocodex-dictation = { version = "0.3.0", path = "crates/experimental/nanocodex-dictation" }
 nanocodex-egress = { version = "0.3.0", path = "crates/experimental/nanocodex-egress" }

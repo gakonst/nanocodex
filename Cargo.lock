@@ -4999,6 +4999,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocodex-audio"
+version = "0.3.0"
+dependencies = [
+ "cpal",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nanocodex-bin"
 version = "0.3.0"
 dependencies = [
@@ -5091,7 +5101,7 @@ dependencies = [
 name = "nanocodex-dictation"
 version = "0.3.0"
 dependencies = [
- "cpal",
+ "nanocodex-audio",
  "nanocodex-oai-api",
  "thiserror 2.0.18",
  "tokio",
@@ -5286,7 +5296,7 @@ dependencies = [
  "cpal",
  "futures-util",
  "nanocodex",
- "nanocodex-dictation",
+ "nanocodex-audio",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",

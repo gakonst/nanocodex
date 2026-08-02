@@ -2,7 +2,6 @@
 #![deny(missing_docs, rustdoc::broken_intra_doc_links)]
 
 use std::{
-    collections::VecDeque,
     future::Future,
     sync::{
         Arc, Mutex, PoisonError,
@@ -11,42 +10,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nanocodex_oai_api::{
-    OpenAi,
-    auth::OpenAiAuthMode,
-    realtime::{
-        RealtimeAudio, RealtimeError, RealtimeEvent, RealtimeSession, RealtimeTransport,
-        RealtimeVersion,
-    },
-};
+use nanocodex_audio::{CaptureConfig, CaptureError, CaptureGate, CaptureStream, Pcm16Chunk};
 use tokio::sync::{mpsc, oneshot};
 
-#[doc(hidden)]
-pub mod audio;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-#[doc(hidden)]
-pub mod capture;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-#[doc(hidden)]
-#[path = "capture_unsupported.rs"]
-pub mod capture;
-mod reducer;
+pub mod openai;
 
-use capture::{CaptureConfig, CaptureGate, CaptureStream, Pcm16Chunk};
-use reducer::TranscriptReducer;
-
-const CHATGPT_SAMPLE_RATE_HZ: u32 = 24_000;
-const CHATGPT_SAMPLES_PER_CHUNK: usize = 480;
-const CHUNK_DURATION: Duration = Duration::from_millis(20);
 const RETAINED_AUDIO_SECONDS: usize = 5;
-const CHATGPT_RETAINED_AUDIO_CHUNKS: usize =
-    RETAINED_AUDIO_SECONDS * CHATGPT_SAMPLE_RATE_HZ as usize / CHATGPT_SAMPLES_PER_CHUNK;
-const EARLY_FINISH_PREROLL_CHUNKS: usize = 15;
-const FINISH_TIMEOUT: Duration = Duration::from_secs(8);
-const NO_SPEECH_FINISH_TIMEOUT: Duration = Duration::from_secs(2);
-const FINALIZATION_GRACE: Duration = Duration::from_millis(500);
-const FINAL_SILENCE_CHUNKS: usize = CHATGPT_SAMPLE_RATE_HZ as usize / CHATGPT_SAMPLES_PER_CHUNK;
 const AUDIO_LEVEL_INTERVAL: Duration = Duration::from_millis(60);
+const CAPTURE_RELEASE_TAIL: Duration = Duration::from_millis(100);
 const ENGINE_CANCEL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Stable and revisable composer text for one dictation attempt.
@@ -58,6 +29,31 @@ pub struct DictationTranscript {
     pub unstable: String,
 }
 
+/// Capture-format-independent microphone peak for presentation and diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MicrophoneLevel(u16);
+
+impl MicrophoneLevel {
+    /// Complete silence.
+    pub const SILENCE: Self = Self(0);
+    /// The largest representable microphone level.
+    pub const MAX: Self = Self(i16::MAX as u16);
+
+    /// Returns the linear peak normalized to `0.0..=1.0`.
+    #[must_use]
+    pub fn normalized(self) -> f64 {
+        f64::from(self.0) / f64::from(i16::MAX)
+    }
+
+    const fn from_pcm16_peak(peak: u16) -> Self {
+        Self(if peak > i16::MAX as u16 {
+            i16::MAX as u16
+        } else {
+            peak
+        })
+    }
+}
+
 /// One normalized update from an independent dictation lifecycle.
 #[derive(Debug)]
 pub enum DictationEvent {
@@ -67,15 +63,15 @@ pub enum DictationEvent {
     Started,
     /// The speech-to-text engine is ready to consume retained and live audio.
     EngineReady,
-    /// Latest microphone peak, coalesced when the consumer falls behind.
-    AudioLevel(u16),
+    /// Latest normalized microphone peak, coalesced when the consumer falls behind.
+    AudioLevel(MicrophoneLevel),
     /// The current stable and revisable transcript replacement.
     Transcript(DictationTranscript),
     /// Text selected for insertion after clean close or stable recovery.
     Finished(String),
-    /// The attempt completed normally without detected speech.
+    /// The attempt completed normally and detected silence.
     NoSpeech,
-    /// The attempt failed without committable text.
+    /// The attempt ended with an engine or capture failure.
     Failed(DictationError),
     /// The attempt stopped after cancellation or terminal settlement.
     Stopped,
@@ -107,8 +103,8 @@ impl DictationEvents {
             QueuedEvent::Lifecycle(event) => event,
             QueuedEvent::Transcript => {
                 // Clear the marker before reading the latest value. A producer
-                // racing this read will either be observed here or enqueue the
-                // next marker; it cannot leave an update permanently unqueued.
+                // racing this read is either observed here or enqueues the next
+                // marker, preserving delivery of the latest replacement.
                 self.transcript_pending.store(false, Ordering::Release);
                 let latest = self
                     .latest_transcript
@@ -118,7 +114,9 @@ impl DictationEvents {
             }
             QueuedEvent::AudioLevel => {
                 self.audio_level_pending.store(false, Ordering::Release);
-                DictationEvent::AudioLevel(self.latest_audio_level.load(Ordering::Acquire))
+                DictationEvent::AudioLevel(MicrophoneLevel(
+                    self.latest_audio_level.load(Ordering::Acquire),
+                ))
             }
         }
     }
@@ -206,8 +204,8 @@ pub enum SpeechToTextControl {
 
 /// Receiver for bounded microphone audio.
 ///
-/// Capture remains realtime: if an engine does not drain the retained queue,
-/// newer chunks may be discarded rather than growing memory without bound.
+/// Capture remains realtime through a bounded queue that discards newer chunks
+/// during engine backpressure.
 pub struct SpeechAudioStream {
     receiver: mpsc::Receiver<SpeechAudio>,
 }
@@ -305,7 +303,7 @@ impl<E: SpeechToTextEngine> DictationBuilder<E> {
     ///
     /// # Errors
     ///
-    /// Returns an error only when the lifecycle thread cannot be created.
+    /// Returns an error when lifecycle thread creation fails.
     /// Runtime, device, and engine failures arrive as [`DictationEvent::Failed`].
     pub fn spawn(self) -> Result<(DictationSession, DictationEvents), DictationError> {
         let (events, receiver) = event_channel();
@@ -336,30 +334,6 @@ impl<E: SpeechToTextEngine> DictationBuilder<E> {
     }
 }
 
-/// ChatGPT Realtime speech-to-text engine using the application's OpenAI recipe.
-pub struct ChatGptSpeechToText {
-    openai: OpenAi,
-}
-
-impl ChatGptSpeechToText {
-    /// Creates the ChatGPT engine from the application's existing OpenAI recipe.
-    #[must_use]
-    pub const fn new(openai: OpenAi) -> Self {
-        Self { openai }
-    }
-}
-
-/// Convenience builder for the currently configured ChatGPT engine.
-pub type ChatGptDictationBuilder = DictationBuilder<ChatGptSpeechToText>;
-
-impl DictationBuilder<ChatGptSpeechToText> {
-    /// Creates a builder from the application's existing OpenAI recipe.
-    #[must_use]
-    pub const fn new(openai: OpenAi) -> Self {
-        Self::with_engine(ChatGptSpeechToText::new(openai))
-    }
-}
-
 /// Cheap synchronous control handle for one dictation lifecycle.
 pub struct DictationSession {
     control: mpsc::UnboundedSender<Control>,
@@ -369,9 +343,8 @@ pub struct DictationSession {
 }
 
 impl DictationSession {
-    /// Stops capture synchronously and requests ordered flush and close.
+    /// Requests a short microphone tail followed by ordered flush and close.
     pub fn finish(&self) {
-        self.capture_gate.stop();
         let _ = self.control.send(Control::Finish);
     }
 
@@ -429,8 +402,6 @@ enum Control {
 pub enum DictationErrorKind {
     /// The owned runtime thread could not be created or initialized.
     Runtime,
-    /// The selected engine does not support the supplied authorization mode.
-    UnsupportedAuth,
     /// The operating system denied microphone access.
     Permission,
     /// Microphone configuration, startup, or streaming failed.
@@ -484,28 +455,6 @@ pub enum DictationShutdownError {
     /// The lifecycle exited without publishing its terminal result.
     #[error("dictation lifecycle completion channel closed")]
     CompletionChannel,
-}
-
-/// Failure to configure or operate the default microphone.
-#[derive(Debug, thiserror::Error)]
-pub enum CaptureError {
-    /// No default microphone exists.
-    #[error("no default microphone is available")]
-    NoInputDevice,
-    /// Capture policy is internally inconsistent.
-    #[error("invalid microphone capture policy: {0}")]
-    InvalidConfig(&'static str),
-    /// The native audio backend rejected an operation.
-    #[error("{operation}: {message}")]
-    Backend {
-        /// Failed operation.
-        operation: &'static str,
-        /// Backend diagnostic.
-        message: String,
-    },
-    /// Default-device capture is unavailable on this target.
-    #[error("default microphone capture is currently supported on macOS and Windows")]
-    UnsupportedPlatform,
 }
 
 fn run_thread<E: SpeechToTextEngine>(
@@ -568,7 +517,10 @@ async fn run_lifecycle<E: SpeechToTextEngine>(
     );
     tokio::pin!(attempt);
     let cancel_deadline = tokio::time::sleep(ENGINE_CANCEL_TIMEOUT);
+    let capture_tail_deadline = tokio::time::sleep(CAPTURE_RELEASE_TAIL);
     tokio::pin!(cancel_deadline);
+    tokio::pin!(capture_tail_deadline);
+    let mut finish_pending = false;
     let mut finishing = false;
     let mut cancelling = false;
     let mut next_audio_level = Instant::now();
@@ -577,17 +529,16 @@ async fn run_lifecycle<E: SpeechToTextEngine>(
             biased;
             command = commands.recv(), if !cancelling => {
                 match command.unwrap_or(Control::Cancel) {
-                    Control::Finish if !finishing => {
-                        capture.stop();
-                        while let Ok(chunk) = microphone.try_recv() {
-                            queue_engine_audio(&audio_sender, chunk);
-                        }
-                        finishing = true;
-                        let _ = control_sender.send(SpeechToTextControl::Finish);
+                    Control::Finish if !finishing && !finish_pending => {
+                        finish_pending = true;
+                        capture_tail_deadline
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + CAPTURE_RELEASE_TAIL);
                     }
                     Control::Finish => {}
                     Control::Cancel => {
                         capture.stop();
+                        finish_pending = false;
                         finishing = true;
                         cancelling = true;
                         let _ = control_sender.send(SpeechToTextControl::Cancel);
@@ -628,8 +579,17 @@ async fn run_lifecycle<E: SpeechToTextEngine>(
                 publish_audio_level(events, &chunk, &mut next_audio_level);
                 queue_engine_audio(&audio_sender, chunk);
             }
+            () = &mut capture_tail_deadline, if finish_pending => {
+                capture.stop();
+                while let Ok(chunk) = microphone.try_recv() {
+                    queue_engine_audio(&audio_sender, chunk);
+                }
+                finish_pending = false;
+                finishing = true;
+                let _ = control_sender.send(SpeechToTextControl::Finish);
+            }
             () = &mut cancel_deadline, if cancelling => {
-                tracing::warn!("speech-to-text engine did not stop within the cancellation timeout");
+                tracing::warn!("speech-to-text engine cancellation deadline elapsed");
                 return Ok(());
             }
         }
@@ -637,331 +597,12 @@ async fn run_lifecycle<E: SpeechToTextEngine>(
 }
 
 fn queue_engine_audio(sender: &mpsc::Sender<SpeechAudio>, chunk: Pcm16Chunk) {
-    // The engine queue retains five seconds in addition to the callback queue.
-    // A stalled engine must not turn live capture into unbounded allocation.
+    // The engine queue retains five seconds in addition to the callback queue,
+    // bounding allocation during engine backpressure.
     drop(sender.try_send(SpeechAudio {
         sample_rate_hz: chunk.sample_rate_hz,
         samples: chunk.samples,
     }));
-}
-
-impl SpeechToTextEngine for ChatGptSpeechToText {
-    fn audio_format(&self) -> SpeechAudioFormat {
-        SpeechAudioFormat::new(CHATGPT_SAMPLE_RATE_HZ, CHATGPT_SAMPLES_PER_CHUNK)
-    }
-
-    fn run(
-        self,
-        audio: SpeechAudioStream,
-        controls: SpeechToTextControls,
-        output: SpeechToTextOutput,
-    ) -> impl Future<Output = Result<SpeechToTextOutcome, DictationError>> {
-        run_chatgpt(self, audio, controls, output)
-    }
-}
-
-async fn run_chatgpt(
-    engine: ChatGptSpeechToText,
-    mut audio: SpeechAudioStream,
-    mut controls: SpeechToTextControls,
-    output: SpeechToTextOutput,
-) -> Result<SpeechToTextOutcome, DictationError> {
-    if engine.openai.auth_mode() != OpenAiAuthMode::ChatGpt {
-        return Err(DictationError::new(
-            DictationErrorKind::UnsupportedAuth,
-            "ChatGPT dictation requires managed ChatGPT authorization".to_owned(),
-        ));
-    }
-    let connect = engine
-        .openai
-        .realtime("Transcribe the user's microphone input. Do not respond or speak.")
-        .version(RealtimeVersion::V3)
-        .transport(RealtimeTransport::WebRtc)
-        .client_managed_handoffs(true)
-        .connect();
-    tokio::pin!(connect);
-    let mut queued = VecDeque::with_capacity(CHATGPT_RETAINED_AUDIO_CHUNKS);
-    let mut requested = None;
-    let (connection, mut server_events) = loop {
-        tokio::select! {
-            result = &mut connect => break result.map_err(map_realtime)?,
-            command = controls.recv() => {
-                let command = command.unwrap_or(SpeechToTextControl::Cancel);
-                requested = Some(command);
-                if matches!(command, SpeechToTextControl::Cancel) {
-                    return Ok(SpeechToTextOutcome::Cancelled);
-                }
-            }
-            chunk = audio.recv(), if requested.is_none() => {
-                let Some(chunk) = chunk else {
-                    return Err(DictationError::new(
-                        DictationErrorKind::Transport,
-                        "dictation audio stream stopped".to_owned(),
-                    ));
-                };
-                retain_audio(&mut queued, chunk);
-            }
-        }
-    };
-    output.ready();
-    let mut reducer = TranscriptReducer::default();
-    let mut finishing = matches!(requested, Some(SpeechToTextControl::Finish));
-    let mut heard_speech = false;
-    if finishing {
-        drain_available_audio(&mut audio, &mut queued);
-    }
-    send_preconnect_audio(&connection, &mut queued, finishing).await?;
-    let mut silence_chunks = 0_usize;
-    let finish_deadline = tokio::time::sleep(FINISH_TIMEOUT);
-    let settle_grace = tokio::time::sleep(FINALIZATION_GRACE);
-    let mut final_silence = tokio::time::interval(CHUNK_DURATION);
-    final_silence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    tokio::pin!(finish_deadline);
-    tokio::pin!(settle_grace);
-    if finishing {
-        finish_deadline
-            .as_mut()
-            .reset(tokio::time::Instant::now() + NO_SPEECH_FINISH_TIMEOUT);
-        settle_grace
-            .as_mut()
-            .reset(tokio::time::Instant::now() + FINALIZATION_GRACE);
-    }
-    loop {
-        tokio::select! {
-            command = controls.recv() => {
-                match command.unwrap_or(SpeechToTextControl::Cancel) {
-                    SpeechToTextControl::Finish if !finishing => {
-                        while let Some(chunk) = audio.try_recv() {
-                            send_chunk(&connection, chunk).await?;
-                        }
-                        finishing = true;
-                        silence_chunks = 0;
-                        let timeout = if heard_speech {
-                            FINISH_TIMEOUT
-                        } else {
-                            NO_SPEECH_FINISH_TIMEOUT
-                        };
-                        finish_deadline.as_mut().reset(tokio::time::Instant::now() + timeout);
-                        settle_grace.as_mut().reset(tokio::time::Instant::now() + FINALIZATION_GRACE);
-                    }
-                    SpeechToTextControl::Finish => {}
-                    SpeechToTextControl::Cancel => {
-                        let _ = connection.close().await;
-                        return Ok(SpeechToTextOutcome::Cancelled);
-                    }
-                }
-            }
-            chunk = audio.recv(), if !finishing => {
-                let Some(chunk) = chunk else {
-                    return Err(DictationError::new(
-                        DictationErrorKind::Transport,
-                        "dictation audio stream stopped".to_owned(),
-                    ));
-                };
-                send_chunk(&connection, chunk).await?;
-            }
-            event = server_events.recv() => {
-                let event = match event {
-                    Some(event) => event,
-                    None => return settle_recovery(&reducer, RealtimeError::Closed),
-                };
-                match event {
-                    RealtimeEvent::InputTranscriptDelta(delta) => {
-                        if reducer.push_delta(&delta) {
-                            output.transcript(reducer.transcript());
-                            if finishing {
-                                settle_grace.as_mut().reset(
-                                    tokio::time::Instant::now() + FINALIZATION_GRACE,
-                                );
-                            }
-                        }
-                    }
-                    RealtimeEvent::InputTranscriptDone(text) => {
-                        if reducer.finish_utterance(&text) {
-                            output.transcript(reducer.transcript());
-                        }
-                        if finishing {
-                            return settle_finished(&mut reducer, &connection, heard_speech).await;
-                        }
-                    }
-                    RealtimeEvent::TranscriptTail(entries) => {
-                        if recover_tail(&mut reducer, entries) {
-                            output.transcript(reducer.transcript());
-                        }
-                    }
-                    RealtimeEvent::Error(message) => {
-                        return settle_recovery(
-                            &reducer,
-                            RealtimeError::WebSocket(message),
-                        );
-                    }
-                    RealtimeEvent::SpeechStarted => {
-                        if finishing && !heard_speech {
-                            finish_deadline
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + FINISH_TIMEOUT);
-                        }
-                        heard_speech = true;
-                    }
-                    RealtimeEvent::SessionReady { .. }
-                    | RealtimeEvent::OutputTranscriptDelta(_)
-                    | RealtimeEvent::OutputTranscriptDone(_)
-                    | RealtimeEvent::Audio(_)
-                    | RealtimeEvent::AgentRequest { .. }
-                    | RealtimeEvent::RemainSilent { .. }
-                    | RealtimeEvent::ResponseStarted
-                    | RealtimeEvent::ResponseDone => {}
-                }
-            }
-            _ = final_silence.tick(), if finishing && silence_chunks < FINAL_SILENCE_CHUNKS => {
-                send_silence(&connection).await?;
-                silence_chunks += 1;
-            }
-            () = &mut settle_grace,
-                if finishing
-                    && !reducer.committable_text().is_empty() =>
-            {
-                return settle_finished(&mut reducer, &connection, heard_speech).await;
-            }
-            () = &mut finish_deadline, if finishing => {
-                let _ = recover_close_tail(&mut reducer, &connection).await;
-                let text = reducer.committable_text();
-                if text.is_empty() {
-                    return settle_empty(heard_speech, true);
-                }
-                return Ok(SpeechToTextOutcome::Finished(text));
-            }
-        }
-    }
-}
-
-fn drain_available_audio(audio: &mut SpeechAudioStream, retained: &mut VecDeque<SpeechAudio>) {
-    while let Some(chunk) = audio.try_recv() {
-        retain_audio(retained, chunk);
-    }
-}
-
-fn retain_audio(retained: &mut VecDeque<SpeechAudio>, chunk: SpeechAudio) {
-    if retained.len() == CHATGPT_RETAINED_AUDIO_CHUNKS {
-        let _ = retained.pop_front();
-    }
-    retained.push_back(chunk);
-}
-
-async fn send_preconnect_audio(
-    connection: &RealtimeSession,
-    queued: &mut VecDeque<SpeechAudio>,
-    finishing: bool,
-) -> Result<(), DictationError> {
-    if !finishing {
-        while let Some(chunk) = queued.pop_front() {
-            send_chunk(connection, chunk).await?;
-        }
-        return Ok(());
-    }
-
-    let mut pace = tokio::time::interval(CHUNK_DURATION);
-    pace.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    for _ in 0..EARLY_FINISH_PREROLL_CHUNKS {
-        pace.tick().await;
-        send_silence(connection).await?;
-    }
-    while let Some(chunk) = queued.pop_front() {
-        pace.tick().await;
-        send_chunk(connection, chunk).await?;
-    }
-    Ok(())
-}
-
-async fn send_silence(connection: &RealtimeSession) -> Result<(), DictationError> {
-    connection
-        .send_audio(RealtimeAudio::from_samples(
-            [0_i16; CHATGPT_SAMPLES_PER_CHUNK],
-        ))
-        .await
-        .map_err(map_realtime)
-}
-
-async fn send_chunk(
-    connection: &RealtimeSession,
-    chunk: SpeechAudio,
-) -> Result<(), DictationError> {
-    if chunk.sample_rate_hz != CHATGPT_SAMPLE_RATE_HZ {
-        return Err(DictationError::new(
-            DictationErrorKind::Capture,
-            format!("microphone produced {} Hz audio", chunk.sample_rate_hz),
-        ));
-    }
-    connection
-        .send_audio(RealtimeAudio::from_samples(chunk.samples))
-        .await
-        .map_err(map_realtime)
-}
-
-async fn settle_finished(
-    reducer: &mut TranscriptReducer,
-    connection: &RealtimeSession,
-    heard_speech: bool,
-) -> Result<SpeechToTextOutcome, DictationError> {
-    recover_close_tail(reducer, connection).await?;
-    let text = reducer.committable_text();
-    if text.is_empty() {
-        return settle_empty(heard_speech, false);
-    }
-    Ok(SpeechToTextOutcome::Finished(text))
-}
-
-fn settle_empty(
-    heard_speech: bool,
-    timed_out: bool,
-) -> Result<SpeechToTextOutcome, DictationError> {
-    match (heard_speech, timed_out) {
-        (false, _) => Ok(SpeechToTextOutcome::NoSpeech),
-        (true, true) => Err(DictationError::new(
-            DictationErrorKind::FinishTimeout,
-            "dictation finalization timed out after speech was detected".to_owned(),
-        )),
-        (true, false) => Err(DictationError::new(
-            DictationErrorKind::Protocol,
-            "dictation detected speech but finished without transcript text".to_owned(),
-        )),
-    }
-}
-
-async fn recover_close_tail(
-    reducer: &mut TranscriptReducer,
-    connection: &RealtimeSession,
-) -> Result<(), DictationError> {
-    let tail = connection
-        .close_with_transcript_tail()
-        .await
-        .map_err(map_realtime)?;
-    recover_tail(reducer, tail);
-    Ok(())
-}
-
-fn recover_tail(
-    reducer: &mut TranscriptReducer,
-    entries: Vec<nanocodex_oai_api::realtime::RealtimeTranscriptEntry>,
-) -> bool {
-    reducer.replace_finalized(
-        entries
-            .into_iter()
-            .filter(|entry| entry.role == "user")
-            .map(|entry| entry.text),
-    )
-}
-
-fn settle_recovery(
-    reducer: &TranscriptReducer,
-    error: RealtimeError,
-) -> Result<SpeechToTextOutcome, DictationError> {
-    let text = reducer.committable_text();
-    if text.is_empty() {
-        Err(map_realtime(error))
-    } else {
-        Ok(SpeechToTextOutcome::Finished(text))
-    }
 }
 
 fn send_event(events: &EventSender, event: DictationEvent) {
@@ -980,7 +621,7 @@ fn send_event(events: &EventSender, event: DictationEvent) {
             }
         }
         DictationEvent::AudioLevel(level) => {
-            events.latest_audio_level.store(level, Ordering::Release);
+            events.latest_audio_level.store(level.0, Ordering::Release);
             if events.audio_level_pending.swap(true, Ordering::AcqRel) {
                 return;
             }
@@ -1004,7 +645,10 @@ fn publish_audio_level(events: &EventSender, chunk: &Pcm16Chunk, next_audio_leve
         .map(|sample| sample.unsigned_abs())
         .max()
         .unwrap_or(0);
-    send_event(events, DictationEvent::AudioLevel(peak));
+    send_event(
+        events,
+        DictationEvent::AudioLevel(MicrophoneLevel::from_pcm16_peak(peak)),
+    );
 }
 
 fn map_capture(error: CaptureError) -> DictationError {
@@ -1022,42 +666,11 @@ fn map_capture(error: CaptureError) -> DictationError {
     DictationError::new(kind, error.to_string())
 }
 
-fn map_realtime(error: RealtimeError) -> DictationError {
-    let kind = match error {
-        RealtimeError::Authentication(_) | RealtimeError::InvalidAuthorization(_) => {
-            DictationErrorKind::Authorization
-        }
-        RealtimeError::InvalidConfiguration(_)
-        | RealtimeError::InvalidInstructions
-        | RealtimeError::InvalidModel
-        | RealtimeError::InvalidVoice(_)
-        | RealtimeError::InvalidAudio(_)
-        | RealtimeError::InvalidInitialItems(_)
-        | RealtimeError::InvalidSessionId(_)
-        | RealtimeError::Message(_) => DictationErrorKind::Protocol,
-        RealtimeError::InvalidUrl(_)
-        | RealtimeError::ConnectTimeout
-        | RealtimeError::Http(_)
-        | RealtimeError::WebRtc(_) => DictationErrorKind::Connect,
-        RealtimeError::SendTimeout | RealtimeError::Closed | RealtimeError::WebSocket(_) => {
-            DictationErrorKind::Transport
-        }
-    };
-    DictationError::new(kind, error.to_string())
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-
-    use nanocodex_oai_api::realtime::{RealtimeError, RealtimeTranscriptEntry};
-    use tokio::sync::mpsc;
-
     use super::{
-        CHATGPT_SAMPLE_RATE_HZ, DictationErrorKind, DictationEvent, DictationTranscript,
-        SpeechAudio, SpeechAudioFormat, SpeechAudioStream, SpeechToTextOutcome, TranscriptReducer,
-        drain_available_audio, event_channel, recover_tail, retained_audio_chunks, send_event,
-        settle_empty, settle_recovery,
+        DictationEvent, DictationTranscript, MicrophoneLevel, SpeechAudioFormat, event_channel,
+        retained_audio_chunks, send_event,
     };
 
     #[test]
@@ -1102,91 +715,38 @@ mod tests {
     #[test]
     fn audio_level_backlog_is_coalesced() {
         let (events, mut receiver) = event_channel();
-        send_event(&events, DictationEvent::AudioLevel(10));
-        send_event(&events, DictationEvent::AudioLevel(20));
+        send_event(
+            &events,
+            DictationEvent::AudioLevel(MicrophoneLevel::from_pcm16_peak(10)),
+        );
+        send_event(
+            &events,
+            DictationEvent::AudioLevel(MicrophoneLevel::from_pcm16_peak(20)),
+        );
 
         assert!(matches!(
             receiver.try_recv(),
-            Some(DictationEvent::AudioLevel(20))
+            Some(DictationEvent::AudioLevel(MicrophoneLevel(20)))
         ));
 
-        send_event(&events, DictationEvent::AudioLevel(30));
+        send_event(
+            &events,
+            DictationEvent::AudioLevel(MicrophoneLevel::from_pcm16_peak(30)),
+        );
         assert!(matches!(
             receiver.try_recv(),
-            Some(DictationEvent::AudioLevel(30))
+            Some(DictationEvent::AudioLevel(MicrophoneLevel(30)))
         ));
     }
 
     #[test]
-    fn empty_finish_distinguishes_no_speech_from_failed_transcription() {
+    fn microphone_level_normalizes_and_clamps_the_capture_sample_scale() {
+        assert_eq!(MicrophoneLevel::SILENCE.normalized(), 0.0);
+        assert_eq!(MicrophoneLevel::MAX.normalized(), 1.0);
         assert_eq!(
-            settle_empty(false, true).unwrap(),
-            SpeechToTextOutcome::NoSpeech
+            MicrophoneLevel::from_pcm16_peak(i16::MIN.unsigned_abs()),
+            MicrophoneLevel::MAX
         );
-        assert_eq!(
-            settle_empty(true, true).unwrap_err().kind(),
-            DictationErrorKind::FinishTimeout
-        );
-        assert_eq!(
-            settle_empty(true, false).unwrap_err().kind(),
-            DictationErrorKind::Protocol
-        );
-    }
-
-    #[test]
-    fn transport_close_commits_all_available_text() {
-        let mut reducer = TranscriptReducer::default();
-        assert!(reducer.finish_utterance("stable"));
-        assert!(reducer.push_delta("latest words"));
-
-        assert_eq!(
-            settle_recovery(&reducer, RealtimeError::Closed).unwrap(),
-            SpeechToTextOutcome::Finished("stable latest words".to_owned())
-        );
-    }
-
-    #[test]
-    fn early_finish_drains_audio_already_handed_to_the_engine() {
-        let (sender, receiver) = mpsc::channel(2);
-        for sample in [1_i16, 2] {
-            sender
-                .try_send(SpeechAudio {
-                    sample_rate_hz: CHATGPT_SAMPLE_RATE_HZ,
-                    samples: Box::new([sample]),
-                })
-                .unwrap();
-        }
-        let mut audio = SpeechAudioStream { receiver };
-        let mut retained = VecDeque::new();
-
-        drain_available_audio(&mut audio, &mut retained);
-
-        assert_eq!(
-            retained
-                .iter()
-                .map(|chunk| chunk.samples[0])
-                .collect::<Vec<_>>(),
-            [1, 2]
-        );
-    }
-
-    #[test]
-    fn chatgpt_tail_recovery_keeps_only_user_transcripts() {
-        let mut reducer = TranscriptReducer::default();
-        assert!(recover_tail(
-            &mut reducer,
-            vec![
-                RealtimeTranscriptEntry {
-                    role: "assistant".to_owned(),
-                    text: "ignored".to_owned(),
-                },
-                RealtimeTranscriptEntry {
-                    role: "user".to_owned(),
-                    text: "recovered".to_owned(),
-                },
-            ],
-        ));
-        assert_eq!(reducer.committable_text(), "recovered");
     }
 
     #[test]

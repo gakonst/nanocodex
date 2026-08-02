@@ -1,5 +1,5 @@
 use nanocodex::oai::realtime::RealtimeAudio;
-use nanocodex_dictation::capture::Pcm16Chunk;
+use nanocodex_audio::Pcm16Chunk;
 use tokio::sync::mpsc;
 
 use crate::{AudioConfig, AudioError};

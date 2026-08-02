@@ -1,4 +1,4 @@
-/// Streaming linear PCM sample-rate converter shared by native audio consumers.
+/// Streaming linear PCM sample-rate converter.
 pub struct LinearResampler {
     step: f64,
     position: f64,

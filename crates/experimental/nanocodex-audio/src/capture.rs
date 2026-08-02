@@ -13,13 +13,12 @@ use cpal::{
 };
 use tokio::sync::mpsc;
 
-use crate::{CaptureError, audio::LinearResampler};
+use crate::{CaptureError, LinearResampler};
 
 const CAPTURE_QUEUE_CHUNKS: usize = 8;
 const DEVICE_CALLBACK_CAPACITY: usize = 4_096;
 
 /// Requested microphone conversion and chunking policy.
-#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CaptureConfig {
     /// Output sample rate after linear conversion.
@@ -29,7 +28,6 @@ pub struct CaptureConfig {
 }
 
 /// One fixed-size mono PCM16 microphone chunk.
-#[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Pcm16Chunk {
     /// Output sample rate.
@@ -39,7 +37,6 @@ pub struct Pcm16Chunk {
 }
 
 /// Synchronous capture gate shared with an owning lifecycle handle.
-#[doc(hidden)]
 #[derive(Clone, Default)]
 pub struct CaptureGate {
     active: Arc<AtomicBool>,
@@ -67,7 +64,6 @@ impl CaptureGate {
 }
 
 /// Owned default-device microphone stream.
-#[doc(hidden)]
 pub struct CaptureStream {
     _stream: Stream,
     gate: CaptureGate,

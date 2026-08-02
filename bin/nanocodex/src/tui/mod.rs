@@ -35,7 +35,8 @@ use nanocodex::{
     tools::mcp::McpHandle,
 };
 use nanocodex_dictation::{
-    ChatGptDictationBuilder, DictationEvent, DictationEvents, DictationSession, DictationTranscript,
+    DictationEvent, DictationEvents, DictationSession, DictationTranscript, MicrophoneLevel,
+    openai as openai_dictation,
 };
 use nanocodex_voice::{
     CHATGPT_REALTIME_VOICES, PLATFORM_REALTIME_VOICES, RealtimeVoice, VoiceAgentControl,
@@ -268,7 +269,7 @@ enum WorkerEvent {
     },
     DictationAudioLevel {
         id: u64,
-        peak: u16,
+        level: MicrophoneLevel,
     },
     DictationFinished {
         id: u64,
@@ -588,14 +589,18 @@ impl UiModel {
                     WorkerEvent::DictationTranscript { id, transcript } => {
                         self.dictation.transcript(id, transcript, &mut self.app);
                     }
-                    WorkerEvent::DictationAudioLevel { id, peak } => {
-                        self.dictation.audio_level(id, peak, &mut self.app);
+                    WorkerEvent::DictationAudioLevel { id, level } => {
+                        self.dictation.audio_level(id, level, &mut self.app);
                     }
                     WorkerEvent::DictationFinished { id, text } => {
-                        self.dictation.finished(id, &text, &mut self.app);
+                        if let Some(intent) = self.dictation.finished(id, &text, &mut self.app) {
+                            submit(&mut self.app, &self.root_session_id, commands, intent)?;
+                        }
                     }
                     WorkerEvent::DictationNoSpeech { id } => {
-                        self.dictation.no_speech(id, &mut self.app);
+                        if let Some(intent) = self.dictation.no_speech(id, &mut self.app) {
+                            submit(&mut self.app, &self.root_session_id, commands, intent)?;
+                        }
                     }
                     WorkerEvent::DictationFailed { id, error } => {
                         self.dictation.failed(id, error, &mut self.app);
@@ -633,7 +638,7 @@ impl UiModel {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SubmitIntent {
     Immediate,
     Queue,
@@ -1284,7 +1289,7 @@ fn forward_dictation_events(
                 DictationEvent::Transcript(transcript) => {
                     WorkerEvent::DictationTranscript { id, transcript }
                 }
-                DictationEvent::AudioLevel(peak) => WorkerEvent::DictationAudioLevel { id, peak },
+                DictationEvent::AudioLevel(level) => WorkerEvent::DictationAudioLevel { id, level },
                 DictationEvent::Finished(text) => WorkerEvent::DictationFinished { id, text },
                 DictationEvent::NoSpeech => WorkerEvent::DictationNoSpeech { id },
                 DictationEvent::Failed(error) => WorkerEvent::DictationFailed {
@@ -1388,18 +1393,18 @@ impl AgentWorker {
             }));
             return;
         }
-        // The UI only permits a new start after the previous attempt has
-        // settled. Join that retained terminal session before replacing it so
-        // an immediate retry never sees a spurious "still active" failure.
+        // The UI permits a new start after the previous attempt has settled.
+        // Joining that retained terminal session gives the retry sole session
+        // ownership before replacement.
         self.stop_dictation().await;
         let Some(openai) = self.realtime.clone() else {
             drop(self.updates.send(WorkerEvent::DictationFailed {
                 id,
-                error: "dictation is unavailable with the selected paid provider".to_owned(),
+                error: "dictation requires OpenAI authentication".to_owned(),
             }));
             return;
         };
-        match ChatGptDictationBuilder::new(openai).spawn() {
+        match openai_dictation::Builder::new(openai).spawn() {
             Ok((session, events)) => {
                 forward_dictation_events(id, events, self.updates.clone());
                 self.dictation = Some((id, session));
@@ -3025,6 +3030,11 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
     if trimmed == "/trace" {
         return Submission::Trace;
     }
+    if trimmed == "/dictate" {
+        return Submission::InvalidCommand(
+            "Start Nanocodex with --dictation to use voice input.".to_owned(),
+        );
+    }
     if trimmed == "/voice" {
         return Submission::Voice(VoiceControl::Toggle);
     }
@@ -3206,6 +3216,12 @@ mod tests {
         assert_eq!(
             classify_submission(" /trace ".to_owned()),
             Submission::Trace
+        );
+        assert_eq!(
+            classify_submission(" /dictate "),
+            Submission::InvalidCommand(
+                "Start Nanocodex with --dictation to use voice input.".to_owned()
+            )
         );
         assert_eq!(
             classify_submission(" /voice "),

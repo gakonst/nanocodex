@@ -134,20 +134,29 @@ path.
 
 ## Streaming dictation (experimental)
 
-Run the interactive TUI with ChatGPT-subscription dictation enabled:
+Run the interactive TUI with dictation enabled using either the selected
+ChatGPT subscription or Platform API-key authorization:
 
 ```sh
 nanocodex auth login # once; shares ~/.codex/auth.json with Codex
 cargo run -p nanocodex-bin -- --dictation
+
+# Or use Platform billing through an API key:
+cargo run -p nanocodex-bin -- --api-key "$OPENAI_API_KEY" --dictation
 ```
+
+API keys use OpenAI's dedicated Realtime transcription WebSocket. Subscription
+credentials use the managed ChatGPT Realtime WebRTC path.
 
 Hold Space briefly to start streaming speech into the composer, then release it
 to finalize. A normal Space tap always inserts a space. The footer shows a live
 microphone meter beside any concurrent agent activity. For longer dictation,
-press Ctrl+X followed by V to start and use the same sequence to finalize. The
-existing draft stays untouched; completed speech is inserted at the captured
-cursor, and Enter still submits explicitly. The equivalent
-environment setting is `NANOCODEX_DICTATION=true`.
+start with a clear composer, type `/dictate`, and press Enter; press Enter again
+to finalize and send (or steer an active turn), Tab to finalize and queue the
+next prompt, or Escape to cancel. Submission occurs after the transcript reaches
+its final form. Hold-Space preserves the existing draft and inserts completed
+speech at the captured cursor. The equivalent environment setting is
+`NANOCODEX_DICTATION=true`.
 
 Hold-Space uses terminal key-release support. Terminals with Kitty keyboard
 enhancement support also provide hold-right-Option as an alias. Nanocodex

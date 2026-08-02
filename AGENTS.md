@@ -65,6 +65,9 @@
 - `nanocodex-tools/macros` contains the `nanocodex-tools-macros` package that
   implements `#[tool]`. Keep the executable under `bin/nanocodex`; do not move
   CLI behavior into the library.
+- The experimental `nanocodex-audio` crate owns native PCM capture and
+  resampling shared by voice and dictation. `nanocodex-dictation` owns the
+  engine-neutral dictation lifecycle and concrete speech-to-text engines.
 - The unpublished experimental `nanocodex-egress` crate owns the authenticated
   loopback HTTP(S) proxy, ephemeral CA, bounded forwarding, and ordered outbound
   layer seam. Provider and payment behavior stays in the consuming application.

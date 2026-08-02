@@ -46,6 +46,7 @@ pub const REALTIME_CHANNELS: u16 = 1;
 pub const REALTIME_MODEL: &str = "gpt-realtime-1.5";
 /// Default model used by ChatGPT-authenticated Codex voice sessions.
 pub const CHATGPT_REALTIME_MODEL: &str = "gpt-live-1-boulder-alpha";
+const REALTIME_TRANSCRIPTION_MODEL: &str = "gpt-live-transcribe";
 
 /// Voices supported by Codex's Frameless/V3 ChatGPT voice sessions.
 pub const CHATGPT_REALTIME_VOICES: &[RealtimeVoice] = &[
@@ -544,6 +545,24 @@ impl RealtimeSession {
         self.send(CommandKind::Audio(audio)).await.map(|_| ())
     }
 
+    /// Commits buffered audio in a direct Platform Realtime session.
+    ///
+    /// Transcription sessions use this to finalize each caller-delimited
+    /// microphone turn with caller-owned turn boundaries.
+    ///
+    /// # Errors
+    ///
+    /// Requires a direct Platform Realtime session and propagates closed-session
+    /// and send-timeout errors.
+    pub async fn commit_audio(&self) -> Result<(), RealtimeError> {
+        if self.protocol != RealtimeProtocol::Direct {
+            return Err(RealtimeError::InvalidConfiguration(
+                "audio buffer commit requires realtime v2".to_owned(),
+            ));
+        }
+        self.send(CommandKind::CommitAudio).await.map(|_| ())
+    }
+
     /// Appends role-bearing text to the running realtime conversation.
     ///
     /// V2 user text receives Codex's `[USER]` prefix. Other versions preserve
@@ -978,10 +997,9 @@ impl RealtimeSessionBuilder {
         } else {
             RealtimeTransport::WebSocket
         });
-        let model = self.model.unwrap_or_else(|| match version {
-            RealtimeVersion::V1 | RealtimeVersion::V2 => REALTIME_MODEL.to_owned(),
-            RealtimeVersion::V3 => CHATGPT_REALTIME_MODEL.to_owned(),
-        });
+        let model = self
+            .model
+            .unwrap_or_else(|| default_realtime_model(version, self.session_mode).to_owned());
         validate_realtime_configuration(
             version,
             transport,
@@ -1246,6 +1264,7 @@ struct Command {
 
 enum CommandKind {
     Audio(RealtimeAudio),
+    CommitAudio,
     Text {
         role: RealtimeInputTextRole,
         text: String,
@@ -1341,6 +1360,8 @@ enum ClientEvent<'a> {
     SessionUpdate { session: SessionUpdate<'a> },
     #[serde(rename = "input_audio_buffer.append")]
     AudioBufferAppend { audio: String },
+    #[serde(rename = "input_audio_buffer.commit")]
+    AudioBufferCommit,
     #[serde(rename = "input_audio.append")]
     AudioAppend { audio: String },
     #[serde(rename = "conversation.item.create")]
@@ -1572,7 +1593,11 @@ fn configured_session_update(
                 "audio": {
                     "input": {
                         "format": { "type": "audio/pcm", "rate": REALTIME_SAMPLE_RATE },
-                        "transcription": { "model": "gpt-4o-mini-transcribe" }
+                        "transcription": {
+                            "model": model,
+                            "prompt": instructions
+                        },
+                        "turn_detection": null
                     }
                 }
             }
@@ -1756,6 +1781,11 @@ async fn handle_command(
                     }
                 }
             }
+            Ok(CommandOutcome::Continue)
+        }
+        CommandKind::CommitAudio => {
+            debug_assert!(matches!(protocol, RealtimeProtocol::Direct));
+            send_json(socket, &ClientEvent::AudioBufferCommit).await?;
             Ok(CommandOutcome::Continue)
         }
         CommandKind::Text { role, mut text } => {
@@ -2598,6 +2628,13 @@ fn parse_direct_event(value: &Value, kind: &str) -> Result<Option<RealtimeEvent>
         "conversation.item.input_audio_transcription.completed" => {
             string_field(value, "transcript").map(RealtimeEvent::InputTranscriptDone)
         }
+        "conversation.item.input_audio_transcription.failed" => Some(RealtimeEvent::Error(
+            value
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("input audio transcription reported a service error")
+                .to_owned(),
+        )),
         "response.output_text.delta" | "response.output_audio_transcript.delta" => {
             string_field(value, "delta").map(RealtimeEvent::OutputTranscriptDelta)
         }
@@ -2780,6 +2817,17 @@ fn realtime_endpoint(api_base_url: &str, model: &str) -> Result<String, Realtime
     Ok(url.into())
 }
 
+const fn default_realtime_model(
+    version: RealtimeVersion,
+    mode: RealtimeSessionMode,
+) -> &'static str {
+    match (version, mode) {
+        (RealtimeVersion::V2, RealtimeSessionMode::Transcription) => REALTIME_TRANSCRIPTION_MODEL,
+        (RealtimeVersion::V1 | RealtimeVersion::V2, _) => REALTIME_MODEL,
+        (RealtimeVersion::V3, _) => CHATGPT_REALTIME_MODEL,
+    }
+}
+
 fn map_websocket_error(error: WebSocketError) -> RealtimeError {
     RealtimeError::WebSocket(error.to_string())
 }
@@ -2792,12 +2840,13 @@ mod tests {
 
     use super::{
         ActiveTranscript, CHATGPT_REALTIME_MODEL, CHATGPT_REALTIME_VOICE, CHATGPT_REALTIME_VOICES,
-        PLATFORM_REALTIME_VOICE, PLATFORM_REALTIME_VOICES, RealtimeAgentSteer, RealtimeAudio,
-        RealtimeEvent, RealtimeInitialItem, RealtimeOutputModality, RealtimeProtocol,
-        RealtimeResponseHandoffMode, RealtimeSessionMode, RealtimeTextRole,
-        RealtimeTranscriptEntry, RealtimeTransport, RealtimeVersion, RealtimeVoice,
-        configured_session_update, context_append_chunks, delegated_prompt, parse_event,
-        realtime_endpoint, session_update, validate_initial_items, validate_realtime_configuration,
+        PLATFORM_REALTIME_VOICE, PLATFORM_REALTIME_VOICES, REALTIME_TRANSCRIPTION_MODEL,
+        RealtimeAgentSteer, RealtimeAudio, RealtimeEvent, RealtimeInitialItem,
+        RealtimeOutputModality, RealtimeProtocol, RealtimeResponseHandoffMode, RealtimeSessionMode,
+        RealtimeTextRole, RealtimeTranscriptEntry, RealtimeTransport, RealtimeVersion,
+        RealtimeVoice, configured_session_update, context_append_chunks, default_realtime_model,
+        delegated_prompt, parse_event, realtime_endpoint, session_update, validate_initial_items,
+        validate_realtime_configuration,
     };
     use crate::OpenAi;
 
@@ -2806,6 +2855,14 @@ mod tests {
         assert_eq!(
             realtime_endpoint("https://api.openai.com/v1", "gpt-realtime-1.5").unwrap(),
             "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5"
+        );
+    }
+
+    #[test]
+    fn transcription_sessions_select_the_transcription_model() {
+        assert_eq!(
+            default_realtime_model(RealtimeVersion::V2, RealtimeSessionMode::Transcription),
+            REALTIME_TRANSCRIPTION_MODEL
         );
     }
 
@@ -2875,7 +2932,7 @@ mod tests {
 
         let transcription = configured_session_update(
             "delegate",
-            "gpt-realtime-1.5",
+            REALTIME_TRANSCRIPTION_MODEL,
             RealtimeVoice::Marin,
             RealtimeVersion::V2,
             RealtimeSessionMode::Transcription,
@@ -2883,6 +2940,15 @@ mod tests {
             &[],
         );
         assert_eq!(transcription["session"]["type"], "transcription");
+        assert_eq!(
+            transcription["session"]["audio"]["input"]["transcription"]["model"],
+            REALTIME_TRANSCRIPTION_MODEL
+        );
+        assert_eq!(
+            transcription["session"]["audio"]["input"]["transcription"]["prompt"],
+            "delegate"
+        );
+        assert!(transcription["session"]["audio"]["input"]["turn_detection"].is_null());
         assert!(transcription["session"].get("tools").is_none());
 
         let v3 = configured_session_update(
@@ -3295,6 +3361,10 @@ mod tests {
             assert_eq!(audio["type"], "input_audio_buffer.append");
             assert_eq!(audio["audio"], "AAE=");
 
+            let commit = socket.next().await.unwrap().unwrap().into_text().unwrap();
+            let commit: serde_json::Value = serde_json::from_str(&commit).unwrap();
+            assert_eq!(commit["type"], "input_audio_buffer.commit");
+
             let output = socket.next().await.unwrap().unwrap().into_text().unwrap();
             let output: serde_json::Value = serde_json::from_str(&output).unwrap();
             assert_eq!(output["item"]["call_id"], "call_1");
@@ -3357,6 +3427,7 @@ mod tests {
             .send_audio(RealtimeAudio::pcm16_le([0, 1]).unwrap())
             .await
             .unwrap();
+        session.commit_audio().await.unwrap();
         session
             .complete_agent_request("call_1", "done")
             .await

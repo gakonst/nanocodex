@@ -7,18 +7,17 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseEventKind,
 };
 use eyre::Result;
-use nanocodex_dictation::DictationTranscript;
+use nanocodex_dictation::{DictationTranscript, MicrophoneLevel};
 use tokio::sync::mpsc;
 
 use super::{
-    ComposerEdit, TerminalAction, WorkerCommand,
+    ComposerEdit, SubmitIntent, TerminalAction, WorkerCommand,
     app::{App, ComposerGeneration},
     send_command,
 };
 
 const SPACE_HOLD_DELAY: Duration = Duration::from_millis(250);
 const SHORT_SPACE_CAPTURE: Duration = Duration::from_millis(150);
-const TOGGLE_PREFIX_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_QUEUED_INTENTS: usize = 64;
 const MAX_QUEUED_TEXT_BYTES: usize = 256 * 1024;
 
@@ -28,7 +27,6 @@ pub(super) struct DictationUi {
     enabled: bool,
     hold_enabled: bool,
     space_pressed_at: Option<Instant>,
-    toggle_prefix_at: Option<Instant>,
 }
 
 enum State {
@@ -43,6 +41,7 @@ enum State {
         generation: ComposerGeneration,
         queued: VecDeque<ComposerEdit>,
         queued_text_bytes: usize,
+        submission: Option<SubmitIntent>,
     },
 }
 
@@ -59,14 +58,11 @@ impl DictationUi {
             enabled,
             hold_enabled,
             space_pressed_at: None,
-            toggle_prefix_at: None,
         }
     }
 
     pub(super) const fn is_active(&self) -> bool {
-        !matches!(self.state, State::Idle)
-            || self.space_pressed_at.is_some()
-            || self.toggle_prefix_at.is_some()
+        !matches!(self.state, State::Idle) || self.space_pressed_at.is_some()
     }
 
     pub(super) fn handle_event(
@@ -84,28 +80,20 @@ impl DictationUi {
             {
                 app.insert_char(' ');
             }
-            if self.enabled && is_dictation_toggle_prefix(key) {
-                self.toggle_prefix_at = Some(Instant::now());
-                return Ok(EventDisposition::Consume(TerminalAction::Ignore));
-            }
-            if key.kind == KeyEventKind::Press
-                && let Some(started_at) = self.toggle_prefix_at.take()
-                && Instant::now().saturating_duration_since(started_at) <= TOGGLE_PREFIX_TIMEOUT
-                && is_dictation_toggle_suffix(key)
+            if self.enabled
+                && matches!(self.state, State::Idle)
+                && is_plain_enter(key)
+                && app.input.trim() == "/dictate"
             {
-                return self.handle_toggle(app, voice_active, commands);
+                app.clear_input();
+                return self.start(app, voice_active, commands);
             }
             if self.enabled && is_right_option(key) {
                 return self.handle_push_to_talk(*key, app, voice_active, commands);
             }
             if self.enabled && self.hold_enabled && is_space(key) {
-                return self.handle_space(*key, app, commands);
+                return self.handle_space(*key, app, voice_active, commands);
             }
-            if key.kind == KeyEventKind::Press {
-                self.toggle_prefix_at = None;
-            }
-        } else {
-            self.toggle_prefix_at = None;
         }
 
         if self.space_pressed_at.is_some() && matches!(self.state, State::Idle) {
@@ -116,6 +104,16 @@ impl DictationUi {
         match &mut self.state {
             State::Idle => Ok(EventDisposition::Pass),
             State::Capturing { id, .. } => match event {
+                Event::Key(key) if is_plain_enter(key) => {
+                    self.finish(app, commands)?;
+                    self.queue_submission(SubmitIntent::Immediate);
+                    Ok(EventDisposition::Consume(TerminalAction::Redraw))
+                }
+                Event::Key(key) if is_plain_tab(key) => {
+                    self.finish(app, commands)?;
+                    self.queue_submission(SubmitIntent::Queue);
+                    Ok(EventDisposition::Consume(TerminalAction::Redraw))
+                }
                 Event::Key(key)
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c')) =>
@@ -144,6 +142,9 @@ impl DictationUi {
             },
             State::Finishing { id, generation, .. } => {
                 if let Event::Key(key) = event {
+                    if key.kind == KeyEventKind::Release {
+                        return Ok(EventDisposition::Consume(TerminalAction::Ignore));
+                    }
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c'))
                     {
@@ -154,6 +155,10 @@ impl DictationUi {
                     if key.kind != KeyEventKind::Release && key.code == KeyCode::Esc {
                         let id = *id;
                         self.cancel(app, commands, id, true)?;
+                        return Ok(EventDisposition::Consume(TerminalAction::Redraw));
+                    }
+                    if let Some(intent) = submission_intent(key) {
+                        self.queue_submission(intent);
                         return Ok(EventDisposition::Consume(TerminalAction::Redraw));
                     }
                 }
@@ -190,7 +195,6 @@ impl DictationUi {
         if self.space_pressed_at.take().is_some() && matches!(self.state, State::Idle) {
             app.insert_char(' ');
         }
-        self.toggle_prefix_at = None;
         if matches!(self.state, State::Capturing { .. }) {
             self.finish(app, commands)?;
         }
@@ -203,9 +207,9 @@ impl DictationUi {
         }
     }
 
-    pub(super) fn audio_level(&self, id: u64, peak: u16, app: &mut App) {
+    pub(super) fn audio_level(&self, id: u64, level: MicrophoneLevel, app: &mut App) {
         if self.state.id() == Some(id) {
-            app.update_dictation_audio_level(id, peak);
+            app.update_dictation_audio_level(id, level);
         }
     }
 
@@ -215,39 +219,45 @@ impl DictationUi {
         }
     }
 
-    pub(super) fn finished(&mut self, id: u64, text: &str, app: &mut App) {
+    pub(super) fn finished(&mut self, id: u64, text: &str, app: &mut App) -> Option<SubmitIntent> {
         if self.state.id() != Some(id) {
-            return;
+            return None;
         }
         let state = std::mem::replace(&mut self.state, State::Idle);
         let State::Finishing {
             id: active,
             generation,
             queued,
+            submission,
             ..
         } = state
         else {
             self.state = state;
-            return;
+            return None;
         };
         debug_assert_eq!(active, id);
         if app.composer_generation() == generation && app.commit_dictation(id, text) {
             replay(app, queued);
+            submission
         } else {
             app.cancel_dictation(id);
+            None
         }
     }
 
-    pub(super) fn no_speech(&mut self, id: u64, app: &mut App) {
+    pub(super) fn no_speech(&mut self, id: u64, app: &mut App) -> Option<SubmitIntent> {
         if self.state.id() != Some(id) {
-            return;
+            return None;
         }
         let state = std::mem::replace(&mut self.state, State::Idle);
-        let (_, generation, queued) = state.into_parts();
+        let (_, generation, queued, submission) = state.into_parts();
         app.cancel_dictation(id);
         self.space_pressed_at = None;
         if generation.is_some_and(|generation| app.composer_generation() == generation) {
             replay(app, queued);
+            submission
+        } else {
+            None
         }
     }
 
@@ -256,7 +266,7 @@ impl DictationUi {
             return;
         }
         let state = std::mem::replace(&mut self.state, State::Idle);
-        let (_, generation, queued) = state.into_parts();
+        let (_, generation, queued, _) = state.into_parts();
         app.cancel_dictation(id);
         self.space_pressed_at = None;
         app.set_dictation_notice(format!("Dictation: {error}"));
@@ -280,11 +290,6 @@ impl DictationUi {
         commands: &mpsc::UnboundedSender<WorkerCommand>,
     ) -> Result<bool> {
         let now = Instant::now();
-        if self.toggle_prefix_at.is_some_and(|started_at| {
-            now.saturating_duration_since(started_at) > TOGGLE_PREFIX_TIMEOUT
-        }) {
-            self.toggle_prefix_at = None;
-        }
         if matches!(self.state, State::Idle)
             && self.space_pressed_at.is_some_and(|started_at| {
                 now.saturating_duration_since(started_at) >= SPACE_HOLD_DELAY
@@ -336,11 +341,20 @@ impl DictationUi {
         &mut self,
         key: KeyEvent,
         app: &mut App,
+        voice_active: bool,
         commands: &mpsc::UnboundedSender<WorkerCommand>,
     ) -> Result<EventDisposition> {
         match key.kind {
             KeyEventKind::Press if matches!(self.state, State::Idle) => {
                 self.space_pressed_at.get_or_insert_with(Instant::now);
+                if app.input.is_empty() {
+                    let disposition = self.start(app, voice_active, commands)?;
+                    if matches!(self.state, State::Idle) {
+                        self.space_pressed_at = None;
+                        app.insert_char(' ');
+                    }
+                    return Ok(disposition);
+                }
                 Ok(EventDisposition::Consume(TerminalAction::Ignore))
             }
             KeyEventKind::Repeat if matches!(self.state, State::Idle) => {
@@ -371,22 +385,6 @@ impl DictationUi {
             KeyEventKind::Press | KeyEventKind::Repeat | KeyEventKind::Release => {
                 Ok(EventDisposition::Consume(TerminalAction::Redraw))
             }
-        }
-    }
-
-    fn handle_toggle(
-        &mut self,
-        app: &mut App,
-        voice_active: bool,
-        commands: &mpsc::UnboundedSender<WorkerCommand>,
-    ) -> Result<EventDisposition> {
-        match self.state {
-            State::Idle => self.start(app, voice_active, commands),
-            State::Capturing { .. } => {
-                self.finish(app, commands)?;
-                Ok(EventDisposition::Consume(TerminalAction::Redraw))
-            }
-            State::Finishing { .. } => Ok(EventDisposition::Consume(TerminalAction::Bell)),
         }
     }
 
@@ -436,6 +434,7 @@ impl DictationUi {
             generation,
             queued: VecDeque::new(),
             queued_text_bytes: 0,
+            submission: None,
         };
         send_command(commands, WorkerCommand::DictationFinish { id })
     }
@@ -448,7 +447,7 @@ impl DictationUi {
         replay_queued: bool,
     ) -> Result<()> {
         let state = std::mem::replace(&mut self.state, State::Idle);
-        let (_, generation, queued) = state.into_parts();
+        let (_, generation, queued, _) = state.into_parts();
         self.space_pressed_at = None;
         app.cancel_dictation(id);
         send_command(commands, WorkerCommand::DictationCancel { id })?;
@@ -493,6 +492,12 @@ impl DictationUi {
         Ok(())
     }
 
+    const fn queue_submission(&mut self, intent: SubmitIntent) {
+        if let State::Finishing { submission, .. } = &mut self.state {
+            *submission = Some(intent);
+        }
+    }
+
     fn overflow(
         &mut self,
         app: &mut App,
@@ -534,16 +539,20 @@ impl State {
         Option<u64>,
         Option<ComposerGeneration>,
         VecDeque<ComposerEdit>,
+        Option<SubmitIntent>,
     ) {
         match self {
-            Self::Idle => (None, None, VecDeque::new()),
-            Self::Capturing { id, generation, .. } => (Some(id), Some(generation), VecDeque::new()),
+            Self::Idle => (None, None, VecDeque::new(), None),
+            Self::Capturing { id, generation, .. } => {
+                (Some(id), Some(generation), VecDeque::new(), None)
+            }
             Self::Finishing {
                 id,
                 generation,
                 queued,
+                submission,
                 ..
-            } => (Some(id), Some(generation), queued),
+            } => (Some(id), Some(generation), queued, submission),
         }
     }
 }
@@ -562,17 +571,22 @@ const fn is_space(key: &KeyEvent) -> bool {
     matches!(key.code, KeyCode::Char(' ')) && key.modifiers.is_empty()
 }
 
-fn is_dictation_toggle_prefix(key: &KeyEvent) -> bool {
-    key.kind == KeyEventKind::Press
-        && matches!(key.code, KeyCode::Char('x'))
-        && key.modifiers.contains(KeyModifiers::CONTROL)
+fn is_plain_enter(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press && key.code == KeyCode::Enter && key.modifiers.is_empty()
 }
 
-fn is_dictation_toggle_suffix(key: &KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
-        && !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+fn submission_intent(key: &KeyEvent) -> Option<SubmitIntent> {
+    if is_plain_enter(key) {
+        Some(SubmitIntent::Immediate)
+    } else if is_plain_tab(key) {
+        Some(SubmitIntent::Queue)
+    } else {
+        None
+    }
+}
+
+fn is_plain_tab(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press && key.code == KeyCode::Tab && key.modifiers.is_empty()
 }
 
 #[cfg(test)]
@@ -588,44 +602,71 @@ mod tests {
         DictationUi, EventDisposition, MAX_QUEUED_INTENTS, SHORT_SPACE_CAPTURE, SPACE_HOLD_DELAY,
         State,
     };
-    use crate::tui::{ComposerEdit, WorkerCommand, app::App};
+    use crate::tui::{ComposerEdit, SubmitIntent, TerminalAction, WorkerCommand, app::App};
 
     #[test]
-    fn ctrl_x_v_toggles_dictation_without_key_release_support() {
+    fn dictate_command_starts_and_enter_defers_submission_until_final_text() {
         let mut app = App::new(".".into());
+        app.input = "/dictate".to_owned();
+        app.cursor = app.input.len();
         let mut ui = DictationUi::new(true, false);
         let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press);
 
-        toggle(&mut ui, &mut app, &commands);
+        ui.handle_event(&enter, &mut app, false, &commands).unwrap();
+        assert!(app.input.is_empty());
         assert!(matches!(
             receiver.try_recv(),
             Ok(WorkerCommand::DictationStart { id: 1 })
         ));
 
-        toggle(&mut ui, &mut app, &commands);
+        ui.handle_event(&enter, &mut app, false, &commands).unwrap();
         assert!(matches!(
             receiver.try_recv(),
             Ok(WorkerCommand::DictationFinish { id: 1 })
         ));
+        assert_eq!(
+            ui.finished(1, "send this", &mut app),
+            Some(SubmitIntent::Immediate)
+        );
+        assert_eq!(app.input, "send this");
     }
 
     #[test]
-    fn dictation_bindings_pass_through_when_disabled() {
+    fn tab_during_capture_queues_submission_after_final_transcript() {
+        let mut app = App::new(".".into());
+        let mut ui = DictationUi::new(true, false);
+        let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        assert!(ui.start(&mut app, false, &commands).is_ok());
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkerCommand::DictationStart { id: 1 })
+        ));
+
+        ui.handle_event(
+            &key(KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press),
+            &mut app,
+            false,
+            &commands,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkerCommand::DictationFinish { id: 1 })
+        ));
+        assert_eq!(
+            ui.finished(1, "queue this", &mut app),
+            Some(SubmitIntent::Queue)
+        );
+        assert_eq!(app.input, "queue this");
+    }
+
+    #[test]
+    fn right_option_follows_standard_input_handling() {
         let mut app = App::new(".".into());
         let mut ui = DictationUi::new(false, false);
         let (commands, _) = tokio::sync::mpsc::unbounded_channel();
-        let prefix = key(
-            KeyCode::Char('x'),
-            KeyModifiers::CONTROL,
-            KeyEventKind::Press,
-        );
-
-        assert!(matches!(
-            ui.handle_event(&prefix, &mut app, false, &commands)
-                .unwrap(),
-            EventDisposition::Pass
-        ));
-
         let right_option = Event::Key(KeyEvent::new(
             KeyCode::Modifier(ModifierKeyCode::RightAlt),
             KeyModifiers::ALT,
@@ -662,12 +703,21 @@ mod tests {
         let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 
         ui.handle_event(&press, &mut app, false, &commands).unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkerCommand::DictationStart { id: 1 })
+        ));
         ui.handle_event(&release, &mut app, false, &commands)
             .unwrap();
         assert_eq!(app.input, " ");
-        assert!(receiver.try_recv().is_err());
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkerCommand::DictationCancel { id: 1 })
+        ));
 
         let mut app = App::new(".".into());
+        app.input = "hello".to_owned();
+        app.cursor = app.input.len();
         let mut ui = DictationUi::new(true, true);
         let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
 
@@ -691,8 +741,10 @@ mod tests {
     }
 
     #[test]
-    fn release_just_after_space_hold_threshold_falls_back_to_text() {
+    fn brief_space_release_inserts_text_after_hold_threshold() {
         let mut app = App::new(".".into());
+        app.input = "hello".to_owned();
+        app.cursor = app.input.len();
         let mut ui = DictationUi::new(true, true);
         let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let press = key(KeyCode::Char(' '), KeyModifiers::NONE, KeyEventKind::Press);
@@ -716,7 +768,7 @@ mod tests {
         ui.handle_event(&release, &mut app, false, &commands)
             .unwrap();
 
-        assert_eq!(app.input, " ");
+        assert_eq!(app.input, "hello ");
         assert!(matches!(
             receiver.try_recv(),
             Ok(WorkerCommand::DictationCancel { id: 1 })
@@ -725,13 +777,13 @@ mod tests {
     }
 
     #[test]
-    fn no_speech_is_a_quiet_no_op_and_preserves_queued_edits() {
+    fn silent_attempt_preserves_queued_edits_quietly() {
         let mut app = App::new(".".into());
         app.set_active_status("Agent still working");
         let mut ui = finishing_ui(&mut app, 1);
         assert!(ui.queue(ComposerEdit::Insert("kept".to_owned())).is_ok());
 
-        ui.no_speech(1, &mut app);
+        assert_eq!(ui.no_speech(1, &mut app), None);
 
         assert_eq!(app.input, "kept");
         assert_eq!(app.active_conversation().status, "Agent still working");
@@ -739,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_is_a_footer_notice_not_a_transcript_item() {
+    fn failure_appears_as_a_footer_notice() {
         let mut app = App::new(".".into());
         app.main.running = true;
         let mut ui = finishing_ui(&mut app, 1);
@@ -810,10 +862,44 @@ mod tests {
             .unwrap();
         }
 
-        ui.finished(1, "hello", &mut app);
+        assert_eq!(ui.finished(1, "hello", &mut app), None);
 
         assert_eq!(app.input, "base hello?");
         assert!(!ui.is_active());
+    }
+
+    #[test]
+    fn enter_on_faded_text_waits_then_submits_one_stable_copy() {
+        let mut app = App::new(".".into());
+        app.main.running = true;
+        let mut ui = finishing_ui(&mut app, 1);
+        ui.transcript(
+            1,
+            nanocodex_dictation::DictationTranscript {
+                stable: String::new(),
+                unstable: "send this once".to_owned(),
+            },
+            &mut app,
+        );
+        let (commands, _) = tokio::sync::mpsc::unbounded_channel();
+
+        ui.handle_event(
+            &key(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press),
+            &mut app,
+            false,
+            &commands,
+        )
+        .unwrap();
+
+        assert!(
+            app.input.is_empty(),
+            "partial speech stays virtual until finalization"
+        );
+        assert_eq!(
+            ui.finished(1, "send this once", &mut app),
+            Some(SubmitIntent::Immediate)
+        );
+        assert_eq!(app.input, "send this once");
     }
 
     #[test]
@@ -830,6 +916,31 @@ mod tests {
             receiver.try_recv(),
             Ok(WorkerCommand::DictationCancel { id: 9 })
         ));
+    }
+
+    #[test]
+    fn finishing_ignores_key_release_after_queuing_the_press() {
+        let mut app = App::new(".".into());
+        let mut ui = finishing_ui(&mut app, 1);
+        let (commands, _) = tokio::sync::mpsc::unbounded_channel();
+        let press = key(KeyCode::Char('x'), KeyModifiers::NONE, KeyEventKind::Press);
+        let release = key(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+
+        assert!(matches!(
+            ui.handle_event(&press, &mut app, false, &commands).unwrap(),
+            EventDisposition::Consume(TerminalAction::Redraw)
+        ));
+        assert!(matches!(
+            ui.handle_event(&release, &mut app, false, &commands)
+                .unwrap(),
+            EventDisposition::Consume(TerminalAction::Ignore)
+        ));
+        assert_eq!(ui.finished(1, "speech", &mut app), None);
+        assert_eq!(app.input, "speechx");
     }
 
     #[test]
@@ -867,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_generation_change_discards_late_commit_and_queue() {
+    fn composer_generation_change_preserves_current_composer_state() {
         let mut app = App::new(".".into());
         app.input = "base".to_owned();
         app.cursor = app.input.len();
@@ -875,7 +986,7 @@ mod tests {
         assert!(ui.queue(ComposerEdit::Insert("queued".to_owned())).is_ok());
         app.insert_char('x');
 
-        ui.finished(1, "late", &mut app);
+        assert_eq!(ui.finished(1, "late", &mut app), None);
 
         assert_eq!(app.input, "basex");
     }
@@ -884,23 +995,6 @@ mod tests {
         let mut key = KeyEvent::new(code, modifiers);
         key.kind = kind;
         Event::Key(key)
-    }
-
-    fn toggle(
-        ui: &mut DictationUi,
-        app: &mut App,
-        commands: &tokio::sync::mpsc::UnboundedSender<WorkerCommand>,
-    ) {
-        for event in [
-            key(
-                KeyCode::Char('x'),
-                KeyModifiers::CONTROL,
-                KeyEventKind::Press,
-            ),
-            key(KeyCode::Char('v'), KeyModifiers::NONE, KeyEventKind::Press),
-        ] {
-            ui.handle_event(&event, app, false, commands).unwrap();
-        }
     }
 
     fn finishing_ui(app: &mut App, id: u64) -> DictationUi {
@@ -912,12 +1006,12 @@ mod tests {
                 generation,
                 queued: VecDeque::new(),
                 queued_text_bytes: 0,
+                submission: None,
             },
             next_id: id + 1,
             enabled: true,
             hold_enabled: true,
             space_pressed_at: None,
-            toggle_prefix_at: None,
         }
     }
 }

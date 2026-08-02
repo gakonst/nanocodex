@@ -17,6 +17,7 @@ use nanocodex::{
         rollout::RolloutTranscriptItem,
     },
 };
+use nanocodex_dictation::MicrophoneLevel;
 use ratatex::Ratatex;
 use ratatui::{
     buffer::Buffer,
@@ -222,35 +223,35 @@ impl DictationPhase {
 }
 
 struct DictationMeter {
-    history: VecDeque<char>,
-    noise_ema: f64,
+    history: [char; 5],
     envelope: f64,
 }
 
 impl DictationMeter {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
-            history: VecDeque::from(['⠤'; 4]),
-            noise_ema: 0.02,
+            history: ['▁'; 5],
             envelope: 0.0,
         }
     }
 
-    fn update(&mut self, peak: u16) {
-        const SYMBOLS: [char; 7] = ['⠤', '⠴', '⠶', '⠷', '⡷', '⡿', '⣿'];
-        let peak = f64::from(peak) / f64::from(i16::MAX);
-        let smoothing = if peak > self.envelope { 0.80 } else { 0.25 };
+    fn update(&mut self, level: MicrophoneLevel) {
+        const SYMBOLS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        const FLOOR_DB: f64 = -48.0;
+        let peak = level.normalized();
+        let smoothing = if peak > self.envelope { 0.85 } else { 0.30 };
         self.envelope = smoothing * peak + (1.0 - smoothing) * self.envelope;
-        let rms = self.envelope * 0.7;
-        self.noise_ema = 0.95 * self.noise_ema + 0.05 * rms;
-        let signal = 0.8 * peak + 0.2 * self.envelope;
-        let ratio = (signal / (self.noise_ema.max(0.01) * 2.0)).max(0.0);
-        let compressed = (ratio.ln_1p() / 1.6_f64.ln_1p()).min(1.0);
-        let index = (compressed * (SYMBOLS.len() - 1) as f64)
+        let db = 20.0
+            * self
+                .envelope
+                .max(f64::from(1_u16) / f64::from(i16::MAX))
+                .log10();
+        let level = ((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0);
+        let index = (level * (SYMBOLS.len() - 1) as f64)
             .round()
             .clamp(0.0, (SYMBOLS.len() - 1) as f64) as usize;
-        let _ = self.history.pop_front();
-        self.history.push_back(SYMBOLS[index]);
+        self.history.rotate_left(1);
+        self.history[self.history.len() - 1] = SYMBOLS[index];
     }
 
     fn text(&self) -> String {
@@ -1444,12 +1445,12 @@ impl App {
         }
     }
 
-    pub(super) fn update_dictation_audio_level(&mut self, id: u64, peak: u16) {
+    pub(super) fn update_dictation_audio_level(&mut self, id: u64, level: MicrophoneLevel) {
         if let Some(mark) = &mut self.dictation
             && mark.id == id
             && mark.phase == DictationPhase::Listening
         {
-            mark.meter.update(peak);
+            mark.meter.update(level);
         }
     }
 
@@ -3586,8 +3587,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        App, EscapeAction, PaneId, SubmittedPrompt, present_tool_name, smooth_scroll_drain,
-        summarize_tool_arguments,
+        App, DictationMeter, EscapeAction, MicrophoneLevel, PaneId, SubmittedPrompt,
+        present_tool_name, smooth_scroll_drain, summarize_tool_arguments,
     };
 
     #[test]
@@ -3635,9 +3636,9 @@ mod tests {
         );
         app.set_dictation_started(3);
         assert_eq!(app.active_conversation().status, "Working");
-        assert_eq!(app.dictation_status(), Some("● listening ⠤⠤⠤⠤".to_owned()));
-        app.update_dictation_audio_level(3, i16::MAX as u16);
-        assert_eq!(app.dictation_status(), Some("● listening ⠤⠤⠤⣿".to_owned()));
+        assert_eq!(app.dictation_status(), Some("● listening ▁▁▁▁▁".to_owned()));
+        app.update_dictation_audio_level(3, MicrophoneLevel::MAX);
+        assert_eq!(app.dictation_status(), Some("● listening ▁▁▁▁█".to_owned()));
         app.set_dictation_finishing(3);
         assert_eq!(app.active_conversation().status, "Working");
         assert_eq!(
@@ -3649,6 +3650,18 @@ mod tests {
 
         assert_eq!(app.active_conversation().status, "Working");
         assert_eq!(app.dictation_status(), None);
+    }
+
+    #[test]
+    fn dictation_meter_shows_recent_level_and_decays_to_silence() {
+        let mut meter = DictationMeter::new();
+        meter.update(MicrophoneLevel::MAX);
+        assert_eq!(meter.text(), "▁▁▁▁█");
+
+        for _ in 0..20 {
+            meter.update(MicrophoneLevel::SILENCE);
+        }
+        assert_eq!(meter.text(), "▁▁▁▁▁");
     }
     use crate::tui::transcript::TranscriptItem;
 
