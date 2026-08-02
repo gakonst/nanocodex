@@ -1,4 +1,7 @@
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 use eyre::Result;
@@ -13,11 +16,20 @@ use super::{
 
 const MAX_QUEUED_INTENTS: usize = 64;
 const MAX_QUEUED_TEXT_BYTES: usize = 256 * 1024;
+const HELD_RELEASE_TIMEOUT: Duration = Duration::from_millis(160);
 
 pub(super) struct DictationUi {
     state: State,
+    shortcut: ShortcutGesture,
     next_id: u64,
     enabled: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ShortcutGesture {
+    Up,
+    Pressed,
+    Held { last_event: Instant },
 }
 
 enum State {
@@ -44,6 +56,7 @@ impl DictationUi {
     pub(super) const fn new(enabled: bool) -> Self {
         Self {
             state: State::Idle,
+            shortcut: ShortcutGesture::Up,
             next_id: 1,
             enabled,
         }
@@ -61,17 +74,8 @@ impl DictationUi {
         commands: &mpsc::UnboundedSender<WorkerCommand>,
     ) -> Result<EventDisposition> {
         if let Event::Key(key) = event {
-            if self.enabled && is_dictation_toggle(key) {
-                return match self.state {
-                    State::Idle => self.start(app, voice_active, commands),
-                    State::Capturing { .. } => {
-                        self.finish(app, commands)?;
-                        Ok(EventDisposition::Consume(TerminalAction::Redraw))
-                    }
-                    State::Finishing { .. } => {
-                        Ok(EventDisposition::Consume(TerminalAction::Ignore))
-                    }
-                };
+            if self.enabled && self.is_dictation_shortcut(key) {
+                return self.handle_shortcut(*key, app, voice_active, commands);
             }
             if self.enabled
                 && matches!(self.state, State::Idle)
@@ -203,6 +207,7 @@ impl DictationUi {
             self.state = state;
             return None;
         };
+        self.shortcut = ShortcutGesture::Up;
         debug_assert_eq!(active, id);
         if app.composer_generation() == generation && app.commit_dictation(id, text) {
             replay(app, queued);
@@ -218,6 +223,7 @@ impl DictationUi {
             return None;
         }
         let state = std::mem::replace(&mut self.state, State::Idle);
+        self.shortcut = ShortcutGesture::Up;
         let (_, generation, queued, submission) = state.into_parts();
         app.cancel_dictation(id);
         if generation.is_some_and(|generation| app.composer_generation() == generation) {
@@ -233,6 +239,7 @@ impl DictationUi {
             return;
         }
         let state = std::mem::replace(&mut self.state, State::Idle);
+        self.shortcut = ShortcutGesture::Up;
         let (_, generation, queued, _) = state.into_parts();
         app.cancel_dictation(id);
         app.set_dictation_notice(format!("Dictation: {error}"));
@@ -245,7 +252,84 @@ impl DictationUi {
         if self.state.id() == Some(id) {
             app.cancel_dictation(id);
             self.state = State::Idle;
+            self.shortcut = ShortcutGesture::Up;
         }
+    }
+
+    fn is_dictation_shortcut(&self, key: &KeyEvent) -> bool {
+        key.code == KeyCode::Char('k')
+            && match key.kind {
+                KeyEventKind::Press | KeyEventKind::Repeat => key.modifiers == KeyModifiers::ALT,
+                KeyEventKind::Release => !matches!(self.shortcut, ShortcutGesture::Up),
+            }
+    }
+
+    fn handle_shortcut(
+        &mut self,
+        key: KeyEvent,
+        app: &mut App,
+        voice_active: bool,
+        commands: &mpsc::UnboundedSender<WorkerCommand>,
+    ) -> Result<EventDisposition> {
+        match key.kind {
+            KeyEventKind::Press => match self.state {
+                State::Idle => {
+                    self.shortcut = ShortcutGesture::Pressed;
+                    let disposition = self.start(app, voice_active, commands)?;
+                    if matches!(self.state, State::Idle) {
+                        self.shortcut = ShortcutGesture::Up;
+                    }
+                    Ok(disposition)
+                }
+                State::Capturing { .. } => {
+                    if matches!(self.shortcut, ShortcutGesture::Up) {
+                        self.finish(app, commands)?;
+                        Ok(EventDisposition::Consume(TerminalAction::Redraw))
+                    } else {
+                        self.shortcut = ShortcutGesture::Held {
+                            last_event: Instant::now(),
+                        };
+                        Ok(EventDisposition::Consume(TerminalAction::Ignore))
+                    }
+                }
+                State::Finishing { .. } => Ok(EventDisposition::Consume(TerminalAction::Ignore)),
+            },
+            KeyEventKind::Repeat => {
+                if !matches!(self.shortcut, ShortcutGesture::Up) {
+                    self.shortcut = ShortcutGesture::Held {
+                        last_event: Instant::now(),
+                    };
+                }
+                Ok(EventDisposition::Consume(TerminalAction::Ignore))
+            }
+            KeyEventKind::Release => {
+                let held = matches!(self.shortcut, ShortcutGesture::Held { .. });
+                self.shortcut = ShortcutGesture::Up;
+                if held && matches!(self.state, State::Capturing { .. }) {
+                    self.finish(app, commands)?;
+                    Ok(EventDisposition::Consume(TerminalAction::Redraw))
+                } else {
+                    Ok(EventDisposition::Consume(TerminalAction::Ignore))
+                }
+            }
+        }
+    }
+
+    pub(super) fn on_tick(
+        &mut self,
+        app: &mut App,
+        commands: &mpsc::UnboundedSender<WorkerCommand>,
+    ) -> Result<bool> {
+        let released = matches!(
+            self.shortcut,
+            ShortcutGesture::Held { last_event }
+                if last_event.elapsed() >= HELD_RELEASE_TIMEOUT
+        );
+        if released && matches!(self.state, State::Capturing { .. }) {
+            self.finish(app, commands)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn start(
@@ -277,6 +361,7 @@ impl DictationUi {
         commands: &mpsc::UnboundedSender<WorkerCommand>,
     ) -> Result<()> {
         let state = std::mem::replace(&mut self.state, State::Idle);
+        self.shortcut = ShortcutGesture::Up;
         let (id, generation) = match state {
             State::Capturing { id, generation, .. } => (id, generation),
             state => {
@@ -303,6 +388,7 @@ impl DictationUi {
         replay_queued: bool,
     ) -> Result<()> {
         let state = std::mem::replace(&mut self.state, State::Idle);
+        self.shortcut = ShortcutGesture::Up;
         let (_, generation, queued, _) = state.into_parts();
         app.cancel_dictation(id);
         send_command(commands, WorkerCommand::DictationCancel { id })?;
@@ -418,12 +504,6 @@ fn replay(app: &mut App, queued: VecDeque<ComposerEdit>) {
     }
 }
 
-fn is_dictation_toggle(key: &KeyEvent) -> bool {
-    key.kind == KeyEventKind::Press
-        && key.code == KeyCode::Char('k')
-        && key.modifiers == KeyModifiers::ALT
-}
-
 fn is_plain_enter(key: &KeyEvent) -> bool {
     key.kind == KeyEventKind::Press && key.code == KeyCode::Enter && key.modifiers.is_empty()
 }
@@ -444,11 +524,14 @@ fn is_plain_tab(key: &KeyEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, time::Instant};
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-    use super::{DictationUi, EventDisposition, MAX_QUEUED_INTENTS, State};
+    use super::{
+        DictationUi, EventDisposition, HELD_RELEASE_TIMEOUT, MAX_QUEUED_INTENTS, ShortcutGesture,
+        State,
+    };
     use crate::tui::{ComposerEdit, SubmitIntent, TerminalAction, WorkerCommand, app::App};
 
     #[test]
@@ -510,21 +593,28 @@ mod tests {
     }
 
     #[test]
-    fn alt_k_toggles_one_attempt_without_editing_the_composer() {
+    fn alt_k_tap_toggles_one_attempt_without_editing_the_composer() {
         let mut app = App::new(".".into());
         app.input = "hello".to_owned();
         app.cursor = app.input.len();
         let mut ui = DictationUi::new(true);
         let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        let toggle = key(KeyCode::Char('k'), KeyModifiers::ALT, KeyEventKind::Press);
+        let press = key(KeyCode::Char('k'), KeyModifiers::ALT, KeyEventKind::Press);
+        let release = key(
+            KeyCode::Char('k'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
 
-        ui.handle_event(&toggle, &mut app, false, &commands)
-            .unwrap();
+        ui.handle_event(&press, &mut app, false, &commands).unwrap();
         assert_eq!(app.input, "hello");
         assert!(matches!(
             receiver.try_recv(),
             Ok(WorkerCommand::DictationStart { id: 1 })
         ));
+        ui.handle_event(&release, &mut app, false, &commands)
+            .unwrap();
+        assert!(receiver.try_recv().is_err());
 
         assert!(matches!(
             ui.handle_event(&Event::FocusLost, &mut app, false, &commands)
@@ -546,8 +636,62 @@ mod tests {
         }
         assert!(receiver.try_recv().is_err());
 
-        ui.handle_event(&toggle, &mut app, false, &commands)
+        ui.handle_event(&press, &mut app, false, &commands).unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkerCommand::DictationFinish { id: 1 })
+        ));
+    }
+
+    #[test]
+    fn alt_k_hold_finishes_on_release() {
+        let mut app = App::new(".".into());
+        let mut ui = DictationUi::new(true);
+        let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        for kind in [
+            KeyEventKind::Press,
+            KeyEventKind::Repeat,
+            KeyEventKind::Release,
+        ] {
+            ui.handle_event(
+                &key(KeyCode::Char('k'), KeyModifiers::ALT, kind),
+                &mut app,
+                false,
+                &commands,
+            )
             .unwrap();
+        }
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkerCommand::DictationStart { id: 1 })
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkerCommand::DictationFinish { id: 1 })
+        ));
+    }
+
+    #[test]
+    fn repeated_alt_k_finishes_when_multiplexer_repeat_stops() {
+        let mut app = App::new(".".into());
+        let mut ui = DictationUi::new(true);
+        let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let press = key(KeyCode::Char('k'), KeyModifiers::ALT, KeyEventKind::Press);
+
+        ui.handle_event(&press, &mut app, false, &commands).unwrap();
+        ui.handle_event(&press, &mut app, false, &commands).unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(WorkerCommand::DictationStart { id: 1 })
+        ));
+        assert!(receiver.try_recv().is_err());
+
+        ui.shortcut = ShortcutGesture::Held {
+            last_event: Instant::now() - HELD_RELEASE_TIMEOUT,
+        };
+        assert!(ui.on_tick(&mut app, &commands).unwrap());
         assert!(matches!(
             receiver.try_recv(),
             Ok(WorkerCommand::DictationFinish { id: 1 })
@@ -797,6 +941,7 @@ mod tests {
                 queued_text_bytes: 0,
                 submission: None,
             },
+            shortcut: ShortcutGesture::Up,
             next_id: id + 1,
             enabled: true,
         }

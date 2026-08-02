@@ -620,8 +620,11 @@ impl UiModel {
                 let requires_full_redraw =
                     self.app.mouse_selection_needs_redraw() || self.app.historical_editor_active();
                 self.app.on_tick();
+                let dictation_redraw = self.dictation.on_tick(&mut self.app, commands)?;
                 Ok(if requires_full_redraw {
                     UiUpdate::Redraw(RedrawPriority::Streaming)
+                } else if dictation_redraw {
+                    UiUpdate::Redraw(RedrawPriority::Immediate)
                 } else {
                     UiUpdate::RedrawAnimation
                 })

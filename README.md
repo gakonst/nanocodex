@@ -148,10 +148,15 @@ cargo run -p nanocodex-bin -- --api-key "$OPENAI_API_KEY" --dictation
 API keys use OpenAI's dedicated Realtime transcription WebSocket. Subscription
 credentials use the managed ChatGPT Realtime WebRTC path.
 
-Press Alt+K (Option+K on macOS) to start dictating and press it again to finish.
-Speech streams into the composer while a one-cell microphone level follows the
-streamed text at its insertion point. The footer keeps listening visible beside
-any concurrent agent activity.
+Tap Alt+K (Option+K on macOS) to start dictating and tap it again to finish. In
+terminals with key-release reporting, hold Alt+K for push-to-talk and release it
+to finish. Speech streams into the composer while a one-cell microphone level
+follows the streamed text at its insertion point. The footer keeps listening
+visible beside any concurrent agent activity.
+
+Within tmux and Zellij, held Alt+K uses the key-repeat stream and finishes when
+that stream stops. Tap-to-toggle works independently of operating-system key
+repeat.
 
 For longer dictation, start with a clear composer, type `/dictate`, and press
 Enter; press Enter again to finalize and send (or steer an active turn), Tab to
