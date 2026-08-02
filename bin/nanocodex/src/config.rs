@@ -113,7 +113,7 @@ pub(crate) struct AgentArgs {
     )]
     rollouts: bool,
 
-    /// Enable experimental hold-Space and `/dictate` streaming dictation.
+    /// Enable experimental Alt+K and `/dictate` streaming dictation.
     #[arg(
         long,
         env = "NANOCODEX_DICTATION",

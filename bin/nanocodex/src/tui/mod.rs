@@ -495,9 +495,6 @@ impl UiModel {
                 // A non-wheel event is an ordering barrier: apply the gesture to
                 // the pane it started in before focus or viewport state can change.
                 self.apply_pending_mouse_scroll();
-                if matches!(event, Event::FocusLost) {
-                    self.dictation.focus_lost(&mut self.app, commands)?;
-                }
                 match self.dictation.handle_event(
                     &event,
                     &mut self.app,
@@ -623,11 +620,8 @@ impl UiModel {
                 let requires_full_redraw =
                     self.app.mouse_selection_needs_redraw() || self.app.historical_editor_active();
                 self.app.on_tick();
-                let dictation_redraw = self.dictation.on_tick(&mut self.app, commands)?;
                 Ok(if requires_full_redraw {
                     UiUpdate::Redraw(RedrawPriority::Streaming)
-                } else if dictation_redraw {
-                    UiUpdate::Redraw(RedrawPriority::Immediate)
                 } else {
                     UiUpdate::RedrawAnimation
                 })

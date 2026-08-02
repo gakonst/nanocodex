@@ -148,21 +148,17 @@ cargo run -p nanocodex-bin -- --api-key "$OPENAI_API_KEY" --dictation
 API keys use OpenAI's dedicated Realtime transcription WebSocket. Subscription
 credentials use the managed ChatGPT Realtime WebRTC path.
 
-Press Space normally to insert a space immediately. While it is held, the
-footer briefly shows `keep holding…`, then starts listening and streams speech
-into the composer. A one-cell microphone level follows the streamed text at its
-insertion point while the footer keeps listening visible beside any concurrent
-agent activity. Release Space to finalize.
+Press Alt+K (Option+K on macOS) to start dictating and press it again to finish.
+Speech streams into the composer while a one-cell microphone level follows the
+streamed text at its insertion point. The footer keeps listening visible beside
+any concurrent agent activity.
 
 For longer dictation, start with a clear composer, type `/dictate`, and press
 Enter; press Enter again to finalize and send (or steer an active turn), Tab to
 finalize and queue the next prompt, or Escape to cancel. Submission occurs after
-the transcript reaches its final form. Hold-Space preserves the existing draft
+the transcript reaches its final form. Dictation preserves the existing draft
 and inserts completed speech at the captured cursor. The equivalent environment
 setting is `NANOCODEX_DICTATION=true`.
-
-Hold-Space follows the terminal's ordinary key-repeat stream. Terminals that
-report modifier release events also provide hold-right-Option as an alias.
 
 ## Thesis
 
