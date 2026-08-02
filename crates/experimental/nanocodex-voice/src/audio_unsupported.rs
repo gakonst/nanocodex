@@ -1,4 +1,5 @@
 use nanocodex::oai::realtime::RealtimeAudio;
+use nanocodex_dictation::capture::Pcm16Chunk;
 use tokio::sync::mpsc;
 
 use crate::{AudioConfig, AudioError};
@@ -8,7 +9,7 @@ pub(crate) struct VoiceAudio;
 impl VoiceAudio {
     pub(crate) const fn open(
         _policy: AudioConfig,
-    ) -> Result<(Self, mpsc::Receiver<RealtimeAudio>), AudioError> {
+    ) -> Result<(Self, mpsc::Receiver<Pcm16Chunk>), AudioError> {
         Err(AudioError::UnsupportedPlatform)
     }
 

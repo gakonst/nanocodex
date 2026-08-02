@@ -6,6 +6,7 @@ members = [
     "crates/nanocodex",
     "crates/nanocodex-agent",
     "crates/experimental/nanocodex-browser",
+    "crates/experimental/nanocodex-dictation",
     "crates/experimental/nanocodex-egress",
     "crates/experimental/nanocodex-voice",
     "crates/experimental/nanocodex-vm",
@@ -68,6 +69,7 @@ mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "
 nanocodex = { version = "0.3.0", path = "crates/nanocodex" }
 nanocodex-agent = { version = "0.3.0", path = "crates/nanocodex-agent" }
 nanocodex-browser = { version = "0.3.0", path = "crates/experimental/nanocodex-browser" }
+nanocodex-dictation = { version = "0.3.0", path = "crates/experimental/nanocodex-dictation" }
 nanocodex-egress = { version = "0.3.0", path = "crates/experimental/nanocodex-egress" }
 nanocodex-voice = { version = "0.3.0", path = "crates/experimental/nanocodex-voice" }
 nanocodex-vm = { version = "0.3.0", path = "crates/experimental/nanocodex-vm" }

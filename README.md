@@ -132,6 +132,26 @@ next safe model boundary. Both use shared Codex/ChatGPT subscription auth, not
 an API key. Set `NANOCODEX_AUTH_FILE` to override the normal Codex credential
 path.
 
+## Streaming dictation (experimental)
+
+Run the interactive TUI with ChatGPT-subscription dictation enabled:
+
+```sh
+nanocodex auth login # once; shares ~/.codex/auth.json with Codex
+cargo run -p nanocodex-bin -- --dictation
+```
+
+Hold Space briefly to start streaming speech into the composer, then release it
+to finalize. A normal Space tap always inserts a space. The footer shows a live
+microphone meter beside any concurrent agent activity. For longer dictation,
+press Ctrl+X followed by V to start and use the same sequence to finalize. The
+draft remains editable and Enter still submits explicitly. The equivalent
+environment setting is `NANOCODEX_DICTATION=true`.
+
+Hold-Space uses terminal key-release support. Terminals with Kitty keyboard
+enhancement support also provide hold-right-Option as an alias. Nanocodex
+detects that capability at startup, including in Ghostty.
+
 ## Thesis
 
 ### Small, excellent building blocks

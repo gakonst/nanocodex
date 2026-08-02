@@ -342,6 +342,7 @@ mod tests {
             "test-key",
             "--prompt",
             "continue",
+            "--dictation",
         ])
         .unwrap();
 
@@ -351,5 +352,6 @@ mod tests {
         assert_eq!(command.thread_id, "019c0d31-c308-7d91-bff4-5dca82d15ac6");
         assert_eq!(command.prompt.as_deref(), Some("continue"));
         assert!(!command.agent.uses_tempo());
+        assert!(command.agent.dictation_enabled());
     }
 }

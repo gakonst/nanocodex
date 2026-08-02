@@ -1,6 +1,7 @@
 mod app;
 mod clipboard;
 mod composer;
+mod dictation;
 mod diff;
 mod external_editor;
 mod markdown;
@@ -33,6 +34,9 @@ use nanocodex::{
     },
     tools::mcp::McpHandle,
 };
+use nanocodex_dictation::{
+    ChatGptDictationBuilder, DictationEvent, DictationEvents, DictationSession, DictationTranscript,
+};
 use nanocodex_voice::{
     CHATGPT_REALTIME_VOICES, PLATFORM_REALTIME_VOICES, RealtimeVoice, VoiceAgentControl,
     VoiceEvent, VoiceEvents, VoiceSession, VoiceSessionBuilder, VoiceSpeaker,
@@ -44,6 +48,7 @@ use tokio::{
 };
 use tracing::{Instrument, info_span};
 
+use self::dictation::{DictationUi, EventDisposition};
 use self::{
     app::{App, EscapeAction, PaneId, ReasoningPickerAction, SubmittedPrompt},
     notification::Notifier,
@@ -116,6 +121,15 @@ enum WorkerCommand {
     },
     VoiceAgentEvent(AgentEvent),
     Voice(VoiceControl),
+    DictationStart {
+        id: u64,
+    },
+    DictationFinish {
+        id: u64,
+    },
+    DictationCancel {
+        id: u64,
+    },
 }
 
 enum WorkerEvent {
@@ -245,6 +259,31 @@ enum WorkerEvent {
         error: String,
     },
     VoiceStopped,
+    DictationStarted {
+        id: u64,
+    },
+    DictationTranscript {
+        id: u64,
+        transcript: DictationTranscript,
+    },
+    DictationAudioLevel {
+        id: u64,
+        peak: u16,
+    },
+    DictationFinished {
+        id: u64,
+        text: String,
+    },
+    DictationNoSpeech {
+        id: u64,
+    },
+    DictationFailed {
+        id: u64,
+        error: String,
+    },
+    DictationStopped {
+        id: u64,
+    },
 }
 
 struct MainWorkerBranch {
@@ -303,6 +342,25 @@ enum TerminalAction {
     Ignore,
     Quit,
     ExternalEditor,
+    Bell,
+}
+
+enum ComposerEdit {
+    Insert(String),
+    Paste(String),
+    Backspace,
+    Delete,
+    DeleteWordBefore,
+    DeleteToLineStart,
+    DeleteToLineEnd,
+    Left,
+    Right,
+    WordLeft,
+    WordRight,
+    Home,
+    End,
+    Up,
+    Down,
 }
 
 enum UiAction {
@@ -329,6 +387,7 @@ enum UiUpdate {
     Ignore,
     Quit,
     ExternalEditor,
+    Bell,
 }
 
 struct UiModel {
@@ -340,6 +399,7 @@ struct UiModel {
     terminal_focused: bool,
     pending_notification: Option<String>,
     pending_mouse_scroll: Option<MouseScrollBurst>,
+    dictation: DictationUi,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -391,6 +451,7 @@ impl UiModel {
             terminal_focused: true,
             pending_notification: None,
             pending_mouse_scroll: None,
+            dictation: DictationUi::new(false, false),
         }
     }
 
@@ -433,6 +494,26 @@ impl UiModel {
                 // A non-wheel event is an ordering barrier: apply the gesture to
                 // the pane it started in before focus or viewport state can change.
                 self.apply_pending_mouse_scroll();
+                if matches!(event, Event::FocusLost) {
+                    self.dictation.focus_lost(&mut self.app, commands)?;
+                }
+                match self.dictation.handle_event(
+                    &event,
+                    &mut self.app,
+                    self.voice_observing,
+                    commands,
+                )? {
+                    EventDisposition::Pass => {}
+                    EventDisposition::Consume(action) => {
+                        return Ok(match action {
+                            TerminalAction::Redraw => UiUpdate::Redraw(RedrawPriority::Immediate),
+                            TerminalAction::Ignore => UiUpdate::Ignore,
+                            TerminalAction::Quit => UiUpdate::Quit,
+                            TerminalAction::ExternalEditor => UiUpdate::ExternalEditor,
+                            TerminalAction::Bell => UiUpdate::Bell,
+                        });
+                    }
+                }
                 match event {
                     Event::FocusGained => {
                         self.terminal_focused = true;
@@ -456,6 +537,7 @@ impl UiModel {
                     TerminalAction::Ignore => Ok(UiUpdate::Ignore),
                     TerminalAction::Quit => Ok(UiUpdate::Quit),
                     TerminalAction::ExternalEditor => Ok(UiUpdate::ExternalEditor),
+                    TerminalAction::Bell => Ok(UiUpdate::Bell),
                 }
             }
             UiAction::Agent(event) => {
@@ -499,7 +581,30 @@ impl UiModel {
                         format!("{scope} finished")
                     });
                 }
-                handle_worker_update(&mut self.app, update, commands)?;
+                match update {
+                    WorkerEvent::DictationStarted { id } => {
+                        self.dictation.started(id, &mut self.app);
+                    }
+                    WorkerEvent::DictationTranscript { id, transcript } => {
+                        self.dictation.transcript(id, transcript, &mut self.app);
+                    }
+                    WorkerEvent::DictationAudioLevel { id, peak } => {
+                        self.dictation.audio_level(id, peak, &mut self.app);
+                    }
+                    WorkerEvent::DictationFinished { id, text } => {
+                        self.dictation.finished(id, &text, &mut self.app);
+                    }
+                    WorkerEvent::DictationNoSpeech { id } => {
+                        self.dictation.no_speech(id, &mut self.app);
+                    }
+                    WorkerEvent::DictationFailed { id, error } => {
+                        self.dictation.failed(id, error, &mut self.app);
+                    }
+                    WorkerEvent::DictationStopped { id } => {
+                        self.dictation.stopped(id, &mut self.app);
+                    }
+                    update => handle_worker_update(&mut self.app, update, commands)?,
+                }
                 Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
             }
             UiAction::WorkerStopped => {
@@ -513,8 +618,13 @@ impl UiModel {
                 let requires_full_redraw =
                     self.app.mouse_selection_needs_redraw() || self.app.historical_editor_active();
                 self.app.on_tick();
+                let dictation_redraw =
+                    self.dictation
+                        .on_tick(&mut self.app, self.voice_observing, commands)?;
                 Ok(if requires_full_redraw {
                     UiUpdate::Redraw(RedrawPriority::Streaming)
+                } else if dictation_redraw {
+                    UiUpdate::Redraw(RedrawPriority::Immediate)
                 } else {
                     UiUpdate::RedrawAnimation
                 })
@@ -562,6 +672,7 @@ pub(crate) async fn run(
     initial_prompt: Option<String>,
     resume: Option<DurableSession>,
 ) -> Result<()> {
+    let dictation_enabled = config.dictation_enabled();
     let initial_model = resume
         .as_ref()
         .map_or_else(|| config.model(), DurableSession::model);
@@ -599,7 +710,9 @@ pub(crate) async fn run(
         update_tx,
     );
 
-    let mut terminal = TerminalSession::enter().wrap_err("failed to initialize the terminal")?;
+    let mut terminal =
+        TerminalSession::enter(dictation_enabled).wrap_err("failed to initialize the terminal")?;
+    let dictation_keys = terminal.supports_key_releases();
     let terminal_profile = TerminalProfile::query(Duration::from_millis(750));
     let (math_update_tx, mut math_update_rx) = mpsc::channel(1);
     let math_renderer = Ratatex::builder(terminal_profile)
@@ -623,6 +736,7 @@ pub(crate) async fn run(
     app.set_math_renderer(math_renderer.clone());
     app.restore_transcript(restored_transcript);
     let mut ui = UiModel::new(app, Arc::clone(&root_session_id));
+    ui.dictation = DictationUi::new(dictation_enabled, dictation_keys);
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut stream_telemetry = StreamTelemetry::default();
     let mut view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));
@@ -661,6 +775,9 @@ pub(crate) async fn run(
                     input_events = run_external_editor(input_events, &mut terminal, &mut ui.app).await?;
                     math_renderer.reupload_all();
                     ui.app.invalidate_math_layouts();
+                    scheduler.request_immediate(Instant::now());
+                } else if update == UiUpdate::Bell {
+                    terminal.write_control_sequence(b"\x07")?;
                     scheduler.request_immediate(Instant::now());
                 } else if apply_update(update, &mut scheduler) {
                     break Ok(());
@@ -701,7 +818,8 @@ pub(crate) async fn run(
             }
             _ = ticker.tick(), if ui.app.main.running
                 || ui.app.btw.as_ref().is_some_and(|btw| btw.conversation.running)
-                || ui.app.mouse_selection_needs_redraw() => {
+                || ui.app.mouse_selection_needs_redraw()
+                || ui.dictation.is_active() => {
                 if apply_update(ui.update(UiAction::Tick, &worker_tx)?, &mut scheduler) {
                     break Ok(());
                 }
@@ -934,6 +1052,7 @@ fn apply_update(update: UiUpdate, scheduler: &mut RenderScheduler) -> bool {
         UiUpdate::Redraw(RedrawPriority::InputBurst) => scheduler.request_input_burst(now),
         UiUpdate::RedrawAnimation => scheduler.request_animation(now),
         UiUpdate::Ignore | UiUpdate::ExternalEditor => {}
+        UiUpdate::Bell => scheduler.request_immediate(now),
         UiUpdate::Quit => return true,
     }
     false
@@ -1063,6 +1182,13 @@ fn handle_worker_update(
             app.set_active_status("Voice unavailable");
         }
         WorkerEvent::VoiceStopped => app.set_active_status("Voice stopped"),
+        WorkerEvent::DictationStarted { .. }
+        | WorkerEvent::DictationTranscript { .. }
+        | WorkerEvent::DictationAudioLevel { .. }
+        | WorkerEvent::DictationFinished { .. }
+        | WorkerEvent::DictationNoSpeech { .. }
+        | WorkerEvent::DictationFailed { .. }
+        | WorkerEvent::DictationStopped { .. } => {}
     }
     Ok(())
 }
@@ -1094,6 +1220,7 @@ fn spawn_agent_worker(
             mcp,
             realtime,
             voice: None,
+            dictation: None,
             voice_agent_control: VoiceAgentControl::default(),
         };
         loop {
@@ -1110,6 +1237,7 @@ fn spawn_agent_worker(
             }
         }
         worker.stop_voice().await;
+        worker.stop_dictation().await;
     })
 }
 
@@ -1142,6 +1270,35 @@ fn forward_voice_events(mut events: VoiceEvents, updates: mpsc::UnboundedSender<
     }));
 }
 
+fn forward_dictation_events(
+    id: u64,
+    mut events: DictationEvents,
+    updates: mpsc::UnboundedSender<WorkerEvent>,
+) {
+    drop(tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            let update = match event {
+                DictationEvent::Connecting | DictationEvent::TransportReady => continue,
+                DictationEvent::Started => WorkerEvent::DictationStarted { id },
+                DictationEvent::Transcript(transcript) => {
+                    WorkerEvent::DictationTranscript { id, transcript }
+                }
+                DictationEvent::AudioLevel(peak) => WorkerEvent::DictationAudioLevel { id, peak },
+                DictationEvent::Finished(text) => WorkerEvent::DictationFinished { id, text },
+                DictationEvent::NoSpeech => WorkerEvent::DictationNoSpeech { id },
+                DictationEvent::Failed(error) => WorkerEvent::DictationFailed {
+                    id,
+                    error: error.to_string(),
+                },
+                DictationEvent::Stopped => WorkerEvent::DictationStopped { id },
+            };
+            if updates.send(update).is_err() {
+                break;
+            }
+        }
+    }));
+}
+
 struct AgentWorker {
     main: MainWorkerBranch,
     archived_main: Vec<MainWorkerBranch>,
@@ -1152,6 +1309,7 @@ struct AgentWorker {
     mcp: Option<McpHandle>,
     realtime: Option<OpenAi>,
     voice: Option<VoiceSession>,
+    dictation: Option<(u64, DictationSession)>,
     voice_agent_control: VoiceAgentControl,
 }
 
@@ -1203,6 +1361,75 @@ impl AgentWorker {
                 }
             }
             WorkerCommand::Voice(control) => self.control_voice(control).await,
+            WorkerCommand::DictationStart { id } => self.start_dictation(id).await,
+            WorkerCommand::DictationFinish { id } => {
+                if let Some((active, dictation)) = &self.dictation
+                    && *active == id
+                {
+                    dictation.finish();
+                }
+            }
+            WorkerCommand::DictationCancel { id } => {
+                if let Some((active, dictation)) = &self.dictation
+                    && *active == id
+                {
+                    dictation.cancel();
+                }
+            }
+        }
+    }
+
+    async fn start_dictation(&mut self, id: u64) {
+        if self.voice_running() {
+            drop(self.updates.send(WorkerEvent::DictationFailed {
+                id,
+                error: "voice already owns the microphone".to_owned(),
+            }));
+            return;
+        }
+        if self
+            .dictation
+            .as_ref()
+            .is_some_and(|(_, session)| session.is_running())
+        {
+            drop(self.updates.send(WorkerEvent::DictationFailed {
+                id,
+                error: "another dictation attempt is still active".to_owned(),
+            }));
+            return;
+        }
+        self.stop_dictation().await;
+        let Some(openai) = self.realtime.clone() else {
+            drop(self.updates.send(WorkerEvent::DictationFailed {
+                id,
+                error: "dictation is unavailable with the selected paid provider".to_owned(),
+            }));
+            return;
+        };
+        match ChatGptDictationBuilder::new(openai).spawn() {
+            Ok((session, events)) => {
+                forward_dictation_events(id, events, self.updates.clone());
+                self.dictation = Some((id, session));
+            }
+            Err(error) => drop(self.updates.send(WorkerEvent::DictationFailed {
+                id,
+                error: error.to_string(),
+            })),
+        }
+    }
+
+    fn dictation_running(&self) -> bool {
+        self.dictation
+            .as_ref()
+            .is_some_and(|(_, session)| session.is_running())
+    }
+
+    async fn stop_dictation(&mut self) {
+        let Some((_, mut dictation)) = self.dictation.take() else {
+            return;
+        };
+        if let Err(error) = dictation.shutdown().await {
+            tracing::warn!(%error, "failed to stop dictation cleanly");
         }
     }
 
@@ -1240,6 +1467,12 @@ impl AgentWorker {
             VoiceControl::Toggle => None,
             VoiceControl::Stop | VoiceControl::List => return,
         };
+        if self.dictation_running() {
+            drop(self.updates.send(WorkerEvent::VoiceFailed {
+                error: "dictation already owns the microphone".to_owned(),
+            }));
+            return;
+        }
         if self.btw.is_some() {
             drop(self.updates.send(WorkerEvent::VoiceFailed {
                 error: "close /btw before starting voice".to_owned(),
@@ -2158,7 +2391,7 @@ fn handle_terminal_event(
         }
         Event::Paste(text) => {
             let _ = app.clear_mouse_selection();
-            app.handle_paste(&text);
+            ComposerEdit::Paste(text).apply(app);
             Ok(TerminalAction::Redraw)
         }
         Event::Mouse(mouse) => match mouse.kind {
@@ -2247,55 +2480,35 @@ fn handle_key(
             KeyCode::Char('g') => return Ok(TerminalAction::ExternalEditor),
             KeyCode::Char('o') => {
                 let _ = app.toggle_tool_details();
+                return Ok(TerminalAction::Redraw);
             }
             KeyCode::Char('d') if app.input.is_empty() => return Ok(TerminalAction::Quit),
-            KeyCode::Char('d') => app.delete(),
-            KeyCode::Char('h') => app.backspace(),
-            KeyCode::Char('j') => app.insert_char('\n'),
-            KeyCode::Char('a') => app.move_home(),
-            KeyCode::Char('e') => app.move_end(),
-            KeyCode::Char('b') => app.move_left(),
-            KeyCode::Char('f') => app.move_right(),
-            KeyCode::Char('p') => app.move_up(),
-            KeyCode::Char('n') => app.move_down(),
-            KeyCode::Char('w') => app.delete_word_before_cursor(),
-            KeyCode::Char('u') => app.delete_to_line_start(),
-            KeyCode::Char('k') => app.delete_to_line_end(),
-            KeyCode::Left => app.move_word_left(),
-            KeyCode::Right => app.move_word_right(),
-            KeyCode::End => app.jump_to_bottom(),
+            KeyCode::End => {
+                app.jump_to_bottom();
+                return Ok(TerminalAction::Redraw);
+            }
             _ => {}
+        }
+        if let Some(edit) = ComposerEdit::from_key(key) {
+            edit.apply(app);
         }
         return Ok(TerminalAction::Redraw);
     }
 
     if key.modifiers.contains(KeyModifiers::ALT) {
-        match key.code {
-            KeyCode::Char('b') | KeyCode::Left => app.move_word_left(),
-            KeyCode::Char('f') | KeyCode::Right => app.move_word_right(),
-            _ => {}
+        if let Some(edit) = ComposerEdit::from_key(key) {
+            edit.apply(app);
         }
         return Ok(TerminalAction::Redraw);
     }
 
+    if let Some(edit) = ComposerEdit::from_key(key) {
+        edit.apply(app);
+        return Ok(TerminalAction::Redraw);
+    }
+
     match key.code {
-        KeyCode::Enter
-            if key
-                .modifiers
-                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
-        {
-            app.insert_char('\n');
-        }
         KeyCode::Enter => submit(app, root_session_id, commands, SubmitIntent::Immediate)?,
-        KeyCode::Char(character) => app.insert_char(character),
-        KeyCode::Backspace => app.backspace(),
-        KeyCode::Delete => app.delete(),
-        KeyCode::Left => app.move_left(),
-        KeyCode::Right => app.move_right(),
-        KeyCode::Home => app.move_home(),
-        KeyCode::End => app.move_end(),
-        KeyCode::Up => app.move_up(),
-        KeyCode::Down => app.move_down(),
         KeyCode::PageUp => app.scroll_up(12),
         KeyCode::PageDown => app.scroll_down(12),
         KeyCode::Esc if key.kind == KeyEventKind::Repeat => {}
@@ -2304,20 +2517,106 @@ fn handle_key(
             submit(app, root_session_id, commands, SubmitIntent::Queue)?;
         }
         KeyCode::Tab | KeyCode::BackTab => app.toggle_focus(),
-        KeyCode::Insert
-        | KeyCode::F(_)
-        | KeyCode::Null
-        | KeyCode::CapsLock
-        | KeyCode::ScrollLock
-        | KeyCode::NumLock
-        | KeyCode::PrintScreen
-        | KeyCode::Pause
-        | KeyCode::Menu
-        | KeyCode::KeypadBegin
-        | KeyCode::Media(_)
-        | KeyCode::Modifier(_) => {}
+        _ => {}
     }
     Ok(TerminalAction::Redraw)
+}
+
+impl ComposerEdit {
+    fn from_event(event: &Event) -> Option<Self> {
+        match event {
+            Event::Paste(text) => Some(Self::Paste(text.clone())),
+            Event::Key(key) if key.kind != KeyEventKind::Release => Self::from_key(*key),
+            Event::FocusGained
+            | Event::FocusLost
+            | Event::Key(_)
+            | Event::Mouse(_)
+            | Event::Resize(_, _) => None,
+        }
+    }
+
+    fn from_key(key: KeyEvent) -> Option<Self> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return match key.code {
+                KeyCode::Char('d') => Some(Self::Delete),
+                KeyCode::Char('h') => Some(Self::Backspace),
+                KeyCode::Char('j') => Some(Self::Insert("\n".to_owned())),
+                KeyCode::Char('a') => Some(Self::Home),
+                KeyCode::Char('e') => Some(Self::End),
+                KeyCode::Char('b') => Some(Self::Left),
+                KeyCode::Char('f') => Some(Self::Right),
+                KeyCode::Char('p') => Some(Self::Up),
+                KeyCode::Char('n') => Some(Self::Down),
+                KeyCode::Char('w') => Some(Self::DeleteWordBefore),
+                KeyCode::Char('u') => Some(Self::DeleteToLineStart),
+                KeyCode::Char('k') => Some(Self::DeleteToLineEnd),
+                KeyCode::Left => Some(Self::WordLeft),
+                KeyCode::Right => Some(Self::WordRight),
+                _ => None,
+            };
+        }
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            return match key.code {
+                KeyCode::Char('b') | KeyCode::Left => Some(Self::WordLeft),
+                KeyCode::Char('f') | KeyCode::Right => Some(Self::WordRight),
+                _ => None,
+            };
+        }
+        match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(Self::Insert("\n".to_owned()))
+            }
+            KeyCode::Char(character) => Some(Self::Insert(character.to_string())),
+            KeyCode::Backspace => Some(Self::Backspace),
+            KeyCode::Delete => Some(Self::Delete),
+            KeyCode::Left => Some(Self::Left),
+            KeyCode::Right => Some(Self::Right),
+            KeyCode::Home => Some(Self::Home),
+            KeyCode::End => Some(Self::End),
+            KeyCode::Up => Some(Self::Up),
+            KeyCode::Down => Some(Self::Down),
+            _ => None,
+        }
+    }
+
+    const fn text_bytes(&self) -> usize {
+        match self {
+            Self::Insert(text) | Self::Paste(text) => text.len(),
+            Self::Backspace
+            | Self::Delete
+            | Self::DeleteWordBefore
+            | Self::DeleteToLineStart
+            | Self::DeleteToLineEnd
+            | Self::Left
+            | Self::Right
+            | Self::WordLeft
+            | Self::WordRight
+            | Self::Home
+            | Self::End
+            | Self::Up
+            | Self::Down => 0,
+        }
+    }
+
+    fn apply(self, app: &mut App) {
+        match self {
+            Self::Insert(text) => app.insert_str(&text),
+            Self::Paste(text) => app.handle_paste(&text),
+            Self::Backspace => app.backspace(),
+            Self::Delete => app.delete(),
+            Self::DeleteWordBefore => app.delete_word_before_cursor(),
+            Self::DeleteToLineStart => app.delete_to_line_start(),
+            Self::DeleteToLineEnd => app.delete_to_line_end(),
+            Self::Left => app.move_left(),
+            Self::Right => app.move_right(),
+            Self::WordLeft => app.move_word_left(),
+            Self::WordRight => app.move_word_right(),
+            Self::Home => app.move_home(),
+            Self::End => app.move_end(),
+            Self::Up => app.move_up(),
+            Self::Down => app.move_down(),
+        }
+    }
 }
 
 fn handle_reasoning_picker_key(

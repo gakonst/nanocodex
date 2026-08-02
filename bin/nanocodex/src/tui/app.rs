@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    ops::Range,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -185,6 +186,76 @@ struct PendingScrollAnchor {
 pub(super) enum PaneId {
     Main,
     Btw(u64),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ComposerGeneration {
+    pane: PaneId,
+    draft: u64,
+}
+
+struct DictationMark {
+    id: u64,
+    anchor: usize,
+    stable: String,
+    unstable: String,
+    phase: DictationPhase,
+    meter: DictationMeter,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DictationPhase {
+    Starting,
+    Listening,
+    Finishing,
+}
+
+impl DictationPhase {
+    const STARTING_STATUS: &'static str = "◌ starting dictation…";
+    const FINISHING_STATUS: &'static str = "◌ finishing dictation…";
+}
+
+struct DictationMeter {
+    history: VecDeque<char>,
+    noise_ema: f64,
+    envelope: f64,
+}
+
+impl DictationMeter {
+    fn new() -> Self {
+        Self {
+            history: VecDeque::from(['⠤'; 4]),
+            noise_ema: 0.02,
+            envelope: 0.0,
+        }
+    }
+
+    fn update(&mut self, peak: u16) {
+        const SYMBOLS: [char; 7] = ['⠤', '⠴', '⠶', '⠷', '⡷', '⡿', '⣿'];
+        let peak = f64::from(peak) / f64::from(i16::MAX);
+        let smoothing = if peak > self.envelope { 0.80 } else { 0.25 };
+        self.envelope = smoothing * peak + (1.0 - smoothing) * self.envelope;
+        let rms = self.envelope * 0.7;
+        self.noise_ema = 0.95 * self.noise_ema + 0.05 * rms;
+        let signal = 0.8 * peak + 0.2 * self.envelope;
+        let ratio = (signal / (self.noise_ema.max(0.01) * 2.0)).max(0.0);
+        let compressed = (ratio.ln_1p() / 1.6_f64.ln_1p()).min(1.0);
+        let index = (compressed * (SYMBOLS.len() - 1) as f64)
+            .round()
+            .clamp(0.0, (SYMBOLS.len() - 1) as f64) as usize;
+        let _ = self.history.pop_front();
+        self.history.push_back(SYMBOLS[index]);
+    }
+
+    fn text(&self) -> String {
+        self.history.iter().collect()
+    }
+}
+
+pub(super) struct DictationComposerView {
+    pub(super) text: String,
+    pub(super) cursor: usize,
+    pub(super) unstable: Range<usize>,
 }
 
 pub(super) struct PendingSteer {
@@ -1157,6 +1228,8 @@ pub(super) struct App {
     composer_width: u16,
     composer_scroll: usize,
     preferred_column: Option<usize>,
+    draft_generation: u64,
+    dictation: Option<DictationMark>,
     next_btw_id: u64,
     next_main_branch_id: u64,
     next_input_id: u64,
@@ -1209,6 +1282,8 @@ impl App {
             composer_width: 80,
             composer_scroll: 0,
             preferred_column: None,
+            draft_generation: 0,
+            dictation: None,
             next_btw_id: 1,
             next_main_branch_id: 1,
             next_input_id: 1,
@@ -1289,6 +1364,7 @@ impl App {
         self.cursor += character.len_utf8();
         self.preferred_column = None;
         self.synchronize_composer_elements();
+        self.bump_draft_generation();
     }
 
     pub(super) fn insert_str(&mut self, text: &str) {
@@ -1298,6 +1374,144 @@ impl App {
         self.cursor += text.len();
         self.preferred_column = None;
         self.synchronize_composer_elements();
+        self.bump_draft_generation();
+    }
+
+    pub(super) const fn composer_generation(&self) -> ComposerGeneration {
+        ComposerGeneration {
+            pane: self.focus,
+            draft: self.draft_generation,
+        }
+    }
+
+    pub(super) fn begin_dictation(&mut self, id: u64) -> Option<ComposerGeneration> {
+        if self.dictation.is_some()
+            || self.historical_editor.is_some()
+            || self.branch_navigator.is_some()
+        {
+            return None;
+        }
+        self.synchronize_composer_elements();
+        self.snap_cursor_out_of_pending_paste();
+        if !self.input.is_char_boundary(self.cursor) {
+            return None;
+        }
+        let generation = self.composer_generation();
+        self.dictation = Some(DictationMark {
+            id,
+            anchor: self.cursor,
+            stable: String::new(),
+            unstable: String::new(),
+            phase: DictationPhase::Starting,
+            meter: DictationMeter::new(),
+        });
+        Some(generation)
+    }
+
+    pub(super) fn update_dictation(&mut self, id: u64, stable: String, unstable: String) {
+        let Some(mark) = &mut self.dictation else {
+            return;
+        };
+        if mark.id == id {
+            mark.stable = stable;
+            mark.unstable = unstable;
+        }
+    }
+
+    pub(super) const fn set_dictation_finishing(&mut self, id: u64) {
+        if let Some(mark) = &mut self.dictation
+            && mark.id == id
+        {
+            mark.phase = DictationPhase::Finishing;
+        }
+    }
+
+    pub(super) fn set_dictation_started(&mut self, id: u64) {
+        if let Some(mark) = &mut self.dictation
+            && mark.id == id
+            && mark.phase == DictationPhase::Starting
+        {
+            mark.phase = DictationPhase::Listening;
+        }
+    }
+
+    pub(super) fn update_dictation_audio_level(&mut self, id: u64, peak: u16) {
+        if let Some(mark) = &mut self.dictation
+            && mark.id == id
+            && mark.phase == DictationPhase::Listening
+        {
+            mark.meter.update(peak);
+        }
+    }
+
+    pub(super) fn dictation_status(&self) -> Option<String> {
+        let mark = self.dictation.as_ref()?;
+        Some(match mark.phase {
+            DictationPhase::Starting => DictationPhase::STARTING_STATUS.to_owned(),
+            DictationPhase::Listening => format!("● listening {}", mark.meter.text()),
+            DictationPhase::Finishing => DictationPhase::FINISHING_STATUS.to_owned(),
+        })
+    }
+
+    pub(super) fn cancel_dictation(&mut self, id: u64) {
+        let Some(mark) = self.dictation.take() else {
+            return;
+        };
+        if mark.id != id {
+            self.dictation = Some(mark);
+        }
+    }
+
+    pub(super) fn commit_dictation(&mut self, id: u64, transcript: &str) -> bool {
+        let Some(mark) = self.dictation.take() else {
+            return false;
+        };
+        if mark.id != id || !self.input.is_char_boundary(mark.anchor) {
+            self.dictation = Some(mark);
+            return false;
+        }
+        self.cursor = mark.anchor;
+        let insertion = spaced_dictation(&self.input, mark.anchor, transcript);
+        if !insertion.is_empty() {
+            self.insert_str(&insertion);
+        }
+        true
+    }
+
+    pub(super) fn commit_dictation_draft(&mut self, id: u64) -> bool {
+        let Some(mark) = self.dictation.as_ref().filter(|mark| mark.id == id) else {
+            return false;
+        };
+        let transcript = match (mark.stable.trim(), mark.unstable.trim()) {
+            ("", unstable) => unstable.to_owned(),
+            (stable, "") => stable.to_owned(),
+            (stable, unstable) => format!("{stable} {unstable}"),
+        };
+        !transcript.is_empty() && self.commit_dictation(id, &transcript)
+    }
+
+    pub(super) fn dictation_composer_view(&self) -> Option<DictationComposerView> {
+        let mark = self.dictation.as_ref()?;
+        let (stable, unstable) =
+            styled_dictation_parts(&self.input, mark.anchor, &mark.stable, &mark.unstable);
+        let stable_start = mark.anchor;
+        let stable_end = stable_start.saturating_add(stable.len());
+        let unstable_end = stable_end.saturating_add(unstable.len());
+        let mut text = String::with_capacity(
+            self.input
+                .len()
+                .saturating_add(stable.len())
+                .saturating_add(unstable.len()),
+        );
+        text.push_str(&self.input[..mark.anchor]);
+        text.push_str(&stable);
+        text.push_str(&unstable);
+        text.push_str(&self.input[mark.anchor..]);
+        Some(DictationComposerView {
+            text,
+            cursor: unstable_end,
+            unstable: stable_end..unstable_end,
+        })
     }
 
     pub(super) fn handle_paste(&mut self, text: &str) {
@@ -1312,6 +1526,7 @@ impl App {
             self.cursor += placeholder.len();
             self.pending_pastes.push(PendingPaste { placeholder, text });
             self.preferred_column = None;
+            self.bump_draft_generation();
             return;
         }
         if text.len() > 1
@@ -1590,6 +1805,7 @@ impl App {
         self.cursor = self.input.len();
         self.preferred_column = None;
         self.synchronize_composer_elements();
+        self.bump_draft_generation();
     }
 
     pub(super) fn editor_failed(&mut self, error: impl std::fmt::Display) {
@@ -1599,11 +1815,15 @@ impl App {
     }
 
     pub(super) fn clear_input(&mut self) {
+        let changed = !self.input.is_empty();
         self.input.clear();
         self.local_images.clear();
         self.pending_pastes.clear();
         self.cursor = 0;
         self.preferred_column = None;
+        if changed {
+            self.bump_draft_generation();
+        }
     }
 
     /// Interrupts immediately to resubmit pending steers, otherwise implements
@@ -1671,6 +1891,7 @@ impl App {
         self.cursor = 0;
         self.input.clear();
         self.pending_pastes.clear();
+        self.bump_draft_generation();
         let local_images = std::mem::take(&mut self.local_images)
             .into_iter()
             .map(|image| image.path)
@@ -2020,6 +2241,7 @@ impl App {
         self.cursor = draft.cursor.min(self.input.len());
         self.composer_scroll = draft.scroll;
         self.preferred_column = draft.preferred_column;
+        self.bump_draft_generation();
     }
 
     pub(super) fn main_branch_switch_failed(&mut self, id: u64, error: &str) {
@@ -2699,6 +2921,7 @@ impl App {
         self.cursor += placeholder.len();
         self.local_images.push(AttachedImage { placeholder, path });
         self.preferred_column = None;
+        self.bump_draft_generation();
     }
 
     fn synchronize_composer_elements(&mut self) {
@@ -2761,7 +2984,12 @@ impl App {
         }
         self.input.drain(start..end);
         self.synchronize_composer_elements();
+        self.bump_draft_generation();
         start
+    }
+
+    const fn bump_draft_generation(&mut self) {
+        self.draft_generation = self.draft_generation.saturating_add(1);
     }
 
     fn expanded_composer_input(&self) -> String {
@@ -3264,6 +3492,51 @@ fn bounded_multiline_text(value: &str, max_chars: usize, max_lines: usize) -> St
     output
 }
 
+fn styled_dictation_parts(
+    input: &str,
+    anchor: usize,
+    stable: &str,
+    unstable: &str,
+) -> (String, String) {
+    let mut stable = stable.to_owned();
+    let mut unstable = unstable.to_owned();
+    if !stable.is_empty()
+        && !unstable.is_empty()
+        && word_like(stable.chars().next_back())
+        && word_like(unstable.chars().next())
+    {
+        stable.push(' ');
+    }
+    let starts = stable.chars().next().or_else(|| unstable.chars().next());
+    if word_like(input[..anchor].chars().next_back()) && word_like(starts) {
+        if stable.is_empty() {
+            unstable.insert(0, ' ');
+        } else {
+            stable.insert(0, ' ');
+        }
+    }
+    let ends = unstable
+        .chars()
+        .next_back()
+        .or_else(|| stable.chars().next_back());
+    if word_like(ends) && word_like(input[anchor..].chars().next()) {
+        if unstable.is_empty() {
+            stable.push(' ');
+        } else {
+            unstable.push(' ');
+        }
+    }
+    (stable, unstable)
+}
+
+fn spaced_dictation(input: &str, anchor: usize, transcript: &str) -> String {
+    styled_dictation_parts(input, anchor, transcript, "").0
+}
+
+fn word_like(character: Option<char>) -> bool {
+    character.is_some_and(|character| character.is_alphanumeric() || character == '_')
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -3284,6 +3557,67 @@ mod tests {
         App, EscapeAction, PaneId, SubmittedPrompt, present_tool_name, smooth_scroll_drain,
         summarize_tool_arguments,
     };
+
+    #[test]
+    fn dictation_mark_is_virtual_and_applies_unicode_aware_spacing_once() {
+        let mut app = App::new(".".into());
+        app.input = "helloworld".to_owned();
+        app.cursor = "hello".len();
+        assert!(app.begin_dictation(7).is_some());
+        app.update_dictation(7, "beautiful".to_owned(), "day".to_owned());
+
+        let view = app.dictation_composer_view().unwrap();
+        assert_eq!(app.input, "helloworld");
+        assert_eq!(view.text, "hello beautiful day world");
+        assert_eq!(&view.text[view.unstable], "day ");
+
+        assert!(app.commit_dictation(7, "beautiful day"));
+        assert_eq!(app.input, "hello beautiful day world");
+        assert_eq!(app.cursor, "hello beautiful day ".len());
+    }
+
+    #[test]
+    fn dictation_spacing_preserves_punctuation_newlines_and_unicode() {
+        let mut app = App::new(".".into());
+        app.input = "héllo世界".to_owned();
+        app.cursor = "héllo".len();
+        assert!(app.begin_dictation(1).is_some());
+        assert!(app.commit_dictation(1, ",\nbeautiful"));
+        assert_eq!(app.input, "héllo,\nbeautiful 世界");
+
+        let mut app = App::new(".".into());
+        assert!(app.begin_dictation(2).is_some());
+        assert!(app.commit_dictation(2, "Hello!"));
+        assert_eq!(app.input, "Hello!");
+    }
+
+    #[test]
+    fn dictation_phase_is_independent_from_agent_status() {
+        let mut app = App::new(".".into());
+        app.set_active_status("Working");
+        assert!(app.begin_dictation(3).is_some());
+        assert_eq!(app.active_conversation().status, "Working");
+        assert_eq!(
+            app.dictation_status(),
+            Some("◌ starting dictation…".to_owned())
+        );
+        app.set_dictation_started(3);
+        assert_eq!(app.active_conversation().status, "Working");
+        assert_eq!(app.dictation_status(), Some("● listening ⠤⠤⠤⠤".to_owned()));
+        app.update_dictation_audio_level(3, i16::MAX as u16);
+        assert_eq!(app.dictation_status(), Some("● listening ⠤⠤⠤⣿".to_owned()));
+        app.set_dictation_finishing(3);
+        assert_eq!(app.active_conversation().status, "Working");
+        assert_eq!(
+            app.dictation_status(),
+            Some("◌ finishing dictation…".to_owned())
+        );
+
+        assert!(app.commit_dictation(3, "done"));
+
+        assert_eq!(app.active_conversation().status, "Working");
+        assert_eq!(app.dictation_status(), None);
+    }
     use crate::tui::transcript::TranscriptItem;
 
     fn event(kind: AgentEventKind, payload: &Value) -> AgentEvent {

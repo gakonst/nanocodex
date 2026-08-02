@@ -113,6 +113,15 @@ pub(crate) struct AgentArgs {
     )]
     rollouts: bool,
 
+    /// Enable experimental hold-Space and Ctrl+X V streaming dictation.
+    #[arg(
+        long,
+        env = "NANOCODEX_DICTATION",
+        default_value_t = false,
+        action = ArgAction::SetTrue
+    )]
+    dictation: bool,
+
     /// Responses API WebSocket endpoint.
     #[arg(long, env = "OPENAI_RESPONSES_WEBSOCKET_URL")]
     websocket_url: Option<String>,
@@ -163,6 +172,10 @@ impl AgentArgs {
 
     pub(crate) const fn model(&self) -> Model {
         self.model
+    }
+
+    pub(crate) const fn dictation_enabled(&self) -> bool {
+        self.dictation
     }
 
     pub(crate) fn responses_transport(&self) -> ResponsesTransport {

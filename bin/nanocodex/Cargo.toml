@@ -43,6 +43,7 @@ hex.workspace = true
 image.workspace = true
 nanocodex.workspace = true
 nanocodex-browser.workspace = true
+nanocodex-dictation.workspace = true
 nanocodex-observability.workspace = true
 nanocodex-voice.workspace = true
 nix = { workspace = true, optional = true }

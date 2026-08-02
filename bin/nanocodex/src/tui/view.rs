@@ -8,7 +8,10 @@ use ratatui::{
 use std::time::Instant;
 
 use super::{
-    app::{App, Conversation, PaneId, ReasoningPicker, STANDARD_THINKING_OPTIONS},
+    app::{
+        App, Conversation, DictationComposerView, PaneId, ReasoningPicker,
+        STANDARD_THINKING_OPTIONS,
+    },
     composer::ComposerLayout,
     transcript::InlineEdit,
 };
@@ -25,6 +28,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
         app,
         layout.composer,
         &layout.composer_layout,
+        layout.dictation_composer_view.as_ref(),
     ));
     render_footer(frame, app, layout.footer);
     app.render_mouse_selection(frame.buffer_mut(), selectable_areas.as_slice());
@@ -33,7 +37,13 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
 
 pub(super) fn render_animation(frame: &mut Frame<'_>, app: &mut App) {
     let layout = view_layout(frame.area(), app);
-    render_composer(frame, app, layout.composer, &layout.composer_layout);
+    render_composer(
+        frame,
+        app,
+        layout.composer,
+        &layout.composer_layout,
+        layout.dictation_composer_view.as_ref(),
+    );
     render_footer(frame, app, layout.footer);
     render_reasoning_picker(frame, app);
 }
@@ -45,6 +55,7 @@ struct ViewLayout {
     composer: Rect,
     footer: Rect,
     composer_layout: ComposerLayout,
+    dictation_composer_view: Option<DictationComposerView>,
 }
 
 fn view_layout(area: Rect, app: &mut App) -> ViewLayout {
@@ -54,13 +65,19 @@ fn view_layout(area: Rect, app: &mut App) -> ViewLayout {
         area.width.saturating_sub(2).max(1)
     };
     app.set_composer_width(composer_width);
-    let composer_layout = ComposerLayout::new(&app.input, composer_width);
+    let dictation_composer_view = app.dictation_composer_view();
+    let (composer_text, composer_cursor) = dictation_composer_view
+        .as_ref()
+        .map_or((app.input.as_str(), app.cursor), |view| {
+            (view.text.as_str(), view.cursor)
+        });
+    let composer_layout = ComposerLayout::new(composer_text, composer_width);
     let composer_height = if app.historical_editor_active() || app.branch_navigator_active() {
         3
     } else {
         composer_height(&composer_layout)
     };
-    let cursor = composer_layout.cursor_position(&app.input, app.cursor);
+    let cursor = composer_layout.cursor_position(composer_text, composer_cursor);
     app.settle_composer_viewport(
         cursor.row,
         composer_layout.row_count(),
@@ -89,6 +106,7 @@ fn view_layout(area: Rect, app: &mut App) -> ViewLayout {
         composer: composer_area,
         footer: footer_area,
         composer_layout,
+        dictation_composer_view,
     }
 }
 
@@ -446,7 +464,13 @@ fn render_transcript(
     inner
 }
 
-fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &ComposerLayout) -> Rect {
+fn render_composer(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    layout: &ComposerLayout,
+    dictation_view: Option<&DictationComposerView>,
+) -> Rect {
     let conversation = app.active_conversation();
     let target = match app.focus {
         PaneId::Main => "Main",
@@ -484,12 +508,16 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &Compos
         );
         return inner;
     }
-    let cursor = layout.cursor_position(&app.input, app.cursor);
+    let (text, cursor, unstable) = dictation_view.map_or_else(
+        || (app.input.as_str(), app.cursor, 0..0),
+        |view| (view.text.as_str(), view.cursor, view.unstable.clone()),
+    );
+    let cursor = layout.cursor_position(text, cursor);
     let vertical_scroll = app.composer_scroll();
     let visible_end = vertical_scroll.saturating_add(usize::from(inner.height));
     let lines = (vertical_scroll..visible_end)
         .filter_map(|row| layout.row(row))
-        .map(|range| Line::raw(&app.input[range.clone()]))
+        .map(|range| composer_line(text, &unstable, range.clone()))
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 
@@ -505,6 +533,29 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect, layout: &Compos
         .saturating_add(saturating_u16(cursor.row.saturating_sub(vertical_scroll)));
     frame.set_cursor_position(Position::new(x, y));
     inner
+}
+
+fn composer_line<'a>(
+    text: &'a str,
+    unstable: &std::ops::Range<usize>,
+    range: std::ops::Range<usize>,
+) -> Line<'a> {
+    let revisable = range.start.max(unstable.start)..range.end.min(unstable.end);
+    if revisable.is_empty() {
+        return Line::raw(&text[range]);
+    }
+    let mut spans = Vec::with_capacity(3);
+    if range.start < revisable.start {
+        spans.push(Span::raw(&text[range.start..revisable.start]));
+    }
+    spans.push(Span::styled(
+        &text[revisable.clone()],
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    if revisable.end < range.end {
+        spans.push(Span::raw(&text[revisable.end..range.end]));
+    }
+    Line::from(spans)
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -535,6 +586,11 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )
     } else {
         conversation.status.clone()
+    };
+    let state = match app.dictation_status() {
+        Some(dictation) if conversation.running => format!("{dictation} · {state}"),
+        Some(dictation) => dictation,
+        None => state,
     };
     let queued = conversation
         .pending_turns
@@ -815,6 +871,22 @@ mod tests {
     }
 
     #[test]
+    fn running_footer_keeps_dictation_visible_beside_agent_activity() {
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.main.running = true;
+        assert!(app.begin_dictation(3).is_some());
+        app.set_dictation_started(3);
+        app.update_dictation_audio_level(3, i16::MAX as u16);
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal.backend().to_string();
+
+        assert!(rendered.contains("● listening ⠤⠤⠤⣿ · "));
+        assert!(rendered.contains("Working (0s)"));
+    }
+
+    #[test]
     fn animation_render_matches_a_full_frame() {
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
         let mut app = App::new("/workspace".into());
@@ -942,6 +1014,37 @@ mod tests {
         assert!(app.begin_mouse_selection((7, 9).into()));
         assert!(app.finish_mouse_selection((7, 9).into()));
         assert_eq!(app.cursor, 6);
+    }
+
+    #[test]
+    fn dictation_keeps_base_draft_virtual_and_dims_revisable_text() {
+        let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.input = "prefix".to_owned();
+        app.cursor = app.input.len();
+        assert!(app.begin_dictation(3).is_some());
+        app.update_dictation(3, "stable".to_owned(), "draft".to_owned());
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        assert_eq!(app.input, "prefix");
+        let buffer = terminal.backend().buffer();
+        let draft_index = buffer
+            .content
+            .windows(5)
+            .position(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>() == "draft")
+            .expect("unstable transcript should render");
+        let draft = &buffer.content[draft_index];
+        assert!(draft.modifier.contains(Modifier::DIM));
+        let stable_index = buffer
+            .content
+            .windows(6)
+            .position(|cells| {
+                cells.iter().map(|cell| cell.symbol()).collect::<String>() == "stable"
+            })
+            .expect("stable transcript should render");
+        let stable = &buffer.content[stable_index];
+        assert!(!stable.modifier.contains(Modifier::DIM));
     }
 
     #[test]

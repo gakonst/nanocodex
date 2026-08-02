@@ -783,6 +783,9 @@ async fn run_active_voice(
                 let Some(frame) = frame else {
                     break Err(VoiceFailure::MicrophoneStopped);
                 };
+                let frame = nanocodex::oai::realtime::RealtimeAudio::from_samples(
+                    frame.samples.iter().copied(),
+                );
                 if let Err(error) = session.send_audio(frame).await {
                     break Err(error.into());
                 }

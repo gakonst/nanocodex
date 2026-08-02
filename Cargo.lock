@@ -5020,6 +5020,7 @@ dependencies = [
  "mpp",
  "nanocodex",
  "nanocodex-browser",
+ "nanocodex-dictation",
  "nanocodex-egress",
  "nanocodex-observability",
  "nanocodex-tools",
@@ -5084,6 +5085,17 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "v8-heap-parser",
+]
+
+[[package]]
+name = "nanocodex-dictation"
+version = "0.3.0"
+dependencies = [
+ "cpal",
+ "nanocodex-oai-api",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -5274,6 +5286,7 @@ dependencies = [
  "cpal",
  "futures-util",
  "nanocodex",
+ "nanocodex-dictation",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
