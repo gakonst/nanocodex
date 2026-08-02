@@ -452,7 +452,7 @@ impl UiModel {
             terminal_focused: true,
             pending_notification: None,
             pending_mouse_scroll: None,
-            dictation: DictationUi::new(false, false),
+            dictation: DictationUi::new(false),
         }
     }
 
@@ -623,9 +623,7 @@ impl UiModel {
                 let requires_full_redraw =
                     self.app.mouse_selection_needs_redraw() || self.app.historical_editor_active();
                 self.app.on_tick();
-                let dictation_redraw =
-                    self.dictation
-                        .on_tick(&mut self.app, self.voice_observing, commands)?;
+                let dictation_redraw = self.dictation.on_tick(&mut self.app, commands)?;
                 Ok(if requires_full_redraw {
                     UiUpdate::Redraw(RedrawPriority::Streaming)
                 } else if dictation_redraw {
@@ -715,9 +713,7 @@ pub(crate) async fn run(
         update_tx,
     );
 
-    let mut terminal =
-        TerminalSession::enter(dictation_enabled).wrap_err("failed to initialize the terminal")?;
-    let dictation_keys = terminal.supports_key_releases();
+    let mut terminal = TerminalSession::enter().wrap_err("failed to initialize the terminal")?;
     let terminal_profile = TerminalProfile::query(Duration::from_millis(750));
     let (math_update_tx, mut math_update_rx) = mpsc::channel(1);
     let math_renderer = Ratatex::builder(terminal_profile)
@@ -741,7 +737,7 @@ pub(crate) async fn run(
     app.set_math_renderer(math_renderer.clone());
     app.restore_transcript(restored_transcript);
     let mut ui = UiModel::new(app, Arc::clone(&root_session_id));
-    ui.dictation = DictationUi::new(dictation_enabled, dictation_keys);
+    ui.dictation = DictationUi::new(dictation_enabled);
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut stream_telemetry = StreamTelemetry::default();
     let mut view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));

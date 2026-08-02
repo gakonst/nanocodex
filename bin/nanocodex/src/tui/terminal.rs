@@ -19,7 +19,7 @@ use crossterm::{
     execute, queue,
     terminal::{
         BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
-        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement,
+        disable_raw_mode, enable_raw_mode,
     },
 };
 use ratatui::{
@@ -58,7 +58,6 @@ pub(super) struct TerminalSession {
     terminal: TuiTerminal,
     output_bytes: Rc<CounterCell<u64>>,
     active: bool,
-    report_all_keys: bool,
 }
 
 static INSTALL_PANIC_HOOK: Once = Once::new();
@@ -218,19 +217,17 @@ impl<B: Backend> Backend for MeasuredBackend<B> {
 }
 
 impl TerminalSession {
-    pub(super) fn enter(dictation_enabled: bool) -> io::Result<Self> {
+    pub(super) fn enter() -> io::Result<Self> {
         if !stdin().is_terminal() || !stdout().is_terminal() {
             return Err(io::Error::other(
                 "interactive mode requires terminal stdin and stdout; use `nanocodex run` for JSONL",
             ));
         }
         install_panic_hook();
-        let supports_key_releases =
-            dictation_enabled && supports_keyboard_enhancement().unwrap_or(false);
         let mut restore = RestoreOnDrop { armed: true };
         enable_raw_mode()?;
         let mut output = stdout();
-        activate_commands(&mut output, supports_key_releases)?;
+        activate_commands(&mut output)?;
         TERMINAL_ACTIVE.store(true, Ordering::Release);
         let output_bytes = Rc::new(CounterCell::new(0));
         let writer = ByteCountingWriter {
@@ -245,12 +242,7 @@ impl TerminalSession {
             terminal,
             output_bytes,
             active: true,
-            report_all_keys: supports_key_releases,
         })
-    }
-
-    pub(super) const fn supports_key_releases(&self) -> bool {
-        self.report_all_keys
     }
 
     pub(super) fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<DrawMetrics> {
@@ -300,7 +292,7 @@ impl TerminalSession {
         }
         let mut restore = RestoreOnDrop { armed: true };
         enable_raw_mode()?;
-        activate_commands(self.terminal.backend_mut(), self.report_all_keys)?;
+        activate_commands(self.terminal.backend_mut())?;
         TERMINAL_ACTIVE.store(true, Ordering::Release);
         self.terminal.clear()?;
         self.terminal.autoresize()?;
@@ -363,7 +355,7 @@ fn restore_commands(output: &mut impl io::Write) {
     ));
 }
 
-fn activate_commands(output: &mut impl io::Write, report_all_keys: bool) -> io::Result<()> {
+fn activate_commands(output: &mut impl io::Write) -> io::Result<()> {
     execute!(
         output,
         EnterAlternateScreen,
@@ -372,16 +364,14 @@ fn activate_commands(output: &mut impl io::Write, report_all_keys: bool) -> io::
         EnableMouseCapture,
         Hide
     )?;
-    let mut flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
-    if report_all_keys {
-        // TODO: Crossterm can expose a split CSI-u sequence as literal text when the initial ESC
-        // arrives in a separate read. Track upstream keyboard parsing in
-        // https://github.com/crossterm-rs/crossterm/issues/685.
-        flags |= KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
-    }
-    drop(execute!(output, PushKeyboardEnhancementFlags(flags)));
+    drop(execute!(
+        output,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    ));
     Ok(())
 }
 

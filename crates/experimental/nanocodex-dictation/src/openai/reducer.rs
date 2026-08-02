@@ -1,16 +1,31 @@
 use crate::DictationTranscript;
 
-#[derive(Default)]
 pub(crate) struct TranscriptReducer {
     finalized: Vec<String>,
     partial: String,
+    utterance_open: bool,
+}
+
+impl Default for TranscriptReducer {
+    fn default() -> Self {
+        Self {
+            finalized: Vec::new(),
+            partial: String::new(),
+            utterance_open: true,
+        }
+    }
 }
 
 impl TranscriptReducer {
+    pub(crate) const fn speech_started(&mut self) {
+        self.utterance_open = true;
+    }
+
     pub(crate) fn push_delta(&mut self, delta: &str) -> bool {
         if delta.is_empty() {
             return false;
         }
+        self.utterance_open = true;
         self.partial.push_str(delta);
         true
     }
@@ -19,10 +34,14 @@ impl TranscriptReducer {
         let before = self.transcript();
         let visible = self.committable_text();
         let partial = std::mem::take(&mut self.partial);
-        if partial.trim().is_empty() || transcripts_reconcile(&partial, text) {
+        if !self.utterance_open {
+            self.refine_last_finalized(text);
+        } else if transcripts_reconcile(&partial, text) {
             self.push_finalized(text);
-        } else if transcript_extends(&visible, text) {
+        } else if !partial.trim().is_empty() && transcript_extends(&visible, text) {
             self.finalized.clear();
+            self.push_finalized(text);
+        } else if partial.trim().is_empty() {
             self.push_finalized(text);
         } else {
             // A completed input event refines matching streamed partial text.
@@ -30,6 +49,7 @@ impl TranscriptReducer {
             // place.
             self.push_finalized(&partial);
         }
+        self.utterance_open = false;
         self.transcript() != before
     }
 
@@ -50,6 +70,7 @@ impl TranscriptReducer {
         }
         self.finalized = recovered;
         self.partial.clear();
+        self.utterance_open = false;
         self.transcript() != before
     }
 
@@ -67,15 +88,19 @@ impl TranscriptReducer {
 
     fn push_finalized(&mut self, text: &str) {
         let text = text.trim();
-        if text.is_empty()
-            || self
-                .finalized
-                .last()
-                .is_some_and(|previous| previous.trim() == text)
-        {
+        if text.is_empty() {
             return;
         }
         self.finalized.push(text.to_owned());
+    }
+
+    fn refine_last_finalized(&mut self, text: &str) {
+        let text = text.trim();
+        if let Some(previous) = self.finalized.last_mut()
+            && transcripts_reconcile(previous, text)
+        {
+            *previous = text.to_owned();
+        }
     }
 }
 
@@ -191,6 +216,7 @@ mod tests {
     fn tail_recovery_preserves_complete_stable_text_after_long_gaps() {
         let mut reducer = TranscriptReducer::default();
         assert!(reducer.finish_utterance("first long section"));
+        reducer.speech_started();
         assert!(reducer.finish_utterance("second section after a gap"));
 
         assert!(!reducer.replace_finalized(["first long section".to_owned()]));
@@ -213,5 +239,33 @@ mod tests {
             "Something I noticed right now."
         );
         assert!(reducer.transcript().unstable.is_empty());
+    }
+
+    #[test]
+    fn repeated_completion_after_stabilization_refines_one_copy() {
+        let mut reducer = TranscriptReducer::default();
+        assert!(reducer.push_delta("release after this becomes visible"));
+        assert!(reducer.finish_utterance("Release after this becomes visible."));
+
+        assert!(!reducer.finish_utterance("Release after this becomes visible."));
+        assert!(reducer.finish_utterance("Release after this becomes visible!"));
+        assert_eq!(
+            reducer.committable_text(),
+            "Release after this becomes visible!"
+        );
+    }
+
+    #[test]
+    fn a_new_speech_boundary_preserves_repeated_words_as_a_new_utterance() {
+        let mut reducer = TranscriptReducer::default();
+        assert!(reducer.push_delta("repeat this sentence"));
+        assert!(reducer.finish_utterance("Repeat this sentence."));
+
+        reducer.speech_started();
+        assert!(reducer.finish_utterance("Repeat this sentence."));
+        assert_eq!(
+            reducer.committable_text(),
+            "Repeat this sentence. Repeat this sentence."
+        );
     }
 }

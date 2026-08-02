@@ -221,6 +221,7 @@ async fn run(
                         return settle_recovery(&reducer, RealtimeError::WebSocket(message));
                     }
                     RealtimeEvent::SpeechStarted => {
+                        reducer.speech_started();
                         if finishing && !heard_speech {
                             finish_deadline
                                 .as_mut()

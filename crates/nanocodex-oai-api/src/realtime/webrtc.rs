@@ -13,7 +13,7 @@ use reqwest::{Client, StatusCode, header::LOCATION};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::{
-    sync::{mpsc, watch},
+    sync::mpsc,
     time::{sleep, timeout},
 };
 use tokio_tungstenite::tungstenite::{
@@ -32,7 +32,6 @@ use webrtc::{
     media::{Sample, io::sample_builder::SampleBuilder},
     peer_connection::{
         RTCPeerConnection, configuration::RTCConfiguration,
-        peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
     },
     rtp::codecs::opus::OpusPacket,
@@ -100,7 +99,7 @@ pub(super) struct ConnectConfig<'a> {
 }
 
 pub(super) async fn connect(config: ConnectConfig<'_>) -> Result<WebRtcConnection, RealtimeError> {
-    let mut offer = create_offer().await?;
+    let offer = create_offer().await?;
     let (call, auth) = create_call_with_auth_recovery(&config, &offer.sdp).await?;
     trace!(target: "nanocodex_oai_api::realtime::wire", sdp = %call.sdp, call_id = %call.id, "GPT Realtime WebRTC answer");
     debug!(call_id = %call.id, "applying GPT Realtime WebRTC answer");
@@ -116,10 +115,7 @@ pub(super) async fn connect(config: ConnectConfig<'_>) -> Result<WebRtcConnectio
     .map_err(|error| RealtimeError::WebRtc(error.to_string()))?;
     debug!(call_id = %call.id, "applied GPT Realtime WebRTC answer");
 
-    let ((mut socket, response), ()) = tokio::try_join!(
-        connect_sideband(&config, &auth, &call.id),
-        wait_for_peer_connection(&mut offer.connection_state),
-    )?;
+    let (mut socket, response) = connect_sideband(&config, &auth, &call.id).await?;
     debug!(
         status = response.status().as_u16(),
         "connected GPT Realtime WebRTC sideband"
@@ -148,34 +144,6 @@ pub(super) async fn connect(config: ConnectConfig<'_>) -> Result<WebRtcConnectio
             audio: offer.audio,
         },
     })
-}
-
-async fn wait_for_peer_connection(
-    states: &mut watch::Receiver<RTCPeerConnectionState>,
-) -> Result<(), RealtimeError> {
-    timeout(CONNECT_TIMEOUT, async {
-        loop {
-            let state = *states.borrow_and_update();
-            match state {
-                RTCPeerConnectionState::Connected => return Ok(()),
-                RTCPeerConnectionState::Failed
-                | RTCPeerConnectionState::Disconnected
-                | RTCPeerConnectionState::Closed => {
-                    return Err(RealtimeError::WebRtc(format!(
-                        "peer connection entered {state} before media became ready"
-                    )));
-                }
-                RTCPeerConnectionState::Unspecified
-                | RTCPeerConnectionState::New
-                | RTCPeerConnectionState::Connecting => {}
-            }
-            states.changed().await.map_err(|_| {
-                RealtimeError::WebRtc("peer connection closed before media became ready".to_owned())
-            })?;
-        }
-    })
-    .await
-    .map_err(|_| RealtimeError::ConnectTimeout)?
 }
 
 async fn connect_sideband(
@@ -286,11 +254,6 @@ async fn create_offer() -> Result<Offer, RealtimeError> {
             .await
             .map_err(|error| RealtimeError::WebRtc(error.to_string()))?,
     );
-    let (connection_state_tx, connection_state) = watch::channel(peer.connection_state());
-    peer.on_peer_connection_state_change(Box::new(move |state| {
-        connection_state_tx.send_replace(state);
-        Box::pin(std::future::ready(()))
-    }));
     let microphone = Arc::new(TrackLocalStaticSample::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_OPUS.to_owned(),
@@ -456,7 +419,6 @@ async fn create_offer() -> Result<Offer, RealtimeError> {
         sdp: offer.sdp,
         input: input_tx,
         audio: audio_rx,
-        connection_state,
     })
 }
 
@@ -482,7 +444,6 @@ struct Offer {
     sdp: String,
     input: mpsc::Sender<RealtimeAudio>,
     audio: mpsc::Receiver<Result<RealtimeAudio, RealtimeError>>,
-    connection_state: watch::Receiver<RTCPeerConnectionState>,
 }
 
 fn spawn_microphone_encoder(
@@ -833,24 +794,17 @@ fn is_uuid(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use webrtc::{
-        peer_connection::peer_connection_state::RTCPeerConnectionState,
-        rtp::{header::Header, packet::Packet},
-    };
+    use webrtc::rtp::{header::Header, packet::Packet};
 
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
-        sync::watch,
-        time::timeout,
     };
 
     use super::{
         ConnectConfig, OPUS_PACKET_CAPACITY, OpusApplication, OpusChannels, OpusDecoder,
         OpusEncoder, OpusSampleRate, WEBRTC_INPUT_FRAME_SAMPLES, call_endpoint, call_id,
-        create_call, inbound_sample_builder, sideband_endpoint, wait_for_peer_connection,
+        create_call, inbound_sample_builder, sideband_endpoint,
     };
     use crate::{
         OpenAiAuth, OpenAiAuthMode, OpenAiAuthSnapshot,
@@ -941,27 +895,6 @@ mod tests {
         assert_eq!(samples.pop().unwrap().data.as_ref(), &[10]);
         assert_eq!(samples.pop().unwrap().data.as_ref(), &[11]);
         assert_eq!(samples.pop().unwrap().data.as_ref(), &[12]);
-    }
-
-    #[tokio::test]
-    async fn media_readiness_waits_for_connected_and_rejects_failure() {
-        let (states_tx, mut states) = watch::channel(RTCPeerConnectionState::Connecting);
-        let mut readiness = Box::pin(wait_for_peer_connection(&mut states));
-        assert!(
-            timeout(Duration::from_millis(10), readiness.as_mut())
-                .await
-                .is_err()
-        );
-        states_tx.send_replace(RTCPeerConnectionState::Connected);
-        assert!(readiness.await.is_ok());
-
-        let (states_tx, mut states) = watch::channel(RTCPeerConnectionState::Connecting);
-        states_tx.send_replace(RTCPeerConnectionState::Failed);
-        assert!(matches!(
-            wait_for_peer_connection(&mut states).await,
-            Err(crate::realtime::RealtimeError::WebRtc(message))
-                if message.contains("failed before media became ready")
-        ));
     }
 
     #[tokio::test]

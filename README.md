@@ -161,9 +161,8 @@ the transcript reaches its final form. Hold-Space preserves the existing draft
 and inserts completed speech at the captured cursor. The equivalent environment
 setting is `NANOCODEX_DICTATION=true`.
 
-Hold-Space uses terminal key-release support. Terminals with Kitty keyboard
-enhancement support also provide hold-right-Option as an alias. Nanocodex
-detects that capability at startup, including in Ghostty.
+Hold-Space follows the terminal's ordinary key-repeat stream. Terminals that
+report modifier release events also provide hold-right-Option as an alias.
 
 ## Thesis
 
