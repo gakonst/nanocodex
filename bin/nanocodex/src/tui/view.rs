@@ -888,6 +888,19 @@ mod tests {
     }
 
     #[test]
+    fn running_footer_keeps_hold_warmup_visible_beside_agent_activity() {
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.main.running = true;
+        app.set_dictation_hold_pending(true);
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal.backend().to_string();
+
+        assert!(rendered.contains("keep holding… · ⠋ Working (0s)"));
+    }
+
+    #[test]
     fn animation_render_matches_a_full_frame() {
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
         let mut app = App::new("/workspace".into());

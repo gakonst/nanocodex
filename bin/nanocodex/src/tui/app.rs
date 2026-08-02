@@ -1237,6 +1237,7 @@ pub(super) struct App {
     preferred_column: Option<usize>,
     draft_generation: u64,
     dictation: Option<DictationMark>,
+    dictation_hold_pending: bool,
     dictation_notice: Option<DictationNotice>,
     next_btw_id: u64,
     next_main_branch_id: u64,
@@ -1292,6 +1293,7 @@ impl App {
             preferred_column: None,
             draft_generation: 0,
             dictation: None,
+            dictation_hold_pending: false,
             dictation_notice: None,
             next_btw_id: 1,
             next_main_branch_id: 1,
@@ -1406,6 +1408,7 @@ impl App {
             return None;
         }
         let generation = self.composer_generation();
+        self.dictation_hold_pending = false;
         self.dictation_notice = None;
         self.dictation = Some(DictationMark {
             id,
@@ -1462,9 +1465,16 @@ impl App {
                 DictationPhase::Finishing => DictationPhase::FINISHING_STATUS.to_owned(),
             });
         }
+        if self.dictation_hold_pending {
+            return Some("keep holding…".to_owned());
+        }
         self.dictation_notice
             .as_ref()
             .map(|notice| notice.text.clone())
+    }
+
+    pub(super) const fn set_dictation_hold_pending(&mut self, pending: bool) {
+        self.dictation_hold_pending = pending;
     }
 
     pub(super) fn set_dictation_notice(&mut self, text: impl Into<String>) {

@@ -148,10 +148,10 @@ cargo run -p nanocodex-bin -- --api-key "$OPENAI_API_KEY" --dictation
 API keys use OpenAI's dedicated Realtime transcription WebSocket. Subscription
 credentials use the managed ChatGPT Realtime WebRTC path.
 
-Press Space normally to insert a space immediately. Hold it until the footer
-starts listening to stream speech into the composer, then release it to
-finalize. The footer shows a live microphone meter beside any concurrent agent
-activity.
+Press Space normally to insert a space immediately. While it is held, the
+footer briefly shows `keep holding…`, then starts listening and streams speech
+into the composer. Release Space to finalize. The footer shows a live
+microphone meter beside any concurrent agent activity.
 
 For longer dictation, start with a clear composer, type `/dictate`, and press
 Enter; press Enter again to finalize and send (or steer an active turn), Tab to
