@@ -1,5 +1,3 @@
-use nanocodex_oai_api::realtime::RealtimeTranscriptEntry;
-
 use crate::DictationTranscript;
 
 #[derive(Default)]
@@ -24,11 +22,10 @@ impl TranscriptReducer {
         self.transcript() != before
     }
 
-    pub(crate) fn recover_tail(&mut self, entries: Vec<RealtimeTranscriptEntry>) -> bool {
+    pub(crate) fn replace_finalized(&mut self, entries: impl IntoIterator<Item = String>) -> bool {
         let recovered = entries
             .into_iter()
-            .filter(|entry| entry.role == "user")
-            .map(|entry| entry.text.trim().to_owned())
+            .map(|text| text.trim().to_owned())
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>();
         if recovered.is_empty() {
@@ -83,8 +80,6 @@ fn join_text<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use nanocodex_oai_api::realtime::RealtimeTranscriptEntry;
-
     use super::TranscriptReducer;
 
     #[test]
@@ -106,32 +101,14 @@ mod tests {
         let mut reducer = TranscriptReducer::default();
         assert!(reducer.finish_utterance("one"));
         assert!(reducer.push_delta("two"));
-        assert!(reducer.recover_tail(vec![
-            RealtimeTranscriptEntry {
-                role: "user".to_owned(),
-                text: "one".to_owned(),
-            },
-            RealtimeTranscriptEntry {
-                role: "user".to_owned(),
-                text: "two".to_owned(),
-            },
-        ]));
+        assert!(reducer.replace_finalized(["one".to_owned(), "two".to_owned()]));
         assert_eq!(reducer.committable_text(), "one two");
     }
 
     #[test]
-    fn recovers_only_user_text_from_transport_tail() {
+    fn replacement_normalizes_empty_text() {
         let mut reducer = TranscriptReducer::default();
-        assert!(reducer.recover_tail(vec![
-            RealtimeTranscriptEntry {
-                role: "assistant".to_owned(),
-                text: "ignored".to_owned(),
-            },
-            RealtimeTranscriptEntry {
-                role: "user".to_owned(),
-                text: "recovered".to_owned(),
-            },
-        ]));
+        assert!(reducer.replace_finalized([" ".to_owned(), "recovered".to_owned()]));
         assert_eq!(reducer.committable_text(), "recovered");
     }
 
@@ -140,7 +117,7 @@ mod tests {
         let mut reducer = TranscriptReducer::default();
         assert!(reducer.push_delta("latest words"));
 
-        assert!(!reducer.recover_tail(Vec::new()));
+        assert!(!reducer.replace_finalized(Vec::new()));
         assert_eq!(reducer.committable_text(), "latest words");
     }
 }

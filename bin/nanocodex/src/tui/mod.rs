@@ -1279,7 +1279,7 @@ fn forward_dictation_events(
     drop(tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             let update = match event {
-                DictationEvent::Connecting | DictationEvent::TransportReady => continue,
+                DictationEvent::Connecting | DictationEvent::EngineReady => continue,
                 DictationEvent::Started => WorkerEvent::DictationStarted { id },
                 DictationEvent::Transcript(transcript) => {
                     WorkerEvent::DictationTranscript { id, transcript }

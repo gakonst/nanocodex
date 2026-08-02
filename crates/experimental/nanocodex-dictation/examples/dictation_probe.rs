@@ -49,8 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 started_at.elapsed()
                             );
                         }
-                        DictationEvent::TransportReady => {
-                            eprintln!("{:?} remote transport ready", started_at.elapsed());
+                        DictationEvent::EngineReady => {
+                            eprintln!("{:?} speech-to-text engine ready", started_at.elapsed());
                         }
                         DictationEvent::Transcript(transcript) => {
                             eprintln!(
