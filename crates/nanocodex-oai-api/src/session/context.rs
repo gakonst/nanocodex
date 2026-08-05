@@ -100,10 +100,7 @@ impl ContextManager {
             total_tokens,
             ..Usage::default()
         });
-        self.calls.clear();
-        for item in self.items.iter() {
-            self.calls.track(item);
-        }
+        self.calls = CallIds::from_items(self.items.iter());
     }
 
     pub fn update_token_info(&mut self, usage: Option<&Usage>) {
@@ -141,6 +138,7 @@ impl ContextManager {
             return (self.items.clone(), false);
         }
 
+        let calls = CallIds::from_items(self.items.iter());
         let mut repaired = Vec::with_capacity(self.items.len() + 2);
         for item in &self.items {
             match item {
@@ -151,7 +149,7 @@ impl ContextManager {
                     ..
                 } => {
                     repaired.push(item.clone());
-                    if !self.calls.function_outputs.contains(call_id.as_ref()) {
+                    if !calls.function_outputs.contains(call_id.as_ref()) {
                         let mut output = ResponseItem::function_call_output(
                             call_id.to_string(),
                             FunctionOutputBody::Text("aborted".into()),
@@ -162,7 +160,7 @@ impl ContextManager {
                 }
                 ResponseItem::CustomToolCall { id, call_id, .. } => {
                     repaired.push(item.clone());
-                    if !self.calls.custom_outputs.contains(call_id.as_ref()) {
+                    if !calls.custom_outputs.contains(call_id.as_ref()) {
                         let mut output = ResponseItem::custom_tool_output(
                             call_id.to_string(),
                             None,
@@ -173,16 +171,16 @@ impl ContextManager {
                     }
                 }
                 ResponseItem::FunctionCallOutput { call_id, .. }
-                    if !self.calls.function_calls.contains(call_id.as_ref()) => {}
+                    if !calls.function_calls.contains(call_id.as_ref()) => {}
                 ResponseItem::CustomToolCallOutput { call_id, .. }
-                    if !self.calls.custom_calls.contains(call_id.as_ref()) => {}
+                    if !calls.custom_calls.contains(call_id.as_ref()) => {}
                 ResponseItem::ToolSearchCall {
                     id,
                     call_id: Some(call_id),
                     ..
                 } => {
                     repaired.push(item.clone());
-                    if !self.calls.tool_search_outputs.contains(call_id.as_ref()) {
+                    if !calls.tool_search_outputs.contains(call_id.as_ref()) {
                         repaired.push(ResponseItem::ToolSearchOutput {
                             id: synthetic_output_id("tso", id.as_ref()),
                             call_id: Some(call_id.clone()),
@@ -198,7 +196,7 @@ impl ContextManager {
                     execution,
                     ..
                 } if execution.as_ref() != "server"
-                    && !self.calls.tool_search_calls.contains(call_id.as_ref()) => {}
+                    && !calls.tool_search_calls.contains(call_id.as_ref()) => {}
                 _ => repaired.push(item.clone()),
             }
         }
@@ -207,10 +205,7 @@ impl ContextManager {
 
     pub(crate) fn adopt_prompt_items(&mut self, items: ResponseHistory) {
         self.items = items;
-        self.calls.clear();
-        for item in self.items.iter() {
-            self.calls.track(item);
-        }
+        self.calls = CallIds::from_items(self.items.iter());
     }
 
     fn items_after_last_model_generated_tokens(&self) -> u64 {
@@ -247,6 +242,14 @@ impl ContextManager {
 }
 
 impl CallIds {
+    fn from_items<'a>(items: impl IntoIterator<Item = &'a ResponseItem>) -> Self {
+        let mut calls = Self::default();
+        for item in items {
+            calls.track(item);
+        }
+        calls
+    }
+
     fn is_balanced(&self) -> bool {
         self.function_calls == self.function_outputs
             && self.custom_calls == self.custom_outputs
@@ -281,9 +284,15 @@ impl CallIds {
             ResponseItem::CustomToolCall { call_id, .. } => {
                 self.custom_calls.insert(call_id.clone());
             }
-            ResponseItem::CustomToolCallOutput { call_id, .. } => {
+            ResponseItem::CustomToolCallOutput {
+                call_id,
+                name: None,
+                ..
+            } => {
                 self.custom_outputs.insert(call_id.clone());
             }
+            // Named outputs are progress notifications, not terminal tool results.
+            ResponseItem::CustomToolCallOutput { .. } => {}
             ResponseItem::ToolSearchCall {
                 call_id: Some(call_id),
                 ..
@@ -355,8 +364,9 @@ pub fn has_well_formed_tool_calls(items: &[ResponseItem]) -> bool {
                     && function_outputs.insert(call_id.as_ref())
             }
             ResponseItem::CustomToolCall { call_id, .. } => custom_calls.insert(call_id.as_ref()),
-            ResponseItem::CustomToolCallOutput { call_id, .. } => {
-                custom_calls.contains(call_id.as_ref()) && custom_outputs.insert(call_id.as_ref())
+            ResponseItem::CustomToolCallOutput { call_id, name, .. } => {
+                custom_calls.contains(call_id.as_ref())
+                    && (name.is_some() || custom_outputs.insert(call_id.as_ref()))
             }
             ResponseItem::ToolSearchCall {
                 call_id: Some(call_id),
@@ -577,6 +587,65 @@ mod tests {
                 && call_id.as_ref() == "missing"
                 && text.as_ref() == "aborted"
         ));
+    }
+
+    #[test]
+    fn notification_for_committed_custom_call_keeps_history_balanced() {
+        let call: ResponseItem = serde_json::from_str(
+            r#"{"type":"custom_tool_call","id":"ctc_source","call_id":"exec","name":"exec","input":"code"}"#,
+        )
+        .unwrap();
+        let output = ResponseItem::custom_tool_output(
+            "exec".to_owned(),
+            None,
+            FunctionOutputBody::Text("running".into()),
+        );
+        let mut context = ContextManager::new(vec![call, output]);
+        context.commit_tail();
+
+        context.record_items([ResponseItem::custom_tool_output(
+            "exec".to_owned(),
+            Some("exec".to_owned()),
+            FunctionOutputBody::Text("progress".into()),
+        )]);
+
+        let (prompt, repaired) = context.prompt_items_with_repair();
+        assert!(!repaired);
+        assert_eq!(prompt.len(), 3);
+        assert!(has_well_formed_tool_calls(
+            &prompt.iter().cloned().collect::<Vec<_>>()
+        ));
+
+        let pending: ResponseItem = serde_json::from_str(
+            r#"{"type":"custom_tool_call","id":"ctc_pending","call_id":"pending","name":"exec","input":"code"}"#,
+        )
+        .unwrap();
+        context.record_items([pending]);
+
+        let (prompt, repaired) = context.prompt_items_with_repair();
+        let prompt = prompt.iter().cloned().collect::<Vec<_>>();
+        assert!(repaired);
+        assert!(has_well_formed_tool_calls(&prompt));
+        assert!(prompt.iter().any(|item| matches!(
+            item,
+            ResponseItem::CustomToolCallOutput {
+                call_id,
+                name: None,
+                output: FunctionOutputBody::Text(text),
+                ..
+            } if call_id.as_ref() == "exec" && text.as_ref() == "running"
+        )));
+        assert!(prompt.iter().any(|item| matches!(
+            item,
+            ResponseItem::CustomToolCallOutput {
+                call_id,
+                name: Some(name),
+                output: FunctionOutputBody::Text(text),
+                ..
+            } if call_id.as_ref() == "exec"
+                && name.as_ref() == "exec"
+                && text.as_ref() == "progress"
+        )));
     }
 
     #[test]
