@@ -158,7 +158,7 @@ fn validate_hypervisor_entitlement(vmm: &Path) -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn validate_hypervisor_entitlement(_vmm: &Path) -> Result<()> {
+const fn validate_hypervisor_entitlement(_vmm: &Path) -> Result<()> {
     Ok(())
 }
 
