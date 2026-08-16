@@ -186,6 +186,7 @@ struct Session {
     passkey_mode: BrowserPasskeyMode,
     react_diagnostics_enabled: bool,
     authenticators: HashMap<String, InstalledAuthenticator>,
+    closed_targets: HashSet<String>,
     allowed_origins: Vec<Url>,
     network_controls: network_control::NetworkControls,
     egress_targets: HashSet<String>,
@@ -815,6 +816,7 @@ impl Session {
             passkey_mode: BrowserPasskeyMode::Auto,
             react_diagnostics_enabled: react_diagnostics.is_some(),
             authenticators: HashMap::new(),
+            closed_targets: HashSet::new(),
             allowed_origins: brave_session
                 .map(|session| session.allowed_origins().to_vec())
                 .unwrap_or_default(),
@@ -1039,6 +1041,8 @@ impl Session {
                 .cloned()
         });
         page.close().await?;
+        self.authenticators.remove(tab_id);
+        self.closed_targets.insert(tab_id.to_owned());
         if let Some(Some(replacement)) = replacement {
             replacement.bring_to_front().await?;
             self.activate_page(replacement).await?;
@@ -1493,10 +1497,20 @@ impl Session {
             return Ok(());
         }
 
-        let mut pages = vec![self.page.clone()];
         let targets = self.browser.execute(GetTargetsParams::default()).await?;
+        let reported_targets = targets
+            .target_infos
+            .iter()
+            .map(|target| target.target_id.as_ref())
+            .collect::<HashSet<_>>();
+        self.closed_targets
+            .retain(|target_id| reported_targets.contains(target_id.as_str()));
+        let mut pages = Vec::new();
         for target in &targets.target_infos {
-            if target.r#type != "iframe" {
+            if !matches!(target.r#type.as_str(), "page" | "iframe") {
+                continue;
+            }
+            if self.closed_targets.contains(target.target_id.as_ref()) {
                 continue;
             }
             match self.browser.get_page(target.target_id.clone()).await {

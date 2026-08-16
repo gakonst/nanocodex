@@ -278,6 +278,63 @@ async fn virtual_passkeys_persist_across_browser_sessions() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires a local Chrome or Chromium installation"]
+async fn virtual_authenticator_is_reused_when_returning_to_a_tab() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let credential_store = directory.path().join("browser/passkeys.json");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(serve_passkey_fixture(listener));
+    let url = format!("http://localhost:{}/", address.port());
+    let browser = Browser::builder()
+        .virtual_authenticator(
+            VirtualAuthenticator::platform_passkey().credential_store(credential_store),
+        )
+        .build()?;
+
+    browser
+        .execute(BrowserAction::Open { url: url.clone() })
+        .await?;
+    let BrowserActionResult::Tabs { tabs, .. } = browser.execute(BrowserAction::ListTabs).await?
+    else {
+        return Err(eyre!("expected browser tabs"));
+    };
+    let original_tab = tabs
+        .into_iter()
+        .find(|tab| tab.active)
+        .ok_or_else(|| eyre!("missing active browser tab"))?
+        .tab_id;
+    browser
+        .execute(BrowserAction::NewTab { url: Some(url) })
+        .await?;
+    browser
+        .execute(BrowserAction::SelectTab {
+            tab_id: original_tab,
+        })
+        .await?;
+    browser.execute(BrowserAction::Passkeys).await?;
+    let BrowserActionResult::Tabs { tabs, .. } = browser.execute(BrowserAction::ListTabs).await?
+    else {
+        return Err(eyre!("expected browser tabs"));
+    };
+    let inactive_tab = tabs
+        .into_iter()
+        .find(|tab| !tab.active)
+        .ok_or_else(|| eyre!("missing inactive browser tab"))?
+        .tab_id;
+    browser
+        .execute(BrowserAction::CloseTab {
+            tab_id: inactive_tab,
+        })
+        .await?;
+    browser.execute(BrowserAction::Passkeys).await?;
+
+    browser.close().await?;
+    server.abort();
+    Ok(())
+}
+
 #[test]
 fn authentication_handoff_requires_an_authenticated_brave_session() -> Result<()> {
     let browser = Browser::new()?;
