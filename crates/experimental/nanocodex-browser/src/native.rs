@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
@@ -93,10 +93,10 @@ use crate::{
     BrowserElementContext, BrowserElementReference, BrowserFrame, BrowserGate, BrowserHttpHeader,
     BrowserImageArtifact, BrowserNetworkBodyKind, BrowserNetworkCallFrame, BrowserNetworkContext,
     BrowserNetworkInitiator, BrowserNetworkRequest, BrowserNetworkTiming, BrowserOriginStorage,
-    BrowserPageError, BrowserPageState, BrowserPostActionSnapshot, BrowserReactEvent,
-    BrowserReactStatus, BrowserStorageState, BrowserTab, BrowserTarget, BrowserTargetIndex,
-    BrowserWebSocketDirection, BrowserWebSocketMessage, MAX_VIEWPORT_DIMENSION, ReactDiagnostics,
-    VirtualAuthenticator, VirtualCredential,
+    BrowserPageError, BrowserPageState, BrowserPasskeyMode, BrowserPostActionSnapshot,
+    BrowserReactEvent, BrowserReactStatus, BrowserStorageState, BrowserTab, BrowserTarget,
+    BrowserTargetIndex, BrowserWebSocketDirection, BrowserWebSocketMessage, MAX_VIEWPORT_DIMENSION,
+    ReactDiagnostics, VirtualAuthenticator, VirtualCredential,
     features::{BrowserColorScheme, BrowserContext, BrowserPermission, BrowserReducedMotion},
     session::cookie_applies_to,
     trace_serialized,
@@ -183,6 +183,7 @@ struct Session {
     output_dir: PathBuf,
     virtual_authenticator: Option<VirtualAuthenticator>,
     virtual_credential_store: Option<VirtualCredentialStore>,
+    passkey_mode: BrowserPasskeyMode,
     react_diagnostics_enabled: bool,
     authenticators: HashMap<String, InstalledAuthenticator>,
     allowed_origins: Vec<Url>,
@@ -811,6 +812,7 @@ impl Session {
             output_dir,
             virtual_authenticator,
             virtual_credential_store,
+            passkey_mode: BrowserPasskeyMode::Auto,
             react_diagnostics_enabled: react_diagnostics.is_some(),
             authenticators: HashMap::new(),
             allowed_origins: brave_session
@@ -1517,10 +1519,9 @@ impl Session {
                 continue;
             }
             let credentials = self
-                .virtual_credential_store
-                .as_ref()
-                .map(|store| store.credentials().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
+                .selected_virtual_credentials()
+                .into_values()
+                .collect::<Vec<_>>();
             let id = install_virtual_authenticator(&page, &credentials).await?;
             self.authenticators
                 .insert(target_id, InstalledAuthenticator { page, id });
@@ -1529,90 +1530,108 @@ impl Session {
     }
 
     async fn synchronize_virtual_credentials(&mut self) -> Result<(), BrowserError> {
-        let Some(store) = self.virtual_credential_store.as_mut() else {
+        if self.virtual_credential_store.is_none() {
             return Ok(());
-        };
+        }
         if self.authenticators.is_empty() {
             return Ok(());
         }
-        let mut authenticators = self.authenticators.values().collect::<Vec<_>>();
+        let presented = self
+            .selected_virtual_credentials()
+            .into_keys()
+            .collect::<BTreeSet<_>>();
+        let mut authenticators = self
+            .authenticators
+            .values()
+            .map(|authenticator| (authenticator.page.clone(), authenticator.id.clone()))
+            .collect::<Vec<_>>();
         authenticators.sort_unstable_by(|left, right| {
-            left.page
+            left.0
                 .target_id()
                 .as_ref()
-                .cmp(right.page.target_id().as_ref())
+                .cmp(right.0.target_id().as_ref())
         });
         let mut snapshots = Vec::with_capacity(authenticators.len());
-        for authenticator in &authenticators {
+        for (page, id) in &authenticators {
             snapshots.push(
-                authenticator
-                    .page
-                    .execute(GetCredentialsParams::new(authenticator.id.clone()))
+                page.execute(GetCredentialsParams::new(id.clone()))
                     .await?
                     .credentials
                     .clone(),
             );
         }
-        store.reconcile(&snapshots)?;
-        let expected = store.snapshot();
-        for (authenticator, snapshot) in authenticators.into_iter().zip(snapshots) {
-            let current = snapshot
-                .into_iter()
-                .filter_map(|credential| {
-                    let relying_party = credential.rp_id.clone()?;
-                    let key = (
-                        relying_party,
-                        String::from(credential.credential_id.clone()),
-                    );
-                    Some((key, credential))
-                })
-                .collect::<BTreeMap<_, _>>();
-            for (key, credential) in &current {
-                if !expected.contains_key(key) {
-                    authenticator
-                        .page
-                        .execute(RemoveCredentialParams::new(
-                            authenticator.id.clone(),
-                            credential.credential_id.clone(),
-                        ))
-                        .await?;
-                }
-            }
-            for (key, credential) in &expected {
-                match current.get(key) {
-                    Some(current) if current == credential => {}
-                    Some(current) => {
-                        authenticator
-                            .page
-                            .execute(RemoveCredentialParams::new(
-                                authenticator.id.clone(),
-                                current.credential_id.clone(),
-                            ))
-                            .await?;
-                        authenticator
-                            .page
-                            .execute(AddCredentialParams::new(
-                                authenticator.id.clone(),
-                                credential.clone(),
-                            ))
-                            .await?;
-                    }
-                    None => {
-                        authenticator
-                            .page
-                            .execute(AddCredentialParams::new(
-                                authenticator.id.clone(),
-                                credential.clone(),
-                            ))
-                            .await?;
-                    }
-                }
-            }
+        self.virtual_credential_store
+            .as_mut()
+            .ok_or(BrowserError::VirtualCredentialStoreNotConfigured)?
+            .reconcile(&snapshots, &presented)?;
+        let expected = self.selected_virtual_credentials();
+        synchronize_authenticator_snapshots(authenticators, snapshots, &expected).await
+    }
+
+    async fn apply_passkey_mode(&self) -> Result<(), BrowserError> {
+        let mut authenticators = self
+            .authenticators
+            .values()
+            .map(|authenticator| (authenticator.page.clone(), authenticator.id.clone()))
+            .collect::<Vec<_>>();
+        authenticators.sort_unstable_by(|left, right| {
+            left.0
+                .target_id()
+                .as_ref()
+                .cmp(right.0.target_id().as_ref())
+        });
+        let mut snapshots = Vec::with_capacity(authenticators.len());
+        for (page, id) in &authenticators {
+            snapshots.push(
+                page.execute(GetCredentialsParams::new(id.clone()))
+                    .await?
+                    .credentials
+                    .clone(),
+            );
         }
-        Ok(())
+        let expected = self.selected_virtual_credentials();
+        synchronize_authenticator_snapshots(authenticators, snapshots, &expected).await
+    }
+
+    fn selected_virtual_credentials(&self) -> BTreeMap<(String, String), Credential> {
+        let Some(store) = self.virtual_credential_store.as_ref() else {
+            return BTreeMap::new();
+        };
+        let mut credentials = store.snapshot();
+        match &self.passkey_mode {
+            BrowserPasskeyMode::Auto => {}
+            BrowserPasskeyMode::New => credentials.clear(),
+            BrowserPasskeyMode::Use {
+                credential_id,
+                relying_party_id,
+            } => credentials.retain(|(candidate_rp, candidate_id), _| {
+                candidate_id == credential_id
+                    && relying_party_id
+                        .as_ref()
+                        .is_none_or(|selected_rp| selected_rp == candidate_rp)
+            }),
+        }
+        credentials
+    }
+
+    fn persisted_virtual_credentials(&self) -> Result<Vec<VirtualCredential>, BrowserError> {
+        if self.virtual_authenticator.is_none() {
+            return Err(BrowserError::VirtualAuthenticatorNotConfigured);
+        }
+        let store = self
+            .virtual_credential_store
+            .as_ref()
+            .ok_or(BrowserError::VirtualCredentialStoreNotConfigured)?;
+        Ok(store
+            .credentials()
+            .map(virtual_credential_metadata)
+            .collect())
     }
 
     async fn virtual_credentials(&self) -> Result<Vec<VirtualCredential>, BrowserError> {
+        if self.virtual_credential_store.is_some() {
+            return self.persisted_virtual_credentials();
+        }
         if self.virtual_authenticator.is_none() {
             return Err(BrowserError::VirtualAuthenticatorNotConfigured);
         }
@@ -1625,22 +1644,118 @@ impl Session {
                 .page
                 .execute(GetCredentialsParams::new(authenticator.id.clone()))
                 .await?;
-            credentials.extend(
-                response
-                    .credentials
-                    .iter()
-                    .map(|credential| VirtualCredential {
-                        credential_id: String::from(credential.credential_id.clone()),
-                        relying_party_id: credential.rp_id.clone(),
-                        is_resident: credential.is_resident_credential,
-                        user_name: credential.user_name.clone(),
-                        user_display_name: credential.user_display_name.clone(),
-                        sign_count: credential.sign_count,
-                    }),
-            );
+            credentials.extend(response.credentials.iter().map(virtual_credential_metadata));
         }
         Ok(credentials)
     }
+
+    fn resolve_passkey_mode(
+        &self,
+        credential_id: String,
+        relying_party_id: Option<String>,
+    ) -> Result<BrowserPasskeyMode, BrowserError> {
+        let store = self
+            .virtual_credential_store
+            .as_ref()
+            .ok_or(BrowserError::VirtualCredentialStoreNotConfigured)?;
+        let mut matches = store.credentials().filter(|credential| {
+            String::from(credential.credential_id.clone()) == credential_id
+                && relying_party_id
+                    .as_ref()
+                    .is_none_or(|selected| credential.rp_id.as_ref() == Some(selected))
+        });
+        let selected = matches
+            .next()
+            .ok_or_else(|| BrowserError::UnknownVirtualCredential {
+                credential_id: credential_id.clone(),
+            })?;
+        if matches.next().is_some() {
+            return Err(BrowserError::AmbiguousVirtualCredential { credential_id });
+        }
+        Ok(BrowserPasskeyMode::Use {
+            credential_id,
+            relying_party_id: selected.rp_id.clone(),
+        })
+    }
+
+    fn passkeys_result(
+        &self,
+        sequence: u64,
+        action: BrowserActionName,
+    ) -> Result<BrowserActionResult, BrowserError> {
+        Ok(BrowserActionResult::Passkeys {
+            sequence,
+            executed: true,
+            action,
+            mode: self.passkey_mode.clone(),
+            credentials: self.persisted_virtual_credentials()?,
+        })
+    }
+}
+
+fn virtual_credential_metadata(credential: &Credential) -> VirtualCredential {
+    VirtualCredential {
+        credential_id: String::from(credential.credential_id.clone()),
+        relying_party_id: credential.rp_id.clone(),
+        is_resident: credential.is_resident_credential,
+        user_name: credential.user_name.clone(),
+        user_display_name: credential.user_display_name.clone(),
+        sign_count: credential.sign_count,
+    }
+}
+
+async fn synchronize_authenticator_snapshots(
+    authenticators: Vec<(Page, AuthenticatorId)>,
+    snapshots: Vec<Vec<Credential>>,
+    expected: &BTreeMap<(String, String), Credential>,
+) -> Result<(), BrowserError> {
+    for ((page, authenticator_id), snapshot) in authenticators.into_iter().zip(snapshots) {
+        let current = snapshot
+            .into_iter()
+            .filter_map(|credential| {
+                let relying_party = credential.rp_id.clone()?;
+                let key = (
+                    relying_party,
+                    String::from(credential.credential_id.clone()),
+                );
+                Some((key, credential))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for (key, credential) in &current {
+            if !expected.contains_key(key) {
+                page.execute(RemoveCredentialParams::new(
+                    authenticator_id.clone(),
+                    credential.credential_id.clone(),
+                ))
+                .await?;
+            }
+        }
+        for (key, credential) in expected {
+            match current.get(key) {
+                Some(current) if current == credential => {}
+                Some(current) => {
+                    page.execute(RemoveCredentialParams::new(
+                        authenticator_id.clone(),
+                        current.credential_id.clone(),
+                    ))
+                    .await?;
+                    page.execute(AddCredentialParams::new(
+                        authenticator_id.clone(),
+                        credential.clone(),
+                    ))
+                    .await?;
+                }
+                None => {
+                    page.execute(AddCredentialParams::new(
+                        authenticator_id.clone(),
+                        credential.clone(),
+                    ))
+                    .await?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_snapshot_wire(
@@ -2520,6 +2635,33 @@ async fn execute_action(
                 executed: true,
                 gate: classify_gate(&signals),
             })
+        }
+        BrowserAction::Passkeys => {
+            session.synchronize_virtual_credentials().await?;
+            session.passkeys_result(sequence, BrowserActionName::Passkeys)
+        }
+        BrowserAction::PasskeyUse {
+            credential_id,
+            relying_party_id,
+        } => {
+            session.synchronize_virtual_credentials().await?;
+            session.passkey_mode = session.resolve_passkey_mode(credential_id, relying_party_id)?;
+            session.apply_passkey_mode().await?;
+            session.passkeys_result(sequence, BrowserActionName::PasskeyUse)
+        }
+        BrowserAction::PasskeyNew => {
+            session.persisted_virtual_credentials()?;
+            session.synchronize_virtual_credentials().await?;
+            session.passkey_mode = BrowserPasskeyMode::New;
+            session.apply_passkey_mode().await?;
+            session.passkeys_result(sequence, BrowserActionName::PasskeyNew)
+        }
+        BrowserAction::PasskeyAuto => {
+            session.persisted_virtual_credentials()?;
+            session.synchronize_virtual_credentials().await?;
+            session.passkey_mode = BrowserPasskeyMode::Auto;
+            session.apply_passkey_mode().await?;
+            session.passkeys_result(sequence, BrowserActionName::PasskeyAuto)
         }
         BrowserAction::Snapshot {
             interactive,
@@ -6371,6 +6513,14 @@ pub enum BrowserError {
     DialogNotPending,
     #[error("this browser was not configured with a virtual authenticator")]
     VirtualAuthenticatorNotConfigured,
+    #[error("model-controlled passkeys require a configured virtual credential store")]
+    VirtualCredentialStoreNotConfigured,
+    #[error("virtual credential `{credential_id}` is not present in the persisted store")]
+    UnknownVirtualCredential { credential_id: String },
+    #[error(
+        "virtual credential `{credential_id}` exists for multiple relying parties; provide relying_party_id"
+    )]
+    AmbiguousVirtualCredential { credential_id: String },
     #[error("virtual credential store {} is invalid: {message}", path.display())]
     VirtualCredentialStore { path: PathBuf, message: String },
     #[error("this browser was not configured with an authenticated Brave session")]

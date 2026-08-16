@@ -15,7 +15,7 @@ const STORE_VERSION: u32 = 1;
 const MAX_STORE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CREDENTIALS: usize = 1_024;
 
-type CredentialKey = (String, String);
+pub(super) type CredentialKey = (String, String);
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -76,7 +76,11 @@ impl VirtualCredentialStore {
         self.credentials.values()
     }
 
-    pub(super) fn reconcile(&mut self, snapshots: &[Vec<Credential>]) -> Result<(), BrowserError> {
+    pub(super) fn reconcile(
+        &mut self,
+        snapshots: &[Vec<Credential>],
+        presented: &BTreeSet<CredentialKey>,
+    ) -> Result<(), BrowserError> {
         if snapshots.is_empty() {
             return Ok(());
         }
@@ -88,6 +92,7 @@ impl VirtualCredentialStore {
         let deleted = self
             .credentials
             .keys()
+            .filter(|key| presented.contains(*key))
             .filter(|key| {
                 snapshots
                     .iter()
@@ -220,13 +225,15 @@ fn store_error(path: &Path, message: impl Into<String>) -> BrowserError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use chromiumoxide::{cdp::browser_protocol::web_authn::Credential, types::Binary};
 
     use super::VirtualCredentialStore;
 
-    fn credential(sign_count: i64) -> Credential {
+    fn credential_with_id(credential_id: &str, sign_count: i64) -> Credential {
         let mut credential = Credential::new(
-            Binary::from("credential-id".to_owned()),
+            Binary::from(credential_id.to_owned()),
             true,
             Binary::from("private-key".to_owned()),
             sign_count,
@@ -236,12 +243,22 @@ mod tests {
         credential
     }
 
+    fn credential(sign_count: i64) -> Credential {
+        credential_with_id("credential-id", sign_count)
+    }
+
+    fn presented() -> BTreeSet<(String, String)> {
+        BTreeSet::from([("wallet.example".to_owned(), "credential-id".to_owned())])
+    }
+
     #[test]
     fn credentials_round_trip_across_store_instances() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("browser/passkeys.json");
         let mut first = VirtualCredentialStore::load(path.clone()).unwrap();
-        first.reconcile(&[vec![credential(1)]]).unwrap();
+        first
+            .reconcile(&[vec![credential(1)]], &BTreeSet::new())
+            .unwrap();
 
         let second = VirtualCredentialStore::load(path).unwrap();
         assert_eq!(
@@ -255,9 +272,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("passkeys.json");
         let mut store = VirtualCredentialStore::load(path).unwrap();
-        store.reconcile(&[vec![credential(7)]]).unwrap();
         store
-            .reconcile(&[vec![credential(6)], vec![credential(8)]])
+            .reconcile(&[vec![credential(7)]], &BTreeSet::new())
+            .unwrap();
+        store
+            .reconcile(&[vec![credential(6)], vec![credential(8)]], &presented())
             .unwrap();
 
         assert_eq!(store.credentials().next().unwrap().sign_count, 8);
@@ -268,8 +287,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("passkeys.json");
         let mut store = VirtualCredentialStore::load(path.clone()).unwrap();
-        store.reconcile(&[vec![credential(1)]]).unwrap();
-        store.reconcile(&[Vec::new(), vec![credential(1)]]).unwrap();
+        store
+            .reconcile(&[vec![credential(1)]], &BTreeSet::new())
+            .unwrap();
+        store
+            .reconcile(&[Vec::new(), vec![credential(1)]], &presented())
+            .unwrap();
 
         assert!(
             VirtualCredentialStore::load(path)
@@ -277,6 +300,33 @@ mod tests {
                 .credentials()
                 .next()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn credentials_hidden_by_selection_are_not_deleted() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("passkeys.json");
+        let selected = credential_with_id("selected", 1);
+        let hidden = credential_with_id("hidden", 2);
+        let mut store = VirtualCredentialStore::load(path.clone()).unwrap();
+        store
+            .reconcile(&[vec![selected.clone(), hidden.clone()]], &BTreeSet::new())
+            .unwrap();
+        store
+            .reconcile(
+                &[vec![selected.clone()]],
+                &BTreeSet::from([("wallet.example".to_owned(), "selected".to_owned())]),
+            )
+            .unwrap();
+
+        assert_eq!(
+            VirtualCredentialStore::load(path)
+                .unwrap()
+                .credentials()
+                .cloned()
+                .collect::<Vec<_>>(),
+            [hidden, selected]
         );
     }
 
@@ -288,7 +338,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("browser/passkeys.json");
         let mut store = VirtualCredentialStore::load(path.clone()).unwrap();
-        store.reconcile(&[vec![credential(1)]]).unwrap();
+        store
+            .reconcile(&[vec![credential(1)]], &BTreeSet::new())
+            .unwrap();
 
         assert_eq!(
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,

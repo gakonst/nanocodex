@@ -18,10 +18,10 @@ use super::{
     BrowserCookie, BrowserCruxClient, BrowserCruxScope, BrowserDocumentReadyState,
     BrowserEgressPolicy, BrowserError, BrowserKeyModifier, BrowserLighthouseCategory,
     BrowserLighthouseFormFactor, BrowserLoadState, BrowserNetworkBodyKind, BrowserNetworkContext,
-    BrowserOriginStorage, BrowserPerformanceInsight, BrowserPostActionSnapshot, BrowserPseudoClass,
-    BrowserReactEventKind, BrowserReducedMotion, BrowserRouteHeader, BrowserRouteResponse,
-    BrowserStorageState, BrowserTarget, BrowserTool, BrowserViewport, BrowserWaitForSelectorState,
-    ReactDiagnostics, VirtualAuthenticator, browser_tool_builder,
+    BrowserOriginStorage, BrowserPasskeyMode, BrowserPerformanceInsight, BrowserPostActionSnapshot,
+    BrowserPseudoClass, BrowserReactEventKind, BrowserReducedMotion, BrowserRouteHeader,
+    BrowserRouteResponse, BrowserStorageState, BrowserTarget, BrowserTool, BrowserViewport,
+    BrowserWaitForSelectorState, ReactDiagnostics, VirtualAuthenticator, browser_tool_builder,
 };
 
 #[test]
@@ -206,6 +206,28 @@ async fn virtual_passkeys_persist_across_browser_sessions() -> Result<()> {
     let restored = second.virtual_credentials().await?;
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].credential_id, credential_id);
+    let listed = second.execute(BrowserAction::Passkeys).await?;
+    assert!(matches!(
+        listed,
+        BrowserActionResult::Passkeys {
+            mode: BrowserPasskeyMode::Auto,
+            ref credentials,
+            ..
+        } if credentials.len() == 1 && credentials[0].credential_id == credential_id
+    ));
+    let selected = second
+        .execute(BrowserAction::PasskeyUse {
+            credential_id: credential_id.clone(),
+            relying_party_id: restored[0].relying_party_id.clone(),
+        })
+        .await?;
+    assert!(matches!(
+        selected,
+        BrowserActionResult::Passkeys {
+            mode: BrowserPasskeyMode::Use { ref credential_id, .. },
+            ..
+        } if credential_id == &registered[0].credential_id
+    ));
     second
         .execute(BrowserAction::Click {
             target: BrowserTarget::role("button").named("Authenticate passkey"),
@@ -233,6 +255,24 @@ async fn virtual_passkeys_persist_across_browser_sessions() -> Result<()> {
     assert_eq!(authenticated.len(), 1);
     assert_eq!(authenticated[0].credential_id, credential_id);
     assert!(authenticated[0].sign_count > registration_count);
+    let fresh = second.execute(BrowserAction::PasskeyNew).await?;
+    assert!(matches!(
+        fresh,
+        BrowserActionResult::Passkeys {
+            mode: BrowserPasskeyMode::New,
+            ref credentials,
+            ..
+        } if credentials.len() == 1 && credentials[0].credential_id == credential_id
+    ));
+    let automatic = second.execute(BrowserAction::PasskeyAuto).await?;
+    assert!(matches!(
+        automatic,
+        BrowserActionResult::Passkeys {
+            mode: BrowserPasskeyMode::Auto,
+            ref credentials,
+            ..
+        } if credentials.len() == 1 && credentials[0].credential_id == credential_id
+    ));
     second.close().await?;
     server.abort();
     Ok(())
@@ -350,6 +390,56 @@ text({ opened, snapshot, clicked, html, elementContext });
     Ok(())
 }
 
+#[test]
+fn recording_browser_exposes_model_controlled_passkey_modes() -> Result<()> {
+    let (_browser, recording) = BrowserTool::recording();
+
+    let listed = recording.record(BrowserAction::Passkeys)?;
+    let selected = recording.record(BrowserAction::PasskeyUse {
+        credential_id: "credential-id".to_owned(),
+        relying_party_id: Some("wallet.example".to_owned()),
+    })?;
+    let fresh = recording.record(BrowserAction::PasskeyNew)?;
+    let automatic = recording.record(BrowserAction::PasskeyAuto)?;
+
+    assert!(matches!(
+        listed,
+        BrowserActionResult::Passkeys {
+            action: BrowserActionName::Passkeys,
+            mode: BrowserPasskeyMode::Auto,
+            ..
+        }
+    ));
+    assert!(matches!(
+        selected,
+        BrowserActionResult::Passkeys {
+            action: BrowserActionName::PasskeyUse,
+            mode: BrowserPasskeyMode::Use {
+                credential_id,
+                relying_party_id: Some(relying_party_id),
+            },
+            ..
+        } if credential_id == "credential-id" && relying_party_id == "wallet.example"
+    ));
+    assert!(matches!(
+        fresh,
+        BrowserActionResult::Passkeys {
+            action: BrowserActionName::PasskeyNew,
+            mode: BrowserPasskeyMode::New,
+            ..
+        }
+    ));
+    assert!(matches!(
+        automatic,
+        BrowserActionResult::Passkeys {
+            action: BrowserActionName::PasskeyAuto,
+            mode: BrowserPasskeyMode::Auto,
+            ..
+        }
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn code_mode_description_exposes_browser_action_schema() -> Result<()> {
     let (browser, _recording) = BrowserTool::recording();
@@ -409,6 +499,10 @@ async fn code_mode_description_exposes_browser_action_schema() -> Result<()> {
     assert!(description.contains(r#"action: "axe_audit""#));
     assert!(description.contains(r#"action: "lighthouse_audit""#));
     assert!(description.contains(r#"action: "crux""#));
+    assert!(description.contains(r#"action: "passkeys""#));
+    assert!(description.contains(r#"action: "passkey_use""#));
+    assert!(description.contains(r#"action: "passkey_new""#));
+    assert!(description.contains(r#"action: "passkey_auto""#));
     assert!(description.contains(r#"action: "export_har""#));
     assert!(description.contains(r#"action: "list_frames""#));
     assert!(description.contains(r#"action: "list_tabs""#));

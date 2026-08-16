@@ -189,6 +189,11 @@ Use `axe_audit` for the complete pinned axe-core engine, `pdf` for Chromium
 print output, `lighthouse_audit` for an exact explicitly configured Lighthouse
 CLI attached to this Chrome session, and `crux` for configured field data.
 Harness credentials and browser storage state never enter this action schema.
+When a virtual passkey store is configured, use `passkeys` to inspect its
+non-secret credential metadata. Before a WebAuthn ceremony, use `passkey_use`
+to expose one saved credential, `passkey_new` to expose an empty authenticator
+for registration, or `passkey_auto` to expose every saved credential and let
+the relying party choose. Persisted private keys never enter tool output.
 Use `matched_styles`, `force_pseudo_state`, and `event_listeners` for authored
 CSS and listener provenance. The debugger actions expose source-mapped
 breakpoints, exception policy, pause stacks/scopes, resume, and stepping;
@@ -701,6 +706,19 @@ pub enum BrowserAction {
     },
     /// Read downloads observed by the browser session.
     Downloads,
+    /// List persisted virtual passkeys and the current credential-selection mode.
+    Passkeys,
+    /// Expose only one persisted passkey to subsequent WebAuthn ceremonies.
+    PasskeyUse {
+        /// Base64-encoded credential identifier returned by `passkeys`.
+        credential_id: String,
+        /// Relying-party identifier returned by `passkeys`; required only when IDs are ambiguous.
+        relying_party_id: Option<String>,
+    },
+    /// Expose an empty virtual authenticator so the next ceremony can create a passkey.
+    PasskeyNew,
+    /// Expose every persisted passkey and let the relying party choose.
+    PasskeyAuto,
     /// Evaluate JavaScript in the active page.
     Evaluate {
         /// JavaScript expression to evaluate.
@@ -817,6 +835,10 @@ impl BrowserAction {
             Self::LighthouseAudit { .. } => BrowserActionName::LighthouseAudit,
             Self::Crux { .. } => BrowserActionName::Crux,
             Self::Downloads => BrowserActionName::Downloads,
+            Self::Passkeys => BrowserActionName::Passkeys,
+            Self::PasskeyUse { .. } => BrowserActionName::PasskeyUse,
+            Self::PasskeyNew => BrowserActionName::PasskeyNew,
+            Self::PasskeyAuto => BrowserActionName::PasskeyAuto,
             Self::Evaluate { .. } => BrowserActionName::Evaluate,
         }
     }
@@ -926,6 +948,10 @@ pub enum BrowserActionName {
     LighthouseAudit,
     Crux,
     Downloads,
+    Passkeys,
+    PasskeyUse,
+    PasskeyNew,
+    PasskeyAuto,
     Evaluate,
 }
 
@@ -1971,7 +1997,8 @@ impl VirtualAuthenticator {
 }
 
 /// Public, non-secret metadata for a credential in the virtual authenticator.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VirtualCredential {
     /// Base64-encoded `WebAuthn` credential identifier.
     pub credential_id: String,
@@ -1987,6 +2014,22 @@ pub struct VirtualCredential {
     pub sign_count: i64,
 }
 
+/// Which persisted credentials are exposed to WebAuthn ceremonies.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BrowserPasskeyMode {
+    /// Expose every saved credential and let the relying party choose.
+    #[default]
+    Auto,
+    /// Expose only the selected saved credential.
+    Use {
+        credential_id: String,
+        relying_party_id: Option<String>,
+    },
+    /// Expose no saved credentials so a relying party can register a new one.
+    New,
+}
+
 /// Typed result of one browser action.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
@@ -1998,6 +2041,14 @@ pub enum BrowserActionResult {
         executed: bool,
         /// Present for a real browser and absent for the recording backend.
         outcome: Option<Box<BrowserActionOutcome>>,
+    },
+    /// Non-secret persisted passkey metadata and active selection mode.
+    Passkeys {
+        sequence: u64,
+        executed: bool,
+        action: BrowserActionName,
+        mode: BrowserPasskeyMode,
+        credentials: Vec<VirtualCredential>,
     },
     /// Accessibility-tree text and its stable element references.
     Snapshot {
@@ -2309,6 +2360,7 @@ impl BrowserActionResult {
     const fn action_name(&self) -> BrowserActionName {
         match self {
             Self::Action { action, .. } => *action,
+            Self::Passkeys { action, .. } => *action,
             Self::Snapshot { .. } => BrowserActionName::Snapshot,
             Self::SnapshotFind { .. } => BrowserActionName::SnapshotFind,
             Self::DomSnapshot { .. } => BrowserActionName::DomSnapshot,
@@ -3049,6 +3101,40 @@ fn recording_result(
             sequence,
             executed,
             downloads: Vec::new(),
+        },
+        BrowserAction::Passkeys => BrowserActionResult::Passkeys {
+            sequence,
+            executed,
+            action: BrowserActionName::Passkeys,
+            mode: BrowserPasskeyMode::Auto,
+            credentials: Vec::new(),
+        },
+        BrowserAction::PasskeyUse {
+            credential_id,
+            relying_party_id,
+        } => BrowserActionResult::Passkeys {
+            sequence,
+            executed,
+            action: BrowserActionName::PasskeyUse,
+            mode: BrowserPasskeyMode::Use {
+                credential_id: credential_id.clone(),
+                relying_party_id: relying_party_id.clone(),
+            },
+            credentials: Vec::new(),
+        },
+        BrowserAction::PasskeyNew => BrowserActionResult::Passkeys {
+            sequence,
+            executed,
+            action: BrowserActionName::PasskeyNew,
+            mode: BrowserPasskeyMode::New,
+            credentials: Vec::new(),
+        },
+        BrowserAction::PasskeyAuto => BrowserActionResult::Passkeys {
+            sequence,
+            executed,
+            action: BrowserActionName::PasskeyAuto,
+            mode: BrowserPasskeyMode::Auto,
+            credentials: Vec::new(),
         },
         BrowserAction::Evaluate { .. } => BrowserActionResult::Evaluation {
             sequence,

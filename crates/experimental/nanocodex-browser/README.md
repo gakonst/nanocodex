@@ -160,6 +160,11 @@ browser and Nanocodex restarts in `$NANOCODEX_DIR/browser/passkeys.json`, or
 `~/.nanocodex/browser/passkeys.json` by default. That owner-only file contains
 private keys. Library consumers opt into persistence explicitly with
 `VirtualAuthenticator::platform_passkey().credential_store(path)`.
+With persistence configured, the model-facing browser tool can call `passkeys`
+to inspect non-secret metadata, `passkey_use` to expose one saved credential,
+`passkey_new` to create against an empty authenticator, and `passkey_auto` to
+restore normal automatic credential selection. Selection never deletes the
+other credentials in the persisted store.
 
 Pass `none` to either option to disable the browser or cookie-copy default:
 
