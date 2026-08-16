@@ -131,9 +131,11 @@ impl BrowserArgs {
         else {
             return Ok(None);
         };
+        let virtual_authenticator = VirtualAuthenticator::platform_passkey()
+            .credential_store(default_virtual_credential_store()?);
         let mut builder = Browser::builder()
             .file_root(workspace)
-            .virtual_authenticator(VirtualAuthenticator::platform_passkey());
+            .virtual_authenticator(virtual_authenticator);
         if let Some(executable) = launch.executable {
             builder = builder.executable(executable);
         }
@@ -151,6 +153,21 @@ impl BrowserArgs {
             .wrap_err("failed to configure the browser tool")?;
         Ok(Some(ConfiguredBrowser { browser }))
     }
+}
+
+fn default_virtual_credential_store() -> Result<PathBuf> {
+    let root = if let Some(root) = std::env::var_os("NANOCODEX_DIR") {
+        PathBuf::from(root)
+    } else {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .ok_or_else(|| eyre!("HOME is not set; set NANOCODEX_DIR explicitly"))?;
+        PathBuf::from(home).join(".nanocodex")
+    };
+    if root.as_os_str().is_empty() {
+        return Err(eyre!("NANOCODEX_DIR cannot be empty"));
+    }
+    Ok(root.join("browser/passkeys.json"))
 }
 
 struct BrowserLaunch {

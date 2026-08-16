@@ -1939,9 +1939,9 @@ pub enum BrowserGate {
 /// This is harness policy rather than a model-callable browser action. The
 /// driver installs it after the first navigation so `WebAuthn` requests never
 /// fall through to the host's passkey UI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VirtualAuthenticator {
-    _private: (),
+    credential_store: Option<std::path::PathBuf>,
 }
 
 impl VirtualAuthenticator {
@@ -1949,7 +1949,24 @@ impl VirtualAuthenticator {
     /// registration and authentication.
     #[must_use]
     pub const fn platform_passkey() -> Self {
-        Self { _private: () }
+        Self {
+            credential_store: None,
+        }
+    }
+
+    /// Persists virtual passkeys at the supplied path and restores them in
+    /// later browser sessions.
+    ///
+    /// The file contains credential private keys. The file and a newly created
+    /// immediate parent directory are restricted to the current user on Unix.
+    #[must_use]
+    pub fn credential_store(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.credential_store = Some(path.into());
+        self
+    }
+
+    pub(crate) fn credential_store_path(&self) -> Option<&std::path::Path> {
+        self.credential_store.as_deref()
     }
 }
 
@@ -3239,10 +3256,7 @@ impl BrowserBuilder {
 
     /// Enables a harness-owned virtual authenticator for passkey flows.
     #[must_use]
-    pub const fn virtual_authenticator(
-        mut self,
-        virtual_authenticator: VirtualAuthenticator,
-    ) -> Self {
+    pub fn virtual_authenticator(mut self, virtual_authenticator: VirtualAuthenticator) -> Self {
         self.virtual_authenticator = Some(virtual_authenticator);
         self
     }
@@ -3374,6 +3388,16 @@ impl BrowserBuilder {
         if self.cdp_endpoint.is_some() && self.file_root.is_some() {
             return Err(BrowserBuildError::Configuration {
                 message: "`file_root` is not supported across a remote CDP boundary".to_owned(),
+            });
+        }
+        if self
+            .virtual_authenticator
+            .as_ref()
+            .and_then(VirtualAuthenticator::credential_store_path)
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(BrowserBuildError::Configuration {
+                message: "the virtual credential store path cannot be empty".to_owned(),
             });
         }
         if let Some(client) = &self.crux_client {

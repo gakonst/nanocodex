@@ -8,6 +8,7 @@ use std::{
 
 mod artifacts;
 mod audits;
+mod credential_store;
 mod devtools;
 mod har;
 mod interaction;
@@ -63,9 +64,9 @@ use chromiumoxide::{
             },
             target::{GetTargetsParams, SetAutoAttachParams, TargetId},
             web_authn::{
-                AddVirtualAuthenticatorParams, AuthenticatorId, AuthenticatorProtocol,
-                AuthenticatorTransport, EnableParams, GetCredentialsParams,
-                VirtualAuthenticatorOptions,
+                AddCredentialParams, AddVirtualAuthenticatorParams, AuthenticatorId,
+                AuthenticatorProtocol, AuthenticatorTransport, Credential, EnableParams,
+                GetCredentialsParams, RemoveCredentialParams, VirtualAuthenticatorOptions,
             },
         },
         js_protocol::runtime::{
@@ -100,6 +101,7 @@ use crate::{
     session::cookie_applies_to,
     trace_serialized,
 };
+use credential_store::VirtualCredentialStore;
 
 const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(25);
 const DEFAULT_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -180,6 +182,7 @@ struct Session {
     refs: HashMap<String, ElementTarget>,
     output_dir: PathBuf,
     virtual_authenticator: Option<VirtualAuthenticator>,
+    virtual_credential_store: Option<VirtualCredentialStore>,
     react_diagnostics_enabled: bool,
     authenticators: HashMap<String, InstalledAuthenticator>,
     allowed_origins: Vec<Url>,
@@ -676,7 +679,12 @@ impl Session {
         let cdp_endpoint = owner.cdp_endpoint.as_ref();
         let brave_session = owner.brave_session.as_ref();
         let launch_brave_executable = owner.launch_brave_executable;
-        let virtual_authenticator = owner.virtual_authenticator;
+        let virtual_authenticator = owner.virtual_authenticator.clone();
+        let virtual_credential_store = virtual_authenticator
+            .as_ref()
+            .and_then(VirtualAuthenticator::credential_store_path)
+            .map(|path| VirtualCredentialStore::load(path.to_path_buf()))
+            .transpose()?;
         let react_diagnostics = owner.react_diagnostics;
         let egress_policy = owner.egress_policy.clone();
         let file_root = owner.file_root.clone();
@@ -802,6 +810,7 @@ impl Session {
             refs: HashMap::new(),
             output_dir,
             virtual_authenticator,
+            virtual_credential_store,
             react_diagnostics_enabled: react_diagnostics.is_some(),
             authenticators: HashMap::new(),
             allowed_origins: brave_session
@@ -832,13 +841,16 @@ impl Session {
     }
 
     async fn close(mut self) -> Result<(), BrowserError> {
+        let credential_sync = self.synchronize_virtual_credentials().await;
         for task in &self.browser_tasks {
             task.abort();
         }
         for task in &self.page_tasks {
             task.abort();
         }
-        close_chromium(&mut self.browser, &self.handler).await
+        let close = close_chromium(&mut self.browser, &self.handler).await;
+        credential_sync?;
+        close
     }
 
     async fn refresh_remote_cookies(
@@ -1504,9 +1516,98 @@ impl Session {
             if self.authenticators.contains_key(&target_id) {
                 continue;
             }
-            let id = install_virtual_authenticator(&page).await?;
+            let credentials = self
+                .virtual_credential_store
+                .as_ref()
+                .map(|store| store.credentials().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            let id = install_virtual_authenticator(&page, &credentials).await?;
             self.authenticators
                 .insert(target_id, InstalledAuthenticator { page, id });
+        }
+        Ok(())
+    }
+
+    async fn synchronize_virtual_credentials(&mut self) -> Result<(), BrowserError> {
+        let Some(store) = self.virtual_credential_store.as_mut() else {
+            return Ok(());
+        };
+        if self.authenticators.is_empty() {
+            return Ok(());
+        }
+        let mut authenticators = self.authenticators.values().collect::<Vec<_>>();
+        authenticators.sort_unstable_by(|left, right| {
+            left.page
+                .target_id()
+                .as_ref()
+                .cmp(right.page.target_id().as_ref())
+        });
+        let mut snapshots = Vec::with_capacity(authenticators.len());
+        for authenticator in &authenticators {
+            snapshots.push(
+                authenticator
+                    .page
+                    .execute(GetCredentialsParams::new(authenticator.id.clone()))
+                    .await?
+                    .credentials
+                    .clone(),
+            );
+        }
+        store.reconcile(&snapshots)?;
+        let expected = store.snapshot();
+        for (authenticator, snapshot) in authenticators.into_iter().zip(snapshots) {
+            let current = snapshot
+                .into_iter()
+                .filter_map(|credential| {
+                    let relying_party = credential.rp_id.clone()?;
+                    let key = (
+                        relying_party,
+                        String::from(credential.credential_id.clone()),
+                    );
+                    Some((key, credential))
+                })
+                .collect::<BTreeMap<_, _>>();
+            for (key, credential) in &current {
+                if !expected.contains_key(key) {
+                    authenticator
+                        .page
+                        .execute(RemoveCredentialParams::new(
+                            authenticator.id.clone(),
+                            credential.credential_id.clone(),
+                        ))
+                        .await?;
+                }
+            }
+            for (key, credential) in &expected {
+                match current.get(key) {
+                    Some(current) if current == credential => {}
+                    Some(current) => {
+                        authenticator
+                            .page
+                            .execute(RemoveCredentialParams::new(
+                                authenticator.id.clone(),
+                                current.credential_id.clone(),
+                            ))
+                            .await?;
+                        authenticator
+                            .page
+                            .execute(AddCredentialParams::new(
+                                authenticator.id.clone(),
+                                credential.clone(),
+                            ))
+                            .await?;
+                    }
+                    None => {
+                        authenticator
+                            .page
+                            .execute(AddCredentialParams::new(
+                                authenticator.id.clone(),
+                                credential.clone(),
+                            ))
+                            .await?;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1698,7 +1799,10 @@ async fn close_chromium(
     wait
 }
 
-async fn install_virtual_authenticator(page: &Page) -> Result<AuthenticatorId, BrowserError> {
+async fn install_virtual_authenticator(
+    page: &Page,
+    credentials: &[Credential],
+) -> Result<AuthenticatorId, BrowserError> {
     page.execute(EnableParams::builder().enable_ui(false).build())
         .await?;
     let mut options = VirtualAuthenticatorOptions::new(
@@ -1712,6 +1816,13 @@ async fn install_virtual_authenticator(page: &Page) -> Result<AuthenticatorId, B
     let response = page
         .execute(AddVirtualAuthenticatorParams::new(options))
         .await?;
+    for credential in credentials {
+        page.execute(AddCredentialParams::new(
+            response.authenticator_id.clone(),
+            credential.clone(),
+        ))
+        .await?;
+    }
     Ok(response.authenticator_id.clone())
 }
 
@@ -2157,6 +2268,11 @@ impl NativeBrowser {
                 Ok::<_, BrowserError>(result)
             }
             .await;
+            let credential_sync = session.synchronize_virtual_credentials().await;
+            let execution = match (execution, credential_sync) {
+                (Ok(result), Ok(())) => Ok(result),
+                (Ok(_), Err(error)) | (Err(error), _) => Err(error),
+            };
             let duration = started.elapsed();
             let result = match execution {
                 Ok(result) => {
@@ -2367,6 +2483,7 @@ impl NativeBrowser {
             .as_mut()
             .ok_or(BrowserError::VirtualAuthenticatorNotReady)?;
         session.sync_virtual_authenticators().await?;
+        session.synchronize_virtual_credentials().await?;
         session.virtual_credentials().await
     }
 }
@@ -6254,6 +6371,8 @@ pub enum BrowserError {
     DialogNotPending,
     #[error("this browser was not configured with a virtual authenticator")]
     VirtualAuthenticatorNotConfigured,
+    #[error("virtual credential store {} is invalid: {message}", path.display())]
+    VirtualCredentialStore { path: PathBuf, message: String },
     #[error("this browser was not configured with an authenticated Brave session")]
     BraveSessionNotConfigured,
     #[error("the virtual authenticator is not ready; navigate to a page first")]

@@ -149,6 +149,95 @@ async fn virtual_credentials_require_the_first_navigation() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires a local Chrome or Chromium installation"]
+async fn virtual_passkeys_persist_across_browser_sessions() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let credential_store = directory.path().join("browser/passkeys.json");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(serve_passkey_fixture(listener));
+    let url = format!("http://localhost:{}/", address.port());
+
+    let first = Browser::builder()
+        .virtual_authenticator(
+            VirtualAuthenticator::platform_passkey().credential_store(credential_store.clone()),
+        )
+        .build()?;
+    first
+        .execute(BrowserAction::Open { url: url.clone() })
+        .await?;
+    first
+        .execute(BrowserAction::Click {
+            target: BrowserTarget::role("button").named("Register passkey"),
+            options: None,
+        })
+        .await?;
+    let registration_wait = first
+        .execute(BrowserAction::WaitForText {
+            text: "registered".to_owned(),
+            target: Some(BrowserTarget::css("#status")),
+            hidden: false,
+        })
+        .await;
+    if let Err(error) = registration_wait {
+        let status = first
+            .execute(BrowserAction::Evaluate {
+                expression: "document.querySelector('#status').textContent".to_owned(),
+            })
+            .await?;
+        return Err(eyre!(
+            "passkey registration failed with {status:?}: {error}"
+        ));
+    }
+    let registered = first.virtual_credentials().await?;
+    assert_eq!(registered.len(), 1);
+    let credential_id = registered[0].credential_id.clone();
+    let registration_count = registered[0].sign_count;
+    first.close().await?;
+    assert!(credential_store.is_file());
+
+    let second = Browser::builder()
+        .virtual_authenticator(
+            VirtualAuthenticator::platform_passkey().credential_store(credential_store),
+        )
+        .build()?;
+    second.execute(BrowserAction::Open { url }).await?;
+    let restored = second.virtual_credentials().await?;
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].credential_id, credential_id);
+    second
+        .execute(BrowserAction::Click {
+            target: BrowserTarget::role("button").named("Authenticate passkey"),
+            options: None,
+        })
+        .await?;
+    let authentication_wait = second
+        .execute(BrowserAction::WaitForText {
+            text: "authenticated".to_owned(),
+            target: Some(BrowserTarget::css("#status")),
+            hidden: false,
+        })
+        .await;
+    if let Err(error) = authentication_wait {
+        let status = second
+            .execute(BrowserAction::Evaluate {
+                expression: "document.querySelector('#status').textContent".to_owned(),
+            })
+            .await?;
+        return Err(eyre!(
+            "passkey authentication failed with {status:?}: {error}"
+        ));
+    }
+    let authenticated = second.virtual_credentials().await?;
+    assert_eq!(authenticated.len(), 1);
+    assert_eq!(authenticated[0].credential_id, credential_id);
+    assert!(authenticated[0].sign_count > registration_count);
+    second.close().await?;
+    server.abort();
+    Ok(())
+}
+
 #[test]
 fn authentication_handoff_requires_an_authenticated_brave_session() -> Result<()> {
     let browser = Browser::new()?;
@@ -2300,6 +2389,70 @@ async fn serve_action_fixture(listener: TcpListener) -> std::io::Result<()> {
         });
     }
 }
+
+async fn serve_passkey_fixture(listener: TcpListener) -> std::io::Result<()> {
+    loop {
+        let (mut stream, _) = listener.accept().await?;
+        tokio::spawn(async move {
+            let mut request = [0_u8; 4_096];
+            if stream.read(&mut request).await? == 0 {
+                return Ok(());
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{PASSKEY_FIXTURE_HTML}",
+                PASSKEY_FIXTURE_HTML.len()
+            );
+            stream.write_all(response.as_bytes()).await?;
+            stream.shutdown().await
+        });
+    }
+}
+
+const PASSKEY_FIXTURE_HTML: &str = r##"<!doctype html>
+<button id="register">Register passkey</button>
+<button id="authenticate">Authenticate passkey</button>
+<output id="status" role="status">idle</output>
+<script>
+const challenge = () => crypto.getRandomValues(new Uint8Array(32));
+const status = document.querySelector("#status");
+document.querySelector("#register").addEventListener("click", async () => {
+  try {
+    const credential = await navigator.credentials.create({ publicKey: {
+      challenge: challenge(),
+      rp: { id: location.hostname, name: "Nanocodex passkey fixture" },
+      user: {
+        id: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+        name: "tester@nanocodex.invalid",
+        displayName: "Nanocodex Tester"
+      },
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+      authenticatorSelection: {
+        authenticatorAttachment: "platform",
+        residentKey: "required",
+        userVerification: "required"
+      },
+      attestation: "none",
+      timeout: 5000
+    }});
+    status.textContent = credential ? "registered" : "registration failed";
+  } catch (error) {
+    status.textContent = `error:${error.name}:${error.message}`;
+  }
+});
+document.querySelector("#authenticate").addEventListener("click", async () => {
+  try {
+    const credential = await navigator.credentials.get({ publicKey: {
+      challenge: challenge(),
+      rpId: location.hostname,
+      userVerification: "required",
+      timeout: 5000
+    }});
+    status.textContent = credential ? "authenticated" : "authentication failed";
+  } catch (error) {
+    status.textContent = `error:${error.name}:${error.message}`;
+  }
+});
+</script>"##;
 
 const ACTION_FIXTURE_HTML: &str = r#"<!doctype html>
 <style>

@@ -153,8 +153,15 @@ installed Chrome, Chromium, or Edge when Brave is not installed. If none is
 available, the CLI starts without browser tools. It copies a standard desktop
 browser profile's complete cookie database by default. `all`
 auto-detects the source; `brave`, `chrome`, `chromium`, `edge`, `firefox`, and
-`safari` select it explicitly. Pass `none` to either option to disable that
-default:
+`safari` select it explicitly.
+
+The CLI's virtual platform authenticator persists testing passkeys across
+browser and Nanocodex restarts in `$NANOCODEX_DIR/browser/passkeys.json`, or
+`~/.nanocodex/browser/passkeys.json` by default. That owner-only file contains
+private keys. Library consumers opt into persistence explicitly with
+`VirtualAuthenticator::platform_passkey().credential_store(path)`.
+
+Pass `none` to either option to disable the browser or cookie-copy default:
 
 ```console
 nanocodex
