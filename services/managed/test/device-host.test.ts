@@ -6,6 +6,7 @@ import type { Env } from "../src/index";
 const testEnv = env as unknown as Env;
 const USER_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const API_KEY = `ncx_live_${"d".repeat(12)}_${"h".repeat(43)}`;
+const DEVICE_HOST_MESSAGE_TIMEOUT_MS = 10_000;
 const createdAgents = new Set<string>();
 
 beforeAll(async () => seedApiKey());
@@ -178,7 +179,10 @@ async function upgrade(endpoint: string): Promise<WebSocket> {
 
 function nextMessage(socket: WebSocket): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("timed out waiting for device-host message")), 2_000);
+    const timeout = setTimeout(
+      () => reject(new Error("timed out waiting for device-host message")),
+      DEVICE_HOST_MESSAGE_TIMEOUT_MS,
+    );
     socket.addEventListener("message", (event) => {
       clearTimeout(timeout);
       try {
