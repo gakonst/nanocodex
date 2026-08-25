@@ -140,8 +140,10 @@ npm ci
 npm run check
 ```
 
-Production deployment accepts the encryption key, private readiness probe
-token, and the GitHub/Google/X OAuth application client IDs and secrets. The
+Production deployment requires the encryption key, private readiness probe
+token, and the GitHub/Google OAuth application client IDs and secrets. X OAuth
+application credentials are optional, but its client ID and secret must be
+configured together. The
 deployment input names are `NANOCODEX_GITHUB_OAUTH_CLIENT_ID`,
 `NANOCODEX_GITHUB_OAUTH_CLIENT_SECRET`, `NANOCODEX_GOOGLE_OAUTH_CLIENT_ID`,
 `NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET`, `NANOCODEX_X_OAUTH_CLIENT_ID`, and

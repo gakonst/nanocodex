@@ -53,8 +53,6 @@ test("production preflight requires only deployment and application boundary inp
     "NANOCODEX_GITHUB_OAUTH_CLIENT_SECRET_CONFIGURED",
     "NANOCODEX_GOOGLE_OAUTH_CLIENT_ID_CONFIGURED",
     "NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET_CONFIGURED",
-    "NANOCODEX_X_OAUTH_CLIENT_ID_CONFIGURED",
-    "NANOCODEX_X_OAUTH_CLIENT_SECRET_CONFIGURED",
   ]) {
     const missing = preflightEnvironment();
     delete missing[name];
@@ -63,6 +61,28 @@ test("production preflight requires only deployment and application boundary inp
   const weak = preflightEnvironment();
   weak.NANOCODEX_ADMIN_TOKEN = "short";
   assert.throws(() => assertProductionPreflight(weak), /at least 32 bytes/);
+});
+
+test("production preflight treats X OAuth as an optional atomic pair", () => {
+  const absent = preflightEnvironment();
+  absent.NANOCODEX_X_OAUTH_CLIENT_ID_CONFIGURED = "false";
+  absent.NANOCODEX_X_OAUTH_CLIENT_SECRET_CONFIGURED = "false";
+  assert.doesNotThrow(() => assertProductionPreflight(absent));
+
+  for (const configured of [
+    ["true", "false"],
+    ["false", "true"],
+  ]) {
+    const partial = preflightEnvironment();
+    [
+      partial.NANOCODEX_X_OAUTH_CLIENT_ID_CONFIGURED,
+      partial.NANOCODEX_X_OAUTH_CLIENT_SECRET_CONFIGURED,
+    ] = configured;
+    assert.throws(
+      () => assertProductionPreflight(partial),
+      /X OAuth application credentials must be configured together/,
+    );
+  }
 });
 
 test("production rollout accepts only a clean checkout of the selected master revision", () => {

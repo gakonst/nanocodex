@@ -84,8 +84,12 @@ export function assertProductionPreflight(environment) {
   requireConfigured(environment, "NANOCODEX_GITHUB_OAUTH_CLIENT_SECRET_CONFIGURED");
   requireConfigured(environment, "NANOCODEX_GOOGLE_OAUTH_CLIENT_ID_CONFIGURED");
   requireConfigured(environment, "NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET_CONFIGURED");
-  requireConfigured(environment, "NANOCODEX_X_OAUTH_CLIENT_ID_CONFIGURED");
-  requireConfigured(environment, "NANOCODEX_X_OAUTH_CLIENT_SECRET_CONFIGURED");
+  requireOptionalConfiguredPair(
+    environment,
+    "NANOCODEX_X_OAUTH_CLIENT_ID_CONFIGURED",
+    "NANOCODEX_X_OAUTH_CLIENT_SECRET_CONFIGURED",
+    "X OAuth application credentials",
+  );
   requireConfigured(environment, "NANOCODEX_GIT_TOKEN_CONFIGURED");
   const adminToken = requiredSecret(environment, "NANOCODEX_ADMIN_TOKEN");
   assertTokenStrength(adminToken, "NANOCODEX_ADMIN_TOKEN");
@@ -626,6 +630,14 @@ function requiredBrokerProbeToken(environment) {
 function requireConfigured(environment, name) {
   if (environment[name] !== "true") {
     throw new Error(`${name.replace(/_CONFIGURED$/, "")} is required for production rollout`);
+  }
+}
+
+function requireOptionalConfiguredPair(environment, left, right, label) {
+  const leftConfigured = environment[left] === "true";
+  const rightConfigured = environment[right] === "true";
+  if (leftConfigured !== rightConfigured) {
+    throw new Error(`${label} must be configured together for production rollout`);
   }
 }
 

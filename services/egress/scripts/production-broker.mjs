@@ -19,10 +19,13 @@ export function productionBrokerSecrets(environment) {
     "NANOCODEX_GOOGLE_OAUTH_CLIENT_ID");
   const googleClientSecret = required(environment.NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET,
     "NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET");
-  const xClientId = required(environment.NANOCODEX_X_OAUTH_CLIENT_ID,
+  const xClientId = optional(environment.NANOCODEX_X_OAUTH_CLIENT_ID,
     "NANOCODEX_X_OAUTH_CLIENT_ID");
-  const xClientSecret = required(environment.NANOCODEX_X_OAUTH_CLIENT_SECRET,
+  const xClientSecret = optional(environment.NANOCODEX_X_OAUTH_CLIENT_SECRET,
     "NANOCODEX_X_OAUTH_CLIENT_SECRET");
+  if ((xClientId === undefined) !== (xClientSecret === undefined)) {
+    throw new Error("X OAuth application credentials must be configured together");
+  }
   if (!/^[A-Za-z0-9_-]{43}$/.test(encryptionKey)) {
     throw new Error("NANOCODEX_CREDENTIAL_ENCRYPTION_KEY must be a 32-byte base64url value");
   }
@@ -36,9 +39,11 @@ export function productionBrokerSecrets(environment) {
     GITHUB_OAUTH_CLIENT_SECRET: githubClientSecret,
     GOOGLE_OAUTH_CLIENT_ID: googleClientId,
     GOOGLE_OAUTH_CLIENT_SECRET: googleClientSecret,
-    X_OAUTH_CLIENT_ID: xClientId,
-    X_OAUTH_CLIENT_SECRET: xClientSecret,
   };
+  if (xClientId !== undefined && xClientSecret !== undefined) {
+    secrets.X_OAUTH_CLIENT_ID = xClientId;
+    secrets.X_OAUTH_CLIENT_SECRET = xClientSecret;
+  }
   const previousEncryptionKey = environment.NANOCODEX_CREDENTIAL_ENCRYPTION_KEY_PREVIOUS;
   if (previousEncryptionKey !== undefined) {
     const previous = required(previousEncryptionKey,
@@ -164,6 +169,11 @@ function required(value, name) {
     throw new Error(`${name} is required and must be one line`);
   }
   return value;
+}
+
+function optional(value, name) {
+  if (value === undefined || value === "") return undefined;
+  return required(value, name);
 }
 
 function run(args, env) {

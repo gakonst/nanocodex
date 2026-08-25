@@ -66,6 +66,33 @@ test("production deployment accepts an optional previous encryption key for rota
   }), /PREVIOUS must be a 32-byte base64url value/);
 });
 
+test("production deployment treats X OAuth as an optional atomic pair", () => {
+  const {
+    NANOCODEX_X_OAUTH_CLIENT_ID: _xId,
+    NANOCODEX_X_OAUTH_CLIENT_SECRET: _xSecret,
+    ...withoutX
+  } = connectorSecrets;
+  const secrets = productionBrokerSecrets({
+    NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    NANOCODEX_BROKER_PROBE_TOKEN: probeToken,
+    ...withoutX,
+  });
+  assert.equal("X_OAUTH_CLIENT_ID" in secrets, false);
+  assert.equal("X_OAUTH_CLIENT_SECRET" in secrets, false);
+  assert.throws(() => productionBrokerSecrets({
+    NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    NANOCODEX_BROKER_PROBE_TOKEN: probeToken,
+    ...withoutX,
+    NANOCODEX_X_OAUTH_CLIENT_ID: "x-client-id",
+  }), /X OAuth application credentials must be configured together/);
+  assert.throws(() => productionBrokerSecrets({
+    NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    NANOCODEX_BROKER_PROBE_TOKEN: probeToken,
+    ...withoutX,
+    NANOCODEX_X_OAUTH_CLIENT_SECRET: "x-client-secret",
+  }), /X OAuth application credentials must be configured together/);
+});
+
 test("production deployment requires a full immutable Git revision", () => {
   assert.equal(productionRevision({ TARGET_SHA: "a".repeat(40) }), "a".repeat(40));
   assert.throws(() => productionRevision({ TARGET_SHA: "abc123" }), /full lowercase Git commit SHA/);
