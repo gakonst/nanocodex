@@ -38,15 +38,15 @@ test("Vite owns one static application graph without manual module loaders", () 
   assert.match(managedRuntime, /Agent,[\s\S]*?from "nanocodex\/managed"/);
 });
 
-test("the authenticated terminal consumes the public React hooks directly", () => {
-  assert.match(terminal, /import \{[\s\S]*?createConfig,[\s\S]*?useNanocodex,[\s\S]*?useVoice,[\s\S]*?\} from "nanocodex-react"/);
+test("the website owns browser Agent creation while the shared terminal owns voice", () => {
+  assert.match(terminal, /import \{[\s\S]*?createConfig,[\s\S]*?useNanocodex,[\s\S]*?\} from "nanocodex-react"/);
   assert.match(terminal, /const agentConfig = useMemo\(\(\) => createConfig\(\{/);
   assert.match(
     terminal,
     /useNanocodex\(\{ config: agentConfig, threadId \}\)/,
   );
-  assert.match(terminal, /useVoice\(agent, \{[\s\S]*?beforeAgentTurn: beforeLocalTurn,[\s\S]*?enabled: mode !== "hidden"/);
-  assert.match(terminal, /useVoice\(managed, \{ enabled: mode !== "hidden" \}\)/);
+  assert.match(terminal, /<AgentTerminalView[\s\S]*?voice[\s\S]*?voiceOptions=\{\{ beforeAgentTurn: beforeLocalTurn \}\}/);
+  assert.match(terminal, /export const ManagedAgentTerminal[\s\S]*?<AgentTerminalView[\s\S]*?voice/);
   assert.doesNotMatch(terminal, /NanocodexProvider|prepareAgent|preload/);
 });
 

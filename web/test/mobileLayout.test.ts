@@ -183,12 +183,11 @@ test("touch terminals use one native IME-safe composer and one contextual action
   assert.equal(matches(terminal, /<TerminalComposer\b/g), 1);
   assert.match(touchComposer, /<textarea[\s\S]*?aria-label="Message Nanocodex"/);
   assert.doesNotMatch(touchComposer, /placeholder="Message Nanocodex"/);
-  assert.match(touchComposer, /value=\{draft\}[\s\S]*?onChange=\{\(event\) => onChange\(event\.currentTarget\.value\)\}/);
-  assert.match(touchComposer, /onCompositionStart=\{\(\) => \{ composing\.current = true; \}\}/);
-  assert.match(touchComposer, /isSubmitKeyEvent\(event\.nativeEvent, composing\.current\)/);
-  assert.match(touchComposer, /onSubmit\(draft\)/);
   assert.match(touchComposer, /terminalComposerAction\(running, draft\)/);
-  assert.match(touchComposer, /\{action === "stop" \? \([\s\S]*?aria-label="Stop response"[\s\S]*?<Square[\s\S]*?\) : \([\s\S]*?aria-label="Send message"[\s\S]*?<ArrowUp/);
+  assert.match(touchComposer, /aria-label="Stop response"/);
+  assert.match(touchComposer, /<Square aria-hidden="true"/);
+  assert.match(touchComposer, /aria-label="Send message"/);
+  assert.match(touchComposer, /<ArrowUp aria-hidden="true"/);
   assert.equal(matches(touchComposer, /className="agent-touch-actions"/g), 1);
   assert.match(touchComposer, /className="agent-touch-actions">\s*\{controls\}[\s\S]*?aria-label="Send message"/);
   assert.match(terminal, /className="agent-voice-button"[\s\S]*?aria-label=\{engaged \? "Stop voice" : "Start voice"\}/);
@@ -222,8 +221,6 @@ test("touch terminals use one native IME-safe composer and one contextual action
   assert.match(action, /background:\s*transparent/);
   assert.match(action, /border-radius:\s*0/);
   assert.match(terminalPresentationCss, /\.agent-touch-composer\.is-running \.agent-touch-actions button \{[\s\S]*?color:\s*var\(--terminal-muted/);
-  assert.match(terminal, /submitPrompt\(controller, submittedPrompts\.current, input, submittedAt\)/);
-  assert.match(terminal, /controller\.cancel\(\)/);
 });
 
 test("the phone transcript owns the remaining workspace and native vertical gestures", () => {

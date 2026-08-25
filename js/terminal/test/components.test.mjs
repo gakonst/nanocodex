@@ -63,7 +63,9 @@ test("controller-backed terminal remains caller-owned when no Agent is attached"
 test("composer keeps send stable while exposing stop separately", async () => {
   assert.equal(terminalComposerAction(true, ""), "stop");
   assert.equal(terminalComposerAction(true, "steer"), "send");
+  const changes = [];
   const submissions = [];
+  const textareaNode = { value: "ship it" };
   let cancelled = 0;
   let renderer;
   await act(async () => {
@@ -73,14 +75,19 @@ test("composer keeps send stable while exposing stop separately", async () => {
       running: true,
       status: "ready",
       onCancel() { cancelled += 1; },
-      onChange() {},
+      onChange(value) { changes.push(value); },
       onSubmit(value) { submissions.push(value); },
-    }));
+    }), {
+      createNodeMock(element) {
+        return element.type === "textarea" ? textareaNode : {};
+      },
+    });
   });
   const form = renderer.root.findByType("form");
   await act(async () => form.props.onSubmit({ preventDefault() {} }));
   assert.deepEqual(submissions, ["ship it"]);
   const textarea = renderer.root.findByType("textarea");
+  textareaNode.value = "live native input";
   let prevented = 0;
   await act(async () => textarea.props.onKeyDown({
     nativeEvent: {
@@ -91,20 +98,21 @@ test("composer keeps send stable while exposing stop separately", async () => {
     },
     preventDefault() { prevented += 1; },
   }));
-  assert.deepEqual(submissions, ["ship it", "ship it"]);
+  assert.deepEqual(submissions, ["ship it", "live native input"]);
   assert.equal(prevented, 1);
   await act(async () => textarea.props.onCompositionStart());
   await act(async () => textarea.props.onKeyDown({
     nativeEvent: {
-      isComposing: true,
+      isComposing: false,
       key: "Enter",
       keyCode: 229,
       shiftKey: false,
     },
     preventDefault() { prevented += 1; },
   }));
-  await act(async () => textarea.props.onCompositionEnd({ currentTarget: { value: "ship it" } }));
-  assert.deepEqual(submissions, ["ship it", "ship it"]);
+  await act(async () => textarea.props.onCompositionEnd({ currentTarget: { value: "composed input" } }));
+  assert.deepEqual(changes, ["composed input"]);
+  assert.deepEqual(submissions, ["ship it", "live native input"]);
   assert.equal(prevented, 1);
   assert.deepEqual(
     renderer.root.findAllByType("button").map((button) => button.props["aria-label"]),
@@ -126,6 +134,53 @@ test("composer keeps send stable while exposing stop separately", async () => {
     ["Stop response", "Send message"],
   );
   assert.equal(renderer.root.findByProps({ "aria-label": "Send message" }).props.disabled, false);
+  await act(async () => renderer.root.findByProps({ "aria-label": "Stop response" }).props.onClick());
+  assert.equal(cancelled, 1);
+  await act(async () => renderer.unmount());
+});
+
+test("welcome is replaced by the first visible durable or voice entry", async () => {
+  const props = {
+    canLoadOlder: false,
+    composer: null,
+    entries: [],
+    inactiveMessage: "",
+    isLoadingOlder: false,
+    mode: "full",
+    status: "ready",
+    welcome: "Welcome to Nanocodex",
+    onLoadOlder: async () => false,
+  };
+  let renderer;
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(TerminalTranscriptSurface, props), {
+      createNodeMock(element) {
+        return element.type === "div"
+          ? { clientHeight: 300, firstElementChild: null, scrollHeight: 300, scrollTop: 0 }
+          : {};
+      },
+    });
+  });
+  assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant is-welcome" }).length, 1);
+
+  await act(async () => renderer.update(React.createElement(TerminalTranscriptSurface, {
+    ...props,
+    entries: [{ id: "durable", kind: "assistant", text: "Ready", streaming: false }],
+  })));
+  assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant is-welcome" }).length, 0);
+
+  await act(async () => renderer.update(React.createElement(TerminalTranscriptSurface, {
+    ...props,
+    voiceEntries: [{
+      id: "voice",
+      kind: "user",
+      source: "voice",
+      streaming: false,
+      text: "Hello",
+    }],
+  })));
+  assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant is-welcome" }).length, 0);
+  assert.equal(renderer.root.findAllByProps({ "data-source": "voice" }).length, 1);
   await act(async () => renderer.unmount());
 });
 

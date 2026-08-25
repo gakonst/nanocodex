@@ -61,18 +61,6 @@ test("the terminal fails before thread or Worker creation and exposes the capabi
   assert.match(session, /if \(capabilityError\) return "browser unsupported"/);
 });
 
-test("coarse-pointer Safari keeps native IME composition separate from send", () => {
-  const terminal = source("../../js/terminal/src/AgentTerminalView.tsx");
-  const composer = source("../../js/terminal/src/TerminalComposer.tsx");
-  assert.match(composer, /<textarea[\s\S]*?enterKeyHint="send"/);
-  assert.match(composer, /onCompositionStart=\{\(\) => \{ composing\.current = true; \}\}/);
-  assert.match(composer, /onCompositionEnd=\{\(\) => \{ composing\.current = false; \}\}/);
-  assert.match(composer, /isSubmitKeyEvent\(event\.nativeEvent, composing\.current\)/);
-  assert.match(composer, /!event\.isComposing/);
-  assert.match(composer, /event\.keyCode !== 229/);
-  assert.match(terminal, /submitPrompt\(controller, submittedPrompts\.current, input, submittedAt\)/);
-});
-
 function source(path: string): string {
   return readFileSync(new URL(path, import.meta.url), "utf8");
 }

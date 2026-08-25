@@ -7,7 +7,6 @@ import { browserMcpConfiguration } from "../src/browserMcp.ts";
 const terminal = source("../src/AgentTerminal.tsx");
 const connectTerminal = source("../connect-playground/src/ConnectAgentExperience.tsx");
 const terminalView = source("../../js/terminal/src/AgentTerminalView.tsx");
-const terminalPresentation = source("../../js/terminal/src/TerminalTranscriptSurface.tsx");
 const dock = source("../src/ArtifactDock.tsx");
 const terminalCss = [
   source("../src/AgentTerminal.css"),
@@ -45,12 +44,6 @@ test("the landing terminal is ephemeral while the Agent demo is managed-durable 
   assert.match(experience, /landing[\s\S]*?\? hasCredential[\s\S]*?<AgentTerminal[\s\S]*?: hasCredential && managedConversationId[\s\S]*?<ManagedAgentTerminal/);
   assert.match(experience, /runtime="managed"/);
   assert.doesNotMatch(experience, /activeRuntime|agent-runtime-switch|Local browser|Managed durable|localConversations/);
-});
-
-test("the landing welcome is replaced atomically by the first transcript entry", () => {
-  assert.match(terminalPresentation, /const visibleWelcome = entries\.length === 0 \? welcome : undefined/);
-  assert.match(terminalPresentation, /\{visibleWelcome \? <article[\s\S]*?\{visibleWelcome\}/);
-  assert.doesNotMatch(terminalPresentation, /welcomeDismissed|setWelcomeDismissed/);
 });
 
 test("the Connect terminal enables package-owned voice from final-output permission", () => {
