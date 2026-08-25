@@ -220,8 +220,8 @@ export function App() {
                 <div className="panel-body empty-state">
                   <div className="empty-orbit" aria-hidden="true" />
                   <div className="connect-copy">
-                    <h2>One approval.</h2>
-                    <p>Sign in and grant this app the capabilities configured at right.</p>
+                    <h2>One passkey.</h2>
+                    <p>Choose the access Atlas receives.</p>
                   </div>
                   {error ? (
                     <div className="error-banner connect-error" data-testid="error-message" role="alert">

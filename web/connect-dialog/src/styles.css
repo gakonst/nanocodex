@@ -213,6 +213,24 @@ dd {
   font-size: 10px;
 }
 
+.connector-prompt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0 0;
+}
+
+.connector-prompt strong {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.connector-prompt span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
 .account-mode button:last-child {
   border-right: 0;
 }
@@ -437,6 +455,11 @@ dd {
 
 .capability-token.disconnected .connector-logo {
   opacity: 0.58;
+}
+
+.capability-token.required .connector-logo {
+  border-color: var(--text);
+  opacity: 1;
 }
 
 .connector-state {

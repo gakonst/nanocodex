@@ -266,7 +266,12 @@ export function App() {
       await parentDialog.respond(result);
     } catch (error) {
       if (currentRequestId.current === attempt.requestId) {
-        setFailure({ id: activeRequest.id, message: errorMessage(error) });
+        setFailure({
+          id: activeRequest.id,
+          message: activeRequest.type === "walletConnect"
+            ? connectCeremonyError(error, accountMode)
+            : errorMessage(error),
+        });
       }
     } finally {
       if (activeCeremony.current === attempt) {
@@ -480,6 +485,12 @@ export function App() {
     void parentDialog.reject(new Error("The request was not approved."));
   }
 
+  function selectAccountMode(mode: "login" | "register") {
+    if (activeCeremony.current) return;
+    setFailure(undefined);
+    setAccountMode(mode);
+  }
+
   const approvalDisabled = ceremonyActive;
 
   return (
@@ -500,7 +511,7 @@ export function App() {
               connectorStatuses={connectorStatuses}
               disabled={ceremonyActive || connectorAction !== undefined}
               deviceCode={deviceCode}
-              onAccountModeChange={setAccountMode}
+              onAccountModeChange={selectAccountMode}
               onConnectConnector={connectConnector}
               request={walletView(request)}
             />
@@ -516,7 +527,7 @@ export function App() {
                 disabled={approvalDisabled}
                 onClick={() => void approve()}
               >
-                {accountMode === "login" ? "Approve" : "Create & approve"}
+                {accountMode === "login" ? "Continue" : "Create account"}
               </button>
             ) : null}
           </div>
@@ -604,7 +615,7 @@ function ConnectionApproval({
           disabled={disabled}
           onClick={() => onAccountModeChange("login")}
         >
-          Existing
+          Sign in
         </button>
         <button
           type="button"
@@ -612,9 +623,16 @@ function ConnectionApproval({
           disabled={disabled}
           onClick={() => onAccountModeChange("register")}
         >
-          New
+          Create account
         </button>
       </div> : null}
+
+      {connectorStatuses && !connectorStatuses.chatgpt?.connected ? (
+        <div className="connector-prompt" role="status">
+          <strong>Connect ChatGPT</strong>
+          <span>Required to continue</span>
+        </div>
+      ) : null}
 
       <section className="oauth-permissions" aria-label="Requested capabilities">
         <div className="capability-logos" role="list">
@@ -626,7 +644,7 @@ function ConnectionApproval({
               status,
               resolved,
             )}. ${connector.detail}`;
-            const className = `capability-token ${status?.connected ? "connected" : resolved ? "disconnected" : "unresolved"}`;
+            const className = `capability-token ${id === "chatgpt" && resolved && !status?.connected ? "required " : ""}${status?.connected ? "connected" : resolved ? "disconnected" : "unresolved"}`;
             const contents = <>
               <ConnectorLogo id={connector.id} name={connector.name} />
               {resolved ? <span className="connector-state" aria-hidden="true">
@@ -1393,4 +1411,17 @@ function errorMessage(error: unknown) {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
   return "The passkey ceremony failed. Try again or reject the request.";
+}
+
+function connectCeremonyError(error: unknown, accountMode: "login" | "register") {
+  const message = errorMessage(error);
+  if (/request is already pending/i.test(message)) {
+    return "A passkey prompt is already open. Complete or dismiss it, then try again.";
+  }
+  if (/failed to request credential|timed out or was not allowed|notallowederror/i.test(message)) {
+    return accountMode === "login"
+      ? "No passkey was selected. Try again or create an account."
+      : "Passkey setup was canceled. Try again.";
+  }
+  return message;
 }
