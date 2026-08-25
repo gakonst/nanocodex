@@ -8898,8 +8898,8 @@ mod tests {
                     .await
                 {
                     Ok(BrowserActionResult::NetworkBody { body, .. }) => {
-                        entry["response"] = serde_json::from_str(&body)
-                            .unwrap_or_else(|_| serde_json::Value::String(body));
+                        entry["response"] =
+                            serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body));
                     }
                     Ok(_) => entry["bodyError"] = "wrong result shape".into(),
                     Err(error) => entry["bodyError"] = error.to_string().into(),
