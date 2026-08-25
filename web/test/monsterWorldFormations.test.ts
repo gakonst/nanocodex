@@ -3,8 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { WORLD_FORMATION_PROMPTS } from "../src/monsterWorldFormations.ts";
-import { EMPTY_WORLD_RESIDENT_MEMORY, RESIDENT_IDS } from "../src/monsterWorldProtocol.ts";
-import { worldResidentPrompt } from "../src/monsterWorldResidentPrompt.ts";
+import { RESIDENT_IDS } from "../src/monsterWorldProtocol.ts";
 import {
   createWorldState,
   observationFor,
@@ -43,6 +42,15 @@ test("Formation Lab presets are natural-language prompt helpers only", () => {
   assert.match(component, /playerSpeak\(worldRef\.current, input, voiceLevel\)/);
   assert.doesNotMatch(component, /playerSpeak\(worldRef\.current, input, voiceLevel,\s*"reducer"\)/);
   assert.doesNotMatch(component, /speech\.order/);
+
+  const worker = source("../src/monsterWorldAgent.worker.ts");
+  assert.match(worker, /one persistent task tree/);
+  assert.match(worker, /six stable squads of eight/);
+  assert.match(worker, /send_agent_message/);
+  assert.match(worker, /mode=maintain installs a cheap deterministic anchor-relative controller/);
+  assert.match(worker, /Subagents\.create\(\{ maxConcurrency: 48 \}\)/);
+  assert.doesNotMatch(worker, /exec_command|messages\.jsonl|CALL-<id> CONTRACT/);
+  assert.doesNotMatch(worker, /independently derive your group and place/);
 });
 
 test("helper and arbitrary formation language never becomes reducer-owned destinations", () => {
@@ -75,22 +83,16 @@ test("helper and arbitrary formation language never becomes reducer-owned destin
       assert.equal(actor.movement, undefined, `${prompt}: ${id}`);
       assert.equal("formation" in observation, false, `${prompt}: ${id}`);
 
-      const modelInput = worldResidentPrompt({
-        requestId: `formation-${id}`,
-        agentId: id,
-        observation,
-        memory: EMPTY_WORLD_RESIDENT_MEMORY,
-      });
-      assert.equal(
-        (JSON.parse(modelInput.slice(
-          modelInput.indexOf("{"),
-          modelInput.indexOf("\n\nAct in the live World now."),
-        )) as { observation: { playerOrder?: { text?: string } } }).observation.playerOrder?.text,
-        prompt,
-        `${prompt}: ${id} model input`,
-      );
     }
   }
+});
+
+test("the task tree makes post-action feedback and directed correction mandatory", () => {
+  const worker = source("../src/monsterWorldAgent.worker.ts");
+  assert.match(worker, /After every act, inspect the returned self, full roster, current order, and events/);
+  assert.match(worker, /course-correct until your part is physically satisfactory/);
+  assert.match(worker, /Do not wait for a global movement wave/);
+  assert.match(worker, /Leaders should dispatch followers immediately/);
 });
 
 function source(path: string): string {

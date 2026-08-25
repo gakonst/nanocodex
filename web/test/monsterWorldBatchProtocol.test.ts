@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  EMPTY_WORLD_RESIDENT_MEMORY,
   RESIDENT_IDS,
   WORLD_PROTOCOL,
   isWorldAgentCommand,
@@ -40,23 +39,23 @@ const observation = (agentId: "cinder" | "june"): WorldObservation => ({
   },
 });
 
-test("every resident is eligible for its own persistent Luna turn", () => {
+test("one World call can carry the full resident task-tree roster", () => {
   assert.equal(RESIDENT_IDS.length, 48);
   assert.equal(RESIDENT_IDS.includes("june"), true);
   assert.equal(RESIDENT_IDS.includes("guest24"), true);
 
   const cinder = {
     protocol: WORLD_PROTOCOL,
-    type: "think",
+    type: "call",
     requestId: "cinder-7",
     agentId: "cinder",
+    residentIds: RESIDENT_IDS,
     observation: observation("cinder"),
-    memory: EMPTY_WORLD_RESIDENT_MEMORY,
   } as const;
   const june = { ...cinder, requestId: "june-11", agentId: "june", observation: observation("june") } as const;
   assert.equal(isWorldAgentCommand(cinder), true);
   assert.equal(isWorldAgentCommand(june), true);
-  assert.equal(isWorldAgentCommand({ ...cinder, memory: undefined }), false);
+  assert.equal(isWorldAgentCommand({ ...cinder, observation: undefined }), false);
 });
 
 test("resident settlements carry a typed failure reason", () => {
@@ -94,6 +93,23 @@ test("one resident action is correlated to its owning turn and fresh reducer res
   assert.equal(isWorldAgentMessage({ ...action, action: { ...action.action, dx_pixels: 0 } }), false);
   assert.equal(isWorldAgentMessage({ ...action, action: { ...action.action, anchor: "nobody" } }), false);
 
+  const maintain = {
+    ...action,
+    actionId: "cinder-maintain-1",
+    action: {
+      kind: "maintain_relative",
+      anchor: "player",
+      dx_pixels: -48,
+      dy_pixels: 32,
+      tolerance_pixels: 8,
+    },
+  } as const;
+  assert.equal(isWorldAgentMessage(maintain), true);
+  assert.equal(isWorldAgentMessage({
+    ...maintain,
+    action: { ...maintain.action, tolerance_pixels: 7 },
+  }), false);
+
   const current = observation("cinder");
   const result = {
     protocol: WORLD_PROTOCOL,
@@ -106,36 +122,16 @@ test("one resident action is correlated to its owning turn and fresh reducer res
       outcome: { status: "in_progress", action: action.action, detail: "moving into position" },
       self: current.self,
       nearby: current.nearby,
+      roster: current.roster,
       relevantEvents: ["Cinder moved east."],
     },
   } as const;
   assert.equal(isWorldAgentCommand(result), true);
   assert.equal(isWorldAgentCommand({ ...result, agentId: "june" }), false);
   assert.equal(isWorldAgentCommand({ ...result, result: { ...result.result, worldRevision: -1 } }), false);
-
-  const roomResult = {
-    protocol: WORLD_PROTOCOL,
-    type: "room_send_result",
-    sendId: "room-cinder-1",
-    requestId: action.requestId,
-    agentId: action.agentId,
-    result: {
-      status: "committed",
-      message: {
-        id: 8,
-        fromId: "cinder",
-        fromName: "Cinder",
-        text: "North path is clear.",
-        minuteOfDay: 481,
-        origin: "nanocodex",
-        scope: "public",
-      },
-    },
-  } as const;
-  assert.equal(isWorldAgentCommand(roomResult), true);
   assert.equal(isWorldAgentCommand({
-    ...roomResult,
-    result: { ...roomResult.result, message: { ...roomResult.result.message, fromId: "june" } },
+    ...result,
+    result: { ...result.result, roster: [{ id: "nobody" }] },
   }), false);
 });
 
@@ -151,43 +147,34 @@ test("runtime action messages reject malformed physical actions", () => {
   assert.equal(isWorldAgentMessage(action), true);
   assert.equal(isWorldAgentMessage({ ...action, actionId: "" }), false);
   assert.equal(isWorldAgentMessage({ ...action, action: { kind: "say", text: "" } }), false);
-  const roomSend = {
-    protocol: WORLD_PROTOCOL,
-    type: "room_send",
-    sendId: "room-cinder-1",
-    requestId: "cinder-turn",
-    agentId: "cinder",
-    text: "I will cover the north path.",
-  } as const;
-  assert.equal(isWorldAgentMessage(roomSend), true);
-  assert.equal(isWorldAgentMessage({ ...roomSend, text: "" }), false);
   assert.equal(isWorldAgentMessage({ ...action, action: { kind: "wait", duration_ms: 300 } }), false);
 });
 
-test("cancel selectors are real bounded arrays of nonempty unique ids", () => {
-  assert.equal(isWorldAgentCommand({ protocol: WORLD_PROTOCOL, type: "cancel" }), true);
-  assert.equal(isWorldAgentCommand({
+test("the caller supplies one bounded authoritative participant roster", () => {
+  const base = {
     protocol: WORLD_PROTOCOL,
-    type: "cancel",
-    agentIds: ["cinder"],
-    requestIds: ["cinder-7"],
-  }), true);
-
+    type: "call",
+    requestId: "cinder-7",
+    agentId: "cinder",
+    residentIds: ["cinder", "june"],
+    observation: observation("cinder"),
+  } as const;
+  assert.equal(isWorldAgentCommand(base), true);
   const sparseIds = new Array<string>(1);
-  const invalidSelectors: readonly Record<string, unknown>[] = [
-    { agentIds: "cinder" },
-    { requestIds: null },
-    { agentIds: [] },
-    { requestIds: ["same", "same"] },
-    { requestIds: sparseIds },
-    { requestIds: Array.from({ length: RESIDENT_IDS.length + 1 }, (_, index) => `request-${index}`) },
+  const invalidRosters: readonly unknown[] = [
+    undefined,
+    "cinder",
+    [],
+    ["cinder", "cinder"],
+    ["june"],
+    sparseIds,
+    [...RESIDENT_IDS, "nobody"],
   ];
-  for (const selectors of invalidSelectors) {
+  for (const residentIds of invalidRosters) {
     assert.equal(isWorldAgentCommand({
-      protocol: WORLD_PROTOCOL,
-      type: "cancel",
-      ...selectors,
-    }), false, JSON.stringify(selectors));
+      ...base,
+      residentIds,
+    }), false, JSON.stringify(residentIds));
   }
 });
 
@@ -195,11 +182,11 @@ test("resident turns deeply reject malformed observations", () => {
   const valid = detailedObservation();
   const accepts = (candidate: unknown) => isWorldAgentCommand({
     protocol: WORLD_PROTOCOL,
-    type: "think",
+    type: "call",
     requestId: "cinder-observation",
     agentId: "cinder",
+    residentIds: ["cinder"],
     observation: candidate,
-    memory: EMPTY_WORLD_RESIDENT_MEMORY,
   });
   assert.equal(accepts(valid), true);
 

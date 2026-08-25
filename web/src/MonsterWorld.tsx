@@ -49,7 +49,6 @@ import {
   MAX_RESIDENT_COUNT,
   activeResidentCount,
   actorWorldPosition,
-  applyWorldRoomSend,
   applyWorldToolAction,
   completeResidentInstruction,
   createWorldState,
@@ -64,7 +63,6 @@ import {
   playerSpeak,
   requestResidentExit,
   rejectedWorldToolResult,
-  residentMemoryFor,
   residentAtWorldPoint,
   serializeWorldState,
   setPopulationTarget,
@@ -80,7 +78,7 @@ import "./MonsterWorld.css";
 
 const WORLD_RENDER_INTERVAL_MS = 50;
 
-type RuntimeStatus = "offline" | "starting" | "ready" | "error";
+type RuntimeStatus = "offline" | "starting" | "ready" | "stopping" | "error";
 
 type UsageTotals = {
   modelTurns: number;
@@ -93,8 +91,8 @@ type UsageTotals = {
 type PendingResidentRequest = {
   requestId: string;
   agentId: ResidentId;
+  residentIds: readonly ResidentId[];
   callId?: number;
-  rejected: boolean;
   cancelled: boolean;
 };
 
@@ -115,7 +113,7 @@ export function MonsterWorld() {
   const heldDirections = useRef(new Set<Direction>());
   const pendingRequests = useRef(new Map<string, PendingResidentRequest>());
   const pendingWorldActions = useRef(new Map<string, WorldToolAction>());
-  const nextThinkAt = useRef(createThinkSchedule());
+  const nextCoordinationAt = useRef(0);
   const usageRef = useRef<UsageTotals>(emptyUsage);
   const runtimeStatusRef = useRef<RuntimeStatus>("offline");
   const [revision, setRevision] = useState(0);
@@ -293,16 +291,22 @@ export function MonsterWorld() {
 
   const stopAgents = useCallback(() => {
     const worker = workerRef.current;
-    workerRef.current = undefined;
-    if (worker) {
+    if (worker && runtimeStatusRef.current !== "stopping") {
       worker.postMessage({ protocol: WORLD_PROTOCOL, type: "shutdown" });
-      worker.terminate();
+      setRuntimeStatus("stopping");
+      runtimeStatusRef.current = "stopping";
+      window.setTimeout(() => {
+        if (workerRef.current !== worker) return;
+        workerRef.current = undefined;
+        worker.terminate();
+        setRuntimeStatus("error");
+        runtimeStatusRef.current = "error";
+        setAgentError("The World task tree did not finish shutting down. Retry the agents.");
+        invalidateWorld();
+      }, 35_000);
     }
     pendingRequests.current.clear();
     pendingWorldActions.current.clear();
-    setRuntimeStatus("offline");
-    runtimeStatusRef.current = "offline";
-    setAgentError(undefined);
     if (worldRef.current) setWorldAgentsOnline(worldRef.current, false);
     invalidateWorld();
   }, [invalidateWorld]);
@@ -314,12 +318,6 @@ export function MonsterWorld() {
         setRuntimeStatus("ready");
         runtimeStatusRef.current = "ready";
         setAgentError(undefined);
-        const now = performance.now();
-        liveAgentIdsInWorld(worldRef.current as WorldState).forEach((id, index) => {
-          nextThinkAt.current[id] = worldRef.current && hasUnansweredGuildCall(worldRef.current, id)
-            ? now
-            : now + index * 80;
-        });
         if (worldRef.current) setWorldAgentsOnline(worldRef.current, true);
       } else if (message.status === "error") {
         const failureMessage = message.message ?? "The world agents could not connect.";
@@ -328,6 +326,8 @@ export function MonsterWorld() {
         setAgentError(failureMessage);
         if (worldRef.current) setWorldAgentsOnline(worldRef.current, false);
       } else if (message.status === "stopped") {
+        workerRef.current = undefined;
+        worker.terminate();
         pendingRequests.current.clear();
         setRuntimeStatus("offline");
         runtimeStatusRef.current = "offline";
@@ -336,36 +336,27 @@ export function MonsterWorld() {
       invalidateWorld();
       return;
     }
-    if (message.type === "room_send") {
-      const request = pendingRequests.current.get(message.requestId);
-      if (!request || request.agentId !== message.agentId || request.cancelled) return;
-      const activeWorld = worldRef.current;
-      if (!activeWorld) return;
-      const application = applyWorldRoomSend(activeWorld, {
-        sendId: message.sendId,
-        requestId: message.requestId,
-        agentId: message.agentId,
-        ...(message.heardCallId === undefined ? {} : { heardCallId: message.heardCallId }),
-        text: message.text,
-      });
-      worker.postMessage({
-        protocol: WORLD_PROTOCOL,
-        type: "room_send_result",
-        sendId: message.sendId,
-        requestId: message.requestId,
-        agentId: message.agentId,
-        result: application.accepted
-          ? { status: "committed", message: application.message }
-          : { status: "rejected", reason: `The reducer rejected this room post: ${application.reason}.` },
-      } satisfies WorldAgentCommand);
-      invalidateWorld();
-      return;
-    }
     if (message.type === "action") {
       const request = pendingRequests.current.get(message.requestId);
-      if (!request || request.agentId !== message.agentId || request.cancelled) return;
       const activeWorld = worldRef.current;
       if (!activeWorld) return;
+      if (!request || !request.residentIds.includes(message.agentId) || request.cancelled) {
+        worker.postMessage({
+          protocol: WORLD_PROTOCOL,
+          type: "action_result",
+          actionId: message.actionId,
+          requestId: message.requestId,
+          agentId: message.agentId,
+          result: rejectedWorldToolResult(
+            activeWorld,
+            message.agentId,
+            message.action,
+            "superseded",
+            "A newer World call replaced this action.",
+          ),
+        } satisfies WorldAgentCommand);
+        return;
+      }
       const application = applyWorldToolAction(activeWorld, {
         actionId: message.actionId,
         requestId: message.requestId,
@@ -373,7 +364,6 @@ export function MonsterWorld() {
         ...(message.heardCallId === undefined ? {} : { heardCallId: message.heardCallId }),
         action: message.action,
       });
-      request.rejected = !application.accepted;
       if (application.accepted) {
         pendingWorldActions.current.set(message.actionId, application.pending);
       } else {
@@ -405,30 +395,17 @@ export function MonsterWorld() {
     if (message.usage) commitModelUsage(message.usage, usageRef, setUsage);
 
     const activeWorld = worldRef.current;
-    const completedPlayerOrder = activeWorld && message.outcome === "completed"
-      ? completeResidentInstruction(activeWorld, request.agentId, request.callId)
-      : false;
-    const unanswered = activeWorld
-      ? hasUnansweredPlayerOrder(activeWorld, request.agentId)
-        || hasUnansweredGuildCall(activeWorld, request.agentId)
-      : false;
-    if (completedPlayerOrder) {
-      nextThinkAt.current[request.agentId] = Number.POSITIVE_INFINITY;
-    } else if (request.cancelled || (unanswered && message.outcome !== "failed")) {
-      nextThinkAt.current[request.agentId] = performance.now();
+    if (activeWorld && message.outcome === "completed" && !request.cancelled) {
+      for (const residentId of request.residentIds) {
+        completeResidentInstruction(activeWorld, residentId, request.callId);
+      }
+      setAgentError(undefined);
+      nextCoordinationAt.current = 0;
+    } else if (message.outcome === "failed") {
+      setAgentError(message.message ?? "The World task tree could not complete this call.");
+      nextCoordinationAt.current = performance.now() + 5_000;
     } else {
-      const retryDelay = unanswered
-        ? 6_000
-        : request.rejected
-          ? 2_000
-          : message.outcome === "completed"
-            ? 7_500
-            : message.outcome === "cancelled"
-              ? 2_500
-              : 8_000;
-      nextThinkAt.current[request.agentId] = performance.now()
-        + retryDelay
-        + residentDelay(request.agentId);
+      nextCoordinationAt.current = 0;
     }
     invalidateWorld();
   }, [invalidateWorld]);
@@ -438,6 +415,7 @@ export function MonsterWorld() {
       capabilityError
       || credentialSource !== "brokered"
       || runtimeStatusRef.current === "starting"
+      || runtimeStatusRef.current === "stopping"
       || runtimeStatusRef.current === "ready"
     ) return;
     workerRef.current?.terminate();
@@ -481,53 +459,38 @@ export function MonsterWorld() {
         || paused
       ) return;
       const now = performance.now();
-      const activeAgentIds = new Set([...pendingRequests.current.values()].map(({ agentId }) => agentId));
-      const orderedAgentIds = [...liveAgentIdsInWorld(activeWorld)].sort((left, right) => {
-        const callPriority = Number(
-          hasUnansweredPlayerOrder(activeWorld, right) || hasUnansweredGuildCall(activeWorld, right),
-        ) - Number(
-          hasUnansweredPlayerOrder(activeWorld, left) || hasUnansweredGuildCall(activeWorld, left),
-        );
-        return callPriority || RESIDENT_IDS.indexOf(left) - RESIDENT_IDS.indexOf(right);
-      });
-      const agentIds = orderedAgentIds.filter((agentId) => {
-        if (activeAgentIds.has(agentId)) return false;
-        if (now < nextThinkAt.current[agentId]) return false;
-        const actor = activeWorld.actors[agentId];
-        if (
-          actor.activeOrderId !== undefined
-          || actor.tasks.length > 0
-          || actor.movement
-          || actor.departure
-        ) return false;
-        return true;
-      });
-      if (agentIds.length === 0) return;
-
-      for (const agentId of agentIds) {
-        const observation = observationFor(activeWorld, agentId);
-        const request: PendingResidentRequest = {
-          requestId: `world-request-${crypto.randomUUID()}`,
+      if (now < nextCoordinationAt.current) return;
+      const residentIds = liveAgentIdsInWorld(activeWorld).filter((agentId) =>
+        hasUnansweredPlayerOrder(activeWorld, agentId)
+        || hasUnansweredGuildCall(activeWorld, agentId));
+      const agentId = residentIds[0];
+      if (!agentId) return;
+      const observation = observationFor(activeWorld, agentId);
+      const callId = worldObservationCallId(observation);
+      if (callId === undefined) return;
+      if ([...pendingRequests.current.values()].some((request) =>
+        !request.cancelled && request.callId === callId)) return;
+      const request: PendingResidentRequest = {
+        requestId: `world-request-${crypto.randomUUID()}`,
+        agentId,
+        residentIds: Object.freeze(residentIds),
+        callId,
+        cancelled: false,
+      };
+      pendingRequests.current.set(request.requestId, request);
+      try {
+        worker.postMessage({
+          protocol: WORLD_PROTOCOL,
+          type: "call",
+          requestId: request.requestId,
           agentId,
-          callId: worldObservationCallId(observation),
-          rejected: false,
-          cancelled: false,
-        };
-        pendingRequests.current.set(request.requestId, request);
-        nextThinkAt.current[request.agentId] = Number.POSITIVE_INFINITY;
-        try {
-          worker.postMessage({
-            protocol: WORLD_PROTOCOL,
-            type: "think",
-            requestId: request.requestId,
-            agentId,
-            observation,
-            memory: residentMemoryFor(activeWorld, agentId),
-          } satisfies WorldAgentCommand);
-        } catch {
-          pendingRequests.current.delete(request.requestId);
-          nextThinkAt.current[request.agentId] = now + 5_000 + residentDelay(request.agentId);
-        }
+          residentIds: request.residentIds,
+          observation,
+        } satisfies WorldAgentCommand);
+        nextCoordinationAt.current = Number.POSITIVE_INFINITY;
+      } catch {
+        pendingRequests.current.delete(request.requestId);
+        nextCoordinationAt.current = now + 5_000;
       }
       invalidateWorld();
     };
@@ -556,7 +519,7 @@ export function MonsterWorld() {
     workerRef.current = undefined;
     if (worker) {
       worker.postMessage({ protocol: WORLD_PROTOCOL, type: "shutdown" });
-      window.setTimeout(() => worker.terminate(), 700);
+      window.setTimeout(() => worker.terminate(), 35_000);
     }
     pendingRequests.current.clear();
     pendingWorldActions.current.clear();
@@ -607,21 +570,13 @@ export function MonsterWorld() {
     };
   }, [invalidateWorld, requestWorldRender]);
 
-  const cancelResidentTurns = (ids: readonly ResidentId[]): number => {
+  const supersedeResidentTurns = (ids: readonly ResidentId[]): number => {
     const residents = new Set(ids);
     const matchingRequests = [...pendingRequests.current.values()]
-      .filter(({ agentId }) => residents.has(agentId));
+      .filter(({ residentIds }) => residentIds.some((agentId) => residents.has(agentId)));
     for (const request of matchingRequests) request.cancelled = true;
     for (const [actionId, pending] of pendingWorldActions.current) {
       if (residents.has(pending.agentId)) pendingWorldActions.current.delete(actionId);
-    }
-    if (matchingRequests.length > 0) {
-      workerRef.current?.postMessage({
-        protocol: WORLD_PROTOCOL,
-        type: "cancel",
-        agentIds: Object.freeze([...new Set(matchingRequests.map(({ agentId }) => agentId))]),
-        requestIds: Object.freeze(matchingRequests.map(({ requestId }) => requestId)),
-      } satisfies WorldAgentCommand);
     }
     return matchingRequests.length;
   };
@@ -631,8 +586,8 @@ export function MonsterWorld() {
     const speech = playerSpeak(worldRef.current, input, voiceLevel);
     if (!speech) return;
     const mindsToWake = speech.liveAddressed;
-    for (const agentId of mindsToWake) nextThinkAt.current[agentId] = 0;
-    cancelResidentTurns(mindsToWake);
+    supersedeResidentTurns(mindsToWake);
+    nextCoordinationAt.current = 0;
     setPaused(false);
     setSpeechNotice(
       `Raw order delivered to ${mindsToWake.length} resident mind${mindsToWake.length === 1 ? "" : "s"}. Each Luna resident will interpret it from their own identity and world state; no destination was assumed by the page.`,
@@ -657,14 +612,9 @@ export function MonsterWorld() {
     canvasRef.current?.focus();
   };
 
-  const cancelDepartingTurns = (ids: readonly ResidentId[]) => {
-    cancelResidentTurns(ids);
-  };
-
   const departResident = (residentId: ResidentId): boolean => {
     const activeWorld = worldRef.current;
     if (!activeWorld || !requestResidentExit(activeWorld, residentId)) return false;
-    cancelDepartingTurns([residentId]);
     setSpeechNotice(`${activeWorld.actors[residentId].name} decided to walk out through the nearest map edge.`);
     invalidateWorld();
     return true;
@@ -686,7 +636,6 @@ export function MonsterWorld() {
     const activeWorld = worldRef.current;
     if (!activeWorld) return;
     const change = setPopulationTarget(activeWorld, requested);
-    cancelDepartingTurns(change.exiting);
     setSpeechNotice(
       change.entering.length > 0
         ? `${change.entering.length} resident${change.entering.length === 1 ? " is" : "s are"} joining from map edges or turning back into town.`
@@ -701,7 +650,7 @@ export function MonsterWorld() {
     stopAgents();
     localStorage.removeItem(WORLD_SAVE_KEY);
     worldRef.current = createWorldState();
-    nextThinkAt.current = createThinkSchedule();
+    nextCoordinationAt.current = 0;
     usageRef.current = emptyUsage;
     setUsage(emptyUsage);
     setAgentError(undefined);
@@ -719,7 +668,9 @@ export function MonsterWorld() {
       : runtimeStatus === "error"
         ? "error"
         : "stopped";
-  const pendingByAgent = new Set([...pendingRequests.current.values()].map(({ agentId }) => agentId));
+  const pendingByAgent = new Set(
+    [...pendingRequests.current.values()].flatMap(({ residentIds }) => residentIds),
+  );
   const relayActive = isGuildRelayActive(world);
   const residentsOnMap = activeResidentCount(world);
   const onMapMindIds = RESIDENT_IDS.filter((id) => world.actors[id].presence !== "absent");
@@ -739,6 +690,8 @@ export function MonsterWorld() {
     : selectableResidents[0];
   const lunaStatus = runtimeStatus === "ready"
     ? "Luna online"
+    : runtimeStatus === "stopping"
+      ? "Luna closing"
     : runtimeStatus === "error"
         ? "Luna error"
         : "Luna offline";
@@ -925,8 +878,10 @@ export function MonsterWorld() {
               onSourceChange={setCredentialSource}
             />
             <div className="monster-world-agent-actions">
-              {runtimeStatus === "ready" ? (
-                <button type="button" onClick={stopAgents}>stop agents</button>
+              {runtimeStatus === "ready" || runtimeStatus === "stopping" ? (
+                <button type="button" disabled={runtimeStatus === "stopping"} onClick={stopAgents}>
+                  {runtimeStatus === "stopping" ? "closing minds" : "stop agents"}
+                </button>
               ) : (
                 <button
                   type="button"
@@ -946,14 +901,14 @@ export function MonsterWorld() {
             </div>
           </div>
 
-          <section className="monster-world-cast" aria-labelledby="world-cast-title">
-            <header>
-              <div><p>All on-map residents · retained private memory</p><h2 id="world-cast-title">Autonomous minds</h2></div>
-              <span>{pendingRequests.current.size} resident mind{pendingRequests.current.size === 1 ? "" : "s"} thinking</span>
-            </header>
-            <div className="monster-world-scale" aria-label="World population architecture">
-              <span><strong>{residentsOnMap}</strong> on map</span>
-              <span><strong>1:1</strong> resident/session</span>
+              <section className="monster-world-cast" aria-labelledby="world-cast-title">
+                <header>
+                  <div><p>One task tree · six squads · retained resident sessions</p><h2 id="world-cast-title">Autonomous minds</h2></div>
+                  <span>{pendingRequests.current.size > 0 ? `${pendingByAgent.size} resident minds coordinating` : "task tree idle"}</span>
+                </header>
+                <div className="monster-world-scale" aria-label="World population architecture">
+                  <span><strong>{residentsOnMap}</strong> on map</span>
+                  <span><strong>1</strong> root · <strong>6</strong> leaders · resident descendants</span>
             </div>
             <ol>
               {onMapMindIds.map((id) => {
@@ -1042,9 +997,9 @@ export function MonsterWorld() {
             </section>
           ) : null}
 
-          <section className="monster-world-board" aria-labelledby="world-board-title">
-            <header>
-              <div><p>/workspace/world/room/messages.jsonl</p><h2 id="world-board-title">Room chat</h2></div>
+              <section className="monster-world-board" aria-labelledby="world-board-title">
+                <header>
+                  <div><p>Embodied local speech · not task-tree coordination</p><h2 id="world-board-title">Scene dialogue</h2></div>
               <span aria-live="polite">{world.guildMessages.length} posts</span>
             </header>
             <ol>
@@ -1087,13 +1042,13 @@ export function MonsterWorld() {
           </section>
 
           <footer className="monster-world-telemetry">
-            <div>
-              <span>resident activity</span>
-              <strong>{usage.modelTurns} independent turns</strong>
-            </div>
-            <p>{usage.totalTokens.toLocaleString()} observed tokens · {usage.estimatedUsd > 0 ? `$${usage.estimatedUsd.toFixed(4)} estimated` : "cost appears when reported"}</p>
-            <p>GPT-5.6 Luna · thinking none · one persistent session per resident · independent concurrent execution.</p>
-            <p>Scout prompts are interpreted by resident minds; the reducer only applies their physical tool actions and records room posts. Every entry marked <b>nanocodex</b> came from that resident's live World tool loop.</p>
+                <div>
+                  <span>reported root activity</span>
+                  <strong>{usage.modelTurns} coordinated calls</strong>
+                </div>
+                <p>{usage.totalTokens.toLocaleString()} observed tokens · {usage.estimatedUsd > 0 ? `$${usage.estimatedUsd.toFixed(4)} estimated` : "cost appears when reported"}</p>
+                <p>GPT-5.6 Luna · thinking none · one Guild Dispatch root and one persistent task-tree session per resident.</p>
+                <p>Squads coordinate through directed subagent messages. The reducer only applies physical tool actions and local scene dialogue. Every entry marked <b>nanocodex</b> came from a live resident tool loop.</p>
           </footer>
         </aside>
       </div>
@@ -1183,17 +1138,6 @@ function directionForKey(key: string): Direction | undefined {
 function isTypingTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement
     && target.matches("input, textarea, button, [contenteditable='true']");
-}
-
-function createThinkSchedule(): Record<ResidentId, number> {
-  return Object.fromEntries(
-    RESIDENT_IDS.map((id) => [id, 0]),
-  ) as Record<ResidentId, number>;
-}
-
-function residentDelay(id: ResidentId): number {
-  const index = RESIDENT_IDS.indexOf(id);
-  return Math.max(index, 0) % 12 * 120;
 }
 
 function voiceLevelForKey(key: string): VoiceLevel | undefined {

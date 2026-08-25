@@ -58,6 +58,7 @@ export const WORLD_POIS = SCENE_WORLD_POIS;
 export const GUILD_RELAY_RADIUS = 3.25;
 export const BASE_RESIDENT_COUNT = 36;
 export const MAX_RESIDENT_COUNT = RESIDENT_IDS.length;
+export const WORLD_ROOM_RETENTION = 128;
 const RETAINED_TERMINAL_ORDERS = 8;
 const OUTDOOR_TILE_ENERGY_COST = 1;
 const GUILD_REST_ENERGY = 32;
@@ -116,6 +117,11 @@ type WorldTask = {
   blockedSinceMs?: number;
 };
 
+type WorldRelativeConstraint = Readonly<{
+  action: Extract<WorldPrimitiveAction, { kind: "maintain_relative" }>;
+  requestId: string;
+}>;
+
 export type WorldOrderStatus = "assigned" | "moving" | "completed" | "preempted" | "rejected";
 
 export type WorldOrderAssignment = {
@@ -167,6 +173,7 @@ export type WorldActor = {
   movement?: WorldMovement;
   departure?: WorldDeparture;
   tasks: WorldTask[];
+  relativeConstraint?: WorldRelativeConstraint;
   activity: string;
   intent?: string;
   lastOrigin: ActivityOrigin;
@@ -868,6 +875,7 @@ export function playerSpeak(
   const liveAddressed = [...boardReaders];
   for (const id of boardReaders) {
     const actor = state.actors[id];
+    actor.relativeConstraint = undefined;
     if (heardBy.includes(id)) {
       actor.direction = directionBetween(actorRenderPoint(actor), actorRenderPoint(player));
       actor.emote = { icon: "!", untilMs: state.elapsedMs + 1_100 + (actor.sprite % 5) * 120 };
@@ -1514,6 +1522,14 @@ export function applyWorldToolAction(
   if (
     actor.presence !== "active"
     || !actionTargetsPresent(state, request.action)
+    || (
+      (request.action.kind === "move_relative" || request.action.kind === "maintain_relative")
+      && request.action.anchor === request.agentId
+    )
+    || (
+      request.action.kind === "maintain_relative"
+      && maintainedRelativeCycle(state, request.agentId, request.action.anchor)
+    )
   ) return { accepted: false, reason: "invalid" };
   if (state.seenRequestIds.includes(request.actionId)) {
     return { accepted: false, reason: "duplicate" };
@@ -1525,7 +1541,21 @@ export function applyWorldToolAction(
 
   // The reducer is the single writer. A later embodied call from this resident
   // replaces only its own earlier control horizon.
-  actor.tasks = tasksFor([request.action], "nanocodex", request.actionId);
+  if (request.action.kind === "maintain_relative") {
+    actor.relativeConstraint = Object.freeze({
+      action: request.action,
+      requestId: request.actionId,
+    });
+    actor.tasks = [];
+    ensureRelativeControllerTask(state, actor);
+  } else {
+    if (
+      request.action.kind === "move"
+      || request.action.kind === "move_relative"
+      || request.action.kind === "interact"
+    ) actor.relativeConstraint = undefined;
+    actor.tasks = tasksFor([request.action], "nanocodex", request.actionId);
+  }
   actor.intent = actionLabel(request.action);
   actor.activity = actionLabel(request.action);
   actor.lastOrigin = "nanocodex";
@@ -1595,6 +1625,18 @@ export function worldToolResultAtDecisionBoundary(
   ) {
     return worldToolResult(state, pending, "blocked", actor.activity);
   }
+  if (
+    pending.action.kind === "maintain_relative"
+    && actor.relativeConstraint?.requestId === pending.actionId
+    && !active
+  ) {
+    return worldToolResult(
+      state,
+      pending,
+      "in_progress",
+      `${actor.activity}; the relative controller remains active`,
+    );
+  }
   if (!active) {
     const status = normalizedActivity.includes("could not") || normalizedActivity.includes("gave up")
       ? "blocked"
@@ -1644,6 +1686,9 @@ function worldToolResult(
     outcome: Object.freeze({ status, action: pending.action, detail }),
     self: observation.self,
     nearby: observation.nearby,
+    roster: observation.roster,
+    ...(observation.playerOrder === undefined ? {} : { playerOrder: observation.playerOrder }),
+    ...(observation.guildCall === undefined ? {} : { guildCall: observation.guildCall }),
     relevantEvents: Object.freeze(relevantEvents),
   });
 }
@@ -1663,6 +1708,9 @@ function actionTargetsPresent(state: WorldState, action: WorldAction): boolean {
       || state.actors[action.to].presence === "active";
   }
   if (action.kind === "move_relative") {
+    return action.anchor === "player" || state.actors[action.anchor].presence === "active";
+  }
+  if (action.kind === "maintain_relative") {
     return action.anchor === "player" || state.actors[action.anchor].presence === "active";
   }
   if (action.kind !== "move" && action.kind !== "interact") return true;
@@ -1757,7 +1805,7 @@ export function observationFor(
     guildBoard: Object.freeze(
       state.guildMessages
         .filter(({ audience }) => audience === undefined || audience.includes(agentId))
-        .slice(0, 32)
+        .slice(0, WORLD_ROOM_RETENTION)
         .map((message) => boardMessageForObservation(state, message)),
     ),
     recentEvents: Object.freeze(
@@ -1823,7 +1871,7 @@ export function serializeWorldState(state: WorldState): string {
       }];
     })),
     activities: state.activities.slice(0, 16),
-    guildMessages: state.guildMessages.slice(0, 32),
+    guildMessages: state.guildMessages.slice(0, WORLD_ROOM_RETENTION),
     agentDecisions: state.agentDecisions,
     residentMemories: state.residentMemories,
   });
@@ -1975,6 +2023,7 @@ function updateActor(state: WorldState, actor: WorldActor, deltaMs: number): voi
   if (actor.presence === "entering") return;
   if (traversePortalAtCurrentPosition(state, actor)) return;
   if (actor.id === "player") return;
+  if (actor.tasks.length === 0) ensureRelativeControllerTask(state, actor);
   const task = actor.tasks[0];
   if (!task) {
     if (actor.activeOrderId !== undefined) return;
@@ -1994,6 +2043,15 @@ function updateActor(state: WorldState, actor: WorldActor, deltaMs: number): voi
   }
   if (task.action.kind === "move_relative") {
     walkTowardRelativeTask(state, actor, task, task.action);
+    return;
+  }
+  if (task.action.kind === "maintain_relative") {
+    actor.tasks.shift();
+    actor.relativeConstraint = Object.freeze({
+      action: task.action,
+      requestId: task.requestId,
+    });
+    ensureRelativeControllerTask(state, actor);
     return;
   }
   if (task.action.kind === "random_choice") {
@@ -2262,6 +2320,60 @@ function tasksFor(
   return steps.map((action) => ({ action, origin, requestId }));
 }
 
+function ensureRelativeControllerTask(state: WorldState, actor: WorldActor): void {
+  const constraint = actor.relativeConstraint;
+  if (!constraint || actor.id === "player" || actor.tasks.length > 0 || actor.movement) return;
+  const anchor = state.actors[constraint.action.anchor];
+  if (
+    anchor.id === actor.id
+    || (anchor.id !== "player" && anchor.presence !== "active")
+  ) {
+    actor.relativeConstraint = undefined;
+    actor.intent = undefined;
+    actor.activity = anchor.id === actor.id
+      ? "could not maintain a position relative to themself"
+      : `stopped following ${anchor.name}; they are not on the map`;
+    return;
+  }
+  const desired = relativeDesiredPosition(actorWorldPosition(anchor), constraint.action);
+  const errorPixels = positionDistance(actorWorldPosition(actor), desired) * WORLD_TILE_SIZE;
+  const label = relativeMoveLabel(state, constraint.action);
+  actor.intent = `maintain ${label} within ${constraint.action.tolerance_pixels}px`;
+  if (
+    actor.scene === desired.scene
+    && errorPixels <= constraint.action.tolerance_pixels
+  ) {
+    actor.activity = `holding ${label}`;
+    return;
+  }
+  actor.tasks.push({
+    action: Object.freeze({
+      kind: "move_relative",
+      anchor: constraint.action.anchor,
+      dx_pixels: constraint.action.dx_pixels,
+      dy_pixels: constraint.action.dy_pixels,
+    }),
+    origin: "nanocodex",
+    requestId: constraint.requestId,
+  });
+  actor.activity = `correcting to maintain ${label}`;
+}
+
+function maintainedRelativeCycle(
+  state: WorldState,
+  followerId: ResidentId,
+  anchorId: ActorId,
+): boolean {
+  const visited = new Set<ActorId>([followerId]);
+  let current: ActorId | undefined = anchorId;
+  while (current !== undefined) {
+    if (visited.has(current)) return true;
+    visited.add(current);
+    current = state.actors[current].relativeConstraint?.action.anchor;
+  }
+  return false;
+}
+
 function walkTowardRelativeTask(
   state: WorldState,
   actor: WorldActor,
@@ -2338,13 +2450,9 @@ function safeRelativeGoal(
   state: WorldState,
   actor: WorldActor,
   anchor: WorldPosition,
-  action: Extract<WorldPrimitiveAction, { kind: "move_relative" }>,
+  action: Readonly<{ dx_pixels: number; dy_pixels: number }>,
 ): WorldPosition | undefined {
-  const desired = Object.freeze({
-    scene: anchor.scene,
-    x: anchor.x + pixelOffsetToTiles(action.dx_pixels),
-    y: anchor.y + pixelOffsetToTiles(action.dy_pixels),
-  });
+  const desired = relativeDesiredPosition(anchor, action);
   for (let radius = 0; radius <= 6; radius += 1) {
     for (let yOffset = -radius; yOffset <= radius; yOffset += 1) {
       for (let xOffset = -radius; xOffset <= radius; xOffset += 1) {
@@ -2368,6 +2476,17 @@ function safeRelativeGoal(
   return undefined;
 }
 
+function relativeDesiredPosition(
+  anchor: WorldPosition,
+  action: Readonly<{ dx_pixels: number; dy_pixels: number }>,
+): WorldPosition {
+  return Object.freeze({
+    scene: anchor.scene,
+    x: anchor.x + pixelOffsetToTiles(action.dx_pixels),
+    y: anchor.y + pixelOffsetToTiles(action.dy_pixels),
+  });
+}
+
 function pixelOffsetToTiles(pixels: number): number {
   if (pixels === 0) return 0;
   return Math.sign(pixels) * Math.max(1, Math.round(Math.abs(pixels) / WORLD_TILE_SIZE));
@@ -2375,7 +2494,7 @@ function pixelOffsetToTiles(pixels: number): number {
 
 function relativeMoveLabel(
   state: WorldState,
-  action: Extract<WorldPrimitiveAction, { kind: "move_relative" }>,
+  action: Readonly<{ anchor: ActorId; dx_pixels: number; dy_pixels: number }>,
 ): string {
   const directions = [
     action.dx_pixels > 0 ? `${action.dx_pixels}px right of` : undefined,
@@ -2727,7 +2846,9 @@ function addGuildMessage(
     scope,
     ...(audience === undefined ? {} : { audience: Object.freeze([...audience]) }),
   }));
-  if (state.guildMessages.length > 32) state.guildMessages.length = 32;
+  if (state.guildMessages.length > WORLD_ROOM_RETENTION) {
+    state.guildMessages.length = WORLD_ROOM_RETENTION;
+  }
 }
 
 function boardMessageForObservation(
@@ -2833,7 +2954,7 @@ function restoreSavedState(state: WorldState, saved: string): void {
     }
     if (Array.isArray(value.guildMessages)) {
       const messages = value.guildMessages
-        .slice(0, 32)
+        .slice(0, WORLD_ROOM_RETENTION)
         .flatMap((entry): GuildMessage[] => {
           if (!entry || typeof entry !== "object") return [];
           const message = entry as Record<string, unknown>;
@@ -3161,6 +3282,9 @@ function actionLabel(action: WorldAction): string {
   if (action.kind === "move") return `move to ${action.target.replaceAll("_", " ")}`;
   if (action.kind === "move_relative") {
     return `move ${action.dx_pixels}px x / ${action.dy_pixels}px y from ${action.anchor}`;
+  }
+  if (action.kind === "maintain_relative") {
+    return `maintain ${action.dx_pixels}px x / ${action.dy_pixels}px y from ${action.anchor} within ${action.tolerance_pixels}px`;
   }
   if (action.kind === "random_choice") {
     return `choose between ${action.true_label} and ${action.false_label}`;

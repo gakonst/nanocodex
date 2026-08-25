@@ -58,7 +58,7 @@ export const GUEST_AGENT_IDS = [
 ] as const;
 
 export const RESIDENT_IDS = [...NAMED_RESIDENT_IDS, ...GUEST_AGENT_IDS] as const;
-// Every resident owns one independent persistent Luna agent.
+// Every resident owns one persistent child session in the World task tree.
 export const ACTOR_IDS = ["player", ...RESIDENT_IDS] as const;
 export const WORLD_TARGETS = [
   "guild",
@@ -123,6 +123,13 @@ export type WorldPrimitiveAction =
       anchor: ActorId;
       dx_pixels: number;
       dy_pixels: number;
+    }>
+  | Readonly<{
+      kind: "maintain_relative";
+      anchor: ActorId;
+      dx_pixels: number;
+      dy_pixels: number;
+      tolerance_pixels: number;
     }>
   | Readonly<{ kind: "say"; text: string; to?: ActorId }>
   | Readonly<{ kind: "emote"; icon: WorldEmote }>
@@ -266,13 +273,6 @@ export function worldObservationCallId(observation: WorldObservation): number | 
     ?? observation.guildCall?.id;
 }
 
-export type WorldThinkEntry = Readonly<{
-  requestId: string;
-  agentId: ResidentId;
-  observation: WorldObservation;
-  memory: WorldResidentMemory;
-}>;
-
 export type WorldActionOutcome = Readonly<{
   status: "completed" | "in_progress" | "blocked" | "rejected" | "superseded";
   action: WorldPrimitiveAction;
@@ -284,12 +284,11 @@ export type WorldToolResult = Readonly<{
   outcome: WorldActionOutcome;
   self: WorldObservation["self"];
   nearby: WorldObservation["nearby"];
+  roster: WorldObservation["roster"];
+  playerOrder?: WorldPlayerOrder;
+  guildCall?: HeardGuildCall;
   relevantEvents: readonly string[];
 }>;
-
-export type WorldRoomSendResult =
-  | Readonly<{ status: "committed"; message: WorldBoardMessage }>
-  | Readonly<{ status: "rejected"; reason: string }>;
 
 export type WorldResidentDecision = Readonly<{
   plan: WorldPlan;
@@ -308,11 +307,11 @@ export type WorldAgentCommand =
     }>
   | Readonly<{
       protocol: typeof WORLD_PROTOCOL;
-      type: "think";
+      type: "call";
       requestId: string;
       agentId: ResidentId;
+      residentIds: readonly ResidentId[];
       observation: WorldObservation;
-      memory: WorldResidentMemory;
     }>
   | Readonly<{
       protocol: typeof WORLD_PROTOCOL;
@@ -321,20 +320,6 @@ export type WorldAgentCommand =
       requestId: string;
       agentId: ResidentId;
       result: WorldToolResult;
-    }>
-  | Readonly<{
-      protocol: typeof WORLD_PROTOCOL;
-      type: "room_send_result";
-      sendId: string;
-      requestId: string;
-      agentId: ResidentId;
-      result: WorldRoomSendResult;
-    }>
-  | Readonly<{
-      protocol: typeof WORLD_PROTOCOL;
-      type: "cancel";
-      agentIds?: readonly ResidentId[];
-      requestIds?: readonly string[];
     }>
   | Readonly<{
       protocol: typeof WORLD_PROTOCOL;
@@ -356,15 +341,6 @@ export type WorldAgentMessage =
       agentId: ResidentId;
       heardCallId?: number;
       action: WorldPrimitiveAction;
-    }>
-  | Readonly<{
-      protocol: typeof WORLD_PROTOCOL;
-      type: "room_send";
-      sendId: string;
-      requestId: string;
-      agentId: ResidentId;
-      heardCallId?: number;
-      text: string;
     }>
   | Readonly<{
       protocol: typeof WORLD_PROTOCOL;
@@ -519,16 +495,6 @@ export function isWorldAgentMessage(value: unknown): value is WorldAgentMessage 
       && (message.heardCallId === undefined || Number.isSafeInteger(message.heardCallId))
       && isWorldPrimitiveAction(message.action);
   }
-  if (message.type === "room_send") {
-    return isWorldIdentifier(message.sendId)
-      && isWorldIdentifier(message.requestId)
-      && isResidentId(message.agentId)
-      && (message.heardCallId === undefined || Number.isSafeInteger(message.heardCallId))
-      && typeof message.text === "string"
-      && message.text.length > 0
-      && message.text.length <= 140
-      && sanitizeDialogue(message.text) === message.text;
-  }
   if (message.type === "settled") {
     return typeof message.requestId === "string"
       && isResidentId(message.agentId)
@@ -548,12 +514,13 @@ export function isWorldAgentCommand(value: unknown): value is WorldAgentCommand 
   const command = value as Partial<WorldAgentCommand>;
   if (command.protocol !== WORLD_PROTOCOL) return false;
   if (command.type === "connect" || command.type === "shutdown") return true;
-  if (command.type === "think") {
+  if (command.type === "call") {
     return typeof command.requestId === "string"
       && command.requestId.length > 0
       && isResidentId(command.agentId)
-      && isWorldObservation(command.observation, command.agentId)
-      && isWorldResidentMemory(command.memory);
+      && isUniqueResidentList(command.residentIds)
+      && command.residentIds.includes(command.agentId)
+      && isWorldObservation(command.observation, command.agentId);
   }
   if (command.type === "action_result") {
     return isWorldIdentifier(command.actionId)
@@ -561,22 +528,12 @@ export function isWorldAgentCommand(value: unknown): value is WorldAgentCommand 
       && isResidentId(command.agentId)
       && isWorldToolResult(command.result, command.agentId);
   }
-  if (command.type === "room_send_result") {
-    return isWorldIdentifier(command.sendId)
-      && isWorldIdentifier(command.requestId)
-      && isResidentId(command.agentId)
-      && isWorldRoomSendResult(command.result, command.agentId);
-  }
-  if (command.type === "cancel") {
-    return isOptionalUniqueList(command.agentIds, RESIDENT_IDS.length, isResidentId)
-      && isOptionalUniqueList(command.requestIds, RESIDENT_IDS.length, isWorldIdentifier);
-  }
   return false;
 }
 
 export function decodeWorldPrimitiveAction(value: unknown): WorldPrimitiveAction {
   const action = object(value, "action");
-  return decodePrimitiveAction(action, text(action.kind, "action.kind", 16));
+  return decodePrimitiveAction(action, text(action.kind, "action.kind", 24));
 }
 
 function isWorldPrimitiveAction(value: unknown): value is WorldPrimitiveAction {
@@ -597,6 +554,9 @@ function isWorldToolResult(value: unknown, agentId: ResidentId): value is WorldT
     || !isJsonObject(result.outcome)
     || !isWorldObservationSelf(result.self, agentId)
     || !isDenseArrayOf(result.nearby, isWorldNearbyActor)
+    || !isDenseArrayOf(result.roster, isWorldRosterActor)
+    || (result.playerOrder !== undefined && !isWorldPlayerOrder(result.playerOrder))
+    || (result.guildCall !== undefined && !isHeardGuildCall(result.guildCall))
     || !isDenseArrayOf(result.relevantEvents, isString)
   ) return false;
   const outcome = result.outcome as Partial<WorldActionOutcome>;
@@ -609,17 +569,6 @@ function isWorldToolResult(value: unknown, agentId: ResidentId): value is WorldT
   )
     && typeof outcome.detail === "string"
     && isWorldPrimitiveAction(outcome.action);
-}
-
-function isWorldRoomSendResult(
-  value: unknown,
-  agentId: ResidentId,
-): value is WorldRoomSendResult {
-  if (!isJsonObject(value)) return false;
-  if (value.status === "committed") {
-    return isWorldBoardMessage(value.message) && value.message.fromId === agentId;
-  }
-  return value.status === "rejected" && typeof value.reason === "string";
 }
 
 export function isResidentId(value: unknown): value is ResidentId {
@@ -897,7 +846,7 @@ function isMinuteOfDay(value: unknown): value is number {
 
 function decodeAction(value: unknown): WorldAction {
   const action = object(value, "action");
-  const kind = text(action.kind, "action.kind", 16);
+  const kind = text(action.kind, "action.kind", 24);
   if (kind === "random_choice") {
     const ifTrue = decodeChoiceBranch(action.if_true, "action.if_true");
     const ifFalse = decodeChoiceBranch(action.if_false, "action.if_false");
@@ -919,7 +868,7 @@ function decodeChoiceBranch(value: unknown, label: string): readonly WorldPrimit
   }
   return value.map((entry) => {
     const action = object(entry, label);
-    return decodePrimitiveAction(action, text(action.kind, `${label}.kind`, 16));
+    return decodePrimitiveAction(action, text(action.kind, `${label}.kind`, 24));
   });
 }
 
@@ -938,6 +887,20 @@ function decodePrimitiveAction(action: JsonObject, kind: string): WorldPrimitive
       anchor: member(action.anchor, ACTOR_IDS, "action.anchor"),
       dx_pixels: dxPixels,
       dy_pixels: dyPixels,
+    });
+  }
+  if (kind === "maintain_relative") {
+    const dxPixels = integer(action.dx_pixels, "action.dx_pixels", -192, 192);
+    const dyPixels = integer(action.dy_pixels, "action.dy_pixels", -192, 192);
+    if (dxPixels === 0 && dyPixels === 0) {
+      throw new Error("a maintained relative position must change at least one axis");
+    }
+    return Object.freeze({
+      kind,
+      anchor: member(action.anchor, ACTOR_IDS, "action.anchor"),
+      dx_pixels: dxPixels,
+      dy_pixels: dyPixels,
+      tolerance_pixels: integer(action.tolerance_pixels, "action.tolerance_pixels", 8, 32),
     });
   }
   if (kind === "say") {

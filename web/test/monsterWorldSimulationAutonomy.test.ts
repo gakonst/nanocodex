@@ -7,6 +7,7 @@ import {
 } from "../src/monsterWorldProtocol.ts";
 import {
   BASE_RESIDENT_COUNT,
+  WORLD_ROOM_RETENTION,
   applyResidentMemory,
   applyWorldRoomSend,
   applyWorldToolAction,
@@ -178,12 +179,12 @@ test("independent resident tools mutate through one reducer and return fresh obs
   if (!cinder.accepted || !june.accepted) return;
   assert.equal(state.actors.cinder.tasks[0]?.requestId, "cinder-say-1");
   assert.equal(state.actors.june.tasks[0]?.requestId, "june-emote-1");
-
   updateWorld(state, 100);
   const cinderResult = worldToolResultAtDecisionBoundary(state, cinder.pending);
   assert.equal(cinderResult?.outcome.status, "completed");
   assert.equal(cinderResult?.self.id, "cinder");
   assert.equal(cinderResult?.worldRevision, observationFor(state, "cinder").stateVersion);
+  assert.equal(cinderResult?.roster.some(({ id }) => id === "june"), true);
   const juneResult = worldToolResultAtDecisionBoundary(state, june.pending);
   assert.equal(juneResult?.outcome.status, "completed");
   assert.equal(juneResult?.self.id, "june");
@@ -243,6 +244,35 @@ test("room posts are ordered reducer writes that do not interrupt embodied movem
   assert.equal(hasUnansweredGuildCall(state, "cinder"), false);
 });
 
+test("the shared room retains a full 48-resident coordination wave", () => {
+  const state = createWorldState();
+  setWorldAgentsOnline(state, true);
+  const firstMessageText = "CALL-77 CONTRACT origin=Scout groups=coListener-index-div-8";
+
+  for (let index = 0; index < 64; index += 1) {
+    const posted = applyWorldRoomSend(state, {
+      sendId: `coordination-wave-${index}`,
+      requestId: `coordination-turn-${index}`,
+      agentId: "cinder",
+      text: index === 0 ? firstMessageText : `CALL-77 resident update ${index}`,
+    });
+    assert.equal(posted.accepted, true);
+  }
+
+  assert.equal(WORLD_ROOM_RETENTION >= 64, true);
+  assert.equal(state.guildMessages.some(({ text }) => text === firstMessageText), true);
+  assert.equal(
+    observationFor(state, "june").guildBoard.some(({ text }) => text === firstMessageText),
+    true,
+  );
+  assert.equal(
+    createWorldState(serializeWorldState(state)).guildMessages.some(
+      ({ text }) => text === firstMessageText,
+    ),
+    true,
+  );
+});
+
 test("World actions and room posts keep an instruction active until its resident turn completes", () => {
   const state = createWorldState();
   setWorldAgentsOnline(state, true);
@@ -300,4 +330,98 @@ test("a newer player instruction supersedes stale in-turn World control", () => 
   const result = worldToolResultAtDecisionBoundary(state, action.pending);
   assert.equal(result?.outcome.status, "superseded");
   assert.match(result?.outcome.detail ?? "", /newer instruction/i);
+});
+
+test("an agent-authored relative constraint keeps correcting below the Luna turn boundary", () => {
+  const state = createWorldState();
+  setWorldAgentsOnline(state, true);
+  for (const id of RESIDENT_IDS) {
+    if (id !== "cinder") state.actors[id].presence = "absent";
+  }
+  const player = state.actors.player;
+  const cinder = state.actors.cinder;
+  cinder.presence = "active";
+  cinder.scene = player.scene;
+  cinder.x = player.x - 8;
+  cinder.y = player.y;
+  cinder.tasks = [];
+  cinder.movement = undefined;
+
+  const application = applyWorldToolAction(state, {
+    actionId: "cinder-maintain-player-left",
+    requestId: "cinder-maintain-turn",
+    agentId: "cinder",
+    action: {
+      kind: "maintain_relative",
+      anchor: "player",
+      dx_pixels: -24,
+      dy_pixels: 0,
+      tolerance_pixels: 8,
+    },
+  });
+  assert.equal(application.accepted, true);
+  if (!application.accepted) return;
+  for (let index = 0; index < 300 && (cinder.tasks.length > 0 || cinder.movement); index += 1) {
+    updateWorld(state, 100);
+  }
+  assert.ok(cinder.relativeConstraint);
+  assert.ok(Math.abs(cinder.x - (player.x - 3)) <= 1);
+  assert.equal(
+    worldToolResultAtDecisionBoundary(state, application.pending)?.outcome.status,
+    "in_progress",
+  );
+
+  const settledX = cinder.x;
+  player.x += 2;
+  for (let index = 0; index < 300; index += 1) updateWorld(state, 100);
+  assert.ok(cinder.x > settledX, "the cheap controller should follow a moving anchor without Luna");
+  assert.ok(Math.abs(cinder.x - (player.x - 3)) <= 1);
+
+  playerSpeak(state, "Now gather beside the bridge instead.", "call");
+  assert.equal(cinder.relativeConstraint, undefined, "a newer raw order replaces the old relation");
+
+  assert.deepEqual(applyWorldToolAction(state, {
+    actionId: "cinder-invalid-self-anchor",
+    requestId: "cinder-invalid-self-turn",
+    agentId: "cinder",
+    heardCallId: observationFor(state, "cinder").playerOrder?.id,
+    action: {
+      kind: "maintain_relative",
+      anchor: "cinder",
+      dx_pixels: 24,
+      dy_pixels: 0,
+      tolerance_pixels: 8,
+    },
+  }), { accepted: false, reason: "invalid" });
+});
+
+test("maintained relative constraints reject follower cycles", () => {
+  const state = createWorldState();
+  setWorldAgentsOnline(state, true);
+  const cinder = applyWorldToolAction(state, {
+    actionId: "cinder-follows-june",
+    requestId: "cinder-chain-turn",
+    agentId: "cinder",
+    action: {
+      kind: "maintain_relative",
+      anchor: "june",
+      dx_pixels: -24,
+      dy_pixels: 0,
+      tolerance_pixels: 8,
+    },
+  });
+  assert.equal(cinder.accepted, true);
+
+  assert.deepEqual(applyWorldToolAction(state, {
+    actionId: "june-follows-cinder",
+    requestId: "june-cycle-turn",
+    agentId: "june",
+    action: {
+      kind: "maintain_relative",
+      anchor: "cinder",
+      dx_pixels: 24,
+      dy_pixels: 0,
+      tolerance_pixels: 8,
+    },
+  }), { accepted: false, reason: "invalid" });
 });
