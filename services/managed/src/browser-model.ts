@@ -1,5 +1,5 @@
 import { authenticate, type AccountAuthEnv } from "./account-auth";
-import { bindAgentCredential } from "./credentials";
+import { bindAgentCredential, browserModelSubject } from "./credentials";
 
 const MODEL_HOST = "nanocodex.internal";
 const STATUS_HOST = "broker.internal";
@@ -23,8 +23,9 @@ type BrowserModelEnv = AccountAuthEnv & {
 
 /**
  * Authenticates browser-owned model traffic inside the private managed Worker,
- * binds one opaque broker subject to the account, and forwards no account
- * cookie beyond this boundary.
+ * binds one opaque broker subject to the account during the readiness check,
+ * self-heals a missing binding once, and forwards no account cookie beyond
+ * this boundary.
  */
 export async function routeBrowserModel(
   request: Request,
@@ -61,20 +62,63 @@ export async function routeBrowserModel(
     : undefined;
   if (realtimeSubject instanceof Response) return realtimeSubject;
   const subject = realtimeSubject ?? await browserModelSubject(principal.userId);
+  const headers = new Headers(request.headers);
+  headers.delete("cookie");
+  headers.delete("x-nanocodex-agent-id");
+  headers.set("x-nanocodex-subject", subject);
+
+  if (status) {
+    const bindingFailure = await bindBrowserModelSubject(env, subject, principal.userId);
+    if (bindingFailure) return bindingFailure;
+    return env.NANOCODEX.fetch(new Request(request, { headers }));
+  }
+
+  const retryRequest = request.clone();
+  let response: Response;
   try {
-    await bindAgentCredential(env.NANOCODEX, subject, principal.userId);
+    response = await env.NANOCODEX.fetch(new Request(request, { headers }));
+  } catch (error) {
+    await retryRequest.body?.cancel().catch(() => {});
+    throw error;
+  }
+  if (!await agentSubjectUnavailable(response)) {
+    await retryRequest.body?.cancel().catch(() => {});
+    return response;
+  }
+  await response.body?.cancel().catch(() => {});
+
+  const bindingFailure = await bindBrowserModelSubject(env, subject, principal.userId);
+  if (bindingFailure) {
+    await retryRequest.body?.cancel().catch(() => {});
+    return bindingFailure;
+  }
+  return env.NANOCODEX.fetch(new Request(retryRequest, { headers }));
+}
+
+async function bindBrowserModelSubject(
+  env: BrowserModelEnv,
+  subject: string,
+  userId: string,
+): Promise<Response | undefined> {
+  try {
+    await bindAgentCredential(env.NANOCODEX, subject, userId);
+    return undefined;
   } catch {
     return Response.json({ error: "credential_broker_unavailable" }, {
       status: 503,
       headers: { "cache-control": "no-store" },
     });
   }
+}
 
-  const headers = new Headers(request.headers);
-  headers.delete("cookie");
-  headers.delete("x-nanocodex-agent-id");
-  headers.set("x-nanocodex-subject", subject);
-  return env.NANOCODEX.fetch(new Request(request, { headers }));
+async function agentSubjectUnavailable(response: Response): Promise<boolean> {
+  if (response.status !== 403) return false;
+  try {
+    const body = await response.clone().json<{ error?: unknown }>();
+    return body.error === "agent_subject_unavailable";
+  } catch {
+    return false;
+  }
 }
 
 async function ownedRealtimeSubject(
@@ -99,16 +143,6 @@ async function ownedRealtimeSubject(
   await owned.body?.cancel();
   if (!owned.ok) return Response.json({ error: "not_found" }, { status: 404 });
   return durableId.toString();
-}
-
-async function browserModelSubject(userId: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(`browser-model-v1:${userId}`),
-  );
-  let binary = "";
-  for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

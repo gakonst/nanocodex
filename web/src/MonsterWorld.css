@@ -646,7 +646,6 @@
 
 .monster-world .agent-session-note,
 .monster-world .agent-byok-error,
-.monster-world-agent-notice,
 .monster-world .agent-oauth-code {
   color: var(--text-secondary);
   font: 9px/1.45 var(--font-mono);
@@ -678,13 +677,6 @@
 
 .monster-world-agent-actions button {
   min-height: 32px;
-}
-
-.monster-world-agent-notice {
-  margin-top: 9px;
-  padding: 8px;
-  background: var(--surface-subtle);
-  border-left: 2px solid var(--text-faint);
 }
 
 .monster-world-formation-run > header > span[data-verdict="pass"] {

@@ -63,6 +63,25 @@ export default {
     }
     const authorization = request.headers.get("authorization");
     const subject = request.headers.get("x-nanocodex-subject");
+    const modelStatus = url.href === "https://broker.internal/.well-known/nanocodex/model-status"
+      && request.method === "GET"
+      && typeof subject === "string"
+      && subjects.has(subject);
+    if (modelStatus) return Response.json({ ready: true });
+    const browserModel = url.hostname === "nanocodex.internal"
+      && [
+        "/v1/responses",
+        "/v1/search",
+        "/v1/images/generations",
+        "/v1/images/edits",
+        "/v1/realtime/calls",
+        "/v1/realtime/sideband",
+      ].includes(url.pathname)
+      && authorization === "Bearer NANOCODEX_PROVIDER_CREDENTIAL"
+      && typeof subject === "string";
+    if (browserModel && !subjects.has(subject)) {
+      return Response.json({ error: "agent_subject_unavailable" }, { status: 403 });
+    }
     if (url.href === "https://api.github.com/repos/gakonst/nanocodex"
       && request.method === "GET"
       && authorization === "Bearer NANOCODEX_PROVIDER_CREDENTIAL"

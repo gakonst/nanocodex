@@ -1,4 +1,4 @@
-const CLIENT_NETWORK_FAILURE = /(?:load failed|failed to fetch|fetch failed|network request failed|networkerror|dynamically imported module)/i;
+const CLIENT_NETWORK_FAILURE = /(?:load failed|failed to fetch|fetch failed|network request failed|networkerror|dynamically imported module|agent connection (?:timed out|rejected|returned an invalid handshake)|websocket (?:connection failed|closed during connection)|responses? websockets? handshake)/i;
 
 export function isClientNetworkFailure(cause: unknown): boolean {
   const message = cause instanceof Error ? cause.message : String(cause ?? "");

@@ -44,13 +44,35 @@ export async function routeCredentialRequest(
     ? "/chatgpt/local-claim"
     : polling ? "/chatgpt/login/status" : suffix;
   const target = `https://broker.internal/users/${encodeURIComponent(principal.userId)}/credentials${brokerSuffix}`;
-  return env.NANOCODEX.fetch(target, {
+  const response = await env.NANOCODEX.fetch(target, {
     method: polling ? "POST" : request.method,
     ...(request.body === null ? {} : {
       headers: { "content-type": request.headers.get("content-type") ?? "" },
       body: request.body,
     }),
   });
+  if (suffix !== "" || request.method !== "GET" || !response.ok) return response;
+  try {
+    await bindAgentCredential(
+      env.NANOCODEX,
+      await browserModelSubject(principal.userId),
+      principal.userId,
+    );
+    return response;
+  } catch {
+    await response.body?.cancel().catch(() => {});
+    return json({ error: "credential_broker_unavailable" }, 503);
+  }
+}
+
+export async function browserModelSubject(userId: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`browser-model-v1:${userId}`),
+  );
+  let binary = "";
+  for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 export async function bindAgentCredential(

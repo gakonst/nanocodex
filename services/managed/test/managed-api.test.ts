@@ -913,6 +913,136 @@ describe("managed agents REST and resumable SSE", () => {
 
   });
 
+  it("keeps subject binding off healthy browser model upgrades and self-heals only a missing subject", async () => {
+    const session = await RAW_SELF.fetch("https://example.test/v1/me");
+    const cookie = session.headers.get("set-cookie")?.split(";", 1)[0];
+    expect(cookie).toMatch(/^nanocodex_account=a_[A-Za-z0-9_-]{43}$/);
+
+    const originalBroker = testEnv.NANOCODEX;
+    let bindingAttempts = 0;
+    let modelAttempts = 0;
+    let subject: string | undefined;
+    let denyNextModel = false;
+    testEnv.NANOCODEX = {
+      async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (request.method === "PUT" && url.pathname.startsWith("/subjects/")) {
+          bindingAttempts += 1;
+        }
+        if (request.method === "GET" && /^\/users\/[^/]+\/credentials$/.test(url.pathname)) {
+          return Response.json({ active: "chatgpt", ready: true });
+        }
+        if (url.hostname === "nanocodex.internal" && url.pathname === "/v1/responses") {
+          modelAttempts += 1;
+          subject = request.headers.get("x-nanocodex-subject") ?? undefined;
+          if (denyNextModel) {
+            denyNextModel = false;
+            return Response.json({ error: "required_header_mismatch" }, { status: 403 });
+          }
+        }
+        if (url.hostname === "nanocodex.internal" && url.pathname === "/v1/search") {
+          modelAttempts += 1;
+          subject = request.headers.get("x-nanocodex-subject") ?? undefined;
+          if (denyNextModel) {
+            denyNextModel = false;
+            return Response.json({ error: "required_header_mismatch" }, { status: 403 });
+          }
+        }
+        return originalBroker.fetch(request);
+      },
+    } as Fetcher;
+
+    const accountCookie = async (): Promise<string> => {
+      const account = await RAW_SELF.fetch("https://example.test/v1/me");
+      const accountCookie = account.headers.get("set-cookie")?.split(";", 1)[0];
+      expect(accountCookie).toMatch(/^nanocodex_account=a_[A-Za-z0-9_-]{43}$/);
+      return accountCookie!;
+    };
+    const search = (accountCookie: string, id: string) => RAW_SELF.fetch(
+      "https://nanocodex.internal/v1/search",
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL",
+          cookie: accountCookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ id }),
+      },
+    );
+
+    try {
+      const ready = await RAW_SELF.fetch(
+        "https://managed.internal/v1/credentials",
+        { headers: { cookie: cookie! } },
+      );
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toEqual({ active: "chatgpt", ready: true });
+      expect(bindingAttempts).toBe(1);
+
+      const sockets = await Promise.all(Array.from({ length: 36 }, (_, index) => (
+        RAW_SELF.fetch("https://nanocodex.internal/v1/responses", {
+          headers: {
+            authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL",
+            cookie: cookie!,
+            "openai-beta": "responses_websockets=2026-02-06",
+            "session-id": `browser-session-${index}`,
+            "thread-id": `browser-session-${index}`,
+            upgrade: "websocket",
+          },
+        })
+      )));
+      expect(sockets.every(({ status }) => status === 101)).toBe(true);
+      for (const response of sockets) {
+        response.webSocket!.accept();
+        response.webSocket!.close();
+      }
+      expect(bindingAttempts).toBe(1);
+      expect(modelAttempts).toBe(36);
+      expect(subject).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      const readySubject = subject;
+
+      const coldSearchCookie = await accountCookie();
+      const healed = await search(coldSearchCookie, "self-heal-browser-subject");
+      expect(healed.status).toBe(200);
+      const healedSearch = await healed.json<{ body: string; subject: string }>();
+      expect(healedSearch).toMatchObject({
+        body: JSON.stringify({ id: "self-heal-browser-subject" }),
+      });
+      expect(healedSearch.subject).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(healedSearch.subject).not.toBe(readySubject);
+      expect(bindingAttempts).toBe(2);
+      expect(modelAttempts).toBe(38);
+
+      const coldSocketCookie = await accountCookie();
+      const healedSocket = await RAW_SELF.fetch("https://nanocodex.internal/v1/responses", {
+        headers: {
+          authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL",
+          cookie: coldSocketCookie,
+          "openai-beta": "responses_websockets=2026-02-06",
+          "session-id": "cold-browser-session",
+          "thread-id": "cold-browser-session",
+          upgrade: "websocket",
+        },
+      });
+      expect(healedSocket.status).toBe(101);
+      healedSocket.webSocket!.accept();
+      healedSocket.webSocket!.close();
+      expect(bindingAttempts).toBe(3);
+      expect(modelAttempts).toBe(40);
+
+      denyNextModel = true;
+      const definitive = await search(cookie!, "do-not-bind-other-403");
+      expect(definitive.status).toBe(403);
+      expect(await definitive.json()).toEqual({ error: "required_header_mismatch" });
+      expect(bindingAttempts).toBe(3);
+      expect(modelAttempts).toBe(41);
+    } finally {
+      testEnv.NANOCODEX = originalBroker;
+    }
+  });
+
   it("forwards browser Realtime calls through the same opaque account subject", async () => {
     const session = await RAW_SELF.fetch("https://example.test/v1/me");
     const cookie = session.headers.get("set-cookie")?.split(";", 1)[0];

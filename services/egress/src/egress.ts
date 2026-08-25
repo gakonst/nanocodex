@@ -234,9 +234,17 @@ export async function handleEgress(
       return auditedError(502, "upstream_redirect_blocked", request, url, operation.id, started);
     }
     if (upstream.status >= 400) {
-      const status = upstream.status;
+      const upstreamStatus = upstream.status;
       await cancelResponseBody(upstream);
-      return auditedError(status === 429 ? 503 : 502, "upstream_rejected", request, url, operation.id, started);
+      return auditedError(
+        upstreamStatus === 429 ? 503 : 502,
+        "upstream_rejected",
+        request,
+        url,
+        operation.id,
+        started,
+        { upstream_status: upstreamStatus },
+      );
     }
     audit("allow", request, url, operation.id, started, { status: upstream.status, recovered });
     return sanitizeUpstreamResponse(upstream);
@@ -711,8 +719,13 @@ function auditedError(
   url: URL,
   rule: string | undefined,
   started: number,
+  detail: Record<string, unknown> = {},
 ): Response {
-  audit(status >= 500 ? "error" : "deny", request, url, rule, started, { code, status });
+  audit(status >= 500 ? "error" : "deny", request, url, rule, started, {
+    ...detail,
+    code,
+    status,
+  });
   return jsonError(status, code);
 }
 function audit(

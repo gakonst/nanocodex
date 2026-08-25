@@ -8,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { AgentStatus } from "./agentTerminalTypes";
+import { clientFailureMessage } from "./clientFailure";
 import {
   AgentSessionBar,
   type ModelSessionStatus,
@@ -99,7 +100,6 @@ type PendingResidentRequest = {
   requestId: string;
   agentId: ResidentId;
   callId?: number;
-  resultReceived: boolean;
   rejected: boolean;
   cancelled: boolean;
 };
@@ -134,7 +134,6 @@ export function MonsterWorld() {
   const [latestOrderId, setLatestOrderId] = useState<number>();
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>("offline");
   const [agentError, setAgentError] = useState<string>();
-  const [agentNotice, setAgentNotice] = useState<string>();
   const [, setAuthStatus] = useState<ModelSessionStatus>();
   const [credentialSource, setCredentialSource] = useState<CredentialSource>();
   const [usage, setUsage] = useState<UsageTotals>(emptyUsage);
@@ -322,7 +321,6 @@ export function MonsterWorld() {
         setRuntimeStatus("ready");
         runtimeStatusRef.current = "ready";
         setAgentError(undefined);
-        setAgentNotice(undefined);
         const now = performance.now();
         liveAgentIdsInWorld(worldRef.current as WorldState).forEach((id, index) => {
           nextThinkAt.current[id] = worldRef.current && hasUnansweredGuildCall(worldRef.current, id)
@@ -349,7 +347,6 @@ export function MonsterWorld() {
     if (message.type === "room_send") {
       const request = pendingRequests.current.get(message.requestId);
       if (!request || request.agentId !== message.agentId || request.cancelled) return;
-      request.resultReceived = true;
       const activeWorld = worldRef.current;
       if (!activeWorld) return;
       const application = applyWorldRoomSend(activeWorld, {
@@ -375,7 +372,6 @@ export function MonsterWorld() {
     if (message.type === "action") {
       const request = pendingRequests.current.get(message.requestId);
       if (!request || request.agentId !== message.agentId || request.cancelled) return;
-      request.resultReceived = true;
       const activeWorld = worldRef.current;
       if (!activeWorld) return;
       const application = applyWorldToolAction(activeWorld, {
@@ -416,7 +412,10 @@ export function MonsterWorld() {
     }
     if (message.usage) commitModelUsage(message.usage, usageRef, setUsage);
 
-    const failureMessage = message.message ?? failureDescription(message.failure);
+    const failureMessage = clientFailureMessage(
+      message.message,
+      failureDescription(message.failure),
+    );
     const terminallyBlocked = message.failure === "usage_limit"
       || message.failure === "budget"
       || isWorldUsageLimitMessage(failureMessage);
@@ -452,13 +451,7 @@ export function MonsterWorld() {
       setRuntimeStatus("blocked");
       runtimeStatusRef.current = "blocked";
       setAgentError(notice);
-      setAgentNotice(notice);
       if (activeWorld) setWorldAgentsOnline(activeWorld, false);
-    } else if (message.outcome === "failed") {
-      const name = activeWorld?.actors[request.agentId].name ?? request.agentId;
-      setAgentNotice(`${name}'s Luna turn failed independently: ${failureMessage}`);
-    } else if (message.outcome === "completed" && !request.resultReceived) {
-      setAgentNotice(`${request.agentId}'s Luna turn completed without acting in the World; retrying independently.`);
     }
     invalidateWorld();
   }, [invalidateWorld]);
@@ -479,7 +472,6 @@ export function MonsterWorld() {
     pendingRequests.current.clear();
     pendingWorldActions.current.clear();
     setAgentError(undefined);
-    setAgentNotice(undefined);
     setRuntimeStatus("starting");
     runtimeStatusRef.current = "starting";
     worker.addEventListener("message", ({ data }: MessageEvent<unknown>) => {
@@ -544,7 +536,6 @@ export function MonsterWorld() {
           requestId: `world-request-${crypto.randomUUID()}`,
           agentId,
           ...(callId === undefined ? {} : { callId }),
-          resultReceived: false,
           rejected: false,
           cancelled: false,
         };
@@ -559,10 +550,9 @@ export function MonsterWorld() {
             observation,
             memory: residentMemoryFor(activeWorld, agentId),
           } satisfies WorldAgentCommand);
-        } catch (cause) {
+        } catch {
           pendingRequests.current.delete(request.requestId);
           nextThinkAt.current[request.agentId] = now + 5_000 + residentDelay(request.agentId);
-          setAgentNotice(`Could not wake ${activeWorld.actors[agentId].name}: ${cause instanceof Error ? cause.message : String(cause)}`);
         }
       }
       invalidateWorld();
@@ -749,7 +739,6 @@ export function MonsterWorld() {
     usageRef.current = emptyUsage;
     setUsage(emptyUsage);
     setAgentError(undefined);
-    setAgentNotice(undefined);
     setSpeechNotice(undefined);
     setLatestOrderId(undefined);
     setSelectedResident("cinder");
@@ -1013,7 +1002,6 @@ export function MonsterWorld() {
               </button>
               <button type="button" onClick={resetTown}>reset</button>
             </div>
-            {agentNotice ? <p className="monster-world-agent-notice" role="status">{agentNotice}</p> : null}
           </div>
 
           {formationProgress && world.formationExperiment ? (
@@ -1247,7 +1235,7 @@ function commitModelUsage(
 function failureDescription(failure: WorldFailureClass | undefined): string {
   if (failure === "usage_limit") return "The Luna usage limit was reached.";
   if (failure === "budget") return "The Luna resident-turn safety budget was reached.";
-  if (failure === "transient") return "A temporary Luna transport failure interrupted this resident's turn.";
+  if (failure === "transient") return "A temporary Luna connection problem interrupted this resident's turn.";
   if (failure === "invalid") return "The resident's Luna result did not satisfy the world contract.";
   if (failure === "cancelled") return "The resident's Luna turn was cancelled.";
   return "Unknown Luna resident-turn failure.";
