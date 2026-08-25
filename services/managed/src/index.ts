@@ -74,6 +74,20 @@ import {
   validatePromptInput,
 } from "./protocol";
 import {
+  DEVICE_HOST_LEASE_MS,
+  DEVICE_TOOL_CALL_TIMEOUT_MS,
+  DeviceHostAmbiguousError,
+  DeviceHostProtocolError,
+  deviceToolAmbiguous,
+  deviceToolResult,
+  deviceToolUnavailable,
+  matchesDeviceHostLease,
+  parseDeviceHostCommand,
+  parseDeviceToolInput,
+  type DeviceHostCommand,
+  type DeviceHostServerMessage,
+} from "./device-host-protocol";
+import {
   classifyTurnFailure,
   materializeTurnTerminal,
   type TurnTerminal,
@@ -158,6 +172,31 @@ type SessionRow = {
   completed_turns: number;
   last_active: number;
   stream_error: string | null;
+};
+
+type DeviceHostAttachment = {
+  kind: "device-host";
+  sessionId: string;
+  hostId?: string;
+  leaseId?: string;
+  epoch?: number;
+};
+
+type DeviceHostStateRow = {
+  epoch: number;
+  host_id: string | null;
+  catalog_version: number | null;
+  lease_id: string | null;
+  lease_expires_at: number;
+};
+
+type PendingDeviceToolCall = {
+  leaseId: string;
+  epoch: number;
+  deadlineAt: number;
+  timeout?: ReturnType<typeof setTimeout>;
+  resolve(result: { success: boolean; output: unknown }): void;
+  reject(error: Error): void;
 };
 
 type SessionInitializationOwnership = {
@@ -527,7 +566,7 @@ export default {
     const sessionHeaders = new Headers(request.headers);
     sessionHeaders.set(SESSION_OWNER_ASSERTION, principal.userId);
     const publicOrigin = `public_origin=${encodeURIComponent(url.origin)}`;
-    if (resource === "ws") {
+    if (resource === "ws" || resource === "device-host") {
       if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
         return new Response("Expected WebSocket upgrade", { status: 426 });
       }
@@ -535,7 +574,7 @@ export default {
         return json({ error: "forbidden_origin" }, { status: 403 });
       }
       return stub.fetch(
-        `https://session.internal/socket?${publicOrigin}`,
+        `https://session.internal/${resource === "ws" ? "socket" : "device-host"}?${publicOrigin}`,
         new Request(request, { headers: sessionHeaders }),
       );
     }
@@ -706,6 +745,7 @@ export class NanocodexSession extends DurableComputerSession {
   readonly #admissionTasks = new Map<string, Promise<ManagedTurnRow>>();
   #initialAccountContextTask?: Promise<InitialAccountContext | undefined>;
   readonly #cancellationTasks = new Map<string, Promise<void>>();
+  readonly #pendingDeviceToolCalls = new Map<string, PendingDeviceToolCall>();
   readonly #realtimeOperations = new Map<string, Promise<unknown>>();
   #realtimeOperationTail: Promise<void> = Promise.resolve();
   readonly #inFlight = new Set<Promise<unknown>>();
@@ -783,6 +823,31 @@ export class NanocodexSession extends DurableComputerSession {
         voice_session_id TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS device_host_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        epoch INTEGER NOT NULL DEFAULT 0,
+        host_id TEXT,
+        catalog_version INTEGER,
+        lease_id TEXT,
+        lease_expires_at INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT OR IGNORE INTO device_host_state (singleton) VALUES (1);
+      CREATE TABLE IF NOT EXISTS device_tool_calls (
+        call_id TEXT PRIMARY KEY,
+        lease_id TEXT NOT NULL,
+        epoch INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('dispatched', 'completed', 'ambiguous')),
+        operation TEXT NOT NULL,
+        arguments_json TEXT NOT NULL,
+        result_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      UPDATE device_tool_calls
+      SET state = 'ambiguous',
+          result_json = '{"ok":false,"status":"ambiguous","message":"device host lifecycle restarted after dispatch"}',
+          updated_at = unixepoch('subsec') * 1000
+      WHERE state = 'dispatched';
     `);
     this.#eventLog = new DurableEventLog<StreamMessage>(this.ctx.storage);
     this.#eventArchive = new ManagedEventArchive<StreamMessage>(
@@ -1103,6 +1168,8 @@ export class NanocodexSession extends DurableComputerSession {
     }
     if (request.method === "GET" && url.pathname === "/socket")
       return this.#upgrade();
+    if (request.method === "GET" && url.pathname === "/device-host")
+      return this.#upgradeDeviceHost();
     const realtimeRoute = url.pathname.match(
       /^\/realtime\/(start|delegate|stop)$/,
     );
@@ -1300,6 +1367,11 @@ export class NanocodexSession extends DurableComputerSession {
       closeSocket(socket, 1009, "message exceeds 1 MiB");
       return;
     }
+    const attachment = socket.deserializeAttachment() as DeviceHostAttachment | { sessionId?: string } | null;
+    if (attachment && "kind" in attachment && attachment.kind === "device-host") {
+      await this.#dispatchDeviceHost(socket, attachment, message);
+      return;
+    }
     let command: ClientCommand;
     try {
       command = parseCommand(message);
@@ -1312,10 +1384,12 @@ export class NanocodexSession extends DurableComputerSession {
   }
 
   webSocketClose(socket: WebSocket, code: number, reason: string): void {
+    this.#retireDeviceHost(socket, reason || "peer closed");
     closeSocket(socket, code, reason || "peer closed");
   }
 
   webSocketError(socket: WebSocket): void {
+    this.#retireDeviceHost(socket, "WebSocket failed");
     closeSocket(socket, 1011, "WebSocket failed");
   }
 
@@ -1394,6 +1468,275 @@ export class NanocodexSession extends DurableComputerSession {
     });
     return new Response(null, { status: 101, webSocket: client });
   }
+
+  #upgradeDeviceHost(): Response {
+    if (this.#deleting) return new Response("Agent is being deleted", { status: 409 });
+    const session = this.#sessionStatus();
+    if (!session) return new Response("Unknown session", { status: 404 });
+    if (this.#session()?.runtime_profile !== "managed") {
+      return new Response("Device hosting is unavailable for multiplayer agents", { status: 409 });
+    }
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    server.serializeAttachment({
+      kind: "device-host",
+      sessionId: session.session_id,
+    } satisfies DeviceHostAttachment);
+    this.ctx.acceptWebSocket(server, ["device-host"]);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async #dispatchDeviceHost(
+    socket: WebSocket,
+    attachment: DeviceHostAttachment,
+    encoded: string,
+  ): Promise<void> {
+    let command: DeviceHostCommand;
+    try {
+      command = parseDeviceHostCommand(encoded);
+    } catch (error) {
+      const protocol = error instanceof DeviceHostProtocolError
+        ? error
+        : new DeviceHostProtocolError("invalid_message", errorMessage(error));
+      this.#sendDeviceHost(socket, { type: "error", code: protocol.code, message: protocol.message });
+      return;
+    }
+    try {
+      if (command.type === "attach") {
+        this.#claimDeviceHost(socket, attachment, command.host_id, command.catalog_version);
+        return;
+      }
+      this.#requireDeviceHostLease(socket, attachment, command.lease_id, command.epoch);
+      if (command.type === "ping") {
+        this.#renewDeviceHostLease(socket, command);
+      } else {
+        this.#completeDeviceToolCall(socket, command);
+      }
+    } catch (error) {
+      const protocol = error instanceof DeviceHostProtocolError
+        ? error
+        : new DeviceHostProtocolError("device_host_failed", errorMessage(error));
+      if (protocol.code !== "stale_lease") {
+        this.#sendDeviceHost(socket, { type: "error", code: protocol.code, message: protocol.message });
+      }
+    }
+  }
+
+  #claimDeviceHost(
+    socket: WebSocket,
+    attachment: DeviceHostAttachment,
+    hostId: string,
+    catalogVersion: number,
+  ): void {
+    if (attachment.hostId || attachment.leaseId || attachment.epoch) {
+      throw new DeviceHostProtocolError("already_attached", "this socket already holds a device-host lease");
+    }
+    const current = this.#deviceHostState();
+    if (current.epoch >= Number.MAX_SAFE_INTEGER) {
+      throw new DeviceHostProtocolError("lease_exhausted", "the device-host lease epoch is exhausted");
+    }
+    const epoch = current.epoch + 1;
+    const leaseId = crypto.randomUUID();
+    const expiresAt = Date.now() + DEVICE_HOST_LEASE_MS;
+    this.ctx.storage.sql.exec(
+      `UPDATE device_host_state
+       SET epoch = ?, host_id = ?, catalog_version = ?, lease_id = ?, lease_expires_at = ?
+       WHERE singleton = 1`,
+      epoch,
+      hostId,
+      catalogVersion,
+      leaseId,
+      expiresAt,
+    );
+    for (const candidate of this.ctx.getWebSockets("device-host")) {
+      if (candidate === socket) continue;
+      const candidateAttachment = candidate.deserializeAttachment() as DeviceHostAttachment | null;
+      if (candidateAttachment?.kind !== "device-host" || !candidateAttachment.leaseId) continue;
+      try {
+        this.#sendDeviceHost(candidate, {
+          type: "fenced",
+          epoch,
+          reason: "a newer Android device host acquired the agent lease",
+        });
+      } catch { /* Closing the old socket is itself the authoritative fence. */ }
+      this.#retireDeviceHost(candidate, "replaced by a newer device host");
+      closeSocket(candidate, 1008, "device-host lease replaced");
+    }
+    socket.serializeAttachment({
+      ...attachment,
+      hostId,
+      leaseId,
+      epoch,
+    } satisfies DeviceHostAttachment);
+    try {
+      this.#sendDeviceHost(socket, {
+        type: "lease",
+        protocol_version: 1,
+        lease_id: leaseId,
+        epoch,
+        expires_at: expiresAt,
+        catalog_version: catalogVersion,
+      });
+    } catch {
+      this.#retireDeviceHost(socket, "lease delivery failed");
+      closeSocket(socket, 1011, "device-host lease delivery failed");
+    }
+  }
+
+  #requireDeviceHostLease(
+    socket: WebSocket,
+    attachment: DeviceHostAttachment,
+    leaseId: string,
+    epoch: number,
+  ): DeviceHostStateRow {
+    const state = this.#deviceHostState();
+    if (attachment.leaseId !== leaseId
+      || attachment.epoch !== epoch
+      || !matchesDeviceHostLease(attachment, state, Date.now())) {
+      try {
+        this.#sendDeviceHost(socket, {
+          type: "fenced",
+          epoch: state.epoch,
+          reason: "the device-host lease is stale or expired",
+        });
+      } catch { /* Closing the stale socket is itself the authoritative fence. */ }
+      this.#retireDeviceHost(socket, "stale or expired lease");
+      closeSocket(socket, 1008, "stale device-host lease");
+      throw new DeviceHostProtocolError("stale_lease", "the device-host lease is stale or expired");
+    }
+    return state;
+  }
+
+  #renewDeviceHostLease(
+    socket: WebSocket,
+    command: Extract<DeviceHostCommand, { type: "ping" }>,
+  ): void {
+    const expiresAt = Date.now() + DEVICE_HOST_LEASE_MS;
+    this.ctx.storage.sql.exec(
+      `UPDATE device_host_state SET lease_expires_at = ?
+       WHERE singleton = 1 AND lease_id = ? AND epoch = ?`,
+      expiresAt,
+      command.lease_id,
+      command.epoch,
+    );
+    this.#sendDeviceHost(socket, {
+      type: "pong",
+      lease_id: command.lease_id,
+      epoch: command.epoch,
+      expires_at: expiresAt,
+      ...(command.nonce === undefined ? {} : { nonce: command.nonce }),
+    });
+  }
+
+  #completeDeviceToolCall(
+    socket: WebSocket,
+    command: Extract<DeviceHostCommand, { type: "device_tool_result" }>,
+  ): void {
+    const pending = this.#pendingDeviceToolCalls.get(command.call_id);
+    if (!pending || pending.leaseId !== command.lease_id || pending.epoch !== command.epoch) {
+      throw new DeviceHostProtocolError("unknown_call", "device tool call is not pending for this lease");
+    }
+    const stored = JSON.stringify(deviceToolResult(command.success, command.output));
+    this.ctx.storage.sql.exec(
+      `UPDATE device_tool_calls
+       SET state = 'completed', result_json = ?, updated_at = ?
+       WHERE call_id = ? AND lease_id = ? AND epoch = ? AND state = 'dispatched'`,
+      stored,
+      Date.now(),
+      command.call_id,
+      command.lease_id,
+      command.epoch,
+    );
+    if (pending.timeout !== undefined) clearTimeout(pending.timeout);
+    this.#pendingDeviceToolCalls.delete(command.call_id);
+    pending.resolve({ success: command.success, output: command.output });
+    this.#sendDeviceHost(socket, {
+      type: "ack",
+      lease_id: command.lease_id,
+      epoch: command.epoch,
+      call_id: command.call_id,
+      state: "completed",
+    });
+  }
+
+  #retireDeviceHost(socket: WebSocket, reason: string): void {
+    const attachment = socket.deserializeAttachment() as DeviceHostAttachment | null;
+    if (attachment?.kind !== "device-host" || !attachment.leaseId || !attachment.epoch) return;
+    const ambiguousMessage = `Android device outcome is ambiguous after disconnect: ${reason}`;
+    const ambiguous = deviceToolAmbiguous(ambiguousMessage);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `UPDATE device_tool_calls
+         SET state = 'ambiguous', result_json = ?, updated_at = ?
+         WHERE lease_id = ? AND epoch = ? AND state = 'dispatched'`,
+        JSON.stringify(ambiguous),
+        Date.now(),
+        attachment.leaseId,
+        attachment.epoch,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE device_host_state
+         SET host_id = NULL, catalog_version = NULL, lease_id = NULL, lease_expires_at = 0
+         WHERE singleton = 1 AND lease_id = ? AND epoch = ?`,
+        attachment.leaseId,
+        attachment.epoch,
+      );
+    });
+    for (const [callId, pending] of this.#pendingDeviceToolCalls) {
+      if (pending.leaseId !== attachment.leaseId || pending.epoch !== attachment.epoch) continue;
+      if (pending.timeout !== undefined) clearTimeout(pending.timeout);
+      this.#pendingDeviceToolCalls.delete(callId);
+      pending.reject(new DeviceHostAmbiguousError(ambiguousMessage));
+    }
+  }
+
+  #deviceHostState(): DeviceHostStateRow {
+    const state = this.ctx.storage.sql.exec<DeviceHostStateRow>(
+      `SELECT epoch, host_id, catalog_version, lease_id, lease_expires_at
+       FROM device_host_state WHERE singleton = 1`,
+    ).toArray()[0];
+    if (!state) throw new Error("device-host state is missing");
+    return state;
+  }
+
+  #sendDeviceHost(socket: WebSocket, message: DeviceHostServerMessage): void {
+    socket.send(JSON.stringify(message));
+  }
+
+  #armDeviceToolExpiry(callId: string, pending: PendingDeviceToolCall, expiresAt: number): void {
+    if (pending.timeout !== undefined) clearTimeout(pending.timeout);
+    pending.timeout = setTimeout(() => {
+      const current = this.#pendingDeviceToolCalls.get(callId);
+      if (current !== pending) return;
+      const state = this.#deviceHostState();
+      if (state.lease_id === pending.leaseId
+        && state.epoch === pending.epoch
+        && state.lease_expires_at > Date.now()
+        && pending.deadlineAt > Date.now()) {
+        this.#armDeviceToolExpiry(
+          callId,
+          pending,
+          Math.min(state.lease_expires_at, pending.deadlineAt),
+        );
+        return;
+      }
+      const ambiguousMessage = "Android device did not return a result before its lease or call deadline expired";
+      const ambiguous = deviceToolAmbiguous(ambiguousMessage);
+      this.ctx.storage.sql.exec(
+        `UPDATE device_tool_calls
+         SET state = 'ambiguous', result_json = ?, updated_at = ?
+         WHERE call_id = ? AND lease_id = ? AND epoch = ? AND state = 'dispatched'`,
+        JSON.stringify(ambiguous),
+        Date.now(),
+        callId,
+        pending.leaseId,
+        pending.epoch,
+      );
+      this.#pendingDeviceToolCalls.delete(callId);
+      pending.reject(new DeviceHostAmbiguousError(ambiguousMessage));
+    }, Math.max(1, expiresAt - Date.now()));
+  }
+
 
   async #dispatch(socket: WebSocket, command: ClientCommand): Promise<void> {
     if (this.#deleting) {
@@ -2814,6 +3157,95 @@ export class NanocodexSession extends DurableComputerSession {
     return prepared;
   }
 
+  async #executePhone(input: unknown, context: { callId: string }): Promise<unknown> {
+    let phone;
+    try {
+      phone = parseDeviceToolInput(input);
+    } catch (error) {
+      return {
+        ok: false,
+        status: "failed",
+        output: {
+          code: error instanceof DeviceHostProtocolError ? error.code : "invalid_phone_input",
+          message: errorMessage(error),
+        },
+      };
+    }
+    const state = this.#deviceHostState();
+    const socket = this.ctx.getWebSockets("device-host").find((candidate) => {
+      if (candidate.readyState !== WebSocket.OPEN) return false;
+      const attachment = candidate.deserializeAttachment() as DeviceHostAttachment | null;
+      return attachment?.kind === "device-host"
+        && matchesDeviceHostLease(attachment, state, Date.now());
+    });
+    if (!socket || !state.lease_id || !state.host_id || state.lease_expires_at < Date.now()) {
+      if (socket) {
+        try {
+          this.#sendDeviceHost(socket, {
+            type: "fenced",
+            epoch: state.epoch,
+            reason: "the device-host lease expired before tool dispatch",
+          });
+        } catch { /* Closing the expired socket is itself the authoritative fence. */ }
+        this.#retireDeviceHost(socket, "lease expired before dispatch");
+        closeSocket(socket, 1008, "device-host lease expired");
+      }
+      return deviceToolUnavailable();
+    }
+    const now = Date.now();
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO device_tool_calls
+           (call_id, lease_id, epoch, state, operation, arguments_json, created_at, updated_at)
+         VALUES (?, ?, ?, 'dispatched', ?, ?, ?, ?)`,
+        context.callId,
+        state.lease_id,
+        state.epoch,
+        phone.operation,
+        JSON.stringify(phone.arguments),
+        now,
+        now,
+      );
+    } catch (error) {
+      return deviceToolAmbiguous(`Phone call could not be admitted without risking replay: ${errorMessage(error)}`);
+    }
+    const result = new Promise<{ success: boolean; output: unknown }>((resolve, reject) => {
+      const pending: PendingDeviceToolCall = {
+        leaseId: state.lease_id!,
+        epoch: state.epoch,
+        deadlineAt: now + DEVICE_TOOL_CALL_TIMEOUT_MS,
+        resolve,
+        reject,
+      };
+      this.#pendingDeviceToolCalls.set(context.callId, pending);
+      this.#armDeviceToolExpiry(
+        context.callId,
+        pending,
+        Math.min(state.lease_expires_at, pending.deadlineAt),
+      );
+    });
+    try {
+      this.#sendDeviceHost(socket, {
+        type: "device_tool_call",
+        lease_id: state.lease_id,
+        epoch: state.epoch,
+        call_id: context.callId,
+        tool: "phone",
+        operation: phone.operation,
+        arguments: phone.arguments,
+      });
+    } catch (error) {
+      this.#retireDeviceHost(socket, `dispatch failed: ${errorMessage(error)}`);
+    }
+    try {
+      const completed = await result;
+      return deviceToolResult(completed.success, completed.output);
+    } catch (error) {
+      return deviceToolAmbiguous(errorMessage(error));
+    }
+  }
+
+
   async #createAgent(): Promise<CloudflareAgent.Agent> {
     const constructionStartedAt = performance.now();
     const session = this.#session();
@@ -2862,11 +3294,28 @@ export class NanocodexSession extends DurableComputerSession {
           ].join("\n\n")
           : [
             "You are Nanocodex running as a durable managed agent on Cloudflare Workers.",
+            "The phone tool's current attached Android device is the authority for phone state and phone actions. A missing device host means the phone is unavailable; there is no cloud fallback.",
+            "Never claim that a phone action happened unless the phone tool returned ok=true and status=completed. Report failed, unavailable, and ambiguous phone outcomes accurately.",
             "Your /workspace filesystem is durable Cloudflare Computer storage backed by this agent's Durable Object.",
             "Call accountInfo to see the current identities, stablecoin balances, and app authorization boundaries, then use gh or curl normally through transparent authenticated egress. accountInfo is a tool, not a shell command.",
           ].join("\n\n"),
         tools: [
           execCommand,
+          ...(multiplayer ? [] : [{
+            name: "phone",
+            description: "Read current phone state or perform a phone operation on the currently attached Android device. This has no cloud fallback; inspect ok and status before claiming success.",
+            supportsParallelToolCalls: false,
+            parameters: {
+              type: "object",
+              properties: {
+                operation: { type: "string", minLength: 1, maxLength: 128 },
+                arguments: { type: "object" },
+              },
+              required: ["operation"],
+              additionalProperties: false,
+            },
+            handler: (input: unknown, context: { callId: string }) => this.#executePhone(input, context),
+          }]),
           ...(multiplayer ? [] : [{
             name: "accountInfo",
             description: "Report account authentication, stablecoin balances, and app authorization boundaries. Never returns credentials.",
