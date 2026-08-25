@@ -201,8 +201,32 @@ export default {
       const multiplayerConnectorOutput = input.find((item) => (
         item?.type === "function_call_output" && item.call_id === "multiplayer-no-connectors"
       ));
+      const phoneOutput = input.find((item) => (
+        item?.type === "function_call_output" && item.call_id === "managed-phone"
+      ));
       pendingResponse = setTimeout(() => {
         pendingResponse = undefined;
+        if (phoneOutput) {
+          const output = String(phoneOutput.output);
+          const valid = output.includes('"ok":true')
+            && output.includes('"status":"completed"')
+            && output.includes('"operation":"device.location.current"')
+            && output.includes('"latitude":37.8715');
+          server.send(JSON.stringify({
+            type: "response.completed",
+            response: {
+              id: crypto.randomUUID(),
+              status: "completed",
+              output: [{
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: valid ? "MANAGED_PHONE_OK" : "MANAGED_PHONE_BAD" }],
+              }],
+              usage: null,
+            },
+          }));
+          return;
+        }
         if (multiplayerConnectorOutput) {
           const output = String(multiplayerConnectorOutput.output);
           const valid = output.includes("MULTIPLAYER_RUNTIME_OK")
@@ -315,6 +339,26 @@ export default {
                 name: "exec_command",
                 arguments: JSON.stringify({
                   cmd: "printf 'MULTIPLAYER_RUNTIME_OK\\n' > /workspace/multiplayer.txt; cat /workspace/multiplayer.txt; gh api repos/gakonst/nanocodex",
+                }),
+              }],
+              usage: null,
+            },
+          }));
+          return;
+        }
+        if (text.includes("E2E_MANAGED_PHONE")) {
+          server.send(JSON.stringify({
+            type: "response.completed",
+            response: {
+              id: crypto.randomUUID(),
+              status: "completed",
+              output: [{
+                type: "function_call",
+                call_id: "managed-phone",
+                name: "phone",
+                arguments: JSON.stringify({
+                  operation: "device.location.current",
+                  arguments: { provider: "precise" },
                 }),
               }],
               usage: null,

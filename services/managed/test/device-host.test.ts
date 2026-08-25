@@ -78,6 +78,84 @@ describe("managed Android device host", () => {
     second.close(1000, "test complete");
   });
 
+  it("executes a managed agent phone call on the attached device host", async () => {
+    const agentId = await createAgent();
+    const host = await upgrade(`https://example.test/v1/agents/${agentId}/device-host`);
+    const leaseMessage = nextMessage(host);
+    host.send(JSON.stringify({
+      type: "attach",
+      protocol_version: 1,
+      host_id: "33333333-3333-4333-8333-333333333333",
+      catalog_version: 3,
+    }));
+    const lease = await leaseMessage as {
+      lease_id: string;
+      epoch: number;
+    };
+
+    const deviceCallMessage = nextMessage(host);
+    const started = await authenticatedFetch(
+      `https://example.test/v1/agents/${agentId}/turns`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "request-managed-phone",
+        },
+        body: JSON.stringify({ id: "turn-managed-phone", input: "E2E_MANAGED_PHONE" }),
+      },
+    );
+    expect(started.status).toBe(202);
+
+    const deviceCall = await deviceCallMessage as {
+      type: string;
+      lease_id: string;
+      epoch: number;
+      call_id: string;
+      tool: string;
+      operation: string;
+      arguments: Record<string, unknown>;
+    };
+    expect(deviceCall).toMatchObject({
+      type: "device_tool_call",
+      lease_id: lease.lease_id,
+      epoch: lease.epoch,
+      call_id: "managed-phone",
+      tool: "phone",
+      operation: "device.location.current",
+      arguments: { provider: "precise" },
+    });
+
+    const ackMessage = nextMessage(host);
+    host.send(JSON.stringify({
+      type: "device_tool_result",
+      lease_id: lease.lease_id,
+      epoch: lease.epoch,
+      call_id: deviceCall.call_id,
+      success: true,
+      output: {
+        ok: true,
+        operation: deviceCall.operation,
+        latitude: 37.8715,
+        longitude: -122.273,
+      },
+    }));
+    expect(await ackMessage).toMatchObject({
+      type: "ack",
+      lease_id: lease.lease_id,
+      epoch: lease.epoch,
+      call_id: "managed-phone",
+      state: "completed",
+    });
+
+    const terminal = await waitForTurn(agentId, "turn-managed-phone");
+    expect(terminal).toMatchObject({
+      type: "turn_completed",
+      final_message: "MANAGED_PHONE_OK",
+    });
+    host.close(1000, "test complete");
+  });
+
 });
 
 async function createAgent(): Promise<string> {
@@ -117,6 +195,20 @@ async function authenticatedFetch(input: RequestInfo | URL, init?: RequestInit):
   const headers = new Headers(request.headers);
   headers.set("authorization", `Bearer ${API_KEY}`);
   return SELF.fetch(new Request(request, { headers }));
+}
+
+async function waitForTurn(agentId: string, turnId: string): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 10_000;
+  do {
+    const response = await authenticatedFetch(
+      `https://example.test/v1/agents/${agentId}/turns/${turnId}`,
+    );
+    expect(response.status).toBe(200);
+    const view = await response.json<{ terminal?: Record<string, unknown> }>();
+    if (view.terminal) return view.terminal;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  throw new Error(`timed out waiting for ${turnId}`);
 }
 
 async function seedApiKey(): Promise<void> {
