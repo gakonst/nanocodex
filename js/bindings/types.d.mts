@@ -352,11 +352,26 @@ export type TurnResult = Readonly<{
   dispose(): void;
 }>;
 
+export type SubagentToolContext = Readonly<{
+  /** Runtime-owned ID within this root's task tree. */
+  agentId: string;
+  /** Runtime-owned parent ID, or null when the parent is the root. */
+  parentAgentId: string | null;
+  /** The child session that invoked the inherited tool. */
+  sessionId: string;
+  /** Role assigned when this child was spawned. */
+  role: string;
+  /** Task assigned when this child was spawned. */
+  task: string;
+}>;
+
 export type ToolContext = {
   callId: string;
   parentCallId: string;
   sessionId: string;
   signal: AbortSignal;
+  /** Present for tools invoked by a subagent; absent for the root agent. */
+  subagent?: SubagentToolContext | undefined;
 };
 
 export type Tool = {

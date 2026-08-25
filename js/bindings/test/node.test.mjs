@@ -270,6 +270,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
   const server = await startServer();
   const decoyServer = await startServer();
   const events = [];
+  const rootToolContexts = [];
   const durabilityId = "node-durable-root-subagents";
   const agent = await createWarmAgent({
     apiKey: "test-key",
@@ -283,7 +284,10 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
         name: "rootOnly",
         description: "Only the orchestrator family can see this tool.",
         parameters: { type: "object" },
-        handler: () => "root",
+        handler: (_input, context) => {
+          rootToolContexts.push(context);
+          return "root";
+        },
       },
     ],
   });
@@ -370,6 +374,15 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     }]);
 
     await childReader.next();
+    sendCompleted(childSocket, "child-tool", [{
+      type: "custom_tool_call",
+      call_id: "call-child-exec",
+      name: "exec",
+      input: "text(await tools.rootOnly({}));",
+    }]);
+    const childExecuted = await childReader.next();
+    assert.equal(childExecuted.input[0].call_id, "call-child-exec");
+    assert.match(JSON.stringify(childExecuted.input[0].output), /root/);
     sendCompleted(childSocket, "child-submit", [{
       type: "function_call",
       call_id: "call-submit",
@@ -394,6 +407,15 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     const result = await agent.turn.prompt({ input: "Delegate this check." }).result();
     assert.equal(result.finalMessage, "portable");
     await scenario;
+    assert.equal(rootToolContexts.length, 1);
+    assert.equal(rootToolContexts[0].sessionId, childSessionId);
+    assert.deepEqual(rootToolContexts[0].subagent, {
+      agentId: "1",
+      parentAgentId: null,
+      sessionId: childSessionId,
+      role: "reviewer",
+      task: "Return the word portable.",
+    });
     assert.ok(events.some((event) => event.request_id === childSessionId));
   } finally {
     watch.off();

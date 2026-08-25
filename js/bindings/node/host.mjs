@@ -288,6 +288,7 @@ export function createNodeHost(options = {}) {
     executeCode: code.executeCodeObserved,
     nextCodeUpdate: code.nextCodeUpdate,
     executeTool: code.executeTool,
+    bindSubagentSession: code.bindSubagentSession,
     cancelCode: code.cancel,
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,

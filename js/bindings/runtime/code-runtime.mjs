@@ -10,6 +10,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   const definitions = [];
   const configuredTools = [];
   const toolByName = new Map();
+  const subagentsBySession = new Map();
 
   function addTools(configuration = {}) {
     for (const [name, tool] of Object.entries(configuration)) {
@@ -79,6 +80,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         parentCallId: "",
         callId,
         signal: controller.signal,
+        subagent: subagentsBySession.get(sessionId),
       });
       return encodeToolOutput(
         outputBody(result),
@@ -158,6 +160,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
               parentCallId,
               callId,
               signal: controller.signal,
+              subagent: subagentsBySession.get(sessionId),
             });
           } finally {
             releaseExecution?.();
@@ -342,6 +345,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
 
   function releaseSession(sessionId) {
     stores.delete(sessionId);
+    subagentsBySession.delete(sessionId);
     for (const tool of configuredTools) tool.releaseSession?.(sessionId);
     closeCodeObservations(sessionId);
   }
@@ -351,6 +355,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       execution.controller.abort(new Error(CANCELLATION_MESSAGE));
     }
     stores.clear();
+    subagentsBySession.clear();
     for (const tool of configuredTools) tool.dispose?.();
     closeCodeObservations();
   }
@@ -366,6 +371,9 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     executeCode,
     executeCodeObserved,
     executeTool,
+    bindSubagentSession(sessionId, context) {
+      subagentsBySession.set(sessionId, Object.freeze({ ...context }));
+    },
     nextCodeUpdate,
     cancel,
     toolDefinitions: () => JSON.stringify(currentDefinitions()),

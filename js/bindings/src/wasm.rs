@@ -141,7 +141,7 @@ extern "C" {
     fn host_subscription_request(subscription_id: &str, request: &str) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = bindSubagentSession)]
-    fn host_bind_subagent_session(root_session_id: &str, session_id: &str);
+    fn host_bind_subagent_session(root_session_id: &str, session_id: &str, context_json: &str);
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = releaseSubagentSession)]
     fn host_release_subagent_session(session_id: &str);
@@ -2311,7 +2311,18 @@ fn forward_subagent_updates(
             let root_session_id = scoped.root_session_id;
             match scoped.update {
                 SubagentUpdate::Added(descriptor) => {
-                    host_bind_subagent_session(&root_session_id, &descriptor.session_id);
+                    let context = serde_json::json!({
+                        "agentId": descriptor.id.to_string(),
+                        "parentAgentId": descriptor.parent.map(|id| id.to_string()),
+                        "sessionId": &descriptor.session_id,
+                        "role": &descriptor.role,
+                        "task": &descriptor.task,
+                    });
+                    host_bind_subagent_session(
+                        &root_session_id,
+                        &descriptor.session_id,
+                        &context.to_string(),
+                    );
                     sessions
                         .borrow_mut()
                         .insert((root_session_id, descriptor.id), descriptor.session_id);

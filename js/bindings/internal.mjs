@@ -427,12 +427,13 @@ const hostBridge = Object.freeze({
     }
     return host.sleep(milliseconds);
   },
-  bindSubagentSession(rootSessionId, sessionId) {
+  bindSubagentSession(rootSessionId, sessionId, contextJson) {
     const host = requiredSessionHost(rootSessionId);
     const existing = hostSessions.get(sessionId);
     if (existing && existing !== host) {
       throw new Error(`Nanocodex subagent session ID is already active: ${sessionId}`);
     }
+    host.bindSubagentSession(sessionId, JSON.parse(contextJson));
     hostSessions.set(sessionId, host);
   },
   releaseSubagentSession(sessionId) {

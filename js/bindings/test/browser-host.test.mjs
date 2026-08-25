@@ -102,6 +102,48 @@ test("browser host directly dispatches tools without dynamic code evaluation", a
   assert.deepEqual(result.structured_result, { runtime: "worker", call_id: "call-1" });
 });
 
+test("browser host gives inherited tools the Rust-owned subagent descriptor", async () => {
+  const host = createBrowserHost({
+    toolMode: "direct",
+    tools: {
+      identity: {
+        parameters: { type: "object", additionalProperties: false },
+        handler: (_input, context) => context.subagent ?? null,
+      },
+    },
+  });
+  const descriptor = {
+    agentId: "7",
+    parentAgentId: "2",
+    sessionId: "child-session",
+    role: "world-resident:fern",
+    task: "Act as Fern.",
+  };
+  host.bindSubagentSession("child-session", descriptor);
+
+  const child = JSON.parse(await host.executeTool(
+    "identity", "{}", "child-session", "call-child",
+  ));
+  const root = JSON.parse(await host.executeTool(
+    "identity", "{}", "root-session", "call-root",
+  ));
+  const nested = JSON.parse(await host.executeCode(
+    "text(await tools.identity({}));",
+    "child-session",
+    "call-code",
+  ));
+
+  assert.deepEqual(child.structured_result, descriptor);
+  assert.equal(root.structured_result, null);
+  assert.deepEqual(nested.nested_calls[0].structured_result, descriptor);
+
+  host.releaseSession("child-session");
+  const released = JSON.parse(await host.executeTool(
+    "identity", "{}", "child-session", "call-released",
+  ));
+  assert.equal(released.structured_result, null);
+});
+
 test("browser host never flattens remote MCP tools into direct mode", () => {
   assert.throws(
     () => createBrowserHost({ mcp: { fixture: { client: {} } }, toolMode: "direct" }),
