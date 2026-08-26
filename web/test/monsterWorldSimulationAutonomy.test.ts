@@ -425,3 +425,59 @@ test("maintained relative constraints reject follower cycles", () => {
     },
   }), { accepted: false, reason: "invalid" });
 });
+
+test("eight generic maintained relations converge and follow a perturbed anchor", () => {
+  const state = createWorldState();
+  setWorldAgentsOnline(state, true);
+  const residents = RESIDENT_IDS.slice(0, 8);
+  for (const id of RESIDENT_IDS) {
+    if (!residents.includes(id)) state.actors[id].presence = "absent";
+  }
+  const player = state.actors.player;
+  const offsets = [
+    [-32, -32], [0, -32], [32, -32], [32, 0],
+    [32, 32], [0, 32], [-32, 32], [-32, 0],
+  ] as const;
+
+  for (const [index, id] of residents.entries()) {
+    const actor = state.actors[id];
+    actor.presence = "active";
+    actor.scene = player.scene;
+    actor.x = player.x;
+    actor.y = player.y;
+    actor.tasks = [];
+    actor.movement = undefined;
+    const [dx_pixels, dy_pixels] = offsets[index];
+    const applied = applyWorldToolAction(state, {
+      actionId: `generic-relation-${id}`,
+      requestId: `generic-relation-turn-${id}`,
+      agentId: id,
+      action: {
+        kind: "maintain_relative",
+        anchor: "player",
+        dx_pixels,
+        dy_pixels,
+        tolerance_pixels: 8,
+      },
+    });
+    assert.equal(applied.accepted, true);
+  }
+
+  for (let index = 0; index < 600; index += 1) updateWorld(state, 100);
+  const firstPositions = residents.map((id) => `${state.actors[id].x},${state.actors[id].y}`);
+  assert.equal(new Set(firstPositions).size, residents.length);
+  for (const [index, id] of residents.entries()) {
+    const [dx, dy] = offsets[index].map((pixels) => pixels / 8);
+    assert.ok(Math.abs(state.actors[id].x - (player.x + dx)) <= 2);
+    assert.ok(Math.abs(state.actors[id].y - (player.y + dy)) <= 2);
+  }
+
+  const before = residents.map((id) => state.actors[id].x);
+  player.x += 3;
+  for (let index = 0; index < 600; index += 1) updateWorld(state, 100);
+  assert.ok(residents.every((id, index) => state.actors[id].x > before[index]));
+  assert.equal(
+    new Set(residents.map((id) => `${state.actors[id].x},${state.actors[id].y}`)).size,
+    residents.length,
+  );
+});

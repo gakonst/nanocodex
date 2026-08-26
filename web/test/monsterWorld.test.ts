@@ -646,6 +646,8 @@ test("the World is one Rust subagent task tree with one embodied session per res
   assert.match(worker, /subagentByResident = new Map<ResidentId, string>/);
   assert.match(worker, /context\.subagent/);
   assert.match(worker, /already bound to another task-tree agent/);
+  assert.match(worker, /otherSquadLeaders/);
+  assert.match(worker, /RESULT_SCHEMA/);
   assert.match(worker, /type: "action"[\s\S]*?actionId[\s\S]*?action/);
   assert.match(worker, /function resolveWorldAction/);
   assert.match(worker, /const pendingWorldActions = new Map<string, PendingWorldAction>\(\)/);

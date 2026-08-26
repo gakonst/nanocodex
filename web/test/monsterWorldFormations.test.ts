@@ -87,12 +87,14 @@ test("helper and arbitrary formation language never becomes reducer-owned destin
   }
 });
 
-test("the task tree makes post-action feedback and directed correction mandatory", () => {
+test("task-tree completion requires current reducer evidence from every resident", () => {
   const worker = source("../src/monsterWorldAgent.worker.ts");
-  assert.match(worker, /After every act, inspect the returned self, full roster, current order, and events/);
-  assert.match(worker, /course-correct until your part is physically satisfactory/);
-  assert.match(worker, /Do not wait for a global movement wave/);
-  assert.match(worker, /Leaders should dispatch followers immediately/);
+  assert.match(worker, /feedback: Map<ResidentId, ResidentActEvidence>/);
+  assert.match(worker, /validateCoordinationCompletion\(active, result\.finalMessage\)/);
+  assert.match(worker, /World coordination completed without fresh action evidence/);
+  assert.match(worker, /result\.remainingGaps\.length !== 0/);
+  assert.match(worker, /evidence\.worldRevision !== latest\.result\.worldRevision/);
+  assert.doesNotMatch(worker, /full roster, current order/);
 });
 
 function source(path: string): string {
