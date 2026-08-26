@@ -44,13 +44,16 @@ test("Formation Lab presets are natural-language prompt helpers only", () => {
   assert.doesNotMatch(component, /speech\.order/);
 
   const worker = source("../src/monsterWorldAgent.worker.ts");
-  assert.match(worker, /one persistent task tree/);
-  assert.match(worker, /six stable squads of eight/);
-  assert.match(worker, /send_agent_message/);
-  assert.match(worker, /mode=maintain installs a cheap deterministic anchor-relative controller/);
+  assert.match(worker, /persistent task tree/);
+  assert.match(worker, /const SQUADS = Object\.freeze\(Array\.from\(\{ length: 6 \}/);
+  assert.match(worker, /canonical subagent messages/);
+  assert.match(worker, /anchor-relative maintenance/);
   assert.match(worker, /Subagents\.create\(\{ maxConcurrency: 48 \}\)/);
+  assert.match(worker, /Cover every supplied squad leader exactly once/);
+  assert.match(worker, /The setup must implement the raw objective rather than assuming a circle/);
   assert.doesNotMatch(worker, /exec_command|messages\.jsonl|CALL-<id> CONTRACT/);
   assert.doesNotMatch(worker, /independently derive your group and place/);
+  assert.doesNotMatch(worker, /phasePositionAction|distance_pixels|Math\.cos\(radians\)/);
 });
 
 test("helper and arbitrary formation language never becomes reducer-owned destinations", () => {
