@@ -13,6 +13,7 @@ import { readCodexSubscription } from "../../services/managed/scripts/codex-auth
 const scriptPath = fileURLToPath(import.meta.url);
 const webRoot = resolve(dirname(scriptPath), "..");
 const repositoryRoot = resolve(webRoot, "..");
+const reactRoot = resolve(repositoryRoot, "js/react");
 const terminalRoot = resolve(repositoryRoot, "js/terminal");
 const managedRoot = resolve(repositoryRoot, "services/managed");
 const connectDialogRoot = resolve(webRoot, "connect-dialog");
@@ -113,18 +114,28 @@ export function managedChildEnvironment(environment) {
 export function localConnectorEnvironment(environment) {
   return definedEnvironment({
     NANOCODEX_LOCAL_GITHUB_OAUTH_CLIENT_ID:
-      environment.NANOCODEX_GITHUB_OAUTH_CLIENT_ID ?? environment.GH_CLIENT_ID,
+      environment.NANOCODEX_GITHUB_OAUTH_CLIENT_ID
+      ?? completeLegacyCredential(environment.GH_CLIENT_ID, environment.GH_CLIENT_SECRETS),
     NANOCODEX_LOCAL_GITHUB_OAUTH_CLIENT_SECRET:
-      environment.NANOCODEX_GITHUB_OAUTH_CLIENT_SECRET ?? environment.GH_CLIENT_SECRETS,
+      environment.NANOCODEX_GITHUB_OAUTH_CLIENT_SECRET
+      ?? completeLegacyCredential(environment.GH_CLIENT_SECRETS, environment.GH_CLIENT_ID),
     NANOCODEX_LOCAL_GOOGLE_OAUTH_CLIENT_ID:
-      environment.NANOCODEX_GOOGLE_OAUTH_CLIENT_ID ?? environment.GOOGLE_CLIENT_ID,
+      environment.NANOCODEX_GOOGLE_OAUTH_CLIENT_ID
+      ?? completeLegacyCredential(environment.GOOGLE_CLIENT_ID, environment.GOOGLE_CLIENT_SECRET),
     NANOCODEX_LOCAL_GOOGLE_OAUTH_CLIENT_SECRET:
-      environment.NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET ?? environment.GOOGLE_CLIENT_SECRET,
+      environment.NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET
+      ?? completeLegacyCredential(environment.GOOGLE_CLIENT_SECRET, environment.GOOGLE_CLIENT_ID),
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_ID:
-      environment.NANOCODEX_X_OAUTH_CLIENT_ID ?? environment.X_CLIENT_ID,
+      environment.NANOCODEX_X_OAUTH_CLIENT_ID
+      ?? completeLegacyCredential(environment.X_CLIENT_ID, environment.X_CLIENT_SECRET),
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_SECRET:
-      environment.NANOCODEX_X_OAUTH_CLIENT_SECRET ?? environment.X_CLIENT_SECRET,
+      environment.NANOCODEX_X_OAUTH_CLIENT_SECRET
+      ?? completeLegacyCredential(environment.X_CLIENT_SECRET, environment.X_CLIENT_ID),
   });
+}
+
+function completeLegacyCredential(value, pair) {
+  return value?.trim() && pair?.trim() ? value.trim() : undefined;
 }
 
 export async function mainWorktreeEnvironmentPath(repositoryPath = repositoryRoot) {
@@ -1059,6 +1070,10 @@ async function ensureLocalDependencies(environment, execute = run) {
 
 export function localDependencyRequirements() {
   return [
+    {
+      root: reactRoot,
+      requiredFiles: ["node_modules/nanocodex/package.json"],
+    },
     {
       root: terminalRoot,
       requiredFiles: [

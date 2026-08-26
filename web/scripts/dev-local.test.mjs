@@ -177,11 +177,13 @@ function forceStopFixture(harness) {
 
 test("local development installs every package required to start the web stack", () => {
   const requirements = localDependencyRequirements();
+  const react = requirements.find(({ root }) => basename(root) === "react");
   const terminal = requirements.find(({ root }) => basename(root) === "terminal");
   const web = requirements.find(({ root }) => basename(root) === "web");
   const connectDialog = requirements.find(({ root }) => basename(root) === "connect-dialog");
   const connectPlayground = requirements.find(({ root }) => basename(root) === "connect-playground");
   const connectApi = requirements.find(({ root }) => basename(root) === "connect-api");
+  assert.deepEqual(react?.requiredFiles, ["node_modules/nanocodex/package.json"]);
   assert.ok(terminal);
   assert.deepEqual(terminal.requiredFiles, [
     "node_modules/streamdown/package.json",
@@ -195,7 +197,7 @@ test("local development installs every package required to start the web stack",
   assert.deepEqual(connectDialog?.requiredFiles, ["node_modules/wrangler/bin/wrangler.js"]);
   assert.deepEqual(connectPlayground?.requiredFiles, ["node_modules/wrangler/bin/wrangler.js"]);
   assert.deepEqual(connectApi?.requiredFiles, ["node_modules/wrangler/bin/wrangler.js"]);
-  assert.equal(requirements.length, 7);
+  assert.equal(requirements.length, 8);
 });
 
 test("completed one-shot commands surrender their process-group capabilities", async () => {
@@ -358,6 +360,19 @@ test("local connector app credentials use private auxiliary names", () => {
     NANOCODEX_LOCAL_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_ID: "x-client",
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_SECRET: "x-secret",
+  });
+});
+
+test("partial ambient connector credentials do not break passkey-only local development", () => {
+  assert.deepEqual(localConnectorEnvironment({
+    GH_CLIENT_ID: "github-without-secret",
+    GOOGLE_CLIENT_ID: "google-without-secret",
+    X_CLIENT_SECRET: "x-without-id",
+  }), {});
+  assert.deepEqual(localConnectorEnvironment({
+    NANOCODEX_GOOGLE_OAUTH_CLIENT_ID: "explicit-google-without-secret",
+  }), {
+    NANOCODEX_LOCAL_GOOGLE_OAUTH_CLIENT_ID: "explicit-google-without-secret",
   });
 });
 
