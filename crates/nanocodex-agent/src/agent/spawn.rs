@@ -142,6 +142,7 @@ where
         .materialize(AgentHandle {
             commands: commands.downgrade(),
             shutdown: shutdown.clone(),
+            session_id,
         })?
         .for_session(&session_id_text);
     let execution = spawner.execution.start(

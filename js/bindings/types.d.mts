@@ -303,10 +303,25 @@ export type AgentActions = {
       ): Promise<string | undefined>;
     };
   };
+  subagents: {
+    start(task: SubagentTask): Promise<SubagentStartReport>;
+  };
   turn: {
     prompt(options: { input: PromptInput; id?: string | undefined }): Turn;
   };
 };
+
+export type SubagentTask = Readonly<{
+  role: string;
+  task: string;
+  outputSchema: Readonly<Record<string, unknown>>;
+}>;
+
+export type SubagentStartReport = Readonly<{
+  agent_id: number;
+  role: string;
+  status: Readonly<{ state: "running" }>;
+}>;
 
 export type Agent<extended extends object = {}> = {
   readonly key: string;

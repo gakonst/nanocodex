@@ -262,6 +262,15 @@ async function check() {
   void realtimeDelegation;
   void realtimeTail;
   await agent.session.setFastMode(true);
+  const programmaticSubagent = await agent.subagents.start({
+    role: "reviewer",
+    task: "Review the result.",
+    outputSchema: { type: "object", additionalProperties: false },
+  });
+  const programmaticSubagentId: number = programmaticSubagent.agent_id;
+  const programmaticSubagentState: "running" = programmaticSubagent.status.state;
+  void programmaticSubagentId;
+  void programmaticSubagentState;
   const options: Actions.turn.prompt.Options = { input: "hello" };
   const turn: Turn = agent.turn.prompt(options);
   const sameTurn: Actions.turn.prompt.ReturnType = Actions.turn.prompt(agent, options);

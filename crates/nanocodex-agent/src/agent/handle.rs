@@ -36,9 +36,16 @@ impl Clone for Nanocodex {
 pub struct AgentHandle {
     pub(super) commands: mpsc::WeakSender<Command>,
     pub(super) shutdown: DriverShutdown,
+    pub(super) session_id: SessionId,
 }
 
 impl AgentHandle {
+    /// Returns the stable session identity of the containing driver.
+    #[must_use]
+    pub const fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
     /// Starts a clean agent with the containing driver's private configuration,
     /// service factory, workspace policy, and per-agent tools factory.
     ///

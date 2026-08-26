@@ -3,6 +3,7 @@ use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
     rc::Rc,
+    sync::{Arc, Mutex},
 };
 
 use js_sys::Promise;
@@ -40,8 +41,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 use nanocodex_subagents::{
-    AgentId as SubagentId, AgentStatus as SubagentStatus, AgentUpdate as SubagentUpdate,
-    ScopedAgentUpdate, SubagentControl,
+    AgentId as SubagentId, AgentStatus as SubagentStatus, AgentTask, AgentUpdate as SubagentUpdate,
+    Registry as SubagentRegistry, ScopedAgentUpdate, SubagentControl, start_agent,
 };
 use nanocodex_voice_protocol::{
     BrowserVoiceEffects, BrowserVoiceProtocol, REALTIME_END_INSTRUCTIONS,
@@ -878,6 +879,8 @@ pub struct WasmNanocodex {
 #[derive(Clone)]
 struct WasmSubagents {
     control: SubagentControl,
+    registry: Arc<SubagentRegistry>,
+    parents: Arc<Mutex<HashMap<String, nanocodex::agent::AgentHandle>>>,
     sessions: Rc<RefCell<HashMap<(String, SubagentId), String>>>,
     event_forwarders: Rc<Cell<usize>>,
 }
@@ -885,6 +888,8 @@ struct WasmSubagents {
 impl WasmSubagents {
     fn new(
         control: SubagentControl,
+        registry: Arc<SubagentRegistry>,
+        parents: Arc<Mutex<HashMap<String, nanocodex::agent::AgentHandle>>>,
         updates: tokio::sync::mpsc::UnboundedReceiver<ScopedAgentUpdate>,
     ) -> Self {
         let sessions = Rc::new(RefCell::new(HashMap::new()));
@@ -892,6 +897,8 @@ impl WasmSubagents {
         forward_subagent_updates(updates, Rc::clone(&sessions), Rc::clone(&event_forwarders));
         Self {
             control,
+            registry,
+            parents,
             sessions,
             event_forwarders,
         }
@@ -909,6 +916,14 @@ impl WasmSubagents {
     async fn close_all(&self, root_session_id: &str) -> std::io::Result<()> {
         self.control.close_all(root_session_id).await?;
         release_subagent_scope(&self.sessions, root_session_id);
+        match self.parents.lock() {
+            Ok(mut parents) => {
+                parents.remove(root_session_id);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().remove(root_session_id);
+            }
+        }
         Ok(())
     }
 }
@@ -971,15 +986,24 @@ impl WasmNanocodex {
         let (mut builder, subagents) = if let Some(subagents) = config.subagents {
             let (registry, control, updates) =
                 nanocodex_subagents::channel(subagents.max_concurrency);
+            let parents = Arc::new(Mutex::new(HashMap::new()));
+            let tool_registry = Arc::clone(&registry);
+            let tool_parents = Arc::clone(&parents);
             (
                 RustNanocodex::builder(openai).tools_factory(move |agent| {
+                    let mut parents = match tool_parents.lock() {
+                        Ok(parents) => parents,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    parents.insert(agent.session_id().to_string(), agent.clone());
+                    drop(parents);
                     nanocodex_subagents::install_tools(
                         hosted_tools.clone(),
                         agent,
-                        registry.clone(),
+                        tool_registry.clone(),
                     )
                 }),
-                Some(WasmSubagents::new(control, updates)),
+                Some(WasmSubagents::new(control, registry, parents, updates)),
             )
         } else {
             (RustNanocodex::builder(openai).tools(hosted_tools), None)
@@ -1141,6 +1165,39 @@ impl WasmNanocodex {
     pub async fn spawn(&self) -> Result<Self, JsValue> {
         let (inner, events) = self.inner.spawn().await.map_err(js_error)?;
         Ok(Self::from_parts(inner, events, self.subagents.clone()))
+    }
+
+    /// Starts one canonical subagent from application code in the same task tree.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed tasks, agents without subagent tools, or a stopped parent.
+    #[wasm_bindgen(js_name = startSubagent)]
+    pub async fn start_subagent(&self, task_json: &str) -> Result<String, JsValue> {
+        let task = serde_json::from_str::<AgentTask>(task_json)
+            .map_err(|error| js_error(format!("invalid subagent task: {error}")))?;
+        let subagents = self
+            .subagents
+            .as_ref()
+            .ok_or_else(|| js_error("subagents are not configured for this Agent"))?;
+        let parents = match subagents.parents.lock() {
+            Ok(parents) => parents,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let parent = parents
+            .get(&self.inner.session_id().to_string())
+            .cloned()
+            .ok_or_else(|| js_error("subagent parent is not ready"))?;
+        drop(parents);
+        let report = start_agent(
+            &parent,
+            &subagents.registry,
+            &self.inner.session_id().to_string(),
+            task,
+        )
+        .await
+        .map_err(js_error)?;
+        serde_json::to_string(&report).map_err(js_error)
     }
 
     /// Changes the reasoning effort for subsequently accepted turns.

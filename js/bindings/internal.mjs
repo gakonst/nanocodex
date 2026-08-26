@@ -172,6 +172,27 @@ export async function spawn(agent) {
   return createAgent(await state.raw.spawn(), state.runtime);
 }
 
+export async function startSubagent(agent, task) {
+  const role = task?.role;
+  const prompt = task?.task;
+  const outputSchema = task?.outputSchema;
+  if (typeof role !== "string" || !role.trim()) {
+    throw new TypeError("subagent role must be a non-empty string");
+  }
+  if (typeof prompt !== "string" || !prompt.trim()) {
+    throw new TypeError("subagent task must be a non-empty string");
+  }
+  if (!outputSchema || typeof outputSchema !== "object" || Array.isArray(outputSchema)) {
+    throw new TypeError("subagent outputSchema must be an object");
+  }
+  const encoded = await agentState(agent).raw.startSubagent(JSON.stringify({
+    role,
+    task: prompt,
+    output_schema: outputSchema,
+  }));
+  return freezeJson(JSON.parse(encoded));
+}
+
 export function setThinking(agent, thinking) {
   return agentState(agent).raw.setThinking(thinking);
 }

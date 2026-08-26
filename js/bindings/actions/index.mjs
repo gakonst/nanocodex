@@ -1,5 +1,6 @@
 import * as events from "./events.mjs";
 import * as session from "./session.mjs";
+import { startSubagent } from "../internal.mjs";
 import * as turn from "./turn.mjs";
 import * as voice from "./voice.mjs";
 
@@ -25,6 +26,9 @@ export function agentActions() {
         delegation: (input, transcript) => session.realtimeDelegation(agent, input, transcript),
         tailDelegation: (transcript) => session.realtimeTailDelegation(agent, transcript),
       },
+    },
+    subagents: {
+      start: (task) => startSubagent(agent, task),
     },
     turn: {
       prompt: (options) => turn.prompt(agent, options),
