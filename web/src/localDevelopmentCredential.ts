@@ -1,13 +1,11 @@
 const LOCAL_DEVELOPMENT_HOSTS = new Set([
   "localhost",
   "127.0.0.1",
-  "nanocodex.local",
   "nanocodex.localhost",
 ]);
 
 function isLocalDevelopmentHost(hostname: string): boolean {
   return LOCAL_DEVELOPMENT_HOSTS.has(hostname)
-    || hostname.endsWith(".nanocodex.local")
     || hostname.endsWith(".nanocodex.localhost");
 }
 

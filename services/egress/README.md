@@ -108,15 +108,14 @@ https://<origin>/v1/connectors/gdrive/callback
 https://<origin>/v1/connectors/x/callback
 ```
 
-For the primary local stack, register the corresponding OrbStack HTTPS
-callbacks below. Worktrees replace `nanocodex.local` with the instance host
+For a local stack, register the exact `nanocodex.localhost` origin and port
 printed at startup; neither Portless nor a public tunnel is required:
 
 ```text
-https://nanocodex.local/v1/connectors/github/callback
-https://nanocodex.local/v1/connectors/gmail/callback
-https://nanocodex.local/v1/connectors/gdrive/callback
-https://nanocodex.local/v1/connectors/x/callback
+http://nanocodex.localhost:5173/v1/connectors/github/callback
+http://nanocodex.localhost:5173/v1/connectors/gmail/callback
+http://nanocodex.localhost:5173/v1/connectors/gdrive/callback
+http://nanocodex.localhost:5173/v1/connectors/x/callback
 ```
 
 Google Web clients require every development URI to match exactly, including the

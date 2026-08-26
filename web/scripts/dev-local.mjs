@@ -19,8 +19,7 @@ const managedRoot = resolve(repositoryRoot, "services/managed");
 const connectDialogRoot = resolve(webRoot, "connect-dialog");
 const connectPlaygroundRoot = resolve(webRoot, "connect-playground");
 const connectApiRoot = resolve(webRoot, "connect-api");
-const localGatewayComposePath = resolve(webRoot, "docker-compose.dev.yml");
-const LOCAL_DEVELOPMENT_PUBLIC_ORIGIN = "https://nanocodex.local";
+const LOCAL_DEVELOPMENT_PUBLIC_ORIGIN = "http://nanocodex.localhost:5173";
 const runtimeEnvironmentNames = [
   "CI",
   "COLORTERM",
@@ -218,20 +217,19 @@ export function localDevelopmentInstance(
   const base = sanitizeLocalDevelopmentSlug(requested || basename(repositoryPath));
   const pathSuffix = createHash("sha256").update(resolve(repositoryPath)).digest("hex").slice(0, 6);
   const id = canonical ? "main" : requested ? base : `${base.slice(0, 24)}-${pathSuffix}`;
-  const publicHost = canonical ? "nanocodex.local" : `${id}.nanocodex.local`;
+  const publicHost = canonical ? "nanocodex.localhost" : `${id}.nanocodex.localhost`;
   const playgroundHost = canonical
-    ? "playground.nanocodex.local"
-    : `playground-${id}.nanocodex.local`;
+    ? "playground.nanocodex.localhost"
+    : `playground-${id}.nanocodex.localhost`;
   const port = canonical
     ? 5_173
     : 20_000 + createHash("sha256").update(id).digest().readUInt16BE(0) % 30_000;
   return Object.freeze({
-    composeProject: canonical ? "nanocodex-dev" : `nanocodex-dev-${id}`,
     defaultOrigin: `http://127.0.0.1:${port}`,
     id,
-    playgroundOrigin: `https://${playgroundHost}`,
+    playgroundOrigin: `http://${playgroundHost}:${port}`,
     primary: canonical,
-    publicOrigin: `https://${publicHost}`,
+    publicOrigin: `http://${publicHost}:${port}`,
   });
 }
 
@@ -259,16 +257,17 @@ async function resolveLocalDevelopmentInstance(environment) {
 export function localDevelopmentPublicOrigin(raw = LOCAL_DEVELOPMENT_PUBLIC_ORIGIN) {
   const origin = new URL(raw);
   if (
-    origin.protocol !== "https:"
-    || (origin.hostname !== "nanocodex.local" && !origin.hostname.endsWith(".nanocodex.local"))
-    || origin.port
+    origin.protocol !== "http:"
+    || (origin.hostname !== "nanocodex.localhost"
+      && !origin.hostname.endsWith(".nanocodex.localhost"))
+    || !origin.port
     || origin.username
     || origin.password
     || origin.pathname !== "/"
     || origin.search
     || origin.hash
   ) {
-    throw new Error("the public local development origin must be HTTPS under nanocodex.local");
+    throw new Error("the public local development origin must be HTTP under nanocodex.localhost with an explicit port");
   }
   return origin;
 }
@@ -280,21 +279,6 @@ export function localDevelopmentStatePath(userHome = homedir(), instanceId = "ma
     throw new Error("invalid local development instance ID");
   }
   return resolve(base, "instances", instanceId);
-}
-
-export function localDevelopmentBrowserOrigin(origin = localDevelopmentOrigin(), instanceId = "main") {
-  const host = instanceId === "main" ? "nanocodex.localhost" : `${instanceId}.nanocodex.localhost`;
-  return new URL(`http://${host}:${origin.port}`);
-}
-
-export function localDevelopmentBrowserPlaygroundOrigin(
-  origin = localDevelopmentOrigin(),
-  instanceId = "main",
-) {
-  const host = instanceId === "main"
-    ? "playground.nanocodex.localhost"
-    : `playground-${instanceId}.nanocodex.localhost`;
-  return new URL(`http://${host}:${origin.port}`);
 }
 
 export async function assertLocalDevelopmentPortAvailable(hostname, rawPort) {
@@ -338,7 +322,6 @@ async function main() {
   requireLocalProcessGroups();
   const lifecycle = new LocalStackLifecycle();
   let developmentLease;
-  let gatewayLaunch;
   lifecycle.installSignalHandlers();
 
   try {
@@ -349,15 +332,18 @@ async function main() {
     }
     const instance = await resolveLocalDevelopmentInstance(environment);
     const origin = localDevelopmentOrigin(environment.NANOCODEX_DEV_ORIGIN ?? instance.defaultOrigin);
-    const publicOrigin = localDevelopmentPublicOrigin(instance.publicOrigin);
-    const browserOrigin = localDevelopmentBrowserOrigin(origin, instance.id);
-    const browserPlaygroundOrigin = localDevelopmentBrowserPlaygroundOrigin(origin, instance.id);
+    const publicOrigin = localDevelopmentPublicOrigin(
+      new URL(instance.publicOrigin).port === origin.port
+        ? instance.publicOrigin
+        : `http://${new URL(instance.publicOrigin).hostname}:${origin.port}`,
+    );
+    const playgroundOrigin = localDevelopmentPublicOrigin(
+      `http://${new URL(instance.playgroundOrigin).hostname}:${origin.port}`,
+    );
     const statePath = localDevelopmentStatePath(homedir(), instance.id);
     developmentLease = await acquireLocalDevelopmentLease(statePath);
     await assertLocalDevelopmentPortAvailable(origin.hostname, origin.port);
     const toolEnvironment = buildChildEnvironment(environment);
-    await assertOrbStack(toolEnvironment, (...arguments_) =>
-      lifecycle.run(...arguments_, "OrbStack preflight"));
     await lifecycle.run(
       process.execPath,
       [resolve(webRoot, "scripts/check-dev-wasm.mjs")],
@@ -446,7 +432,7 @@ async function main() {
       NANOCODEX_LOCAL_CHATGPT_BOOTSTRAP: localChatGptBootstrap,
       NANOCODEX_LOCAL_CODEX_RELAY_URL: relayUrl,
       NANOCODEX_LOCAL_PUBLIC_ORIGIN: publicOrigin.origin,
-      NANOCODEX_LOCAL_CONNECT_PLAYGROUND_HOST: new URL(instance.playgroundOrigin).hostname,
+      NANOCODEX_LOCAL_CONNECT_PLAYGROUND_HOST: playgroundOrigin.hostname,
       NANOCODEX_LOCAL_STATE_PATH: statePath,
       ...localConnectorEnvironment(environment),
     });
@@ -463,24 +449,10 @@ async function main() {
       [relayChild, website.child],
       (response) => verifyLocalHealthResponse(response),
     );
-
-    gatewayLaunch = orbStackGatewayChildLaunch(
-      toolEnvironment,
-      origin,
-      publicOrigin,
-      new URL(instance.playgroundOrigin),
-      instance.composeProject,
-    );
-    const gateway = lifecycle.spawn(
-      gatewayLaunch.command,
-      gatewayLaunch.arguments,
-      gatewayLaunch.options,
-      "OrbStack HTTPS gateway",
-    );
-    await waitForOrbStackGateway(
+    await waitForHttp(
       new URL("/api/health", publicOrigin),
-      [relayChild, website.child, gateway.child],
-      toolEnvironment,
+      [relayChild, website.child],
+      (response) => verifyLocalHealthResponse(response),
     );
 
     await lifecycle.run(process.execPath, [resolve(webRoot, "scripts/publish-repository.mjs")], {
@@ -506,12 +478,10 @@ async function main() {
     process.stderr.write(
       `Nanocodex local Workers are ready at ${publicOrigin.origin} (${instance.id}; ${head.slice(0, 7)}; `
       + "repository published; evals migrated; managed agents ready).\n"
-      + `Connect playground: ${instance.playgroundOrigin}\n`
-      + `Portable browser verification: ${browserOrigin.origin}\n`
-      + `Portable Connect playground: ${browserPlaygroundOrigin.origin}\n`,
+      + `Connect playground: ${playgroundOrigin.origin}\n`,
     );
 
-    const exited = await Promise.race([relay.exit, website.exit, gateway.exit]);
+    const exited = await Promise.race([relay.exit, website.exit]);
     if (!lifecycle.signal && exited.code !== 0) {
       throw new Error(`${exited.name} exited with ${exited.code ?? exited.signal}`);
     }
@@ -524,13 +494,9 @@ async function main() {
       await lifecycle.stop();
     } finally {
       try {
-        if (gatewayLaunch) await stopOrbStackGateway(gatewayLaunch);
+        await developmentLease?.release();
       } finally {
-        try {
-          await developmentLease?.release();
-        } finally {
-          lifecycle.removeSignalHandlers();
-        }
+        lifecycle.removeSignalHandlers();
       }
     }
   }
@@ -568,7 +534,7 @@ export async function acquireLocalDevelopmentLease(
       const retained = await readLocalDevelopmentLease(path);
       if (Number.isSafeInteger(retained?.pid) && isProcessAlive(retained.pid)) {
         throw new Error(
-          `Nanocodex local development is already running as process ${retained.pid}; one stable HTTPS origin owns one local stack`,
+          `Nanocodex local development is already running as process ${retained.pid}; one stable localhost origin owns one local stack`,
         );
       }
       await unlink(path).catch((unlinkError) => {
@@ -598,102 +564,6 @@ function localProcessIsAlive(pid) {
     if (error?.code === "EPERM") return true;
     throw error;
   }
-}
-
-export async function assertOrbStack(environment, execute = run) {
-  const [status, context] = await Promise.all([
-    execute("orb", ["status"], { capture: true, env: environment }),
-    execute("docker", ["context", "show"], { capture: true, env: environment }),
-  ]);
-  if (status.trim() !== "Running" || context.trim() !== "orbstack") {
-    throw new Error(
-      "Nanocodex local development requires a running OrbStack Docker context for trusted nanocodex.local HTTPS",
-    );
-  }
-}
-
-export function orbStackGatewayChildLaunch(
-  environment,
-  origin,
-  publicOrigin = localDevelopmentPublicOrigin(),
-  playgroundOrigin = localDevelopmentPublicOrigin("https://playground.nanocodex.local"),
-  composeProject = "nanocodex-dev",
-) {
-  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(composeProject)) {
-    throw new Error("invalid local development Compose project");
-  }
-  return {
-    command: "docker",
-    arguments: [
-      "compose",
-      "--project-name",
-      composeProject,
-      "--file",
-      localGatewayComposePath,
-      "up",
-      "--force-recreate",
-      "--remove-orphans",
-      "--no-color",
-    ],
-    options: {
-      cwd: webRoot,
-      env: {
-        ...selectedEnvironment(environment, runtimeEnvironmentNames),
-        NANOCODEX_DEV_HOST: publicOrigin.hostname,
-        NANOCODEX_PLAYGROUND_HOST: playgroundOrigin.hostname,
-        NANOCODEX_DEV_PORT: origin.port,
-      },
-      stdio: ["ignore", "inherit", "inherit"],
-    },
-  };
-}
-
-export function orbStackGatewayStop(gatewayLaunch) {
-  return {
-    command: gatewayLaunch.command,
-    arguments: [
-      "compose",
-      "--project-name",
-      gatewayLaunch.arguments[gatewayLaunch.arguments.indexOf("--project-name") + 1],
-      "--file",
-      localGatewayComposePath,
-      "down",
-      "--remove-orphans",
-    ],
-    options: {
-      cwd: gatewayLaunch.options.cwd,
-      env: gatewayLaunch.options.env,
-    },
-  };
-}
-
-async function stopOrbStackGateway(gatewayLaunch, execute = run) {
-  const stop = orbStackGatewayStop(gatewayLaunch);
-  await execute(stop.command, stop.arguments, stop.options);
-}
-
-export async function waitForOrbStackGateway(url, children, environment, execute = run) {
-  let lastError;
-  for (let attempt = 0; attempt < 45; attempt += 1) {
-    if (children.some((child) => child.exitCode !== null || child.signalCode !== null)) {
-      throw new Error(`a local process exited before ${url.href} became ready`);
-    }
-    try {
-      const output = await execute("curl", [
-        "--fail",
-        "--silent",
-        "--max-time",
-        "1",
-        url.href,
-      ], { capture: true, env: environment });
-      if (await verifyLocalHealthResponse(Response.json(JSON.parse(output)))) return;
-      lastError = new Error(`${url.href} returned an invalid health document`);
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
-  }
-  throw new Error(`${url.href} did not become ready: ${errorMessage(lastError)}`);
 }
 
 function selectedEnvironment(environment, names) {

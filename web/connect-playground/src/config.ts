@@ -8,18 +8,18 @@ const USDC_E = "0x20C000000000000000000000b9537d11c60E8b50" as const;
 const MACHINE_USD_SWAPPER = "0xd588ED9Ae08643A450157Adaf61c3C0C1BBd0dbb" as const;
 const TIP20_CHANNEL_ESCROW = "0x4d50500000000000000000000000000000000000" as const;
 const MERCATOR_SETTLEMENT = "0xa295C42FBCC026a62304A7701f25B4c91799B0dA" as const;
-const portableBrowserHostname = globalThis.location?.hostname === "playground.nanocodex.localhost"
+const localBrowserHostname = globalThis.location?.hostname === "playground.nanocodex.localhost"
   ? "nanocodex.localhost"
   : globalThis.location?.hostname.startsWith("playground-")
       && globalThis.location.hostname.endsWith(".nanocodex.localhost")
     ? globalThis.location.hostname.slice("playground-".length)
     : undefined;
-const portableBrowserApiHost = portableBrowserHostname
-  ? `${globalThis.location.protocol}//${portableBrowserHostname}${
+const localBrowserApiHost = localBrowserHostname
+  ? `${globalThis.location.protocol}//${localBrowserHostname}${
       globalThis.location.port ? `:${globalThis.location.port}` : ""
     }`
   : undefined;
-export const apiHost = portableBrowserApiHost
+export const apiHost = localBrowserApiHost
   || import.meta.env.VITE_CONNECT_API_HOST?.trim()
   || DEFAULT_API_HOST;
 
@@ -30,8 +30,8 @@ export const CONNECT_RESOURCES = [
 ] as const;
 
 export const dialog = Dialog.iframe({
-  host: portableBrowserApiHost
-    ? `${portableBrowserApiHost}/connect-dialog/`
+  host: localBrowserApiHost
+    ? `${localBrowserApiHost}/connect-dialog/`
     : import.meta.env.VITE_CONNECT_DIALOG_HOST?.trim() || DEFAULT_DIALOG_HOST,
   key: "connect-playground",
   name: "Nanocodex Connect",

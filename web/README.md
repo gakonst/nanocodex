@@ -67,21 +67,15 @@ while the existing surfaces are recomposed incrementally.
 
 ## Development
 
-Local development requires a running [OrbStack](https://orbstack.dev/) Docker
-context. OrbStack terminates trusted HTTPS for `https://nanocodex.local` in the
-primary checkout and for a deterministic `https://<worktree>.nanocodex.local`
-origin in each linked worktree; the application and credential broker still
-run as host processes.
-
-Browser runtimes outside macOS mDNS, including the managed verification
-browser, use the same running stack through
-`http://nanocodex.localhost:<development-port>`. The reserved `.localhost`
-domain remains a browser secure context. Normal interactive development uses
-OrbStack HTTPS: every checkout validates its exact browser origin while using
-the shared `nanocodex.local` RP ID; portable browser URLs use the corresponding
-shared `nanocodex.localhost` RP ID. A tamper-evident public credential record
-lets an isolated worktree Worker verify the same passkey without sharing or
-concurrently opening another Wrangler process's state files.
+Local development uses `http://nanocodex.localhost:<development-port>` in the
+primary checkout and a deterministic
+`http://<worktree>.nanocodex.localhost:<development-port>` origin in each linked
+worktree. The reserved `.localhost` domain is a browser secure context and
+requires no Docker gateway, DNS integration, certificate, or public tunnel.
+Every checkout validates its exact browser origin while using the shared
+`nanocodex.localhost` RP ID. A tamper-evident public credential record lets an
+isolated worktree Worker verify the same passkey without sharing or concurrently
+opening another Wrangler process's state files.
 
 ```bash
 cd web
@@ -99,8 +93,8 @@ Object. It reports ready only after a generation-pinned Source blob, commit
 metadata and page, patch, Evals, and the read-only `/git` advertisement all
 resolve that `HEAD`. The primary checkout retains Cloudflare state under
 `~/.nanocodex/web-development`; worktrees use instance-scoped children of that
-directory. Their Vite ports, Compose projects, OrbStack hosts, Durable Objects,
-R2, and D1 state are isolated, so multiple versions can run concurrently.
+directory. Their Vite ports, application hosts, Durable Objects, R2, and D1
+state are isolated, so multiple versions can run concurrently.
 Passkey eligibility and verified credential identity are deliberately shared;
 agent, account-session, connector, and repository state are not.
 
@@ -170,11 +164,10 @@ React integration creates the browser agent with
 event stream with `useAgentEvents`. React owns no Worker lifecycle, agent
 history, credential policy, or model-loop state.
 
-The local Worker and Vite client run together behind their printed
-`https://*.nanocodex.local` origin using the Cloudflare Vite-plugin layout and
-an instance-owned OrbStack TCP gateway. The gateway receives only the internal Vite port; it
-never receives provider credentials. No Cloudflare account or remote binding
-is used by the normal development command. Provider credentials remain behind
+The local Worker and Vite client run together on their printed
+`http://*.nanocodex.localhost:<development-port>` origin using the Cloudflare
+Vite-plugin layout. No Docker daemon, Cloudflare account, or remote binding is
+used by the normal development command. Provider credentials remain behind
 private Worker bindings; see the
 [Cloudflare Worker example](../services/managed/README.md#multiplayer-managed-agent-rooms)
 for the deployment and live-smoke workflow.
@@ -353,9 +346,9 @@ Run `npm run bench:dataset` in `js/bindings` for the deterministic 100,000-row
 Snappy Parquet/JSONL browser-path benchmark. It reports cold and repeated query
 latency, pulled bytes, range requests, scanned rows, and cache hits.
 
-Development runs on the stable OrbStack HTTPS origin printed at startup. Provider
-credentials remain behind Worker Service Bindings and never enter that browser
-origin.
+Development runs on the stable `nanocodex.localhost` origin printed at startup.
+Provider credentials remain behind Worker Service Bindings and never enter that
+browser origin.
 
 Local development reads the optional ignored `.env` from the main Git worktree
 through the repository workflow. BYOK uses the `BYOK_SESSIONS` Durable Object

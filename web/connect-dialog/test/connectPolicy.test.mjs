@@ -14,21 +14,19 @@ import {
   usesBrowserLocalWebAuthn,
 } from "../src/connectPolicy.mjs";
 
-test("local development origins include the canonical OrbStack HTTPS domain", () => {
-  assert.equal(isLocalDevelopmentOrigin("https://nanocodex.local"), true);
-  assert.equal(isLocalDevelopmentOrigin("https://connect.nanocodex.local"), true);
+test("local development origins use only the canonical localhost domain", () => {
   assert.equal(isLocalDevelopmentOrigin("http://nanocodex.localhost:5173"), true);
   assert.equal(isLocalDevelopmentOrigin("http://passkey-a.nanocodex.localhost:5173"), true);
   assert.equal(isLocalDevelopmentOrigin("http://playground-passkey-a.nanocodex.localhost:5173"), true);
-  assert.equal(isLocalDevelopmentOrigin("http://nanocodex.local"), false);
-  assert.equal(isLocalDevelopmentOrigin("https://notnanocodex.local"), false);
+  assert.equal(isLocalDevelopmentOrigin("http://nanocodex.example:5173"), false);
+  assert.equal(isLocalDevelopmentOrigin("https://connect.example"), false);
 });
 
 test("only standalone loopback dialogs use the browser-local WebAuthn ceremony", () => {
   assert.equal(usesBrowserLocalWebAuthn("http://127.0.0.1:4177"), true);
   assert.equal(usesBrowserLocalWebAuthn("https://localhost:4177"), true);
   assert.equal(usesBrowserLocalWebAuthn("http://nanocodex.localhost:4177"), false);
-  assert.equal(usesBrowserLocalWebAuthn("https://nanocodex.local"), false);
+  assert.equal(usesBrowserLocalWebAuthn("https://nanocodex.example"), false);
   assert.equal(usesBrowserLocalWebAuthn("https://nanocodex.gakonst.workers.dev"), false);
 });
 

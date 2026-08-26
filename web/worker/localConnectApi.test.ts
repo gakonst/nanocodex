@@ -41,7 +41,7 @@ test("local Connect API routes retain the exact browser request", async () => {
 
 test("local Connect API routing replaces an untrusted public-origin header", async () => {
   const requests: Request[] = [];
-  const request = new Request("https://passkey-a.nanocodex.local/v1/connect/auth/challenge", {
+  const request = new Request("http://passkey-a.nanocodex.localhost:5273/v1/connect/auth/challenge", {
     headers: { "x-nanocodex-local-origin": "https://attacker.example" },
     method: "POST",
   });
@@ -53,7 +53,7 @@ test("local Connect API routing replaces an untrusted public-origin header", asy
   }, new URL(request.url));
   assert.equal(
     requests[0]?.headers.get("x-nanocodex-local-origin"),
-    "https://passkey-a.nanocodex.local",
+    "http://passkey-a.nanocodex.localhost:5273",
   );
 });
 

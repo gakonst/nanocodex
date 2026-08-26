@@ -45,12 +45,11 @@ describe("account provisioning", () => {
 describe("local WebAuthn credential portability", () => {
   it("uses one parent RP ID while retaining exact per-request origin checks", async () => {
     for (const [origin, rpId] of [
-      ["https://nanocodex.local", "nanocodex.local"],
-      ["https://branch.nanocodex.local", "nanocodex.local"],
+      ["http://nanocodex.localhost:5173", "nanocodex.localhost"],
       ["http://branch.nanocodex.localhost", "nanocodex.localhost"],
       ["https://nanocodex.example", "nanocodex.example"],
       ["https://localhost", "localhost"],
-      ["http://branch.nanocodex.local", "branch.nanocodex.local"],
+      ["http://branch.example", "branch.example"],
     ]) {
       const { env } = portableEnv();
       const response = await routeAccountRequest(new Request(`${origin}/webauthn/login/options`, {
@@ -65,16 +64,16 @@ describe("local WebAuthn credential portability", () => {
 
     const { env } = portableEnv();
     const rejected = await routeAccountRequest(new Request(
-      "https://branch.nanocodex.local/webauthn/login/options",
+      "http://branch.nanocodex.localhost:5273/webauthn/login/options",
       {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          origin: "https://nanocodex.local",
+          origin: "http://nanocodex.localhost:5173",
         },
         body: "{}",
       },
-    ), env, new URL("https://branch.nanocodex.local/webauthn/login/options"));
+    ), env, new URL("http://branch.nanocodex.localhost:5273/webauthn/login/options"));
     expect(rejected?.status).toBe(403);
   });
 
@@ -89,13 +88,13 @@ describe("local WebAuthn credential portability", () => {
       expiresAt: Math.floor(Date.now() / 1_000) + 60,
     });
 
-    const migrated = await routeAccountRequest(new Request("https://one.nanocodex.local/v1/me", {
+    const migrated = await routeAccountRequest(new Request("http://one.nanocodex.localhost:5173/v1/me", {
       headers: { cookie: `nanocodex_account=${sessionToken}` },
-    }), source.env, new URL("https://one.nanocodex.local/v1/me"));
+    }), source.env, new URL("http://one.nanocodex.localhost:5173/v1/me"));
     expect(migrated?.status).toBe(200);
     const setCookie = migrated!.headers.get("set-cookie");
     expect(setCookie).toContain("nanocodex_local_passkey=");
-    expect(setCookie).toContain("Domain=nanocodex.local");
+    expect(setCookie).toContain("Domain=nanocodex.localhost");
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Lax");
     expect(setCookie).toContain("Secure");
@@ -109,17 +108,17 @@ describe("local WebAuthn credential portability", () => {
 
     const target = portableEnv();
     const options = await routeAccountRequest(new Request(
-      "https://two.nanocodex.local/webauthn/login/options",
+      "http://two.nanocodex.localhost:5273/webauthn/login/options",
       {
         method: "POST",
         headers: {
           cookie: portableCookie,
           "content-type": "application/json",
-          origin: "https://two.nanocodex.local",
+          origin: "http://two.nanocodex.localhost:5273",
         },
         body: JSON.stringify({ allowCredentialIds: ["stale-credential"] }),
       },
-    ), target.env, new URL("https://two.nanocodex.local/webauthn/login/options"));
+    ), target.env, new URL("http://two.nanocodex.localhost:5273/webauthn/login/options"));
     expect(await options!.json()).toMatchObject({
       options: {
         publicKey: {
@@ -146,9 +145,9 @@ describe("local WebAuthn credential portability", () => {
       issuedAt: 1,
       expiresAt: Math.floor(Date.now() / 1_000) + 60,
     });
-    const migrated = await routeAccountRequest(new Request("https://one.nanocodex.local/v1/me", {
+    const migrated = await routeAccountRequest(new Request("http://one.nanocodex.localhost:5173/v1/me", {
       headers: { cookie: `nanocodex_account=${sessionToken}` },
-    }), source.env, new URL("https://one.nanocodex.local/v1/me"));
+    }), source.env, new URL("http://one.nanocodex.localhost:5173/v1/me"));
     const portableCookie = migrated!.headers.get("set-cookie")!.split(";", 1)[0]!;
     const [name, value] = portableCookie.split("=", 2) as [string, string];
     const [payload, signature] = value.split(".") as [string, string];
@@ -170,37 +169,6 @@ describe("local WebAuthn credential portability", () => {
     expect(differentKey.get("webauthn", `credential:${CREDENTIAL_ID}`)).toBeUndefined();
   });
 
-  it("issues the same portable record on the browser-safe localhost fallback", async () => {
-    const source = portableEnv();
-    const sessionToken = "w".repeat(43);
-    source.set("webauthn", `session:${sessionToken}`, {
-      credentialId: CREDENTIAL_ID,
-      publicKey: PUBLIC_KEY,
-      userId: encodeUserId(USER_ID),
-      issuedAt: 1,
-      expiresAt: Math.floor(Date.now() / 1_000) + 60,
-    });
-    const migrated = await routeAccountRequest(new Request(
-      "http://passkey-a.nanocodex.localhost/v1/me",
-      { headers: { cookie: `nanocodex_account=${sessionToken}` } },
-    ), source.env, new URL("http://passkey-a.nanocodex.localhost/v1/me"));
-    const setCookie = migrated!.headers.get("set-cookie");
-    expect(setCookie).toContain("Domain=nanocodex.localhost");
-    expect(setCookie).toContain("Secure");
-
-    const target = portableEnv();
-    await loginWithPortableCookie(
-      target.env,
-      setCookie!.split(";", 1)[0]!,
-      CREDENTIAL_ID,
-      "http://passkey-b.nanocodex.localhost",
-    );
-    expect(target.get("webauthn", `credential:${CREDENTIAL_ID}`)).toEqual({
-      publicKey: PUBLIC_KEY,
-      userId: encodeUserId(USER_ID),
-    });
-  });
-
   it("never issues or imports the portable record on production or generic loopback origins", async () => {
     const source = portableEnv();
     const portableSessionToken = "v".repeat(43);
@@ -211,16 +179,16 @@ describe("local WebAuthn credential portability", () => {
       issuedAt: 1,
       expiresAt: Math.floor(Date.now() / 1_000) + 60,
     });
-    const migrated = await routeAccountRequest(new Request("https://nanocodex.local/v1/me", {
+    const migrated = await routeAccountRequest(new Request("http://nanocodex.localhost:5173/v1/me", {
       headers: { cookie: `nanocodex_account=${portableSessionToken}` },
-    }), source.env, new URL("https://nanocodex.local/v1/me"));
+    }), source.env, new URL("http://nanocodex.localhost:5173/v1/me"));
     const portableCookie = migrated!.headers.get("set-cookie")!.split(";", 1)[0]!;
 
     for (const origin of [
       "https://nanocodex.example",
       "https://localhost",
       "https://127.0.0.1",
-      "http://nanocodex.local",
+      "http://branch.example",
     ]) {
       const local = portableEnv();
       const sessionToken = "u".repeat(43);
@@ -322,7 +290,7 @@ function loginWithPortableCookie(
   env: AccountAuthEnv,
   cookie: string,
   credentialId: string,
-  origin = "https://two.nanocodex.local",
+  origin = "http://two.nanocodex.localhost:5273",
 ): Promise<Response> {
   const url = new URL("/webauthn/login", origin);
   return routeAccountRequest(new Request(url, {

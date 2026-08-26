@@ -61,7 +61,7 @@ test("strips the public prefix without exposing canonical credentials", async ()
   assert.equal(response?.headers.get("x-content-type-options"), "nosniff");
   assert.equal(
     response?.headers.get("content-security-policy"),
-    "frame-ancestors 'self' https://*.nanocodex.local https://nanocodex-connect-playground.gakonst.workers.dev chrome-extension://jpkimkgbgbpcaldbnhlhbkbadmpeffle",
+    "frame-ancestors 'self' http://nanocodex.localhost:* http://*.nanocodex.localhost:* https://nanocodex-connect-playground.gakonst.workers.dev chrome-extension://jpkimkgbgbpcaldbnhlhbkbadmpeffle",
   );
   assert.equal(forwarded.length, 1);
   assert.equal(forwarded[0]?.url, "https://nanocodex.test/assets/app.js?v=7");

@@ -168,10 +168,6 @@ export function isLocalDevelopmentOrigin(value) {
         || url.hostname === "[::1]"
         || url.hostname === "nanocodex.localhost"
         || url.hostname.endsWith(".nanocodex.localhost")
-        || (url.protocol === "https:" && (
-          url.hostname === "nanocodex.local"
-          || url.hostname.endsWith(".nanocodex.local")
-        ))
       );
   } catch {
     return false;

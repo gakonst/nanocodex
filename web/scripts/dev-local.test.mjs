@@ -13,9 +13,6 @@ import {
   LocalStackLifecycle,
   acquireLocalDevelopmentLease,
   assertLocalDevelopmentPortAvailable,
-  assertOrbStack,
-  localDevelopmentBrowserOrigin,
-  localDevelopmentBrowserPlaygroundOrigin,
   localDevelopmentInstance,
   localDevelopmentOrigin,
   localDevelopmentPublicOrigin,
@@ -27,8 +24,6 @@ import {
   loadRootEnvironment,
   mainWorktreeEnvironmentPath,
   managedChildEnvironment,
-  orbStackGatewayChildLaunch,
-  orbStackGatewayStop,
   parseLocalDevOptions,
   providerFreeWebEnvironment,
   requireLocalProcessGroups,
@@ -43,7 +38,6 @@ import {
   verifyLocalMultiplayer,
   viteChildConfiguration,
   waitForManagedStack,
-  waitForOrbStackGateway,
   websiteChildLaunch,
 } from "./dev-local.mjs";
 import { prepareDevWasm } from "./check-dev-wasm.mjs";
@@ -902,43 +896,36 @@ test("local development gives the primary checkout and worktrees stable isolated
   const primary = localDevelopmentInstance("/Users/example/nanocodex", { primary: true });
   const worktree = localDevelopmentInstance("/Users/example/nanocodex/.worktrees/passkey-fix");
   assert.deepEqual(primary, {
-    composeProject: "nanocodex-dev",
     defaultOrigin: "http://127.0.0.1:5173",
     id: "main",
-    playgroundOrigin: "https://playground.nanocodex.local",
+    playgroundOrigin: "http://playground.nanocodex.localhost:5173",
     primary: true,
-    publicOrigin: "https://nanocodex.local",
+    publicOrigin: "http://nanocodex.localhost:5173",
   });
   assert.match(worktree.id, /^passkey-fix-[a-f0-9]{6}$/);
   assert.equal(worktree.primary, false);
-  assert.equal(worktree.publicOrigin, `https://${worktree.id}.nanocodex.local`);
-  assert.equal(worktree.playgroundOrigin, `https://playground-${worktree.id}.nanocodex.local`);
-  assert.equal(worktree.composeProject, `nanocodex-dev-${worktree.id}`);
+  const worktreePort = new URL(worktree.defaultOrigin).port;
+  assert.equal(
+    worktree.publicOrigin,
+    `http://${worktree.id}.nanocodex.localhost:${worktreePort}`,
+  );
+  assert.equal(
+    worktree.playgroundOrigin,
+    `http://playground-${worktree.id}.nanocodex.localhost:${worktreePort}`,
+  );
   assert.match(worktree.defaultOrigin, /^http:\/\/127\.0\.0\.1:[2-4][0-9]{4}$/);
   assert.equal(
     localDevelopmentInstance("/tmp/other", { requestedName: "review-v2" }).id,
     "review-v2",
   );
 
-  assert.equal(localDevelopmentPublicOrigin(primary.publicOrigin).origin, "https://nanocodex.local");
+  assert.equal(
+    localDevelopmentPublicOrigin(primary.publicOrigin).origin,
+    "http://nanocodex.localhost:5173",
+  );
   assert.equal(
     localDevelopmentPublicOrigin(worktree.publicOrigin).origin,
     worktree.publicOrigin,
-  );
-  assert.equal(
-    localDevelopmentBrowserOrigin(localDevelopmentOrigin("http://127.0.0.1:5273")).origin,
-    "http://nanocodex.localhost:5273",
-  );
-  assert.equal(
-    localDevelopmentBrowserOrigin(localDevelopmentOrigin("http://127.0.0.1:5273"), "review-v2").origin,
-    "http://review-v2.nanocodex.localhost:5273",
-  );
-  assert.equal(
-    localDevelopmentBrowserPlaygroundOrigin(
-      localDevelopmentOrigin("http://127.0.0.1:5273"),
-      "review-v2",
-    ).origin,
-    "http://playground-review-v2.nanocodex.localhost:5273",
   );
   assert.equal(
     localDevelopmentStatePath("/Users/example", primary.id),
@@ -949,71 +936,16 @@ test("local development gives the primary checkout and worktrees stable isolated
     `/Users/example/.nanocodex/web-development/instances/${worktree.id}`,
   );
   for (const invalid of [
-    "http://nanocodex.local",
-    "https://nanocodex.local:8443",
-    "https://nanocodex.other.local",
+    "http://nanocodex.example:5173",
+    "https://nanocodex.localhost:8443",
+    "http://nanocodex.localhost",
+    "http://nanocodex.other.localhost:5173",
   ]) {
     assert.throws(
       () => localDevelopmentPublicOrigin(invalid),
-      /must be HTTPS under nanocodex\.local/,
+      /must be HTTP under nanocodex\.localhost with an explicit port/,
     );
   }
-});
-
-test("OrbStack owns the canonical HTTPS gateway without receiving provider credentials", async () => {
-  const calls = [];
-  await assertOrbStack({ PATH: "/bin" }, async (command, arguments_, options) => {
-    calls.push([command, arguments_, options]);
-    return command === "orb" ? "Running\n" : "orbstack\n";
-  });
-  assert.deepEqual(calls.map(([command, arguments_]) => [command, arguments_]), [
-    ["orb", ["status"]],
-    ["docker", ["context", "show"]],
-  ]);
-
-  const launch = orbStackGatewayChildLaunch(
-    { PATH: "/bin", OPENAI_API_KEY: "must-not-cross" },
-    localDevelopmentOrigin("http://127.0.0.1:5273"),
-    localDevelopmentPublicOrigin("https://review.nanocodex.local"),
-    localDevelopmentPublicOrigin("https://playground-review.nanocodex.local"),
-    "nanocodex-dev-review",
-  );
-  assert.equal(launch.command, "docker");
-  assert.deepEqual(launch.options.env, {
-    NANOCODEX_DEV_HOST: "review.nanocodex.local",
-    NANOCODEX_DEV_PORT: "5273",
-    NANOCODEX_PLAYGROUND_HOST: "playground-review.nanocodex.local",
-    PATH: "/bin",
-  });
-  assert.equal(launch.arguments.includes("--force-recreate"), true);
-  assert.deepEqual(orbStackGatewayStop(launch), {
-    command: "docker",
-    arguments: [
-      "compose",
-      "--project-name",
-      "nanocodex-dev-review",
-      "--file",
-      fileURLToPath(new URL("../docker-compose.dev.yml", import.meta.url)),
-      "down",
-      "--remove-orphans",
-    ],
-    options: {
-      cwd: resolve(fileURLToPath(new URL("..", import.meta.url))),
-      env: {
-        NANOCODEX_DEV_HOST: "review.nanocodex.local",
-        NANOCODEX_DEV_PORT: "5273",
-        NANOCODEX_PLAYGROUND_HOST: "playground-review.nanocodex.local",
-        PATH: "/bin",
-      },
-    },
-  });
-
-  await waitForOrbStackGateway(
-    new URL("https://nanocodex.local/api/health"),
-    [{ exitCode: null, signalCode: null }],
-    { PATH: "/bin" },
-    async () => JSON.stringify({ status: "ok" }),
-  );
 });
 
 test("each instance state admits one owner without blocking another instance", async () => {

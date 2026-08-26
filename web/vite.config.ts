@@ -57,11 +57,7 @@ function localConnectApplications(): Plugin {
         };
 
         const playgroundHost = process.env.NANOCODEX_LOCAL_CONNECT_PLAYGROUND_HOST;
-        const browserPlaygroundHost = playgroundHost?.replace(
-          /\.nanocodex\.local$/,
-          ".nanocodex.localhost",
-        );
-        if (playgroundHost && (hostname === playgroundHost || hostname === browserPlaygroundHost)) {
+        if (playgroundHost && hostname === playgroundHost) {
           if (method !== "GET" && method !== "HEAD") {
             response.statusCode = 405;
             response.setHeader("allow", "GET, HEAD");
@@ -117,7 +113,7 @@ function localConnectApplications(): Plugin {
             try {
               response.setHeader(
                 "content-security-policy",
-                "frame-ancestors 'self' https://*.nanocodex.local http://*.nanocodex.localhost:*",
+                "frame-ancestors 'self' http://nanocodex.localhost:* http://*.nanocodex.localhost:*",
               );
               await serveDocument(
                 connectDialogIndex,
@@ -299,7 +295,14 @@ export default defineConfig({
   },
   server: {
     strictPort: true,
-    allowedHosts: [".nanocodex.local", ".nanocodex.localhost"],
+    allowedHosts: [".nanocodex.localhost"],
+    // The playground and application use sibling localhost hosts. Their API
+    // requests carry the account session, so Vite's preflight must opt into
+    // credentialed CORS before the request can reach the local Worker.
+    cors: {
+      origin: true,
+      credentials: true,
+    },
     // The live artifact frame intentionally has an opaque sandbox origin. Its
     // module graph therefore needs CORS even though it is served by this host.
     headers: { "Access-Control-Allow-Origin": "*" },

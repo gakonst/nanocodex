@@ -5,7 +5,8 @@ export type ConnectDialogProxyEnv = {
 const CONNECT_DIALOG_PREFIX = "/connect-dialog";
 const CONNECT_DIALOG_FRAME_ANCESTORS = [
   "'self'",
-  "https://*.nanocodex.local",
+  "http://nanocodex.localhost:*",
+  "http://*.nanocodex.localhost:*",
   "https://nanocodex-connect-playground.gakonst.workers.dev",
   "chrome-extension://jpkimkgbgbpcaldbnhlhbkbadmpeffle",
 ].join(" ");

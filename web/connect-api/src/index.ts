@@ -3164,18 +3164,13 @@ function isLoopbackOrigin(origin: string | null): boolean {
   );
 }
 
-function isLocalDevelopmentOrigin(origin: string | null): boolean {
-  return isLoopbackOrigin(origin)
-    || /^https:\/\/(?:[a-z0-9-]+\.)*nanocodex\.local$/.test(origin ?? "");
-}
-
 function authenticationOrigin(request: Request): string {
   return localDevelopmentPublicOrigin(request) ?? API_ORIGIN;
 }
 
 function localDevelopmentPublicOrigin(request: Request): string | undefined {
   const forwarded = request.headers.get("x-nanocodex-local-origin");
-  return new URL(request.url).origin !== API_ORIGIN && isLocalDevelopmentOrigin(forwarded)
+  return new URL(request.url).origin !== API_ORIGIN && isLoopbackOrigin(forwarded)
     ? forwarded!
     : undefined;
 }

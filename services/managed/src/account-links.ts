@@ -385,8 +385,7 @@ function isAllowedConnectDialogOrigin(value: unknown): value is string {
 }
 
 function isLocalDevelopmentOrigin(value: string): boolean {
-  return /^https:\/\/(?:[a-z0-9-]+\.)*nanocodex\.local$/.test(value)
-    || /^https?:\/\/(?:[a-z0-9-]+\.)*nanocodex\.localhost(?::\d+)?$/.test(value);
+  return /^https?:\/\/(?:[a-z0-9-]+\.)*nanocodex\.localhost(?::\d+)?$/.test(value);
 }
 
 function json(body: unknown, init: ResponseInit = {}): Response {

@@ -4,8 +4,7 @@ import { Handler, Kv } from "accounts/server";
 
 const ACCOUNT_COOKIE = "nanocodex_account";
 const LOCAL_PORTABLE_CREDENTIAL_COOKIE = "nanocodex_local_passkey";
-const LOCAL_WEBAUTHN_RP_ID = "nanocodex.local";
-const LOCAL_BROWSER_WEBAUTHN_RP_ID = "nanocodex.localhost";
+const LOCAL_WEBAUTHN_RP_ID = "nanocodex.localhost";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const API_KEY = /^ncx_live_([A-Za-z0-9_-]{12})_([A-Za-z0-9_-]{43})$/;
@@ -466,17 +465,11 @@ function isPortableCredential(value: unknown): value is PortableCredential {
 
 function portableLocalWebAuthnRpId(url: URL): string | undefined {
   if (
-    url.protocol === "https:"
-    && (url.hostname === LOCAL_WEBAUTHN_RP_ID || url.hostname.endsWith(`.${LOCAL_WEBAUTHN_RP_ID}`))
+    (url.protocol === "http:" || url.protocol === "https:")
+    && (url.hostname === LOCAL_WEBAUTHN_RP_ID
+      || url.hostname.endsWith(`.${LOCAL_WEBAUTHN_RP_ID}`))
   ) {
     return LOCAL_WEBAUTHN_RP_ID;
-  }
-  if (
-    (url.protocol === "http:" || url.protocol === "https:")
-    && (url.hostname === LOCAL_BROWSER_WEBAUTHN_RP_ID
-      || url.hostname.endsWith(`.${LOCAL_BROWSER_WEBAUTHN_RP_ID}`))
-  ) {
-    return LOCAL_BROWSER_WEBAUTHN_RP_ID;
   }
   return undefined;
 }
