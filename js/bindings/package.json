@@ -43,6 +43,10 @@
       "types": "./vite/index.d.mts",
       "import": "./vite/index.mjs"
     },
+    "./vite/client": {
+      "types": "./vite/auto-webmcp-client.d.mts",
+      "import": "./vite/auto-webmcp-client.mjs"
+    },
     "./vite/cloudflare": {
       "types": "./vite/cloudflare.d.mts",
       "import": "./vite/cloudflare.mjs"

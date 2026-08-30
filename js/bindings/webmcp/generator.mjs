@@ -46,10 +46,14 @@ export async function generate(options = {}) {
     ...candidate,
     approved: false,
   }));
+  const sourceRevision = createHash("sha256")
+    .update(JSON.stringify(tools.map(toolFingerprint)))
+    .digest("hex");
   return deepFreeze({
     version: 1,
     generatedAt: new Date().toISOString(),
     root: ".",
+    sourceRevision,
     tools,
   });
 }
@@ -504,6 +508,10 @@ function validateFileOptions(options) {
 }
 
 function reconcileManifest(draft, previous) {
+  if (previous?.sourceRevision === draft.sourceRevision
+      && previous.generatedBy === "nanocodex-agent") {
+    return deepFreeze(previous);
+  }
   const approved = new Map((previous?.tools ?? []).map((tool) => [tool.name, tool]));
   const tools = draft.tools.map((tool) => {
     const prior = approved.get(tool.name);

@@ -56,13 +56,10 @@ both native and semantic tools available.
 
 ## Generate tools from an existing site
 
-The repository generator follows the same review-first model as tools such as
-Sodium. It statically reads source as data and drafts candidates for common
-application routes, frontend fetches, HTML forms, GraphQL operations, Next.js
-server actions, tRPC procedures, and OpenAPI JSON. It never imports or runs the
-repository, and every new or changed candidate starts with `approved: false`.
-
-Vite and Next.js can keep the review manifest generated automatically:
+With Vite there is no separate command and no WebMCP specification to write.
+`nanocodex()` derives bounded candidates from source, injects the normal
+Accounts-backed embed into the development page, and asks the authenticated
+Nanocodex Agent to verify them against the running product:
 
 ```ts
 // vite.config.ts
@@ -70,7 +67,7 @@ import { defineConfig } from "vite";
 import { nanocodex } from "nanocodex/vite";
 
 export default defineConfig({
-  plugins: [nanocodex({ webMcp: true })],
+  plugins: [nanocodex()],
 });
 ```
 
@@ -83,38 +80,30 @@ const nextConfig: NextConfig = {};
 export default withWebMcp(nextConfig);
 ```
 
-Both write `webmcp.manifest.json`. Vite regenerates during development and
-build; Next.js regenerates at startup/build and watches source in development.
-An existing approval is preserved only while the source digest, generated
-method, schema, annotations, description, and implementation are unchanged.
-Source or contract changes reset approval instead of silently broadening the
-website's tools.
+The browser module reuses the same Connect dialog and `tempoxyz/accounts`
+session as the normal embed. The managed Agent observes the page through the
+reverse WebMCP attachment and returns a manifest to Vite. Vite accepts it only
+for the exact source revision and pins every execution target, evidence record,
+and read/write annotation. Source changes repeat this lifecycle through HMR;
+production builds perform no model calls.
 
-React applications can make that published registry their entire Agent tool
-surface without owning a harness:
+Next.js currently keeps deterministic source generation through
+`withWebMcp()`.
+
+React consumes the automatically connected Agent without owning a config,
+Worker, or harness:
 
 ```tsx
-import { Transport } from "nanocodex/browser";
-import { createConfig, useNanocodex } from "nanocodex-react";
-
-const config = createConfig({
-  agent: {
-    harness: false,
-    transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
-    webMcp: true,
-  },
-});
+import { useNanocodex } from "nanocodex-react/vite";
 
 function App() {
-  const { data: agent } = useNanocodex({ config });
+  const { data: agent } = useNanocodex();
   return agent ? <Conversation agent={agent} /> : null;
 }
 ```
 
-Replace `hostManaged(...)` with
-`Transport.managed({ agent: { create: true } })` for a durable managed Agent.
-The same React config then reverse-attaches WebMCP over the remote tools
-protocol, so handlers and approvals remain in the live website.
+The hook adapts that durable Connect Agent for the existing headless
+conversation controller. Handlers and approvals stay in the authenticated page.
 
 The CLI exposes the same reconciliation when explicit generation is preferable:
 

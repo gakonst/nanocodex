@@ -16,11 +16,16 @@
     "./agent": {
       "types": "./agent/index.d.mts",
       "import": "./agent/index.mjs"
+    },
+    "./vite": {
+      "types": "./vite/index.d.mts",
+      "import": "./vite/index.mjs"
     }
   },
   "files": [
     "agent",
     "cloud",
+    "vite",
     "index.d.mts",
     "index.mjs",
     "README.md"

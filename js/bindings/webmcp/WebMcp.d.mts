@@ -69,6 +69,8 @@ export type GeneratedWebMcpTool = Readonly<{
 export type WebMcpManifest = Readonly<{
   version: number;
   generatedAt?: string | undefined;
+  sourceRevision?: string | undefined;
+  generatedBy?: "nanocodex-agent" | undefined;
   tools: readonly GeneratedWebMcpTool[];
 }>;
 

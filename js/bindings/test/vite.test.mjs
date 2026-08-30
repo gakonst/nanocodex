@@ -4,11 +4,13 @@ import { createServer } from "node:http";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 
 import WebSocket, { WebSocketServer } from "ws";
 
 import { readCodexSubscription } from "../vite/codex-auth-file.mjs";
+import { startAutomaticWebMcp } from "../vite/auto-webmcp-client.mjs";
 import { createNanocodexCloudflarePlugins } from "../vite/cloudflare-plugin.mjs";
 import { startChatGptWorkerEgress } from "../vite/chatgpt-egress.mjs";
 import { nanocodex } from "../vite/index.mjs";
@@ -81,6 +83,120 @@ test("the Vite plugin generates a review-first WebMCP manifest", async () => {
   }
 });
 
+test("plain nanocodex() injects Accounts-backed automatic generation and verifies the Agent result", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "nanocodex-vite-automatic-webmcp-"));
+  try {
+    await writeFile(join(directory, "client.ts"), 'fetch("/api/balance");\n');
+    const watcher = new EventEmitter();
+    let endpoint;
+    let middleware;
+    const plugin = nanocodex({ chatGpt: false });
+    await plugin.config({}, { command: "serve" });
+    plugin.configResolved({ root: directory, logger: { info() {} } });
+    await plugin.configureServer({
+      config: { logger: { error(error) { throw error; }, info() {} } },
+      middlewares: {
+        use(path, handler) {
+          endpoint = path;
+          middleware = handler;
+        },
+      },
+      watcher,
+    });
+    assert.equal(endpoint, "/__nanocodex/webmcp");
+    assert.deepEqual(plugin.transformIndexHtml(), [{
+      tag: "script",
+      attrs: { type: "module", src: "/@id/virtual:nanocodex-webmcp" },
+      injectTo: "body",
+    }]);
+
+    const draft = await callMiddleware(middleware, "GET");
+    assert.match(draft.appId, /^webmcp-dev:/);
+    assert.match(draft.sourceRevision, /^[0-9a-f]{64}$/);
+    assert.equal(draft.manifest.tools[0].approved, false);
+    const proposed = structuredClone(draft.manifest);
+    proposed.tools[0].title = "Current balance";
+    proposed.tools[0].description = "Read the signed-in user's current balance.";
+    proposed.tools[0].approved = true;
+    const generated = await callMiddleware(middleware, "POST", {
+      sourceRevision: draft.sourceRevision,
+      manifest: proposed,
+    });
+    assert.equal(generated.generatedBy, "nanocodex-agent");
+    assert.equal(generated.tools[0].title, "Current balance");
+    assert.equal(generated.tools[0].approved, true);
+
+    const retained = JSON.parse(await readFile(join(directory, "webmcp.manifest.json"), "utf8"));
+    assert.equal(retained.generatedBy, "nanocodex-agent");
+    assert.equal(retained.sourceRevision, draft.sourceRevision);
+    await plugin.closeBundle();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the injected browser generator uses Connect, reverse-attached WebMCP, and publishes the verified result", async () => {
+  const sourceRevision = "a".repeat(64);
+  const candidate = {
+    name: "get_api_balance",
+    title: "GET /api/balance",
+    description: "candidate",
+    approved: false,
+    annotations: { readOnlyHint: true, untrustedContentHint: true },
+    implementation: { kind: "fetch", method: "GET", path: "/api/balance" },
+    evidence: [{ file: "client.ts", line: 1, kind: "frontend fetch", sourceHash: "b".repeat(64) }],
+  };
+  const generated = {
+    version: 1,
+    sourceRevision,
+    tools: [{ ...candidate, title: "Current balance", approved: true }],
+  };
+  const calls = [];
+  const connection = { grant: { status: "active" } };
+  const agent = {
+    session: { async shutdown() {} },
+    turn: {
+      prompt({ input }) {
+        calls.push(["prompt", input]);
+        return { async result() { return { finalMessage: JSON.stringify(generated) }; } };
+      },
+    },
+  };
+  const client = {
+    dialog: { async open() {} },
+    connection: {
+      async reconnect(options) { calls.push(["reconnect", options]); },
+      async connect(options) { calls.push(["connect", options]); return connection; },
+    },
+    agent: {
+      async create(options) { calls.push(["agent", options]); return agent; },
+    },
+  };
+  const fetchImpl = async (_input, init) => {
+    if (!init) return Response.json({
+      appId: "webmcp-dev:fixture",
+      sourceRevision,
+      manifest: { version: 1, sourceRevision, tools: [candidate] },
+    });
+    calls.push(["result", JSON.parse(init.body)]);
+    return Response.json({ ...generated, generatedBy: "nanocodex-agent" });
+  };
+  const ready = await startAutomaticWebMcp({
+    client,
+    fetch: fetchImpl,
+    async publish(manifest) {
+      calls.push(["publish", manifest]);
+      return { tools: [manifest.tools[0].name], close() {} };
+    },
+  });
+  assert.strictEqual(ready.agent, agent);
+  assert.equal(calls[2][0], "agent");
+  assert.deepEqual(calls[2][1].webMcp.fallback, "when-empty");
+  assert.match(calls[3][1], /web_page_observe/);
+  assert.equal(calls.at(-1)[0], "publish");
+  assert.equal(calls.at(-1)[1].tools[0].title, "Current balance");
+});
+
 test("the Vite development watcher regenerates changed WebMCP source", async () => {
   const directory = await mkdtemp(join(tmpdir(), "nanocodex-vite-webmcp-watch-"));
   try {
@@ -91,6 +207,7 @@ test("the Vite development watcher regenerates changed WebMCP source", async () 
     plugin.configResolved({ root: directory, logger: { info() {} } });
     await plugin.configureServer({
       config: { logger: { error(error) { throw error; } } },
+      middlewares: { use() {} },
       watcher,
     });
     await writeFile(source, 'fetch("/api/profile", { method: "POST" });\n');
@@ -237,4 +354,24 @@ async function waitFor(predicate) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.fail("timed out waiting for Vite WebMCP regeneration");
+}
+
+async function callMiddleware(handler, method, body) {
+  const request = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]);
+  request.method = method;
+  return new Promise((resolve, reject) => {
+    const headers = new Map();
+    const response = {
+      statusCode: 200,
+      setHeader(name, value) { headers.set(name, value); },
+      end(value) {
+        try {
+          const parsed = JSON.parse(String(value));
+          if (this.statusCode >= 400) reject(new Error(parsed.error));
+          else resolve(parsed);
+        } catch (error) { reject(error); }
+      },
+    };
+    Promise.resolve(handler(request, response)).catch(reject);
+  });
 }

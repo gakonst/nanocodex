@@ -222,7 +222,7 @@ test("only top-level popup dialogs admit unknown secure app origins", () => {
   assert.equal(isPopupPresentation("https://dialog.example/?mode=iframe", true), false);
 });
 
-test("loopback auth and apps are accepted only by a loopback dialog", () => {
+test("loopback apps can use the hosted dialog while loopback auth requires a loopback dialog", () => {
   assert.equal(connectApiOrigin({
     challenge: `${productionConnectApiOrigin}/v1/connect/auth/challenge`,
     verify: `${productionConnectApiOrigin}/v1/connect/auth`,
@@ -237,6 +237,16 @@ test("loopback auth and apps are accepted only by a loopback dialog", () => {
     "http://127.0.0.1:4177/connect-dialog/?mode=iframe",
     false,
   ).id, "atlas-workspace");
+  assert.deepEqual(registeredApp(
+    "http://localhost:5173",
+    "webmcp-dev:bank",
+    productionDialog,
+    false,
+  ), {
+    id: "webmcp-dev:bank",
+    name: "Atlas Workspace",
+    origin: "http://localhost:5173",
+  });
   assert.throws(() => connectApiOrigin({ url: "http://127.0.0.1:8787/v1/connect/auth" }, "https://dialog.example"), /production Connect API/);
   assert.throws(() => connectApiOrigin({
     challenge: "http://127.0.0.1:8787/v1/connect/auth/challenge",

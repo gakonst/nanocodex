@@ -88,7 +88,11 @@ export function registeredApp(embeddingOrigin, appId, dialogUrl, isTopLevel, all
     if (registered.id !== appId) throw new Error("This application ID does not match its registered origin.");
     return registered;
   }
-  if (isLocalDevelopmentOrigin(dialogOrigin) && isLocalDevelopmentOrigin(embeddingOrigin)) {
+  // A loopback application is developer-controlled even when it uses the
+  // production-hosted iframe. This is what lets `nanocodex()` work without a
+  // second local dialog server while keeping non-loopback iframe origins on
+  // the explicit production registry.
+  if (isLocalDevelopmentOrigin(embeddingOrigin)) {
     return Object.freeze({ id: appId, name: "Atlas Workspace", origin: embeddingOrigin });
   }
   if (allowDynamicPopup && isPopupPresentation(dialogUrl, isTopLevel) && isSecurePopupOrigin(embeddingOrigin)) {

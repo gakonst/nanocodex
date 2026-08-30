@@ -6,7 +6,7 @@ import { defineConfig } from "vite";
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 export default defineConfig({
-  plugins: [react(), nanocodex({ webMcp: true })],
+  plugins: [react(), nanocodex()],
   build: {
     manifest: true,
   },

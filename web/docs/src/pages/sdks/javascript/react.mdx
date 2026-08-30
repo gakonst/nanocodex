@@ -61,45 +61,22 @@ required.
 
 ## Make the website the tool surface
 
-After the Vite or Next.js plugin generates `webmcp.manifest.json`, publish its
-reviewed tools and enable WebMCP in the React-owned config. When the site itself
-provides everything the Agent needs, `harness: false` avoids installing the
-default coding harness:
+With Vite, `nanocodex()` owns generation, the normal Accounts-backed connection,
+and reverse attachment. React consumes that already-owned Agent directly:
 
 ```tsx
-const config = createConfig({
-  agent: {
-    harness: false,
-    transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
-    webMcp: true,
-  },
-});
+import { useNanocodex } from "nanocodex-react/vite";
 
 function App() {
-  const { data: agent } = useNanocodex({ config });
+  const { data: agent } = useNanocodex();
   return agent ? <Conversation agent={agent} /> : null;
 }
 ```
 
-No caller-owned Worker or React-specific harness lifecycle is needed. The
-WebMCP implementation remains in the signed-in page while bounded definitions
-and calls cross the package Worker bridge.
-
-For a durable managed Agent, select the managed transport on the same config:
-
-```tsx
-const config = createConfig({
-  agent: {
-    transport: Transport.managed({ agent: { create: true } }),
-    webMcp: true,
-  },
-});
-```
-
-`useNanocodex` then owns the managed lifecycle and Nanocodex reverse-attaches
-the page's WebMCP provider over the remote tools protocol. Tool execution comes
-back to the live browser page, preserving its authenticated session and the
-same trusted approval dialog.
+No caller-owned Worker, config, or React-specific harness lifecycle is needed.
+The hook adapts the durable Connect Agent for the existing headless controller.
+Tool execution returns to the signed-in page and mutating calls use the same
+trusted approval dialog.
 
 ## Keep policy in the application
 

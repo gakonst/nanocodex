@@ -175,8 +175,10 @@ Managed browser agents accept the same `webMcp` option. Nanocodex automatically
 reverse-attaches the page provider, preserving website authentication in the
 browser while the account-owned conversation remains hosted.
 
-Existing applications can generate a reviewable publisher manifest without
-running repository code:
+Existing Vite applications need no generation command or WebMCP specification.
+The plugin derives bounded candidates from source and injects the normal
+Accounts-backed Nanocodex embed in development so the authenticated Agent can
+verify them against the live page:
 
 ```ts
 // vite.config.ts
@@ -184,7 +186,7 @@ import { defineConfig } from "vite";
 import { nanocodex } from "nanocodex/vite";
 
 export default defineConfig({
-  plugins: [nanocodex({ webMcp: true })],
+  plugins: [nanocodex()],
 });
 ```
 
@@ -197,14 +199,18 @@ const nextConfig: NextConfig = {};
 export default withWebMcp(nextConfig);
 ```
 
-Both plugins generate `webmcp.manifest.json` automatically. Vite keeps it
-current while the development server runs; Next.js generates it at startup and
-watches source during development. An approval survives regeneration only
-while the tool's source digest, method, schema, annotations, description, and
-implementation remain identical. A source or contract change returns to
-`approved: false`.
+Vite owns the complete generation and verification lifecycle when the page
+opens in development. It reuses `tempoxyz/accounts` for remembered passkeys,
+ChatGPT subscription, Tempo MPP, and provider selection. Credentials stay in
+Accounts and the broker; Vite receives only the source revision and manifest.
+The Agent may improve the public contract or remove false positives, but Vite
+pins execution targets, source evidence, and read/write annotations. A source
+change invalidates the verified revision. Production builds make no model call.
 
-The equivalent explicit commands are:
+Next.js currently retains deterministic source generation through
+`withWebMcp()`.
+
+Lower-level explicit commands remain available for non-Vite build systems:
 
 ```sh
 npx nanocodex-webmcp generate . --out webmcp.manifest.json

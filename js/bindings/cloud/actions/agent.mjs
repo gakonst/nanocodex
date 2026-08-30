@@ -3,6 +3,7 @@ import { registerManagedAgentAlias } from "../../managed/internal.mjs";
 import { reportError } from "../../internal.mjs";
 import { createTools } from "../../tools/Tools.mjs";
 import { AttachmentRejectedError } from "../../tools/attachment.mjs";
+import { createProvider as createWebMcpProvider } from "../../webmcp/WebMcp.mjs";
 
 const PROVIDER_NAME = "ChatGPT · Nanocodex Connect";
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
@@ -20,7 +21,7 @@ export async function create(client, options) {
   if (!connection.grant.connectors?.includes("chatgpt")) {
     throw new Error("Connect ChatGPT before opening the durable Nanocodex agent.");
   }
-  const unsupported = Object.keys(options ?? {}).find((key) => key !== "connection");
+  const unsupported = Object.keys(options ?? {}).find((key) => !["connection", "webMcp"].includes(key));
   if (unsupported) {
     throw new TypeError(`Connect durable agents do not accept app-local ${unsupported}`);
   }
@@ -32,8 +33,13 @@ export async function create(client, options) {
     grantSession,
   };
   let tools;
-  if (connection.grant.mcpConnections.length > 0) {
-    tools = await createGrantMcpTools(transport, connection.grant.id, connection.grant.mcpConnections);
+  if (connection.grant.mcpConnections.length > 0 || options.webMcp) {
+    tools = await createGrantTools(
+      transport,
+      connection.grant.id,
+      connection.grant.mcpConnections,
+      options.webMcp,
+    );
   }
   const managedOptions = {
     baseUrl: client.transport.baseUrl,
@@ -127,7 +133,7 @@ function connectAgent(managed, connection, transport, tools) {
   return Object.freeze(agent);
 }
 
-async function createGrantMcpTools({ baseUrl, grantSession }, grantId, connections) {
+async function createGrantTools({ baseUrl, grantSession }, grantId, connections, webMcp) {
   const mcp = Object.fromEntries(connections.map(({ id, name }) => {
     if (!MCP_CONNECTION_ID.test(id)) {
       throw new TypeError("Connect grant contains an invalid MCP connection ID");
@@ -138,12 +144,23 @@ async function createGrantMcpTools({ baseUrl, grantSession }, grantId, connectio
       url: new URL(`/v1/grants/${grantId}/mcp/${id}`, baseUrl),
     }];
   }));
-  return createTools({
-    mcp,
-    mcpOptions: {
-      catalogProvider: (connectionId) => `mcp:${connectionId}`,
-    },
-  });
+  const webMcpProvider = webMcp
+    ? await createWebMcpProvider(webMcp === true ? {} : webMcp)
+    : undefined;
+  try {
+    return await createTools({
+      ...(connections.length === 0 ? {} : {
+        mcp,
+        mcpOptions: {
+          catalogProvider: (connectionId) => `mcp:${connectionId}`,
+        },
+      }),
+      ...(webMcpProvider === undefined ? {} : { providers: [webMcpProvider] }),
+    });
+  } catch (error) {
+    await webMcpProvider?.close?.();
+    throw error;
+  }
 }
 
 function grantMcpFetch(session, baseUrl, grantId, connectionId) {
