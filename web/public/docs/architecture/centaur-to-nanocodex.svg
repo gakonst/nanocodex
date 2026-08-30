@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">Keep the product, remove the permanent box</title>
+  <desc id="desc">Centaur placed the agent, state, and tools inside one always-on sandbox. Nanocodex keeps the durable Codex agent separate and attaches tools and machines only when needed.</desc>
+  <defs>
+    <filter id="paper" x="-3%" y="-3%" width="106%" height="106%"><feTurbulence type="fractalNoise" baseFrequency=".72" numOctaves="2" seed="26" result="n"/><feComponentTransfer in="n" result="f"><feFuncA type="table" tableValues="0 .035"/></feComponentTransfer><feBlend in="SourceGraphic" in2="f" mode="multiply"/></filter>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#37ff37"/><stop offset=".55" stop-color="#00e900"/><stop offset="1" stop-color="#caffca"/></linearGradient>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto"><path d="M1 1l9 4.5L1 10" fill="none" stroke="#aaa" stroke-width="2"/></marker>
+    <style>.title{font:44px Georgia,serif;fill:#080808}.label{font:27px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111}.small{font:23px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.eyebrow{font:21px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777;letter-spacing:1px}.box{fill:#fff;stroke:#c9c9c6;stroke-width:2}.dash{fill:none;stroke:#aaa;stroke-width:2;stroke-dasharray:8 8}.line{fill:none;stroke:#aaa;stroke-width:3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="460" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="48" y="62" class="title">Keep the product. Remove the permanent box.</text>
+  <g transform="translate(48 110)"><text x="0" y="28" class="eyebrow">CENTAUR</text><rect x="0" y="48" width="430" height="220" rx="22" class="box"/><text x="26" y="88" class="label">ALWAYS-ON SANDBOX</text><rect x="26" y="112" width="378" height="116" rx="16" fill="#f0f0ed" stroke="#c9c9c6" stroke-width="2"/><text x="48" y="158" class="small">Codex · state · tools</text><text x="48" y="198" class="small">one lifecycle, one bill</text></g>
+  <path d="M510 242h116" class="line"/>
+  <g transform="translate(660 110)"><text x="0" y="28" class="eyebrow">NANOCODEX</text><rect x="0" y="48" width="492" height="100" rx="20" fill="url(#green)" stroke="#00cf00" stroke-width="2"/><text x="27" y="92" class="label">CODEX + DURABLE STATE</text><text x="27" y="126" class="small">the agent</text><path d="M60 148v44M246 148v44M432 148v44" class="dash"/><g transform="translate(0 192)"><rect width="150" height="76" rx="15" class="box"/><text x="24" y="47" class="small">Browser</text></g><g transform="translate(171 192)"><rect width="150" height="76" rx="15" class="box"/><text x="18" y="47" class="small">Sandbox</text></g><g transform="translate(342 192)"><rect width="150" height="76" rx="15" class="box"/><text x="42" y="47" class="small">GPU</text></g></g>
+  <text x="48" y="414" class="small">Centaur proved embedded Codex. Nanocodex makes execution replaceable.</text>
+</svg>

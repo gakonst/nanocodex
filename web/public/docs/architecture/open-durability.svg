@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">Export a working agent</title>
+  <desc id="desc">One open runnable journal can move to Paradigm, Postgres, Cloudflare, Vercel, or another compatible host with the same recovery rules.</desc>
+  <defs>
+    <filter id="paper" x="-3%" y="-3%" width="106%" height="106%"><feTurbulence type="fractalNoise" baseFrequency=".72" numOctaves="2" seed="25" result="n"/><feComponentTransfer in="n" result="f"><feFuncA type="table" tableValues="0 .035"/></feComponentTransfer><feBlend in="SourceGraphic" in2="f" mode="multiply"/></filter>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#37ff37"/><stop offset=".55" stop-color="#00e900"/><stop offset="1" stop-color="#caffca"/></linearGradient>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto"><path d="M1 1l9 4.5L1 10" fill="none" stroke="#aaa" stroke-width="2"/></marker>
+    <style>.title{font:44px Georgia,serif;fill:#080808}.label{font:27px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111}.small{font:24px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.box{fill:#fff;stroke:#c9c9c6;stroke-width:2}.line{fill:none;stroke:#aaa;stroke-width:3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="460" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="48" y="62" class="title">Export a working agent</text>
+  <g transform="translate(48 132)"><rect width="350" height="190" rx="24" fill="url(#green)" stroke="#00cf00" stroke-width="2"/><text x="32" y="56" class="label">RUNNABLE JOURNAL</text><text x="32" y="101" class="small">operations · checkpoints</text><text x="32" y="136" class="small">outputs · effect identities</text><text x="32" y="171" class="small">recovery metadata</text></g>
+  <path d="M398 227h118" class="line"/>
+  <path d="M516 227C574 227 574 137 630 137" class="line"/><path d="M516 227C574 227 574 227 630 227" class="line"/><path d="M516 227C574 227 574 317 630 317" class="line"/>
+  <g transform="translate(630 94)"><rect width="230" height="86" rx="16" class="box"/><text x="25" y="52" class="label">Paradigm</text></g>
+  <g transform="translate(630 184)"><rect width="230" height="86" rx="16" class="box"/><text x="25" y="52" class="label">Postgres</text></g>
+  <g transform="translate(630 274)"><rect width="230" height="86" rx="16" class="box"/><text x="25" y="52" class="label">Cloudflare</text></g>
+  <path d="M860 137h72" class="line"/><path d="M860 227h72" class="line"/><path d="M860 317h72" class="line"/>
+  <g transform="translate(938 94)"><rect width="214" height="86" rx="16" class="box"/><text x="25" y="52" class="label">Vercel</text></g>
+  <g transform="translate(938 184)"><rect width="214" height="86" rx="16" class="box"/><text x="25" y="52" class="label">Your cloud</text></g>
+  <g transform="translate(938 274)"><rect width="214" height="86" rx="16" class="box"/><text x="25" y="52" class="label">Any host</text></g>
+  <text x="48" y="414" class="small">Not a transcript. The state required to continue running.</text>
+</svg>

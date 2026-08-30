@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">One agent, every surface</title>
+  <desc id="desc">A single durable Nanocodex agent is attached to web, Slack, mobile, and API clients. Each product keeps its own interface.</desc>
+  <defs>
+    <filter id="paper" x="-3%" y="-3%" width="106%" height="106%"><feTurbulence type="fractalNoise" baseFrequency=".72" numOctaves="2" seed="21" result="n"/><feComponentTransfer in="n" result="f"><feFuncA type="table" tableValues="0 .035"/></feComponentTransfer><feBlend in="SourceGraphic" in2="f" mode="multiply"/></filter>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#37ff37"/><stop offset=".55" stop-color="#00e900"/><stop offset="1" stop-color="#caffca"/></linearGradient>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto"><path d="M1 1l9 4.5L1 10" fill="none" stroke="#aaa" stroke-width="2"/></marker>
+    <style>.title{font:44px Georgia,serif;fill:#080808}.label{font:28px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111}.small{font:25px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.box{fill:#fff;stroke:#c9c9c6;stroke-width:2}.line{fill:none;stroke:#aaa;stroke-width:3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="460" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="48" y="62" class="title">One agent, every surface</text>
+  <g transform="translate(48 118)"><rect width="240" height="92" rx="18" class="box"/><text x="28" y="57" class="label">Web product</text></g>
+  <g transform="translate(48 246)"><rect width="240" height="92" rx="18" class="box"/><text x="28" y="57" class="label">Slack</text></g>
+  <g transform="translate(912 118)"><rect width="240" height="92" rx="18" class="box"/><text x="28" y="57" class="label">Mobile</text></g>
+  <g transform="translate(912 246)"><rect width="240" height="92" rx="18" class="box"/><text x="28" y="57" class="label">API / job</text></g>
+  <path d="M288 164C390 164 408 195 480 205" class="line"/><path d="M288 292C390 292 408 261 480 251" class="line"/>
+  <path d="M912 164C810 164 792 195 720 205" class="line"/><path d="M912 292C810 292 792 261 720 251" class="line"/>
+  <g transform="translate(480 142)"><rect width="240" height="172" rx="28" fill="url(#green)" stroke="#00cf00" stroke-width="2"/><text x="40" y="71" class="label">ONE AGENT</text><text x="51" y="112" class="small">same context</text><text x="51" y="145" class="small">same work</text></g>
+  <text x="48" y="410" class="small">The product owns the interface. The agent keeps working when a client leaves.</text>
+</svg>

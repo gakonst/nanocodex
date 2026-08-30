@@ -1,105 +1,151 @@
 # Introducing Nanocodex
 
-*Managed Codex agents you can embed in any product, connect to a user's accounts and machines, and move off our cloud.*
+*Managed Codex agents you can embed in any product.*
 
 By Georgios Konstantopoulos
 
-Today we are releasing Nanocodex Managed, Connect, and the open-source Nanocodex agent runtime.
+Today we are releasing Nanocodex Managed, Connect, and the open-source Nanocodex runtime.
 
-Nanocodex gives developers a long-running Codex agent over an API. The agent keeps working when the client disconnects and can appear inside a web application, Slack, a mobile client, or a background job.
+You should use Nanocodex if you want to put a Codex agent inside your product without running one container per user, rebuilding OAuth for every integration, or trapping the agent on our cloud.
 
-Four things are different:
+The product has four properties:
 
-1. **Embed, do not redirect.** The agent lives inside the product where the work starts. The product owns the interface; Nanocodex owns the agent lifecycle.
-2. **Connect once, grant anywhere.** A user can bring their ChatGPT subscription, accounts, wallet, and private machines. Those connections follow the user's Nanocodex account across embedded products, while each product receives only the access the user approved.
-3. **Keep the brain; rent the hands.** The durable agent does not sit inside a permanent container. It attaches a browser, sandbox, GPU, API, or private worker only when the work needs one.
-4. **Hosted does not mean captive.** Nanocodex exports runnable agent state, not only transcripts. The same agent can resume on Postgres, Cloudflare, Vercel, another Nanocodex deployment, or infrastructure you operate.
+1. **Embed.** The agent runs inside your product. The same agent can appear in a browser, Slack, mobile, or an API.
+2. **Connect.** The user's ChatGPT subscription, accounts, wallet, and machines follow the user. Each product gets an explicit grant, not the underlying credential.
+3. **Hands.** The agent is durable without owning a permanent machine. It attaches a browser, sandbox, GPU, API, or private worker when it needs one, and you pay for that resource while it is attached.
+4. **Open Durability.** You can export the runnable agent—not just its transcript—and resume it on Postgres, Cloudflare, Vercel, another Nanocodex deployment, or infrastructure you operate.
 
-The stack is **Embed → Connect → Managed Agents → Hands → Open Durability**.
+These are one stack: **Embed → Connect → Managed Agents → Hands → Open Durability.**
 
-![Embed and Connect sit above the durable managed agent; replaceable execution hands sit below it; open durability keeps the runnable state portable.](../../web/public/docs/architecture/managed-request.svg)
+## Embed: the agent belongs in the product
 
-## Embed
+Most agents still make the user go somewhere else. Open a terminal. Open a chat app. Copy the context over. Wait there for the answer.
 
-Agents are moving from terminals and dedicated chat applications into the software where people already work.
+That is the wrong boundary for most software.
 
-The agent can work beside a research document, inside a support ticket, or against a development repository. The user should not have to leave the product, open another application, and reconstruct the context.
+Nanocodex exposes the same running agent through JavaScript, React, and HTTP. A product can render it beside the work it is doing. This could be a support ticket, research document, editor, or transaction flow. Slack, mobile, and background jobs can attach to the same agent. Closing one client does not stop the work.
 
-Nanocodex exposes the same managed agent through JavaScript, React, and an HTTP API. A browser tab, Slack thread, phone, and server process can attach to one running agent. Closing one client detaches that client; it does not cancel the work. Another client can open the agent later and continue from the last durable event it received.
+![One running agent appears inside several products while the products keep their own interfaces.](../../web/public/docs/architecture/embed-anywhere.svg)
 
-The application can also give the agent native access to the product. Its own functions can be local tools. A browser can expose the current page through WebMCP. The agent can use the product's actions and current context directly instead of scraping the interface or moving the product's data into a remote machine.
+Embedding also gives the agent a better way to use the product. The application can expose its own functions as local tools. A browser can expose the current page through WebMCP. The agent acts on the product's real state instead of scraping a UI or moving all of the data into a remote sandbox.
 
-This is similar to the shift from standalone wallets to embedded wallets. The application owns the experience while specialized infrastructure handles keys and authorization. Agents need the same separation for identity, connected accounts, durable work, and execution.
+This is the same transition wallets made. Wallets started as destinations. Then they became infrastructure embedded inside applications. Agents are going through the same transition, except they also need durable work, connected accounts, and replaceable execution.
 
-## Connect
+## Connect: accounts should follow the user
 
-Connect is the identity and authorization layer for embedded agents.
+Embedding an agent is easy until it needs to do anything useful.
 
-A user can connect GitHub, Slack, Google, Linear, a ChatGPT subscription, a wallet, or a private machine to their Nanocodex account. These connections belong to the account rather than to one agent or application.
+Then every product asks the user to connect GitHub, Slack, Google, Linear, a wallet, a model account, and sometimes a machine. The OAuth work is repeated by every developer. The user repeats setup in every product. Credentials end up copied into application databases and sandboxes.
 
-When the same account appears in another Nanocodex-powered product, its connections are already available. The new product asks for a scoped grant covering the agent, tools, data, output visibility, and optional spending authority it needs. Connecting GitHub in one product should not require connecting GitHub again in every other product that embeds an agent.
+Connect gives the user one portable capability graph.
 
-The reverse is also useful. If a user connects a new account from one embedded product, that capability becomes available anywhere else they use the same Nanocodex account, subject to a new explicit grant. Connect turns a collection of OAuth integrations, wallets, machines, and model access into a portable capability graph.
+A connection belongs to the user's Nanocodex account, not to one product or one agent. When the user opens another Nanocodex-powered product, the connection is already there. The new product asks for a scoped grant covering the tools, data, output, and optional spending authority it needs.
 
-Connect works with Nanocodex accounts and with applications that already use Auth0, Better Auth, Privy, or another identity provider. The application keeps its existing login. It links its user to a Nanocodex account and opens the Connect flow when it needs agent capabilities.
+![A user connects accounts once and grants different subsets to each embedded product.](../../web/public/docs/architecture/connect-anywhere.svg)
 
-Credentials stay behind the broker. The application, generated code, agent, and sandbox receive a capability grant, not an OAuth refresh token or SSH private key. The egress layer checks the grant and injects the current credential at the network boundary. Revoking a connection or grant takes effect without finding and deleting credential copies from running machines.
+The product can keep Auth0, Better Auth, Privy, or whatever it already uses for login. Connect links that authenticated user to a Nanocodex account. It is an authorization layer for agents, not a demand to replace the application's identity system.
 
-ChatGPT model access uses the same mechanism. A user can connect an eligible ChatGPT subscription for Codex without giving the embedding application an OpenAI API key. Paradigm stores and refreshes the account credential and uses it only at the fixed Codex transport boundary. Usage remains subject to the user's OpenAI plan, limits, and terms.
+The application, generated code, agent, and sandbox receive capabilities. They never receive OAuth refresh tokens, SSH private keys, or wallet secrets. Our egress service checks the grant and injects the credential at the network boundary. Revoking the connection takes effect without hunting for copies on running machines.
 
-## Managed Agents and Hands
+ChatGPT works the same way. A user can connect an eligible ChatGPT subscription and let Nanocodex run Codex without giving the embedding application an OpenAI API key. Usage remains subject to the user's OpenAI plan, limits, and terms.
 
-A managed agent is the durable brain. Capabilities are its hands.
+The important property is simple: connect GitHub once, then explicitly grant GitHub wherever your agent appears.
 
-The brain owns the Codex context, ordered prompt queue, compaction, tool calls, steering, cancellation, branching, and committed output. Clients can attach and detach without becoming responsible for that state. Applications do not replay message history, preserve provider response IDs, or guess whether work completed after a connection failure.
+## Managed Agents: keep the brain, attach the hands
 
-The hands can live anywhere. They can be functions inside the application, OAuth-backed APIs behind Connect, actions exposed by the browser, lightweight filesystem and shell tools, hosted sandboxes, GPUs, laptops, or workers inside a private network. A private worker connects outward and registers its tools without accepting public inbound traffic.
+A long-running agent and a Linux container are not the same thing.
 
-The split is what makes the cost model work.
+The agent owns the Codex context, prompt queue, compaction, tool calls, steering, cancellation, branching, and committed output. That state should survive a browser closing, a process restarting, or a sandbox disappearing.
 
-Most managed-agent systems start by assigning every agent a container. The container then sits around while the model reasons, waits for the user, calls an API, or does nothing. Keeping the agent alive means keeping the machine alive.
+The machine is a hand. It exists to execute work.
 
-Nanocodex does not require a machine per agent. The durable brain can remain available without an idle VM. Common filesystem, shell, API, and product-local work runs in the Rust or WASM runtime. If a task needs a native binary, browser, stronger isolation, more compute, or a GPU, Nanocodex attaches that hand for the task and retains it only while useful.
+![The durable agent lives for weeks while browsers, sandboxes, and GPUs attach only for the minutes that need them.](../../web/public/docs/architecture/brain-and-hands.svg)
+
+Most managed-agent systems allocate a container first and put the agent inside it. The container then sits there while the model reasons, waits for the user, calls an API, or does nothing. Keeping the agent alive means keeping the machine alive.
+
+Nanocodex keeps the agent durable without keeping an idle VM. Common filesystem, shell, API, and product-local work runs in the Rust or WASM runtime. If the turn needs a native binary, a real browser, stronger isolation, more compute, or a GPU, Nanocodex attaches that resource and retains it only while useful.
 
 The agent can live for weeks. The expensive machine can live for minutes.
 
-[Anthropic describes this as separating the brain from the hands](https://www.anthropic.com/engineering/managed-agents). Nanocodex applies the same operational model to Codex, but the hands also include product-local tools, connected accounts, reverse-attached private workers, and paid capabilities discovered at runtime.
+[Anthropic calls this separating the brain from the hands](https://www.anthropic.com/engineering/managed-agents). We agree. In Nanocodex, the hands can also be functions inside the embedding product, OAuth-backed APIs behind Connect, browsers, reverse-connected laptops, or workers inside a private network.
 
-We care about matching Codex rather than hiding it behind a generic model abstraction. Prompt shape, tool schemas, result ordering, caching, compaction, retry behavior, and process cleanup affect performance on long tasks. Nanocodex tracks the behavior of Codex and ports the parts required to reproduce it as a library.
+Durability also means clients do not own the work. The normal API is intentionally boring:
 
-## Capabilities, Mercator, and MPP
+```js
+const agent = await Agent.create();
+const turn = agent.turn.prompt({ input: "Prepare the migration PR." });
+```
 
-A capability is any hand the agent can call: a function in the application, an OAuth-backed API, a browser, a sandbox, a GPU, a private worker, a dataset, or a specialized service.
+Output is an ordered event log. A client stores the last cursor it processed, detaches by closing its watcher, and reattaches later—even from another process:
 
-Connect determines which capabilities the user and application may access. Mercator handles discovery and routing across available providers. The [Machine Payments Protocol](https://tempo.xyz/solutions/agentic-payments/), co-authored by Stripe and Tempo, handles payment negotiation and metering for capabilities that cost money. Payments can settle on Tempo.
+```js
+let cursor = "latest";
+let output = agent.events.watch({ cursor });
+const rendering = (async () => {
+  for await (const event of output) {
+    render(event);
+    cursor = event.cursor;
+  }
+})();
 
-An agent can start with inexpensive local execution, discover that it needs a native binary or more compute, select an eligible provider through Mercator, and pay for the resource over MPP within the spending authority the user approved in Connect.
+await output.return(); // detaches this client; the turn keeps running
+await rendering;
 
-The same model applies to underused resources. A developer can expose a machine or service as a capability, set its policy and price, and let eligible agents find it. The agent does not need to know which vendor owns the sandbox or where the worker runs. It needs a typed capability, a grant, and a route.
+const sameAgent = Agent.open(agent.id);
+output = sameAgent.events.watch({ cursor });
+```
 
-## Open durability
+Applications do not replay transcripts on the common path. They also do not invent an `idempotencyKey` for every prompt. The SDK creates the identities it needs. Applications coordinating retries across separate processes can opt into explicit turn identities.
 
-Managed agents should not create another cloud silo.
+## Capabilities: acquire the right hand when needed
 
-Downloading a transcript is insufficient. A transcript describes what happened but usually cannot resume an interrupted agent. Nanocodex exports the ordered operations and committed agent history, along with the checkpoints, effect identities, outputs, and recovery metadata required to continue running.
+We use *capability* to mean anything the agent can call: a function in the product, an OAuth-backed API, a browser, a sandbox, a GPU, a private worker, a dataset, or a specialized service.
 
-The open-source durability library defines that journal and the rules for reducing it into agent state. Storage adapters implement atomic load and compare-and-append without redefining the format. The same journal can live in memory, SQLite, Postgres, a Cloudflare Durable Object, a Vercel Workflow, or Paradigm's hosted service.
+Capabilities do not have to run beside the agent. A laptop inside a private network can connect outward and register tools without accepting inbound traffic. A browser can expose the current product. A sandbox can appear for one task and disappear after its filesystem is committed.
 
-A team can start on Nanocodex Managed, export a consistent snapshot, and resume against Postgres it operates. It can import the same state into Cloudflare, Vercel, or another Nanocodex deployment. It can also follow an incremental cursor and replicate state before a migration.
+![An agent starts local, uses Mercator to find a paid capability, pays over MPP, and settles on Tempo.](../../web/public/docs/architecture/capability-market.svg)
 
-Secrets are excluded. The destination must reauthorize Connect and bind the tools and compute it intends to use. Durable agent state moves; credentials do not.
+Connect decides what the agent may use. Mercator discovers and routes eligible providers. The [Machine Payments Protocol](https://tempo.xyz/solutions/agentic-payments/), co-authored by Stripe and Tempo, negotiates and meters payment when a capability costs money. Payment can settle on Tempo under the spending limit the user approved in Connect.
 
-Paradigm hosts the default service because most developers should not have to operate this infrastructure. The open journal and adapters ensure that using the hosted product does not give Paradigm the only runnable copy of the agent.
+This lets an agent escalate during a turn. Start in the cheap WASM runtime. Discover that the task needs Chrome, CUDA, or a machine inside the user's network. Find an eligible provider. Pay for exactly that capability. Attach it. Release it when the work is done.
+
+The reverse also works. A developer can expose an underused machine or specialized service, set a policy and price, and let eligible agents find it. The agent needs a typed capability, a grant, and a route. It does not need to know which cloud owns the machine.
+
+## Open Durability: the agent can leave
+
+Hosted agents should not become another form of cloud lock-in.
+
+A transcript export is not enough. It tells you what the agent said. It does not contain the information required to resume an interrupted tool call, recover committed output, preserve compaction, or continue from the same agent state.
+
+Nanocodex exports the journal the agent actually runs from. It contains ordered operations, committed history, checkpoints, effect identities, outputs, and recovery metadata.
+
+![The same runnable journal moves from Nanocodex Managed to Postgres, Cloudflare, Vercel, or another compatible host.](../../web/public/docs/architecture/open-durability.svg)
+
+The open-source durability library defines the journal and the rules for reducing it into agent state. An adapter only has to implement atomic load and compare-and-append. The same format can live in SQLite, Postgres, a Cloudflare Durable Object, a Vercel Workflow, or Paradigm's hosted service.
+
+This is plumbing. It is also the difference between exporting a chat log and exporting a working agent.
+
+A team can start on Nanocodex Managed, export a consistent snapshot, and resume against its own Postgres. It can follow an incremental cursor and replicate before a migration. It can move to Cloudflare, Vercel, or another Nanocodex host without translating the agent's state into a new proprietary workflow model.
+
+Secrets do not move with the journal. The destination reauthorizes Connect and binds the tools and compute it intends to use. Durable state is portable. Credentials remain scoped and revocable.
+
+Paradigm will run the default hosted service because most developers should not have to operate this machinery. The open format exists so that using our service never gives us the only runnable copy.
 
 ## What Centaur proved
 
-We built Nanocodex after operating [Centaur](https://www.paradigm.xyz/writing/open-sourcing-centaur-multiplayer-self-hosted-secure-agents) across Paradigm and Tempo.
+We learned this by operating [Centaur](https://www.paradigm.xyz/writing/open-sourcing-centaur-multiplayer-self-hosted-secure-agents) across Paradigm and Tempo.
 
-Centaur's core decision was simple: use Codex rather than replace it with a third-party harness. Put it where people already work, let sessions run for a long time, and connect it to real company systems. By [Centaur 2.0](https://www.paradigm.xyz/writing/centaur-2-0-permissions-context-and-mcp), more than 80% of sessions happened in shared channels and more than 99% of daily sessions completed successfully.
+Centaur made one decision that mattered: use Codex directly instead of replacing it with a third-party harness. Put it in Slack, let it run for hours or days, connect it to real company systems, and make the sessions multiplayer. By [Centaur 2.0](https://www.paradigm.xyz/writing/centaur-2-0-permissions-context-and-mcp), more than 80% of sessions happened in shared channels and more than 99% of daily sessions completed successfully.
 
-It proved that embedded, durable, connected agents are useful. It also made the cost of a permanent container per session obvious. Nanocodex keeps the part that worked—the Codex agent—and makes the expensive execution environment an optional hand.
+This worked. It also showed us where the architecture stopped scaling.
 
-Nanocodex Managed is the version of that product we can offer to every developer without asking them to reproduce the infrastructure behind Centaur.
+![Centaur proved the embedded Codex product; Nanocodex keeps it and removes the permanent container boundary.](../../web/public/docs/architecture/centaur-to-nanocodex.svg)
+
+Centaur put the agent, its state, and its tools inside a sandbox. We then built supervision, recovery, remote tool transport, credential brokering, and sandbox lifecycle around that box. Even a task that only needed an API call paid for a general-purpose machine.
+
+Nanocodex turns that boundary inside out. Codex and its durable state are the agent. Everything else is a capability that can be attached where it already lives.
+
+Centaur proved the product. Nanocodex is the version we can embed everywhere and operate at the cost of the work it actually performs.
 
 ## Available today
 
@@ -107,6 +153,6 @@ Nanocodex is open source under Apache 2.0 or MIT. It includes the Rust agent, Ja
 
 Nanocodex Managed provides the hosted agent API, Connect, durable storage, secure egress, capability routing, and sandbox lifecycle. Mercator and MPP let agents discover and pay for additional capabilities under user-approved limits, with Tempo available as the settlement rail.
 
-Embed the agent in your product. Let the user bring their accounts. Pay for the hands only when the work needs them. Leave with the runnable state if you want to operate it yourself.
+Put the agent in your product. Let the user bring their accounts. Pay for hands when the work needs them. Export the agent if you want to run it somewhere else.
 
 Code and documentation are available on [GitHub](https://github.com/gakonst/nanocodex).

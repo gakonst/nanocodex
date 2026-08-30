@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">Connect once, grant anywhere</title>
+  <desc id="desc">GitHub, ChatGPT, wallet, and private machine connections belong to one user account. Two products receive different scoped grants without receiving credentials.</desc>
+  <defs>
+    <filter id="paper" x="-3%" y="-3%" width="106%" height="106%"><feTurbulence type="fractalNoise" baseFrequency=".72" numOctaves="2" seed="22" result="n"/><feComponentTransfer in="n" result="f"><feFuncA type="table" tableValues="0 .035"/></feComponentTransfer><feBlend in="SourceGraphic" in2="f" mode="multiply"/></filter>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dfffe0"/><stop offset=".55" stop-color="#8fff91"/><stop offset="1" stop-color="#f2fff2"/></linearGradient>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto"><path d="M1 1l9 4.5L1 10" fill="none" stroke="#aaa" stroke-width="2"/></marker>
+    <style>.title{font:44px Georgia,serif;fill:#080808}.label{font:28px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111}.small{font:25px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.tiny{font:22px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.box{fill:#fff;stroke:#c9c9c6;stroke-width:2}.line{fill:none;stroke:#aaa;stroke-width:3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="460" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="48" y="62" class="title">Connect once, grant anywhere</text>
+  <g transform="translate(48 112)"><rect width="250" height="58" rx="14" class="box"/><text x="24" y="39" class="small">GitHub + Slack</text></g>
+  <g transform="translate(48 184)"><rect width="250" height="58" rx="14" class="box"/><text x="24" y="39" class="small">ChatGPT</text></g>
+  <g transform="translate(48 256)"><rect width="250" height="58" rx="14" class="box"/><text x="24" y="39" class="small">Wallet + machine</text></g>
+  <path d="M298 141L452 193" class="line"/><path d="M298 213h150" class="line"/><path d="M298 285l154-52" class="line"/>
+  <g transform="translate(452 130)"><rect width="300" height="166" rx="26" fill="url(#green)" stroke="#8ed58e" stroke-width="2"/><text x="72" y="60" class="label">CONNECT</text><text x="46" y="103" class="small">user account</text><text x="42" y="138" class="tiny">credentials stay here</text></g>
+  <path d="M752 182L902 149" class="line"/><path d="M752 244l150 47" class="line"/>
+  <text x="783" y="142" class="tiny">grant A</text><text x="783" y="287" class="tiny">grant B</text>
+  <g transform="translate(902 102)"><rect width="250" height="92" rx="18" class="box"/><text x="26" y="40" class="label">Product A</text><text x="26" y="72" class="tiny">GitHub only</text></g>
+  <g transform="translate(902 246)"><rect width="250" height="92" rx="18" class="box"/><text x="26" y="40" class="label">Product B</text><text x="26" y="72" class="tiny">wallet + Slack</text></g>
+  <text x="48" y="410" class="small">Connections follow the user. Products receive capabilities, never reusable secrets.</text>
+</svg>

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">Acquire a capability during the turn</title>
+  <desc id="desc">An agent discovers a needed GPU through Mercator, pays under an MPP spending grant with settlement on Tempo, attaches the GPU, then releases it.</desc>
+  <defs>
+    <filter id="paper" x="-3%" y="-3%" width="106%" height="106%"><feTurbulence type="fractalNoise" baseFrequency=".72" numOctaves="2" seed="24" result="n"/><feComponentTransfer in="n" result="f"><feFuncA type="table" tableValues="0 .035"/></feComponentTransfer><feBlend in="SourceGraphic" in2="f" mode="multiply"/></filter>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#37ff37"/><stop offset=".55" stop-color="#00e900"/><stop offset="1" stop-color="#caffca"/></linearGradient>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto"><path d="M1 1l9 4.5L1 10" fill="none" stroke="#aaa" stroke-width="2"/></marker>
+    <style>.title{font:44px Georgia,serif;fill:#080808}.label{font:26px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111}.small{font:23px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.step{font:21px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777}.box{fill:#fff;stroke:#c9c9c6;stroke-width:2}.line{fill:none;stroke:#aaa;stroke-width:3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1200" height="460" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="48" y="62" class="title">Acquire a capability during the turn</text>
+  <g transform="translate(38 144)"><rect width="190" height="124" rx="18" class="box"/><text x="22" y="38" class="step">1 · NEED</text><text x="22" y="84" class="label">CUDA GPU</text></g>
+  <path d="M228 206h44" class="line"/>
+  <g transform="translate(278 144)"><rect width="190" height="124" rx="18" fill="#e2ffe2" stroke="#9bd99b" stroke-width="2"/><text x="22" y="38" class="step">2 · FIND</text><text x="22" y="84" class="label">Mercator</text></g>
+  <path d="M468 206h44" class="line"/>
+  <g transform="translate(518 144)"><rect width="190" height="124" rx="18" class="box"/><text x="22" y="38" class="step">3 · PAY</text><text x="22" y="84" class="label">MPP</text></g>
+  <path d="M708 206h44" class="line"/>
+  <g transform="translate(758 144)"><rect width="190" height="124" rx="18" fill="url(#green)" stroke="#00cf00" stroke-width="2"/><text x="22" y="38" class="step">4 · ATTACH</text><text x="22" y="84" class="label">GPU hand</text></g>
+  <path d="M948 206h44" class="line"/>
+  <g transform="translate(998 144)"><rect width="164" height="124" rx="18" class="box"/><text x="18" y="38" class="step">5 · DONE</text><text x="18" y="84" class="label">release</text></g>
+  <path d="M613 268v52h240v-52" fill="none" stroke="#aaa" stroke-width="2"/>
+  <text x="630" y="350" class="small">Tempo settlement · Connect spending limit</text>
+  <text x="48" y="414" class="small">Start cheap. Escalate only when the task proves it needs more.</text>
+</svg>

@@ -21,20 +21,24 @@ The stack has five layers:
 5. **Open Durability** keeps the runnable state portable across Paradigm,
    Postgres, Cloudflare, Vercel, and compatible self-hosted deployments.
 
-![A product embeds a managed agent, Connect grants model and tool access, clients attach to durable output, and execution hands attach only when needed.](/docs/architecture/managed-request.svg "Embed and Connect sit above the durable agent; replaceable execution hands sit below it.")
-
-## Embed and Connect
+## Embed
 
 The application owns its interface and product policy. Nanocodex owns the
 agent lifecycle, ordered output, reconnection, and recovery. A browser tab can
 detach while the turn continues, and another client can resume from the last
 event that the first client processed.
 
+![One running agent appears inside web, Slack, mobile, and API products while each product keeps its own interface.](/docs/architecture/embed-anywhere.svg "One durable agent can be embedded across product surfaces.")
+
+## Connect
+
 Connect is the account and authorization layer. A user can connect an eligible
 ChatGPT subscription, GitHub, Slack, Google, a wallet, MCP servers, or a private
 machine once. Those connections belong to the Nanocodex account rather than
 one application. Every embedded product asks for its own bounded grant; the
 reusable credentials remain behind the broker.
+
+![GitHub, ChatGPT, wallet, and machine connections follow the user while each product receives a separate scoped grant.](/docs/architecture/connect-anywhere.svg "Connect once, then grant only the capabilities each product needs.")
 
 This gives embedded agents the useful property of embedded wallets: the
 product owns the experience while the user brings identity and capabilities.
@@ -47,6 +51,8 @@ output attachment, grants, ChatGPT model access, and reverse-attached tools.
 ## Managed Agents and Hands
 
 The managed agent is the durable brain. Capabilities are its hands.
+
+![The durable agent can live for weeks while browser, sandbox, and GPU hands attach only for the minutes that need them.](/docs/architecture/brain-and-hands.svg "The agent outlives each execution environment.")
 
 The brain owns typed history, prompt ordering, model transport, tool calls,
 steering, cancellation, branching, and cleanup. Its committed state lives in a
@@ -71,6 +77,15 @@ interface only when needed. Nanocodex applies it to Codex and extends the hands
 to product-local tools, portable Connect capabilities, reverse-attached private
 workers, and paid resources discovered at runtime.
 
+## Capabilities, Mercator, and MPP
+
+Connect determines which capabilities the agent may use. Mercator discovers
+and routes eligible providers. MPP negotiates and meters payment for a paid
+capability under the spending authority the user granted in Connect, with
+Tempo available as a settlement rail.
+
+![An agent discovers a needed GPU through Mercator, pays through MPP, attaches it for the task, and releases it afterward.](/docs/architecture/capability-market.svg "Start in the inexpensive runtime and acquire paid execution only when needed.")
+
 Continue with [tools and execution](/architecture/tools-execution) for
 capability selection, escalation, egress, and worker attachment.
 
@@ -80,6 +95,8 @@ Hosted agents should not become another cloud silo. Nanocodex exports the
 ordered operations, committed history, checkpoints, effect identities,
 outputs, and recovery metadata needed to resume an agent. A transcript alone
 is not a portable agent.
+
+![The same runnable journal can move to Paradigm, Postgres, Cloudflare, Vercel, or another compatible host.](/docs/architecture/open-durability.svg "Export the state required to continue running, not only a transcript.")
 
 The same Rust-owned journal can live in Paradigm's managed service, SQLite,
 Postgres, a Cloudflare Durable Object, a Vercel Workflow, or another compatible
@@ -100,6 +117,8 @@ It also exposed the cost of assigning every agent a permanent container. A
 session that waited for a user or called an API still carried the lifecycle of
 a general-purpose machine. Nanocodex keeps the Codex agent and makes that
 machine an optional hand.
+
+![Centaur keeps the agent, state, and tools in one always-on sandbox; Nanocodex keeps the durable agent separate from replaceable execution hands.](/docs/architecture/centaur-to-nanocodex.svg "Keep the embedded Codex product and remove the permanent container boundary.")
 
 [Centaur 2.0](https://www.paradigm.xyz/writing/centaur-2-0-permissions-context-and-mcp)
 showed that more than 80% of sessions moved to shared channels. Nanocodex
