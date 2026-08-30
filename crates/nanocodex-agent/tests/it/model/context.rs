@@ -131,7 +131,7 @@ async fn fork_replaces_or_removes_changed_agents_md_once() -> Result<()> {
         let replaced = next_json(&mut replacement).await?;
         assert_eq!(replaced["previous_response_id"], "resp-root");
         let replaced = replaced.to_string();
-        assert!(replaced.contains("creation-time agents"));
+        assert!(!replaced.contains("creation-time agents"));
         assert!(replaced.contains(
             "These AGENTS.md instructions replace all previously provided AGENTS.md instructions."
         ));
@@ -147,7 +147,7 @@ async fn fork_replaces_or_removes_changed_agents_md_once() -> Result<()> {
         let removed = next_json(&mut removal).await?;
         assert_eq!(removed["previous_response_id"], "resp-root");
         let removed = removed.to_string();
-        assert!(removed.contains("creation-time agents"));
+        assert!(!removed.contains("creation-time agents"));
         assert!(
             removed.contains("The previously provided AGENTS.md instructions no longer apply.")
         );
@@ -224,7 +224,7 @@ async fn fork_reloads_a_changed_global_agents_source_once() -> Result<()> {
         let replaced = next_json(&mut fork).await?;
         assert_eq!(replaced["previous_response_id"], "resp-root");
         let replaced = replaced.to_string();
-        assert!(replaced.contains("original global agents"));
+        assert!(!replaced.contains("original global agents"));
         assert!(replaced.contains("replacement global agents"));
         assert_eq!(
             replaced.matches("replace all previously provided").count(),
