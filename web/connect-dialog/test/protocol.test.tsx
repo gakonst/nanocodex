@@ -4,12 +4,74 @@ const MCP_ID = "abcdefghijklmnopqrstuvwxyz0123456789_-ABCDE";
 const OTHER_MCP_ID = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-abcde";
 
 let projectWalletRequest: typeof import("../src/protocol").projectWalletRequest;
+let parentDialog: typeof import("../src/protocol").parentDialog;
+let messageListener: (event: MessageEvent<unknown>) => void;
+const parent = { postMessage: vi.fn() };
 
 beforeAll(async () => {
   vi.stubGlobal("window", {
-    addEventListener: vi.fn(),
+    parent,
+    addEventListener: vi.fn((type, listener) => {
+      if (type === "message") messageListener = listener;
+    }),
   });
-  ({ projectWalletRequest } = await import("../src/protocol"));
+  ({ parentDialog, projectWalletRequest } = await import("../src/protocol"));
+});
+
+describe("embedded WebMCP approval protocol", () => {
+  it("binds the request to its parent origin and waits for execution completion", async () => {
+    const request = {
+      id: "webmcp-approval",
+      type: "webMcpApproval",
+      app: { id: "webmcp:consumer.example", name: "Sodium", origin: "https://consumer.example" },
+      action: {
+        kind: "webmcp",
+        name: "send_transfer",
+        input: { amount: "25.00", to: "Ada" },
+        readOnly: false,
+      },
+    } as const;
+    messageListener({
+      data: { type: "nanocodex:request", id: request.id, request },
+      origin: "https://consumer.example",
+      source: parent,
+    } as unknown as MessageEvent);
+    expect(parentDialog.getRequest()).toEqual(request);
+
+    const completion = parentDialog.approve();
+    expect(parent.postMessage).toHaveBeenLastCalledWith({
+      type: "nanocodex:approval",
+      id: request.id,
+    }, "https://consumer.example");
+    messageListener({
+      data: { type: "nanocodex:completion", id: request.id, ok: true },
+      origin: "https://consumer.example",
+      source: parent,
+    } as unknown as MessageEvent);
+    await completion;
+    await parentDialog.respond({ approved: true });
+    expect(parent.postMessage).toHaveBeenLastCalledWith({
+      type: "nanocodex:response",
+      id: request.id,
+      result: { approved: true },
+    }, "https://consumer.example");
+    expect(parentDialog.getRequest()).toBeUndefined();
+  });
+
+  it("rejects a WebMCP request that lies about its embedding origin", () => {
+    const request = {
+      id: "origin-substitution",
+      type: "webMcpApproval",
+      app: { id: "webmcp:attacker.example", name: "Attacker", origin: "https://attacker.example" },
+      action: { kind: "webmcp", name: "send_transfer", input: {}, readOnly: false },
+    } as const;
+    messageListener({
+      data: { type: "nanocodex:request", id: request.id, request },
+      origin: "https://consumer.example",
+      source: parent,
+    } as unknown as MessageEvent);
+    expect(parentDialog.getRequest()).toBeUndefined();
+  });
 });
 
 function walletRequest(context?: unknown) {

@@ -60,6 +60,70 @@ test("WebMCP provider mirrors native tools, preserves session execution, and ref
   assert.equal(listeners.size, 0);
 });
 
+test("mutating WebMCP tools execute only inside the one-time dialog approval", async () => {
+  let pageCalls = 0;
+  let request;
+  let execution;
+  const document = {
+    title: "Sodium Bank",
+    location: { href: "https://sodium.example/accounts", origin: "https://sodium.example" },
+    modelContext: {
+      async getTools() { return [registeredTool("send_transfer", false)]; },
+      async executeTool(_tool, input) {
+        pageCalls += 1;
+        return JSON.stringify({ sent: JSON.parse(input).amount });
+      },
+    },
+  };
+  const provider = await createProvider({
+    document,
+    fallback: false,
+    dialog: {
+      async open(nextRequest, nextExecution) {
+        request = nextRequest;
+        execution = nextExecution;
+        assert.equal(pageCalls, 0);
+        return nextExecution.execute();
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await provider.resolve("web_send_transfer").handler({ amount: "25.00", to: "Ada" }, {}),
+    { sent: "25.00" },
+  );
+  assert.equal(pageCalls, 1);
+  assert.equal(request.type, "webMcpApproval");
+  assert.equal(request.app.name, "Sodium Bank");
+  assert.equal(request.app.origin, "https://sodium.example");
+  assert.equal(request.action.name, "send_transfer");
+  assert.deepEqual(request.action.input, { amount: "25.00", to: "Ada" });
+  assert.equal(typeof execution.execute, "function");
+  provider.close();
+});
+
+test("a rejected WebMCP approval never reaches the website handler", async () => {
+  let pageCalls = 0;
+  const provider = await createProvider({
+    document: {
+      title: "Sodium Bank",
+      location: { href: "https://sodium.example", origin: "https://sodium.example" },
+      modelContext: {
+        async getTools() { return [registeredTool("send_transfer", false)]; },
+        async executeTool() { pageCalls += 1; },
+      },
+    },
+    fallback: false,
+    dialog: { async open() { throw new Error("The request was not approved."); } },
+  });
+  await assert.rejects(
+    provider.resolve("web_send_transfer").handler({ amount: "25.00" }, {}),
+    /not approved/,
+  );
+  assert.equal(pageCalls, 0);
+  provider.close();
+});
+
 test("semantic fallback observes, fills, activates, and submits only retained visible elements", async () => {
   const form = element("form", { name: "support" });
   form.requestSubmit = () => { form.submitted = true; };

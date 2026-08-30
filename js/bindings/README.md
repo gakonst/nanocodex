@@ -156,10 +156,7 @@ import { Agent, Transport } from "nanocodex/browser";
 
 const agent = await Agent.create({
   transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
-  webMcp: {
-    fallback: "when-empty",
-    confirm: (action) => showApplicationApproval(action),
-  },
+  webMcp: { fallback: "when-empty" },
 });
 ```
 
@@ -167,9 +164,12 @@ Native `document.modelContext` tools update live on `toolchange`. When none are
 available, the default bounded fallback can observe visible page text and
 controls, fill fields, activate controls, and submit forms. It never exposes
 arbitrary page JavaScript, hidden elements, raw selectors, HTML, or password
-values. Set `fallback: "never"` for native-only behavior. Mutating calls use
-the application-owned `confirm` callback when supplied and propagate
-cancellation.
+values. Set `fallback: "never"` for native-only behavior. Every mutating call
+opens the bundled Nanocodex approval dialog. Its trusted chrome shows the
+requesting website, destination, exact action, one-time scope, and expandable
+payload. The dialog remains in `Applying…` until the website handler settles;
+rejection never invokes it. Read-only tools do not prompt. A `confirm` callback
+is available only as a headless/custom-host override.
 
 Managed browser agents accept the same `webMcp` option. Nanocodex automatically
 reverse-attaches the page provider, preserving website authentication in the
@@ -191,7 +191,6 @@ import manifest from "./webmcp.manifest.json" with { type: "json" };
 import { publish } from "nanocodex/webmcp";
 
 const publication = await publish(manifest, {
-  confirm: (action) => showApplicationApproval(action),
   handlers: {
     get_account: (input, { signal }) => accountClient.get(input, { signal }),
   },

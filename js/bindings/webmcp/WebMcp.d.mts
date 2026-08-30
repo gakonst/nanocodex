@@ -4,6 +4,7 @@ export type WebMcpActionRequest = Readonly<{
   kind: "webmcp" | "semantic" | "published";
   name: string;
   title?: string | undefined;
+  description?: string | undefined;
   origin?: string | undefined;
   input: unknown;
   readOnly: false;
@@ -18,6 +19,14 @@ export type WebMcpProviderOptions = Readonly<{
   sourceId?: string | undefined;
   maxElements?: number | undefined;
   maxTextChars?: number | undefined;
+  /** Overrides the bundled Nanocodex iframe, primarily for custom hosts and tests. */
+  dialog?: Readonly<{
+    open(
+      request: import("../cloud/Dialog.mjs").WebMcpApprovalRequest,
+      execution: import("../cloud/Dialog.mjs").Execution,
+    ): Promise<unknown>;
+  }> | undefined;
+  /** Headless approval override. The bundled dialog is used when omitted. */
   confirm?(request: WebMcpActionRequest): boolean | Promise<boolean>;
 }>;
 

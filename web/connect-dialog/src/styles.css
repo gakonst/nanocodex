@@ -90,6 +90,10 @@
   height: min(650px, calc(100vh - 24px));
 }
 
+:scope.dialog-shell[data-request="webMcpApproval"] {
+  height: min(650px, calc(100vh - 24px));
+}
+
 .dialog-header,
 .section-heading,
 .card-topline {
@@ -807,6 +811,47 @@
   color: var(--faint);
   font-size: 8px;
   line-height: 1.45;
+}
+
+.action-route {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-block: 1px solid var(--border);
+}
+
+.action-route > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.action-route > span {
+  color: var(--positive);
+  font-size: 14px;
+}
+
+.action-route div > span,
+.action-route small {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-route strong {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webmcp-approval .detail-section {
+  border-top: 0;
 }
 
 .advanced-details {

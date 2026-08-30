@@ -1,6 +1,6 @@
 export const DEFAULT_HOST: "https://nanocodex.gakonst.workers.dev/connect-dialog/";
 
-export type Request = ConnectionRequest | FundingRequest;
+export type Request = ConnectionRequest | FundingRequest | WebMcpApprovalRequest;
 
 export type ConnectionRequest = Readonly<{
   id: string;
@@ -59,9 +59,29 @@ export type FundingRequest = Readonly<{
   usdAmountCents: number;
 }>;
 
+export type WebMcpApprovalRequest = Readonly<{
+  id: string;
+  type: "webMcpApproval";
+  app: Readonly<{ id: string; name: string; origin: string }>;
+  action: Readonly<{
+    kind: "webmcp" | "semantic";
+    name: string;
+    title?: string | undefined;
+    description?: string | undefined;
+    origin?: string | undefined;
+    input: unknown;
+    readOnly: false;
+    element?: Readonly<Record<string, unknown>> | undefined;
+  }>;
+}>;
+
+export type Execution = Readonly<{
+  execute?(): unknown | Promise<unknown>;
+}>;
+
 export type Instance = Readonly<{
   host: string;
-  open(request: Request): Promise<unknown>;
+  open(request: Request, execution?: Execution): Promise<unknown>;
   /** Internal WATA iframe target used by the bundled Accounts provider. */
   walletTarget?(options: Readonly<{ host?: string | undefined }>): Window | null | undefined;
   /** Resolves after the bundled Accounts iframe has completed navigation. */
@@ -72,8 +92,8 @@ export type Instance = Readonly<{
   resetWallet?(): Promise<void>;
   getRequest?(): Request | undefined;
   subscribe?(listener: () => void): () => void;
-  respond?(result: unknown): void;
-  reject?(error?: unknown): void;
+  respond?(result: unknown): unknown | Promise<unknown>;
+  reject?(error?: unknown): unknown | Promise<unknown>;
 }>;
 
 export type Dialog<type extends string = string> = Readonly<{

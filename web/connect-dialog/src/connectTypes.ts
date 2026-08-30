@@ -34,6 +34,7 @@ export type WalletRequest =
 export type ConnectRequest =
   | WalletRequest
   | Dialog.FundingRequest
+  | Dialog.WebMcpApprovalRequest
   | Readonly<{ id: string; message: string; type: "deviceError" }>
   | Readonly<{
       connectorName?: string | undefined;

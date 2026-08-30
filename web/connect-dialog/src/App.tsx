@@ -118,6 +118,7 @@ type WizardAccountSelection = AccountSelection;
 export type { ConnectRequest } from "./connectTypes";
 
 export type ConnectOnboardingHost = Readonly<{
+  approve?(): Promise<void>;
   reject(error?: unknown): Promise<unknown>;
   respond(result: unknown): Promise<unknown>;
 }>;
@@ -489,7 +490,9 @@ export function ConnectOnboarding({
                   selectedAccount?.discoverCredential,
                   hostedAuthorization,
                 )
-              : activeRequest.rpc) as never,
+              : activeRequest.type === "walletRevokeAccessKey"
+                ? activeRequest.rpc
+                : (() => { throw new Error("The Connect request changed."); })()) as never,
           ) as Promise<typeof result>);
         } finally {
           if (activeRequest.type === "walletConnect") invalidateBrowserSession();
@@ -1101,7 +1104,7 @@ export function ConnectOnboarding({
     >
       {!wizard ? <header className="dialog-header">
         <span className="wordmark">nanocodex/connect</span>
-        <span className="secure-label"><span aria-hidden="true" /> passkey</span>
+        <span className="secure-label"><span aria-hidden="true" /> {request.type === "webMcpApproval" ? "one-time approval" : "passkey"}</span>
       </header> : null}
 
       {request.type === "walletConnect" ? (
@@ -1177,11 +1180,99 @@ export function ConnectOnboarding({
             </button>
           </div>
         </>
+      ) : request.type === "webMcpApproval" ? (
+        <WebMcpApproval host={host} request={request} onReject={reject} />
       ) : (
         <FundingApproval host={host} request={request} onReject={reject} />
       )}
     </section>
   );
+}
+
+function WebMcpApproval({ host, request, onReject }: Readonly<{
+  host: ConnectOnboardingHost;
+  request: Dialog.WebMcpApprovalRequest;
+  onReject(): void;
+}>) {
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string>();
+  const action = request.action;
+  const destination = action.origin ?? request.app.origin;
+  const title = action.title?.trim() || humanizeAction(action.name);
+
+  async function approve() {
+    if (busy || failure) return;
+    setBusy(true);
+    try {
+      if (!host.approve) throw new Error("This host cannot execute WebMCP approvals.");
+      await host.approve();
+      await host.respond({ approved: true });
+    } catch (error) {
+      setFailure(errorMessage(error));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="dialog-content webmcp-approval">
+        <section className="request-title" aria-labelledby="webmcp-approval-heading">
+          <p className="eyebrow">Review action</p>
+          <h1 id="webmcp-approval-heading">{title}</h1>
+          <p className="request-copy">{action.description ?? "Review the exact website action before Nanocodex applies it."}</p>
+        </section>
+
+        <section className="action-route" aria-label="Action route">
+          <div>
+            <span>Requested by</span>
+            <strong>{request.app.name}</strong>
+            <small>{request.app.origin}</small>
+          </div>
+          <span aria-hidden="true">→</span>
+          <div>
+            <span>Destination</span>
+            <strong>{destinationLabel(destination)}</strong>
+            <small>{destination}</small>
+          </div>
+        </section>
+
+        <section className="detail-section" aria-labelledby="webmcp-effects-heading">
+          <SectionHeading id="webmcp-effects-heading" label="Exact effects" value="One time" />
+          <div className="permission-rows">
+            <PermissionRow label="Action" value={title} />
+            <PermissionRow label="Method" value={action.name} />
+            <PermissionRow label="Scope" value="This call only" />
+          </div>
+          <p className="period-note">Approval is bound to this method and payload. A later call requires a new approval.</p>
+        </section>
+
+        <details className="advanced-details">
+          <summary>Technical payload</summary>
+          <pre>{safeJson({ kind: action.kind, origin: destination, input: action.input, element: action.element })}</pre>
+        </details>
+        {failure ? <p className="dialog-error" role="alert">{failure}</p> : null}
+      </div>
+      <div className="dialog-actions">
+        <button type="button" disabled={busy} onClick={onReject}>{failure ? "Close" : "Cancel"}</button>
+        <button type="button" disabled={busy || Boolean(failure)} onClick={() => void approve()}>
+          {busy ? "Applying…" : "Confirm action"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function humanizeAction(value: string) {
+  const words = value.replace(/^web_/, "").replace(/[._-]+/g, " ").trim();
+  return words ? `${words[0]!.toUpperCase()}${words.slice(1)}` : "Website action";
+}
+
+function destinationLabel(value: string) {
+  try { return new URL(value).hostname; } catch { return value; }
+}
+
+function safeJson(value: unknown) {
+  try { return JSON.stringify(value, null, 2); } catch { return "The payload could not be displayed."; }
 }
 
 function RevocationApproval({ request }: Readonly<{ request: WalletRequest }>) {
@@ -2138,6 +2229,7 @@ function walletConnectContext(request: WalletRequest) {
 function walletRequestPolicyError(request: ConnectRequest | undefined) {
   if (!request
     || request.type === "machineUsdFund"
+    || request.type === "webMcpApproval"
     || request.type === "deviceError"
     || request.type === "deviceComplete") return undefined;
   try {

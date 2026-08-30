@@ -89,10 +89,10 @@ export function memory(options = {}) {
 
       return {
         host: options.host ?? "https://connect.nanocodex.xyz",
-        open(request) {
+        open(request, options = {}) {
           if (pending) return Promise.reject(new DialogBusyError());
           return new Promise((resolve, reject) => {
-            pending = { reject, request, resolve };
+            pending = { execute: options.execute, reject, request, resolve };
             publish(Object.freeze(request));
           });
         },
@@ -109,6 +109,19 @@ export function memory(options = {}) {
         respond(result) {
           if (!pending) throw new Error("The Nanocodex dialog has no pending request");
           const current = pending;
+          if (typeof current.execute === "function") {
+            return Promise.resolve(current.execute()).then((executionResult) => {
+              if (pending !== current) return;
+              pending = undefined;
+              publish(undefined);
+              current.resolve(executionResult);
+            }, (error) => {
+              if (pending !== current) return;
+              pending = undefined;
+              publish(undefined);
+              current.reject(error);
+            });
+          }
           pending = undefined;
           publish(undefined);
           current.resolve(result);
@@ -170,6 +183,7 @@ function createIframeInstance(host) {
 
   function rejectActive(error) {
     if (!active) return;
+    if (active.executing) return;
     const current = active;
     active = undefined;
     if (modal?.open) modal.close();
@@ -182,18 +196,53 @@ function createIframeInstance(host) {
   function onMessage(event) {
     if (!active || event.origin !== new URL(host).origin || event.source !== frame?.contentWindow) return;
     const message = event.data;
-    if (!message || message.type !== "nanocodex:response" || message.id !== active.request.id) return;
+    if (!message || message.id !== active.request.id) return;
+    if (message.type === "nanocodex:approval") {
+      executeApprovedAction();
+      return;
+    }
+    if (message.type !== "nanocodex:response") return;
     const current = active;
+    if (typeof current.execute === "function" && !current.executed && !message.error) return;
     active = undefined;
     modal?.close();
     frame.tabIndex = -1;
     frame.setAttribute("inert", "");
     frame.style.display = "none";
     if (message.error) {
-      current.reject(new UserRejectedRequestError(message.error.message));
+      current.reject(current.executionError
+        ?? new UserRejectedRequestError(message.error.message));
       return;
     }
-    current.resolve(message.result);
+    current.resolve(current.executed ? current.executionResult : message.result);
+  }
+
+  function executeApprovedAction() {
+    if (!active || typeof active.execute !== "function" || active.executing || active.executed) return;
+    const current = active;
+    current.executing = true;
+    Promise.resolve().then(() => current.execute()).then((result) => {
+      if (active !== current) return;
+      current.executing = false;
+      current.executed = true;
+      current.executionResult = result;
+      frame.contentWindow.postMessage({
+        type: "nanocodex:completion",
+        id: current.request.id,
+        ok: true,
+      }, new URL(host).origin);
+    }, (error) => {
+      if (active !== current) return;
+      current.executing = false;
+      current.executed = true;
+      current.executionError = error;
+      frame.contentWindow.postMessage({
+        type: "nanocodex:completion",
+        id: current.request.id,
+        ok: false,
+        error: { message: errorMessage(error) },
+      }, new URL(host).origin);
+    });
   }
 
   window.addEventListener("message", onMessage);
@@ -286,12 +335,12 @@ function createIframeInstance(host) {
     host,
     hideWallet,
     resetWallet,
-    async open(request) {
+    async open(request, options = {}) {
       if (active) throw new DialogBusyError();
       mount();
       await ready;
       return new Promise((resolve, reject) => {
-        active = { reject, request, resolve };
+        active = { execute: options.execute, reject, request, resolve };
         frame.removeAttribute("inert");
         frame.tabIndex = 0;
         frame.style.display = "block";
@@ -314,6 +363,12 @@ function createIframeInstance(host) {
       return walletFrame?.contentWindow;
     },
   };
+}
+
+function errorMessage(error) {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error) return error;
+  return "The action failed.";
 }
 
 function createPopupInstance(host, options) {

@@ -23,7 +23,7 @@ export async function createProvider(options = {}) {
   const nativeMode = options.native ?? true;
   const fallbackMode = normalizeFallback(options.fallback);
   const sourceId = nonEmptyString(options.sourceId) ?? DEFAULT_SOURCE_ID;
-  const confirm = options.confirm;
+  const approval = createApproval(document, options);
   const fromOrigins = normalizeOrigins(options.fromOrigins);
   const maxElements = boundedInteger(
     options.maxElements ?? DEFAULT_MAX_ELEMENTS,
@@ -40,7 +40,7 @@ export async function createProvider(options = {}) {
   const listeners = new Set();
   const nativeTools = new Map();
   const semantic = createSemanticPageTools(document, {
-    confirm,
+    approval,
     maxElements,
     maxTextChars,
   });
@@ -69,7 +69,7 @@ export async function createProvider(options = {}) {
             native,
             input,
             context,
-            confirm,
+            approval,
           ),
         });
       }
@@ -249,24 +249,31 @@ function mirrorNativeTools(registered) {
   });
 }
 
-async function executeNativeTool(document, tool, input, context, confirm) {
+async function executeNativeTool(document, tool, input, context, approval) {
   context?.signal?.throwIfAborted?.();
+  const exactInput = cloneApprovalValue(input && typeof input === "object" ? input : {});
+  const encodedInput = JSON.stringify(exactInput);
+  const execute = async () => {
+    context?.signal?.throwIfAborted?.();
+    const result = await document.modelContext.executeTool(
+      tool,
+      encodedInput,
+      context?.signal === undefined ? undefined : { signal: context.signal },
+    );
+    return parseStructuredResult(result);
+  };
   if (tool.annotations?.readOnlyHint !== true) {
-    await authorize(confirm, {
+    return approval.execute({
       kind: "webmcp",
       name: tool.name,
       title: tool.title,
+      description: tool.description,
       origin: tool.origin,
-      input,
+      input: exactInput,
       readOnly: false,
-    });
+    }, execute);
   }
-  const result = await document.modelContext.executeTool(
-    tool,
-    JSON.stringify(input && typeof input === "object" ? input : {}),
-    context?.signal === undefined ? undefined : { signal: context.signal },
-  );
-  return parseStructuredResult(result);
+  return execute();
 }
 
 function createSemanticPageTools(document, options) {
@@ -392,17 +399,18 @@ function createSemanticPageTools(document, options) {
 
   async function activate(input, context) {
     const element = requiredElement(input?.id);
-    await authorize(options.confirm, {
+    return options.approval.execute({
       kind: "semantic",
       name: "web_page_activate",
       input,
       element: describeElement(element),
       readOnly: false,
+    }, () => {
+      context?.signal?.throwIfAborted?.();
+      if (typeof element.click !== "function") throw new Error("page element cannot be activated");
+      element.click();
+      return { activated: input.id, url: document.location?.href ?? "" };
     });
-    context?.signal?.throwIfAborted?.();
-    if (typeof element.click !== "function") throw new Error("page element cannot be activated");
-    element.click();
-    return { activated: input.id, url: document.location?.href ?? "" };
   }
 
   async function fill(input, context) {
@@ -415,7 +423,7 @@ function createSemanticPageTools(document, options) {
       id: entry?.id,
       value: entry?.value,
     }));
-    await authorize(options.confirm, {
+    return options.approval.execute({
       kind: "semantic",
       name: "web_page_fill",
       input,
@@ -427,14 +435,15 @@ function createSemanticPageTools(document, options) {
         })),
       },
       readOnly: false,
+    }, () => {
+      const changed = [];
+      for (const entry of changes) {
+        context?.signal?.throwIfAborted?.();
+        setControlValue(entry.element, entry.value, document);
+        changed.push(entry.id);
+      }
+      return { filled: changed };
     });
-    const changed = [];
-    for (const entry of changes) {
-      context?.signal?.throwIfAborted?.();
-      setControlValue(entry.element, entry.value, document);
-      changed.push(entry.id);
-    }
-    return { filled: changed };
   }
 
   async function submit(input, context) {
@@ -442,18 +451,19 @@ function createSemanticPageTools(document, options) {
     if (String(form.tagName ?? "").toLowerCase() !== "form") {
       throw new TypeError("web_page_submit requires a form ID");
     }
-    await authorize(options.confirm, {
+    return options.approval.execute({
       kind: "semantic",
       name: "web_page_submit",
       input,
       element: { id: input.id, role: "form", name: accessibleName(form) },
       readOnly: false,
+    }, () => {
+      context?.signal?.throwIfAborted?.();
+      if (typeof form.requestSubmit === "function") form.requestSubmit();
+      else if (typeof form.submit === "function") form.submit();
+      else throw new Error("page form cannot be submitted");
+      return { submitted: input.id, url: document.location?.href ?? "" };
     });
-    context?.signal?.throwIfAborted?.();
-    if (typeof form.requestSubmit === "function") form.requestSubmit();
-    else if (typeof form.submit === "function") form.submit();
-    else throw new Error("page form cannot be submitted");
-    return { submitted: input.id, url: document.location?.href ?? "" };
   }
 
   function describeElement(element) {
@@ -604,7 +614,7 @@ function validateProviderOptions(options) {
     throw new TypeError("WebMCP provider options must be an object");
   }
   const allowed = new Set([
-    "confirm", "document", "fallback", "fromOrigins", "maxElements",
+    "confirm", "dialog", "document", "fallback", "fromOrigins", "maxElements",
     "maxTextChars", "native", "sourceId",
   ]);
   for (const name of Object.keys(options)) {
@@ -612,6 +622,9 @@ function validateProviderOptions(options) {
   }
   if (options.confirm !== undefined && typeof options.confirm !== "function") {
     throw new TypeError("WebMCP confirm must be a function");
+  }
+  if (options.dialog !== undefined && typeof options.dialog?.open !== "function") {
+    throw new TypeError("WebMCP dialog must provide open(request, execution)");
   }
   if (options.native !== undefined
       && options.native !== true && options.native !== false && options.native !== "require") {
@@ -695,6 +708,64 @@ async function authorize(confirm, request) {
   if (await confirm(Object.freeze({ ...request })) !== true) {
     throw new Error(`WebMCP action was not approved: ${request.name}`);
   }
+}
+
+function createApproval(document, options) {
+  const confirm = options.confirm;
+  let dialog = options.dialog;
+  let defaultDialog;
+  return Object.freeze({
+    async execute(request, action) {
+      const frozen = deepFreeze(cloneApprovalValue({ ...request }));
+      if (confirm !== undefined) {
+        await authorize(confirm, frozen);
+        return action();
+      }
+      if (!dialog) {
+        defaultDialog ??= import("../cloud/Dialog.mjs").then(({ iframe }) => iframe().setup({
+          appId: approvalApp(document).id,
+        }));
+        dialog = await defaultDialog;
+      }
+      return dialog.open(deepFreeze({
+        id: randomId(),
+        type: "webMcpApproval",
+        app: approvalApp(document),
+        action: frozen,
+      }), { execute: action });
+    },
+  });
+}
+
+function cloneApprovalValue(value) {
+  try {
+    if (typeof globalThis.structuredClone === "function") return globalThis.structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  } catch (error) {
+    throw new TypeError("WebMCP approval data must be structured-cloneable", { cause: error });
+  }
+}
+
+function approvalApp(document) {
+  const href = document.location?.href ?? globalThis.location?.href;
+  let origin = document.location?.origin ?? globalThis.location?.origin;
+  if (!origin && href) {
+    try { origin = new URL(href).origin; } catch {}
+  }
+  if (!origin || origin === "null") {
+    throw new Error("mutating WebMCP tools require a trusted browser origin");
+  }
+  const host = new URL(origin).hostname;
+  return deepFreeze({
+    id: `webmcp:${host}`.slice(0, 128),
+    name: nonEmptyString(document.title) ?? host,
+    origin,
+  });
+}
+
+function randomId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
+  return `webmcp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function queryAll(document, selector) {

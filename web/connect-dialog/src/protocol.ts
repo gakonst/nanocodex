@@ -20,7 +20,11 @@ type WalletHostActions = Readonly<{
 const listeners = new Set<() => void>();
 let snapshot: Request | undefined;
 let walletEvent: WalletEvent | undefined;
-let fundingParent: Readonly<{ id: string; origin: string; source: Window }> | undefined;
+let dialogParent: Readonly<{ id: string; origin: string; source: Window }> | undefined;
+let executionCompletion: Readonly<{
+  reject(error: Error): void;
+  resolve(): void;
+}> | undefined;
 let started = false;
 
 export const parentDialog = Object.freeze({
@@ -38,7 +42,7 @@ export const parentDialog = Object.freeze({
       await event.respond(result);
       return;
     }
-    const current = fundingParent;
+    const current = dialogParent;
     if (!current) throw new Error("The Nanocodex dialog has no pending request");
     settle();
     current.source.postMessage({ type: "nanocodex:response", id: current.id, result }, current.origin);
@@ -51,7 +55,7 @@ export const parentDialog = Object.freeze({
       await event.reject({ code: 4001, message });
       return;
     }
-    const current = fundingParent;
+    const current = dialogParent;
     if (!current) throw new Error("The Nanocodex dialog has no pending request");
     settle();
     current.source.postMessage({
@@ -59,6 +63,19 @@ export const parentDialog = Object.freeze({
       id: current.id,
       error: { message },
     }, current.origin);
+  },
+  async approve() {
+    const current = dialogParent;
+    if (!current || snapshot?.type !== "webMcpApproval" || executionCompletion) {
+      throw new Error("The Nanocodex dialog has no pending WebMCP approval");
+    }
+    return new Promise<void>((resolve, reject) => {
+      executionCompletion = Object.freeze({ reject, resolve });
+      current.source.postMessage({
+        type: "nanocodex:approval",
+        id: current.id,
+      }, current.origin);
+    });
   },
 });
 
@@ -123,15 +140,19 @@ export function startWalletHost(actions: WalletHostActions) {
 }
 
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
-  if (
-    window.parent === window ||
-    event.source !== window.parent ||
-    event.origin === "null" ||
-    snapshot !== undefined ||
-    !isFundingMessage(event.data)
-  ) return;
-
-  fundingParent = Object.freeze({ id: event.data.id, origin: event.origin, source: window.parent });
+  if (window.parent === window || event.source !== window.parent || event.origin === "null") return;
+  if (isCompletionMessage(event.data)
+    && dialogParent?.id === event.data.id
+    && dialogParent.origin === event.origin) {
+    const completion = executionCompletion;
+    executionCompletion = undefined;
+    if (!completion) return;
+    if (event.data.ok) completion.resolve();
+    else completion.reject(new Error(event.data.error?.message ?? "The action failed."));
+    return;
+  }
+  if (snapshot !== undefined || !isDialogMessage(event.data, event.origin)) return;
+  dialogParent = Object.freeze({ id: event.data.id, origin: event.origin, source: window.parent });
   publish(Object.freeze(event.data.request));
 });
 
@@ -142,7 +163,8 @@ function publish(request: Request | undefined) {
 
 function settle() {
   walletEvent = undefined;
-  fundingParent = undefined;
+  dialogParent = undefined;
+  executionCompletion = undefined;
   publish(undefined);
 }
 
@@ -224,13 +246,37 @@ function singleParameter(url: URL, name: string): string | null {
   return values.length === 1 ? values[0]! : null;
 }
 
-function isFundingMessage(value: unknown): value is Readonly<{
+function isDialogMessage(value: unknown, origin: string): value is Readonly<{
   type: "nanocodex:request";
   id: string;
-  request: Dialog.FundingRequest;
+  request: Dialog.FundingRequest | Dialog.WebMcpApprovalRequest;
 }> {
   if (!isRecord(value) || value.type !== "nanocodex:request" || typeof value.id !== "string") return false;
-  return isRecord(value.request) && value.request.type === "machineUsdFund" && value.request.id === value.id;
+  if (!isRecord(value.request) || value.request.id !== value.id) return false;
+  if (value.request.type === "machineUsdFund") return true;
+  if (value.request.type !== "webMcpApproval"
+    || !isRecord(value.request.app)
+    || value.request.app.origin !== origin
+    || typeof value.request.app.id !== "string"
+    || typeof value.request.app.name !== "string"
+    || !isRecord(value.request.action)
+    || value.request.action.readOnly !== false
+    || (value.request.action.kind !== "webmcp" && value.request.action.kind !== "semantic")
+    || typeof value.request.action.name !== "string"
+    || !value.request.action.name) return false;
+  return true;
+}
+
+function isCompletionMessage(value: unknown): value is Readonly<{
+  type: "nanocodex:completion";
+  id: string;
+  ok: boolean;
+  error?: Readonly<{ message?: string }>;
+}> {
+  return isRecord(value)
+    && value.type === "nanocodex:completion"
+    && typeof value.id === "string"
+    && typeof value.ok === "boolean";
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

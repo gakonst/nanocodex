@@ -74,6 +74,55 @@ test("the default Connect dialog stays embedded and accepts responses only from 
   }
 });
 
+test("the embedded approval stays open while its exact action executes", async () => {
+  const browser = createBrowserHarness();
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.document = browser.document;
+  globalThis.window = browser.window;
+  try {
+    const dialog = Dialog.iframe({ host: `${DEFAULT_HOST}?test=execution` }).setup({ appId: "execution-test" });
+    let finish;
+    const execution = new Promise((resolve) => { finish = resolve; });
+    const request = { id: "approval-1", type: "webMcpApproval" };
+    const result = dialog.open(request, { execute: () => execution });
+    const modal = browser.document.body.children.find(
+      (element) => element.attributes.get("aria-label") === "Nanocodex Connect permissions",
+    );
+    const frame = modal.children[0];
+    frame.dispatch("load");
+    await Promise.resolve();
+
+    browser.window.dispatchMessage({
+      data: { type: "nanocodex:approval", id: request.id },
+      origin: DEFAULT_ORIGIN,
+      source: frame.contentWindow,
+    });
+    await Promise.resolve();
+    assert.equal(modal.open, true);
+    assert.equal(frame.contentWindow.messages.length, 1);
+
+    finish({ transferred: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(frame.contentWindow.messages[1], {
+      message: { type: "nanocodex:completion", id: request.id, ok: true },
+      targetOrigin: DEFAULT_ORIGIN,
+    });
+    assert.equal(modal.open, true);
+
+    browser.window.dispatchMessage({
+      data: { type: "nanocodex:response", id: request.id, result: { approved: true } },
+      origin: DEFAULT_ORIGIN,
+      source: frame.contentWindow,
+    });
+    assert.deepEqual(await result, { transferred: true });
+    assert.equal(modal.open, false);
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.window = previousWindow;
+  }
+});
+
 test("the popup Connect dialog opens the canonical host as a top-level wallet target", () => {
   const previousWindow = globalThis.window;
   const opened = [];
