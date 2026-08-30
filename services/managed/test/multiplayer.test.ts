@@ -2090,7 +2090,10 @@ async function within<Result>(promise: Promise<Result>, operation: string): Prom
     return await Promise.race([
       promise,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`${operation} test timed out`)), 1_000);
+        // The application deadline is configured independently (20 ms in the
+        // bounded-I/O tests). Leave enough harness headroom for a saturated CI
+        // worker to schedule that deadline and return its 503 response.
+        timer = setTimeout(() => reject(new Error(`${operation} test timed out`)), 5_000);
       }),
     ]);
   } finally {
