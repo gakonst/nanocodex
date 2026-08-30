@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import type { DefaultAgent } from "nanocodex";
+import type { AgentLifecycle, DefaultAgent } from "nanocodex";
 import { Transport, type AgentStatus } from "nanocodex/browser";
 import type { ManagedAgent } from "nanocodex/managed";
 import {
@@ -28,8 +28,14 @@ import {
 import type { ConnectAgent } from "nanocodex/connect";
 
 const config = createConfig({
-  agent: { transport: Transport.hostManaged(), thinking: "high" },
+  agent: { transport: Transport.hostManaged(), thinking: "high", webMcp: true, harness: false },
   retry: 1,
+});
+const managedConfig = createConfig({
+  agent: {
+    transport: Transport.managed({ agent: { create: true } }),
+    webMcp: true,
+  },
 });
 const provider: ComponentProps<typeof NanocodexProvider> = { children: null, config };
 void provider;
@@ -62,6 +68,15 @@ function Consumer() {
   return result.data;
 }
 void Consumer;
+
+function ManagedConsumer() {
+  const result = useNanocodex({ config: managedConfig });
+  if (result.status !== "success") return result.status;
+  const agent: AgentLifecycle = result.data;
+  useAgentEvents(agent, (event) => event.seq);
+  return agent.sessionId;
+}
+void ManagedConsumer;
 
 function VoiceConsumer(agent: DefaultAgent | ManagedAgent | ConnectAgent | undefined) {
   const voice: UseVoiceReturnType = useVoice(agent, {

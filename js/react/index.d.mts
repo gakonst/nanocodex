@@ -1,4 +1,4 @@
-import type { AgentEvent, DefaultAgent } from "nanocodex";
+import type { AgentEvent, AgentLifecycle, DefaultAgent } from "nanocodex";
 import type { ManagedAgent } from "nanocodex/managed";
 import type { ConnectAgent } from "nanocodex/connect";
 import type { Config } from "nanocodex/browser";
@@ -15,22 +15,26 @@ export {
   type AgentStatus,
   type Config,
   type CreateConfigParameters,
+  type CreateManagedConfigParameters,
 } from "nanocodex/browser";
 
-export type UseNanocodexParameters<Selection = UseNanocodexReturnType> = Readonly<{
+export type UseNanocodexParameters<
+  Selection = UseNanocodexReturnType,
+  agent extends AgentLifecycle = DefaultAgent,
+> = Readonly<{
   /** Defaults to true. Disabled hooks stay idle and do not prepare or create an Agent. */
   enabled?: boolean | undefined;
   /** Stable OPFS/Git workspace identity. Omitted or empty values use the config's stable default. */
   threadId?: string | undefined;
   /** Optional provider bypass for libraries and isolated consumers. */
-  config?: Config | undefined;
+  config?: Config<agent> | undefined;
   /** Selects the value observed by this component. Defaults to the full Agent resource. */
-  selector?: ((resource: UseNanocodexReturnType) => Selection) | undefined;
+  selector?: ((resource: UseNanocodexReturnType<agent>) => Selection) | undefined;
   /** Controls whether two selected values are observably different. Defaults to Object.is. */
   equalityFn?: ((previous: Selection, next: Selection) => boolean) | undefined;
 }>;
 
-export type UseNanocodexReturnType =
+export type UseNanocodexReturnType<agent extends AgentLifecycle = DefaultAgent> =
   | Readonly<{
     data: undefined;
     error: undefined;
@@ -52,7 +56,7 @@ export type UseNanocodexReturnType =
     refetch(): void;
   }>
   | Readonly<{
-    data: DefaultAgent;
+    data: agent;
     error: undefined;
     status: "success";
     isError: false;
@@ -74,21 +78,23 @@ export type UseNanocodexReturnType =
 
 export function NanocodexProvider(props: {
   children: ReactNode;
-  config: Config;
+  config: Config<AgentLifecycle>;
 }): ReactNode;
-export function useConfig(parameters?: { config?: Config | undefined }): Config;
-export function useNanocodex<Selection>(
-  options: UseNanocodexParameters<Selection> & {
-    selector: (resource: UseNanocodexReturnType) => Selection;
+export function useConfig<agent extends AgentLifecycle = DefaultAgent>(
+  parameters?: { config?: Config<agent> | undefined },
+): Config<agent>;
+export function useNanocodex<agent extends AgentLifecycle, Selection>(
+  options: UseNanocodexParameters<Selection, agent> & {
+    selector: (resource: UseNanocodexReturnType<agent>) => Selection;
   },
 ): Selection;
-export function useNanocodex(
-  options?: Omit<UseNanocodexParameters<UseNanocodexReturnType>, "selector"> & {
+export function useNanocodex<agent extends AgentLifecycle = DefaultAgent>(
+  options?: Omit<UseNanocodexParameters<UseNanocodexReturnType<agent>, agent>, "selector"> & {
     selector?: undefined;
   },
-): UseNanocodexReturnType;
+): UseNanocodexReturnType<agent>;
 export function useAgentEvents(
-  agent: DefaultAgent | undefined,
+  agent: AgentLifecycle | undefined,
   listener: (event: AgentEvent) => void,
   options?: { includeAllSessions?: boolean | undefined },
 ): void;

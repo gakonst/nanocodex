@@ -1,4 +1,6 @@
-import { createWorkerAgent, prepareWorkerAgent } from "./WorkerAgent.mjs";
+import { managedTransportOptions } from "../runtime/managed-transport.mjs";
+import { create as createBrowserAgent } from "./Agent.mjs";
+import { prepareWorkerAgent } from "./WorkerAgent.mjs";
 
 const IDLE_SNAPSHOT = Object.freeze({
   data: undefined,
@@ -9,8 +11,19 @@ const IDLE_SNAPSHOT = Object.freeze({
 /** Creates the stable browser runtime consumed by framework bindings. */
 export function createConfig(options = {}) {
   return createAgentConfig(options, {
-    create: createWorkerAgent,
-    prepare: prepareWorkerAgent,
+    create: createBrowserAgent,
+    prepare(agentOptions, workerOptions) {
+      if (managedTransportOptions(agentOptions.transport)) return;
+      return prepareWorkerAgent(agentOptions, workerOptions);
+    },
+    resolveOptions(agentOptions, { origin, threadId }) {
+      if (managedTransportOptions(agentOptions.transport)) return agentOptions;
+      return {
+        ...agentOptions,
+        threadId,
+        ...(origin === undefined ? {} : { origin }),
+      };
+    },
   });
 }
 
@@ -35,11 +48,13 @@ export function createAgentConfig(options = {}, runtime) {
   }
 
   function createEntry(threadId) {
-    const createOptions = Object.freeze({
-      ...agentOptions,
-      threadId,
-      ...(options.origin === undefined ? {} : { origin: options.origin }),
-    });
+    const createOptions = Object.freeze(runtime.resolveOptions
+      ? runtime.resolveOptions(agentOptions, { origin: options.origin, threadId })
+      : {
+          ...agentOptions,
+          threadId,
+          ...(options.origin === undefined ? {} : { origin: options.origin }),
+        });
     const entry = {
       activeSubscribers: 0,
       activeTurns: 0,

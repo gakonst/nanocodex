@@ -1,7 +1,7 @@
 # nanocodex-react
 
-React hooks over the headless browser SDK. The vanilla config owns the package
-Worker, Rust/WASM Agent, persistent workspace, and cleanup. React only reads
+React hooks over the headless browser SDK. The vanilla config owns either the
+package Worker or managed Agent lifecycle and its cleanup. React only reads
 that external state and binds event subscriptions.
 
 ## Headless conversation controller
@@ -140,4 +140,46 @@ preparation lifecycle.
 
 ```ts
 const config = createConfig({ agent: { /* tools and policy */ } });
+```
+
+## Drive the website through WebMCP
+
+With the Vite or Next.js WebMCP generator enabled, publish the reviewed
+`webmcp.manifest.json` from the application and enable WebMCP on the same config
+used by the React hook. Set `harness: false` when the website itself is the
+complete tool surface:
+
+```tsx
+import { Transport } from "nanocodex/browser";
+import { createConfig, useNanocodex } from "nanocodex-react";
+
+const config = createConfig({
+  agent: {
+    harness: false,
+    transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
+    webMcp: true,
+  },
+});
+
+function App() {
+  const { data: agent } = useNanocodex({ config });
+  return agent ? <Conversation agent={agent} /> : null;
+}
+```
+
+No caller-owned Worker or harness is required. WebMCP handlers stay in the
+page and use its signed-in session; the package Worker receives only the tool
+catalog and bounded calls.
+
+The same hook also owns a durable managed Agent. Its WebMCP tools are
+reverse-attached automatically over the remote tools protocol, so execution
+still returns to the current browser page:
+
+```ts
+const config = createConfig({
+  agent: {
+    transport: Transport.managed({ agent: { create: true } }),
+    webMcp: true,
+  },
+});
 ```

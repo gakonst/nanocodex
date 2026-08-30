@@ -90,6 +90,32 @@ method, schema, annotations, description, and implementation are unchanged.
 Source or contract changes reset approval instead of silently broadening the
 website's tools.
 
+React applications can make that published registry their entire Agent tool
+surface without owning a harness:
+
+```tsx
+import { Transport } from "nanocodex/browser";
+import { createConfig, useNanocodex } from "nanocodex-react";
+
+const config = createConfig({
+  agent: {
+    harness: false,
+    transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
+    webMcp: true,
+  },
+});
+
+function App() {
+  const { data: agent } = useNanocodex({ config });
+  return agent ? <Conversation agent={agent} /> : null;
+}
+```
+
+Replace `hostManaged(...)` with
+`Transport.managed({ agent: { create: true } })` for a durable managed Agent.
+The same React config then reverse-attaches WebMCP over the remote tools
+protocol, so handlers and approvals remain in the live website.
+
 The CLI exposes the same reconciliation when explicit generation is preferable:
 
 ```sh

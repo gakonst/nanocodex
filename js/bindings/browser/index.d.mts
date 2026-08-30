@@ -70,6 +70,7 @@ export {
   type AgentStatus,
   type Config,
   type CreateConfigParameters,
+  type CreateManagedConfigParameters,
 } from "./config.mjs";
 export {
   defaultHostManagedWebSocketUrl,

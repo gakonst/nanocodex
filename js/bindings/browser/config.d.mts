@@ -1,12 +1,12 @@
-import type { DefaultAgent } from "../types.mjs";
+import type { AgentLifecycle, DefaultAgent } from "../types.mjs";
 import type { create as createAgent } from "./Agent.mjs";
 
 export type AgentStatus = "idle" | "pending" | "success" | "error";
 
-export type AgentSnapshot =
+export type AgentSnapshot<agent extends AgentLifecycle = DefaultAgent> =
   | Readonly<{ data: undefined; error: undefined; status: "idle" }>
   | Readonly<{ data: undefined; error: undefined; status: "pending" }>
-  | Readonly<{ data: DefaultAgent; error: undefined; status: "success" }>
+  | Readonly<{ data: agent; error: undefined; status: "success" }>
   | Readonly<{ data: undefined; error: unknown; status: "error" }>;
 
 export type AgentParameters = Readonly<{
@@ -14,8 +14,8 @@ export type AgentParameters = Readonly<{
   threadId?: string | undefined;
 }>;
 
-export type Config = Readonly<{
-  getAgent(parameters?: AgentParameters): AgentSnapshot;
+export type Config<agent extends AgentLifecycle = DefaultAgent> = Readonly<{
+  getAgent(parameters?: AgentParameters): AgentSnapshot<agent>;
   subscribeAgent(parameters: AgentParameters, listener: () => void): () => void;
   refetchAgent(parameters?: AgentParameters): void;
   destroy(): Promise<void>;
@@ -32,5 +32,15 @@ export type CreateConfigParameters = Readonly<{
   retryDelay?: ((attempt: number, error: unknown) => number) | undefined;
 }>;
 
+export type CreateManagedConfigParameters = Readonly<{
+  /** Managed Agent and reverse host-tool attachment owned by this config. */
+  agent: createAgent.ManagedOptions;
+  /** Agent startup retries after the first attempt. Defaults to 2. */
+  retry?: number | undefined;
+  /** Backoff before a startup retry. Defaults to 400ms × attempt. */
+  retryDelay?: ((attempt: number, error: unknown) => number) | undefined;
+}>;
+
 /** Creates the stable browser runtime consumed by framework bindings. */
+export function createConfig(options: CreateManagedConfigParameters): Config<AgentLifecycle>;
 export function createConfig(options?: CreateConfigParameters): Config;

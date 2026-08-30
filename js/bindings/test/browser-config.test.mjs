@@ -1,7 +1,64 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createAgentConfig } from "../browser/config.mjs";
+import { createAgentConfig, createConfig } from "../browser/config.mjs";
+import { managed as managedTransport } from "../browser/Transport.mjs";
+
+const managedAgentId = "0198d3f0-8844-7000-8000-000000000001";
+const managedSessionId = "0198d3f0-8844-7000-8000-000000000002";
+
+test("the browser config reverse-attaches WebMCP to managed Agents without a Worker harness", async () => {
+  const socket = new ManagedToolSocket();
+  let providerClosed = false;
+  const provider = {
+    [Symbol.for("nanocodex.webmcp.provider")]: true,
+    sourceId: "webmcp:react-config",
+    kind: "webmcp",
+    mode: "union",
+    deferred: true,
+    definitions: () => [{
+      type: "function",
+      name: "web_current_page",
+      description: "Read the current page.",
+      strict: false,
+      defer_loading: true,
+      parameters: { type: "object", additionalProperties: false },
+    }],
+    resolve: (name) => name === "web_current_page" ? {
+      name,
+      parallelSafe: true,
+      handler: () => ({ title: "Managed site" }),
+    } : undefined,
+    async settled() {},
+    close() { providerClosed = true; },
+  };
+  const config = createConfig({
+    retry: 0,
+    agent: {
+      transport: managedTransport({
+        agent: { id: managedAgentId },
+        baseUrl: "https://managed.example",
+        fetch: async () => Response.json({
+          agent_id: managedAgentId,
+          session_id: managedSessionId,
+        }),
+        toolsTransport: () => socket,
+      }),
+      webMcp: provider,
+    },
+  });
+  const unsubscribe = config.subscribeAgent({}, () => {});
+  await waitFor(() => ["success", "error"].includes(config.getAgent().status));
+  assert.equal(config.getAgent().status, "success", String(config.getAgent().error));
+  await waitFor(() => socket.frames.some((frame) => frame.type === "catalog"));
+
+  assert.equal(config.getAgent().data.type, "managed");
+  assert.equal(socket.frames.find((frame) => frame.type === "catalog").tools[0].definition.name, "web_current_page");
+
+  unsubscribe();
+  await waitFor(() => providerClosed);
+  await config.destroy();
+});
 
 test("snapshot reads and refetch stay pure until a subscriber creates the entry", async () => {
   const calls = [];
@@ -1098,6 +1155,36 @@ function fakeAgent(id, closed) {
       async shutdown() { closed.push(id); },
     },
   };
+}
+
+class ManagedToolSocket {
+  readyState = 1;
+  frames = [];
+  listeners = new Map();
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  send(encoded) {
+    const frame = JSON.parse(encoded);
+    this.frames.push(frame);
+    if (frame.type === "catalog") queueMicrotask(() => this.receive({ type: "ready" }));
+    if (frame.type === "drain") queueMicrotask(() => this.receive({ type: "draining" }));
+  }
+
+  receive(frame) {
+    for (const listener of this.listeners.get("message") ?? []) {
+      listener({ data: JSON.stringify(frame) });
+    }
+  }
+
+  close(code, reason) {
+    this.readyState = 3;
+    for (const listener of this.listeners.get("close") ?? []) listener({ code, reason });
+  }
 }
 
 function deferred() {

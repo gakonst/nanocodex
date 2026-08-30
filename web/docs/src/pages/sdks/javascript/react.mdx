@@ -30,9 +30,10 @@ function App() {
 root.render(<App />);
 ```
 
-The vanilla `createConfig` store owns the package Worker, retries, replacement,
-and graceful shutdown. Active hooks with the same thread ID share exactly one
-Agent. A disabled hook stays idle without preparing or creating an Agent.
+The vanilla `createConfig` store owns the package Worker or managed Agent,
+retries, replacement, and graceful shutdown. Active hooks with the same thread
+ID share exactly one Agent. A disabled hook stays idle without preparing or
+creating an Agent.
 `useNanocodex` exposes a Wagmi-style status snapshot and
 `refetch`; `useAgentEvents` subscribes to the ordered typed event stream while
 always calling the latest committed React listener.
@@ -57,6 +58,48 @@ function App() {
 For many consumers, put the same config in `NanocodexProvider` and omit the
 `config` option from each hook. No React-specific prepare or preload step is
 required.
+
+## Make the website the tool surface
+
+After the Vite or Next.js plugin generates `webmcp.manifest.json`, publish its
+reviewed tools and enable WebMCP in the React-owned config. When the site itself
+provides everything the Agent needs, `harness: false` avoids installing the
+default coding harness:
+
+```tsx
+const config = createConfig({
+  agent: {
+    harness: false,
+    transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
+    webMcp: true,
+  },
+});
+
+function App() {
+  const { data: agent } = useNanocodex({ config });
+  return agent ? <Conversation agent={agent} /> : null;
+}
+```
+
+No caller-owned Worker or React-specific harness lifecycle is needed. The
+WebMCP implementation remains in the signed-in page while bounded definitions
+and calls cross the package Worker bridge.
+
+For a durable managed Agent, select the managed transport on the same config:
+
+```tsx
+const config = createConfig({
+  agent: {
+    transport: Transport.managed({ agent: { create: true } }),
+    webMcp: true,
+  },
+});
+```
+
+`useNanocodex` then owns the managed lifecycle and Nanocodex reverse-attaches
+the page's WebMCP provider over the remote tools protocol. Tool execution comes
+back to the live browser page, preserving its authenticated session and the
+same trusted approval dialog.
 
 ## Keep policy in the application
 
