@@ -19,16 +19,17 @@ Duration: 24 seconds.
 
 1. In a product UI, enter: “Audit this repository and draft the migration PR.”
 2. Show `turn accepted` and the first two durable event cursors.
-3. Close the laptop or cut to a disconnected state while the hosted agent keeps
-   working.
-4. Open the same agent from a phone-sized client, reconnect after the last
+3. Click a visible **Detach output** control and show the UI stop consuming
+   events while the hosted turn remains `running`.
+4. Close the laptop. Open the same agent from a phone-sized client, reconnect after the last
    processed cursor, and show later events without transcript replay.
 5. End on the proposed change and a completed status.
 
 On-screen copy: “The client disconnected. The work did not.”
 
-This clip belongs after “What Centaur taught us.” It makes durability legible
-to a product person before the article introduces the journal.
+This is the first clip in the post, directly after the attach/detach example.
+It makes the product contract legible before the article introduces the
+journal or the Centaur architecture.
 
 ## 2. Start cheap, attach a machine when needed
 

@@ -1,118 +1,214 @@
 ---
-title: Nanocodex Managed
-description: Use Paradigm's hosted durable-agent API while keeping the same open agent and journal contract.
+title: Managed Agents and Connect
+description: Create a durable agent, connect model and tool access, and attach any product surface to its output.
 ---
 
-# Nanocodex Managed
+# Managed Agents and Connect
 
-Nanocodex Managed is the hosted product built above the open-source SDK. It
-exposes an authenticated agent lifecycle, not a remote shell: create an agent,
-submit an idempotent turn, consume ordered events, reconnect from a cursor,
-steer or cancel work, and delete the durable owner when the product is done.
+Nanocodex Managed puts a durable Codex agent behind an ordinary API. Create an
+agent, connect the model and accounts it may use, submit work, and attach its
+output to a web app, Slack bot, mobile client, or background job. A client can
+detach without stopping the agent and reattach later from its last durable
+cursor.
 
-![A product calls the Paradigm managed API, which runs the Rust and WASM agent against a portable journal and attaches execution hands as needed.](/docs/architecture/managed-request.svg "The hosted control plane owns operations; the agent and journal retain their open contracts.")
+Connect is the identity half of the product. A user can bring an eligible
+ChatGPT subscription for Codex model access and authorize narrow GitHub, Slack,
+Google, or other tool capabilities. The application receives capability
+identities. Reusable credentials remain behind Paradigm's broker and never
+enter the agent, generated code, or sandbox.
 
-## The product contract
+This is the same product transition embedded wallets made: a capability that
+once required leaving the application becomes infrastructure inside the
+application. The product owns the experience; the user brings identity and
+explicit grants. Nanocodex adds a portability requirement to that pattern:
+embedded agents must be exportable as runnable state, not trapped as a hosted
+transcript.
 
-Each agent belongs to an authenticated account. Agent IDs route requests but do
-not grant access. Creation and turn admission accept stable idempotency keys so
-a client can retry after a timeout without creating a second agent or executing
-the same logical turn twice.
+![A product connects model and tool access, creates a managed agent, and attaches clients to its durable output while execution hands remain replaceable.](/docs/architecture/managed-request.svg "Clients attach to durable output; execution environments attach separately as hands.")
 
-Events are durable, ordered, and cursor-addressed. A web app, background job,
-Slack surface, and mobile client can project the same agent without any client
-becoming the conversation owner. Reconnect after the last fully processed
-cursor; a live connection is a delivery optimization rather than the source of
-truth.
+## Create and run an agent
 
-The hosted service implements the complete lifecycle over REST,
-resumable server-sent events, and authenticated WebSockets in
-[`services/managed`](https://github.com/gakonst/nanocodex/tree/master/services/managed).
-The checked-in service is also the production behavior specification.
-
-## One durable turn
-
-Create an agent with a stable idempotency key. The receipt contains routing and
-stream locations, but no second bearer credential:
+Install the package, then create one retained agent. Browser applications can
+omit the options and use their same-origin account session. Server applications
+provide an `ncx_live_...` account API key:
 
 ```sh
-curl -fsS -X POST \
-  -H "Authorization: Bearer $NANOCODEX_API_KEY" \
-  -H 'Idempotency-Key: create-project-42' \
-  https://nanocodex.paradigm.xyz/v1/agents
+npm install nanocodex
 ```
 
-Submit work only once logically, even if the network response is lost:
+```js
+import { Agent } from "nanocodex/managed";
+
+const managed = {
+  baseUrl: "https://nanocodex.paradigm.xyz",
+  apiKey: process.env.NANOCODEX_API_KEY,
+};
+
+const agent = await Agent.create(managed);
+const turn = agent.turn.prompt({
+  id: "migration-42",
+  idempotencyKey: "customer-42:migration",
+  input: "Inspect the repository and draft the migration PR.",
+});
+
+const result = await turn.result();
+console.log(result.finalMessage);
+```
+
+`Agent.create()` returns an account-owned handle. Turn admission is durable: if
+the response is lost, retry the same idempotency key and stable turn ID rather
+than guessing whether the work started. `turn.result()` is only one observer of
+the accepted turn; abandoning that promise does not silently cancel server
+work.
+
+## Attach, detach, and reattach output
+
+Managed output is an ordered durable event log. Every event carries a decimal
+cursor. Persist the cursor only after the client has successfully rendered or
+processed the event.
+
+```js
+let cursor = "latest";
+
+// Attach this client atomically at the current durable head.
+let output = agent.events.watch({ cursor });
+const rendering = (async () => {
+  for await (const event of output) {
+    render(event);
+    cursor = event.cursor;
+  }
+})();
+
+// Detach only this client. The accepted turn continues on the server.
+await output.return();
+await rendering;
+
+// Later, perhaps on another device or process, reopen the same agent.
+const sameAgent = Agent.open(agent.id, managed);
+output = sameAgent.events.watch({ cursor });
+for await (const event of output) {
+  render(event);
+  cursor = event.cursor;
+}
+```
+
+The SDK automatically reconnects transient network endings from its most
+recent observed cursor. The explicit cursor is what lets an application close
+completely, persist a checkpoint, and resume on a different client.
+
+| Operation | Effect on this client | Effect on the durable turn |
+| --- | --- | --- |
+| `output.return()` or abort the watch signal | Detaches the event observer | Keeps running |
+| Reopen and `watch({ cursor })` | Resumes strictly after `cursor` | No change |
+| `watch({ cursor: "latest" })` | Tails atomically from the current head | No change |
+| `watch({ cursor: "0" })` | Replays retained events from the beginning | No change |
+| `turn.cancel()` | Observers receive cancellation events | Requests durable cancellation |
+| `agent.delete()` | Invalidates every handle | Deletes the agent and retained state |
+
+Multiple watchers may consume the same agent concurrently. Each has its own
+cursor and buffer, so a Slack consumer cannot steal events from a web UI. Use
+`agent.events.page()` to hydrate older history independently of the live tail.
+
+### REST and SSE equivalent
+
+The same contract is available without the JavaScript client. Submit a stable
+turn and attach to server-sent events from a cursor:
 
 ```sh
 curl -fsS -X POST \
   -H "Authorization: Bearer $NANOCODEX_API_KEY" \
   -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: request-42' \
-  --data '{"id":"turn-42","input":"Inspect the repository and draft the migration."}' \
-  https://nanocodex.paradigm.xyz/v1/agents/<agent-id>/turns
+  -H 'Idempotency-Key: customer-42:migration' \
+  --data '{"id":"migration-42","input":"Inspect the repository and draft the migration PR."}' \
+  "https://nanocodex.paradigm.xyz/v1/agents/$AGENT_ID/turns"
+
+curl -N \
+  -H "Authorization: Bearer $NANOCODEX_API_KEY" \
+  -H 'Accept: text/event-stream' \
+  "https://nanocodex.paradigm.xyz/v1/agents/$AGENT_ID/events?cursor=latest"
 ```
 
-Start at cursor zero, or send `Last-Event-ID` with the last cursor the consumer
-fully processed:
+Closing the SSE response detaches. To reattach, send the last fully processed
+event ID. `Last-Event-ID` takes precedence over the query parameter and resumes
+strictly after that cursor:
 
 ```sh
 curl -N \
   -H "Authorization: Bearer $NANOCODEX_API_KEY" \
   -H 'Accept: text/event-stream' \
-  'https://nanocodex.paradigm.xyz/v1/agents/<agent-id>/events?cursor=0'
+  -H 'Last-Event-ID: 42' \
+  "https://nanocodex.paradigm.xyz/v1/agents/$AGENT_ID/events"
 ```
 
-A new turn returns only after durable acceptance. An identical replay returns
-the original turn and cursors; reusing an identity with different input is a
-conflict. Event cursor 42 resumes strictly after 42.
+A `cursor=latest` stream begins with a control frame containing the atomic
+attachment cursor. Store it even if no later event arrives. A cursor ahead of
+the durable head is rejected rather than silently skipping future output.
 
-## Connect
+## Connect a ChatGPT subscription
 
-Connect lets an application request narrow capabilities from accounts a user
-has connected through Paradigm. First-party connectors and user-added MCP
-connections remain bound to the user's account. The grant projected into a
-managed agent contains connector and capability identities, never raw OAuth
-tokens.
-
-### Bring a ChatGPT subscription
-
-ChatGPT is also a Connect capability and can be the managed agent's model-access
-source. A user selects ChatGPT, completes OpenAI's device authorization, and
-returns to the product. Nanocodex Managed can then run Codex under that eligible
-subscription without asking the product to collect an OpenAI API key.
+ChatGPT can be the managed agent's model-access source. The user selects
+ChatGPT, completes OpenAI's device authorization, and returns to the product.
+Nanocodex Managed can then run Codex under that eligible subscription without
+asking the application to collect an OpenAI API key.
 
 The durable broker stores and rotates the account credential. It injects a
 current access token only while opening the fixed Codex Responses WebSocket.
 The browser, product API key, managed agent, tools, generated code, and sandbox
-never receive the refresh credential. Disconnecting ChatGPT revokes that model
-access for later admission. Usage is still governed by the user's OpenAI plan,
-limits, and terms.
+never receive the refresh credential. Disconnecting ChatGPT revokes model
+access for later turn admission. Usage remains governed by the user's OpenAI
+plan, limits, and terms.
 
-An account may instead host a raw OpenAI API key. Both choices use the same
-agent and journal; changing credential source does not create another harness
-or rewrite conversation history.
+An account can instead host an OpenAI API key behind the same broker boundary.
+Changing the credential source does not create another agent or rewrite its
+conversation history.
 
-Provider and connector credentials remain behind a broker. The agent or
-sandbox sends an authorized request to that boundary; the broker validates the
-destination and operation, injects the credential, and consumes rejected
-upstream responses before returning a typed failure. Generated code cannot
-read a token from its environment because the token is not there.
+## Connect product tools
 
-Connect is not ambient access. A product requests a grant, the user authorizes
-it, and the managed service enforces that grant again on admission and egress.
-A Slack channel, private web session, or background workflow can therefore
-receive different capabilities even when they address the same account.
+First-party connectors and user-added MCP connections use the same grant
+model. The product requests capabilities, the user authorizes them, and the
+managed service enforces the grant again at admission and egress. The agent
+sees a typed tool; only the egress broker sees the credential used to perform
+the authorized request.
 
-## Managed versus embedded
+A product may also attach tools running in its own browser, laptop, VPC, or
+physical device. This is a separate attachment from watching agent output:
 
-Use Managed when the product wants Paradigm to own durable admission, identity,
-event replay, quotas, execution routing, credential brokering, and sandbox
-lifecycle. Use the SDK when the product already owns those boundaries or must
-run them in its own infrastructure.
+```js
+import { createTools } from "nanocodex/tools";
 
-These are deployment choices around one agent implementation. The hosted
-service runs the same Rust/WASM lifecycle and persists the same Rust-owned
-journal format that self-hosted adapters consume. See
-[durability and portability](/architecture/durability-portability) for the
-export, replication, fencing, and import contract.
+const tools = await createTools({
+  mcp: false,
+  tools: {
+    inspectSelection: {
+      description: "Read the selection in the currently attached product UI.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+      handler: () => ({ text: readCurrentSelection() }),
+    },
+  },
+});
+
+const attachment = tools.attach(agent.toolsTarget());
+await attachment.connect();
+
+// Later: stop routing calls to this host. Agent state and output remain durable.
+await tools.close();
+```
+
+The private worker connects outward, so it does not need a public inbound
+endpoint. Production hosts can replace an attachment and fence the older
+generation before closing it, ensuring a tool call routes to at most one live
+host.
+
+## What Paradigm operates
+
+Paradigm owns authenticated admission, identity, quotas, durable storage,
+event replay, client synchronization, execution routing, credential brokering,
+and sandbox policy. Nanocodex owns the agent lifecycle. Tools can stay where
+the data or compute already lives, and a sandbox is allocated only when the
+agent needs a real machine.
+
+Use Managed when those operational boundaries should be an API. Use the SDK
+when your application already owns them or must run inside your infrastructure.
+Both use the same Rust/WASM agent and Rust-owned journal format. See
+[durability and portability](/architecture/durability-portability) for export,
+continuous replication, writer fencing, and import.

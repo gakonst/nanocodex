@@ -10,7 +10,7 @@ behind an API; the native, Rust, JavaScript, browser/WASM, and Python artifacts
 let your application own it. Both paths run the same Rust-owned agent
 lifecycle.
 
-## Hosted API
+## Managed Agents and Connect
 
 Create an account and issue an API key in the
 [agent console](https://nanocodex.paradigm.xyz/agent). Agent and turn creation use stable idempotency keys;
@@ -27,7 +27,31 @@ Choose one model-access connection for the account:
 The ChatGPT path does not require the product to collect an OpenAI API key.
 Usage remains subject to the connected user's OpenAI plan, limits, and terms.
 
-See [Nanocodex Managed](/architecture/managed) for ownership and security, then
+Create a retained agent and submit durable work:
+
+```js
+import { Agent } from "nanocodex/managed";
+
+const managed = {
+  baseUrl: "https://nanocodex.paradigm.xyz",
+  apiKey: process.env.NANOCODEX_API_KEY,
+};
+const agent = await Agent.create(managed);
+const turn = agent.turn.prompt({
+  id: "first-turn",
+  idempotencyKey: "first-turn",
+  input: "Inspect this project and propose the next useful change.",
+});
+console.log((await turn.result()).finalMessage);
+```
+
+The agent belongs to the account, not to this process. A UI can attach with
+`agent.events.watch({ cursor })`, detach by closing that iterator, and reopen
+the same agent later with `Agent.open(agent.id, managed)`. Detaching output does
+not cancel the accepted turn.
+
+See [Managed Agents and Connect](/architecture/managed) for the complete
+attach, detach, reattach, tool-host, and security contracts, then
 [durability and portability](/architecture/durability-portability) for the
 state contract shared with self-hosted deployments.
 

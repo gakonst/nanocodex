@@ -1,15 +1,21 @@
 ---
-title: Why the harness moves outside the sandbox
-description: Nanocodex embeds the Codex agent in the product and treats sandboxes as replaceable tools.
+title: Managed agents, inside out
+description: Start with Managed Agents and Connect, then see why Nanocodex moves the harness outside the sandbox.
 ---
 
-# Why the harness moves outside the sandbox
+# Managed agents, inside out
 
-Nanocodex starts from a narrow claim: use the model provider's real agent
-harness, but do not make a permanent sandbox its home. Embed the harness in the
-product. Keep the durable session outside the live process. Attach filesystems,
-browsers, private workers, and isolated machines as tools only when the work
-needs them.
+Nanocodex Managed gives products a durable Codex agent over an API. Connect
+lets users bring an eligible ChatGPT subscription and authorize the accounts
+the agent may use. Web, Slack, mobile, and background clients can attach to the
+same ordered output, detach without cancelling the work, and resume from a
+durable cursor.
+
+Start with [Managed Agents and Connect](/architecture/managed) for the product
+API. The architecture underneath begins with a narrow claim: use the model
+provider's real harness, but do not make a permanent sandbox its home. Keep the
+durable session outside the live process. Attach filesystems, browsers, private
+workers, and isolated machines as tools only when the work needs them.
 
 ![Centaur placed the CLI harness inside each sandbox; Nanocodex places the agent in the product and makes execution environments replaceable hands.](/docs/architecture/inside-out.svg "The sandbox stops being the agent's home and becomes one of its tools.")
 

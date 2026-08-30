@@ -10,7 +10,7 @@
   </defs>
   <rect width="1600" height="900" fill="#f8f8f6" filter="url(#paper)"/>
   <text x="66" y="88" class="title">Your agent can leave the cloud</text>
-  <g transform="translate(1110 48)"><circle cx="30" cy="30" r="30" fill="#d9ffd9"/><path d="M18 18l24 12-24 12V18zm7 8v8l8-4-8-4z" fill="#00e900"/><text x="76" y="41" class="repo">paradigmxyz/<tspan class="strong">nanocodex</tspan></text></g>
+  <g transform="translate(1274 48)"><circle cx="30" cy="30" r="30" fill="#d9ffd9"/><path d="M19 17L45 30 19 43Z" fill="#00e900"/><text x="76" y="41" class="repo strong">nanocodex</text></g>
 
   <g transform="translate(420 168)">
     <rect width="760" height="318" rx="24" fill="url(#greenSoft)" stroke="#9bd99b" stroke-width="2"/>

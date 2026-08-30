@@ -131,5 +131,29 @@ handle without a preliminary state request. The first operation on that handle
 still verifies account ownership at the managed service boundary. Use
 `Agent.get(id)` when an eager existence check is part of the caller's workflow.
 
+Attach, detach, and reattach are output-delivery operations. They are distinct
+from cancelling a durable turn:
+
+```js
+let cursor = "latest";
+let output = agent.events.watch({ cursor });
+const rendering = (async () => {
+  for await (const event of output) {
+    render(event);
+    cursor = event.cursor;
+  }
+})();
+
+await output.return(); // detach this observer; server work continues
+await rendering;
+
+const retained = Agent.open(agent.id, options);
+output = retained.events.watch({ cursor }); // resume strictly after cursor
+```
+
+Use `await turn.cancel()` only when the durable work itself should stop. Closing
+a watcher, aborting `turn.result({ signal })`, losing the network, or shutting
+down a transport client cancels only that observer.
+
 The managed API never accepts model-provider credentials, egress bindings,
 runtime environment objects, credential grants, or arbitrary request headers.

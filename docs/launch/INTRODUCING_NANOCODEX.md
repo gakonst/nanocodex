@@ -1,24 +1,94 @@
-# Introducing Nanocodex: Turning the Agent Harness Inside Out
+# Introducing Nanocodex: Managed Agents, Embedded Anywhere
 
-*Codex as a headless library—and durable managed agents as an API.*
+*Create a durable Codex agent, connect it to a user’s accounts, and embed it in any product.*
 
 By Georgios Konstantopoulos
 
-Today we’re open sourcing [Nanocodex](https://github.com/gakonst/nanocodex), a set of frontier building blocks for OpenAI agents, and launching **Nanocodex Managed**, Paradigm’s hosted API for running durable agents.
+Today we are launching **Nanocodex Managed**, Paradigm’s API for durable agents, and open sourcing [Nanocodex](https://github.com/gakonst/nanocodex), the agent runtime underneath it.
 
-Nanocodex is Codex as a headless, extensible library: the OpenAI API and tool loop, an owned agent lifecycle, and optional durability, packaged in Rust and compiled to native code or WASM. It gives applications Codex-level performance without requiring them to run a CLI inside a permanent sandbox or rebuild the hard parts of an agent around raw model calls.
+Managed Agents are long-running Codex agents you can create with an API call and put inside your own product. Connect lets a user bring their ChatGPT subscription and the accounts the agent should use. Your web app, Slack bot, mobile client, and background jobs can all attach to the same ordered output. They can leave and come back without stopping the work.
 
-Nanocodex Managed hosts the complete system for you. Create an agent over an API, send it work, stream or reconnect to its events from multiple clients, and let it continue after your process or laptop disappears. Paradigm owns the durable control plane, identity, execution routing, egress security, and sandbox lifecycle. Your application owns its product, policy, and agent data—and can export the complete durable state to another Nanocodex deployment at any time.
+Paradigm operates identity, durable execution, event replay, secure egress, and sandbox lifecycle. You own the product and its policy. You can export the agent’s complete runnable state to Postgres, Cloudflare, Vercel, or another Nanocodex deployment at any time.
 
-The architectural move is to **turn the agent harness inside out**.
+![A product connects model and tool access, creates a managed agent, and attaches clients to its durable output while execution hands remain replaceable.](../../web/public/docs/architecture/managed-request.svg)
 
-Today, most managed agent systems start with a sandbox, place a CLI harness inside it, and then build a product around the outside. Nanocodex embeds the harness directly in the product. Sandboxes, local machines, browsers, tools, and remote workers move outside the harness and become capabilities it can call only when needed. Durable state lives outside both, so either side can disappear and resume independently.
+Here is the whole product loop:
 
-You can use the library to build a personal harness, an agent in a browser, a Slack coworker, or your own agent platform. Or use the hosted API to add long-running agents to a product without operating any of that infrastructure yourself.
+```js
+import { Agent } from "nanocodex/managed";
 
-The thesis is simple: **the frontier model providers already build the best general-purpose harnesses for their models. Most developers should extend those harnesses, not replace them.**
+const managed = {
+  baseUrl: "https://nanocodex.paradigm.xyz",
+  apiKey: process.env.NANOCODEX_API_KEY,
+};
 
-With Nanocodex, you can now embed that thesis anywhere. With Nanocodex Managed, you can ship it without first becoming an agent infrastructure company.
+const agent = await Agent.create(managed);
+const turn = agent.turn.prompt({
+  id: "migration-42",
+  idempotencyKey: "customer-42:migration",
+  input: "Inspect the repository and draft the migration PR.",
+});
+
+const result = await turn.result();
+console.log(result.finalMessage);
+```
+
+In a browser, `Agent.create()` uses the current account session instead of exposing an API key. Before the first turn, the user can connect an eligible ChatGPT subscription for Codex model access and authorize GitHub, Slack, Google, or other tools through the same Connect flow. The product receives capability identities. The reusable credentials remain behind Paradigm’s broker.
+
+## Attach, leave, and come back
+
+An agent is not a request that happens to stream for a long time. It is a durable object with many possible observers.
+
+Each output event has a cursor. A client attaches after a cursor, records the cursor only after it has rendered or persisted the event, and detaches by closing its iterator. That stops delivery to that client; it does not cancel the turn.
+
+```js
+let cursor = "latest";
+
+// Attach this UI at the durable head.
+let output = agent.events.watch({ cursor });
+const rendering = (async () => {
+  for await (const event of output) {
+    render(event);
+    cursor = event.cursor; // acknowledge only after render succeeds
+  }
+})();
+
+// The tab closes or the user navigates away.
+await output.return();     // detach this observer
+await rendering;          // the durable turn keeps running
+
+// A later client reopens the retained agent and resumes strictly after cursor.
+const sameAgent = Agent.open(agent.id, managed);
+output = sameAgent.events.watch({ cursor });
+for await (const event of output) {
+  render(event);
+  cursor = event.cursor;
+}
+```
+
+Network interruptions are resumed automatically by the SDK. `cursor: "0"` replays the complete retained history; `cursor: "latest"` attaches atomically at the current head. If the user actually wants to stop the work, cancellation is explicit: `await turn.cancel()`.
+
+This distinction sounds small. It is what makes one agent usable from a web app, a Slack thread, a phone, and a background workflow without appointing any of them as the owner of the conversation.
+
+<!-- PRODUCT VIDEO 01: 24 seconds, 16:9 and 4:5. Begin in a web product.
+Create an agent, show the first durable cursors, click a visible “Detach” control,
+and keep the server-side turn running. Open the same agent on a phone-sized
+client, resume after the displayed cursor, and end on the completed artifact.
+Capture the real SDK calls and API cursors from docs/launch/VIDEO_STORYBOARDS.md. -->
+
+## Agents are becoming embedded infrastructure
+
+Wallets went through a similar transition. They began as separate destinations: install an extension, leave the application, manage another account, and return. Embedded-wallet infrastructure made the wallet a native product primitive. The application could own the experience while a specialized system handled key management and authorization. Newer systems also let users bring the same wallet across applications instead of creating a fresh identity each time ([Privy](https://privy.io/blog/embedded-wallet-launch), [global wallets](https://privy.io/blog/global-embedded-wallets)).
+
+Agents are moving the same way.
+
+The first generation lives in a terminal or a dedicated chat application. The next generation will be inside the software where the work begins: an IDE, an investment workflow, a support console, a research product, a multiplayer document, or something we have not named yet. The product should own the interface and policy. The agent should arrive with a durable identity, connected capabilities, and work that survives the interface.
+
+The analogy has one important consequence: embedded should not mean captive. A user should be able to bring an agent into a product, and a developer should be able to take its runnable state back out. This is why Connect and the interoperable durability format are product features, not implementation details.
+
+Nanocodex Managed is the hosted primitive. Nanocodex is the open runtime and exit path.
+
+Underneath both is one architectural move: **turn the agent harness inside out**.
 
 ![Centaur put one CLI harness inside each permanent sandbox. Nanocodex embeds the agent in the product and treats execution environments as replaceable hands.](../../web/public/docs/architecture/inside-out.svg)
 
@@ -48,11 +118,6 @@ A session that only needed to search, read files, or call an API still paid for 
 
 Centaur was right about the harness and wrong about the boundary.
 
-<!-- PRODUCT VIDEO 01: 24 seconds, 16:9 and 4:5. Begin on a product UI, not a
-terminal. A user assigns work in a web product, closes the laptop, then opens
-the same agent on a phone at a later durable cursor. End on the completed
-artifact. Capture spec: docs/launch/VIDEO_STORYBOARDS.md. -->
-
 ## Turning the harness inside out
 
 Centaur’s architecture looked like this: the product controlled a sandbox, the sandbox contained a CLI harness, and the harness controlled the tools available inside that machine.
@@ -81,9 +146,9 @@ Anthropic recently described a closely related conclusion in [Scaling Managed Ag
 
 We agree with the architecture. Nanocodex is our implementation of that thesis for the OpenAI agent stack: a small, faithful Codex loop embedded on the other side of the sandbox boundary, plus explicit seams for tools, durability, and execution.
 
-## What is Nanocodex?
+## Under the hood
 
-Nanocodex has four layers. Each is useful without the layer above it.
+Nanocodex has three open layers. Managed composes them into the hosted product.
 
 ### 1. OpenAI API and tools
 
@@ -140,11 +205,9 @@ The migration moves agent state, not Paradigm’s secrets. OAuth credentials rem
 
 Paradigm’s hosted product is therefore a convenience and operational commitment, not a custody claim over the agent. Start with one API call, leave with a complete runnable history.
 
-### 4. Nanocodex Managed and Connect
+## How Managed composes the pieces
 
 Once the harness, session, and hands have independent lifecycles, a managed agent service becomes surprisingly small. Nanocodex Managed is the complete hosted version operated by Paradigm.
-
-![A product calls Paradigm's managed API, which runs the same Rust and WASM agent against a portable journal and attaches hands as needed.](../../web/public/docs/architecture/managed-request.svg)
 
 The hosted API exposes the durable lifecycle rather than a sandbox process: create or reuse an agent, append input, execute or steer a turn, and stream ordered events. The same agent can be attached to a web app, React interface, Slack thread, mobile client, background workflow, or several of them at once. Closing one client does not stop the work.
 
@@ -274,9 +337,13 @@ We cannot wait to see what you build.
 
 ## Launch post for X
 
-Announcing Nanocodex: frontier building blocks for OpenAI agents in Rust—and Nanocodex Managed, Paradigm’s hosted API for durable agents.
+Announcing Nanocodex Managed: durable Codex agents you can embed in any product, with Nanocodex as the open-source Rust/WASM runtime underneath.
 
-Nanocodex is Codex as a headless, extensible library—with the performance of the real harness, without having to run a CLI inside a permanent sandbox.
+Create an agent over the API. Connect a user’s ChatGPT subscription and tools. Attach its output to web, Slack, mobile, or several clients at once. Detach and the work continues; reattach after the last durable cursor and nothing is lost.
+
+Agents are following the path of embedded wallets: moving from a separate destination into the products where people already work. The product should own the experience. The agent should bring durable state and explicit capabilities. Embedded should not mean captive.
+
+That product came from what we learned building Centaur.
 
 Centaur proved the core idea: don’t build a fancy 3p harness. Just run Codex, give it tools + durability + secure access to your company, and put it where people work.
 

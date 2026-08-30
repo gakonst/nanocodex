@@ -27,9 +27,9 @@
   </defs>
   <rect width="1600" height="900" fill="#f8f8f6" filter="url(#paper)"/>
   <text x="66" y="88" class="title">Turning the harness inside out</text>
-  <g transform="translate(1110 48)">
-    <circle cx="30" cy="30" r="30" fill="#d9ffd9"/><path d="M18 18l24 12-24 12V18zm7 8v8l8-4-8-4z" fill="#00e900"/>
-    <text x="76" y="41" class="repo">paradigmxyz/<tspan class="repoStrong">nanocodex</tspan></text>
+  <g transform="translate(1274 48)">
+    <circle cx="30" cy="30" r="30" fill="#d9ffd9"/><path d="M19 17L45 30 19 43Z" fill="#00e900"/>
+    <text x="76" y="41" class="repo repoStrong">nanocodex</text>
   </g>
 
   <text x="72" y="176" class="eyebrow">BEFORE · CENTAUR</text>
@@ -44,7 +44,7 @@
     <text x="76" y="184" class="heading">Permanent machine</text>
     <text x="76" y="217" class="body">one container per thread</text>
     <rect x="76" y="258" width="488" height="192" rx="19" fill="url(#greenStrong)" stroke="#00d500" stroke-width="2"/>
-    <rect x="383" y="278" width="151" height="40" rx="20" fill="#00ca00"/><text x="409" y="304" class="tag">HARNESS</text>
+    <rect x="450" y="278" width="84" height="40" rx="20" fill="#00ca00"/><text x="462" y="304" class="tag">CODEX</text>
     <text x="108" y="320" class="heading">Codex CLI process</text>
     <text x="108" y="357" class="body">context · tools · subprocesses</text>
     <rect x="108" y="386" width="118" height="38" rx="19" fill="#e8ffe8"/><text x="136" y="411" class="small">bash</text>
