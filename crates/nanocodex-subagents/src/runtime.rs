@@ -217,7 +217,7 @@ impl TurnSteer {
 }
 
 impl RegistryState {
-    fn next_access(&mut self) -> u64 {
+    const fn next_access(&mut self) -> u64 {
         self.next_access = self.next_access.wrapping_add(1);
         self.next_access
     }

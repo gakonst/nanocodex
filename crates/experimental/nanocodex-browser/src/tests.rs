@@ -3181,7 +3181,9 @@ fn execution_text(output: &ToolOutputBody) -> Result<&str> {
         .rev()
         .find_map(|content| match content {
             ToolOutputContent::InputText { text } => Some(text.as_str()),
-            ToolOutputContent::InputImage { .. } | ToolOutputContent::InputAudio { .. } => None,
+            ToolOutputContent::InputImage { .. }
+            | ToolOutputContent::InputAudio { .. }
+            | ToolOutputContent::EncryptedContent { .. } => None,
         })
         .ok_or_else(|| eyre!("missing Code Mode text output"))
 }

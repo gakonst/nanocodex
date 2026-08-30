@@ -182,16 +182,18 @@ fn set_modified(path: &Path, seconds: u64) {
 fn recorder(home: &Path) -> RolloutRecorder {
     RolloutRecorder::create(
         &Handle::current(),
-        &RolloutConfig::new(home),
-        "019c0d31-c308-7d91-bff4-5dca82d15ac6",
-        "durable-cache",
-        Path::new("/worktree"),
-        "base instructions",
-        RolloutOrigin {
-            kind: "root",
-            parent_thread_id: None,
+        RolloutStart {
+            config: &RolloutConfig::new(home),
+            thread_id: "019c0d31-c308-7d91-bff4-5dca82d15ac6",
+            prompt_cache_key: "durable-cache",
+            cwd: Path::new("/worktree"),
+            instructions: "base instructions",
+            origin: RolloutOrigin {
+                kind: "root",
+                parent_thread_id: None,
+            },
+            resume_history_len: None,
         },
-        None,
     )
     .expect("create rollout")
 }
@@ -604,17 +606,19 @@ async fn resumed_writer_repairs_a_rollout_behind_the_durable_boundary() {
     let config = RolloutConfig::new(home.path()).resumed(path.clone());
     let resumed = RolloutRecorder::create(
         &Handle::current(),
-        &config,
-        "019c0d31-c308-7d91-bff4-5dca82d15ac6",
-        "durable-cache",
-        Path::new("/worktree"),
-        "base instructions",
-        RolloutOrigin {
-            kind: "resume",
-            parent_thread_id: None,
+        RolloutStart {
+            config: &config,
+            thread_id: "019c0d31-c308-7d91-bff4-5dca82d15ac6",
+            prompt_cache_key: "durable-cache",
+            cwd: Path::new("/worktree"),
+            instructions: "base instructions",
+            origin: RolloutOrigin {
+                kind: "resume",
+                parent_thread_id: None,
+            },
+            // The durable snapshot already contains `two`, but its rollout append failed.
+            resume_history_len: Some(2),
         },
-        // The durable snapshot already contains `two`, but its rollout append failed.
-        Some(2),
     )
     .expect("resume rollout");
     resumed
@@ -683,16 +687,18 @@ async fn fork_metadata_retains_parent_identity() {
     let parent = "019c0d31-c308-7d91-bff4-5dca82d15ac5";
     let recorder = RolloutRecorder::create(
         &Handle::current(),
-        &RolloutConfig::new(home.path()),
-        "019c0d31-c308-7d91-bff4-5dca82d15ac6",
-        "durable-cache",
-        Path::new("/worktree"),
-        "base instructions",
-        RolloutOrigin {
-            kind: "fork",
-            parent_thread_id: Some(parent),
+        RolloutStart {
+            config: &RolloutConfig::new(home.path()),
+            thread_id: "019c0d31-c308-7d91-bff4-5dca82d15ac6",
+            prompt_cache_key: "durable-cache",
+            cwd: Path::new("/worktree"),
+            instructions: "base instructions",
+            origin: RolloutOrigin {
+                kind: "fork",
+                parent_thread_id: Some(parent),
+            },
+            resume_history_len: None,
         },
-        None,
     )
     .expect("create fork rollout");
 

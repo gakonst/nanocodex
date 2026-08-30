@@ -37,6 +37,16 @@ pub(crate) struct RolloutOrigin<'a> {
     pub(crate) parent_thread_id: Option<&'a str>,
 }
 
+pub(crate) struct RolloutStart<'a> {
+    pub(crate) config: &'a RolloutConfig,
+    pub(crate) thread_id: &'a str,
+    pub(crate) prompt_cache_key: &'a str,
+    pub(crate) cwd: &'a Path,
+    pub(crate) instructions: &'a str,
+    pub(crate) origin: RolloutOrigin<'a>,
+    pub(crate) resume_history_len: Option<usize>,
+}
+
 enum RolloutCommand {
     Commit {
         commit: Box<RolloutCommit>,
@@ -183,16 +193,16 @@ impl RolloutTurn {
 }
 
 impl RolloutRecorder {
-    pub(crate) fn create(
-        runtime: &Handle,
-        config: &RolloutConfig,
-        thread_id: &str,
-        prompt_cache_key: &str,
-        cwd: &Path,
-        instructions: &str,
-        origin: RolloutOrigin<'_>,
-        resume_history_len: Option<usize>,
-    ) -> io::Result<Self> {
+    pub(crate) fn create(runtime: &Handle, start: RolloutStart<'_>) -> io::Result<Self> {
+        let RolloutStart {
+            config,
+            thread_id,
+            prompt_cache_key,
+            cwd,
+            instructions,
+            origin,
+            resume_history_len,
+        } = start;
         if let Some(path) = &config.resume_path {
             let history_len = resume_history_len.ok_or_else(|| {
                 io::Error::new(

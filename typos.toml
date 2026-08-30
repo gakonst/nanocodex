@@ -8,6 +8,10 @@ extend-exclude = [
     "web/worker-configuration.d.ts",
 ]
 
+[default]
+# Codex parity ledgers quote exact hexadecimal commit IDs, which are data rather than prose.
+extend-ignore-re = ["`[0-9a-f]{7,40}`"]
+
 [default.extend-words]
 ratatui = "ratatui"
 serde = "serde"

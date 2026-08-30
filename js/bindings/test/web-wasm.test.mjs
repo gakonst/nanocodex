@@ -19,6 +19,18 @@ const SUBAGENT_TOOL_NAMES = Object.freeze([
   "close_agent",
 ]);
 
+const SHELL_DESCRIPTOR = Object.freeze({
+  shell: "nanocodex-just-bash",
+  commands: Object.freeze(["curl", "gh", "git", "python3"]),
+  customCommands: Object.freeze(["gh", "git", "python3"]),
+  cwd: "/workspace",
+  limits: Object.freeze({ maxFileSystemBytes: 256 * 1024 * 1024 }),
+  network: Object.freeze({ enabled: true, mode: "connector-http-gateway" }),
+  pty: false,
+  sessions: false,
+  sandboxEscalation: false,
+});
+
 const createWarmAgent = ({
   apiKey,
   createWebSocket,
@@ -674,6 +686,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
     standard,
     threadId: "browser-harness-e2e",
     shell: {
+      descriptor: SHELL_DESCRIPTOR,
       artifactTool: artifact({
         workspace,
         onArtifact: (document) => effects.artifacts.push(document),

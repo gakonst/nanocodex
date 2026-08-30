@@ -4,7 +4,9 @@ use tracing::error;
 
 use crate::{
     NanocodexError, Result,
-    rollout::{RolloutConfig, RolloutInfo, RolloutOrigin, RolloutRecorder, RolloutTurn},
+    rollout::{
+        RolloutConfig, RolloutInfo, RolloutOrigin, RolloutRecorder, RolloutStart, RolloutTurn,
+    },
     session::CommittedSession,
 };
 
@@ -47,16 +49,18 @@ impl Config {
             })?;
         let recorder = RolloutRecorder::create(
             &runtime,
-            config,
-            session_id,
-            prompt_cache_key,
-            &cwd,
-            instructions,
-            RolloutOrigin {
-                kind: origin_kind,
-                parent_thread_id: parent_session_id,
+            RolloutStart {
+                config,
+                thread_id: session_id,
+                prompt_cache_key,
+                cwd: &cwd,
+                instructions,
+                origin: RolloutOrigin {
+                    kind: origin_kind,
+                    parent_thread_id: parent_session_id,
+                },
+                resume_history_len,
             },
-            resume_history_len,
         )
         .map_err(|source| NanocodexError::InitializeRollout {
             codex_home: config.codex_home().to_path_buf(),
