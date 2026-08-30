@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">How a Nanocodex Managed request works</title>
+  <desc id="desc">A product uses Connect and the hosted API. Paradigm runs the Rust and WASM agent against a portable journal and routes tools to a lightweight workspace, sandbox, private worker, or secret-injecting egress broker.</desc>
+  <defs>
+    <filter id="paper"><feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="2" seed="12" result="n"/><feComponentTransfer in="n" result="f"><feFuncA type="table" tableValues="0 0.035"/></feComponentTransfer><feBlend in="SourceGraphic" in2="f" mode="multiply"/></filter>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dfffe0"/><stop offset=".5" stop-color="#a1ffa3"/><stop offset="1" stop-color="#f2fff2"/></linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffe8dc"/><stop offset="1" stop-color="#ffd2bb"/></linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1 1l10 5-10 5" fill="none" stroke="#b9b9b6" stroke-width="2"/></marker>
+    <style>.title{font:58px Georgia,serif;fill:#050505;letter-spacing:-2px}.repo{font:32px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777}.strong{fill:#111}.heading{font:29px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#080808}.body{font:19px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777}.small{font:16px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.pill{font:16px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#5e5e5e}.panel{fill:#fff;stroke:#c9c9c6;stroke-width:2}.line{fill:none;stroke:#b9b9b6;stroke-width:3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1600" height="900" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="66" y="88" class="title">How managed agents work</text>
+  <g transform="translate(1110 48)"><circle cx="30" cy="30" r="30" fill="#d9ffd9"/><path d="M18 18l24 12-24 12V18zm7 8v8l8-4-8-4z" fill="#00e900"/><text x="76" y="41" class="repo">paradigmxyz/<tspan class="strong">nanocodex</tspan></text></g>
+
+  <g transform="translate(40 218)">
+    <rect x="0" y="0" width="330" height="250" rx="20" class="panel"/>
+    <text x="62" y="56" class="body">Embed within</text><text x="62" y="91" class="heading">Your product</text>
+    <line x1="0" y1="119" x2="330" y2="119" stroke="#d1d1ce" stroke-width="2"/>
+    <text x="62" y="165" class="body">Run from</text><text x="62" y="201" class="heading">Web · Slack · Mobile</text>
+  </g>
+  <path d="M370 345h76" class="line"/><rect x="372" y="298" width="106" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/><text x="390" y="324" class="pill">connect</text>
+
+  <g transform="translate(476 184)">
+    <rect width="440" height="330" rx="22" fill="url(#green)" stroke="#a8dba8" stroke-width="2"/>
+    <text x="40" y="57" class="heading">Paradigm managed API</text><text x="40" y="91" class="body">identity · grants · durable events</text>
+    <rect x="40" y="132" width="360" height="142" rx="18" fill="#fff" stroke="#8ed68e" stroke-width="2"/>
+    <rect x="62" y="153" width="52" height="52" rx="12" fill="#d9ffd9"/><path d="M75 166h26v26H75zm7 7v12h12v-12z" fill="none" stroke="#00db00" stroke-width="3"/>
+    <text x="134" y="182" class="heading">Rust/WASM agent</text><text x="134" y="218" class="body">Codex loop outside sandbox</text>
+    <text x="64" y="252" class="small">prompt · steer · cancel · stream</text>
+  </g>
+  <path d="M660 514v104" class="line"/><rect x="580" y="548" width="160" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/><text x="605" y="574" class="pill">persists</text>
+  <g transform="translate(490 646)"><rect width="340" height="142" rx="20" class="panel"/><text x="34" y="57" class="heading">Portable journal</text><text x="34" y="92" class="body">ordered operations + checkpoints</text><text x="34" y="121" class="small">export and resume elsewhere</text></g>
+
+  <path d="M916 282h104" class="line"/><rect x="923" y="235" width="112" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/><text x="947" y="261" class="pill">routes</text>
+  <g transform="translate(1048 164)">
+    <rect width="484" height="564" rx="22" class="panel"/>
+    <text x="36" y="55" class="heading">Hands</text><text x="36" y="87" class="body">same tool contract, different placement</text>
+    <rect x="34" y="122" width="416" height="86" rx="17" fill="url(#green)" stroke="#a8dba8" stroke-width="2"/><text x="62" y="158" class="heading">Just Bash workspace</text><text x="62" y="187" class="small">cheap filesystem + common commands</text>
+    <rect x="34" y="232" width="416" height="86" rx="17" fill="#fff" stroke="#c9c9c6" stroke-width="2"/><text x="62" y="268" class="heading">Sandbox / VM</text><text x="62" y="297" class="small">native packages · browser · GPU</text>
+    <rect x="34" y="342" width="416" height="86" rx="17" fill="#fff" stroke="#c9c9c6" stroke-width="2"/><text x="62" y="378" class="heading">Reverse worker</text><text x="62" y="407" class="small">laptop · VPC · physical device</text>
+    <rect x="34" y="452" width="416" height="86" rx="17" fill="url(#orange)" stroke="#efb899" stroke-width="2"/><text x="62" y="488" class="heading">Egress broker</text><text x="62" y="517" class="small">injects OAuth after authorization</text>
+  </g>
+  <path d="M1256 728v70h-186" class="line"/><rect x="1120" y="756" width="178" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/><text x="1146" y="782" class="pill">secrets stay out</text>
+  <g transform="translate(836 752)"><rect width="206" height="92" rx="18" fill="#fff" stroke="#c9c9c6" stroke-width="2"/><text x="28" y="43" class="heading">Connect</text><text x="28" y="72" class="small">ChatGPT + tools</text></g>
+</svg>

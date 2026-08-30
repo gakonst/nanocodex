@@ -1,0 +1,118 @@
+---
+title: Nanocodex Managed
+description: Use Paradigm's hosted durable-agent API while keeping the same open agent and journal contract.
+---
+
+# Nanocodex Managed
+
+Nanocodex Managed is the hosted product built above the open-source SDK. It
+exposes an authenticated agent lifecycle, not a remote shell: create an agent,
+submit an idempotent turn, consume ordered events, reconnect from a cursor,
+steer or cancel work, and delete the durable owner when the product is done.
+
+![A product calls the Paradigm managed API, which runs the Rust and WASM agent against a portable journal and attaches execution hands as needed.](/docs/architecture/managed-request.svg "The hosted control plane owns operations; the agent and journal retain their open contracts.")
+
+## The product contract
+
+Each agent belongs to an authenticated account. Agent IDs route requests but do
+not grant access. Creation and turn admission accept stable idempotency keys so
+a client can retry after a timeout without creating a second agent or executing
+the same logical turn twice.
+
+Events are durable, ordered, and cursor-addressed. A web app, background job,
+Slack surface, and mobile client can project the same agent without any client
+becoming the conversation owner. Reconnect after the last fully processed
+cursor; a live connection is a delivery optimization rather than the source of
+truth.
+
+The hosted service implements the complete lifecycle over REST,
+resumable server-sent events, and authenticated WebSockets in
+[`services/managed`](https://github.com/gakonst/nanocodex/tree/master/services/managed).
+The checked-in service is also the production behavior specification.
+
+## One durable turn
+
+Create an agent with a stable idempotency key. The receipt contains routing and
+stream locations, but no second bearer credential:
+
+```sh
+curl -fsS -X POST \
+  -H "Authorization: Bearer $NANOCODEX_API_KEY" \
+  -H 'Idempotency-Key: create-project-42' \
+  https://nanocodex.paradigm.xyz/v1/agents
+```
+
+Submit work only once logically, even if the network response is lost:
+
+```sh
+curl -fsS -X POST \
+  -H "Authorization: Bearer $NANOCODEX_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: request-42' \
+  --data '{"id":"turn-42","input":"Inspect the repository and draft the migration."}' \
+  https://nanocodex.paradigm.xyz/v1/agents/<agent-id>/turns
+```
+
+Start at cursor zero, or send `Last-Event-ID` with the last cursor the consumer
+fully processed:
+
+```sh
+curl -N \
+  -H "Authorization: Bearer $NANOCODEX_API_KEY" \
+  -H 'Accept: text/event-stream' \
+  'https://nanocodex.paradigm.xyz/v1/agents/<agent-id>/events?cursor=0'
+```
+
+A new turn returns only after durable acceptance. An identical replay returns
+the original turn and cursors; reusing an identity with different input is a
+conflict. Event cursor 42 resumes strictly after 42.
+
+## Connect
+
+Connect lets an application request narrow capabilities from accounts a user
+has connected through Paradigm. First-party connectors and user-added MCP
+connections remain bound to the user's account. The grant projected into a
+managed agent contains connector and capability identities, never raw OAuth
+tokens.
+
+### Bring a ChatGPT subscription
+
+ChatGPT is also a Connect capability and can be the managed agent's model-access
+source. A user selects ChatGPT, completes OpenAI's device authorization, and
+returns to the product. Nanocodex Managed can then run Codex under that eligible
+subscription without asking the product to collect an OpenAI API key.
+
+The durable broker stores and rotates the account credential. It injects a
+current access token only while opening the fixed Codex Responses WebSocket.
+The browser, product API key, managed agent, tools, generated code, and sandbox
+never receive the refresh credential. Disconnecting ChatGPT revokes that model
+access for later admission. Usage is still governed by the user's OpenAI plan,
+limits, and terms.
+
+An account may instead host a raw OpenAI API key. Both choices use the same
+agent and journal; changing credential source does not create another harness
+or rewrite conversation history.
+
+Provider and connector credentials remain behind a broker. The agent or
+sandbox sends an authorized request to that boundary; the broker validates the
+destination and operation, injects the credential, and consumes rejected
+upstream responses before returning a typed failure. Generated code cannot
+read a token from its environment because the token is not there.
+
+Connect is not ambient access. A product requests a grant, the user authorizes
+it, and the managed service enforces that grant again on admission and egress.
+A Slack channel, private web session, or background workflow can therefore
+receive different capabilities even when they address the same account.
+
+## Managed versus embedded
+
+Use Managed when the product wants Paradigm to own durable admission, identity,
+event replay, quotas, execution routing, credential brokering, and sandbox
+lifecycle. Use the SDK when the product already owns those boundaries or must
+run them in its own infrastructure.
+
+These are deployment choices around one agent implementation. The hosted
+service runs the same Rust/WASM lifecycle and persists the same Rust-owned
+journal format that self-hosted adapters consume. See
+[durability and portability](/architecture/durability-portability) for the
+export, replication, fencing, and import contract.

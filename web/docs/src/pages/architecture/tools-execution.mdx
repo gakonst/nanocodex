@@ -1,0 +1,63 @@
+---
+title: Tools and execution
+description: Start with lightweight execution and attach a sandbox, browser, or private worker only when policy requires it.
+---
+
+# Tools and execution
+
+The harness does not own a machine. Nanocodex receives caller-defined tools
+with typed names and inputs; the implementation may run in the same process,
+inside a lightweight WASM workspace, over HTTPS or MCP, on a private worker, or
+in an isolated sandbox.
+
+## Start with the cheapest capable hand
+
+The managed reference service begins with Just Bash over a durable virtual
+filesystem for common file, text, HTTP, and application-owned commands. That
+path has no Linux container or arbitrary native process. It is fast to start
+and sufficient for many read, transform, search, and API-driven tasks.
+
+A product may attach a stronger environment when the request requires one:
+
+| Requirement | Example hand |
+| --- | --- |
+| Files, text transforms, bounded HTTP | Just Bash and a durable VFS |
+| Native packages or an OS process | Container or retained VM |
+| Deterministic web interaction | Browser tool or browser VM |
+| Private network or local device | Outbound reverse worker |
+| SaaS data with user authorization | Brokered connector or MCP tool |
+
+Escalation is product policy, not hidden model magic. A lightweight tool can
+return a typed capability requirement such as `native_process_required` or
+`browser_required`. The host decides whether that agent may receive the
+capability, provisions or selects it, and lets the same durable turn continue.
+Teams can instead attach a sandbox from the beginning when isolation or a known
+native workload matters more than startup cost.
+
+## Private and reverse tools
+
+A hand does not need to accept inbound traffic. A worker on a laptop, VPC, or
+private cluster can establish an outbound authenticated connection, register a
+bounded tool catalog, receive calls, and return results. The durable agent stays
+hosted while execution remains next to the data or hardware.
+
+The tool boundary should make ownership visible:
+
+- the product authenticates and authorizes the worker;
+- the agent sees only the granted tool schema;
+- the worker applies input, output, time, and concurrency limits;
+- reconnect does not imply an unfinished side effect is safe to repeat; and
+- closing an agent revokes its leases and joins owned work.
+
+## Secrets belong at egress
+
+Do not place reusable provider or OAuth credentials in generated code, shell
+environment variables, workspace files, or sandbox metadata. Give the agent a
+narrow network capability and let a broker validate the full destination and
+operation before injecting credentials outside the execution environment.
+
+This is the practical security consequence of turning the harness inside out:
+the sandbox is replaceable compute, not the place that owns the agent identity,
+session, or secrets. The concrete Cloudflare composition is documented in
+[Cloudflare Durable Objects](/deployments/cloudflare); native isolation options
+are covered in [VMs and sandboxes](/capabilities/vm-sandboxes).

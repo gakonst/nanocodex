@@ -30,6 +30,17 @@ export const docsNavigation: readonly DocsNavigationGroup[] = [
     items: [
       page("Quick start", "/docs"),
       page("Installation and auth", "/docs/getting-started"),
+      {
+        type: "section",
+        id: "architecture",
+        label: "Architecture",
+        pages: [
+          page("Why inside out", "/docs/architecture"),
+          page("Nanocodex Managed", "/docs/architecture/managed"),
+          page("Tools and execution", "/docs/architecture/tools-execution"),
+          page("Durability and portability", "/docs/architecture/durability-portability"),
+        ],
+      },
     ],
   },
   {
@@ -162,5 +173,6 @@ export function normalizeDocsPath(pathname: string) {
 
 function routeForSource(file: string) {
   const relative = file.split("/pages/")[1].replace(/\.mdx$/, "");
-  return relative === "index" ? "/docs" : `/docs/${relative}`;
+  const route = relative === "index" ? "" : relative.replace(/\/index$/, "");
+  return route ? `/docs/${route}` : "/docs";
 }

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Portable durable agent state</title>
+  <desc id="desc">The same Rust-owned opaque journal batches can be retained by Paradigm, self-hosted or hosted Postgres, Cloudflare Durable Objects, Vercel Workflows, Rivet Actors, or another compatible store.</desc>
+  <defs>
+    <filter id="paper"><feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="2" seed="17" result="n"/><feComponentTransfer in="n" result="f"><feFuncA type="table" tableValues="0 0.035"/></feComponentTransfer><feBlend in="SourceGraphic" in2="f" mode="multiply"/></filter>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#30ff30"/><stop offset=".5" stop-color="#00ea00"/><stop offset="1" stop-color="#caffca"/></linearGradient>
+    <linearGradient id="greenSoft" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dfffe0"/><stop offset=".55" stop-color="#9dff9f"/><stop offset="1" stop-color="#f2fff2"/></linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1 1l10 5-10 5" fill="none" stroke="#b9b9b6" stroke-width="2"/></marker>
+    <style>.title{font:58px Georgia,serif;fill:#050505;letter-spacing:-2px}.repo{font:32px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777}.strong{fill:#111}.heading{font:28px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#080808}.body{font:19px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777}.small{font:16px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.pill{font:16px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#5e5e5e}.tag{font:16px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111;letter-spacing:1px}.panel{fill:#fff;stroke:#c9c9c6;stroke-width:2}.line{fill:none;stroke:#b9b9b6;stroke-width:3;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect width="1600" height="900" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="66" y="88" class="title">Your agent can leave the cloud</text>
+  <g transform="translate(1110 48)"><circle cx="30" cy="30" r="30" fill="#d9ffd9"/><path d="M18 18l24 12-24 12V18zm7 8v8l8-4-8-4z" fill="#00e900"/><text x="76" y="41" class="repo">paradigmxyz/<tspan class="strong">nanocodex</tspan></text></g>
+
+  <g transform="translate(420 168)">
+    <rect width="760" height="318" rx="24" fill="url(#greenSoft)" stroke="#9bd99b" stroke-width="2"/>
+    <rect x="529" y="26" width="194" height="42" rx="21" fill="#7df47d"/><text x="557" y="53" class="tag">OPEN FORMAT</text>
+    <text x="44" y="68" class="heading">Rust-owned journal</text>
+    <text x="44" y="105" class="body">the runnable state, not a transcript export</text>
+    <rect x="44" y="142" width="672" height="126" rx="18" fill="url(#green)" stroke="#00d500" stroke-width="2"/>
+    <text x="76" y="190" class="heading">ordered opaque batches</text>
+    <text x="76" y="222" class="body">operations · steps · checkpoints</text>
+    <text x="76" y="248" class="small">outputs · recovery policy · effect identities</text>
+  </g>
+
+  <path d="M800 486v96" class="line"/><rect x="687" y="518" width="226" height="42" rx="21" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/><text x="716" y="545" class="pill">export · replicate</text>
+
+  <g transform="translate(48 638)"><rect width="270" height="150" rx="20" class="panel"/><text x="30" y="54" class="heading">Paradigm</text><text x="30" y="89" class="body">managed default</text><text x="30" y="121" class="small">one API call</text></g>
+  <g transform="translate(354 638)"><rect width="270" height="150" rx="20" class="panel"/><text x="30" y="54" class="heading">Postgres</text><text x="30" y="89" class="body">hosted or yours</text><text x="30" y="121" class="small">native adapter</text></g>
+  <g transform="translate(660 638)"><rect width="270" height="150" rx="20" class="panel"/><text x="30" y="54" class="heading">Cloudflare</text><text x="30" y="89" class="body">Durable Object</text><text x="30" y="121" class="small">SQLite host store</text></g>
+  <g transform="translate(966 638)"><rect width="270" height="150" rx="20" class="panel"/><text x="30" y="54" class="heading">Vercel</text><text x="30" y="89" class="body">Workflow</text><text x="30" y="121" class="small">Postgres journal</text></g>
+  <g transform="translate(1272 638)"><rect width="280" height="150" rx="20" class="panel"/><text x="30" y="54" class="heading">Any host</text><text x="30" y="89" class="body">compare + append</text><text x="30" y="121" class="small">same recovery rules</text></g>
+
+  <path d="M800 582L183 630" class="line"/><path d="M800 582L489 630" class="line"/><path d="M800 582v48" class="line"/><path d="M800 582l301 48" class="line"/><path d="M800 582l612 48" class="line"/>
+  <text x="420" y="838" class="body">Start hosted. Leave with the state required to continue running.</text>
+</svg>

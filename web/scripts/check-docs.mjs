@@ -108,8 +108,9 @@ async function markdownPages(directory, prefix = "") {
     const source = await readFile(new URL(entry.name, directory), "utf8");
     const stem = entry.name.slice(0, -4);
     const relative = `${prefix}${stem}`;
+    const route = relative === "index" ? "" : relative.replace(/\/index$/, "");
     return [{
-      route: relative === "index" ? "/docs" : `/docs/${relative}`,
+      route: route ? `/docs/${route}` : "/docs",
       title: frontmatter(source, "title") ?? "",
       description: frontmatter(source, "description") ?? "",
       body: stripFrontmatter(source),
@@ -152,7 +153,7 @@ function headingAnchors(body) {
 
 function markdownLinks(body) {
   const withoutCode = body.replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, "");
-  return [...withoutCode.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map((match) => match[1]);
+  return [...withoutCode.matchAll(/(?<!!)\[[^\]]+\]\(([^)]+)\)/g)].map((match) => match[1]);
 }
 
 function resolveDocsHref(currentRoute, href) {

@@ -316,6 +316,30 @@ html[data-theme="dark"] .docs-code-token {
   text-transform: uppercase;
 }
 
+.docs-figure {
+  width: min(980px, calc(100vw - var(--page-margin) - var(--page-margin)));
+  margin: 32px 0 8px 50%;
+  transform: translateX(-50%);
+}
+
+.docs-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #f7f7f5;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+
+.docs-figure figcaption {
+  max-width: 660px;
+  margin: 10px auto 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .docs-on-this-page a {
   font-size: 10px;
 }
@@ -475,6 +499,8 @@ html[data-theme="dark"] .docs-code-token {
   .docs-code-block { margin-inline: -4px; border-radius: 6px; }
   .docs-code-block > button { width: 44px; height: 44px; top: 0; right: 0; }
   .docs-code-block pre { padding: 42px 14px 16px; font-size: 12px; }
+  .docs-figure { width: calc(100vw - 24px); margin-top: 28px; }
+  .docs-figure img { border-radius: 6px; }
   .docs-pagination { grid-template-columns: 1fr; }
   .docs-pagination > a:last-child { justify-content: flex-start; text-align: left; }
   .docs-pagination > a:last-child svg { order: -1; }

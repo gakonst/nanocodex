@@ -1,6 +1,7 @@
 export type MarkdownBlock =
   | { type: "heading"; depth: number; text: string; id: string }
   | { type: "paragraph"; text: string }
+  | { type: "image"; alt: string; src: string; caption?: string }
   | { type: "code"; language: string; code: string }
   | { type: "list"; ordered: boolean; items: string[] }
   | { type: "table"; headers: string[]; rows: string[][] };
@@ -48,6 +49,18 @@ export function parseDocument(source: string): ParsedDoc {
         depth: heading[1].length,
         text,
         id: duplicate ? `${baseId}-${duplicate + 1}` : baseId,
+      });
+      index += 1;
+      continue;
+    }
+
+    const image = line.match(/^!\[([^\]]*)\]\((\S+?)(?:\s+"([^"]*)")?\)$/);
+    if (image) {
+      blocks.push({
+        type: "image",
+        alt: image[1],
+        src: image[2],
+        caption: image[3] || undefined,
       });
       index += 1;
       continue;
@@ -119,6 +132,7 @@ function isBlockStart(lines: string[], index: number) {
   return (
     /^```/.test(line) ||
     /^(#{1,3})\s+/.test(line) ||
+    /^!\[[^\]]*\]\(\S+?(?:\s+"[^"]*")?\)$/.test(line) ||
     /^\s*(-|\d+\.)\s+/.test(line) ||
     isTableStart(lines, index)
   );

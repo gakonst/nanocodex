@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Turning the agent harness inside out</title>
+  <desc id="desc">Centaur placed a CLI harness and its tools inside a permanent sandbox. Nanocodex embeds the harness in the product and treats lightweight workspaces, sandboxes, and private workers as interchangeable external hands.</desc>
+  <defs>
+    <filter id="paper" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.72" numOctaves="2" seed="9" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0" result="gray"/>
+      <feComponentTransfer in="gray" result="faint"><feFuncA type="table" tableValues="0 0.035"/></feComponentTransfer>
+      <feBlend in="SourceGraphic" in2="faint" mode="multiply"/>
+    </filter>
+    <linearGradient id="greenSoft" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dcffdc"/>
+      <stop offset="0.55" stop-color="#aaffaa"/>
+      <stop offset="1" stop-color="#efffef"/>
+    </linearGradient>
+    <linearGradient id="greenStrong" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#35ff35"/>
+      <stop offset="0.52" stop-color="#00ee00"/>
+      <stop offset="1" stop-color="#caffca"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M1 1l10 5-10 5" fill="none" stroke="#b9b9b6" stroke-width="2"/>
+    </marker>
+    <style>
+      .title{font:58px Georgia,serif;fill:#050505;letter-spacing:-2px}.repo{font:32px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777}.repoStrong{fill:#111}.eyebrow{font:19px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777;letter-spacing:2px}.heading{font:31px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#080808}.body{font:20px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#777}.small{font:17px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#686868}.pill{font:17px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#5e5e5e}.tag{font:17px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111;letter-spacing:1px}.panel{fill:#fff;stroke:#c9c9c6;stroke-width:2}.line{fill:none;stroke:#b9b9b6;stroke-width:3;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="900" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="66" y="88" class="title">Turning the harness inside out</text>
+  <g transform="translate(1110 48)">
+    <circle cx="30" cy="30" r="30" fill="#d9ffd9"/><path d="M18 18l24 12-24 12V18zm7 8v8l8-4-8-4z" fill="#00e900"/>
+    <text x="76" y="41" class="repo">paradigmxyz/<tspan class="repoStrong">nanocodex</tspan></text>
+  </g>
+
+  <text x="72" y="176" class="eyebrow">BEFORE · CENTAUR</text>
+  <text x="868" y="176" class="eyebrow">AFTER · NANOCODEX MANAGED</text>
+
+  <g transform="translate(68 210)">
+    <rect width="640" height="610" rx="24" fill="#fff" stroke="#c9c9c6" stroke-width="2"/>
+    <text x="42" y="58" class="heading">Product</text>
+    <text x="42" y="91" class="body">Slack, API, control plane</text>
+    <rect x="38" y="128" width="564" height="430" rx="22" fill="url(#greenSoft)" stroke="#a8dba8" stroke-width="2"/>
+    <rect x="410" y="151" width="156" height="42" rx="21" fill="#8df78d"/><text x="438" y="178" class="tag">SANDBOX</text>
+    <text x="76" y="184" class="heading">Permanent machine</text>
+    <text x="76" y="217" class="body">one container per thread</text>
+    <rect x="76" y="258" width="488" height="192" rx="19" fill="url(#greenStrong)" stroke="#00d500" stroke-width="2"/>
+    <rect x="383" y="278" width="151" height="40" rx="20" fill="#00ca00"/><text x="409" y="304" class="tag">HARNESS</text>
+    <text x="108" y="320" class="heading">Codex CLI process</text>
+    <text x="108" y="357" class="body">context · tools · subprocesses</text>
+    <rect x="108" y="386" width="118" height="38" rx="19" fill="#e8ffe8"/><text x="136" y="411" class="small">bash</text>
+    <rect x="242" y="386" width="118" height="38" rx="19" fill="#e8ffe8"/><text x="266" y="411" class="small">files</text>
+    <rect x="376" y="386" width="158" height="38" rx="19" fill="#e8ffe8"/><text x="401" y="411" class="small">tools</text>
+    <text x="76" y="502" class="body">The harness lives inside its hand.</text>
+    <text x="76" y="533" class="body">Every session pays for the machine.</text>
+  </g>
+
+  <path d="M728 514h104" class="line"/>
+  <rect x="716" y="462" width="136" height="42" rx="21" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/>
+  <text x="741" y="489" class="pill">invert</text>
+
+  <g transform="translate(868 210)">
+    <rect width="664" height="300" rx="24" fill="#fff" stroke="#c9c9c6" stroke-width="2"/>
+    <text x="38" y="61" class="heading">Your product embeds the harness</text>
+    <text x="38" y="96" class="body">API · JS/React · Rust/WASM</text>
+    <rect x="38" y="135" width="588" height="118" rx="19" fill="url(#greenStrong)" stroke="#00d500" stroke-width="2"/>
+    <text x="72" y="184" class="heading">Owned Nanocodex agent</text>
+    <text x="72" y="220" class="body">history · tools · steering · cleanup</text>
+  </g>
+
+  <path d="M1042 510v68" class="line"/>
+  <rect x="941" y="535" width="206" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/>
+  <text x="970" y="561" class="pill">persists to</text>
+  <g transform="translate(868 596)">
+    <rect width="310" height="160" rx="20" class="panel"/>
+    <rect x="24" y="24" width="54" height="54" rx="13" fill="#d9ffd9"/><path d="M39 38h24v24H39zm6 6v12h12V44z" fill="none" stroke="#00dc00" stroke-width="3"/>
+    <text x="96" y="57" class="heading">Journal</text>
+    <text x="96" y="91" class="body">portable state</text>
+    <text x="30" y="132" class="small">outside agent + hands</text>
+  </g>
+
+  <path d="M1255 510v68" class="line"/>
+  <rect x="1193" y="535" width="150" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/>
+  <text x="1218" y="561" class="pill">calls only</text>
+  <g transform="translate(1202 596)">
+    <rect width="330" height="160" rx="20" class="panel"/>
+    <rect x="24" y="24" width="54" height="54" rx="13" fill="#d9ffd9"/><path d="M38 51h26M51 38v26" stroke="#00dc00" stroke-width="4" stroke-linecap="round"/>
+    <text x="96" y="57" class="heading">Hands</text>
+    <text x="96" y="91" class="body">only when needed</text>
+    <text x="30" y="132" class="small">WASM · VM · private worker</text>
+  </g>
+  <text x="884" y="803" class="small">The sandbox moves from the agent’s home to one of its tools.</text>
+</svg>

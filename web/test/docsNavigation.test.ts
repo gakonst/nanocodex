@@ -17,6 +17,10 @@ test("documentation manifest has four task-oriented top-level groups", () => {
 
   for (const route of [
     "/docs/getting-started",
+    "/docs/architecture",
+    "/docs/architecture/managed",
+    "/docs/architecture/tools-execution",
+    "/docs/architecture/durability-portability",
     "/docs/evals",
     "/docs/harness/focused-run",
     "/docs/harness/evidence",
@@ -68,7 +72,7 @@ test("documentation source checker proves manifest parity, frontmatter, H1s, and
   const output = execFileSync(process.execPath, [script.pathname, "--source-only"], {
     encoding: "utf8",
   });
-  assert.match(output, /checked 33 documentation sources/);
+  assert.match(output, /checked 37 documentation sources/);
 });
 
 test("navigation intent prepares the parsed overview, not only the Docs component", () => {

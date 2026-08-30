@@ -1,0 +1,73 @@
+---
+title: Why the harness moves outside the sandbox
+description: Nanocodex embeds the Codex agent in the product and treats sandboxes as replaceable tools.
+---
+
+# Why the harness moves outside the sandbox
+
+Nanocodex starts from a narrow claim: use the model provider's real agent
+harness, but do not make a permanent sandbox its home. Embed the harness in the
+product. Keep the durable session outside the live process. Attach filesystems,
+browsers, private workers, and isolated machines as tools only when the work
+needs them.
+
+![Centaur placed the CLI harness inside each sandbox; Nanocodex places the agent in the product and makes execution environments replaceable hands.](/docs/architecture/inside-out.svg "The sandbox stops being the agent's home and becomes one of its tools.")
+
+## What Centaur proved
+
+[Centaur](https://www.paradigm.xyz/writing/open-sourcing-centaur-multiplayer-self-hosted-secure-agents)
+proved that the stock coding harness could become shared infrastructure: one
+Slack thread could own a session that ran for hours, survived restarts, used
+organization tools, and reached credentialed systems without receiving raw
+secrets. The important product choice was not to invent a third-party harness.
+It was to run Codex.
+
+That first architecture also exposed a limit. The CLI harness lived inside the
+container assigned to the thread. Starting an agent meant starting its machine.
+Harness failure, container failure, and stream failure were difficult to
+separate. Connecting a private resource often meant bringing the whole harness
+to that resource. The application had to supervise a process protocol when it
+really wanted an agent library.
+
+[Centaur 2.0](https://www.paradigm.xyz/writing/centaur-2-0-permissions-context-and-mcp)
+showed that the product thesis was durable: more than 80% of sessions moved to
+shared channels. It also moved grants toward the network boundary, reinforcing
+the separation between an agent and the credentials used on its behalf.
+
+## The inside-out boundary
+
+Nanocodex separates three lifecycles that a sandbox-first design couples:
+
+1. The agent owns typed history, prompt ordering, model transport, tool calls,
+   steering, cancellation, branching, and cleanup.
+2. The journal owns accepted work, committed effects, recovery, and replay.
+3. The hands own execution: a WASM workspace, API, MCP server, browser, private
+   worker, container, or VM.
+
+The product can embed the first, choose or outsource the second, and attach the
+third according to its own cost and security policy. A failed hand can be
+replaced without losing the conversation. A failed agent process can be
+reconstructed from the journal. A client can disconnect without becoming the
+owner of either one.
+
+Anthropic describes the same boundary in
+[Scaling Managed Agents](https://www.anthropic.com/engineering/managed-agents):
+move the harness out of the container, keep the session outside the harness,
+and provision a sandbox through a tool interface only when it is needed.
+Their reported median time-to-first-token fell roughly 60%, with p95 falling
+more than 90%. Nanocodex applies that architecture to the OpenAI Codex stack
+and makes the agent itself an embeddable Rust/WASM library.
+
+## Why not a generic harness?
+
+The model and harness are one performance system. Prompt shape, tool schemas,
+tool-result ordering, compaction, cache identity, retry policy, and cleanup all
+affect long-horizon behavior. Nanocodex deliberately follows one OpenAI coding
+model family and the Responses WebSocket protocol instead of flattening models
+behind a provider abstraction.
+
+The application still owns what should vary: interface, tools, authorization,
+storage, execution policy, and product behavior. Continue with
+[Nanocodex Managed](/architecture/managed),
+[tools and execution](/architecture/tools-execution), or
+[durability and portability](/architecture/durability-portability).

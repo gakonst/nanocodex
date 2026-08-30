@@ -13,6 +13,15 @@ test("documentation uses a full-width shell and restrained heading scale", () =>
   assert.match(css, /\.docs-article h2 \{[\s\S]*?font-size:\s*16px/);
 });
 
+test("documentation figures render responsive diagrams with accessible text", () => {
+  assert.match(source, /<figure className="docs-figure">/);
+  assert.match(source, /<img src=\{block\.src\} alt=\{block\.alt\} loading="lazy" decoding="async"/);
+  assert.match(source, /block\.caption \? <figcaption>/);
+  assert.match(css, /\.docs-figure \{[\s\S]*?width:\s*min\(980px,/);
+  assert.match(css, /\.docs-figure img \{[\s\S]*?width:\s*100%;[\s\S]*?height:\s*auto/);
+  assert.match(css, /@media \(max-width: 900px\) \{[\s\S]*?\.docs-figure \{ width:\s*calc\(100vw - 24px\)/);
+});
+
 test("documentation navigation stays client-side and code uses themed syntax tokens", () => {
   assert.match(source, /import \{ Link, useLocation, useNavigate \} from "react-router"/);
   assert.match(source, /\{previous \? \([\s\S]*?<Link[\s\S]*?to=\{previous\.href\}/);

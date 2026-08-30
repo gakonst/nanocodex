@@ -25,6 +25,8 @@ An **owned** session uses \`TurnResult\` and [tools](/core/tools-code-mode).
 | --- | --- |
 | History | Rust |
 
+![Inside-out architecture](/docs/inside-out.svg "The sandbox becomes a tool.")
+
 \`\`\`js
 const turn = await agent.prompt("hello")
 await turn.result()
@@ -34,7 +36,7 @@ await turn.result()
   assert.equal(doc.title, "Agent guide");
   assert.deepEqual(
     doc.blocks.map((block) => block.type),
-    ["heading", "paragraph", "heading", "list", "list", "table", "code"],
+    ["heading", "paragraph", "heading", "list", "list", "table", "image", "code"],
   );
   assert.deepEqual(doc.blocks[3], {
     type: "list",
@@ -47,9 +49,15 @@ await turn.result()
     rows: [["History", "Rust"]],
   });
   assert.equal(
-    doc.blocks[6].type === "code" ? doc.blocks[6].code : "",
+    doc.blocks[7].type === "code" ? doc.blocks[7].code : "",
     'const turn = await agent.prompt("hello")\nawait turn.result()',
   );
+  assert.deepEqual(doc.blocks[6], {
+    type: "image",
+    alt: "Inside-out architecture",
+    src: "/docs/inside-out.svg",
+    caption: "The sandbox becomes a tool.",
+  });
 });
 
 test("deduplicates stable heading anchors", () => {

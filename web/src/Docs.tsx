@@ -396,6 +396,14 @@ function MarkdownBlockView({ block }: { block: MarkdownBlock }) {
     );
   }
   if (block.type === "paragraph") return <p>{inline(block.text)}</p>;
+  if (block.type === "image") {
+    return (
+      <figure className="docs-figure">
+        <img src={block.src} alt={block.alt} loading="lazy" decoding="async" />
+        {block.caption ? <figcaption>{inline(block.caption)}</figcaption> : null}
+      </figure>
+    );
+  }
   if (block.type === "code") return <CodeBlock code={block.code} language={block.language} />;
   if (block.type === "list") {
     const List = block.ordered ? "ol" : "ul";

@@ -1,0 +1,79 @@
+---
+title: Durability and portability
+description: Understand the Rust-owned journal, host store contract, and the migration surface required for hosted agents.
+---
+
+# Durability and portability
+
+Durable agent state should outlive a process without becoming private data that
+only one hosting provider can execute. Nanocodex separates the Rust-owned
+journal from the database that stores its opaque batches.
+
+![The same Rust-owned journal can live in Paradigm's managed service, Postgres, Cloudflare, Vercel, or another host store.](/docs/architecture/portable-durability.svg "Portability means moving resumable state, not merely downloading a transcript.")
+
+## Implemented portability contract
+
+The open-source durability crate publicly exposes `StoredJournal` and
+`StoredBatch`. A journal is an ordered sequence of versioned, opaque payloads.
+The `JournalStore` boundary acquires an exclusive fenced owner, appends at an
+expected revision, and compacts retained state without asking the database to
+interpret model messages or tool results.
+
+Rust owns decoding and reduction, operation idempotency, checkpoint recovery,
+effect replay, and the classification of an interrupted unsafe effect as
+ambiguous. Every adapter therefore persists the same agent state machine rather
+than translating it into a platform-specific workflow definition.
+
+Today the repository includes:
+
+- process-local memory for tests and ephemeral work;
+- native SQLite and Postgres stores;
+- a JavaScript/WASM host-store bridge;
+- a SQLite-backed Cloudflare Durable Object adapter; and
+- a Postgres-backed Vercel Workflow adapter.
+
+This is already enough to self-host the same journal contract in a normal
+server, hosted Postgres, Cloudflare, Vercel, or a custom platform with atomic
+ownership and append semantics.
+
+## Hosted migration contract
+
+Nanocodex Managed exposes the user-facing migration surface above the
+underlying portable format. A migration:
+
+1. Export a consistent journal snapshot plus its revision and format version.
+2. Resume incremental replication strictly after that revision when a live
+   migration cannot pause the source immediately.
+3. Fence the old writer before the destination becomes authoritative.
+4. Import without rewriting ordered batches or inventing completed effects.
+5. Reconstruct the agent against the destination's `JournalStore` and continue
+   from the committed boundary.
+
+The hosted API authenticates export and import against the owning account. An
+export is immutable and content-addressed; incremental reads advance from its
+revision without mutating the snapshot. Import verifies format, ordering, and
+integrity before acquiring the destination owner. The source remains readable
+after fencing but cannot accept new work once the destination is authoritative.
+
+## What moves
+
+A portable bundle includes the journal identity, format version, ordered
+batches, current revision, and integrity metadata needed to reject an incomplete
+or reordered import. It can also carry application-owned metadata explicitly
+selected for migration.
+
+Secrets do not move in that bundle. OAuth refresh tokens, provider keys,
+ephemeral sandbox credentials, and broker-internal connection material remain
+at the source. The destination reauthorizes Connect accounts and rebinds tools,
+workspaces, and sandboxes to equivalent stable identities. A portable agent is
+not a credential exfiltration format.
+
+Portability also does not make Cloudflare, Vercel, and Postgres operationally
+identical. Each host still owns scheduling, quotas, networking, workspace
+lifecycle, and client delivery. The common contract is narrower and more
+valuable: the committed agent computation can be reconstructed without a
+provider-specific transcript conversion.
+
+For the low-level API, continue with [durable execution](/core/durability).
+For concrete hosts, compare [Cloudflare](/deployments/cloudflare) and
+[Vercel](/deployments/vercel).
