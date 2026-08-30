@@ -92,6 +92,8 @@ const DEPLOYMENT_SECRET_NAMES = Object.freeze([
   "NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET",
   "NANOCODEX_X_OAUTH_CLIENT_ID",
   "NANOCODEX_X_OAUTH_CLIENT_SECRET",
+  "NANOCODEX_WHOOP_OAUTH_CLIENT_ID",
+  "NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET",
 ]);
 
 export const PRODUCTION_ORIGINS = Object.freeze({
@@ -139,6 +141,8 @@ export function preflightEnvironment(environment, revision, {
     NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET_CONFIGURED: configured("NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET") ? "true" : "false",
     NANOCODEX_X_OAUTH_CLIENT_ID_CONFIGURED: configured("NANOCODEX_X_OAUTH_CLIENT_ID") ? "true" : "false",
     NANOCODEX_X_OAUTH_CLIENT_SECRET_CONFIGURED: configured("NANOCODEX_X_OAUTH_CLIENT_SECRET") ? "true" : "false",
+    NANOCODEX_WHOOP_OAUTH_CLIENT_ID_CONFIGURED: configured("NANOCODEX_WHOOP_OAUTH_CLIENT_ID") ? "true" : "false",
+    NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET_CONFIGURED: configured("NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET") ? "true" : "false",
   };
 }
 
@@ -152,6 +156,8 @@ export function normalizeDeploymentEnvironment(environment) {
     NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET: "GOOGLE_CLIENT_SECRET",
     NANOCODEX_X_OAUTH_CLIENT_ID: "X_CLIENT_ID",
     NANOCODEX_X_OAUTH_CLIENT_SECRET: "X_CLIENT_SECRET",
+    NANOCODEX_WHOOP_OAUTH_CLIENT_ID: "WHOOP_CLIENT_ID",
+    NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET: "WHOOP_CLIENT_SECRET",
   };
   for (const [canonical, alias] of Object.entries(aliases)) {
     if (!configured(normalized[canonical]) && configured(normalized[alias])) {

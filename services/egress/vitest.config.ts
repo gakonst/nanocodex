@@ -42,6 +42,8 @@ export default defineConfig({
           GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
           X_OAUTH_CLIENT_ID: "x-client-id",
           X_OAUTH_CLIENT_SECRET: "x-client-secret",
+          WHOOP_OAUTH_CLIENT_ID: "whoop-client-id",
+          WHOOP_OAUTH_CLIENT_SECRET: "whoop-client-secret",
         },
         workers: [{
           name: "nanocodex",
@@ -162,6 +164,48 @@ export default defineConfig({
               data: { id: "2244994945", username: "nanocodex", name: "Nanocodex" },
             });
           }
+          if (request.method === "POST" && url.hostname === "api.prod.whoop.com"
+            && url.pathname === "/oauth/oauth2/token") {
+            const body = await request.clone().formData();
+            const refresh = body.get("grant_type") === "refresh_token";
+            const code = String(body.get("code") ?? "");
+            if (refresh && body.get("refresh_token") === "whoop-revoked-refresh") {
+              return Response.json({ error: "invalid_grant" }, { status: 400 });
+            }
+            const fullScope = "offline read:profile read:body_measurement read:cycles read:recovery read:sleep read:workout";
+            return Response.json({
+              access_token: refresh ? "whoop-refreshed-access" : "whoop-connector-access",
+              ...(code === "whoop-no-refresh-code" ? {} : {
+                refresh_token: refresh ? "whoop-rotated-refresh"
+                  : code === "whoop-revoked-refresh-code"
+                    ? "whoop-revoked-refresh"
+                    : "whoop-connector-refresh",
+              }),
+              expires_in: !refresh && (
+                code === "whoop-expiring-code" || code === "whoop-revoked-refresh-code"
+              ) ? 1 : 3_600,
+              scope: code === "whoop-reduced-scope-code"
+                ? "offline read:profile read:recovery"
+                : fullScope,
+              token_type: "bearer",
+            });
+          }
+          if (request.method === "GET" && url.hostname === "api.prod.whoop.com"
+            && url.pathname === "/developer/v2/user/profile/basic") {
+            return Response.json({
+              user_id: 10_129,
+              email: "member@example.test",
+              first_name: "Nano",
+              last_name: "Athlete",
+            });
+          }
+          if (request.method === "DELETE" && url.hostname === "api.prod.whoop.com"
+            && url.pathname === "/developer/v2/user/access") {
+            return ["Bearer whoop-connector-access", "Bearer whoop-refreshed-access"]
+              .includes(request.headers.get("authorization") ?? "")
+              ? new Response(null, { status: 204 })
+              : Response.json({ error: "invalid_token" }, { status: 401 });
+          }
           if (request.method === "POST" && url.hostname === "oauth2.googleapis.com"
             && url.pathname === "/token") {
             const body = await request.clone().formData();
@@ -232,7 +276,8 @@ export default defineConfig({
           if ((url.hostname === "api.github.com"
               || url.hostname === "gmail.googleapis.com"
               || url.hostname === "www.googleapis.com"
-              || url.hostname === "api.x.com")) {
+              || url.hostname === "api.x.com"
+              || url.hostname === "api.prod.whoop.com")) {
             const authorization = request.headers.get("authorization") ?? "";
             if (url.searchParams.has("redirect")) {
               return new Response(null, {
@@ -254,6 +299,7 @@ export default defineConfig({
               : authorization === "Bearer github-refreshed-access" ? "github-refreshed"
               : authorization === "Bearer gmail-refreshed-access" ? "gmail-refreshed"
               : authorization === "Bearer x-refreshed-access" ? "x-refreshed"
+              : authorization === "Bearer whoop-refreshed-access" ? "whoop-refreshed"
               : authorization.startsWith("Bearer ") ? "connected" : "missing";
             return Response.json({
               account,

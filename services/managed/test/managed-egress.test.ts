@@ -26,6 +26,7 @@ describe("Computer egress gateway", () => {
       "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10",
       "https://www.googleapis.com/drive/v3/files?pageSize=10",
       "https://api.x.com/2/dm_events?max_results=10",
+      "https://api.prod.whoop.com/developer/v2/recovery?limit=10",
     ]) {
       expect((await gateway.fetch(url)).status).toBe(200);
     }
@@ -45,12 +46,17 @@ describe("Computer egress gateway", () => {
       "https://api.x.com/2/users/2244994945/bookmarks/1890000000000000000",
       { method: "DELETE" },
     )).status).toBe(200);
+    expect((await gateway.fetch(
+      "https://api.prod.whoop.com/developer/v2/activity/workout",
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    )).status).toBe(403);
 
     expect(seen.map((request) => request.url)).toEqual([
       "https://api.github.com/repos/nanocodex/nanocodex/pulls?state=open",
       "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10",
       "https://www.googleapis.com/drive/v3/files?pageSize=10",
       "https://api.x.com/2/dm_events?max_results=10",
+      "https://api.prod.whoop.com/developer/v2/recovery?limit=10",
       "https://www.googleapis.com/upload/drive/v3/files?uploadType=media",
       "https://api.x.com/2/tweets",
       "https://api.x.com/2/users/2244994945/bookmarks/1890000000000000000",
@@ -60,9 +66,9 @@ describe("Computer egress gateway", () => {
         && request.headers.get("x-nanocodex-subject") === SUBJECT
     ))).toBe(true);
     expect(publicFetch).not.toHaveBeenCalled();
-    expect(await seen[4]!.text()).toBe(writeBody);
-    expect(await seen[5]!.text()).toBe(xWriteBody);
-    expect(seen[5]!.headers.get("content-type")).toBe("application/json");
+    expect(await seen[5]!.text()).toBe(writeBody);
+    expect(await seen[6]!.text()).toBe(xWriteBody);
+    expect(seen[6]!.headers.get("content-type")).toBe("application/json");
   });
 
   it("rejects credentials, lookalikes, userinfo, and private destinations", async () => {
@@ -79,6 +85,9 @@ describe("Computer egress gateway", () => {
       ["https://api.github.com.evil.test/user", undefined, 403],
       ["https://gmail.googleapis.com/gmail/v1/users/me/%2e%2e%2fother/messages", undefined, 403],
       ["https://www.googleapis.com/drive/v3/%252e%252e%252fother", undefined, 403],
+      ["https://api.prod.whoop.com/oauth/oauth2/token", undefined, 403],
+      ["https://api.prod.whoop.com/developer/v2/user/access", undefined, 403],
+      ["https://api.prod.whoop.com/developer/v2/partner/token", undefined, 403],
       ["https://name:password@example.com/", undefined, 403],
       ["http://127.0.0.1/", undefined, 403],
       ["http://169.254.169.254/latest/meta-data", undefined, 403],

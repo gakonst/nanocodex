@@ -13,7 +13,7 @@ type ConnectorEnv = AccountAuthEnv & {
   NANOCODEX: Fetcher;
   NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY?: string;
 };
-type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+type ConnectorId = "github" | "gmail" | "gdrive" | "x" | "whoop";
 type McpConnectionStatus =
   | "authorization_required"
   | "connected"
@@ -26,7 +26,7 @@ type McpConnection = Readonly<{
   status: McpConnectionStatus;
 }>;
 
-const CONNECTOR = /^(github|gmail|gdrive|x)$/;
+const CONNECTOR = /^(github|gmail|gdrive|x|whoop)$/;
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const MCP_CONNECTION_NAME = /^[^\u0000-\u001f\u007f]{1,256}$/u;
 const MCP_CONNECTION_STATUSES = new Set<McpConnectionStatus>([

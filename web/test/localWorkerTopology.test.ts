@@ -15,6 +15,8 @@ test("local development mirrors the private Workers and same-session Connect API
     NANOCODEX_LOCAL_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_ID: "x-client",
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_SECRET: "x-secret",
+    NANOCODEX_LOCAL_WHOOP_OAUTH_CLIENT_ID: "whoop-client",
+    NANOCODEX_LOCAL_WHOOP_OAUTH_CLIENT_SECRET: "whoop-secret",
     OPENAI_API_KEY: "must-not-enter-managed-worker",
   });
   assert.equal(egress?.configPath, "../services/egress/wrangler.broker.jsonc");
@@ -33,6 +35,8 @@ test("local development mirrors the private Workers and same-session Connect API
       GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
       X_OAUTH_CLIENT_ID: "x-client",
       X_OAUTH_CLIENT_SECRET: "x-secret",
+      WHOOP_OAUTH_CLIENT_ID: "whoop-client",
+      WHOOP_OAUTH_CLIENT_SECRET: "whoop-secret",
     },
   });
   assert.equal(managed?.configPath, "../services/managed/wrangler.jsonc");
@@ -103,5 +107,9 @@ test("local managed defaults are immediately runnable and validate only policy",
   assert.throws(
     () => localManagedAuxiliaryWorkers({ NANOCODEX_LOCAL_X_OAUTH_CLIENT_ID: "incomplete" }),
     /X OAuth client ID and secret must be configured together/,
+  );
+  assert.throws(
+    () => localManagedAuxiliaryWorkers({ NANOCODEX_LOCAL_WHOOP_OAUTH_CLIENT_ID: "incomplete" }),
+    /WHOOP OAuth client ID and secret must be configured together/,
   );
 });

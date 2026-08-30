@@ -37,6 +37,8 @@ function preflightEnvironment() {
     NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET_CONFIGURED: "true",
     NANOCODEX_X_OAUTH_CLIENT_ID_CONFIGURED: "true",
     NANOCODEX_X_OAUTH_CLIENT_SECRET_CONFIGURED: "true",
+    NANOCODEX_WHOOP_OAUTH_CLIENT_ID_CONFIGURED: "true",
+    NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET_CONFIGURED: "true",
     TARGET_SHA: revision,
   };
 }
@@ -83,6 +85,28 @@ test("production preflight treats X OAuth as an optional atomic pair", () => {
     assert.throws(
       () => assertProductionPreflight(partial),
       /X OAuth application credentials must be configured together/,
+    );
+  }
+});
+
+test("production preflight treats WHOOP OAuth as an optional atomic pair", () => {
+  const absent = preflightEnvironment();
+  absent.NANOCODEX_WHOOP_OAUTH_CLIENT_ID_CONFIGURED = "false";
+  absent.NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET_CONFIGURED = "false";
+  assert.doesNotThrow(() => assertProductionPreflight(absent));
+
+  for (const configured of [
+    ["true", "false"],
+    ["false", "true"],
+  ]) {
+    const partial = preflightEnvironment();
+    [
+      partial.NANOCODEX_WHOOP_OAUTH_CLIENT_ID_CONFIGURED,
+      partial.NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET_CONFIGURED,
+    ] = configured;
+    assert.throws(
+      () => assertProductionPreflight(partial),
+      /WHOOP OAuth application credentials must be configured together/,
     );
   }
 });

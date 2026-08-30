@@ -47,6 +47,8 @@ function productionEnvironment() {
     NANOCODEX_GITHUB_OAUTH_CLIENT_SECRET: "github-secret",
     NANOCODEX_GOOGLE_OAUTH_CLIENT_ID: "google-client",
     NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
+    NANOCODEX_WHOOP_OAUTH_CLIENT_ID: "whoop-client",
+    NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET: "whoop-secret",
     TARGET_SHA: revision,
   };
 }
@@ -140,6 +142,8 @@ test("legacy private env names normalize and rollout secrets derive stably", () 
     GH_CLIENT_SECRETS: "github-secret",
     GOOGLE_CLIENT_ID: "google-client",
     GOOGLE_CLIENT_SECRET: "google-secret",
+    WHOOP_CLIENT_ID: "whoop-client",
+    WHOOP_CLIENT_SECRET: "whoop-secret",
     GIT_MIRROR_TOKEN: "git-token",
     SESSION_CREDENTIAL_KEY: "s".repeat(43),
   };
@@ -149,6 +153,8 @@ test("legacy private env names normalize and rollout secrets derive stably", () 
   assert.equal(first.NANOCODEX_GITHUB_OAUTH_CLIENT_SECRET, legacy.GH_CLIENT_SECRETS);
   assert.equal(first.NANOCODEX_GOOGLE_OAUTH_CLIENT_ID, legacy.GOOGLE_CLIENT_ID);
   assert.equal(first.NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET, legacy.GOOGLE_CLIENT_SECRET);
+  assert.equal(first.NANOCODEX_WHOOP_OAUTH_CLIENT_ID, legacy.WHOOP_CLIENT_ID);
+  assert.equal(first.NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET, legacy.WHOOP_CLIENT_SECRET);
   assert.equal(first.NANOCODEX_GIT_TOKEN, legacy.GIT_MIRROR_TOKEN);
   for (const name of [
     "NANOCODEX_ADMIN_TOKEN",

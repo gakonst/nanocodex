@@ -9,7 +9,7 @@ const CLI_APP_ID = "nanocodex-cli";
 const CONNECT_BROWSER_CLIENTS = new Set(["device", "onboarding"]);
 const CONNECT_BROWSER_ROUTE = /^(?:\/v1\/device(?:\/.*)?|\/v1\/connect\/auth(?:\/.*)?|\/v1\/hosted-authorizations|\/v1\/account-link|\/v1\/connections(?:\/.*)?|\/v1\/access-keys(?:\/.*)?|\/v1\/grants(?:\/.*)?)$/;
 const CONNECTOR_ROUTE = /^\/v1\/connectors(?:\/.*)?$/;
-const CONNECTOR_CALLBACK = /^\/v1\/connectors\/(?:github|gmail|gdrive|x)\/callback$/;
+const CONNECTOR_CALLBACK = /^\/v1\/connectors\/(?:github|gmail|gdrive|x|whoop)\/callback$/;
 const MCP_CONNECTION_ROUTE = /^\/v1\/mcp-connections(?:\/.*)?$/;
 const MCP_CONNECTION_CALLBACK = /^\/v1\/mcp-connections\/[A-Za-z0-9_-]{43}\/callback$/;
 

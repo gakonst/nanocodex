@@ -137,10 +137,10 @@ key, access token, refresh token, device auth ID, verifier, or challenge.
 
 ## Account connectors
 
-The account profile supports GitHub, Gmail, Google Drive, and X authorization.
+The account profile supports GitHub, Gmail, Google Drive, X, and WHOOP authorization.
 The browser starts an account-authenticated flow and receives only the fixed
 provider authorization URL. The private per-user connector Durable Object owns
-PKCE/state validation, code exchange, identity lookup, encrypted token storage,
+state validation, PKCE where supported, code exchange, identity lookup, encrypted token storage,
 and disconnect. OAuth callbacks return only a relative profile destination and
 connection result through the managed Worker.
 
@@ -152,6 +152,7 @@ https://<origin>/v1/connectors/github/callback
 https://<origin>/v1/connectors/gmail/callback
 https://<origin>/v1/connectors/gdrive/callback
 https://<origin>/v1/connectors/x/callback
+https://<origin>/v1/connectors/whoop/callback
 ```
 
 For a local stack, register the exact `nanocodex.localhost` origin and port
@@ -166,6 +167,9 @@ http://nanocodex.localhost:5173/v1/connectors/x/callback
 
 Google Web clients require every development URI to match exactly, including the
 scheme, host, port, and path. Keep GitHub wildcard callback matching disabled.
+WHOOP accepts HTTPS (or a native `whoop://` URI) only, so its connector cannot
+complete through the HTTP localhost relay. Exercise WHOOP against an HTTPS
+deployment or tunnel registered in the WHOOP Developer Dashboard.
 
 GitHub requests only the classic `repo` and `workflow` OAuth scopes for cloning,
 pushing, repository API work, and workflow-file updates. It does not request
@@ -177,7 +181,9 @@ permissions. The Google scopes are restricted and require the corresponding
 verification and data-handling review for a public production application. X
 requests read/write scopes for posts, follows, likes, bookmarks, lists, direct
 messages, media, and offline refresh. Agents poll or act through the allowlisted
-X API paths when invoked.
+X API paths when invoked. WHOOP requests offline access plus read-only profile,
+body measurement, cycle, recovery, sleep, and workout scopes. Its data plane
+allows GET and HEAD only, and rotating refresh tokens are persisted atomically.
 
 ## Validation and deployment
 
@@ -188,12 +194,13 @@ npm run check
 
 Production deployment requires the encryption key, private readiness probe
 token, and the GitHub/Google OAuth application client IDs and secrets. X OAuth
-application credentials are optional, but its client ID and secret must be
-configured together. The
+and WHOOP OAuth application credentials are optional, but each provider's
+client ID and secret must be configured together. The
 deployment input names are `NANOCODEX_GITHUB_OAUTH_CLIENT_ID`,
 `NANOCODEX_GITHUB_OAUTH_CLIENT_SECRET`, `NANOCODEX_GOOGLE_OAUTH_CLIENT_ID`,
-`NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET`, `NANOCODEX_X_OAUTH_CLIENT_ID`, and
-`NANOCODEX_X_OAUTH_CLIENT_SECRET`; the deployment script maps them to the
+`NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET`, `NANOCODEX_X_OAUTH_CLIENT_ID`,
+`NANOCODEX_X_OAUTH_CLIENT_SECRET`, `NANOCODEX_WHOOP_OAUTH_CLIENT_ID`, and
+`NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET`; the deployment script maps them to the
 private Worker bindings and strips them from child-process environments. User
 provider credentials are still provisioned per account only after interactive
 authorization; no user token or deployment-global provider credential reaches

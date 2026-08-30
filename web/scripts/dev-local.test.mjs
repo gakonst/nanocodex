@@ -452,6 +452,8 @@ test("local connector app credentials use private auxiliary names", () => {
     GOOGLE_CLIENT_SECRET: "google-secret",
     X_CLIENT_ID: "x-client",
     X_CLIENT_SECRET: "x-secret",
+    WHOOP_CLIENT_ID: "whoop-client",
+    WHOOP_CLIENT_SECRET: "whoop-secret",
     OPENAI_API_KEY: "must-not-project",
   }), {
     NANOCODEX_LOCAL_GITHUB_OAUTH_CLIENT_ID: "github-client",
@@ -460,6 +462,8 @@ test("local connector app credentials use private auxiliary names", () => {
     NANOCODEX_LOCAL_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_ID: "x-client",
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_SECRET: "x-secret",
+    NANOCODEX_LOCAL_WHOOP_OAUTH_CLIENT_ID: "whoop-client",
+    NANOCODEX_LOCAL_WHOOP_OAUTH_CLIENT_SECRET: "whoop-secret",
   });
   assert.deepEqual(localConnectorEnvironment({
     GH_CLIENT_ID: "ambient-github-id",

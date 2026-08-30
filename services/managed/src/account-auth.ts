@@ -60,7 +60,7 @@ export type OrganizationCapability =
   | "organization:read"
   | "organization:write";
 
-export type ConnectConnectorId = "github" | "gmail" | "gdrive" | "x" | "chatgpt";
+export type ConnectConnectorId = "github" | "gmail" | "gdrive" | "x" | "whoop" | "chatgpt";
 
 export type ConnectGrantSlice = Readonly<{
   grantId: string;
@@ -1741,6 +1741,7 @@ const CONNECT_CONNECTORS = new Set<ConnectConnectorId>([
   "gmail",
   "gdrive",
   "x",
+  "whoop",
   "chatgpt",
 ]);
 const CONNECT_GRANT_ID = /^0x[0-9a-fA-F]{64}$/;

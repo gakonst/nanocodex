@@ -497,7 +497,7 @@ function isConnectGrantSlice(value: unknown): value is ConnectGrantSlice {
     && isUniqueStringArray(grant.connectors)
     && grant.connectors.every((connector) => (
       connector === "github" || connector === "gmail" || connector === "gdrive"
-      || connector === "x" || connector === "chatgpt"
+      || connector === "x" || connector === "whoop" || connector === "chatgpt"
     ))
     && isUniqueStringArray(grant.mcpIds) && grant.mcpIds.length <= 16
     && grant.mcpIds.every((id) => /^[A-Za-z0-9_-]{43}$/.test(id));
@@ -3818,7 +3818,7 @@ export class NanocodexSession extends DurableComputerSession {
     try {
       allowedConnectors = accountConnectorProjection(
         parseTurnAuthorization(first.authorization_json),
-      ) ?? ["github", "gmail", "gdrive", "x"];
+      ) ?? ["github", "gmail", "gdrive", "x", "whoop"];
     } catch { /* Malformed authorization fails closed. */ }
     const retained = await this.ctx.storage.get<InitialAccountContext>(
       INITIAL_ACCOUNT_CONTEXT_KEY,

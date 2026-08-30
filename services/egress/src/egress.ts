@@ -45,7 +45,7 @@ const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefine
 };
 
 type ConnectorOperation = Readonly<{
-  id: "github" | "gmail" | "gdrive" | "x";
+  id: "github" | "gmail" | "gdrive" | "x" | "whoop";
   origin: `https://${string}`;
   paths: readonly RegExp[];
 }>;
@@ -75,6 +75,16 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
       /^\/2\/lists(?:\/|$)/,
       /^\/2\/dm_(?:conversations|events)(?:\/|$)/,
       /^\/2\/media(?:\/|$)/,
+    ],
+  },
+  {
+    id: "whoop",
+    origin: "https://api.prod.whoop.com",
+    paths: [
+      /^\/developer\/v2\/user\/(?:profile\/basic|measurement\/body)$/,
+      /^\/developer\/v2\/cycle(?:\/|$)/,
+      /^\/developer\/v2\/recovery(?:\/|$)/,
+      /^\/developer\/v2\/activity\/(?:sleep|workout)(?:\/|$)/,
     ],
   },
 ];
@@ -391,6 +401,9 @@ async function handleConnectorEgress(
   if (!CONNECTOR_METHODS.has(request.method)) {
     return auditedError(403, "method_denied", request, url, connector.id, started);
   }
+  if (connector.id === "whoop" && request.method !== "GET" && request.method !== "HEAD") {
+    return auditedError(403, "method_denied", request, url, connector.id, started);
+  }
   const subject = request.headers.get(SUBJECT_HEADER);
   if (!subject || !SUBJECT.test(subject)) {
     return auditedError(403, "agent_subject_required", request, url, connector.id, started);
@@ -504,7 +517,7 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const connectorMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|gmail|gdrive|x)(\/callback)?)?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|gmail|gdrive|x|whoop)(\/callback)?)?$/,
   );
   if (connectorMatch) {
     const userId = connectorMatch[1]!;
@@ -989,7 +1002,7 @@ function auditControl(
   const subject = url.pathname.startsWith("/subjects/");
   const tail = user?.[3];
   const connector = user?.[2] === "connectors"
-    ? tail?.match(/^(github|gmail|gdrive|x)/)?.[1]
+    ? tail?.match(/^(github|gmail|gdrive|x|whoop)/)?.[1]
     : undefined;
   const mcpConnectionId = user?.[2] === "mcp-connections"
     ? tail?.match(/^([A-Za-z0-9_-]{43})/)?.[1]
@@ -1017,7 +1030,7 @@ function audit(
   detail: Record<string, unknown>,
 ): void {
   const connector = rule === "github" || rule === "gmail" || rule === "gdrive"
-    || rule === "x" || rule === "mcp";
+    || rule === "x" || rule === "whoop" || rule === "mcp";
   console.log({
     type: "egress.request",
     action,

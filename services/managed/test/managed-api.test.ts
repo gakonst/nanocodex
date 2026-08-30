@@ -693,6 +693,7 @@ describe("managed agents REST and resumable SSE", () => {
         gmail: { connected: false },
         gdrive: { connected: false },
         x: { connected: false },
+        whoop: { connected: false },
       },
     });
 

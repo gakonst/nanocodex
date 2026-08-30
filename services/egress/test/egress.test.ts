@@ -1014,7 +1014,16 @@ describe("per-user OAuth connectors", () => {
     );
   });
 
-  for (const connector of ["github", "gmail", "gdrive", "x"] as const) {
+  it("requires an HTTPS callback for WHOOP", async () => {
+    const started = await control("/users/connector-whoop-localhost/connectors/whoop", "POST", {
+      redirect_uri: "http://127.0.0.1:47891/v1/connectors/whoop/callback",
+      return_to: "/connect?thread=connector-whoop-localhost",
+    });
+    expect(started.status).toBe(400);
+    expect(await started.json()).toEqual({ error: "invalid_request" });
+  });
+
+  for (const connector of ["github", "gmail", "gdrive", "x", "whoop"] as const) {
     it(`completes ${connector} authorization without returning provider credentials`, async () => {
       const user = `connector-${connector}`;
       const started = await control(`/users/${user}/connectors/${connector}`, "POST", {
@@ -1026,7 +1035,8 @@ describe("per-user OAuth connectors", () => {
       const authorization = new URL(startBody.authorization_url);
       expect(authorization.protocol).toBe("https:");
       expect(authorization.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]{43}$/);
-      expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+      expect(authorization.searchParams.get("code_challenge_method"))
+        .toBe(connector === "whoop" ? null : "S256");
       expect(JSON.stringify(startBody)).not.toContain("client-secret");
 
       const completed = await control(`/users/${user}/connectors/${connector}/callback`, "POST", {
@@ -1073,6 +1083,30 @@ describe("per-user OAuth connectors", () => {
       expect(await status.json()).toMatchObject({
         connectors: { x: { connected: false } },
       });
+    });
+  }
+
+  for (const [code, label] of [
+    ["whoop-no-refresh-code", "refresh token"],
+    ["whoop-reduced-scope-code", "complete scope grant"],
+  ] as const) {
+    it(`rejects a WHOOP authorization without its ${label}`, async () => {
+      const user = `connector-${code}`;
+      const started = await control(`/users/${user}/connectors/whoop`, "POST", {
+        redirect_uri: "https://nanocodex.test/v1/connectors/whoop/callback",
+        return_to: "/",
+      });
+      const authorization = new URL(
+        (await started.json<{ authorization_url: string }>()).authorization_url,
+      );
+      const completed = await control(`/users/${user}/connectors/whoop/callback`, "POST", {
+        code,
+        state: authorization.searchParams.get("state"),
+      });
+      expect(completed.status).toBe(502);
+      expect(await (await SELF.fetch(
+        `https://broker.test/users/${user}/connectors`,
+      )).json()).toMatchObject({ connectors: { whoop: { connected: false } } });
     });
   }
 
@@ -1159,7 +1193,7 @@ describe("private connector data plane", () => {
     const subject = connectorSubject("data-plane");
     const user = "connector-data-plane";
     await control(`/subjects/${subject}`, "PUT", { user_id: user });
-    for (const connector of ["github", "gmail", "gdrive", "x"] as const) {
+    for (const connector of ["github", "gmail", "gdrive", "x", "whoop"] as const) {
       await connect(user, connector, connector === "gdrive" ? "gdrive-code" : `${connector}-code`);
     }
 
@@ -1171,6 +1205,7 @@ describe("private connector data plane", () => {
         "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=1",
         "https://www.googleapis.com/drive/v3/files?pageSize=1",
         "https://api.x.com/2/dm_events?max_results=5",
+        "https://api.prod.whoop.com/developer/v2/recovery?limit=1",
       ]) {
         const response = await SELF.fetch(connectorRequest(url, subject));
         expect(response.status).toBe(200);
@@ -1242,6 +1277,13 @@ describe("private connector data plane", () => {
       connectorRequest("https://www.googleapis.com/oauth2/v3/userinfo", subject),
       connectorRequest("https://api.x.com/1.1/statuses/home_timeline.json", subject),
       connectorRequest("https://api.x.com/2/oauth2/revoke", subject),
+      connectorRequest("https://api.prod.whoop.com/oauth/oauth2/token", subject),
+      connectorRequest("https://api.prod.whoop.com/developer/v2/user/access", subject),
+      connectorRequest("https://api.prod.whoop.com/developer/v2/partner/token", subject),
+      connectorRequest(
+        "https://api.prod.whoop.com/developer/v2/activity/%2e%2e%2fpartner/token",
+        subject,
+      ),
       connectorRequest("https://api.github.com/repos/nanocodex/sdk?access_token=caller", subject),
       connectorRequest("https://api.github.com/repos/nanocodex/sdk", ""),
       connectorRequest("https://api.github.com/repos/nanocodex/sdk", subject, {
@@ -1597,6 +1639,50 @@ describe("private connector data plane", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ account: "x-refreshed" });
   });
+
+  it("rotates an expiring WHOOP refresh token before reading recovery", async () => {
+    const subject = "W".repeat(43);
+    const user = "connector-whoop-refresh";
+    await control(`/subjects/${subject}`, "PUT", { user_id: user });
+    await connect(user, "whoop", "whoop-expiring-code");
+    const response = await SELF.fetch(connectorRequest(
+      "https://api.prod.whoop.com/developer/v2/recovery?limit=1",
+      subject,
+    ));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ account: "whoop-refreshed" });
+  });
+
+  it("enforces WHOOP read-only access and revokes the provider grant on disconnect", async () => {
+    const subject = "R".repeat(43);
+    const user = "connector-whoop-read-only";
+    await control(`/subjects/${subject}`, "PUT", { user_id: user });
+    await connect(user, "whoop", "whoop-code");
+    expect((await SELF.fetch(connectorRequest(
+      "https://api.prod.whoop.com/developer/v2/activity/workout",
+      subject,
+      { method: "POST", body: "{}", contentType: "application/json" },
+    ))).status).toBe(403);
+    expect((await SELF.fetch(
+      `https://broker.test/users/${user}/connectors/whoop`,
+      { method: "DELETE" },
+    )).status).toBe(204);
+    expect(await (await SELF.fetch(
+      `https://broker.test/users/${user}/connectors`,
+    )).json()).toMatchObject({ connectors: { whoop: { connected: false } } });
+  });
+
+  it("refreshes an expiring WHOOP token before revoking access", async () => {
+    const user = "connector-whoop-expiring-disconnect";
+    await connect(user, "whoop", "whoop-expiring-code");
+    expect((await SELF.fetch(
+      `https://broker.test/users/${user}/connectors/whoop`,
+      { method: "DELETE" },
+    )).status).toBe(204);
+    expect(await (await SELF.fetch(
+      `https://broker.test/users/${user}/connectors`,
+    )).json()).toMatchObject({ connectors: { whoop: { connected: false } } });
+  });
 });
 
 function control(path: string, method: string, body: Record<string, unknown>): Promise<Response> {
@@ -1613,7 +1699,7 @@ function connectorSubject(label: string): string {
 
 async function connect(
   user: string,
-  connector: "github" | "gmail" | "gdrive" | "x",
+  connector: "github" | "gmail" | "gdrive" | "x" | "whoop",
   code: string,
 ): Promise<void> {
   const started = await control(`/users/${user}/connectors/${connector}`, "POST", {

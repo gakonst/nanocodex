@@ -40,6 +40,15 @@ import {
   decodeXIdentity,
   decodeXTokenResponse,
 } from "./connectors/x";
+import {
+  buildWhoopAuthorizationUrl,
+  buildWhoopIdentityRequest,
+  buildWhoopRefreshRequest,
+  buildWhoopRevocationRequest,
+  buildWhoopTokenRequest,
+  decodeWhoopIdentity,
+  decodeWhoopTokenResponse,
+} from "./connectors/whoop";
 
 const STATE_KEY = "connector-state";
 const PENDING_TTL_MS = 10 * 60_000;
@@ -50,7 +59,7 @@ const MAX_CONNECTOR_RESPONSE_BYTES = 8 * 1024 * 1024;
 const CONNECTOR_TIMEOUT_MS = 20_000;
 const EXPIRY_SKEW_MS = 30_000;
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
-const CONNECTOR = /^(github|gmail|gdrive|x)$/;
+const CONNECTOR = /^(github|gmail|gdrive|x|whoop)$/;
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 
 type ProviderRule = Readonly<{
@@ -86,9 +95,19 @@ const PROVIDER_RULES: readonly ProviderRule[] = [
       /^\/2\/media(?:\/|$)/,
     ],
   },
+  {
+    id: "whoop",
+    origin: "https://api.prod.whoop.com",
+    paths: [
+      /^\/developer\/v2\/user\/(?:profile\/basic|measurement\/body)$/,
+      /^\/developer\/v2\/cycle(?:\/|$)/,
+      /^\/developer\/v2\/recovery(?:\/|$)/,
+      /^\/developer\/v2\/activity\/(?:sleep|workout)(?:\/|$)/,
+    ],
+  },
 ];
 
-export type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+export type ConnectorId = "github" | "gmail" | "gdrive" | "x" | "whoop";
 
 export interface ConnectorBrokerEnv extends McpConnectionBrokerEnv {
   GITHUB_OAUTH_CLIENT_ID?: string;
@@ -97,6 +116,8 @@ export interface ConnectorBrokerEnv extends McpConnectionBrokerEnv {
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
   X_OAUTH_CLIENT_ID?: string;
   X_OAUTH_CLIENT_SECRET?: string;
+  WHOOP_OAUTH_CLIENT_ID?: string;
+  WHOOP_OAUTH_CLIENT_SECRET?: string;
 }
 
 type StoredConnector = {
@@ -195,7 +216,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       if (request.method === "GET" && url.pathname === "/v1/status") {
         return json({ connectors: this.#publicStatus() }, 200);
       }
-      const match = url.pathname.match(/^\/v1\/(github|gmail|gdrive|x)(?:\/(start|callback))?$/);
+      const match = url.pathname.match(/^\/v1\/(github|gmail|gdrive|x|whoop)(?:\/(start|callback))?$/);
       const id = connectorId(match?.[1]);
       if (!id) return jsonError(404, "not_found");
       const operation = match?.[2];
@@ -249,6 +270,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
 
   async #proxy(provider: ProviderRule, request: Request, url: URL): Promise<Response> {
     if (!CONNECTOR_METHODS.has(request.method)) {
+      throw new ConnectorFailure(403, "method_denied");
+    }
+    if (provider.id === "whoop" && request.method !== "GET" && request.method !== "HEAD") {
       throw new ConnectorFailure(403, "method_denied");
     }
     if (url.href.length > MAX_CONNECTOR_URL_BYTES || url.username || url.password || url.hash) {
@@ -317,6 +341,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     }
     if (id === "github") return this.#refreshGitHubConnector(connector);
     if (id === "x") return this.#refreshXConnector(connector);
+    if (id === "whoop") return this.#refreshWhoopConnector(connector);
     return this.#refreshGoogleConnector(id, connector);
   }
 
@@ -411,6 +436,45 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     return next;
   }
 
+  async #refreshWhoopConnector(connector: StoredConnector): Promise<StoredConnector> {
+    const credentials = providerCredentials("whoop", this.#env);
+    const response = await providerFetch(buildWhoopRefreshRequest(
+      credentials.clientId,
+      credentials.clientSecret,
+      connector.refreshToken!,
+    ));
+    if (REDIRECT_STATUS.has(response.status) || !response.ok) {
+      await response.body?.cancel();
+      if (response.status === 400 || response.status === 401) {
+        return this.#rejectRefresh("whoop", connector);
+      }
+      connectorAudit("refresh", "error", "whoop", {
+        status: 503,
+        code: "connector_provider_unavailable",
+      });
+      throw new ConnectorFailure(503, "connector_provider_unavailable");
+    }
+    let refreshed;
+    try {
+      refreshed = decodeWhoopTokenResponse(await providerJson(response));
+    } catch {
+      return this.#rejectRefresh("whoop", connector);
+    }
+    // WHOOP refresh tokens are single-use. Never retain the consumed token.
+    if (!refreshed.refreshToken) return this.#rejectRefresh("whoop", connector);
+    const next: StoredConnector = {
+      ...connector,
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken,
+      expiresAt: Date.now() + refreshed.expiresIn * 1_000,
+      scopes: [...refreshed.scopes],
+    };
+    this.#connectors.connectors.whoop = next;
+    await this.#persist();
+    connectorAudit("refresh", "allow", "whoop", { status: 200 });
+    return next;
+  }
+
   async #refreshGoogleConnector(
     id: "gmail" | "gdrive",
     connector: StoredConnector,
@@ -476,6 +540,17 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       }
       return false;
     }
+    if (id === "whoop") {
+      // WHOOP rejects expired access tokens at the user-access endpoint. Refresh first
+      // when needed so disconnect always revokes the live rotating token pair.
+      const active = await this.#usableConnector("whoop");
+      const response = await providerFetch(buildWhoopRevocationRequest(active.accessToken));
+      await response.body?.cancel();
+      const revoked = response.status === 204;
+      connectorAudit("revoke", revoked ? "allow" : "error", id, { status: response.status });
+      if (!revoked) throw new ConnectorFailure(503, "connector_revocation_failed");
+      return true;
+    }
     const response = await providerFetch(revocationRequest(id, connector, this.#env));
     await response.body?.cancel();
     const revoked = id === "github" ? response.status === 204 : response.status === 200;
@@ -484,7 +559,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   }
 
   #disconnectIds(id: ConnectorId, connector: StoredConnector): ConnectorId[] {
-    if (id === "github" || id === "x") return [id];
+    if (id === "github" || id === "x" || id === "whoop") return [id];
     return (["gmail", "gdrive"] as const).filter((candidate) => (
       candidate === id
       || this.#connectors.connectors[candidate]?.accountId === connector.accountId
@@ -520,6 +595,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       gmail: status("gmail"),
       gdrive: status("gdrive"),
       x: status("x"),
+      whoop: status("whoop"),
     };
   }
 
@@ -527,7 +603,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     const body = await readJson(request, MAX_BODY_BYTES);
     const redirectUri = stringField(body, "redirect_uri");
     const returnTo = stringField(body, "return_to");
-    if (!redirectUri || !validRedirectUri(redirectUri, this.#env)
+    if (!redirectUri || !validRedirectUri(id, redirectUri, this.#env)
       || !returnTo || !validReturnTo(returnTo)) {
       throw new ConnectorFailure(400, "invalid_request");
     }
@@ -650,6 +726,7 @@ function authorizationUrl(
   if (id === "github") return buildGitHubAuthorizationUrl({ clientId, ...fields });
   if (id === "gmail") return buildGmailAuthorizationUrl({ clientId, ...fields });
   if (id === "x") return buildXAuthorizationUrl({ clientId, ...fields });
+  if (id === "whoop") return buildWhoopAuthorizationUrl({ clientId, ...fields });
   return buildGDriveAuthorizationUrl({ clientId, ...fields });
 }
 
@@ -673,6 +750,12 @@ function tokenExchangeRequest(
     clientId: credentials.clientId,
     clientSecret: credentials.clientSecret,
     ...fields,
+  });
+  if (id === "whoop") return buildWhoopTokenRequest({
+    clientId: credentials.clientId,
+    clientSecret: credentials.clientSecret,
+    code: fields.code,
+    redirectUri: fields.redirectUri,
   });
   return buildGDriveTokenRequest({
     clientId: credentials.clientId,
@@ -717,6 +800,18 @@ function decodeToken(id: ConnectorId, value: unknown): DecodedToken {
       scopes: token.scopes,
     };
   }
+  if (id === "whoop") {
+    const token = decodeWhoopTokenResponse(value);
+    if (!token.refreshToken) {
+      throw new ConnectorFailure(502, "connector_token_response_invalid");
+    }
+    return {
+      accessToken: token.accessToken,
+      refreshToken: token.refreshToken,
+      expiresIn: token.expiresIn,
+      scopes: token.scopes,
+    };
+  }
   const token = decodeGDriveTokenResponse(value);
   return {
     accessToken: token.accessToken,
@@ -730,6 +825,7 @@ function identityRequest(id: ConnectorId, accessToken: string): Request {
   if (id === "github") return buildGitHubIdentityRequest(accessToken);
   if (id === "gmail") return buildGmailIdentityRequest(accessToken);
   if (id === "x") return buildXIdentityRequest(accessToken);
+  if (id === "whoop") return buildWhoopIdentityRequest(accessToken);
   return buildGDriveIdentityRequest(accessToken);
 }
 
@@ -773,6 +869,7 @@ function decodeIdentity(id: ConnectorId, value: unknown): { accountId: string; d
   if (id === "github") return decodeGitHubIdentity(value);
   if (id === "gmail") return decodeGmailIdentity(value);
   if (id === "x") return decodeXIdentity(value);
+  if (id === "whoop") return decodeWhoopIdentity(value);
   return decodeGDriveIdentity(value);
 }
 
@@ -782,10 +879,12 @@ function providerCredentials(
 ): { clientId: string; clientSecret: string } {
   const clientId = (id === "github" ? env.GITHUB_OAUTH_CLIENT_ID
     : id === "x" ? env.X_OAUTH_CLIENT_ID
+    : id === "whoop" ? env.WHOOP_OAUTH_CLIENT_ID
     : env.GOOGLE_OAUTH_CLIENT_ID)?.trim();
   const clientSecret = (id === "github"
     ? env.GITHUB_OAUTH_CLIENT_SECRET
     : id === "x" ? env.X_OAUTH_CLIENT_SECRET
+    : id === "whoop" ? env.WHOOP_OAUTH_CLIENT_SECRET
     : env.GOOGLE_OAUTH_CLIENT_SECRET)?.trim();
   if (!clientId || !clientSecret) throw new ConnectorFailure(503, "connector_not_configured");
   return { clientId, clientSecret };
@@ -936,9 +1035,12 @@ function containsCredential(body: Uint8Array, connector: StoredConnector): boole
   return credentials.some((credential) => decoded.includes(credential));
 }
 
-function validRedirectUri(value: string, env: ConnectorBrokerEnv): boolean {
+function validRedirectUri(id: ConnectorId, value: string, env: ConnectorBrokerEnv): boolean {
   try {
     const url = new URL(value);
+    if (id === "whoop") {
+      return !url.username && !url.password && !url.hash && url.protocol === "https:";
+    }
     const environment = env.ENVIRONMENT?.trim().toLowerCase();
     const local = environment === "local" || environment === "development" || environment === "test";
     return !url.username && !url.password && !url.hash

@@ -20,7 +20,7 @@ const BLOCKED_RESPONSE_HEADERS = new Set([
   "x-nanocodex-subject",
 ]);
 
-export type ManagedEgressConnectorId = "github" | "gmail" | "gdrive" | "x";
+export type ManagedEgressConnectorId = "github" | "gmail" | "gdrive" | "x" | "whoop";
 
 type ProviderPolicy = Readonly<{
   connector: ManagedEgressConnectorId;
@@ -43,6 +43,14 @@ const PROVIDERS = new Map<string, ProviderPolicy>([
   ["api.x.com", {
     connector: "x",
     path: (path) => /^\/2\/(?:tweets|users|lists|dm_(?:conversations|events)|media)(?:\/|$)/.test(path),
+  }],
+  ["api.prod.whoop.com", {
+    connector: "whoop",
+    path: (path) => (
+      /^\/developer\/v2\/user\/(?:profile\/basic|measurement\/body)$/.test(path)
+      || /^\/developer\/v2\/(?:cycle|recovery)(?:\/|$)/.test(path)
+      || /^\/developer\/v2\/activity\/(?:sleep|workout)(?:\/|$)/.test(path)
+    ),
   }],
 ]);
 
@@ -78,6 +86,9 @@ export async function handleManagedEgress(
   if (provider) {
     if (!connectorAllowed(provider.connector)) return failure(403, "connector_forbidden");
     if (!subject || !SUBJECT.test(subject)) return failure(403, "requires_login");
+    if (provider.connector === "whoop" && method !== "GET" && method !== "HEAD") {
+      return failure(403, "method_denied");
+    }
     if (!canonicalProviderPath(provider, url.pathname) || !provider.path(url.pathname)) {
       return failure(403, "connector_path_denied");
     }

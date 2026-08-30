@@ -20,6 +20,8 @@ const connectorSecrets = {
   NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
   NANOCODEX_X_OAUTH_CLIENT_ID: "x-client-id",
   NANOCODEX_X_OAUTH_CLIENT_SECRET: "x-client-secret",
+  NANOCODEX_WHOOP_OAUTH_CLIENT_ID: "whoop-client-id",
+  NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET: "whoop-client-secret",
 };
 
 test("production deployment selects only owned broker and connector secrets", () => {
@@ -38,6 +40,8 @@ test("production deployment selects only owned broker and connector secrets", ()
     GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
     X_OAUTH_CLIENT_ID: "x-client-id",
     X_OAUTH_CLIENT_SECRET: "x-client-secret",
+    WHOOP_OAUTH_CLIENT_ID: "whoop-client-id",
+    WHOOP_OAUTH_CLIENT_SECRET: "whoop-client-secret",
   });
   assert.throws(() => productionBrokerSecrets({}), /CREDENTIAL_ENCRYPTION_KEY/);
 });
@@ -58,6 +62,8 @@ test("production deployment accepts an optional previous encryption key for rota
     GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
     X_OAUTH_CLIENT_ID: "x-client-id",
     X_OAUTH_CLIENT_SECRET: "x-client-secret",
+    WHOOP_OAUTH_CLIENT_ID: "whoop-client-id",
+    WHOOP_OAUTH_CLIENT_SECRET: "whoop-client-secret",
   });
   assert.throws(() => productionBrokerSecrets({
     NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
@@ -92,6 +98,33 @@ test("production deployment treats X OAuth as an optional atomic pair", () => {
     ...withoutX,
     NANOCODEX_X_OAUTH_CLIENT_SECRET: "x-client-secret",
   }), /X OAuth application credentials must be configured together/);
+});
+
+test("production deployment treats WHOOP OAuth as an optional atomic pair", () => {
+  const {
+    NANOCODEX_WHOOP_OAUTH_CLIENT_ID: _whoopId,
+    NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET: _whoopSecret,
+    ...withoutWhoop
+  } = connectorSecrets;
+  const secrets = productionBrokerSecrets({
+    NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    NANOCODEX_BROKER_PROBE_TOKEN: probeToken,
+    ...withoutWhoop,
+  });
+  assert.equal("WHOOP_OAUTH_CLIENT_ID" in secrets, false);
+  assert.equal("WHOOP_OAUTH_CLIENT_SECRET" in secrets, false);
+  assert.throws(() => productionBrokerSecrets({
+    NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    NANOCODEX_BROKER_PROBE_TOKEN: probeToken,
+    ...withoutWhoop,
+    NANOCODEX_WHOOP_OAUTH_CLIENT_ID: "whoop-client-id",
+  }), /WHOOP OAuth application credentials must be configured together/);
+  assert.throws(() => productionBrokerSecrets({
+    NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    NANOCODEX_BROKER_PROBE_TOKEN: probeToken,
+    ...withoutWhoop,
+    NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET: "whoop-client-secret",
+  }), /WHOOP OAuth application credentials must be configured together/);
 });
 
 test("production deployment requires a full immutable Git revision", () => {

@@ -28,8 +28,15 @@ export function productionBrokerSecrets(environment) {
     "NANOCODEX_X_OAUTH_CLIENT_ID");
   const xClientSecret = optional(environment.NANOCODEX_X_OAUTH_CLIENT_SECRET,
     "NANOCODEX_X_OAUTH_CLIENT_SECRET");
+  const whoopClientId = optional(environment.NANOCODEX_WHOOP_OAUTH_CLIENT_ID,
+    "NANOCODEX_WHOOP_OAUTH_CLIENT_ID");
+  const whoopClientSecret = optional(environment.NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET,
+    "NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET");
   if ((xClientId === undefined) !== (xClientSecret === undefined)) {
     throw new Error("X OAuth application credentials must be configured together");
+  }
+  if ((whoopClientId === undefined) !== (whoopClientSecret === undefined)) {
+    throw new Error("WHOOP OAuth application credentials must be configured together");
   }
   if (!/^[A-Za-z0-9_-]{43}$/.test(encryptionKey)) {
     throw new Error("NANOCODEX_CREDENTIAL_ENCRYPTION_KEY must be a 32-byte base64url value");
@@ -48,6 +55,10 @@ export function productionBrokerSecrets(environment) {
   if (xClientId !== undefined && xClientSecret !== undefined) {
     secrets.X_OAUTH_CLIENT_ID = xClientId;
     secrets.X_OAUTH_CLIENT_SECRET = xClientSecret;
+  }
+  if (whoopClientId !== undefined && whoopClientSecret !== undefined) {
+    secrets.WHOOP_OAUTH_CLIENT_ID = whoopClientId;
+    secrets.WHOOP_OAUTH_CLIENT_SECRET = whoopClientSecret;
   }
   const previousEncryptionKey = environment.NANOCODEX_CREDENTIAL_ENCRYPTION_KEY_PREVIOUS;
   if (previousEncryptionKey !== undefined) {
@@ -89,6 +100,8 @@ export function brokerWranglerEnvironment(environment, accountId, apiToken) {
     "NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET",
     "NANOCODEX_X_OAUTH_CLIENT_ID",
     "NANOCODEX_X_OAUTH_CLIENT_SECRET",
+    "NANOCODEX_WHOOP_OAUTH_CLIENT_ID",
+    "NANOCODEX_WHOOP_OAUTH_CLIENT_SECRET",
   ]) delete clean[name];
   clean.CLOUDFLARE_ACCOUNT_ID = accountId;
   if (apiToken) clean.CLOUDFLARE_API_TOKEN = apiToken;

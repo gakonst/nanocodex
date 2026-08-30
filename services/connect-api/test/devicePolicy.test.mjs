@@ -73,6 +73,12 @@ test("CLI device registration accepts exact hosted capabilities without implicit
 });
 
 test("CLI connector focus is signed, singular, and part of the granted connector set", () => {
+  const whoop = [
+    ...base,
+    "urn:nanocodex:connectors:whoop",
+    "urn:nanocodex:connector-focus:whoop",
+  ];
+  assert.deepEqual(parseCliRegisterBody(registration(whoop)).resources, whoop);
   const focused = [
     ...base,
     "urn:nanocodex:connectors:chatgpt,github",
