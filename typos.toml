@@ -10,7 +10,7 @@ extend-exclude = [
 
 [default]
 # Codex parity ledgers quote exact hexadecimal commit IDs, which are data rather than prose.
-extend-ignore-re = ["`[0-9a-f]{7,40}`"]
+extend-ignore-re = ["`[0-9a-f]{7,40}`", "[0-9a-f]{12}"]
 
 [default.extend-words]
 ratatui = "ratatui"
