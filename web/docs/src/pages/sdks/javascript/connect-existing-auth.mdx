@@ -1,0 +1,152 @@
+---
+title: Connect with existing authentication
+description: Add Nanocodex connectors to an Auth0, Better Auth, Privy, or custom-authenticated site without replacing its login.
+---
+
+# Connect with existing authentication
+
+Keep the application's login. Nanocodex Connect adds connector approval and a
+grant-scoped agent session; it does not need to become the site's identity
+provider.
+
+The bridge is deliberately small:
+
+1. The browser calls an application-owned, same-origin session route.
+2. That route verifies the application's existing cookie or access token.
+3. The application server exchanges only its stable user ID for a short-lived,
+   one-time Nanocodex identity session.
+4. Connect includes that opaque session in the passkey-signed connector
+   approval and binds the resulting grant to the application user.
+
+Auth0, Better Auth, or Privy credentials never go to the Connect iframe. The
+Nanocodex project secret never goes to the browser.
+
+## Add the browser adapter
+
+```js
+import { Client, Identity } from "nanocodex/connect";
+
+export const connect = Client.create({
+  appId: "acme",
+  identity: Identity.host(),
+});
+
+const connection = await connect.connect({
+  capabilities: {
+    cloudAccounts: { github: true, gmail: true },
+  },
+});
+```
+
+`Identity.host()` posts to `/api/nanocodex/session` with the site's normal
+same-origin credentials. A different same-origin path can be passed as
+`Identity.host({ url: "/api/agent/session" })`.
+
+## Add the server route
+
+```js
+import { Session } from "nanocodex/connect/server";
+
+const sessions = Session.create({
+  appId: "acme",
+  appOrigin: "https://app.example.com",
+  secret: process.env.NANOCODEX_PROJECT_SECRET,
+});
+
+export const POST = sessions.handler({
+  async authenticate(request) {
+    const user = await authenticateWithYourExistingSystem(request);
+    if (!user) return undefined;
+    return {
+      subject: user.id,
+      organization: user.organizationId,
+    };
+  },
+});
+```
+
+The handler accepts only an exact-origin `POST`, returns `401` when the host
+session is absent, and emits only `{ token, expires_at }`. `subject` must be a
+stable, opaque ID. Do not use email addresses, display names, provider tokens,
+or wallet addresses as the subject.
+
+## Auth0
+
+In a Next.js App Router route, use the Auth0 server session you already have:
+
+```js
+export const POST = sessions.handler({
+  async authenticate() {
+    const session = await auth0.getSession();
+    if (!session) return undefined;
+    return {
+      subject: session.user.sub,
+      organization: session.user.org_id,
+    };
+  },
+});
+```
+
+## Better Auth
+
+Pass the incoming headers to the Better Auth server API:
+
+```js
+export const POST = sessions.handler({
+  async authenticate(request) {
+    const session = await auth.api.getSession({ headers: request.headers });
+    if (!session) return undefined;
+    return { subject: session.user.id };
+  },
+});
+```
+
+## Privy
+
+Verify the Privy access token on the server, then use the returned Privy DID:
+
+```js
+export const POST = sessions.handler({
+  async authenticate(request) {
+    const accessToken = readPrivyTokenFromRequest(request);
+    if (!accessToken) return undefined;
+    const claims = await privy.verifyAuthToken(accessToken);
+    return { subject: claims.userId };
+  },
+});
+```
+
+Use the provider's server SDK and your existing cookie/header policy to obtain
+and verify the token. Never return that token to the browser route.
+
+## Configure the Connect service
+
+Each application and exact production origin has a project secret. Loopback
+HTTP origins are also accepted for local development. Store only
+its SHA-256 base64url digest in the Connect service's
+`NANOCODEX_EMBED_PROJECTS` secret:
+
+```json
+[
+  {
+    "app_id": "acme",
+    "app_origin": "https://app.example.com",
+    "secret_sha256": "base64url-sha256-of-the-project-secret"
+  }
+]
+```
+
+Keep the original project secret only in the application server's secret
+manager. Sessions live for 30 to 300 seconds, are consumed once by Connect,
+and are bound to the exact `app_id` and origin.
+
+## Where OIDC fits
+
+OIDC is an optional way to standardize the server-side `authenticate` step. An
+OIDC adapter can verify the issuer, audience, signature, expiry, and nonce, then
+use the verified `sub` to mint the same opaque Nanocodex session. It should not
+replace the bridge or forward an ID/access token into the browser approval.
+
+Start with the native server SDK for the auth system already installed. Add an
+OIDC adapter when supporting many compatible issuers makes that operationally
+simpler.

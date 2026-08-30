@@ -54,6 +54,7 @@ export const docsNavigation: readonly DocsNavigationGroup[] = [
           page("Install from npm", "/docs/sdks/javascript/install-entrypoints"),
           page("Agent lifecycle", "/docs/sdks/javascript/agent-lifecycle"),
           page("Transports and auth", "/docs/sdks/javascript/transports-auth"),
+          page("Connect with existing auth", "/docs/sdks/javascript/connect-existing-auth"),
           page("Browser WASM and workspace", "/docs/sdks/javascript/browser-workspace"),
           page("React", "/docs/sdks/javascript/react"),
         ],

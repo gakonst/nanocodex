@@ -1,5 +1,6 @@
 import type { ConnectActions } from "./Decorator.mjs";
 import type { Instance as DialogInstance, Dialog } from "./Dialog.mjs";
+import type { Identity, Instance as IdentityInstance } from "./Identity.mjs";
 import type { Request, Transport } from "./Transport.mjs";
 import type { Auth, AuthorizeAccessKey } from "./actions/connection.mjs";
 
@@ -31,6 +32,7 @@ export type Base = Readonly<{
   accessKey: Readonly<{ authorize?: AuthorizeAccessKey | undefined }> | undefined;
   auth: Auth | undefined;
   dialog: DialogInstance;
+  identity: IdentityInstance | undefined;
   key: string;
   name: string;
   provider: Provider;
@@ -54,6 +56,8 @@ export type Parameters = Readonly<{
   /** Accounts-compatible default access-key authorization policy. */
   accessKey?: Readonly<{ authorize?: AuthorizeAccessKey | undefined }> | undefined;
   dialog?: Dialog | undefined;
+  /** Existing application login bridged into the signed Connect grant. */
+  identity?: Identity | undefined;
   key?: string | undefined;
   name?: string | undefined;
   /** Advanced override for the remote wallet provider that owns the access key. */

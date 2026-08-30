@@ -41,6 +41,14 @@ import {
   managedGrantHeaders,
   type ManagedGrantAssertion,
 } from "./managedGrant.mjs";
+import {
+  authenticateEmbedProject,
+  embedPrincipalId,
+  identitySessionToken,
+  isEmbedIdentity,
+  parseEmbedSessionBody,
+  type EmbedIdentity,
+} from "./embedIdentity.mjs";
 
 type WorkerWebSocket = WebSocket & { accept(): void };
 declare const WebSocketPair: {
@@ -143,6 +151,7 @@ const MAX_PINNED_RUNTIME_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_ACCOUNT_AUTHORIZATIONS = 64;
 const MAX_DEVICE_REGISTER_BYTES = 64 * 1024;
 const MAX_CONNECTION_REQUEST_BYTES = 128 * 1024;
+const MAX_EMBED_SESSION_REQUEST_BYTES = 4 * 1024;
 const MAX_CHATGPT_IMPORT_BODY_BYTES = 64 * 1024;
 const EGRESS_SUBJECT = /^[A-Za-z0-9_-]{43,128}$/;
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
@@ -243,6 +252,7 @@ type ConnectApproval = Readonly<{
   profileLinked?: boolean;
   resources: readonly string[];
   authorization: "signed" | "hosted";
+  externalPrincipalId?: string;
 }>;
 type Fetcher = Readonly<{
   fetch(request: Request): Promise<Response>;
@@ -266,6 +276,7 @@ type Env = Readonly<{
   EGRESS: Fetcher;
   NANOCODEX: Fetcher;
   NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY?: string;
+  NANOCODEX_EMBED_PROJECTS?: string;
   DEPLOYMENT_SHA?: string;
 }>;
 
@@ -287,6 +298,12 @@ type GrantRecord = Readonly<{
   egressSubject: string;
   settlementBalanceAtomics?: string;
   sharedEgressSubject?: boolean;
+  externalPrincipalId?: string;
+}>;
+type EmbedIdentitySession = EmbedIdentity & Readonly<{ expiresAt: number }>;
+type EmbedIdentityBinding = Readonly<{
+  brokerUserId: string;
+  principalId: string;
 }>;
 type HostedBrowserSession = Readonly<{
   accountAddress: `0x${string}`;
@@ -297,6 +314,7 @@ type GrantPrincipal = Readonly<{
   appId: string;
   appOrigin: string;
   grantId: `0x${string}`;
+  externalPrincipalId?: string;
 }>;
 type ConnectAgentRecord = Readonly<{ agentId: string }>;
 type ConnectIdentityRecord = Readonly<{
@@ -345,6 +363,10 @@ export default {
     try {
       const url = new URL(request.url);
       const store = Kv.durableObject(env.CONNECT_STATE);
+
+      if (request.method === "POST" && url.pathname === "/v1/embed/sessions") {
+        return cors(await createEmbedIdentitySession(request, env, store), request);
+      }
 
       if (url.pathname.startsWith("/v1/device/")) {
         if (request.method === "POST" && url.pathname === "/v1/device/register") {
@@ -881,6 +903,63 @@ function isMcpIntent(value: unknown): value is McpIntent {
     && Number.isSafeInteger(value.expiresAt);
 }
 
+async function createEmbedIdentitySession(
+  request: Request,
+  env: Env,
+  store: Kv.Kv,
+): Promise<Response> {
+  if (request.headers.has("origin")) {
+    throw new ApiFailure(
+      403,
+      "embed_session_server_required",
+      "Embedded identity sessions must be minted by the application server.",
+    );
+  }
+  const appId = request.headers.get("x-nanocodex-app-id");
+  const secret = request.headers.get("authorization")?.match(/^Bearer ([^\s]{32,512})$/)?.[1];
+  let body: ReturnType<typeof parseEmbedSessionBody>;
+  try {
+    body = parseEmbedSessionBody(await boundedJson(
+      request,
+      MAX_EMBED_SESSION_REQUEST_BYTES,
+      "embedded identity session",
+    ));
+  } catch (cause) {
+    if (cause instanceof ApiFailure) throw cause;
+    throw new ApiFailure(400, "invalid_embed_session", errorText(cause));
+  }
+  const project = appId && secret
+    ? await authenticateEmbedProject(env.NANOCODEX_EMBED_PROJECTS, {
+        appId,
+        appOrigin: body.appOrigin,
+        secret,
+      })
+    : undefined;
+  if (!project) {
+    throw new ApiFailure(401, "invalid_embed_project", "The Nanocodex embed project is not authorized.");
+  }
+  if (!store.create) {
+    throw new ApiFailure(503, "embed_session_unavailable", "Atomic embedded identity sessions are unavailable.");
+  }
+  const token = randomSubject();
+  const expiresAt = Math.floor(Date.now() / 1_000) + body.expiresIn;
+  const identity: EmbedIdentitySession = {
+    appId: project.appId,
+    appOrigin: project.appOrigin,
+    issuer: `urn:nanocodex:app:${project.appId}`,
+    subject: body.subject,
+    ...(body.organization === undefined ? {} : { organization: body.organization }),
+    expiresAt,
+  };
+  if (!await store.create(`embed-session:${token}`, identity, { ttl: body.expiresIn })) {
+    throw new ApiFailure(503, "embed_session_conflict", "The embedded identity session could not be reserved.");
+  }
+  return Response.json({ token, expires_at: expiresAt }, {
+    status: 201,
+    headers: { "cache-control": "no-store" },
+  });
+}
+
 async function createHostedAuthorization(
   request: Request,
   env: Env,
@@ -1200,6 +1279,10 @@ async function createConnection(
   if (!identity.linked) {
     throw new ApiFailure(403, "account_link_required", "Link this Tempo account to your Nanocodex profile before authorizing a durable agent.");
   }
+  const externalPrincipalId = approval.externalPrincipalId
+    ? await bindEmbedPrincipal(store, approval.externalPrincipalId, identity.userId)
+    : undefined;
+  if (externalPrincipalId) mark("external-identity");
   const credential = await connectionCredential(
     store,
     body,
@@ -1242,6 +1325,7 @@ async function createConnection(
   const grantId = await digestHex(`grant:${randomSubject()}`);
   const grantCapabilities = [
     "nanocodex.agent",
+    ...(externalPrincipalId ? ["identity.external"] : []),
     ...approvedHostedCapabilities(approval.resources),
     ...agentCapabilities,
     ...connectors,
@@ -1280,6 +1364,7 @@ async function createConnection(
     spentAtomics: "0",
     egressSubject,
     sharedEgressSubject: true,
+    ...(externalPrincipalId ? { externalPrincipalId } : {}),
   };
 
   try {
@@ -1296,6 +1381,7 @@ async function createConnection(
         appId,
         appOrigin: app.origin,
         grantId: grant.id,
+        ...(externalPrincipalId ? { externalPrincipalId } : {}),
       } satisfies GrantPrincipal, { ttl: grantTtl }),
       ...(persist && accessKey ? [store.set(accessKeyStorageKey(accountAddress, accessKey.key_id), {
         accountAddress,
@@ -1840,6 +1926,49 @@ function isConnectIdentityRecord(
     && typeof value.accountAddress === "string"
     && value.accountAddress.toLowerCase() === accountAddress.toLowerCase()
     && isBrokerUserId(value.brokerUserId);
+}
+
+async function bindEmbedPrincipal(
+  store: Kv.Kv,
+  principalId: string,
+  brokerUserId: string,
+): Promise<string> {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(principalId) || !isBrokerUserId(brokerUserId) || !store.create) {
+    throw new ApiFailure(503, "embed_identity_unavailable", "Atomic embedded identity linking is unavailable.");
+  }
+  const key = `embed-identity:${principalId}`;
+  const retained = await store.get<unknown>(key);
+  if (isEmbedIdentityBinding(retained, principalId)) {
+    if (retained.brokerUserId !== brokerUserId) {
+      throw new ApiFailure(
+        409,
+        "embed_identity_conflict",
+        "This application identity is already linked to another Nanocodex profile.",
+      );
+    }
+    return retained.principalId;
+  }
+  const candidate: EmbedIdentityBinding = { brokerUserId, principalId };
+  if (await store.create(key, candidate)) return principalId;
+  const winner = await store.get<unknown>(key);
+  if (!isEmbedIdentityBinding(winner, principalId) || winner.brokerUserId !== brokerUserId) {
+    throw new ApiFailure(
+      409,
+      "embed_identity_conflict",
+      "This application identity is already linked to another Nanocodex profile.",
+    );
+  }
+  return winner.principalId;
+}
+
+function isEmbedIdentityBinding(
+  value: unknown,
+  principalId: string,
+): value is EmbedIdentityBinding {
+  return isRecord(value)
+    && isBrokerUserId(value.brokerUserId)
+    && value.principalId === principalId
+    && /^[A-Za-z0-9_-]{43}$/.test(value.principalId);
 }
 
 async function connectEgressSubject(
@@ -3047,6 +3176,7 @@ async function authenticatedGrant(
     || grant.id.toLowerCase() !== principal.grantId.toLowerCase()
     || grant.appId !== principal.appId
     || grant.appOrigin !== principal.appOrigin
+    || grant.externalPrincipalId !== principal.externalPrincipalId
     || grant.accountAddress.toLowerCase() !== principal.accountAddress.toLowerCase()) {
     throw new ApiFailure(401, "invalid_grant_token", "The grant session is not bound to this grant, app, and account.");
   }
@@ -3065,7 +3195,9 @@ function isGrantPrincipal(value: unknown): value is GrantPrincipal {
     && validAppId(value.appId)
     && isPublicAppOrigin(value.appOrigin)
     && /^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress))
-    && /^0x[0-9a-fA-F]{64}$/.test(String(value.grantId));
+    && /^0x[0-9a-fA-F]{64}$/.test(String(value.grantId))
+    && (value.externalPrincipalId === undefined
+      || /^[A-Za-z0-9_-]{43}$/.test(String(value.externalPrincipalId)));
 }
 
 function isGrantRecord(value: unknown): value is GrantRecord {
@@ -3093,6 +3225,8 @@ function isGrantRecord(value: unknown): value is GrantRecord {
     && (value.balanceAtomics === undefined || /^\d+$/.test(String(value.balanceAtomics)))
     && typeof value.spentAtomics === "string"
     && typeof value.egressSubject === "string"
+    && (value.externalPrincipalId === undefined
+      || /^[A-Za-z0-9_-]{43}$/.test(String(value.externalPrincipalId)))
     && (value.settlementBalanceAtomics === undefined || /^\d+$/.test(String(value.settlementBalanceAtomics)))
     && (value.sharedEgressSubject === undefined || typeof value.sharedEgressSubject === "boolean");
 }
@@ -4352,6 +4486,10 @@ function createAuth(
       const approvalId = randomSubject();
       const resources = siweResources(message);
       const app = approvedAppContext(resources);
+      const externalIdentity = await takeEmbedIdentitySession(store, resources, app);
+      const externalPrincipalId = externalIdentity
+        ? await embedPrincipalId(externalIdentity)
+        : undefined;
       let connectorsDuration = 0;
       const identity = await connectBrokerIdentity(env, store, accountAddress);
       mark("identity");
@@ -4373,6 +4511,7 @@ function createAuth(
         connectedConnectors,
         mcpConnections,
         ...(context.keyAuthorization ? { keyAuthorization: context.keyAuthorization } : {}),
+        ...(externalPrincipalId ? { externalPrincipalId } : {}),
         profileLinked: identity.linked,
         resources,
       } satisfies ConnectApproval, { ttl: CONNECT_APPROVAL_TTL });
@@ -4422,6 +4561,42 @@ async function authRequestContext(request: Request, url: URL): Promise<AuthReque
       ? { keyAuthorization: keyAuthorization as `0x${string}` }
       : {}),
   };
+}
+
+async function takeEmbedIdentitySession(
+  store: Kv.Kv,
+  resources: readonly string[],
+  app: CallerApp,
+): Promise<EmbedIdentity | undefined> {
+  let token: string | undefined;
+  try {
+    token = identitySessionToken(resources);
+  } catch (cause) {
+    throw new ApiFailure(403, "invalid_embed_session", errorText(cause));
+  }
+  if (!token) return undefined;
+  if (!store.take) {
+    throw new ApiFailure(503, "embed_session_unavailable", "One-time embedded identity sessions are unavailable.");
+  }
+  const session = await store.take<EmbedIdentitySession>(`embed-session:${token}`);
+  if (!isEmbedIdentitySession(session)
+    || session.expiresAt <= Math.floor(Date.now() / 1_000)
+    || session.appId !== app.appId
+    || session.appOrigin !== app.origin) {
+    throw new ApiFailure(403, "invalid_embed_session", "The embedded identity session is invalid or expired.");
+  }
+  return {
+    appId: session.appId,
+    appOrigin: session.appOrigin,
+    issuer: session.issuer,
+    subject: session.subject,
+    ...(session.organization === undefined ? {} : { organization: session.organization }),
+  };
+}
+
+function isEmbedIdentitySession(value: unknown): value is EmbedIdentitySession {
+  if (!isRecord(value) || !Number.isSafeInteger(value.expiresAt)) return false;
+  return isEmbedIdentity(value);
 }
 
 async function takeConnectApproval(
@@ -4474,6 +4649,8 @@ function isConnectApproval(value: unknown): value is ConnectApproval {
     && value.resources.every((resource) => typeof resource === "string")
     && (value.authorization === "signed" || value.authorization === "hosted")
     && (value.profileLinked === undefined || typeof value.profileLinked === "boolean")
+    && (value.externalPrincipalId === undefined
+      || /^[A-Za-z0-9_-]{43}$/.test(String(value.externalPrincipalId)))
     && (value.keyAuthorization === undefined
       || (typeof value.keyAuthorization === "string" && /^0x[0-9a-fA-F]+$/.test(value.keyAuthorization)));
 }

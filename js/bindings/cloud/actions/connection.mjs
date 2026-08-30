@@ -11,6 +11,8 @@ const CONNECTOR_RESOURCE_PREFIX = "urn:nanocodex:connector:";
 const CONNECTORS_RESOURCE_PREFIX = "urn:nanocodex:connectors:";
 const APP_RESOURCE_PREFIX = "urn:nanocodex:app:";
 const APP_ORIGIN_RESOURCE_PREFIX = "urn:nanocodex:origin:";
+const IDENTITY_SESSION_RESOURCE_PREFIX = "urn:nanocodex:identity-session:";
+const IDENTITY_SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const MCP_CONNECTION_RESOURCE_PREFIX = "urn:nanocodex:mcp:";
 const MCP_FOCUS_RESOURCE_PREFIX = "urn:nanocodex:mcp-focus:";
@@ -42,6 +44,9 @@ export async function connect(client, options) {
     permission,
     visibility: agentVisibility,
   });
+  const identitySession = client.identity
+    ? await client.identity.getSession({ signal: options.signal })
+    : undefined;
   const auth = withConnectionResources(
     options.capabilities?.auth ?? client.auth,
     client.appId,
@@ -50,6 +55,7 @@ export async function connect(client, options) {
     agentVisibility,
     mcpConnections,
     focusMcpConnectionId,
+    identitySession,
   );
   const walletAuth = delegateAuthVerification(auth);
   client.dialog.showWallet?.();
@@ -211,6 +217,7 @@ function withConnectionResources(
   agentVisibility,
   mcpConnections,
   focusMcpConnectionId,
+  identitySession,
 ) {
   const configured = typeof auth === "object" && auth !== null
     ? (auth.resources ?? []).filter((resource) =>
@@ -221,7 +228,8 @@ function withConnectionResources(
       && !resource.startsWith(MCP_CONNECTION_RESOURCE_PREFIX)
       && !resource.startsWith(MCP_FOCUS_RESOURCE_PREFIX)
       && !resource.startsWith(APP_RESOURCE_PREFIX)
-      && !resource.startsWith(APP_ORIGIN_RESOURCE_PREFIX))
+      && !resource.startsWith(APP_ORIGIN_RESOURCE_PREFIX)
+      && !resource.startsWith(IDENTITY_SESSION_RESOURCE_PREFIX))
     : [];
   const visibility = Object.entries(AGENT_VISIBILITY_NAMES)
     .filter(([name]) => agentVisibility[name])
@@ -230,6 +238,9 @@ function withConnectionResources(
     ...configured,
     `${APP_RESOURCE_PREFIX}${encodeURIComponent(appId)}`,
     ...(appOrigin ? [`${APP_ORIGIN_RESOURCE_PREFIX}${encodeURIComponent(appOrigin)}`] : []),
+    ...(identitySession
+      ? [`${IDENTITY_SESSION_RESOURCE_PREFIX}${identitySessionToken(identitySession)}`]
+      : []),
     ...(requestedConnectors.length === 0
       ? []
       : [`${CONNECTORS_RESOURCE_PREFIX}${requestedConnectors.join(",")}`]),
@@ -241,6 +252,15 @@ function withConnectionResources(
   ])];
   if (typeof auth === "string") return { url: auth, resources };
   return { ...auth, resources };
+}
+
+function identitySessionToken(session) {
+  if (!session || typeof session !== "object" || !IDENTITY_SESSION_TOKEN.test(session.token)
+    || !Number.isSafeInteger(session.expiresAt)
+    || session.expiresAt <= Math.floor(Date.now() / 1_000)) {
+    throw new TypeError("Connect identity returned an invalid session");
+  }
+  return session.token;
 }
 
 function reusableAccessKeys(provider, accountAddress) {

@@ -26,6 +26,12 @@ const requiredFiles = [
   "cloud/Client.d.mts",
   "cloud/Dialog.mjs",
   "cloud/Dialog.d.mts",
+  "cloud/Identity.mjs",
+  "cloud/Identity.d.mts",
+  "cloud/server/index.mjs",
+  "cloud/server/index.d.mts",
+  "cloud/server/Session.mjs",
+  "cloud/server/Session.d.mts",
   "cloud/actions/index.mjs",
   "cloud/actions/index.d.mts",
   "browser/index.mjs",
@@ -125,6 +131,8 @@ export async function checkPackage(packageRoot = root) {
   assert.equal(packageJson.exports?.["./connect"]?.import, "./cloud/index.mjs");
   assert.equal(packageJson.exports?.["./connect"]?.types, "./cloud/index.d.mts");
   assert.equal(packageJson.exports?.["./connect/actions"]?.import, "./cloud/actions/index.mjs");
+  assert.equal(packageJson.exports?.["./connect/identity"]?.import, "./cloud/Identity.mjs");
+  assert.equal(packageJson.exports?.["./connect/server"]?.import, "./cloud/server/index.mjs");
   assert.equal(packageJson.exports?.["./durability"]?.import, "./runtime/durability-store.mjs");
   assert.equal(
     packageJson.exports?.["./durability/cloudflare"]?.import,

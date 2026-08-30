@@ -1,9 +1,12 @@
-import { Actions, Client, Dialog, Transport, type Connection } from "nanocodex/connect";
+import { Actions, Client, Dialog, Identity, Transport, type Connection } from "nanocodex/connect";
+import { Session } from "nanocodex/connect/server";
 import { Voice } from "nanocodex/browser";
 
 const client = Client.create({
   appId: "type-probe",
+  appOrigin: "https://app.example.com",
   dialog: Dialog.memory(),
+  identity: Identity.host(),
   transport: Transport.mock(),
 });
 Dialog.popup({ target: "nanocodex-connect", features: "popup=yes" });
@@ -58,3 +61,15 @@ client.mpp.charge({
   grantId: connection.grant.id,
   origin: "https://models.example",
 });
+
+const sessions = Session.create({
+  appId: "type-probe",
+  appOrigin: "https://app.example.com",
+  secret: "project-secret-that-is-long-enough-123",
+});
+const sessionRoute: (request: Request) => Promise<Response> = sessions.handler({
+  async authenticate(request) {
+    return request.headers.has("cookie") ? { subject: "user-123" } : undefined;
+  },
+});
+void sessionRoute;

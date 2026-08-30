@@ -75,6 +75,14 @@
       "types": "./cloud/actions/index.d.mts",
       "import": "./cloud/actions/index.mjs"
     },
+    "./connect/identity": {
+      "types": "./cloud/Identity.d.mts",
+      "import": "./cloud/Identity.mjs"
+    },
+    "./connect/server": {
+      "types": "./cloud/server/index.d.mts",
+      "import": "./cloud/server/index.mjs"
+    },
     "./durability": {
       "types": "./runtime/durability-store.d.mts",
       "import": "./runtime/durability-store.mjs"

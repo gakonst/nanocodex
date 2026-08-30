@@ -15,6 +15,10 @@ export function create(parameters) {
   const dialog = parameters.dialog ?? iframe();
   const transportInstance = transport.setup({ appId: parameters.appId });
   const dialogInstance = dialog.setup({ appId: parameters.appId });
+  const identityInstance = parameters.identity?.setup({
+    appId: parameters.appId,
+    appOrigin,
+  });
   const provider = parameters.provider ?? createRemoteProvider({
     host: dialogInstance.host,
     async target(options) {
@@ -63,6 +67,7 @@ export function create(parameters) {
     appOrigin,
     auth: parameters.auth,
     dialog: dialogInstance,
+    identity: identityInstance,
     key: parameters.key ?? "connect",
     name: parameters.name ?? "Nanocodex Connect",
     provider,
