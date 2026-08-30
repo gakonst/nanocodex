@@ -112,6 +112,7 @@ export const docsNavigation: readonly DocsNavigationGroup[] = [
         label: "Browser and other capabilities",
         pages: [
           page("Browser-local agent", "/docs/capabilities/web-agent"),
+          page("Embedded WebMCP", "/docs/capabilities/webmcp"),
           page("VMs and sandboxes", "/docs/capabilities/vm-sandboxes"),
           page("Voice", "/docs/capabilities/voice"),
           page("Built with Nanocodex: Tact", "/docs/examples/tact"),

@@ -105,6 +105,74 @@ test("Worker prompt acknowledgement waits for durable turn admission", async () 
   assert.equal(worker.terminated, 1);
 });
 
+test("Worker Agent bridges live page-owned WebMCP tools without cloning their handlers", async () => {
+  const fixture = createFixture();
+  let workerProvider;
+  const createAgent = async (options) => {
+    workerProvider = options[Symbol.for("nanocodex.browser.internalRuntime")].toolProviders[0];
+    return fixture.createAgent(options);
+  };
+  const worker = new LoopbackWorker(createAgent);
+  const listeners = new Set();
+  const calls = [];
+  let definitions = [{
+    type: "function",
+    name: "web_lookup",
+    description: "Look up the current website account.",
+    strict: false,
+    defer_loading: true,
+    parameters: { type: "object", additionalProperties: true },
+  }];
+  let closed = false;
+  const provider = {
+    [Symbol.for("nanocodex.webmcp.provider")]: true,
+    sourceId: "webmcp:fixture",
+    kind: "webmcp",
+    mode: "union",
+    deferred: true,
+    definitions: () => definitions,
+    resolve: (name) => name === "web_lookup" ? {
+      name,
+      parallelSafe: true,
+      handler(input, context) {
+        calls.push({ input, signal: context.signal });
+        return { account: "host-session", input };
+      },
+    } : undefined,
+    async settled() {},
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    close() { closed = true; listeners.clear(); },
+  };
+  const agent = await createWorkerAgent({
+    sessionId: "webmcp-worker",
+    harness: false,
+    webMcp: provider,
+  }, { worker });
+
+  assert.deepEqual(workerProvider.definitions().map(({ name }) => name), ["web_lookup"]);
+  const signal = new AbortController().signal;
+  assert.deepEqual(
+    await workerProvider.resolve("web_lookup").handler({ id: 42 }, {
+      callId: "call-1",
+      parentCallId: "",
+      sessionId: "webmcp-worker",
+      signal,
+    }),
+    { account: "host-session", input: { id: 42 } },
+  );
+  assert.equal(calls[0].signal instanceof AbortSignal, true);
+
+  definitions = [{ ...definitions[0], name: "web_replacement" }];
+  for (const listener of listeners) listener(definitions);
+  await tick();
+  assert.deepEqual(workerProvider.definitions().map(({ name }) => name), ["web_replacement"]);
+  assert.equal(workerProvider.resolve("web_lookup"), undefined);
+
+  agent.dispose();
+  assert.equal(closed, true);
+  assert.equal(worker.terminated, 1);
+});
+
 test("Worker Agent retains and proxies the Rust browser voice handle", async () => {
   const fixture = createFixture();
   const worker = new LoopbackWorker(fixture.createAgent);

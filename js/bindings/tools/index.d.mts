@@ -44,5 +44,6 @@ export type {
   AttachmentSocket,
   AttachmentTarget,
   AttachmentTransport,
+  ToolProvider,
   Tools,
 } from "./Tools.mjs";

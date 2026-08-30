@@ -90,6 +90,11 @@ const requiredFiles = [
   "tools/browser/index.d.mts",
   "tools/vite.mjs",
   "tools/vite.d.mts",
+  "webmcp/WebMcp.mjs",
+  "webmcp/WebMcp.d.mts",
+  "webmcp/generator.mjs",
+  "webmcp/generator.d.mts",
+  "webmcp/cli.mjs",
   "vite/index.mjs",
   "vite/index.d.mts",
   "vite/cloudflare.mjs",
@@ -146,6 +151,9 @@ export async function checkPackage(packageRoot = root) {
   assert.equal(packageJson.exports?.["./tools/artifact"]?.import, "./tools/artifact.mjs");
   assert.equal(packageJson.exports?.["./tools/browser"]?.import, "./tools/browser/index.mjs");
   assert.equal(packageJson.exports?.["./tools/vite"]?.import, "./tools/vite.mjs");
+  assert.equal(packageJson.exports?.["./webmcp"]?.import, "./webmcp/WebMcp.mjs");
+  assert.equal(packageJson.exports?.["./webmcp/generator"]?.import, "./webmcp/generator.mjs");
+  assert.equal(packageJson.bin?.["nanocodex-webmcp"], "webmcp/cli.mjs");
   assert.equal(packageJson.exports?.["./vite"]?.import, "./vite/index.mjs");
   assert.equal(packageJson.exports?.["./vite/cloudflare"]?.import, "./vite/cloudflare.mjs");
   assert.equal(packageJson.exports?.["./wasm"]?.import, "./pkg-web/nanocodex_bg.wasm");

@@ -24,6 +24,7 @@ export async function createTools(options = {}) {
   );
   if (resolved.subagents) throw new TypeError("createTools does not accept agent-relative extensions");
   const custom = resolved.tools;
+  const providerIds = [];
   let mcp;
   try {
     if (Object.keys(custom).length) {
@@ -36,18 +37,37 @@ export async function createTools(options = {}) {
         { kind: "cloud" },
       ));
     }
+    for (const [index, provider] of (options.providers ?? []).entries()) {
+      const sourceId = provider.sourceId ?? `provider:${String(index).padStart(8, "0")}`;
+      router.addSource(providerSource(
+        sourceId,
+        provider,
+        {
+          kind: provider.kind ?? "union",
+          mode: provider.mode ?? "union",
+          deferred: provider.deferred,
+        },
+      ));
+      providerIds.push(sourceId);
+    }
     if (options.mcp !== undefined && options.mcp !== false) {
       const { createMcpRuntime } = await import("../runtime/mcp-runtime.mjs");
       mcp = await createMcpRuntime(options.mcp, options.mcpOptions);
       router.addSource(providerSource("mcp", mcp, { kind: "mcp" }));
     }
+    await Promise.all((options.providers ?? []).map((provider) => provider.settled?.()));
   } catch (error) {
-    if (!mcp) throw error;
-    try { await mcp.close(); }
-    catch (cleanupError) {
+    const cleanup = [
+      ...providerIds.map((sourceId) => router.detachSource(sourceId)),
+      ...(mcp ? [mcp.close()] : []),
+    ];
+    const failures = (await Promise.allSettled(cleanup))
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length) {
       throw new AggregateError(
-        [error, cleanupError],
-        "Tools construction and MCP cleanup failed",
+        [error, ...failures],
+        "Tools construction and provider cleanup failed",
       );
     }
     throw error;
@@ -114,7 +134,7 @@ function validateOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("createTools options must be an object");
   }
-  const allowed = new Set(["tools", "workspace", "workspaceOptions", "mcp", "mcpOptions"]);
+  const allowed = new Set(["tools", "workspace", "workspaceOptions", "mcp", "mcpOptions", "providers"]);
   for (const name of Object.keys(options)) {
     if (!allowed.has(name)) throw new TypeError(`unsupported createTools option: ${name}`);
   }
@@ -123,5 +143,8 @@ function validateOptions(options) {
   }
   if ((options.mcp === undefined || options.mcp === false) && options.mcpOptions !== undefined) {
     throw new TypeError("mcpOptions requires mcp");
+  }
+  if (options.providers !== undefined && !Array.isArray(options.providers)) {
+    throw new TypeError("providers must be an array");
   }
 }

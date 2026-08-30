@@ -13,6 +13,7 @@ import {
 import { resolveResponsesTransport } from "../runtime/responses-transport.mjs";
 import { utf8ByteLength } from "../runtime/utf8.mjs";
 import { createIndexedDbDurabilityStore } from "./indexeddb-durability-store.mjs";
+import { createProvider as createWebMcpProvider, isProvider as isWebMcpProvider } from "../webmcp/WebMcp.mjs";
 
 const DEFAULT_MAX_PENDING_RPCS = 1_024;
 const MAX_RETAINED_RESULTS = 1_024;
@@ -32,21 +33,36 @@ let prewarmedWorker;
 /** Creates a DefaultAgent whose owned driver and browser host live in one module Worker. */
 export async function createWorkerAgent(options = {}, workerOptions = {}) {
   workerOptions.signal?.throwIfAborted();
-  const config = serializeConfig(options);
-  const reservation = config.sessionId === undefined
-    ? undefined
-    : reserveAgentSession(config.sessionId);
+  const providerResolution = resolveWebMcpProvider(options.webMcp);
+  const webMcpProvider = providerResolution instanceof Promise
+    ? await providerResolution
+    : providerResolution;
+  let config;
+  let reservation;
+  try {
+    config = serializeConfig(options, webMcpProvider);
+    reservation = config.sessionId === undefined
+      ? undefined
+      : reserveAgentSession(config.sessionId);
+  } catch (error) {
+    webMcpProvider?.close();
+    throw error;
+  }
   let worker;
   try {
     const claimed = claimWorker(config.harness, config.module, workerOptions);
     worker = claimed instanceof Promise ? await claimed : claimed;
   } catch (error) {
+    webMcpProvider?.close();
     releaseAgentSession(reservation);
     throw error;
   }
   let connection;
   try {
-    connection = new WorkerConnection(worker, workerOptions);
+    connection = new WorkerConnection(worker, {
+      ...workerOptions,
+      hostToolProviders: webMcpProvider ? [webMcpProvider] : [],
+    });
   } catch (error) {
     const errors = [error];
     try {
@@ -54,6 +70,7 @@ export async function createWorkerAgent(options = {}, workerOptions = {}) {
     } catch (cleanupError) {
       appendErrors(errors, cleanupError);
     } finally {
+      webMcpProvider?.close();
       releaseAgentSession(reservation);
     }
     throwErrors(errors, "Worker Agent connection construction and cleanup both failed");
@@ -207,6 +224,9 @@ export function installWorkerAgentRuntime(scope = globalThis, options = {}) {
   const turns = new Map();
   const results = new Map();
   const voices = new Map();
+  const hostToolProviders = new Map();
+  const hostToolCalls = new Map();
+  let nextHostToolCall = 1;
 
   const post = (message, expectedGeneration = generation, transfer) => {
     if (expectedGeneration !== generation) return;
@@ -233,6 +253,11 @@ export function installWorkerAgentRuntime(scope = globalThis, options = {}) {
     }
     agents.clear();
     voices.clear();
+    for (const pending of hostToolCalls.values()) {
+      pending.reject(new Error("Worker Agent host tool execution was cancelled"));
+    }
+    hostToolCalls.clear();
+    hostToolProviders.clear();
   };
 
   const boot = async (message) => {
@@ -244,7 +269,15 @@ export function installWorkerAgentRuntime(scope = globalThis, options = {}) {
     nextResult = 1;
     nextVoice = 1;
     try {
-      const hydration = hydrateConfig(message.config, createDurabilityStore);
+      for (const descriptor of message.config.hostToolProviders ?? []) {
+        const provider = createHostToolProxy(descriptor, callHostTool);
+        hostToolProviders.set(provider.sourceId, provider);
+      }
+      const hydration = hydrateConfig(
+        message.config,
+        createDurabilityStore,
+        [...hostToolProviders.values()],
+      );
       const preparation = prewarmBoot?.(message.config.harness, {
         module: message.config.module,
       });
@@ -470,6 +503,14 @@ export function installWorkerAgentRuntime(scope = globalThis, options = {}) {
     }
     if (message.channel !== channel || !bootPromise) return;
     const currentGeneration = generation;
+    if (message.type === "host-tool.resolve" || message.type === "host-tool.reject") {
+      settleHostToolCall(message);
+      return;
+    }
+    if (message.type === "host-tools.update") {
+      hostToolProviders.get(message.sourceId)?.update(message.definitions);
+      return;
+    }
     if (message.type === "liveness.ping") {
       if (Number.isSafeInteger(message.sequence) && message.sequence > 0) {
         post({ type: "liveness.pong", sequence: message.sequence }, currentGeneration);
@@ -482,6 +523,52 @@ export function installWorkerAgentRuntime(scope = globalThis, options = {}) {
   };
 
   return Object.freeze({ dispose() { generation += 1; cleanup(); scope.onmessage = null; } });
+
+  function callHostTool(sourceId, name, input, context = {}) {
+    const callId = `host-tool-${nextHostToolCall++}`;
+    const signal = context.signal ?? new AbortController().signal;
+    signal.throwIfAborted?.();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (complete, value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener?.("abort", abort);
+        hostToolCalls.delete(callId);
+        complete(value);
+      };
+      const abort = () => {
+        post({ type: "host-tool.cancel", callId }, currentGeneration());
+        finish(reject, signal.reason ?? new Error("host tool execution was cancelled"));
+      };
+      hostToolCalls.set(callId, {
+        resolve: (value) => finish(resolve, value),
+        reject: (error) => finish(reject, error),
+      });
+      signal.addEventListener?.("abort", abort, { once: true });
+      post({
+        type: "host-tool.call",
+        callId,
+        sourceId,
+        name,
+        input,
+        context: {
+          callId: context.callId,
+          parentCallId: context.parentCallId,
+          sessionId: context.sessionId,
+        },
+      }, currentGeneration());
+    });
+  }
+
+  function settleHostToolCall(message) {
+    const pending = hostToolCalls.get(message.callId);
+    if (!pending) return;
+    if (message.type === "host-tool.resolve") pending.resolve(message.value);
+    else pending.reject(decodeError(message.error));
+  }
+
+  function currentGeneration() { return generation; }
 }
 
 async function dispatch(message, state) {
@@ -675,6 +762,32 @@ class WorkerConnection {
     this.heartbeatTimer = undefined;
     this.closed = false;
     this.closeError = undefined;
+    this.hostToolProviders = new Map();
+    this.hostToolCalls = new Map();
+    for (const provider of options.hostToolProviders ?? []) {
+      if (!provider || typeof provider.sourceId !== "string"
+          || typeof provider.definitions !== "function"
+          || typeof provider.resolve !== "function") {
+        throw new TypeError("Worker Agent host tool provider is invalid");
+      }
+      if (this.hostToolProviders.has(provider.sourceId)) {
+        throw new Error(`duplicate Worker Agent host tool provider: ${provider.sourceId}`);
+      }
+      const stop = provider.subscribe?.((definitions) => {
+        if (this.closed) return;
+        try {
+          assertCloneable(definitions, `host tool provider ${provider.sourceId} definitions`);
+          this.send({
+            type: "host-tools.update",
+            sourceId: provider.sourceId,
+            definitions,
+          });
+        } catch (error) {
+          this.fail(error);
+        }
+      });
+      this.hostToolProviders.set(provider.sourceId, { provider, stop });
+    }
     worker.onmessage = ({ data }) => this.receive(data);
     worker.onerror = (event) => this.fail(new Error(event?.message || "Nanocodex Agent Worker failed"));
     worker.onmessageerror = () => this.fail(new Error("Nanocodex Agent Worker returned an unreadable message"));
@@ -990,10 +1103,60 @@ class WorkerConnection {
       this.receiveEventChunk(message);
       return;
     }
+    if (message.type === "host-tool.call") {
+      void this.executeHostTool(message);
+      return;
+    }
+    if (message.type === "host-tool.cancel") {
+      this.hostToolCalls.get(message.callId)?.abort(
+        new Error("Worker Agent cancelled the host tool execution"),
+      );
+      return;
+    }
     if (message.type === "ready") return this.resolvePending("boot", message.root);
     if (message.type === "fatal") return this.fail(decodeError(message.error));
     if (message.type === "resolve") return this.resolvePending(message.id, message.value);
     if (message.type === "reject") return this.rejectPending(message.id, decodeError(message.error));
+  }
+
+  async executeHostTool(message) {
+    if (typeof message.callId !== "string" || !message.callId
+        || typeof message.sourceId !== "string" || !message.sourceId
+        || typeof message.name !== "string" || !message.name
+        || this.hostToolCalls.has(message.callId)) {
+      this.fail(new Error("Nanocodex Agent Worker requested an invalid host tool call"));
+      return;
+    }
+    const entry = this.hostToolProviders.get(message.sourceId);
+    const tool = entry?.provider.resolve(message.name);
+    if (!tool || typeof tool.handler !== "function") {
+      this.send({
+        type: "host-tool.reject",
+        callId: message.callId,
+        error: encodeError(new Error(`unknown host tool: ${message.name}`)),
+      });
+      return;
+    }
+    const controller = new AbortController();
+    this.hostToolCalls.set(message.callId, controller);
+    try {
+      const value = await tool.handler(message.input, {
+        callId: message.context?.callId ?? message.callId,
+        parentCallId: message.context?.parentCallId ?? "",
+        sessionId: message.context?.sessionId ?? "default",
+        signal: controller.signal,
+      });
+      if (this.closed || this.hostToolCalls.get(message.callId) !== controller) return;
+      assertCloneable(value, `host tool ${message.name} result`);
+      this.send({ type: "host-tool.resolve", callId: message.callId, value });
+    } catch (error) {
+      if (this.closed || this.hostToolCalls.get(message.callId) !== controller) return;
+      this.send({ type: "host-tool.reject", callId: message.callId, error: encodeError(error) });
+    } finally {
+      if (this.hostToolCalls.get(message.callId) === controller) {
+        this.hostToolCalls.delete(message.callId);
+      }
+    }
   }
 
   resolvePending(id, value) {
@@ -1158,6 +1321,13 @@ class WorkerConnection {
       this.listeners.clear();
       this.chunkedEvent = undefined;
       this.onFailure = undefined;
+      for (const controller of this.hostToolCalls.values()) controller.abort(error);
+      this.hostToolCalls.clear();
+      for (const { provider, stop } of this.hostToolProviders.values()) {
+        try { stop?.(); } catch (failure) { reportError(failure); }
+        try { provider.close?.(); } catch (failure) { reportError(failure); }
+      }
+      this.hostToolProviders.clear();
     }
   }
 }
@@ -1282,8 +1452,89 @@ function listenForAbort(signal, listener) {
   };
 }
 
-function serializeConfig(options) {
+function resolveWebMcpProvider(value) {
+  if (value === undefined || value === false) return undefined;
+  if (!isWebMcpProvider(value)) {
+    return createWebMcpProvider(value === true ? {} : value).then(settleProvider);
+  }
+  const settling = value.settled?.();
+  return settling instanceof Promise
+    ? settling.then(() => value, (error) => closeRejectedProvider(value, error))
+    : value;
+}
+
+async function settleProvider(provider) {
+  try {
+    await provider.settled?.();
+    return provider;
+  } catch (error) { return closeRejectedProvider(provider, error); }
+}
+
+function closeRejectedProvider(provider, error) {
+  try { provider.close?.(); }
+  catch (cleanupError) {
+    throw new AggregateError([error, cleanupError], "WebMCP discovery and cleanup failed");
+  }
+  throw error;
+}
+
+function createHostToolProxy(descriptor, call) {
+  if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)
+      || typeof descriptor.sourceId !== "string" || !descriptor.sourceId
+      || !Array.isArray(descriptor.definitions)) {
+    throw new TypeError("Worker Agent host tool provider descriptor is invalid");
+  }
+  let definitions = cloneDefinitions(descriptor.definitions, descriptor.sourceId);
+  const provider = {
+    sourceId: descriptor.sourceId,
+    kind: descriptor.kind ?? "attached",
+    mode: descriptor.mode ?? "attached-over-cloud",
+    deferred: descriptor.deferred ?? true,
+    definitions: () => definitions,
+    resolve(name) {
+      if (!definitions.some((definition) => definition.name === name)) return undefined;
+      return Object.freeze({
+        name,
+        parallelSafe: false,
+        handler: (input, context) => call(descriptor.sourceId, name, input, context),
+      });
+    },
+    update(next) {
+      definitions = cloneDefinitions(next, descriptor.sourceId);
+    },
+  };
+  return Object.freeze(provider);
+}
+
+function cloneDefinitions(value, sourceId) {
+  if (!Array.isArray(value)) {
+    throw new TypeError(`host tool provider ${sourceId} definitions must be an array`);
+  }
+  const names = new Set();
+  const definitions = JSON.parse(JSON.stringify(value));
+  for (const definition of definitions) {
+    if (!definition || typeof definition !== "object" || Array.isArray(definition)
+        || typeof definition.name !== "string" || !definition.name
+        || names.has(definition.name)) {
+      throw new TypeError(`host tool provider ${sourceId} returned invalid definitions`);
+    }
+    names.add(definition.name);
+  }
+  return Object.freeze(definitions.map((definition) => Object.freeze(definition)));
+}
+
+function serializeConfig(options, webMcpProvider) {
   const config = { ...options };
+  delete config.webMcp;
+  if (webMcpProvider) {
+    config.hostToolProviders = [{
+      sourceId: webMcpProvider.sourceId,
+      kind: webMcpProvider.kind,
+      mode: webMcpProvider.mode,
+      deferred: webMcpProvider.deferred,
+      definitions: webMcpProvider.definitions(),
+    }];
+  }
   const workerDurability = config.durability !== false;
   if (!workerDurability) delete config.durability;
   const stableThreadId = nonEmptyString(options.threadId) ?? nonEmptyString(options.sessionId);
@@ -1329,8 +1580,8 @@ function serializeConfig(options) {
   return config;
 }
 
-async function hydrateConfig(config, createDurabilityStore) {
-  const { harness, workerDurabilityId, ...options } = config;
+async function hydrateConfig(config, createDurabilityStore, hostToolProviders = []) {
+  const { harness, workerDurabilityId, hostToolProviders: _hostToolProviders, ...options } = config;
   const [Transport, harnessRuntime] = await Promise.all([
     import("./Transport.mjs"),
     harness === false || harness === undefined
@@ -1374,6 +1625,11 @@ async function hydrateConfig(config, createDurabilityStore) {
       tools: harnessRuntime.tools,
       executionEnvironment: options.executionEnvironment ?? harnessRuntime.executionEnvironment,
     });
+  }
+  if (hostToolProviders.length) {
+    options[Symbol.for("nanocodex.browser.internalRuntime")] = {
+      toolProviders: hostToolProviders,
+    };
   }
   return options;
 }

@@ -54,6 +54,24 @@ test("createTools transfers caller tool ownership only after successful construc
   assert.equal(disposals, 0);
 });
 
+test("createTools transfers dynamic provider ownership only after successful construction", async () => {
+  let closes = 0;
+  const provider = {
+    sourceId: "dynamic",
+    definitions: () => [contract("dynamic")],
+    resolve: () => ({ name: "dynamic", handler: () => "ok" }),
+    async settled() { throw new Error("discovery failed"); },
+    close() { closes += 1; },
+  };
+  await assert.rejects(createTools({ providers: [provider] }), /discovery failed/);
+  assert.equal(closes, 0);
+
+  delete provider.settled;
+  const tools = await createTools({ providers: [provider] });
+  await tools.close();
+  assert.equal(closes, 1);
+});
+
 test("Tools close joins one exhaustive synchronous and asynchronous cleanup", async () => {
   const events = [];
   const tools = await createTools({ tools: {

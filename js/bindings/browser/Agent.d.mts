@@ -6,6 +6,7 @@ import type {
 } from "../types.mjs";
 import type { ManagedTransport, WorkerTransport } from "./Transport.mjs";
 import type { Tools } from "../tools/Tools.mjs";
+import type { WebMcpProviderOptions, WebMcpToolProvider } from "../webmcp/WebMcp.mjs";
 
 export type Agent = DefaultAgent;
 
@@ -32,6 +33,8 @@ export declare namespace create {
   type ManagedOptions = Readonly<{
     transport: ManagedTransport;
     tools?: Tools | undefined;
+    /** Attach the host page's WebMCP capabilities under its existing session. */
+    webMcp?: true | WebMcpProviderOptions | WebMcpToolProvider | false | undefined;
   }>;
   type Options = AgentOptions & WorkerToolExposureOptions & {
     /** Precompiled browser module; WebAssembly modules are structured-clone-safe. */
@@ -46,6 +49,8 @@ export declare namespace create {
     durability?: false | undefined;
     /** Set false to omit the default OPFS, shell, web, image, plan, and artifact tools. */
     harness?: false | undefined;
+    /** Discover WebMCP tools in the embedding page and bridge them into the Agent Worker. */
+    webMcp?: true | WebMcpProviderOptions | WebMcpToolProvider | false | undefined;
   };
   type ReturnType = Agent;
 }

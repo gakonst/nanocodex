@@ -1,0 +1,120 @@
+---
+title: Embedded WebMCP
+description: Let a Nanocodex browser or managed agent use the live website's approved tools and a bounded semantic fallback.
+---
+
+# Embedded WebMCP
+
+Enable `webMcp` when Nanocodex is embedded in a website. The browser binding
+discovers the live page's `document.modelContext` tools, mirrors them into the
+agent, and executes them back in the page. The tool therefore uses the
+website's current cookies, in-memory state, CSRF handling, and UI lifecycle;
+Nanocodex does not copy the website's credentials into its Worker or managed
+service.
+
+```js
+import { Agent, Transport } from "nanocodex/browser";
+
+const agent = await Agent.create({
+  transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
+  webMcp: {
+    fallback: "when-empty",
+    confirm: (action) => showApplicationApproval(action),
+  },
+});
+```
+
+The package-owned Agent Worker receives only structured tool definitions.
+Calls cross a bounded page-to-Worker RPC bridge and the actual handler remains
+in the window. `toolchange` updates are reflected without recreating the
+Agent. The same `webMcp` option on `Transport.managed(...)` agents creates a
+reverse attachment, so execution still occurs in the signed-in host page while
+the durable conversation remains managed.
+
+## Native tools and semantic fallback
+
+Native WebMCP tools are preferred. Tool names are exposed to the model with a
+`web_` prefix, schemas and annotations are retained, and an `AbortSignal`
+propagates from the agent to `document.modelContext.executeTool(...)`.
+When supplied, the embedding application's `confirm` hook gates non-read-only
+calls.
+
+WebMCP is still an experimental browser API. When the registry is unavailable
+or empty, `fallback: "when-empty"` exposes four bounded page tools:
+
+- `web_page_observe` returns bounded visible text, forms, and actionable
+  controls with opaque element IDs;
+- `web_page_fill` changes visible form controls;
+- `web_page_activate` clicks one retained visible control; and
+- `web_page_submit` uses the page's normal form submission path.
+
+The fallback does not expose arbitrary JavaScript, hidden elements, selectors,
+HTML, or password values. Element IDs are page-local and revalidated before
+use. Fill, activate, and submit all invoke the application confirmation hook
+when one is configured.
+Choose `fallback: "never"` for native-only operation or `"always"` to make
+both native and semantic tools available.
+
+## Generate tools from an existing site
+
+The repository generator follows the same review-first model as tools such as
+Sodium. It statically reads source as data and drafts candidates for common
+application routes, frontend fetches, HTML forms, GraphQL operations, Next.js
+server actions, tRPC procedures, and OpenAPI JSON. It never imports or runs the
+repository, and every generated candidate starts with `approved: false`.
+
+```sh
+npx nanocodex-webmcp generate . --out webmcp.manifest.json
+npx nanocodex-webmcp check webmcp.manifest.json
+```
+
+Review the evidence, schemas, descriptions, read-only annotations, and handler
+placement. Mark only intentional tools as approved. The publisher ignores all
+other candidates.
+
+```js
+import manifest from "./webmcp.manifest.json" with { type: "json" };
+import { publish } from "nanocodex/webmcp";
+
+const publication = await publish(manifest, {
+  confirm: (action) => showApplicationApproval(action),
+  handlers: {
+    get_account: ({ id }, { signal }) => accountClient.get(id, { signal }),
+  },
+});
+
+// Unregister all tools during application teardown.
+publication.close();
+```
+
+Approved same-origin fetch and HTML form candidates have built-in handlers.
+GraphQL, server-action, and tRPC candidates require an explicit application
+handler because the generator cannot safely infer a live client instance.
+
+## Cross-origin and trust boundaries
+
+Same-origin discovery is the default. For an embedded cross-origin frame, the
+parent must delegate the `tools` Permissions Policy, the publishing frame must
+set an exact `exposedTo` origin, and the consumer must request that origin with
+`fromOrigins`. Do not use wildcard origin policy.
+
+```html
+<iframe src="https://shop.example" allow="tools"></iframe>
+```
+
+```js
+await publish(manifest, { exposedTo: ["https://assistant.example"] });
+
+const agent = await Agent.create({
+  transport,
+  webMcp: { fromOrigins: ["https://shop.example"] },
+});
+```
+
+`readOnlyHint` and `untrustedContentHint` are metadata supplied by the website,
+not proof of safety. Keep approvals, grants, rate limits, audit UI, and
+authorization checks in the application. A Nanocodex Connect grant does not
+broaden merely because the page attaches more tools.
+
+See the current [Chrome WebMCP imperative API](https://developer.chrome.com/docs/ai/webmcp/imperative-api)
+and [tool security guidance](https://developer.chrome.com/docs/ai/webmcp/secure-tools).

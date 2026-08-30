@@ -23,8 +23,10 @@ import {
   Agent as BrowserAgent,
   Subagents as BrowserSubagents,
   Transport as BrowserTransport,
+  WebMcp,
   Workspace as BrowserWorkspace,
 } from "../browser/index.mjs";
+import { generate as generateWebMcp } from "../webmcp/generator.mjs";
 import {
   Agent as HostAgent,
   type BrowserWebSocketRequest,
@@ -471,6 +473,20 @@ async function check() {
   const workerTransport: BrowserTransport.WorkerTransport = BrowserTransport.hostManaged({
     websocketUrl: "wss://example.com/api/responses",
   });
+  const webMcpProvider = await WebMcp.createProvider({
+    document,
+    fallback: "when-empty",
+    confirm: (action) => action.readOnly === false,
+  });
+  await BrowserAgent.create({ transport: workerTransport, webMcp: webMcpProvider });
+  await BrowserAgent.create({
+    transport: BrowserTransport.managed({ agent: { create: true } }),
+    webMcp: true,
+  });
+  const generatedWebMcp = await generateWebMcp({ root: ".", maxFiles: 10 });
+  generatedWebMcp.tools[0]?.approved;
+  // @ts-expect-error WebMCP fallback modes are closed.
+  await BrowserAgent.create({ transport: workerTransport, webMcp: { fallback: "unsafe" } });
   const durability = createMemoryDurabilityStore("journal-1");
   await HostAgent.create({
     transport: HostTransport.openAi({ apiKey }),

@@ -27,6 +27,7 @@ import { resolveTools } from "../runtime/tool-configuration.mjs";
 import {
   hostManaged as defaultHostManagedTransport,
 } from "./Transport.mjs";
+import { createProvider as createWebMcpProvider, isProvider as isWebMcpProvider } from "../webmcp/WebMcp.mjs";
 
 /** Creates the Rust/WASM Agent in the current Web API host isolate. */
 export async function create(options = {}) {
@@ -57,8 +58,8 @@ export async function create(options = {}) {
     mcp,
     executionEnvironment,
     codeEvaluator,
+    webMcp,
   } = options;
-  const toolProviders = internalRuntime?.toolProviders;
   const stableSessionId = sessionId ?? createSessionId();
   const {
     apiKey,
@@ -80,28 +81,47 @@ export async function create(options = {}) {
   const events = createEventChannel();
   const tempoMcp = mpp?.[Symbol.for("nanocodex.tempo.mcp")];
   let hostDefinitionId;
-  const host = createBrowserHost({
-    WebSocketImpl,
-    createWebSocket,
-    hostAuth: hostAuth === true
-      || (apiKey === undefined && mpp === undefined && subscription === undefined),
-    hostManagedProtocol,
-    mpp,
-    onEvent: events.emit,
-    filesystem,
-    filesystemTools,
-    tools: hostTools,
-    toolProviders,
-    toolMode,
-    mcp: mcp === false
-      ? undefined
-      : tempoMcp ? { ...tempoMcp, ...mcp } : mcp,
-    codeEvaluator,
-    applyPatch: applyBrowserPatch,
-    websocketPreconnect,
-    websocketUrl,
-    onDispose: () => releaseDefinitionHost(hostDefinitionId),
-  });
+  let webMcpProvider;
+  if (webMcp !== undefined && webMcp !== false) {
+    webMcpProvider = isWebMcpProvider(webMcp)
+      ? webMcp
+      : await createWebMcpProvider(webMcp === true ? {} : webMcp);
+  }
+  const toolProviders = [
+    ...(internalRuntime?.toolProviders ?? []),
+    ...(webMcpProvider ? [webMcpProvider] : []),
+  ];
+  let host;
+  try {
+    host = createBrowserHost({
+      WebSocketImpl,
+      createWebSocket,
+      hostAuth: hostAuth === true
+        || (apiKey === undefined && mpp === undefined && subscription === undefined),
+      hostManagedProtocol,
+      mpp,
+      onEvent: events.emit,
+      filesystem,
+      filesystemTools,
+      tools: hostTools,
+      toolProviders,
+      toolMode,
+      mcp: mcp === false
+        ? undefined
+        : tempoMcp ? { ...tempoMcp, ...mcp } : mcp,
+      codeEvaluator,
+      applyPatch: applyBrowserPatch,
+      websocketPreconnect,
+      websocketUrl,
+      onDispose: () => {
+        releaseDefinitionHost(hostDefinitionId);
+        webMcpProvider?.close();
+      },
+    });
+  } catch (error) {
+    webMcpProvider?.close();
+    throw error;
+  }
   let durabilityOwner;
   let creationStarted = false;
   hostDefinitionId = registerDefinitionHost(host);

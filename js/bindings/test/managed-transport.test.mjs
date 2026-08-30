@@ -160,6 +160,50 @@ test("managed create reverse-attaches one Tools recipe and shutdown closes it wi
   assert.equal(requests.some((request) => request.method === "DELETE"), false);
 });
 
+test("managed browser Agent reverse-attaches the host page WebMCP provider under existing auth", async () => {
+  const socket = new ManagedToolSocket();
+  let closed = false;
+  const provider = {
+    [Symbol.for("nanocodex.webmcp.provider")]: true,
+    sourceId: "webmcp:managed-fixture",
+    kind: "webmcp",
+    mode: "union",
+    deferred: true,
+    definitions: () => [{
+      type: "function",
+      name: "web_current_user",
+      description: "Read the current website user.",
+      strict: false,
+      defer_loading: true,
+      parameters: { type: "object", additionalProperties: false },
+    }],
+    resolve: (name) => name === "web_current_user" ? {
+      name,
+      parallelSafe: true,
+      handler: () => ({ id: "website-session-user" }),
+    } : undefined,
+    async settled() {},
+    close() { closed = true; },
+  };
+  const agent = await BrowserAgent.create({
+    transport: BrowserTransport.managed({
+      agent: { id: agentId },
+      baseUrl: origin,
+      apiKey,
+      fetch: async () => Response.json({ agent_id: agentId, session_id: sessionId }),
+      toolsTransport: () => socket,
+    }),
+    webMcp: provider,
+  });
+
+  await waitFor(() => socket.frames.some(({ type }) => type === "catalog"));
+  assert.equal(socket.frames[0].tools[0].definition.name, "web_current_user");
+  assert.equal(socket.frames[0].tools[0].provider, "javascript");
+  await agent.session.shutdown();
+  assert.equal(closed, true);
+  assert.equal(socket.closed.code, 1000);
+});
+
 test("cold reverse attachment failure does not block the durable Agent and retries under its lifecycle", async () => {
   const socket = new ManagedToolSocket();
   let attempts = 0;

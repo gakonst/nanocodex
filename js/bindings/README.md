@@ -144,6 +144,68 @@ Agent host rejects the same value. Do not also supply legacy top-level
 workspace or MCP configuration to an Agent that already receives them through
 `Tools`.
 
+### Use the embedding website through WebMCP
+
+`nanocodex/browser` can turn the live host page's WebMCP registry into dynamic
+agent tools. Handlers remain in the window so they use the website's existing
+signed-in session and UI state; only structured definitions and bounded calls
+cross into the package-owned Agent Worker.
+
+```js
+import { Agent, Transport } from "nanocodex/browser";
+
+const agent = await Agent.create({
+  transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
+  webMcp: {
+    fallback: "when-empty",
+    confirm: (action) => showApplicationApproval(action),
+  },
+});
+```
+
+Native `document.modelContext` tools update live on `toolchange`. When none are
+available, the default bounded fallback can observe visible page text and
+controls, fill fields, activate controls, and submit forms. It never exposes
+arbitrary page JavaScript, hidden elements, raw selectors, HTML, or password
+values. Set `fallback: "never"` for native-only behavior. Mutating calls use
+the application-owned `confirm` callback when supplied and propagate
+cancellation.
+
+Managed browser agents accept the same `webMcp` option. Nanocodex automatically
+reverse-attaches the page provider, preserving website authentication in the
+browser while the account-owned conversation remains hosted.
+
+Existing applications can generate a reviewable publisher manifest without
+running repository code:
+
+```sh
+npx nanocodex-webmcp generate . --out webmcp.manifest.json
+npx nanocodex-webmcp check webmcp.manifest.json
+```
+
+Every candidate is emitted with `approved: false`. After reviewing its source
+evidence and marking intentional tools approved, publish it from the website:
+
+```js
+import manifest from "./webmcp.manifest.json" with { type: "json" };
+import { publish } from "nanocodex/webmcp";
+
+const publication = await publish(manifest, {
+  confirm: (action) => showApplicationApproval(action),
+  handlers: {
+    get_account: (input, { signal }) => accountClient.get(input, { signal }),
+  },
+});
+```
+
+The publisher ignores unapproved entries and unregisters approved tools when
+`publication.close()` aborts their registrations. Same-origin fetch and form
+candidates can execute directly; framework-client candidates such as GraphQL,
+tRPC, and server actions require an explicit handler. Cross-origin frames also
+require `allow="tools"`, exact `exposedTo` origins when publishing, and matching
+`fromOrigins` when consuming. See the
+[WebMCP capability guide](https://nanocodex.ai/capabilities/webmcp).
+
 Browser consumers can attach Codex's ChatGPT Realtime voice lifecycle to the
 same retained Agent. The resource owns microphone, speaker, WebRTC, sideband,
 and delegation cleanup; stopping voice does not cancel an active coding turn.

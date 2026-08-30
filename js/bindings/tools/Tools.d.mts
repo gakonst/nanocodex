@@ -36,6 +36,21 @@ export type Tools = Readonly<{
   close(): Promise<void>;
 }>;
 
+export type ToolProvider = Readonly<{
+  sourceId?: string | undefined;
+  kind?: string | undefined;
+  mode?: "union" | "attached-over-cloud" | undefined;
+  deferred?: boolean | undefined;
+  definitions(): readonly Record<string, unknown>[];
+  resolve(name: string): Readonly<{
+    name: string;
+    parallelSafe?: boolean | undefined;
+    handler(input: unknown, context: import("../types.mjs").ToolContext): unknown | Promise<unknown>;
+  }> | undefined;
+  settled?(): void | Promise<void>;
+  close?(): void | Promise<void>;
+}>;
+
 /**
  * Creates one owned tool runtime. Caller-supplied tool ownership transfers only
  * after this promise resolves; a rejected construction leaves those tools with
@@ -48,4 +63,6 @@ export function createTools(options?: {
   workspaceOptions?: { maxEntries?: number; maxReadBytes?: number; maxWriteBytes?: number };
   mcp?: McpServers | false;
   mcpOptions?: Readonly<Record<string, unknown>>;
+  /** Dynamic caller-owned capability sources such as the embedding page's WebMCP registry. */
+  providers?: readonly ToolProvider[] | undefined;
 }): Promise<Tools>;

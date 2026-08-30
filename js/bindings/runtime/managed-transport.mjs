@@ -3,13 +3,17 @@ import { registerManagedAgentAlias } from "../managed/internal.mjs";
 import { reportError } from "../internal.mjs";
 import { AttachmentRejectedError } from "../tools/attachment.mjs";
 import {
+  providerSource,
   toolRouterBrand,
+  toolRouterRuntime,
   toolRuntimeLifecycle,
 } from "./tool-router.mjs";
+import { createTools } from "../tools/Tools.mjs";
+import { createProvider as createWebMcpProvider, isProvider as isWebMcpProvider } from "../webmcp/WebMcp.mjs";
 
 const MANAGED_AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TRANSPORT_OPTIONS = new Set(["agent", "apiKey", "baseUrl", "fetch", "toolsTransport"]);
-const CREATE_OPTIONS = new Set(["tools", "transport"]);
+const CREATE_OPTIONS = new Set(["tools", "transport", "webMcp"]);
 const ATTACHMENT_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000];
 const managedTransports = new WeakMap();
 let nextManagedAgent = 1;
@@ -41,23 +45,61 @@ export async function createManagedAgent(options) {
   validateCreateOptions(options);
   const setup = managedTransportOptions(options.transport);
   if (!setup) throw new TypeError("Agent.create requires a managed transport");
-  const tools = options.tools;
+  let tools = options.tools;
   if (tools !== undefined
       && (!tools?.[toolRouterBrand] || typeof tools.attach !== "function")) {
     throw new TypeError("managed Agent tools must be created by createTools()");
   }
   tools?.[toolRuntimeLifecycle].available();
-  const managed = setup.identity.kind === "create"
-    ? await ManagedAgent.create(setup.client)
-    : ManagedAgent.open(setup.identity.id, setup.client);
-  const managedState = await managed.state();
-  if (managedState.agent_id !== managed.id
-      || typeof managedState.session_id !== "string"
-      || !MANAGED_AGENT_ID.test(managedState.session_id)) {
-    throw new Error("managed Agent state returned inconsistent agent or session identity");
+  let automaticTools = false;
+  let addedWebMcpSource = false;
+  let webMcpProvider;
+  try {
+    if (options.webMcp !== undefined && options.webMcp !== false) {
+      webMcpProvider = isWebMcpProvider(options.webMcp)
+        ? options.webMcp
+        : await createWebMcpProvider(options.webMcp === true ? {} : options.webMcp);
+      if (tools === undefined) {
+        tools = await createTools({ providers: [webMcpProvider] });
+        automaticTools = true;
+      } else {
+        const router = tools[toolRouterRuntime];
+        router.addSource(providerSource(webMcpProvider.sourceId, webMcpProvider, {
+          kind: webMcpProvider.kind,
+          mode: webMcpProvider.mode,
+          deferred: webMcpProvider.deferred,
+        }));
+        addedWebMcpSource = true;
+        await webMcpProvider.settled?.();
+      }
+    }
+    const managed = setup.identity.kind === "create"
+      ? await ManagedAgent.create(setup.client)
+      : ManagedAgent.open(setup.identity.id, setup.client);
+    const managedState = await managed.state();
+    if (managedState.agent_id !== managed.id
+        || typeof managedState.session_id !== "string"
+        || !MANAGED_AGENT_ID.test(managedState.session_id)) {
+      throw new Error("managed Agent state returned inconsistent agent or session identity");
+    }
+    tools?.[toolRuntimeLifecycle].claim();
+    return managedAgentView(managed, managedState.agent_id, managedState.session_id, tools);
+  } catch (error) {
+    const cleanup = [];
+    if (automaticTools) cleanup.push(tools.close());
+    else if (addedWebMcpSource) {
+      cleanup.push((async () => {
+        await tools[toolRouterRuntime].detachSource(webMcpProvider.sourceId);
+        await webMcpProvider.close?.();
+      })());
+    } else if (webMcpProvider) cleanup.push(Promise.resolve(webMcpProvider.close?.()));
+    const settled = await Promise.allSettled(cleanup);
+    const failures = settled.filter((result) => result.status === "rejected").map((result) => result.reason);
+    if (failures.length) {
+      throw new AggregateError([error, ...failures], "managed Agent creation and WebMCP cleanup failed");
+    }
+    throw error;
   }
-  tools?.[toolRuntimeLifecycle].claim();
-  return managedAgentView(managed, managedState.agent_id, managedState.session_id, tools);
 }
 
 function managedAgentView(managed, agentId, sessionId, tools) {

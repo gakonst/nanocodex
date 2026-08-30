@@ -119,6 +119,14 @@
       "types": "./tools/vite.d.mts",
       "import": "./tools/vite.mjs"
     },
+    "./webmcp": {
+      "types": "./webmcp/WebMcp.d.mts",
+      "import": "./webmcp/WebMcp.mjs"
+    },
+    "./webmcp/generator": {
+      "types": "./webmcp/generator.d.mts",
+      "import": "./webmcp/generator.mjs"
+    },
     "./worker": {
       "types": "./worker/index.d.mts",
       "import": "./worker/index.mjs"
@@ -127,6 +135,9 @@
       "types": "./wasm.d.mts",
       "import": "./pkg-web/nanocodex_bg.wasm"
     }
+  },
+  "bin": {
+    "nanocodex-webmcp": "webmcp/cli.mjs"
   },
   "files": [
     "actions",
@@ -142,6 +153,7 @@
     "runtime",
     "tools",
     "vite",
+    "webmcp",
     "internal.mjs",
     "index.d.mts",
     "index.mjs",
