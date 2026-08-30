@@ -68,7 +68,7 @@ const REQUIRED_DATA_CAPABILITIES: &[&str] = &[
     "memory:read",
     "memory:write",
 ];
-const CONNECTOR_NAMES: &[&str] = &["chatgpt", "github", "gmail", "gdrive", "x"];
+const CONNECTOR_NAMES: &[&str] = &["chatgpt", "github", "gmail", "gdrive", "x", "whoop"];
 
 #[derive(Args, Clone)]
 pub(crate) struct Login {
@@ -114,6 +114,7 @@ enum Connector {
     Gmail,
     Gdrive,
     X,
+    Whoop,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,6 +133,7 @@ impl FromStr for ConnectTarget {
             "gmail" => Some(Connector::Gmail),
             "gdrive" => Some(Connector::Gdrive),
             "x" => Some(Connector::X),
+            "whoop" => Some(Connector::Whoop),
             _ => None,
         };
         connector.map_or_else(
@@ -202,6 +204,7 @@ impl Connector {
             Self::Gmail => "gmail",
             Self::Gdrive => "gdrive",
             Self::X => "x",
+            Self::Whoop => "whoop",
         }
     }
 }
@@ -2535,6 +2538,7 @@ fn connector_label(name: &str) -> &str {
         "gmail" => "Gmail",
         "gdrive" => "Google Drive",
         "x" => "X",
+        "whoop" => "WHOOP",
         _ => name,
     }
 }
@@ -2936,6 +2940,10 @@ mod tests {
         assert_eq!(
             ConnectTarget::from_str("github").unwrap(),
             ConnectTarget::Connector(Connector::Github)
+        );
+        assert_eq!(
+            ConnectTarget::from_str("whoop").unwrap(),
+            ConnectTarget::Connector(Connector::Whoop)
         );
         assert_eq!(
             ConnectTarget::from_str("MCP.Linear.App").unwrap(),

@@ -529,6 +529,7 @@ test("Connect binds normalized cloud accounts into auth resources and the connec
               "github",
               "gdrive",
               "x",
+              "whoop",
             ] });
           },
         };
@@ -553,6 +554,7 @@ test("Connect binds normalized cloud accounts into auth resources and the connec
         gmail: false,
         gdrive: true,
         x: true,
+        whoop: true,
         chatgpt: "true",
         unknown: true,
       },
@@ -577,19 +579,19 @@ test("Connect binds normalized cloud accounts into auth resources and the connec
             "urn:example:configured",
             "urn:nanocodex:app:connector-workspace",
             "urn:nanocodex:origin:https%3A%2F%2Fconsumer.example",
-            "urn:nanocodex:connectors:github,gdrive,x",
+            "urn:nanocodex:connectors:github,gdrive,x,whoop",
             "urn:nanocodex:agent:visibility:reply,actions,history,traces",
           ],
         },
       },
     }],
   }]);
-  assert.deepEqual(requests[0].body.requested_connectors, ["github", "gdrive", "x"]);
+  assert.deepEqual(requests[0].body.requested_connectors, ["github", "gdrive", "x", "whoop"]);
   assert.equal("agent" in requests[0].body, false);
   assert.equal("visibility" in requests[0].body, false);
   assert.equal(requests[0].body.approval_id, "approval-test");
   assert.equal(requests[0].headers, undefined);
-  assert.deepEqual(connection.grant.connectors, ["github", "gdrive", "x"]);
+  assert.deepEqual(connection.grant.connectors, ["github", "gdrive", "x", "whoop"]);
   assert.deepEqual(connection.grant.visibility, {
     finalMessages: true,
     actionSummaries: true,
@@ -1123,7 +1125,7 @@ test("Connect persists, validates, and clears an app-scoped grant session", asyn
   });
   assert.equal(exactConnectorClient._resumeConnection({
     capabilities: {
-      cloudAccounts: { github: true, gmail: true, gdrive: true, x: true, chatgpt: true },
+      cloudAccounts: { github: true, gmail: true, gdrive: true, x: true, whoop: true, chatgpt: true },
     },
     permission: "agent.run",
   }), undefined);

@@ -1,4 +1,4 @@
-export type ConnectionLogoId = "chatgpt" | "openai" | "github" | "gmail" | "gdrive" | "mcp" | "x";
+export type ConnectionLogoId = "chatgpt" | "openai" | "github" | "gmail" | "gdrive" | "mcp" | "x" | "whoop";
 
 export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
   if (id === "chatgpt" || id === "openai") {
@@ -48,6 +48,15 @@ export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
       <span className="connector-logo connector-logo-mcp" aria-hidden="true">
         <svg viewBox="0 0 24 24" role="presentation">
           <path d="M7.5 3.5a4 4 0 0 0 0 8h1v-2h-1a2 2 0 1 1 0-4h3a2 2 0 0 1 2 2v1h2v-1a4 4 0 0 0-4-4h-3Zm8 9h1a2 2 0 1 1 0 4h-3a2 2 0 0 1-2-2v-1h-2v1a4 4 0 0 0 4 4h3a4 4 0 1 0 0-8h-1v2Zm-8.5.5h10v-2H7v2Z" />
+        </svg>
+      </span>
+    );
+  }
+  if (id === "whoop") {
+    return (
+      <span className="connector-logo connector-logo-whoop" aria-hidden="true">
+        <svg viewBox="0 0 24 24" role="presentation">
+          <path d="M2 12h4l2.2-5.5 3.5 11 3-8 2 2.5H22" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
         </svg>
       </span>
     );

@@ -13,7 +13,7 @@ import {
   connectorCompletionFor,
 } from "@nanocodex-connect/connectorCompletion";
 
-type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+type ConnectorId = "github" | "gmail" | "gdrive" | "x" | "whoop";
 type ConnectorStatus = Readonly<{
   connected: boolean;
   accountId?: string;
@@ -61,6 +61,7 @@ const connectorDefinitions = [
   { id: "gmail", label: "Gmail", description: "Read, send, modify, and permanently delete mail" },
   { id: "gdrive", label: "Google Drive", description: "Read, create, edit, and delete all Drive files" },
   { id: "x", label: "X", description: "Read and publish posts; manage follows, likes, bookmarks, lists, and messages" },
+  { id: "whoop", label: "WHOOP", description: "Read recovery, sleep, strain, workouts, and body measurements" },
 ] as const satisfies ReadonlyArray<{
   id: ConnectorId;
   label: string;

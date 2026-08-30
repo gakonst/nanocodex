@@ -11,7 +11,7 @@ The commands are:
 
 ```text
 nanocodex login
-nanocodex connect <chatgpt|github|gmail|gdrive|x>...
+nanocodex connect <chatgpt|github|gmail|gdrive|x|whoop>...
 ```
 
 "Login" means creating or signing into a Nanocodex account and authorizing this

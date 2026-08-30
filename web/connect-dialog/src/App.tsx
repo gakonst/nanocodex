@@ -70,7 +70,7 @@ export async function logoutAccount() {
   }
 }
 
-const connectorIds = ["github", "gmail", "gdrive", "x", "chatgpt"] as const;
+const connectorIds = ["github", "gmail", "gdrive", "x", "whoop", "chatgpt"] as const;
 const connectDialogRoutingHeaders = { "x-nanocodex-connect-client": "onboarding" } as const;
 const connectDeviceRoutingHeaders = { "x-nanocodex-connect-client": "device" } as const;
 const connectorResourcePrefix = "urn:nanocodex:connector:";
@@ -1789,6 +1789,7 @@ function permissionTitle(id: string, fallback: string) {
   if (id === "gmail") return "Gmail";
   if (id === "gdrive") return "Google Drive";
   if (id === "x") return "X";
+  if (id === "whoop") return "WHOOP";
   if (id === "chatgpt" || id === "model") return "ChatGPT";
   return fallback;
 }
@@ -2099,6 +2100,7 @@ function connectorDefinition(id: ConnectorId) {
   if (id === "gmail") return { id, name: "Gmail", detail: "Read and send email" };
   if (id === "gdrive") return { id, name: "Google Drive", detail: "Read and create files" };
   if (id === "x") return { id, name: "X", detail: "Posts, follows, likes, lists, and messages" };
+  if (id === "whoop") return { id, name: "WHOOP", detail: "Recovery, sleep, strain, workouts, and body measurements" };
   return { id, name: "ChatGPT", detail: "Model access through your account" };
 }
 

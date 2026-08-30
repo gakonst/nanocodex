@@ -5,7 +5,7 @@ const appOriginResourcePrefix = "urn:nanocodex:origin:";
 const connectorFocusResourcePrefix = "urn:nanocodex:connector-focus:";
 const credentialImportResourcePrefix = "urn:nanocodex:credential-import:";
 const chatGptCredentialImportResource = /^urn:nanocodex:credential-import:chatgpt:codex-auth-v1:sha256:[A-Za-z0-9_-]{43}$/;
-const connectorIds = new Set(["chatgpt", "github", "gmail", "gdrive", "x"]);
+const connectorIds = new Set(["chatgpt", "github", "gmail", "gdrive", "x", "whoop"]);
 const mcpConnectionId = /^[A-Za-z0-9_-]{43}$/;
 const mcpConnectionStatuses = new Set([
   "authorization_required",

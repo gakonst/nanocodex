@@ -375,6 +375,10 @@ test("ChatGPT connector responses distinguish an immediate local claim from devi
 
 test("connector focus is singular, known, and included in the signed connector grant", () => {
   assert.equal(focusedConnectorFromResources([
+    "urn:nanocodex:connectors:whoop",
+    "urn:nanocodex:connector-focus:whoop",
+  ], ["whoop"]), "whoop");
+  assert.equal(focusedConnectorFromResources([
     "urn:nanocodex:connectors:chatgpt,github",
     "urn:nanocodex:connector-focus:github",
   ], ["chatgpt", "github"]), "github");

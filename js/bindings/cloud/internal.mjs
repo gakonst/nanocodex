@@ -1,6 +1,6 @@
 import { InvalidResponseError } from "./Errors.mjs";
 
-const CLOUD_ACCOUNT_PROVIDERS = Object.freeze(["github", "gmail", "gdrive", "x", "chatgpt"]);
+const CLOUD_ACCOUNT_PROVIDERS = Object.freeze(["github", "gmail", "gdrive", "x", "whoop", "chatgpt"]);
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 
 export function connectionFromWire(value) {
@@ -282,7 +282,7 @@ function strings(value, label) {
 }
 
 function connectors(capabilities, label) {
-  const providers = ["github", "gmail", "gdrive", "x", "chatgpt"];
+  const providers = ["github", "gmail", "gdrive", "x", "whoop", "chatgpt"];
   const items = strings(capabilities, label);
   return Object.freeze(providers.filter((provider) =>
     items.includes(provider) || items.includes(`urn:nanocodex:connector:${provider}`)

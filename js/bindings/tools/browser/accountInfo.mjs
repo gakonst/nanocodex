@@ -1,6 +1,6 @@
 import { namedTool } from "../namedTool.mjs";
 
-const CONNECTOR_IDS = ["github", "gmail", "gdrive", "x", "chatgpt"];
+const CONNECTOR_IDS = ["github", "gmail", "gdrive", "x", "whoop", "chatgpt"];
 const LIMIT_SCHEMA = {
   type: "object",
   properties: {
