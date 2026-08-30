@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { createProvider, publish } from "../webmcp/WebMcp.mjs";
-import { generate, validate } from "../webmcp/generator.mjs";
+import { generate, generateFile, validate } from "../webmcp/generator.mjs";
 
 test("WebMCP provider mirrors native tools, preserves session execution, and refreshes", async () => {
   const listeners = new Set();
@@ -332,6 +332,40 @@ test("repository generator finds routes, forms, GraphQL, tRPC, and server action
     const path = join(directory, "webmcp.manifest.json");
     await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
     assert.equal(validate(JSON.parse(await readFile(path, "utf8"))), true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("manifest generation preserves only approvals for unchanged tool contracts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "nanocodex-webmcp-manifest-"));
+  const route = join(directory, "app", "api", "orders", "route.ts");
+  const output = join(directory, "webmcp.manifest.json");
+  try {
+    await mkdir(join(directory, "app", "api", "orders"), { recursive: true });
+    await writeFile(route, "export async function GET() { return Response.json([]); }\n");
+    const first = await generateFile({ root: directory });
+    assert.equal(first.changed, true);
+    assert.equal(first.path, output);
+    const reviewed = JSON.parse(await readFile(output, "utf8"));
+    reviewed.tools[0].approved = true;
+    await writeFile(output, `${JSON.stringify(reviewed, null, 2)}\n`);
+
+    const unchanged = await generateFile({ root: directory });
+    assert.equal(unchanged.changed, false);
+    assert.equal(unchanged.manifest.tools[0].approved, true);
+
+    await writeFile(route, "export async function GET() { return Response.json([1]); }\n");
+    const implementationChanged = await generateFile({ root: directory });
+    assert.equal(implementationChanged.changed, true);
+    assert.equal(implementationChanged.manifest.tools[0].name, "get_api_orders");
+    assert.equal(implementationChanged.manifest.tools[0].approved, false);
+
+    await writeFile(route, "export async function POST() { return Response.json({ ok: true }); }\n");
+    const changed = await generateFile({ root: directory });
+    assert.equal(changed.changed, true);
+    assert.equal(changed.manifest.tools[0].name, "post_api_orders");
+    assert.equal(changed.manifest.tools[0].approved, false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

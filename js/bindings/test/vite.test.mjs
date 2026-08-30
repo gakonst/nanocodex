@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,6 +11,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { readCodexSubscription } from "../vite/codex-auth-file.mjs";
 import { createNanocodexCloudflarePlugins } from "../vite/cloudflare-plugin.mjs";
 import { startChatGptWorkerEgress } from "../vite/chatgpt-egress.mjs";
+import { nanocodex } from "../vite/index.mjs";
 
 test("one Vite plugin gives Cloudflare only exact development Worker bindings", async () => {
   const fixture = await authFixture();
@@ -60,6 +62,47 @@ test("production builds neither read local auth nor start development egress", a
   assert.equal(cloudflareOptions.config({ vars: { PRODUCTION: "yes" } }), undefined);
   assert.equal(typeof config.worker.plugins, "function");
   await plugin.closeBundle();
+});
+
+test("the Vite plugin generates a review-first WebMCP manifest", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "nanocodex-vite-webmcp-"));
+  try {
+    await writeFile(join(directory, "client.ts"), 'fetch("/api/profile");\n');
+    const plugin = nanocodex({ chatGpt: false, webMcp: true });
+    plugin.configResolved({ root: directory, logger: { info() {} } });
+    await plugin.buildStart();
+    const manifest = JSON.parse(await readFile(join(directory, "webmcp.manifest.json"), "utf8"));
+    assert.equal(manifest.tools.length, 1);
+    assert.equal(manifest.tools[0].name, "get_api_profile");
+    assert.equal(manifest.tools[0].approved, false);
+    await plugin.closeBundle();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the Vite development watcher regenerates changed WebMCP source", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "nanocodex-vite-webmcp-watch-"));
+  try {
+    const source = join(directory, "client.ts");
+    await writeFile(source, 'fetch("/api/profile");\n');
+    const watcher = new EventEmitter();
+    const plugin = nanocodex({ chatGpt: false, webMcp: true });
+    plugin.configResolved({ root: directory, logger: { info() {} } });
+    await plugin.configureServer({
+      config: { logger: { error(error) { throw error; } } },
+      watcher,
+    });
+    await writeFile(source, 'fetch("/api/profile", { method: "POST" });\n');
+    watcher.emit("change", source);
+    await waitFor(async () => {
+      const manifest = JSON.parse(await readFile(join(directory, "webmcp.manifest.json"), "utf8"));
+      return manifest.tools[0]?.name === "post_api_profile";
+    });
+    await plugin.closeBundle();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the Codex auth reader selects current subscription fields but never refresh data", async () => {
@@ -186,4 +229,12 @@ function listen(server) {
 
 function close(server) {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("timed out waiting for Vite WebMCP regeneration");
 }

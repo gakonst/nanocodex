@@ -8,14 +8,18 @@ export type NanocodexChatGptViteOptions = Readonly<{
 export type NanocodexViteOptions = Readonly<{
   /** Local ChatGPT subscription support is on by default; pass false to disable it. */
   chatGpt?: NanocodexChatGptViteOptions | false | undefined;
+  /** Generate and continuously reconcile a review-first WebMCP manifest. */
+  webMcp?: true | import("../webmcp/generator.mjs").GenerateWebMcpManifestOptions | false | undefined;
 }>;
 
 export type NanocodexVitePlugin = Readonly<{
   name: "nanocodex";
   enforce: "pre";
   resolveId(source: string, importer?: string): string | null;
+  configResolved(config: Readonly<{ root?: string; logger?: unknown }>): void;
   config(config: unknown, environment: Readonly<{ command: "build" | "serve" }>): unknown | Promise<unknown>;
   configureServer(server: unknown): void | Promise<void>;
+  buildStart(): void | Promise<void>;
   closeBundle(): void | Promise<void>;
 }>;
 

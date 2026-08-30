@@ -26,7 +26,8 @@ import {
   WebMcp,
   Workspace as BrowserWorkspace,
 } from "../browser/index.mjs";
-import { generate as generateWebMcp } from "../webmcp/generator.mjs";
+import { generate as generateWebMcp, generateFile as generateWebMcpFile } from "../webmcp/generator.mjs";
+import { withWebMcp } from "../next/index.mjs";
 import {
   Agent as HostAgent,
   type BrowserWebSocketRequest,
@@ -154,6 +155,11 @@ async function check() {
   const workerOptions: WorkerAgentOptions = {
     onFailure(error) { error.message; },
   };
+  await generateWebMcpFile({ output: "generated/webmcp.json" });
+  nanocodex({ chatGpt: false, webMcp: { output: "generated/webmcp.json" } });
+  const nextConfig = withWebMcp({ reactStrictMode: true }, { output: "generated/webmcp.json" });
+  const resolvedNextConfig = await nextConfig("phase-production-build", {});
+  void resolvedNextConfig;
   await createWorkerAgent(workerResource, workerOptions);
   // @ts-expect-error non-disabled preparation requires one stable harness identity.
   await prepareWorkerAgent({ origin: "https://example.com" });

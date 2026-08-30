@@ -17,10 +17,7 @@ import { Agent, Transport } from "nanocodex/browser";
 
 const agent = await Agent.create({
   transport: Transport.hostManaged({ websocketUrl: "/api/responses" }),
-  webMcp: {
-    fallback: "when-empty",
-    confirm: (action) => showApplicationApproval(action),
-  },
+  webMcp: { fallback: "when-empty" },
 });
 ```
 
@@ -36,8 +33,11 @@ the durable conversation remains managed.
 Native WebMCP tools are preferred. Tool names are exposed to the model with a
 `web_` prefix, schemas and annotations are retained, and an `AbortSignal`
 propagates from the agent to `document.modelContext.executeTool(...)`.
-When supplied, the embedding application's `confirm` hook gates non-read-only
-calls.
+Every non-read-only call opens the package-owned Connect dialog. The dialog
+shows requester → destination, exact effects, one-call scope, and the technical
+payload, then remains in `Applying…` until that exact handler settles. A
+rejection never invokes the page handler. The `confirm` option is only a
+headless or custom-host override.
 
 WebMCP is still an experimental browser API. When the registry is unavailable
 or empty, `fallback: "when-empty"` exposes four bounded page tools:
@@ -50,8 +50,7 @@ or empty, `fallback: "when-empty"` exposes four bounded page tools:
 
 The fallback does not expose arbitrary JavaScript, hidden elements, selectors,
 HTML, or password values. Element IDs are page-local and revalidated before
-use. Fill, activate, and submit all invoke the application confirmation hook
-when one is configured.
+use. Fill, activate, and submit use the same Nanocodex approval dialog.
 Choose `fallback: "never"` for native-only operation or `"always"` to make
 both native and semantic tools available.
 
@@ -61,7 +60,37 @@ The repository generator follows the same review-first model as tools such as
 Sodium. It statically reads source as data and drafts candidates for common
 application routes, frontend fetches, HTML forms, GraphQL operations, Next.js
 server actions, tRPC procedures, and OpenAPI JSON. It never imports or runs the
-repository, and every generated candidate starts with `approved: false`.
+repository, and every new or changed candidate starts with `approved: false`.
+
+Vite and Next.js can keep the review manifest generated automatically:
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import { nanocodex } from "nanocodex/vite";
+
+export default defineConfig({
+  plugins: [nanocodex({ webMcp: true })],
+});
+```
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+import { withWebMcp } from "nanocodex/next";
+
+const nextConfig: NextConfig = {};
+export default withWebMcp(nextConfig);
+```
+
+Both write `webmcp.manifest.json`. Vite regenerates during development and
+build; Next.js regenerates at startup/build and watches source in development.
+An existing approval is preserved only while the source digest, generated
+method, schema, annotations, description, and implementation are unchanged.
+Source or contract changes reset approval instead of silently broadening the
+website's tools.
+
+The CLI exposes the same reconciliation when explicit generation is preferable:
 
 ```sh
 npx nanocodex-webmcp generate . --out webmcp.manifest.json
@@ -77,7 +106,6 @@ import manifest from "./webmcp.manifest.json" with { type: "json" };
 import { publish } from "nanocodex/webmcp";
 
 const publication = await publish(manifest, {
-  confirm: (action) => showApplicationApproval(action),
   handlers: {
     get_account: ({ id }, { signal }) => accountClient.get(id, { signal }),
   },
@@ -112,9 +140,9 @@ const agent = await Agent.create({
 ```
 
 `readOnlyHint` and `untrustedContentHint` are metadata supplied by the website,
-not proof of safety. Keep approvals, grants, rate limits, audit UI, and
-authorization checks in the application. A Nanocodex Connect grant does not
-broaden merely because the page attaches more tools.
+not proof of safety. Keep server authorization and rate limits in the
+application; the Nanocodex dialog owns per-call user approval. A Connect grant
+does not broaden merely because the page attaches more tools.
 
 See the current [Chrome WebMCP imperative API](https://developer.chrome.com/docs/ai/webmcp/imperative-api)
 and [tool security guidance](https://developer.chrome.com/docs/ai/webmcp/secure-tools).

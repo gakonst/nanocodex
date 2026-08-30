@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "generatedAt": "2026-08-30T22:37:11.412Z",
+  "root": ".",
+  "tools": [
+    {
+      "name": "form_form_1",
+      "title": "form 1",
+      "description": "Submit the form 1 form through the website's current authenticated page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "fields"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "untrustedContentHint": false
+      },
+      "implementation": {
+        "kind": "form",
+        "selector": "form:nth-of-type(1)"
+      },
+      "evidence": [
+        {
+          "file": "src/App.tsx",
+          "line": 255,
+          "kind": "HTML form GET current URL",
+          "sourceHash": "62e95700d47f750c0d594ead45e5bc01e93a624b9dc11efd2dc0278eb480144a"
+        }
+      ],
+      "approved": false
+    },
+    {
+      "name": "form_form_2",
+      "title": "form 2",
+      "description": "Submit the form 2 form through the website's current authenticated page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "fields"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "untrustedContentHint": false
+      },
+      "implementation": {
+        "kind": "form",
+        "selector": "form:nth-of-type(2)"
+      },
+      "evidence": [
+        {
+          "file": "src/App.tsx",
+          "line": 308,
+          "kind": "HTML form GET current URL",
+          "sourceHash": "62e95700d47f750c0d594ead45e5bc01e93a624b9dc11efd2dc0278eb480144a"
+        }
+      ],
+      "approved": false
+    }
+  ]
+}

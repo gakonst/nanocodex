@@ -62,6 +62,8 @@ const requiredFiles = [
   "managed/ManagedError.d.mts",
   "managed/index.mjs",
   "managed/index.d.mts",
+  "next/index.mjs",
+  "next/index.d.mts",
   "node/index.mjs",
   "node/index.d.mts",
   "node/workspace.mjs",
@@ -127,6 +129,8 @@ export async function checkPackage(packageRoot = root) {
   assert.equal(packageJson.exports?.["./host"]?.import, "./host/index.mjs");
   assert.equal(packageJson.exports?.["./cloudflare"]?.import, "./cloudflare/index.mjs");
   assert.equal(packageJson.exports?.["./managed"]?.import, "./managed/index.mjs");
+  assert.equal(packageJson.exports?.["./next"]?.import, "./next/index.mjs");
+  assert.equal(packageJson.exports?.["./next"]?.require, "./next/index.mjs");
   assert.equal(packageJson.exports?.["./connect"]?.import, "./cloud/index.mjs");
   assert.equal(packageJson.exports?.["./connect"]?.types, "./cloud/index.d.mts");
   assert.equal(packageJson.exports?.["./connect/actions"]?.import, "./cloud/actions/index.mjs");

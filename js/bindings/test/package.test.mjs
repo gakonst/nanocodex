@@ -93,12 +93,14 @@ test("the packed package ships and resolves every public entry point", async () 
       import { dataset } from "nanocodex/tools/dataset";
       import { nanocodexTools } from "nanocodex/tools/vite";
       import { nanocodex } from "nanocodex/vite";
+      import { withWebMcp } from "nanocodex/next";
       import { Agent as NodeAgent, Subagents as NodeSubagents, Transport as NodeTransport, Workspace as NodeWorkspace } from "nanocodex/node";
       import * as nodeExports from "nanocodex/node";
       import { Subagents as BrowserSubagents, Workspace as BrowserWorkspace } from "nanocodex/browser";
       import * as browserExports from "nanocodex/browser";
 
       assert.equal(typeof Actions.turn.prompt, "function");
+      assert.equal(typeof withWebMcp, "function");
       assert.equal(typeof ManagedAgent.create, "function");
       assert.equal(typeof ManagedAgent.list, "function");
       const durabilityValueNames = [

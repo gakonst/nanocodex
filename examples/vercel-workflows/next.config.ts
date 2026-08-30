@@ -2,6 +2,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { NextConfig } from "next";
+import { withWebMcp } from "nanocodex/next";
 import { withWorkflow } from "workflow/next";
 
 const exampleRoot = dirname(fileURLToPath(import.meta.url));
@@ -27,4 +28,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default withWorkflow(nextConfig);
+export default withWebMcp(withWorkflow(nextConfig), { root: exampleRoot });

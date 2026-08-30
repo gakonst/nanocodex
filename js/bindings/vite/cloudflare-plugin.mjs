@@ -4,7 +4,7 @@ import { createNanocodexVitePlugin } from "./plugin.mjs";
 export function createNanocodexCloudflarePlugins(options, cloudflare) {
   let devBindings;
   const core = createNanocodexVitePlugin(
-    { chatGpt: options.chatGpt },
+    { chatGpt: options.chatGpt, webMcp: options.webMcp },
     {
       target: "cloudflare",
       setDevBindings(value) {

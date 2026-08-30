@@ -178,13 +178,42 @@ browser while the account-owned conversation remains hosted.
 Existing applications can generate a reviewable publisher manifest without
 running repository code:
 
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import { nanocodex } from "nanocodex/vite";
+
+export default defineConfig({
+  plugins: [nanocodex({ webMcp: true })],
+});
+```
+
+```ts
+// next.config.ts
+import type { NextConfig } from "next";
+import { withWebMcp } from "nanocodex/next";
+
+const nextConfig: NextConfig = {};
+export default withWebMcp(nextConfig);
+```
+
+Both plugins generate `webmcp.manifest.json` automatically. Vite keeps it
+current while the development server runs; Next.js generates it at startup and
+watches source during development. An approval survives regeneration only
+while the tool's source digest, method, schema, annotations, description, and
+implementation remain identical. A source or contract change returns to
+`approved: false`.
+
+The equivalent explicit commands are:
+
 ```sh
 npx nanocodex-webmcp generate . --out webmcp.manifest.json
 npx nanocodex-webmcp check webmcp.manifest.json
 ```
 
-Every candidate is emitted with `approved: false`. After reviewing its source
-evidence and marking intentional tools approved, publish it from the website:
+Every new or changed candidate is emitted with `approved: false`. After
+reviewing its source evidence and marking intentional tools approved, publish
+it from the website:
 
 ```js
 import manifest from "./webmcp.manifest.json" with { type: "json" };

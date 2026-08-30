@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { extname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { nanocodexTools } from "../tools/vite.mjs";
+import { generateFile as generateWebMcpManifest } from "../webmcp/generator.mjs";
 import { chatGptSubscription } from "./chatgpt-subscription.mjs";
 import { defaultCodexAuthFile, readCodexSubscription } from "./codex-auth-file.mjs";
 import { startChatGptWorkerEgress } from "./chatgpt-egress.mjs";
@@ -15,8 +17,18 @@ export function createNanocodexVitePlugin(options, integration) {
   let workerAuth;
   let egress;
   let cleanupPromise;
+  let viteRoot = process.cwd();
+  let viteLogger;
+  let webMcpTimer;
+  let webMcpWatch;
+  let webMcpGeneration;
+  let webMcpQueued = false;
 
   const cleanup = () => cleanupPromise ??= (async () => {
+    if (webMcpTimer) clearTimeout(webMcpTimer);
+    webMcpTimer = undefined;
+    webMcpWatch?.();
+    webMcpWatch = undefined;
     try {
       await egress?.close();
     } finally {
@@ -30,6 +42,10 @@ export function createNanocodexVitePlugin(options, integration) {
     name: "nanocodex",
     enforce: "pre",
     resolveId: tools.resolveId,
+    configResolved(config) {
+      viteRoot = resolve(config.root ?? process.cwd());
+      viteLogger = config.logger;
+    },
     async config(config, environment) {
       const nestedWorker = workerPlugins(config.worker?.plugins);
       if (
@@ -71,6 +87,8 @@ export function createNanocodexVitePlugin(options, integration) {
       return { worker: { plugins: nestedWorker } };
     },
     async configureServer(vite) {
+      await updateWebMcpManifest();
+      watchWebMcp(vite);
       if (integration.target === "vite") {
         await direct?.configureServer(vite);
         return;
@@ -81,11 +99,76 @@ export function createNanocodexVitePlugin(options, integration) {
       );
       vite.httpServer?.once("close", () => { void cleanup(); });
     },
+    async buildStart() {
+      await updateWebMcpManifest();
+    },
     async closeBundle() {
       await cleanup();
     },
   };
+
+  async function updateWebMcpManifest() {
+    if (options.webMcp === undefined || options.webMcp === false) return;
+    if (webMcpGeneration) {
+      webMcpQueued = true;
+      return webMcpGeneration;
+    }
+    const configured = options.webMcp === true ? {} : options.webMcp;
+    if (!configured || typeof configured !== "object" || Array.isArray(configured)) {
+      throw new TypeError("Nanocodex Vite webMcp must be true, false, or an options object");
+    }
+    const root = resolve(viteRoot, configured.root ?? ".");
+    webMcpGeneration = generateWebMcpManifest({
+      ...configured,
+      root,
+    }).then((result) => {
+      if (result.changed) {
+        viteLogger?.info?.(
+          `[nanocodex] generated ${relative(viteRoot, result.path)} (${result.manifest.tools.length} review-required tools)`,
+        );
+      }
+      return result;
+    }).finally(async () => {
+      webMcpGeneration = undefined;
+      if (webMcpQueued) {
+        webMcpQueued = false;
+        await updateWebMcpManifest();
+      }
+    });
+    return webMcpGeneration;
+  }
+
+  function watchWebMcp(vite) {
+    if (options.webMcp === undefined || options.webMcp === false || webMcpWatch) return;
+    const configured = options.webMcp === true ? {} : options.webMcp;
+    const root = resolve(viteRoot, configured.root ?? ".");
+    const output = resolve(root, configured.output ?? "webmcp.manifest.json");
+    const changed = (path) => {
+      const absolute = resolve(path);
+      const local = relative(root, absolute);
+      if (absolute === output || local.startsWith(`..${sep}`) || local === ".."
+          || !WEBMCP_SOURCE_EXTENSIONS.has(extname(absolute).toLowerCase())) return;
+      if (webMcpTimer) clearTimeout(webMcpTimer);
+      webMcpTimer = setTimeout(() => {
+        webMcpTimer = undefined;
+        void updateWebMcpManifest().catch((error) => vite.config.logger.error(errorMessage(error)));
+      }, 50);
+    };
+    vite.watcher.on("add", changed);
+    vite.watcher.on("change", changed);
+    vite.watcher.on("unlink", changed);
+    webMcpWatch = () => {
+      vite.watcher.off("add", changed);
+      vite.watcher.off("change", changed);
+      vite.watcher.off("unlink", changed);
+    };
+  }
 }
+
+const WEBMCP_SOURCE_EXTENSIONS = new Set([
+  ".cjs", ".gql", ".graphql", ".htm", ".html", ".js", ".json",
+  ".jsx", ".mjs", ".ts", ".tsx", ".yaml", ".yml",
+]);
 
 function workerPlugins(existing) {
   return () => {

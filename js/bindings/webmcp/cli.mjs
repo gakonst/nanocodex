@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { generate, validate } from "./generator.mjs";
+import { generateFile, validate } from "./generator.mjs";
 
 const [command = "generate", ...argv] = process.argv.slice(2);
 
@@ -31,11 +31,10 @@ async function generateCommand(args) {
     } else if (root === ".") root = argument;
     else throw new Error(`unexpected argument: ${argument}`);
   }
-  const manifest = await generate({ root });
-  validate(manifest);
-  const path = resolve(output);
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "w" });
-  process.stdout.write(`Generated ${manifest.tools.length} review-required WebMCP tools in ${path}\n`);
+  const result = await generateFile({ root, output: resolve(output) });
+  process.stdout.write(
+    `${result.changed ? "Generated" : "Unchanged"} ${result.manifest.tools.length} review-required WebMCP tools in ${result.path}\n`,
+  );
 }
 
 async function checkCommand(args) {

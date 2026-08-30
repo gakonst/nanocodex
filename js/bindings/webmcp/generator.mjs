@@ -1,13 +1,14 @@
-import { readdir, readFile } from "node:fs/promises";
-import { extname, join, relative, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const SOURCE_EXTENSIONS = new Set([
   ".cjs", ".gql", ".graphql", ".htm", ".html", ".js", ".json",
   ".jsx", ".mjs", ".ts", ".tsx", ".yaml", ".yml",
 ]);
 const IGNORED_DIRECTORIES = new Set([
-  ".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules",
-  "out", "target", "vendor",
+  ".git", ".next", ".turbo", "__fixtures__", "__tests__", "build", "coverage",
+  "dist", "fixtures", "node_modules", "out", "target", "test", "tests", "vendor",
 ]);
 const HTTP_METHODS = new Set(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"]);
 const DEFAULT_MAX_FILE_BYTES = 1_000_000;
@@ -27,7 +28,8 @@ export async function generate(options = {}) {
     16_000_000,
   );
   const maxFiles = boundedInteger(options.maxFiles ?? DEFAULT_MAX_FILES, "maxFiles", 1, 100_000);
-  const files = await sourceFiles(root, maxFiles);
+  const excluded = new Set((options.exclude ?? []).map((path) => resolve(root, path)));
+  const files = await sourceFiles(root, maxFiles, excluded);
   const candidates = [];
   for (const path of files) {
     let contents;
@@ -50,6 +52,52 @@ export async function generate(options = {}) {
     root: ".",
     tools,
   });
+}
+
+/**
+ * Generates and atomically updates a checked-in review manifest. Existing
+ * approvals survive only while the generated tool contract is unchanged.
+ */
+export async function generateFile(options = {}) {
+  validateFileOptions(options);
+  const root = resolve(options.root ?? process.cwd());
+  const output = isAbsolute(options.output ?? "")
+    ? options.output
+    : resolve(root, options.output ?? "webmcp.manifest.json");
+  const draft = await generate({
+    root,
+    exclude: [output],
+    ...(options.maxFiles === undefined ? {} : { maxFiles: options.maxFiles }),
+    ...(options.maxFileBytes === undefined ? {} : { maxFileBytes: options.maxFileBytes }),
+  });
+  let previous;
+  try {
+    previous = JSON.parse(await readFile(output, "utf8"));
+    validate(previous);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw new Error(`existing WebMCP manifest is invalid: ${output}`, { cause: error });
+    }
+  }
+  const manifest = reconcileManifest(draft, previous);
+  if (previous && JSON.stringify(previous.tools) === JSON.stringify(manifest.tools)) {
+    return Object.freeze({ changed: false, manifest: deepFreeze(previous), path: output });
+  }
+  const serialized = `${JSON.stringify(manifest, null, 2)}\n`;
+  await mkdir(dirname(output), { recursive: true });
+  const temporary = join(
+    dirname(output),
+    `.${basename(output)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`,
+  );
+  try {
+    await writeFile(temporary, serialized, { flag: "wx" });
+    await rename(temporary, output);
+  } finally {
+    await unlink(temporary).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+  }
+  return Object.freeze({ changed: true, manifest, path: output });
 }
 
 /** Validates the stable generated-manifest shape without executing handlers. */
@@ -89,7 +137,11 @@ function analyzeFile(file, contents) {
   tools.push(...routerTools(file, contents));
   tools.push(...fetchTools(file, contents));
   tools.push(...trpcTools(file, contents));
-  return tools;
+  const sourceHash = createHash("sha256").update(contents).digest("hex");
+  return tools.map((tool) => ({
+    ...tool,
+    evidence: tool.evidence.map((entry) => ({ ...entry, sourceHash })),
+  }));
 }
 
 function nextRouteTools(file, contents) {
@@ -327,7 +379,7 @@ function deduplicate(candidates) {
   return tools.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-async function sourceFiles(root, maximum) {
+async function sourceFiles(root, maximum, excluded) {
   const files = [];
   const pending = [root];
   while (pending.length) {
@@ -337,6 +389,7 @@ async function sourceFiles(root, maximum) {
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       const path = join(directory, entry.name);
+      if (excluded.has(path)) continue;
       if (entry.isDirectory()) {
         if (!IGNORED_DIRECTORIES.has(entry.name) && !entry.name.startsWith(".wrangler")) pending.push(path);
         continue;
@@ -426,10 +479,52 @@ function validateOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("WebMCP generator options must be an object");
   }
-  const allowed = new Set(["maxFileBytes", "maxFiles", "root"]);
+  const allowed = new Set(["exclude", "maxFileBytes", "maxFiles", "root"]);
   for (const name of Object.keys(options)) {
     if (!allowed.has(name)) throw new TypeError(`unsupported WebMCP generator option: ${name}`);
   }
+  if (options.exclude !== undefined
+      && (!Array.isArray(options.exclude)
+        || options.exclude.some((path) => typeof path !== "string" || !path))) {
+    throw new TypeError("WebMCP generator exclude must be an array of non-empty paths");
+  }
+}
+
+function validateFileOptions(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("WebMCP manifest generation options must be an object");
+  }
+  const allowed = new Set(["maxFileBytes", "maxFiles", "output", "root"]);
+  for (const name of Object.keys(options)) {
+    if (!allowed.has(name)) throw new TypeError(`unsupported WebMCP manifest option: ${name}`);
+  }
+  if (options.output !== undefined && (typeof options.output !== "string" || !options.output)) {
+    throw new TypeError("WebMCP manifest output must be a non-empty path");
+  }
+}
+
+function reconcileManifest(draft, previous) {
+  const approved = new Map((previous?.tools ?? []).map((tool) => [tool.name, tool]));
+  const tools = draft.tools.map((tool) => {
+    const prior = approved.get(tool.name);
+    return deepFreeze({
+      ...tool,
+      approved: prior?.approved === true && toolFingerprint(prior) === toolFingerprint(tool),
+    });
+  });
+  return deepFreeze({ ...draft, tools });
+}
+
+function toolFingerprint(tool) {
+  return JSON.stringify({
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    annotations: tool.annotations,
+    implementation: tool.implementation,
+    evidence: tool.evidence?.map(({ file, kind, sourceHash }) => ({ file, kind, sourceHash })),
+  });
 }
 
 function boundedInteger(value, name, minimum, maximum) {

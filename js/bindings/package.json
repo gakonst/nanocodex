@@ -67,6 +67,11 @@
       "types": "./managed/index.d.mts",
       "import": "./managed/index.mjs"
     },
+    "./next": {
+      "types": "./next/index.d.mts",
+      "import": "./next/index.mjs",
+      "require": "./next/index.mjs"
+    },
     "./connect": {
       "types": "./cloud/index.d.mts",
       "import": "./cloud/index.mjs"
@@ -146,6 +151,7 @@
     "cloud",
     "host",
     "managed",
+    "next",
     "node",
     "worker",
     "pkg-node",

@@ -1,0 +1,262 @@
+{
+  "version": 1,
+  "generatedAt": "2026-08-30T22:37:55.984Z",
+  "root": ".",
+  "tools": [
+    {
+      "name": "form_prompt-form",
+      "title": "prompt form",
+      "description": "Submit the prompt form form through the website's current authenticated page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "fields"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "untrustedContentHint": false
+      },
+      "implementation": {
+        "kind": "form",
+        "selector": "#prompt-form"
+      },
+      "evidence": [
+        {
+          "file": "app/page.tsx",
+          "line": 42,
+          "kind": "HTML form GET current URL",
+          "sourceHash": "19dcf0d3df4ea55572c8c3fb407319549684e9637f9f351a0bc48592b8739536"
+        }
+      ],
+      "approved": false
+    },
+    {
+      "name": "get_api_sessions_sessionId_stream",
+      "title": "GET /api/sessions/[sessionId]/stream",
+      "description": "GET /api/sessions/[sessionId]/stream through the website's same-origin authenticated session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "sessionId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sessionId"
+            ],
+            "additionalProperties": false
+          },
+          "query": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "untrustedContentHint": true
+      },
+      "implementation": {
+        "kind": "fetch",
+        "method": "GET",
+        "path": "/api/sessions/[sessionId]/stream"
+      },
+      "evidence": [
+        {
+          "file": "app/api/sessions/[sessionId]/stream/route.ts",
+          "line": 13,
+          "kind": "Next.js route GET /api/sessions/[sessionId]/stream",
+          "sourceHash": "6d3bbfc8a796aada494f17a1a78c9ff1deddfc75c5d71b12cda8e94d24d7c212"
+        }
+      ],
+      "approved": false
+    },
+    {
+      "name": "get_api_ws",
+      "title": "GET /api/ws",
+      "description": "GET /api/ws through the website's same-origin authenticated session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "untrustedContentHint": true
+      },
+      "implementation": {
+        "kind": "fetch",
+        "method": "GET",
+        "path": "/api/ws"
+      },
+      "evidence": [
+        {
+          "file": "app/api/ws/route.ts",
+          "line": 11,
+          "kind": "Next.js route GET /api/ws",
+          "sourceHash": "e21bc0f01a531500c1acb5b1aa20207ad68a76aaa712e0c76d964edc149d5276"
+        }
+      ],
+      "approved": false
+    },
+    {
+      "name": "post_api_sessions",
+      "title": "POST /api/sessions",
+      "description": "POST /api/sessions through the website's same-origin authenticated session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "body": {}
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "untrustedContentHint": true
+      },
+      "implementation": {
+        "kind": "fetch",
+        "method": "POST",
+        "path": "/api/sessions"
+      },
+      "evidence": [
+        {
+          "file": "app/api/sessions/route.ts",
+          "line": 8,
+          "kind": "Next.js route POST /api/sessions",
+          "sourceHash": "cdc051a34899013410e81acc4d8ced0dd391cd3060f4ef23821e95f6159d6d52"
+        },
+        {
+          "file": "public/app.js",
+          "line": 71,
+          "kind": "frontend fetch POST /api/sessions",
+          "sourceHash": "c0609c5b9c097fec3feea8208343566fcedf2cc1e1958acca79d8b4d0204fcf0"
+        }
+      ],
+      "approved": false
+    },
+    {
+      "name": "post_api_sessions_sessionId_prompt",
+      "title": "POST /api/sessions/[sessionId]/prompt",
+      "description": "POST /api/sessions/[sessionId]/prompt through the website's same-origin authenticated session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "sessionId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sessionId"
+            ],
+            "additionalProperties": false
+          },
+          "query": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "body": {}
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "untrustedContentHint": true
+      },
+      "implementation": {
+        "kind": "fetch",
+        "method": "POST",
+        "path": "/api/sessions/[sessionId]/prompt"
+      },
+      "evidence": [
+        {
+          "file": "app/api/sessions/[sessionId]/prompt/route.ts",
+          "line": 9,
+          "kind": "Next.js route POST /api/sessions/[sessionId]/prompt",
+          "sourceHash": "3ef6ba5b955f2db3f6340dce34841708ff12cdff4f752d615700c5527dd09eb2"
+        }
+      ],
+      "approved": false
+    },
+    {
+      "name": "post_api_sessions_sessionId_terminal",
+      "title": "POST /api/sessions/[sessionId]/terminal",
+      "description": "POST /api/sessions/[sessionId]/terminal through the website's same-origin authenticated session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "sessionId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sessionId"
+            ],
+            "additionalProperties": false
+          },
+          "query": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "body": {}
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "untrustedContentHint": true
+      },
+      "implementation": {
+        "kind": "fetch",
+        "method": "POST",
+        "path": "/api/sessions/[sessionId]/terminal"
+      },
+      "evidence": [
+        {
+          "file": "app/api/sessions/[sessionId]/terminal/route.ts",
+          "line": 7,
+          "kind": "Next.js route POST /api/sessions/[sessionId]/terminal",
+          "sourceHash": "982f475521c72ad784e0f44ef6b17c7e25dc30dc86f6bb5ba0e3b29063bd87c8"
+        }
+      ],
+      "approved": false
+    }
+  ]
+}
