@@ -1,0 +1,8 @@
+{
+  "name": "@nanocodex/example-connect-existing-auth",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}
