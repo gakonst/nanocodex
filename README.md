@@ -2,12 +2,12 @@
 
 <h1>Nanocodex</h1>
 
-<p><strong>The coding agent is the library.</strong></p>
+<p><strong>Turn the agent harness inside out.</strong></p>
 
 <p>
-Embed the complete OpenAI Responses loop—retained sessions, typed history,
-tools, Code Mode, branches, events, retries, and cleanup. Keep your interface,
-data, memory, infrastructure, and policy.
+Embed the complete Codex agent as a library, or use Paradigm's hosted API.
+Keep durable state independent and attach sandboxes, private workers, and
+connected accounts as capabilities only when the work needs them.
 </p>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gakonst/nanocodex/ci.yml?branch=master)][ci]
@@ -17,6 +17,7 @@ data, memory, infrastructure, and policy.
 
 **[Rust](#rust-start-here)** · **[JavaScript](#javascript-node-browser-and-wasm)** ·
 **[Python](#python)** · **[Capabilities](#one-agent-owned-end-to-end)** ·
+**[Managed](#managed-agents)** ·
 **[Evaluation](#evaluation-is-a-product-boundary)** ·
 **[Deployments](#deployment-proofs)** · **[Status](#what-is-stable)**
 
@@ -28,11 +29,18 @@ data, memory, infrastructure, and policy.
 </div>
 
 Nanocodex is a headless, library-first SDK for building products around one
-deliberately supported OpenAI coding-agent stack. It is not a provider
-abstraction and it is not an app server. The public product is an embeddable
-agent with an owned lifecycle; the native CLI/TUI, browser apps, Python and
-JavaScript packages, durable actors, sandboxes, voice client, and evaluation
-harness are consumers that prove the same contract.
+deliberately supported OpenAI coding-agent stack. It is also the open agent and
+durability core underneath Nanocodex Managed, Paradigm's hosted durable-agent
+API. It is not a provider abstraction. The native CLI/TUI, browser apps,
+Python and JavaScript packages, managed service, durable actors, sandboxes,
+voice client, and evaluation harness are consumers of the same owned lifecycle.
+
+The architectural move is to put the harness in the product rather than inside
+a permanent sandbox. The agent owns reasoning and context. A Rust-owned journal
+records accepted work and committed effects outside the live process.
+Filesystems, APIs, browsers, private workers, containers, and VMs are
+replaceable hands. This is the boundary Centaur's sandbox-first architecture
+helped us discover: keep Codex, move the harness outside the machine.
 
 The important difference from assembling a model client and a loop is what the
 caller does **not** have to rebuild:
@@ -49,6 +57,39 @@ The interface is deliberately not part of that list. Consume ordered typed
 events in a native TUI, wterm, xterm.js, React, logs, or something that only
 your product could have. The included renderers are complete consumers, not a
 UI protocol every embedding must adopt.
+
+## Managed agents
+
+Nanocodex Managed exposes the same agent lifecycle over an authenticated hosted
+API. Products create agents, submit idempotent turns, consume durable ordered
+events, and reconnect from a cursor. Paradigm operates admission, identity,
+event replay, quotas, execution routing, credential brokering, and sandbox
+lifecycle; the application keeps its interface and product policy.
+
+Connect projects explicitly authorized connector and MCP capabilities into an
+agent without placing reusable OAuth credentials in the harness, generated
+code, or sandbox. Common file and shell work can begin in a lightweight
+Rust/WASM environment; a container, browser, VM, or reverse-connected private
+worker can be attached when policy and workload require it.
+
+Users can also connect an eligible ChatGPT subscription as the model-access
+credential instead of supplying an OpenAI API key. The user completes OpenAI's
+device authorization once; Paradigm's credential broker owns refresh and
+injects short-lived access only at the fixed Codex WebSocket boundary. The
+managed agent, application, generated code, and sandbox receive a scoped
+`chatgpt` capability, never the reusable subscription credential. Subscription
+use remains subject to the user's OpenAI plan, limits, and terms.
+
+The hosted service persists the same Rust-owned journal format used by the
+open-source memory, SQLite, Postgres, Cloudflare, and Vercel adapters. Export a
+consistent snapshot, follow its incremental cursor, fence the hosted writer,
+and import the journal into another compatible deployment. Secrets do not move
+with it; reauthorize Connect and rebind tools at the destination.
+
+Read the architecture guides for [the inside-out boundary](web/docs/src/pages/architecture/index.mdx),
+[Nanocodex Managed](web/docs/src/pages/architecture/managed.mdx),
+[tools and execution](web/docs/src/pages/architecture/tools-execution.mdx), and
+[durability and portability](web/docs/src/pages/architecture/durability-portability.mdx).
 
 ## Install
 
@@ -600,9 +641,10 @@ client projection, and sandbox policy while reusing one agent lifecycle:
 | [exe.dev](examples/exe-dev/README.md) | Both a retained native session inside a VM and the inverse: a host agent controlling one exact remote VM through narrow tools. |
 | [Python](examples/python) and [Node](examples/node/README.md) | Thin language bindings over the same results, events, history, snapshots, branches, and shutdown semantics. |
 
-These are reference consumers, not portability promises. Cloudflare, Rivet,
-Vercel, exe.dev, and the native VM layer each keep their platform policy above
-the stable crates.
+These are reference consumers. Their common Rust journal and host-store
+contract make committed agent state portable; their scheduling, networking,
+workspace, secret, and sandbox APIs remain platform policy above the stable
+crates.
 
 ## What is stable
 

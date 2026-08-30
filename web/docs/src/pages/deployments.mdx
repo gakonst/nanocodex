@@ -1,14 +1,21 @@
 ---
 title: Deployment patterns
-description: Run one owned agent in a CLI, browser, server isolate, durable actor, or cloud sandbox.
+description: Use Paradigm's managed API or run the same agent and journal in your own host.
 ---
 
 # Deployment patterns
 
-Choose the host that already owns your application lifecycle. The same Rust
-agent runs natively in a CLI, through WASM in a browser or server isolate, and
-inside durable serverless actors. Nanocodex does not impose an app server. Your
-application keeps credentials, durable state, clients, and sandbox policy.
+Use Paradigm's managed API when you want the hosted control plane, or choose the
+host that already owns your application lifecycle. The same Rust agent runs
+natively in a CLI, through WASM in a browser or server isolate, and inside
+durable serverless actors. Self-hosted applications keep credentials, durable
+state, clients, and sandbox policy.
+
+The durability adapters share a Rust-owned journal format and store contract.
+That makes the committed computation portable; it does not erase differences
+in each platform's scheduler, network, filesystem, or sandbox lifecycle. Read
+[durability and portability](/architecture/durability-portability) before
+planning a migration.
 
 ## CLI, browser, and Node
 
@@ -54,9 +61,9 @@ application keeps credentials, durable state, clients, and sandbox policy.
    explicit.
 8. Close descendant task trees and tool processes before stopping the root.
 
-These examples are runnable integration proofs, not portability guarantees for
-platform APIs. Pin versions and test the recovery semantics that matter to your
-product.
+These examples are runnable integration proofs. Their common journal contract
+is portable; their platform APIs and operational policy are not. Pin versions
+and test the recovery and writer-fencing semantics that matter to your product.
 
 The deep guides show the two different durable boundaries:
 [Cloudflare Durable Objects](/deployments/cloudflare) and

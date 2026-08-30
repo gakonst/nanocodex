@@ -69,11 +69,11 @@ Workflow retry wrapper.
 
 ## What the host owns
 
-The host store contract has only two operations:
+The storage core is intentionally small:
 
-1. `load(journal_id)` returns ordered opaque batches and the current revision.
-2. `append(journal_id, expected_revision, payload)` atomically compares the
-   revision and appends an opaque payload.
+1. acquire an exclusive, fenced owner and load ordered opaque batches;
+2. append an opaque payload at an expected revision; and
+3. compact retained batches while proving the same owner still has authority.
 
 Hosts do not deserialize model outputs, tool results, journal entries, or
 snapshots. `MemoryStore` is process-local and useful for tests or ephemeral
@@ -86,3 +86,18 @@ application can define its own operation, step, checkpoint, and output types
 while retaining the same journal owner and store contract. See the
 [crate guide](https://github.com/gakonst/nanocodex/tree/master/crates/nanocodex-durability)
 and [runnable example](https://github.com/gakonst/nanocodex/blob/master/examples/durable.rs).
+
+## Interoperability boundary
+
+`StoredJournal` and `StoredBatch` are public serialized types. Memory, SQLite,
+Postgres, and JavaScript/WASM host adapters store the same ordered Rust-owned
+batches; a platform adapter does not translate agent history into its own
+workflow semantics. That makes a committed journal reconstructable on another
+compatible store.
+
+Moving a live hosted agent still requires coordination above the store: export
+a consistent revision, replicate any later batches, fence the source writer,
+then activate the destination. Credentials and ephemeral sandbox leases are not
+part of the journal and must be rebound. Read
+[durability and portability](/architecture/durability-portability) for the
+complete migration contract and current launch boundary.

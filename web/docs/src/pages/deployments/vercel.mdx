@@ -69,6 +69,8 @@ Keep these ownership boundaries separate:
 The browser terminal does not become the agent protocol, and durable files do
 not imply durable shell processes.
 
-This adapter proves one Vercel composition. It does not promise that arbitrary
-Functions keep a resident agent or that Nanocodex is portable across every
-serverless runtime without platform code.
+This adapter proves one Vercel composition. The Postgres rows retain the public
+Rust journal batches and can participate in a coordinated migration, but that
+does not promise that arbitrary Functions keep a resident agent or erase the
+platform code around scheduling, WebSockets, and Sandbox lifecycle. See
+[durability and portability](/architecture/durability-portability).

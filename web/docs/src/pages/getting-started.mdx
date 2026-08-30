@@ -5,8 +5,31 @@ description: Install a published Nanocodex artifact and choose an explicit user-
 
 # Installation and authentication
 
-Choose the artifact for the product you are building. All supported entrypoints
-run the same Rust-owned agent lifecycle.
+Choose who should own the durable control plane. Nanocodex Managed operates it
+behind an API; the native, Rust, JavaScript, browser/WASM, and Python artifacts
+let your application own it. Both paths run the same Rust-owned agent
+lifecycle.
+
+## Hosted API
+
+Create an account and issue an API key in the
+[agent console](https://nanocodex.paradigm.xyz/agent). Agent and turn creation use stable idempotency keys;
+event consumers reconnect with a durable cursor. Connected accounts are
+authorized separately through [Connect](https://nanocodex.paradigm.xyz/connect), so an API credential does
+not silently grant every connector the user has configured.
+
+Choose one model-access connection for the account:
+
+- Connect an eligible ChatGPT subscription through OpenAI's device flow. The
+  broker owns refresh and the agent never receives the reusable credential.
+- Host an OpenAI API key behind the same broker boundary.
+
+The ChatGPT path does not require the product to collect an OpenAI API key.
+Usage remains subject to the connected user's OpenAI plan, limits, and terms.
+
+See [Nanocodex Managed](/architecture/managed) for ownership and security, then
+[durability and portability](/architecture/durability-portability) for the
+state contract shared with self-hosted deployments.
 
 ## Native CLI
 
@@ -20,7 +43,7 @@ nanocodex --help
 Restart your shell if the installer added `~/.nanocodex/bin` to `PATH`. Later,
 `nanocodex update` installs and activates the latest release.
 
-Use ChatGPT subscription login:
+Use ChatGPT subscription login locally:
 
 ```sh
 nanocodex auth login

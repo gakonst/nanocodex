@@ -81,4 +81,8 @@ explicit composition.
 
 Credentials, router authorization, session capabilities, R2 prefixes, Sandbox
 policy, and hosted web tools remain application code. This example does not
-define a generic Durable Object or serverless agent protocol.
+define a generic Durable Object or serverless agent protocol. Its SQLite rows
+do retain the public Rust journal batches, so a coordinated export can move the
+committed agent state to another compatible store. The destination must still
+rebind credentials, tools, and workspace policy; see
+[durability and portability](/architecture/durability-portability).

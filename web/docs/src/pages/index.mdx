@@ -1,16 +1,34 @@
 ---
 title: Quick start
-description: Install Nanocodex, authenticate, and run your first coding-agent turn.
+description: Choose Paradigm's hosted agent API or embed the open-source Nanocodex lifecycle.
 ---
 
 # Quick start
 
-Nanocodex is a Rust agents SDK with native, Node, browser/WASM, and Python
-consumers. It owns the OpenAI Responses session, retained history, tool loop,
-typed results, and cleanup. Your application owns the interface and product
-policy.
+Nanocodex turns the Codex harness inside out: the agent is an embeddable
+Rust/WASM library, durable state is independent of the live process, and
+sandboxes are tools attached only when work needs them. Choose the hosted path
+when Paradigm should operate the control plane, or embed the open-source SDK
+when your application should own it.
 
-## Try the CLI
+## Use a hosted managed agent
+
+Nanocodex Managed exposes durable agents over an authenticated API. A product
+creates an agent, submits idempotent turns, consumes ordered events, and
+reconnects from its last processed cursor. Paradigm operates identity,
+durability, event replay, execution routing, credential brokering, and sandbox
+lifecycle.
+
+Create an account and API key in the
+[agent console](https://nanocodex.paradigm.xyz/agent). Use
+[Connect](https://nanocodex.paradigm.xyz/connect) to authorize the accounts and MCP tools your product wants
+to request without placing raw OAuth credentials inside the agent or sandbox.
+For model access, connect an eligible ChatGPT subscription or host an OpenAI API
+key. Read [Nanocodex Managed](/architecture/managed) before integrating the API.
+
+## Embed Nanocodex
+
+### Try the CLI
 
 Install the release binary on Apple Silicon macOS or x86-64 glibc Linux:
 
@@ -31,7 +49,7 @@ The interactive command opens the TUI. `nanocodex run` emits flushed JSONL for
 one prompt. Local tools run with the authority of the process, so start in a
 workspace the agent may change.
 
-## Embed the agent
+### Embed the agent
 
 For Node.js 22.13 or newer:
 
@@ -57,4 +75,5 @@ identity without replaying prior messages.
 Continue with [installation and authentication](/getting-started),
 [embedding Nanocodex in JavaScript](/sdks/javascript), or the
 [Rust SDK](/sdks/rust). To review retained benchmark results, go straight to
-[Evals](/evals).
+[Evals](/evals). For the system boundary first, read
+[why the harness moves outside the sandbox](/architecture).
