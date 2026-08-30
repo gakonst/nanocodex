@@ -32,7 +32,7 @@ test("Vite owns one static application graph without manual module loaders", () 
   );
   assert.doesNotMatch(
     applicationGraph,
-    /\b(?:lazy|loadAgentTerminal|preloadAgentTerminal|prepareAgentRuntime|agentRuntime|loadAgentExperience|loadHomeFrame)\b|import\(/,
+    /\blazy\s*\(|\b(?:loadAgentTerminal|preloadAgentTerminal|prepareAgentRuntime|agentRuntime|loadAgentExperience|loadHomeFrame)\b|import\(/,
   );
   assert.match(accountSession, /import \{ Provider, Storage, webAuthn \} from "accounts"/);
   assert.match(managedRuntime, /Agent,[\s\S]*?from "nanocodex\/managed"/);

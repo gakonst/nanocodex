@@ -26,7 +26,7 @@ export const docsPreview = {
   "/docs/sdks/javascript/browser-workspace": ["Browser Worker and workspace", "Run the Rust agent in a Worker with persistent OPFS, browser tools, and application-owned UI."],
   "/docs/sdks/javascript/react": ["React integration", "Let React own a module Worker and external store without making presentation part of the agent SDK."],
   "/docs/capabilities/web-agent": ["Web agent", "Run the Codex lifecycle and common coding tools locally in a browser Worker."],
-  "/docs/deployments": ["Deployment patterns", "Run one owned agent in a CLI, browser, server isolate, durable actor, or cloud sandbox."],
+  "/docs/deployments": ["Deployment patterns", "Use Paradigm's managed API or run the same agent and journal in your own host."],
   "/docs/deployments/cloudflare": ["Cloudflare Durable Objects", "Run Rust/WASM inside one SQLite-backed Durable Object with an R2-backed Sandbox workspace."],
   "/docs/deployments/vercel": ["Vercel Workflows", "Reconstruct Rust/WASM in Function steps from an application-owned PostgreSQL journal."],
   "/docs/sdks/python": ["Python SDK", "A thin PyO3 binding over the native owned Rust lifecycle."],
