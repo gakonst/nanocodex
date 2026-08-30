@@ -1,21 +1,32 @@
 ---
 title: Quick start
-description: Choose Paradigm's hosted agent API or embed the open-source Nanocodex lifecycle.
+description: Start with an embedded managed Codex agent and add user capabilities and on-demand execution.
 ---
 
 # Quick start
 
-Nanocodex turns the Codex harness inside out: the agent is an embeddable
-Rust/WASM library, durable state is independent of the live process, and
-sandboxes are tools attached only when work needs them. Choose the hosted path
-when Paradigm should operate the control plane, or embed the open-source SDK
-when your application should own it.
+Nanocodex gives products durable Codex agents through JavaScript, React, and an
+HTTP API. The same running agent can appear in web, Slack, mobile, or a
+background job.
+
+Four properties define the stack:
+
+1. **Embed:** keep the agent inside the product where work starts.
+2. **Connect:** let users bring a ChatGPT subscription, connected accounts,
+   wallets, and private machines under explicit grants.
+3. **Hands:** keep the durable agent available without an idle container, then
+   attach browsers, sandboxes, GPUs, or private workers when needed.
+4. **Open durability:** export runnable state and resume it on Postgres,
+   Cloudflare, Vercel, or another compatible deployment.
+
+Use Nanocodex Managed when Paradigm should operate the control plane. Embed the
+open-source SDK when your application should own it.
 
 ## Use a hosted managed agent
 
 Nanocodex Managed exposes durable agents over an authenticated API. A product
-creates an agent, submits idempotent turns, consumes ordered events, and
-reconnects from its last processed cursor. Paradigm operates identity,
+creates an agent, submits work, consumes ordered events, and reconnects from
+its last processed cursor. Paradigm operates identity,
 durability, event replay, execution routing, credential brokering, and sandbox
 lifecycle.
 
@@ -75,5 +86,5 @@ identity without replaying prior messages.
 Continue with [installation and authentication](/getting-started),
 [embedding Nanocodex in JavaScript](/sdks/javascript), or the
 [Rust SDK](/sdks/rust). To review retained benchmark results, go straight to
-[Evals](/evals). For the system boundary first, read
-[why the harness moves outside the sandbox](/architecture).
+[Evals](/evals). For the complete product boundary, read
+[the Nanocodex stack](/architecture).

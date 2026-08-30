@@ -14,7 +14,6 @@ import { Agent } from "nanocodex/managed";
 const agent = await Agent.create();
 const turn = agent.turn.prompt({
   input: "Inspect the repository and summarize it.",
-  idempotencyKey: crypto.randomUUID(),
 });
 const result = await turn.result();
 console.log(result.finalMessage);

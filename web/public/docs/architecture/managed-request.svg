@@ -1,87 +1,92 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
-  <title id="title">Managed Agents and Connect</title>
-  <desc id="desc">A product uses Connect to grant ChatGPT and tool access, creates a durable managed agent, attaches and detaches clients from ordered output, and routes tool calls to replaceable execution hands.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1240" viewBox="0 0 900 1240" role="img" aria-labelledby="title desc">
+  <title id="title">The Nanocodex product stack</title>
+  <desc id="desc">Five stacked layers show Embed above Connect, Managed Agents, execution Hands, and Open Durability. Products own the interface, user connections remain portable, expensive execution attaches only when needed, and runnable state can move between hosts.</desc>
   <defs>
-    <filter id="paper" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="2" seed="12" result="n"/><feComponentTransfer in="n" result="f"><feFuncA type="table" tableValues="0 0.035"/></feComponentTransfer><feBlend in="SourceGraphic" in2="f" mode="multiply"/></filter>
-    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dfffe0"/><stop offset=".5" stop-color="#9cff9f"/><stop offset="1" stop-color="#f2fff2"/></linearGradient>
-    <linearGradient id="strong" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#34ff34"/><stop offset=".52" stop-color="#00e900"/><stop offset="1" stop-color="#caffca"/></linearGradient>
-    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffe8dc"/><stop offset="1" stop-color="#ffd2bb"/></linearGradient>
-    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1 1l10 5-10 5" fill="none" stroke="#b9b9b6" stroke-width="2"/></marker>
-    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1 1l10 5-10 5" fill="none" stroke="#00d900" stroke-width="2"/></marker>
-    <style>.title{font:58px Georgia,serif;fill:#050505;letter-spacing:-2px}.repo{font:32px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111}.eyebrow{font:17px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666;letter-spacing:1.7px}.heading{font:28px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#080808}.body{font:18px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#696969}.small{font:15px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#666}.tiny{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#555}.pill{font:15px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#555}.panel{fill:#fff;stroke:#c9c9c6;stroke-width:2}.line{fill:none;stroke:#b9b9b6;stroke-width:3;marker-end:url(#arrow)}.live{fill:none;stroke:#00d900;stroke-width:3;marker-end:url(#arrowGreen)}</style>
+    <filter id="paper" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="2" seed="12" result="noise"/>
+      <feComponentTransfer in="noise" result="faint"><feFuncA type="table" tableValues="0 0.035"/></feComponentTransfer>
+      <feBlend in="SourceGraphic" in2="faint" mode="multiply"/>
+    </filter>
+    <linearGradient id="greenSoft" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#dfffe0"/>
+      <stop offset=".55" stop-color="#a0ffa2"/>
+      <stop offset="1" stop-color="#f2fff2"/>
+    </linearGradient>
+    <linearGradient id="greenStrong" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#34ff34"/>
+      <stop offset=".52" stop-color="#00e900"/>
+      <stop offset="1" stop-color="#caffca"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M1 1l10 5-10 5" fill="none" stroke="#a9a9a6" stroke-width="2"/>
+    </marker>
+    <style>
+      .title{font:52px Georgia,serif;fill:#050505;letter-spacing:-1.5px}
+      .repo{font:24px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#111}
+      .eyebrow{font:15px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#626262;letter-spacing:1.7px}
+      .heading{font:30px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#080808}
+      .body{font:20px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#4f4f4f}
+      .small{font:17px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#626262}
+      .panel{fill:#fff;stroke:#c9c9c6;stroke-width:2}
+      .line{fill:none;stroke:#a9a9a6;stroke-width:3;marker-end:url(#arrow)}
+    </style>
   </defs>
-  <rect width="1600" height="900" fill="#f8f8f6" filter="url(#paper)"/>
-  <text x="66" y="88" class="title">Managed Agents and Connect</text>
-  <g transform="translate(1274 48)"><circle cx="30" cy="30" r="30" fill="#d9ffd9"/><path d="M19 17L45 30 19 43Z" fill="#00e900"/><text x="76" y="41" class="repo">nanocodex</text></g>
 
-  <g transform="translate(56 176)">
-    <rect width="360" height="594" rx="24" class="panel"/>
-    <text x="34" y="51" class="eyebrow">EMBED IN</text>
-    <text x="34" y="91" class="heading">Your product</text>
-    <text x="34" y="124" class="body">web · Slack · mobile</text>
-
-    <rect x="28" y="164" width="304" height="160" rx="19" fill="url(#green)" stroke="#9bd99b" stroke-width="2"/>
-    <text x="54" y="205" class="eyebrow">CONNECT</text>
-    <text x="54" y="245" class="heading">ChatGPT</text>
-    <text x="54" y="276" class="body">+ user-authorized tools</text>
-    <text x="54" y="304" class="small">credentials stay brokered</text>
-
-    <rect x="28" y="356" width="304" height="184" rx="19" fill="#f8f8f6" stroke="#c9c9c6" stroke-width="2"/>
-    <text x="54" y="397" class="eyebrow">ONE API</text>
-    <text x="54" y="437" class="heading">Create + prompt</text>
-    <text x="54" y="473" class="body">stable IDs</text>
-    <text x="54" y="505" class="body">durable admission</text>
+  <rect width="900" height="1240" fill="#f8f8f6" filter="url(#paper)"/>
+  <text x="54" y="78" class="title">The Nanocodex stack</text>
+  <g transform="translate(662 42)">
+    <circle cx="24" cy="24" r="24" fill="#d9ffd9"/>
+    <path d="M15 14l20 10-20 10z" fill="#00e900"/>
+    <text x="60" y="32" class="repo">nanocodex</text>
   </g>
 
-  <path d="M416 430h88" class="live"/>
-  <rect x="421" y="382" width="116" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/>
-  <text x="442" y="408" class="pill">create</text>
-
-  <g transform="translate(516 176)">
-    <rect width="522" height="594" rx="24" fill="url(#green)" stroke="#9bd99b" stroke-width="2"/>
-    <text x="36" y="51" class="eyebrow">PARADIGM MANAGED</text>
-    <text x="36" y="91" class="heading">Durable agent</text>
-    <text x="36" y="124" class="body">Codex loop outside the sandbox</text>
-
-    <rect x="32" y="162" width="458" height="158" rx="19" fill="url(#strong)" stroke="#00d500" stroke-width="2"/>
-    <text x="62" y="207" class="heading">Nanocodex agent</text>
-    <text x="62" y="244" class="body">prompt · steer · cancel</text>
-    <text x="62" y="277" class="body">history · tools · cleanup</text>
-
-    <path d="M261 320v56" class="line"/>
-    <rect x="32" y="392" width="458" height="146" rx="19" fill="#fff" stroke="#8ed68e" stroke-width="2"/>
-    <text x="62" y="434" class="eyebrow">DURABLE OUTPUT</text>
-    <text x="62" y="474" class="heading">Ordered event log</text>
-    <text x="62" y="507" class="body">cursor · replay · checkpoint</text>
+  <g transform="translate(60 130)">
+    <rect width="780" height="166" rx="22" class="panel"/>
+    <text x="32" y="35" class="eyebrow">PRODUCT LAYER</text>
+    <text x="32" y="76" class="heading">Embed</text>
+    <text x="32" y="113" class="body">web · React · Slack · mobile · API</text>
+    <text x="32" y="143" class="small">The product owns the interface and policy.</text>
   </g>
 
-  <path d="M1038 380h96" class="live"/>
-  <rect x="1004" y="332" width="136" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/>
-  <text x="1015" y="357" class="tiny">attach / detach</text>
+  <path d="M450 296v28" class="line"/>
 
-  <g transform="translate(1148 166)">
-    <rect width="396" height="292" rx="22" class="panel"/>
-    <text x="32" y="48" class="eyebrow">OUTPUT CLIENTS</text>
-    <text x="32" y="88" class="heading">Come and go</text>
-    <rect x="28" y="120" width="100" height="68" rx="16" fill="#f8f8f6" stroke="#c9c9c6" stroke-width="2"/><text x="50" y="161" class="body">Web</text>
-    <rect x="148" y="120" width="100" height="68" rx="16" fill="#f8f8f6" stroke="#c9c9c6" stroke-width="2"/><text x="166" y="161" class="body">Slack</text>
-    <rect x="268" y="120" width="100" height="68" rx="16" fill="#f8f8f6" stroke="#c9c9c6" stroke-width="2"/><text x="287" y="161" class="body">Phone</text>
-    <text x="32" y="230" class="body">resume after cursor 42</text>
-    <text x="32" y="260" class="small">detach does not cancel work</text>
+  <g transform="translate(60 334)">
+    <rect width="780" height="166" rx="22" fill="url(#greenSoft)" stroke="#9bd99b" stroke-width="2"/>
+    <text x="32" y="35" class="eyebrow">ACCOUNT + AUTHORIZATION</text>
+    <text x="32" y="76" class="heading">Connect</text>
+    <text x="32" y="113" class="body">ChatGPT · OAuth · wallet · private machines</text>
+    <text x="32" y="143" class="small">Connections follow the user. Each product gets a scoped grant.</text>
   </g>
 
-  <path d="M1038 642h96" class="line"/>
-  <rect x="1022" y="594" width="118" height="40" rx="20" fill="#f3f3f1" stroke="#c8c8c5" stroke-width="2"/>
-  <text x="1040" y="620" class="pill">tools</text>
+  <path d="M450 500v28" class="line"/>
 
-  <g transform="translate(1148 492)">
-    <rect width="396" height="278" rx="22" class="panel"/>
-    <text x="32" y="48" class="eyebrow">EXECUTION HANDS</text>
-    <text x="32" y="88" class="heading">Attach as needed</text>
-    <rect x="28" y="116" width="340" height="54" rx="15" fill="url(#green)" stroke="#9bd99b" stroke-width="2"/><text x="50" y="150" class="body">Just Bash workspace</text>
-    <rect x="28" y="184" width="164" height="54" rx="15" fill="#fff" stroke="#c9c9c6" stroke-width="2"/><text x="49" y="218" class="body">Sandbox</text>
-    <rect x="204" y="184" width="164" height="54" rx="15" fill="url(#orange)" stroke="#efb899" stroke-width="2"/><text x="226" y="218" class="body">Broker</text>
+  <g transform="translate(60 538)">
+    <rect width="780" height="166" rx="22" fill="url(#greenStrong)" stroke="#00d500" stroke-width="2"/>
+    <text x="32" y="35" class="eyebrow">DURABLE BRAIN</text>
+    <text x="32" y="76" class="heading">Managed Agents</text>
+    <text x="32" y="113" class="body">Codex context · long-running work · ordered output</text>
+    <text x="32" y="143" class="small">Clients attach and detach without owning the work.</text>
   </g>
 
-  <text x="58" y="835" class="body">The client, agent, and execution environment have independent lifecycles.</text>
+  <path d="M450 704v28" class="line"/>
+
+  <g transform="translate(60 742)">
+    <rect width="780" height="166" rx="22" class="panel"/>
+    <text x="32" y="35" class="eyebrow">EXECUTION</text>
+    <text x="32" y="76" class="heading">Hands</text>
+    <text x="32" y="113" class="body">tools · WebMCP · APIs · sandboxes · GPUs</text>
+    <text x="32" y="143" class="small">Mercator routes · MPP pays · Tempo settles.</text>
+  </g>
+
+  <path d="M450 908v28" class="line"/>
+
+  <g transform="translate(60 946)">
+    <rect width="780" height="166" rx="22" fill="url(#greenSoft)" stroke="#9bd99b" stroke-width="2"/>
+    <text x="32" y="35" class="eyebrow">RUNNABLE STATE</text>
+    <text x="32" y="76" class="heading">Open Durability</text>
+    <text x="32" y="113" class="body">Paradigm · Postgres · Cloudflare · Vercel · your cloud</text>
+    <text x="32" y="143" class="small">Export the agent, not only its transcript.</text>
+  </g>
+
+  <text x="60" y="1182" class="body">Embedded · connected · cheap while idle · portable</text>
 </svg>

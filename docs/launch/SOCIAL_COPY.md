@@ -1,110 +1,98 @@
 # Nanocodex social launch copy
 
-This copy follows Georgios's public framing. It stays concrete and first-person,
-focused on frontier infrastructure people can own, and willing to state the
-architecture in one line. The blog carries the qualifications and evidence;
-the first post should make the product legible.
-
 ## Single post
 
 Introducing Nanocodex Managed.
 
-Create a durable Codex agent over an API. Connect a user’s ChatGPT subscription
-and tools. Attach its output to web, Slack, or mobile. Detach and the work keeps
-running; reattach from the last cursor and nothing is lost.
+Embed a durable Codex agent in any product. Let users bring their ChatGPT
+subscription and connected accounts. Keep the agent alive without paying for
+an idle container; attach browsers, sandboxes, GPUs, and private workers only
+when needed.
 
-We are also open sourcing Nanocodex, the Rust/WASM runtime underneath it.
+Start hosted on Paradigm. Export the runnable state to Postgres, Cloudflare,
+Vercel, or your own Nanocodex deployment.
 
-We turned the harness inside out: durable state lives outside the process, and
-sandboxes are tools the agent attaches only when needed.
-
-Start hosted on Paradigm. Export the runnable journal to Postgres, Cloudflare,
-Vercel, or your own host.
-
-Open source. Frontier agentic infrastructure you can actually own.
+We are also open sourcing the Rust/WASM agent and durability runtime underneath
+it.
 
 ## Thread
 
 ### 1
 
 Introducing Nanocodex Managed: durable Codex agents you can embed in any
-product, with Nanocodex as the open-source Rust/WASM runtime underneath.
+product.
 
-Create an agent over the API. Connect a user’s ChatGPT subscription and tools.
-Attach its output to web, Slack, mobile, or several clients at once.
+Create one over an API. Put it inside web, Slack, mobile, or a background job.
+Disconnect and the work continues. Reconnect from the last durable event.
 
 ### 2
 
-Detach and the work continues. Reattach after the last durable cursor and
-nothing is lost.
+Four things are different:
 
-An agent is not a long-running HTTP request. It is a durable object with many
-possible observers.
+1. Embed the agent instead of redirecting the user.
+2. Connect accounts once and grant them across products.
+3. Keep the durable brain; rent execution hands when needed.
+4. Start hosted and leave with runnable state.
 
 ### 3
 
-Agents are following the path of embedded wallets: moving from a separate
-destination into the products where people already work.
+Embed is the product layer.
 
-The product owns the experience. The agent brings durable state and explicit
-capabilities. Embedded should not mean captive.
+The application owns the interface and policy. Nanocodex owns the Codex
+lifecycle, durable output, reconnection, and recovery. Several clients can
+attach to the same agent without any of them becoming its owner.
 
 ### 4
 
-Centaur proved that stock Codex + tools + durability could become shared
-infrastructure for a company.
+Connect is the account and authorization layer.
 
-It also showed us the limit: the harness lived inside the sandbox, so every
-agent inherited the lifecycle and cost of a machine.
+Users can bring an eligible ChatGPT subscription, GitHub, Slack, Google,
+wallets, MCP servers, and private machines. A connection added in one embedded
+product is available in another under a new explicit grant.
 
-Centaur was right about the harness and wrong about the boundary.
+Credentials stay behind the egress broker. They never enter the application,
+generated code, agent, or sandbox.
 
 ### 5
 
-Nanocodex turns that boundary inside out.
+The managed agent is the durable brain. Capabilities are its hands.
 
-Nanocodex embeds the agent as a library. Managed hosts the same runtime behind
-an API. A portable journal owns committed state. Just Bash, browsers, VMs,
-private workers, and MCP servers are hands attached when the task needs them.
+The brain does not require a permanent container. Common work starts in the
+Rust/WASM runtime. Attach a browser, sandbox, VM, GPU, or reverse-connected
+private worker only when the task needs it.
+
+The agent can live for weeks. The expensive machine can live for minutes.
 
 ### 6
 
-Most agent work does not need a full machine at the first token.
+Hands are not tied to the agent's host. They can run inside the product, behind
+Connect, on a laptop, in a private network, or with a compute provider.
 
-Start immediately with a durable lightweight workspace. If the task needs a
-native package, browser, GPU, private network, or stronger isolation, attach
-the right hand and continue the same turn.
+Mercator handles discovery and routing. MPP handles metering and payment under
+the spending authority granted through Connect, with Tempo available for
+settlement.
 
 ### 7
 
-Users can bring an eligible ChatGPT subscription for Codex model access. No
-OpenAI API key needs to enter the product.
+Hosted does not mean captive.
 
-Connect also grants GitHub, Google, MCP, and other tools. Credentials stay
-behind the broker, outside the agent, generated code, and sandbox.
+Export the Rust-owned journal, replicate from its cursor, fence the old writer,
+and resume the agent on Postgres, Cloudflare, Vercel, or another compatible
+Nanocodex deployment.
+
+This is runnable state, not a transcript download. Secrets stay behind and are
+reauthorized at the destination.
 
 ### 8
 
-Nanocodex Managed gives you the full lifecycle over one API: idempotent agent
-and turn admission, ordered durable events, cursor reconnect, steering,
-cancellation, and multi-client projection.
+Centaur proved that Codex becomes company infrastructure when it can work for a
+long time, use real systems, and live where people already work. It also showed
+the cost of a permanent container per agent.
 
-Close the laptop. The work continues.
+Nanocodex is the version we can offer to every developer. It is embedded,
+connected, cheap while idle, and portable.
 
-### 9
-
-Hosted does not mean trapped.
-
-Export the runnable Rust-owned journal, replicate from its cursor, fence the
-source, and import it into Postgres, Cloudflare, Vercel, or another compatible
-host. Reauthorize secrets at the destination and resume the same agent.
-
-### 10
-
-Nanocodex is intentionally narrow: one OpenAI coding stack, faithfully
-implemented; your interface, data, tools, infrastructure, and policy.
-
-The library is open source. The managed API and Connect are hosted by Paradigm.
+Apache/MIT. Rust, JavaScript/WASM, and Python.
 
 [blog link]
 [repository link]

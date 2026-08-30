@@ -2,12 +2,12 @@
 
 <h1>Nanocodex</h1>
 
-<p><strong>Turn the agent harness inside out.</strong></p>
+<p><strong>Managed Codex agents, embedded anywhere.</strong></p>
 
 <p>
-Embed the complete Codex agent as a library, or use Paradigm's hosted API.
-Keep durable state independent and attach sandboxes, private workers, and
-connected accounts as capabilities only when the work needs them.
+Embed a durable Codex agent in your product. Let users bring connected accounts
+and a ChatGPT subscription. Attach sandboxes and private workers only when the
+work needs them, or run the same open-source agent on infrastructure you own.
 </p>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/gakonst/nanocodex/ci.yml?branch=master)][ci]
@@ -35,12 +35,21 @@ API. It is not a provider abstraction. The native CLI/TUI, browser apps,
 Python and JavaScript packages, managed service, durable actors, sandboxes,
 voice client, and evaluation harness are consumers of the same owned lifecycle.
 
-The architectural move is to put the harness in the product rather than inside
-a permanent sandbox. The agent owns reasoning and context. A Rust-owned journal
-records accepted work and committed effects outside the live process.
-Filesystems, APIs, browsers, private workers, containers, and VMs are
-replaceable hands. This is the boundary Centaur's sandbox-first architecture
-helped us discover: keep Codex, move the harness outside the machine.
+The hosted stack has four product boundaries:
+
+- **Embed:** web, Slack, mobile, and background clients can share one running
+  agent without any client becoming its owner.
+- **Connect:** users bring an eligible ChatGPT subscription and connected
+  accounts; each product receives an explicit grant rather than reusable
+  credentials.
+- **Hands:** the durable agent does not require a permanent container. Local
+  tools, browsers, sandboxes, GPUs, and private workers attach only when useful.
+- **Open durability:** the Rust-owned journal can be exported and resumed on
+  Postgres, Cloudflare, Vercel, or another compatible Nanocodex deployment.
+
+The agent owns reasoning and context. The journal records accepted work and
+committed effects independently of the live process. Filesystems, APIs,
+browsers, private workers, containers, and VMs are replaceable hands.
 
 The important difference from assembling a model client and a loop is what the
 caller does **not** have to rebuild:
@@ -61,10 +70,10 @@ UI protocol every embedding must adopt.
 ## Managed agents
 
 Nanocodex Managed exposes the same agent lifecycle over an authenticated hosted
-API. Products create agents, submit idempotent turns, consume durable ordered
-events, and reconnect from a cursor. Paradigm operates admission, identity,
-event replay, quotas, execution routing, credential brokering, and sandbox
-lifecycle; the application keeps its interface and product policy.
+API. Products create agents, submit work, consume durable ordered events, and
+reconnect from a cursor. Paradigm operates admission, identity, event replay,
+quotas, execution routing, credential brokering, and sandbox lifecycle; the
+application keeps its interface and product policy.
 
 Connect projects explicitly authorized connector and MCP capabilities into an
 agent without placing reusable OAuth credentials in the harness, generated
@@ -86,7 +95,7 @@ consistent snapshot, follow its incremental cursor, fence the hosted writer,
 and import the journal into another compatible deployment. Secrets do not move
 with it; reauthorize Connect and rebind tools at the destination.
 
-Read the architecture guides for [the inside-out boundary](web/docs/src/pages/architecture/index.mdx),
+Read the architecture guides for [the product stack](web/docs/src/pages/architecture/index.mdx),
 [Nanocodex Managed](web/docs/src/pages/architecture/managed.mdx),
 [tools and execution](web/docs/src/pages/architecture/tools-execution.mdx), and
 [durability and portability](web/docs/src/pages/architecture/durability-portability.mdx).

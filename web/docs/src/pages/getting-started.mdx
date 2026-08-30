@@ -13,8 +13,8 @@ lifecycle.
 ## Managed Agents and Connect
 
 Create an account and issue an API key in the
-[agent console](https://nanocodex.paradigm.xyz/agent). Agent and turn creation use stable idempotency keys;
-event consumers reconnect with a durable cursor. Connected accounts are
+[agent console](https://nanocodex.paradigm.xyz/agent). The SDK handles durable
+agent and turn admission; event consumers reconnect with a cursor. Connected accounts are
 authorized separately through [Connect](https://nanocodex.paradigm.xyz/connect), so an API credential does
 not silently grant every connector the user has configured.
 
@@ -22,9 +22,9 @@ Choose one model-access connection for the account:
 
 - Connect an eligible ChatGPT subscription through OpenAI's device flow. The
   broker owns refresh and the agent never receives the reusable credential.
-- Host an OpenAI API key behind the same broker boundary.
+- Alternatively, host an OpenAI API key behind the same broker boundary.
 
-The ChatGPT path does not require the product to collect an OpenAI API key.
+The ChatGPT path keeps the product from collecting an OpenAI API key.
 Usage remains subject to the connected user's OpenAI plan, limits, and terms.
 
 Create a retained agent and submit durable work:
@@ -38,8 +38,6 @@ const managed = {
 };
 const agent = await Agent.create(managed);
 const turn = agent.turn.prompt({
-  id: "first-turn",
-  idempotencyKey: "first-turn",
   input: "Inspect this project and propose the next useful change.",
 });
 console.log((await turn.result()).finalMessage);

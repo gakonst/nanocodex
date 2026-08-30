@@ -1,80 +1,119 @@
 ---
-title: Managed agents, inside out
-description: Start with Managed Agents and Connect, then see why Nanocodex moves the harness outside the sandbox.
+title: The Nanocodex stack
+description: Embed durable Codex agents, connect user capabilities, attach execution hands on demand, and keep the state portable.
 ---
 
-# Managed agents, inside out
+# The Nanocodex stack
 
 Nanocodex Managed gives products a durable Codex agent over an API. Connect
-lets users bring an eligible ChatGPT subscription and authorize the accounts
-the agent may use. Web, Slack, mobile, and background clients can attach to the
-same ordered output, detach without cancelling the work, and resume from a
-durable cursor.
+lets users bring the accounts, model access, and machines the agent may use.
+Web, Slack, mobile, and background clients can attach to the same ordered
+output, detach without cancelling the work, and resume from a durable cursor.
 
-Start with [Managed Agents and Connect](/architecture/managed) for the product
-API. The architecture underneath begins with a narrow claim: use the model
-provider's real harness, but do not make a permanent sandbox its home. Keep the
-durable session outside the live process. Attach filesystems, browsers, private
-workers, and isolated machines as tools only when the work needs them.
+The stack has five layers:
 
-![Centaur placed the CLI harness inside each sandbox; Nanocodex places the agent in the product and makes execution environments replaceable hands.](/docs/architecture/inside-out.svg "The sandbox stops being the agent's home and becomes one of its tools.")
+1. **Embed** places the agent in the product where the work starts.
+2. **Connect** gives the user a portable capability graph with explicit grants
+   for each product.
+3. **Managed Agents** own Codex context, long-running work, and durable output.
+4. **Hands** provide local tools, APIs, browsers, sandboxes, GPUs, and private
+   workers only when the agent needs them.
+5. **Open Durability** keeps the runnable state portable across Paradigm,
+   Postgres, Cloudflare, Vercel, and compatible self-hosted deployments.
+
+![A product embeds a managed agent, Connect grants model and tool access, clients attach to durable output, and execution hands attach only when needed.](/docs/architecture/managed-request.svg "Embed and Connect sit above the durable agent; replaceable execution hands sit below it.")
+
+## Embed and Connect
+
+The application owns its interface and product policy. Nanocodex owns the
+agent lifecycle, ordered output, reconnection, and recovery. A browser tab can
+detach while the turn continues, and another client can resume from the last
+event that the first client processed.
+
+Connect is the account and authorization layer. A user can connect an eligible
+ChatGPT subscription, GitHub, Slack, Google, a wallet, MCP servers, or a private
+machine once. Those connections belong to the Nanocodex account rather than
+one application. Every embedded product asks for its own bounded grant; the
+reusable credentials remain behind the broker.
+
+This gives embedded agents the useful property of embedded wallets: the
+product owns the experience while the user brings identity and capabilities.
+It also avoids rebuilding the same OAuth and secret-routing infrastructure in
+every product that embeds an agent.
+
+Continue with [Managed Agents and Connect](/architecture/managed) for the API,
+output attachment, grants, ChatGPT model access, and reverse-attached tools.
+
+## Managed Agents and Hands
+
+The managed agent is the durable brain. Capabilities are its hands.
+
+The brain owns typed history, prompt ordering, model transport, tool calls,
+steering, cancellation, branching, and cleanup. Its committed state lives in a
+journal outside the current process. Clients and execution environments can
+come and go without becoming the owner of the conversation.
+
+The hands can be a function in the embedding application, a browser action, a
+brokered API, a lightweight WASM workspace, an MCP server, a private worker, a
+container, a VM, or a GPU.
+
+This separation determines cost. A durable agent does not require a permanent
+container. Common filesystem, shell, API, and product-local work can start in
+the Rust/WASM runtime. A native machine, browser, GPU, or stronger isolation is
+attached only when the task requires it and retained only while useful. The
+agent can remain available for weeks while the expensive hand exists for
+minutes.
+
+Anthropic describes the same operating model in
+[Scaling Managed Agents](https://www.anthropic.com/engineering/managed-agents):
+separate the brain from the hands and provision a sandbox through a tool
+interface only when needed. Nanocodex applies it to Codex and extends the hands
+to product-local tools, portable Connect capabilities, reverse-attached private
+workers, and paid resources discovered at runtime.
+
+Continue with [tools and execution](/architecture/tools-execution) for
+capability selection, escalation, egress, and worker attachment.
+
+## Open durability
+
+Hosted agents should not become another cloud silo. Nanocodex exports the
+ordered operations, committed history, checkpoints, effect identities,
+outputs, and recovery metadata needed to resume an agent. A transcript alone
+is not a portable agent.
+
+The same Rust-owned journal can live in Paradigm's managed service, SQLite,
+Postgres, a Cloudflare Durable Object, a Vercel Workflow, or another compatible
+store. Credentials do not travel with the journal; the destination reauthorizes
+Connect and binds the tools and compute it intends to use.
+
+Continue with [durability and portability](/architecture/durability-portability)
+for snapshot export, incremental replication, fencing, import, and resume.
 
 ## What Centaur proved
 
 [Centaur](https://www.paradigm.xyz/writing/open-sourcing-centaur-multiplayer-self-hosted-secure-agents)
-proved that the stock coding harness could become shared infrastructure: one
-Slack thread could own a session that ran for hours, survived restarts, used
-organization tools, and reached credentialed systems without receiving raw
-secrets. The important product choice was not to invent a third-party harness.
-It was to run Codex.
+proved that Codex becomes shared infrastructure when it can run for a long
+time, use real company systems, and live where people already work. The core
+choice was to use Codex rather than replace it with a third-party harness.
 
-That first architecture also exposed a limit. The CLI harness lived inside the
-container assigned to the thread. Starting an agent meant starting its machine.
-Harness failure, container failure, and stream failure were difficult to
-separate. Connecting a private resource often meant bringing the whole harness
-to that resource. The application had to supervise a process protocol when it
-really wanted an agent library.
+It also exposed the cost of assigning every agent a permanent container. A
+session that waited for a user or called an API still carried the lifecycle of
+a general-purpose machine. Nanocodex keeps the Codex agent and makes that
+machine an optional hand.
 
 [Centaur 2.0](https://www.paradigm.xyz/writing/centaur-2-0-permissions-context-and-mcp)
-showed that the product thesis was durable: more than 80% of sessions moved to
-shared channels. It also moved grants toward the network boundary. The agent
-became separate from the credentials used on its behalf.
+showed that more than 80% of sessions moved to shared channels. Nanocodex
+Managed packages that product direction for any developer. The result is
+embedded, connected, cheap while idle, and portable.
 
-## The inside-out boundary
-
-Nanocodex separates three lifecycles that a sandbox-first design couples:
-
-1. The agent owns typed history, prompt ordering, model transport, tool calls,
-   steering, cancellation, branching, and cleanup.
-2. The journal owns accepted work, committed effects, recovery, and replay.
-3. The hands own execution. A hand can be a WASM workspace, API, MCP server,
-   browser, private worker, container, or VM.
-
-The product can embed the first, choose or outsource the second, and attach the
-third according to its own cost and security policy. A failed hand can be
-replaced without losing the conversation. A failed agent process can be
-reconstructed from the journal. A client can disconnect without becoming the
-owner of either one.
-
-Anthropic describes the same boundary in
-[Scaling Managed Agents](https://www.anthropic.com/engineering/managed-agents):
-move the harness out of the container, keep the session outside the harness,
-and provision a sandbox through a tool interface only when it is needed.
-Their reported median time-to-first-token fell roughly 60%, with p95 falling
-more than 90%. Nanocodex applies that architecture to the OpenAI Codex stack
-and makes the agent itself an embeddable Rust/WASM library.
-
-## Why not a generic harness?
+## Why Codex rather than a generic harness?
 
 The model and harness are one performance system. Prompt shape, tool schemas,
 tool-result ordering, compaction, cache identity, retry policy, and cleanup all
-affect long-horizon behavior. Nanocodex deliberately follows one OpenAI coding
-model family and the Responses WebSocket protocol instead of flattening models
-behind a provider abstraction.
+affect long-horizon behavior. Nanocodex follows one OpenAI coding-model family
+and the Responses WebSocket protocol instead of flattening models behind a
+provider abstraction.
 
-The application still owns everything that should vary. That includes its
+The application still owns everything that should vary. This includes its
 interface, tools, authorization, storage, execution policy, and product
-behavior. Continue with
-[Nanocodex Managed](/architecture/managed),
-[tools and execution](/architecture/tools-execution), or
-[durability and portability](/architecture/durability-portability).
+behavior.

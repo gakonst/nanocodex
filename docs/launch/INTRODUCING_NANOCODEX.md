@@ -15,25 +15,9 @@ Four things are different:
 3. **Keep the brain; rent the hands.** The durable agent does not sit inside a permanent container. It attaches a browser, sandbox, GPU, API, or private worker only when the work needs one.
 4. **Hosted does not mean captive.** Nanocodex exports runnable agent state, not only transcripts. The same agent can resume on Postgres, Cloudflare, Vercel, another Nanocodex deployment, or infrastructure you operate.
 
-The stack is:
+The stack is **Embed → Connect → Managed Agents → Hands → Open Durability**.
 
-```text
-Embed
-JavaScript · React · API · Slack · web · mobile
-
-Connect
-Identity · OAuth · ChatGPT · wallet · grants · spend permissions
-
-Managed Agents
-Codex · context · long-running work · attach / detach
-
-Capabilities
-Tools · APIs · browsers · compute · private workers · paid services
-Mercator discovery and routing · MPP payments settled on Tempo
-
-Open Durability
-Paradigm · Postgres · Cloudflare · Vercel · your cloud
-```
+![Embed and Connect sit above the durable managed agent; replaceable execution hands sit below it; open durability keeps the runnable state portable.](../../web/public/docs/architecture/managed-request.svg)
 
 ## Embed
 

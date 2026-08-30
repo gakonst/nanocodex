@@ -1,6 +1,6 @@
 ---
 title: Managed Agents and Connect
-description: Create a durable agent, connect model and tool access, and attach any product surface to its output.
+description: Create and embed a durable agent with connected model and tool access.
 ---
 
 # Managed Agents and Connect
@@ -16,6 +16,11 @@ ChatGPT subscription for Codex model access and authorize narrow GitHub, Slack,
 Google, or other tool capabilities. The application receives capability
 identities. Reusable credentials remain behind Paradigm's broker and never
 enter the agent, generated code, or sandbox.
+
+Connections belong to the user's Nanocodex account rather than one embedding.
+When that account appears in another Nanocodex-powered product, the same
+connections are available under a new product-specific grant. Adding a
+connection in either product updates the account's capability graph everywhere.
 
 This is the same product transition embedded wallets made: a capability that
 once required leaving the application becomes infrastructure inside the
@@ -46,8 +51,6 @@ const managed = {
 
 const agent = await Agent.create(managed);
 const turn = agent.turn.prompt({
-  id: "migration-42",
-  idempotencyKey: "customer-42:migration",
   input: "Inspect the repository and draft the migration PR.",
 });
 
@@ -55,11 +58,12 @@ const result = await turn.result();
 console.log(result.finalMessage);
 ```
 
-`Agent.create()` returns an account-owned handle. Turn admission is durable: if
-the response is lost, retry the same idempotency key and stable turn ID rather
-than guessing whether the work started. `turn.result()` is only one observer of
-the accepted turn; abandoning that promise does not silently cancel server
-work.
+`Agent.create()` returns an account-owned handle. The SDK generates stable
+request and turn identities, retries transient admission failures, and returns
+the accepted turn. Applications coordinating retries across separate processes
+may supply `id` and `idempotencyKey` explicitly. `turn.result()` is only one
+observer of the accepted turn; abandoning that promise does not silently cancel
+server work.
 
 ## Attach, detach, and reattach output
 

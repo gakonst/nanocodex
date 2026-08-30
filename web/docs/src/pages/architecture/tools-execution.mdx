@@ -1,14 +1,18 @@
 ---
-title: Tools and execution
-description: Start with lightweight execution and attach a sandbox, browser, or private worker only when policy requires it.
+title: Hands and execution
+description: Keep the durable brain cheap and attach a sandbox, browser, GPU, or private worker only when needed.
 ---
 
-# Tools and execution
+# Hands and execution
 
-The harness does not own a machine. Nanocodex receives caller-defined tools
-with typed names and inputs; the implementation may run in the same process,
-inside a lightweight WASM workspace, over HTTPS or MCP, on a private worker, or
-in an isolated sandbox.
+The managed agent is the durable brain. Tools and execution environments are
+hands it can attach. A hand may run in the same process, inside a lightweight
+WASM workspace, over HTTPS or MCP, on a private worker, in an isolated sandbox,
+or on a GPU.
+
+No permanent container is required to keep the agent available. Paradigm bills
+and provisions expensive execution for the period in which the task uses it,
+not for the lifetime of the agent.
 
 ## Start with the cheapest capable hand
 
@@ -56,8 +60,7 @@ environment variables, workspace files, or sandbox metadata. Give the agent a
 narrow network capability and let a broker validate the full destination and
 operation before injecting credentials outside the execution environment.
 
-This is the practical security consequence of turning the harness inside out:
-the sandbox is replaceable compute, not the place that owns the agent identity,
+The sandbox is replaceable compute, not the place that owns the agent identity,
 session, or secrets. The concrete Cloudflare composition is documented in
 [Cloudflare Durable Objects](/deployments/cloudflare); native isolation options
 are covered in [VMs and sandboxes](/capabilities/vm-sandboxes).
