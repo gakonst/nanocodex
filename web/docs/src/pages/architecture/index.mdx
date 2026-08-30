@@ -37,8 +37,8 @@ really wanted an agent library.
 
 [Centaur 2.0](https://www.paradigm.xyz/writing/centaur-2-0-permissions-context-and-mcp)
 showed that the product thesis was durable: more than 80% of sessions moved to
-shared channels. It also moved grants toward the network boundary, reinforcing
-the separation between an agent and the credentials used on its behalf.
+shared channels. It also moved grants toward the network boundary. The agent
+became separate from the credentials used on its behalf.
 
 ## The inside-out boundary
 
@@ -47,8 +47,8 @@ Nanocodex separates three lifecycles that a sandbox-first design couples:
 1. The agent owns typed history, prompt ordering, model transport, tool calls,
    steering, cancellation, branching, and cleanup.
 2. The journal owns accepted work, committed effects, recovery, and replay.
-3. The hands own execution: a WASM workspace, API, MCP server, browser, private
-   worker, container, or VM.
+3. The hands own execution. A hand can be a WASM workspace, API, MCP server,
+   browser, private worker, container, or VM.
 
 The product can embed the first, choose or outsource the second, and attach the
 third according to its own cost and security policy. A failed hand can be
@@ -72,8 +72,9 @@ affect long-horizon behavior. Nanocodex deliberately follows one OpenAI coding
 model family and the Responses WebSocket protocol instead of flattening models
 behind a provider abstraction.
 
-The application still owns what should vary: interface, tools, authorization,
-storage, execution policy, and product behavior. Continue with
+The application still owns everything that should vary. That includes its
+interface, tools, authorization, storage, execution policy, and product
+behavior. Continue with
 [Nanocodex Managed](/architecture/managed),
 [tools and execution](/architecture/tools-execution), or
 [durability and portability](/architecture/durability-portability).

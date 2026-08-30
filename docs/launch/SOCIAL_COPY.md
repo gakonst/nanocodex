@@ -1,9 +1,9 @@
 # Nanocodex social launch copy
 
-This copy follows Georgios's public framing: concrete, first-person, focused on
-frontier infrastructure people can own, and willing to state the architecture
-in one line. The blog carries the qualifications and evidence; the first post
-should make the product legible.
+This copy follows Georgios's public framing. It stays concrete and first-person,
+focused on frontier infrastructure people can own, and willing to state the
+architecture in one line. The blog carries the qualifications and evidence;
+the first post should make the product legible.
 
 ## Single post
 

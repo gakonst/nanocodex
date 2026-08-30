@@ -12,7 +12,7 @@ Paradigm operates identity, durable execution, event replay, secure egress, and 
 
 ![A product connects model and tool access, creates a managed agent, and attaches clients to its durable output while execution hands remain replaceable.](../../web/public/docs/architecture/managed-request.svg)
 
-Here is the whole product loop:
+The managed API starts here:
 
 ```js
 import { Agent } from "nanocodex/managed";
@@ -78,7 +78,7 @@ Capture the real SDK calls and API cursors from docs/launch/VIDEO_STORYBOARDS.md
 
 ## Agents are becoming embedded infrastructure
 
-Wallets went through a similar transition. They began as separate destinations: install an extension, leave the application, manage another account, and return. Embedded-wallet infrastructure made the wallet a native product primitive. The application could own the experience while a specialized system handled key management and authorization. Newer systems also let users bring the same wallet across applications instead of creating a fresh identity each time ([Privy](https://privy.io/blog/embedded-wallet-launch), [global wallets](https://privy.io/blog/global-embedded-wallets)).
+Wallets went through a similar transition. They began as separate destinations. You installed an extension, left the application, managed another account, then came back. Embedded-wallet infrastructure made the wallet a native product primitive. The application could own the experience while a specialized system handled key management and authorization. Newer systems also let users bring the same wallet across applications instead of creating a fresh identity each time ([Privy](https://privy.io/blog/embedded-wallet-launch), [global wallets](https://privy.io/blog/global-embedded-wallets)).
 
 Agents are moving the same way.
 
@@ -196,10 +196,10 @@ The journal contains the ordered operations, committed agent history, checkpoint
 
 This gives every managed agent a credible exit:
 
-- Export a complete portable snapshot from Paradigm and resume it against the open-source Postgres adapter.
-- Point that adapter at Postgres you operate or at a hosted Postgres provider.
-- Import the same journal into your own Cloudflare Durable Object, Vercel Workflow, Rivet Actor, or another compatible cloud.
-- Follow an incremental cursor to continuously replicate durable state instead of waiting for a one-off migration.
+1. Export a complete portable snapshot from Paradigm and resume it against the open-source Postgres adapter.
+2. Point that adapter at Postgres you operate or at a hosted Postgres provider.
+3. Import the same journal into your own Cloudflare Durable Object, Vercel Workflow, Rivet Actor, or another compatible cloud.
+4. Follow an incremental cursor to continuously replicate durable state instead of waiting for a one-off migration.
 
 The migration moves agent state, not Paradigm’s secrets. OAuth credentials remain in Connect and must be explicitly reauthorized or rebound at the destination. Tool and sandbox capabilities are resolved by stable identities, so the destination can attach equivalent local or remote resources without rewriting the historical journal.
 
@@ -209,7 +209,7 @@ Paradigm’s hosted product is therefore a convenience and operational commitmen
 
 Once the harness, session, and hands have independent lifecycles, a managed agent service becomes surprisingly small. Nanocodex Managed is the complete hosted version operated by Paradigm.
 
-The hosted API exposes the durable lifecycle rather than a sandbox process: create or reuse an agent, append input, execute or steer a turn, and stream ordered events. The same agent can be attached to a web app, React interface, Slack thread, mobile client, background workflow, or several of them at once. Closing one client does not stop the work.
+The hosted API exposes the durable lifecycle rather than a sandbox process. Create or reuse an agent, append input, execute or steer a turn, and stream ordered events. The same agent can be attached to a web app, React interface, Slack thread, mobile client, background workflow, or several of them at once. Closing one client does not stop the work.
 
 The API is intentionally ordinary. Create an agent with an idempotency key, submit a stable turn, and consume server-sent events from a durable cursor:
 
@@ -302,7 +302,7 @@ Nanocodex Managed is intentionally more opinionated: it is the hosted control pl
 
 The shared contract is the embeddable agent lifecycle. The hosted API, CLI, TUI, React hooks, browser workspace, durable actors, VMs, voice client, and evaluation harness are consumers of that contract rather than alternate agent implementations.
 
-We expect models and their harnesses to keep changing quickly. The stable primitives around them should be smaller: typed model I/O, tools, an owned agent, a durable journal, and explicit execution boundaries.
+We expect models and their harnesses to keep changing quickly. The stable primitives around them should be smaller. Nanocodex keeps typed model I/O, tools, an owned agent, a durable journal, and explicit execution boundaries.
 
 ## Available today
 
