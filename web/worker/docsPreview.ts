@@ -1,8 +1,12 @@
 // Compact Worker-owned projection of docs frontmatter and the public docs route
 // set. The focused sync test keeps it aligned with every source page.
 export const docsPreview = {
-  "/docs": ["Quick start", "Install Nanocodex, authenticate, and run your first coding-agent turn."],
+  "/docs": ["Quick start", "Choose Paradigm's hosted agent API or embed the open-source Nanocodex lifecycle."],
   "/docs/getting-started": ["Installation and authentication", "Install a published Nanocodex artifact and choose an explicit user-facing auth path."],
+  "/docs/architecture": ["Managed agents, inside out", "Start with Managed Agents and Connect, then see why Nanocodex moves the harness outside the sandbox."],
+  "/docs/architecture/managed": ["Managed Agents and Connect", "Create a durable agent, connect model and tool access, and attach any product surface to its output."],
+  "/docs/architecture/tools-execution": ["Tools and execution", "Start with lightweight execution and attach a sandbox, browser, or private worker only when policy requires it."],
+  "/docs/architecture/durability-portability": ["Durability and portability", "Understand the Rust-owned journal, host store contract, and the migration surface required for hosted agents."],
   "/docs/harness/focused-run": ["Use the eval harness", "Add, run, and inspect one task when you have a complete Nanocodex eval distribution."],
   "/docs/harness/evidence": ["Retained runs and evidence", "Understand generations, attempt history, and the files behind an eval result."],
   "/docs/harness/dashboard-worksets": ["Dashboard and worksets", "Browse retained public worksets or observe a complete local eval ledger."],

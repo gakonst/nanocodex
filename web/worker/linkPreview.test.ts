@@ -340,7 +340,7 @@ test("the compact Worker docs projection matches every source frontmatter entry"
   const projected = new Set<string>();
   for (const file of files) {
     const relative = file.replace(/\.mdx$/, "");
-    const route = relative === "index" ? "/docs" : `/docs/${relative}`;
+    const route = relative === "index" ? "/docs" : `/docs/${relative.replace(/\/index$/, "")}`;
     const source = await readFile(new URL(file, root), "utf8");
     const read = (name: string) => source.match(new RegExp(`^${name}:\\s*(.+)$`, "m"))
       ?.[1]?.trim().replace(/^(["'])(.*)\1$/, "$2");
