@@ -248,7 +248,10 @@ where
                 let usage = self.stats.turn_usage(self.model, self.fast_mode);
                 record_turn_usage(&tracing::Span::current(), &usage);
                 let checkpoint = self.commit_checkpoint()?;
-                let response_completions = std::mem::take(&mut self.stats.response_completions);
+                // Keep the terminal event and the independently awaited result
+                // consistent: the driver emits `run.completed` only after this
+                // model outcome has been returned.
+                let response_completions = self.stats.response_completions.clone();
                 Ok(ModelTurnOutcome::Completed(CompletedModelTurn {
                     final_message: message,
                     usage,

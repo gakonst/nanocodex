@@ -1,4 +1,3 @@
-use super::store::writer::validate_context_window_transition;
 use super::*;
 use std::{collections::HashMap, time::SystemTime};
 
@@ -394,10 +393,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
     let mut transcript = Vec::new();
     let mut context_baseline = None;
     let mut model = Model::Sol;
-    let mut first_window_id = None;
-    let mut current_window_id = None;
-    let mut previous_window_id = None;
-    let mut window_number = 0;
+    let mut context_window = ReplayedContextWindow::new(thread_id);
     for (index, line) in BufReader::new(File::open(path)?).lines().enumerate() {
         let line = line?;
         let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
@@ -435,18 +431,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 base_instructions = payload["base_instructions"]["text"]
                     .as_str()
                     .map(str::to_owned);
-                let window_id = payload["context_window"]["window_id"]
-                    .as_str()
-                    .filter(|id| !id.trim().is_empty())
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Codex rollout session metadata is missing its context window",
-                        )
-                    })?
-                    .to_owned();
-                first_window_id = Some(window_id.clone());
-                current_window_id = Some(window_id);
+                context_window.observe_session_meta(payload, thread_id)?;
                 workspace = Some(
                     payload
                         .get("cwd")
@@ -477,38 +462,18 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 history.push(item);
             }
             Some("compacted") => {
-                let first = first_window_id.as_deref().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Codex compaction appeared before session metadata",
-                    )
-                })?;
-                let current = current_window_id.as_deref().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Codex compaction is missing its previous context window",
-                    )
-                })?;
-                let (next_number, next_id) = validate_context_window_transition(
-                    &value["payload"],
-                    first,
-                    current,
-                    window_number,
-                )?;
-                history = serde_json::from_value(value["payload"]["replacement_history"].clone())
-                    .map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "failed to decode replacement history at {} line {}: {error}",
-                            path.display(),
-                            index + 1
-                        ),
-                    )
-                })?;
-                previous_window_id = current_window_id.clone();
-                window_number = next_number;
-                current_window_id = Some(next_id);
+                context_window.observe_compaction(&value["payload"])?;
+                history =
+                    replay_compacted_history(&value["payload"], &history).map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "failed to replay compaction at {} line {}: {error}",
+                                path.display(),
+                                index + 1
+                            ),
+                        )
+                    })?;
                 context_baseline = None;
             }
             Some("turn_context") => {
@@ -570,20 +535,10 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
         history,
         transcript,
         context_baseline,
-        first_window_id: first_window_id.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Codex rollout is missing its first context window",
-            )
-        })?,
-        previous_window_id,
-        current_window_id: current_window_id.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Codex rollout is missing its current context window",
-            )
-        })?,
-        window_number,
+        first_window_id: context_window.first_id,
+        previous_window_id: context_window.previous_id,
+        current_window_id: context_window.current_id,
+        window_number: context_window.number,
     })
 }
 

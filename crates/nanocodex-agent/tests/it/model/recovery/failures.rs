@@ -535,6 +535,12 @@ async fn completed_response_accepts_null_usage() -> Result<()> {
         json!("usage_not_reported")
     );
     assert!(terminal["payload"]["estimated_cost"].is_null());
+    assert!(!result.response_completions().is_empty());
+    assert_eq!(
+        terminal["payload"]["response_completions"],
+        serde_json::to_value(result.response_completions())?,
+        "terminal JSONL must preserve the same provider completions as TurnResult"
+    );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

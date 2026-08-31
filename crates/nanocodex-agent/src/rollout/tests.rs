@@ -12,7 +12,7 @@ use super::{
     load::{visible_rollout_event, visible_tool_call},
     store::{
         RolloutCommit, test_initial_window_id,
-        writer::{RolloutWriter, validate_context_window_transition, write_line},
+        writer::{RolloutWriter, write_line},
     },
 };
 
@@ -224,8 +224,8 @@ fn lines(recorder: &RolloutRecorder) -> Vec<Value> {
         .collect()
 }
 
-#[test]
-fn loads_codex_rollout_without_a_nanocodex_sidecar() {
+#[tokio::test]
+async fn loads_codex_rollout_without_a_nanocodex_sidecar() {
     let home = tempdir().expect("temporary Codex home");
     let thread_id = "019c0d31-c308-7d91-bff4-5dca82d15ac6";
     let directory = home.path().join("sessions/2026/07/24");
@@ -240,8 +240,7 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
                 "id": thread_id,
                 "cwd": home.path(),
                 "originator": "codex-tui",
-                "history_mode": "legacy",
-                "context_window": {"window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac7"}
+                "history_mode": "legacy"
             }
         }),
         serde_json::json!({
@@ -274,15 +273,8 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
             "timestamp": "2026-07-24T12:00:02Z",
             "type": "compacted",
             "payload": {
-                "replacement_history": [{
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "retained"}]
-                }],
-                "window_number": 1,
-                "first_window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac7",
-                "previous_window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac7",
-                "window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac8"
+                "message": "legacy summary",
+                "window_id": 1
             }
         }),
         serde_json::json!({
@@ -321,12 +313,16 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
     let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
     assert_eq!(snapshot["lineage_id"], thread_id);
     assert_eq!(snapshot["prompt_cache_key"], thread_id);
+    assert_eq!(snapshot["context_window"]["first_id"], thread_id);
+    assert_eq!(snapshot["context_window"]["current_id"], thread_id);
+    assert_eq!(snapshot["context_window"]["number"], 1);
+    assert!(snapshot["context_window"]["previous_id"].is_null());
     assert!(snapshot.get("request_prefix").is_none());
-    assert_eq!(snapshot["history"].as_array().map(Vec::len), Some(2));
+    assert_eq!(snapshot["history"].as_array().map(Vec::len), Some(3));
     let history = snapshot["history"].to_string();
-    assert!(history.contains("retained"));
+    assert!(history.contains("legacy summary"));
     assert!(history.contains("continued"));
-    assert!(!history.contains("discarded"));
+    assert!(history.contains("discarded"));
     assert_eq!(
         session.transcript(),
         [
@@ -335,6 +331,28 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
             RolloutTranscriptItem::Assistant("visible answer".to_owned()),
         ]
     );
+
+    let (_, _, resume_config) = session.into_parts();
+    let resumed = RolloutRecorder::create(
+        &Handle::current(),
+        RolloutCreate {
+            config: &resume_config,
+            thread_id,
+            prompt_cache_key: thread_id,
+            cwd: home.path(),
+            instructions: "",
+            origin: RolloutOrigin {
+                kind: "resume",
+                parent_thread_id: None,
+            },
+            resume_history_len: Some(3),
+        },
+    )
+    .expect("resume legacy Codex rollout writer");
+    resumed
+        .shutdown()
+        .await
+        .expect("close resumed legacy rollout writer");
 }
 
 #[test]

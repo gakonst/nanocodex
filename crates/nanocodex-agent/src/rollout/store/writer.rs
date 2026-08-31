@@ -463,17 +463,15 @@ pub(super) fn read_resume_writer_state(
     path: &Path,
     thread_id: &str,
 ) -> io::Result<ResumeWriterState> {
-    let mut first_window_id = None;
-    let mut current_window_id = None;
-    let mut window_number = 0;
-    let mut written_len = 0;
+    let mut context_window = ReplayedContextWindow::new(thread_id);
+    let mut history = Vec::new();
     let mut workspace = None;
     let mut context_baseline = None;
     for line in BufReader::new(File::open(path)?).lines() {
         let line = line?;
         let value: serde_json::Value = serde_json::from_str(&line).map_err(io::Error::other)?;
         match value.get("type").and_then(serde_json::Value::as_str) {
-            Some("session_meta") if first_window_id.is_none() => {
+            Some("session_meta") if workspace.is_none() => {
                 let payload = &value["payload"];
                 validate_legacy_history_mode(payload)?;
                 if payload.get("id").and_then(serde_json::Value::as_str) != Some(thread_id) {
@@ -482,17 +480,7 @@ pub(super) fn read_resume_writer_state(
                         "Codex rollout thread ID does not match durable session",
                     ));
                 }
-                let window = payload["context_window"]["window_id"]
-                    .as_str()
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Codex rollout is missing its initial context window",
-                        )
-                    })?
-                    .to_owned();
-                first_window_id = Some(window.clone());
-                current_window_id = Some(window);
+                context_window.observe_session_meta(payload, thread_id)?;
                 workspace = Some(PathBuf::from(payload["cwd"].as_str().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -502,34 +490,15 @@ pub(super) fn read_resume_writer_state(
             }
             Some("compacted") => {
                 let payload = &value["payload"];
-                written_len = payload["replacement_history"]
-                    .as_array()
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Codex compaction is missing replacement history",
-                        )
-                    })?
-                    .len();
-                let first = first_window_id.as_deref().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Codex compaction appeared before session metadata",
-                    )
-                })?;
-                let previous = current_window_id.as_deref().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Codex compaction is missing its previous context window",
-                    )
-                })?;
-                let (next_window_number, next_window_id) =
-                    validate_context_window_transition(payload, first, previous, window_number)?;
-                window_number = next_window_number;
-                current_window_id = Some(next_window_id);
+                history = replay_compacted_history(payload, &history)?;
+                context_window.observe_compaction(payload)?;
                 context_baseline = None;
             }
-            Some("response_item") => written_len = written_len.saturating_add(1),
+            Some("response_item") => {
+                history.push(
+                    serde_json::from_value(value["payload"].clone()).map_err(io::Error::other)?,
+                );
+            }
             Some("world_state") => {
                 if let Some(state) = value["payload"]["state"].get("nanocodex_context") {
                     context_baseline =
@@ -539,12 +508,6 @@ pub(super) fn read_resume_writer_state(
             _ => {}
         }
     }
-    let first_window_id = first_window_id.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Codex rollout is missing session metadata",
-        )
-    })?;
     let workspace = workspace.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -552,62 +515,13 @@ pub(super) fn read_resume_writer_state(
         )
     })?;
     Ok(ResumeWriterState {
-        written_len,
+        written_len: history.len(),
         workspace,
         context_baseline,
-        window_number,
-        current_window_id: current_window_id.unwrap_or_else(|| first_window_id.clone()),
-        first_window_id,
+        window_number: context_window.number,
+        current_window_id: context_window.current_id,
+        first_window_id: context_window.first_id,
     })
-}
-
-pub(in crate::rollout) fn validate_context_window_transition(
-    payload: &serde_json::Value,
-    first_window_id: &str,
-    previous_window_id: &str,
-    previous_window_number: u64,
-) -> io::Result<(u64, String)> {
-    let next_window_number = payload["window_number"].as_u64().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Codex compaction is missing its window number",
-        )
-    })?;
-    if next_window_number != previous_window_number.saturating_add(1) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Codex compaction context window number is not contiguous",
-        ));
-    }
-    if payload["first_window_id"].as_str() != Some(first_window_id) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Codex compaction changed its first context window ID",
-        ));
-    }
-    if payload["previous_window_id"].as_str() != Some(previous_window_id) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Codex compaction previous context window does not match lineage",
-        ));
-    }
-    let next_window_id = payload["window_id"]
-        .as_str()
-        .filter(|id| !id.trim().is_empty())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Codex compaction is missing its window ID",
-            )
-        })?
-        .to_owned();
-    if next_window_id == previous_window_id {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Codex compaction did not advance its context window ID",
-        ));
-    }
-    Ok((next_window_number, next_window_id))
 }
 
 pub(in crate::rollout) fn timestamp() -> String {
