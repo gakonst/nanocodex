@@ -116,8 +116,8 @@ pub mod __private {
     /// Agent-owned context accounting and compaction policy primitives.
     pub mod compaction {
         pub use crate::session::compaction::{
-            auto_compact_token_limit, estimate_item_tokens, install_history, trigger,
-            trim_tool_outputs_to_fit_context_window,
+            auto_compact_token_limit, estimate_item_tokens, install_history,
+            replay_legacy_compaction, trigger, trim_tool_outputs_to_fit_context_window,
         };
     }
 

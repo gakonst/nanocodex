@@ -16,6 +16,8 @@ use super::context::is_contextual_user_message;
 use crate::session::image_dimensions::dimensions_from_base64;
 
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+const LEGACY_COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+const CODEX_COMPACTION_SUMMARY_LEAD: &str = "Another language model started to solve this problem and produced a summary of its thinking process.";
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 const RESIZED_IMAGE_BYTES_ESTIMATE: usize = 7_373;
 #[cfg(not(target_family = "wasm"))]
@@ -248,6 +250,41 @@ pub fn install_history(
     );
     installed.push(compaction);
     installed
+}
+
+/// Rebuilds the checkpoint represented by a legacy Codex compaction that did
+/// not persist `replacement_history`.
+#[doc(hidden)]
+#[must_use]
+pub fn replay_legacy_compaction(history: &[ResponseItem], summary: &str) -> Vec<ResponseItem> {
+    let retained = history
+        .iter()
+        .filter(|item| item.is_user_message() && !is_codex_compaction_summary(item))
+        .cloned()
+        .collect();
+    let mut rebuilt = truncate_retained_messages(retained, LEGACY_COMPACT_USER_MESSAGE_MAX_TOKENS);
+    rebuilt.push(ResponseItem::message(
+        crate::MessageRole::User,
+        [ContentItem::input_text(if summary.is_empty() {
+            "(no summary available)"
+        } else {
+            summary
+        })],
+    ));
+    rebuilt
+}
+
+fn is_codex_compaction_summary(item: &ResponseItem) -> bool {
+    let ResponseItem::Message { content, .. } = item else {
+        return false;
+    };
+    content.iter().any(|content| {
+        matches!(
+            content,
+            ContentItem::InputText { text }
+                if text.starts_with(CODEX_COMPACTION_SUMMARY_LEAD)
+        )
+    })
 }
 
 fn is_client_developer_message(item: &ResponseItem) -> bool {
@@ -624,6 +661,34 @@ mod tests {
             auto_compact_token_limit(Model::Luna, crate::MAX_CONTEXT_WINDOW_TOKENS),
             784_800
         );
+    }
+
+    #[test]
+    fn legacy_compaction_drops_prior_summaries_and_bounds_retained_users() {
+        let prior_summary = ResponseItem::message(
+            crate::MessageRole::User,
+            [ContentItem::input_text(format!(
+                "{CODEX_COMPACTION_SUMMARY_LEAD}\nold"
+            ))],
+        );
+        let oversized = ResponseItem::message(
+            crate::MessageRole::User,
+            [ContentItem::input_text("x".repeat(
+                (LEGACY_COMPACT_USER_MESSAGE_MAX_TOKENS + 1_000) * APPROX_BYTES_PER_TOKEN,
+            ))],
+        );
+
+        let rebuilt = replay_legacy_compaction(&[prior_summary, oversized], "latest summary");
+
+        assert_eq!(rebuilt.len(), 2);
+        assert!(
+            retained_message_token_count(&rebuilt[0])
+                <= LEGACY_COMPACT_USER_MESSAGE_MAX_TOKENS + 32,
+            "the truncation marker may consume only a small fixed allowance"
+        );
+        let encoded = serde_json::to_string(&rebuilt).expect("encode rebuilt history");
+        assert!(!encoded.contains("old"));
+        assert!(encoded.contains("latest summary"));
     }
 
     #[test]

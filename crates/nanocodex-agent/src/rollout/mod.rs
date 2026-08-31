@@ -19,7 +19,7 @@ use std::{
 use chrono::{Local, SecondsFormat, Utc};
 use nanocodex_oai_api::{
     ImageDetail, Model, Prompt, PromptInput, Thinking, UserInput,
-    responses::{ContentItem, MessageRole, ResponseHistory, ResponseItem},
+    responses::{ResponseHistory, ResponseItem},
 };
 use serde::Serialize;
 use tokio::{
@@ -165,21 +165,11 @@ fn replay_compacted_history(
                         "legacy Codex compaction is missing its summary",
                     )
                 })?;
-            let summary = if summary.is_empty() {
-                "(no summary available)"
-            } else {
-                summary
-            };
-            let mut rebuilt = history
-                .iter()
-                .filter(|item| item.is_user_message())
-                .cloned()
-                .collect::<Vec<_>>();
-            rebuilt.push(ResponseItem::message(
-                MessageRole::User,
-                [ContentItem::input_text(summary)],
-            ));
-            Ok(rebuilt)
+            Ok(
+                nanocodex_oai_api::__private::compaction::replay_legacy_compaction(
+                    history, summary,
+                ),
+            )
         }
         Some(replacement) => serde_json::from_value(replacement.clone()).map_err(|error| {
             io::Error::new(
