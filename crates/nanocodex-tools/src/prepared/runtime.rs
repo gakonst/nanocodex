@@ -333,7 +333,8 @@ impl PreparedToolRuntime {
                 );
                 ToolOutput::error("aborted")
             }
-        };
+        }
+        .bounded_for_model(call.output_token_budget);
         let wire = output
             .into_wire()
             .map_err(PreparedToolError::InvalidOutput)?;

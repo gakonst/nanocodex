@@ -13,6 +13,7 @@ use crate::{ImageDetail, ResponseItem};
 
 /// Default maximum model-visible output budget for one tool call.
 pub const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 10_000;
+const APPROX_OUTPUT_BYTES_PER_TOKEN: usize = 4;
 
 /// Model-visible body returned by a tool.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -126,6 +127,25 @@ pub type ToolError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type ToolResult = std::result::Result<ToolOutput, ToolError>;
 
 impl ToolOutput {
+    /// Bounds the model-visible projection while retaining the exact structured
+    /// result for diagnostics and non-model adapters.
+    ///
+    /// The limit is deliberately applied at the execution boundary rather than
+    /// trusting individual tools to remember it. Text is shortened on UTF-8
+    /// boundaries; oversized binary content is represented by a short notice.
+    #[must_use]
+    pub fn bounded_for_model(mut self, max_tokens: usize) -> Self {
+        let max_bytes = max_tokens.saturating_mul(APPROX_OUTPUT_BYTES_PER_TOKEN);
+        self.output = match self.output {
+            ToolOutputBody::Text(text) => {
+                ToolOutputBody::Text(truncate_model_text(text, max_bytes))
+            }
+            ToolOutputBody::Content(content) => {
+                ToolOutputBody::Content(bound_model_content(content, max_bytes))
+            }
+        };
+        self
+    }
     /// Creates a successful plain-text output.
     #[must_use]
     pub fn text(output: impl Into<String>) -> Self {
@@ -289,6 +309,89 @@ impl ToolOutput {
             process_trace: wire.process_trace.map(Into::into),
         })
     }
+}
+
+fn bound_model_content(
+    content: Vec<ToolOutputContent>,
+    max_bytes: usize,
+) -> Vec<ToolOutputContent> {
+    let mut remaining = max_bytes;
+    let mut output = Vec::with_capacity(content.len());
+    for item in content {
+        match item {
+            ToolOutputContent::InputText { text } => {
+                let bounded = truncate_model_text(text, remaining);
+                remaining = remaining.saturating_sub(bounded.len());
+                if !bounded.is_empty() {
+                    output.push(ToolOutputContent::InputText { text: bounded });
+                }
+            }
+            item => {
+                let bytes = match &item {
+                    ToolOutputContent::InputImage { image_url, .. } => image_url.len(),
+                    ToolOutputContent::InputAudio { audio_url } => audio_url.len(),
+                    ToolOutputContent::EncryptedContent { encrypted_content } => {
+                        encrypted_content.len()
+                    }
+                    ToolOutputContent::InputText { .. } => 0,
+                };
+                if bytes <= remaining {
+                    remaining = remaining.saturating_sub(bytes);
+                    output.push(item);
+                } else if remaining > 0 {
+                    let notice = truncate_model_text(
+                        "[omitted oversized non-text tool output]".to_owned(),
+                        remaining,
+                    );
+                    remaining = remaining.saturating_sub(notice.len());
+                    if !notice.is_empty() {
+                        output.push(ToolOutputContent::InputText { text: notice });
+                    }
+                }
+            }
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+    output
+}
+
+fn truncate_model_text(text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+    let omitted = text.len().saturating_sub(max_bytes);
+    let marker = format!("…{omitted} bytes truncated…");
+    if marker.len() >= max_bytes {
+        return take_prefix_at_boundary(&text, max_bytes).to_owned();
+    }
+    let visible = max_bytes.saturating_sub(marker.len());
+    let head = visible / 2;
+    let tail = visible.saturating_sub(head);
+    let prefix = take_prefix_at_boundary(&text, head);
+    let suffix = take_suffix_at_boundary(&text, tail);
+    format!("{prefix}{marker}{suffix}")
+}
+
+fn take_prefix_at_boundary(text: &str, max_bytes: usize) -> &str {
+    let mut end = text.len().min(max_bytes);
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    &text[..end]
+}
+
+fn take_suffix_at_boundary(text: &str, max_bytes: usize) -> &str {
+    let start = text.len().saturating_sub(max_bytes);
+    let mut start = start;
+    while !text.is_char_boundary(start) {
+        start = start.saturating_add(1);
+    }
+    &text[start..]
 }
 
 impl From<ToolProcessTrace> for ToolProcessTraceWire {
@@ -491,11 +594,34 @@ pub trait Tool: Send + Sync + 'static {
 mod tests {
     use serde_json::json;
 
-    use super::ToolOutput;
+    use super::{ToolOutput, ToolOutputBody, ToolOutputContent};
 
     #[test]
     fn structured_result_preserves_text_and_json_types() {
         assert_eq!(ToolOutput::text("42").structured_result(), json!("42"));
         assert_eq!(ToolOutput::json(&42).structured_result(), json!(42));
+    }
+
+    #[test]
+    fn bounded_model_projection_keeps_the_raw_structured_result() {
+        let output =
+            ToolOutput::from_json(json!({"private": "x".repeat(100)}), true).bounded_for_model(8);
+        assert!(matches!(&output.output, ToolOutputBody::Text(text) if text.len() <= 32));
+        assert_eq!(
+            output.structured_result()["private"]
+                .as_str()
+                .unwrap()
+                .len(),
+            100
+        );
+
+        let output = ToolOutput::content(vec![ToolOutputContent::InputImage {
+            image_url: "x".repeat(128),
+            detail: crate::ImageDetail::Auto,
+        }])
+        .bounded_for_model(4);
+        assert!(
+            matches!(output.output, ToolOutputBody::Content(content) if content.iter().all(|item| matches!(item, ToolOutputContent::InputText { .. })))
+        );
     }
 }

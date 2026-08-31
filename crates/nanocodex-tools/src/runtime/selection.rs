@@ -173,6 +173,7 @@ impl ToolSource for crate::mcp::Mcp {
 pub struct Tools {
     exposure: ToolExposure,
     workspace: bool,
+    plan: bool,
     web_search: bool,
     image_generation: bool,
     #[cfg(all(not(target_family = "wasm"), feature = "native"))]
@@ -205,6 +206,9 @@ impl Default for Tools {
         Self {
             exposure: ToolExposure::default(),
             workspace: true,
+            // Plan state is application policy, not an ambient workspace
+            // capability. Embeddings opt in when they have a plan surface.
+            plan: false,
             web_search: true,
             image_generation: true,
             #[cfg(all(not(target_family = "wasm"), feature = "native"))]
@@ -330,6 +334,12 @@ impl Tools {
     #[must_use]
     pub const fn workspace_enabled(&self) -> bool {
         self.workspace
+    }
+
+    /// Returns whether the host-owned plan tool is enabled.
+    #[must_use]
+    pub const fn plan_enabled(&self) -> bool {
+        self.plan
     }
 
     /// Returns whether the standard web-search tool is enabled.
@@ -484,12 +494,13 @@ impl ToolsBuilder {
     #[must_use]
     pub const fn without_defaults(mut self) -> Self {
         self.tools.workspace = false;
+        self.tools.plan = false;
         self.tools.web_search = false;
         self.tools.image_generation = false;
         self
     }
 
-    /// Enables or disables the standard command, patch, plan, and file tools.
+    /// Enables or disables the standard command, patch, and file tools.
     #[must_use]
     #[cfg(not(target_family = "wasm"))]
     #[allow(clippy::missing_const_for_fn)]
@@ -502,7 +513,7 @@ impl ToolsBuilder {
         self
     }
 
-    /// Enables or disables the standard command, patch, plan, and file tools.
+    /// Enables or disables the standard command, patch, and file tools.
     #[must_use]
     #[cfg(target_family = "wasm")]
     pub const fn workspace(mut self, enabled: bool) -> Self {
@@ -521,6 +532,16 @@ impl ToolsBuilder {
     #[must_use]
     pub const fn image_generation(mut self, enabled: bool) -> Self {
         self.tools.image_generation = enabled;
+        self
+    }
+
+    /// Enables or disables the host-owned task-plan tool.
+    ///
+    /// This is opt-in because retaining task state is application policy, not
+    /// an inherent workspace operation.
+    #[must_use]
+    pub const fn plan(mut self, enabled: bool) -> Self {
+        self.tools.plan = enabled;
         self
     }
 
@@ -846,11 +867,12 @@ fn host_owned_name(name: &str) -> bool {
 }
 
 fn built_in_name(tools: &Tools, name: &str) -> bool {
-    (tools.workspace
+    ((tools.workspace
         && matches!(
             name,
-            "exec_command" | "write_stdin" | "update_plan" | "apply_patch" | "view_image"
+            "exec_command" | "write_stdin" | "apply_patch" | "view_image"
         ))
+        || (tools.plan && name == "update_plan"))
         || (tools.web_search && name == "web__run")
         || (tools.image_generation && name == "image_gen__imagegen")
 }
@@ -860,7 +882,7 @@ fn enabled_built_in_names(tools: &Tools) -> impl Iterator<Item = &'static str> {
     [
         (tools.workspace, "exec_command"),
         (tools.workspace, "write_stdin"),
-        (tools.workspace, "update_plan"),
+        (tools.plan, "update_plan"),
         (tools.workspace, "apply_patch"),
         (tools.workspace, "view_image"),
         (tools.web_search, "web__run"),

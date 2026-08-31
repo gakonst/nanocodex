@@ -95,7 +95,8 @@ impl ToolRegistry {
         let execution = match AssertUnwindSafe(dispatch).catch_unwind().await {
             Ok(execution) => execution,
             Err(payload) => panicked_tool_output(&span, payload),
-        };
+        }
+        .bounded_for_model(context.output_token_budget());
         let output_content = trace_content
             .then(|| serde_json::to_string(&execution.output).ok())
             .flatten();
@@ -159,7 +160,8 @@ impl ToolRegistry {
         let execution = match AssertUnwindSafe(dispatch).catch_unwind().await {
             Ok(execution) => execution,
             Err(payload) => panicked_tool_output(&span, payload),
-        };
+        }
+        .bounded_for_model(context.output_token_budget());
         let output_content = trace_content
             .then(|| serde_json::to_string(&execution.output).ok())
             .flatten();

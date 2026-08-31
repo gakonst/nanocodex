@@ -471,6 +471,16 @@ fn without_defaults_allows_replacing_a_standard_workspace_tool() {
 }
 
 #[test]
+fn update_plan_is_opt_in_and_reserves_its_name_only_when_enabled() {
+    let runtime = ToolRuntime::new(".", None, None);
+    assert!(!runtime.contains("update_plan"));
+
+    let tools = Tools::builder().plan(true).build().unwrap();
+    let runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
+    assert!(runtime.contains("update_plan"));
+}
+
+#[test]
 fn workspace_tool_source_is_a_singleton() {
     let result = Tools::builder()
         .without_defaults()

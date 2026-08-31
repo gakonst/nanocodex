@@ -72,6 +72,7 @@ pub struct Mcp {
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
     oauth_metadata: Arc<oauth::OAuthMetadataCache>,
     started: AtomicBool,
+    startup_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 pub(crate) struct PreparedMcpTool {
@@ -83,6 +84,21 @@ struct NamedServer {
     name: String,
     model_namespace: String,
     config: McpServer,
+}
+
+#[derive(Clone, Copy)]
+enum McpResourceOperation {
+    List,
+    ListTemplates,
+    Read,
+}
+
+struct McpResourceTool {
+    name: String,
+    server_name: String,
+    state: Arc<ProviderState>,
+    timeout: Duration,
+    operation: McpResourceOperation,
 }
 
 /// Builder for an MCP provider.
@@ -105,7 +121,7 @@ pub struct McpHandle {
 /// An in-progress browser OAuth login.
 pub struct McpLogin {
     authorization_url: String,
-    completion: tokio::task::JoinHandle<Result<usize, McpControlError>>,
+    completion: Option<tokio::task::JoinHandle<Result<usize, McpControlError>>>,
 }
 
 /// Failure while controlling an already configured MCP provider.
@@ -307,7 +323,43 @@ impl McpBuilder {
             oauth_store: self.oauth_store,
             oauth_metadata: Arc::new(oauth::OAuthMetadataCache::default()),
             started: AtomicBool::new(false),
+            startup_tasks: std::sync::Mutex::new(Vec::new()),
         })
+    }
+}
+
+impl Mcp {
+    /// Cancels and joins outstanding background server startup work.
+    ///
+    /// Successfully connected clients remain owned by the catalog until this
+    /// provider is dropped; this method only stops work that has not completed
+    /// its catalog handoff.
+    pub async fn shutdown(&self) {
+        let mut tasks = {
+            let mut tasks = self
+                .startup_tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *tasks)
+        };
+        for task in &tasks {
+            task.abort();
+        }
+        while let Some(task) = tasks.pop() {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        // Drop cannot await, but it must still fence background startup so a
+        // discarded provider cannot later publish authority into its catalog.
+        if let Ok(mut tasks) = self.startup_tasks.try_lock() {
+            for task in tasks.drain(..) {
+                task.abort();
+            }
+        }
     }
 }
 
@@ -492,7 +544,7 @@ impl McpHandle {
         );
         Ok(McpLogin {
             authorization_url: flow.authorization_url,
-            completion,
+            completion: Some(completion),
         })
     }
 }
@@ -510,10 +562,25 @@ impl McpLogin {
     ///
     /// Returns an error when authorization, credential persistence, or the subsequent hot reload
     /// fails.
-    pub async fn wait(self) -> Result<usize, McpControlError> {
+    pub async fn wait(mut self) -> Result<usize, McpControlError> {
         self.completion
+            .take()
+            .ok_or_else(|| {
+                McpControlError::LoginTask("login completion was already consumed".to_owned())
+            })?
             .await
             .map_err(|error| McpControlError::LoginTask(error.to_string()))?
+    }
+}
+
+impl Drop for McpLogin {
+    fn drop(&mut self) {
+        // The browser callback future owns a local listener and credential
+        // persistence path. A caller that abandons login must also abandon
+        // that authority, rather than leaking an unobserved OAuth task.
+        if let Some(completion) = &self.completion {
+            completion.abort();
+        }
     }
 }
 
@@ -540,7 +607,7 @@ impl DynamicToolProvider for Mcp {
                 status = tracing::field::Empty,
                 tool.count = tracing::field::Empty,
             );
-            drop(tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 let result = client::connect(&name, &config, oauth_store, oauth_metadata, &span)
                     .await
                     .map(|connected| {
@@ -572,12 +639,50 @@ impl DynamicToolProvider for Mcp {
                     span.record("tool.count", catalog.entries.len());
                 }
                 state.complete_server(&name, 0, result);
-            }));
+            });
+            // Startup is provider-owned work. Retaining the task makes both
+            // explicit shutdown and Drop cancellation deterministic.
+            if let Ok(mut tasks) = self.startup_tasks.try_lock() {
+                tasks.retain(|task| !task.is_finished());
+                tasks.push(task);
+            } else {
+                task.abort();
+            }
         }
     }
 
     fn direct_tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![Arc::clone(&self.search) as Arc<dyn Tool>]
+        let mut tools = vec![Arc::clone(&self.search) as Arc<dyn Tool>];
+        for server in &*self.servers {
+            for (suffix, operation) in [
+                ("resources_list", McpResourceOperation::List),
+                (
+                    "resource_templates_list",
+                    McpResourceOperation::ListTemplates,
+                ),
+                ("resource_read", McpResourceOperation::Read),
+            ] {
+                tools.push(Arc::new(McpResourceTool {
+                    name: format!("{}{}", server.model_namespace, suffix),
+                    server_name: server.name.clone(),
+                    state: Arc::clone(&self.state),
+                    timeout: server.config.tool_timeout,
+                    operation,
+                }));
+            }
+        }
+        tools
+    }
+
+    fn direct_tools_for_exposure(&self, exposure: crate::ToolExposure) -> Vec<Arc<dyn Tool>> {
+        // Preserve Codex's compact Code Mode-only prefix: MCP server tools
+        // are deferred there, while resources become explicit model tools
+        // when the embedding elects direct exposure.
+        if exposure == crate::ToolExposure::CodeModeOnly {
+            vec![Arc::clone(&self.search) as Arc<dyn Tool>]
+        } else {
+            self.direct_tools()
+        }
     }
 
     fn available_definitions(&self) -> Vec<ToolDefinition> {
@@ -610,7 +715,78 @@ impl DynamicToolProvider for Mcp {
     }
 }
 
+#[async_trait]
+impl Tool for McpResourceTool {
+    fn definition(&self) -> ToolDefinition {
+        let (description, parameters) = match self.operation {
+            McpResourceOperation::List => (
+                format!(
+                    "Lists resources exposed by MCP server {}.",
+                    self.server_name
+                ),
+                json!({"type":"object", "properties":{}, "additionalProperties":false}),
+            ),
+            McpResourceOperation::ListTemplates => (
+                format!(
+                    "Lists resource templates exposed by MCP server {}.",
+                    self.server_name
+                ),
+                json!({"type":"object", "properties":{}, "additionalProperties":false}),
+            ),
+            McpResourceOperation::Read => (
+                format!("Reads one resource from MCP server {}.", self.server_name),
+                json!({"type":"object", "properties":{"uri":{"type":"string"}}, "required":["uri"], "additionalProperties":false}),
+            ),
+        };
+        ToolDefinition::function(self.name.clone(), description, parameters)
+    }
+
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        let input: Value = input.decode_json()?;
+        let client = self
+            .state
+            .ready_client(&self.server_name)
+            .await
+            .ok_or_else(|| {
+                std::io::Error::other(format!("MCP server {} is not ready", self.server_name))
+            })?;
+        let call = async {
+            client.refresh_oauth().await?;
+            match self.operation {
+                McpResourceOperation::List => client.list_resources().await,
+                McpResourceOperation::ListTemplates => client.list_resource_templates().await,
+                McpResourceOperation::Read => {
+                    let uri = input
+                        .get("uri")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "MCP resource_read requires a string uri".to_owned())?;
+                    client.read_resource(uri.to_owned()).await
+                }
+            }
+        };
+        match tokio::time::timeout(self.timeout, call).await {
+            Ok(Ok(result)) => Ok(ToolOutput::from_json(result, true).with_metadata(json!({
+                "mcp_server": self.server_name,
+                "mcp_resource_operation": self.name,
+            }))),
+            Ok(Err(error)) => Ok(ToolOutput::error(format!(
+                "MCP resource operation failed: {error}"
+            ))),
+            Err(_) => Ok(ToolOutput::error(format!(
+                "MCP resource operation exceeded {:.1} seconds",
+                self.timeout.as_secs_f64()
+            ))),
+        }
+    }
+}
+
 async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -> ToolOutput {
+    if !entry.is_current() {
+        return ToolOutput::error(format!(
+            "MCP tool {}/{} is no longer available; refresh the catalog before retrying",
+            entry.server_name, entry.remote_name
+        ));
+    }
     let Value::Object(arguments) = input else {
         return ToolOutput::error(format!(
             "MCP tool {} requires an object argument",
@@ -637,20 +813,14 @@ async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -
         mcp.arguments.count = argument_count,
         status = tracing::field::Empty,
     );
-    if let Err(error) = entry.client.refresh_oauth().await {
-        span.record("status", "failed");
-        span.record("otel.status_code", "ERROR");
-        return ToolOutput::error(format!(
-            "MCP tool {}/{} could not refresh OAuth credentials: {error}",
-            entry.server_name, entry.remote_name
-        ));
-    }
-    let result = match tokio::time::timeout(
-        timeout,
-        entry.client.call_tool(params).instrument(span.clone()),
-    )
-    .await
-    {
+    let call = async {
+        entry.client.refresh_oauth().await?;
+        if !entry.is_current() {
+            return Err("MCP catalog revision was revoked before the call was sent".to_owned());
+        }
+        entry.client.call_tool(params).await
+    };
+    let result = match tokio::time::timeout(timeout, call.instrument(span.clone())).await {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => {
             span.record("status", "failed");
@@ -987,6 +1157,22 @@ mod tests {
                 matches!(content, ToolOutputContent::InputText { text } if text.contains(expected))
             }),
         }
+    }
+
+    #[test]
+    fn exposes_named_resource_operations_for_each_mcp_server() {
+        let mcp = Mcp::builder()
+            .server("fixtures", McpServer::stdio("node"))
+            .build()
+            .unwrap();
+        let names = mcp
+            .direct_tools()
+            .into_iter()
+            .map(|tool| tool.definition().name().to_owned())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"mcp__fixtures__resources_list".to_owned()));
+        assert!(names.contains(&"mcp__fixtures__resource_templates_list".to_owned()));
+        assert!(names.contains(&"mcp__fixtures__resource_read".to_owned()));
     }
 
     #[test]
@@ -1717,6 +1903,50 @@ mod tests {
             &execution.output,
             "fixture:after-reload"
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_reload_revokes_the_previous_catalog_revision() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let mcp = Mcp::builder()
+            .server(
+                "fixture",
+                McpServer::stdio("node").arg(fixture.to_string_lossy()),
+            )
+            .build()
+            .unwrap();
+        mcp.start();
+        let search = mcp
+            .search
+            .execute(
+                ToolInput::Function(to_raw_value(&json!({ "query": "echo" })).unwrap()),
+                test_context("revision-session", "search"),
+            )
+            .await
+            .unwrap();
+        assert!(search.success);
+        let name = "mcp__fixture__echo";
+        let prior = mcp.state.entry(name).unwrap();
+
+        let revision = mcp.state.begin_server("fixture");
+        mcp.state.complete_server(
+            "fixture",
+            revision,
+            Err("replacement transport rejected credentials".to_owned()),
+        );
+
+        assert!(!prior.is_current());
+        assert!(mcp.state.entry(name).is_none());
+        assert!(
+            mcp.execute(
+                name,
+                json!({ "message": "must not call stale transport" }),
+                test_context("revision-session", "call"),
+            )
+            .await
+            .is_none()
+        );
     }
 
     #[tokio::test]

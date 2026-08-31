@@ -6,7 +6,7 @@ use http::{
 };
 use rmcp::{
     ServiceExt,
-    model::{CallToolRequestParams, CallToolResult, Tool},
+    model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
     service::{RoleClient, RunningService, ServiceError},
     transport::{
         StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
@@ -129,6 +129,64 @@ impl ClientInner {
             oauth.refresh_if_needed().await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn list_resources(&self) -> Result<Value, String> {
+        let parent = Span::current();
+        let service = Arc::clone(&self.service);
+        let result = collect_paginated("resources/list", move |params| {
+            let service = Arc::clone(&service);
+            async move {
+                let result = service
+                    .list_resources(params)
+                    .await
+                    .map_err(|error| error_chain(&error))?;
+                Ok((result.resources, result.next_cursor))
+            }
+        })
+        .await
+        .and_then(|resources| serde_json::to_value(resources).map_err(|error| error.to_string()));
+        self.persist_oauth(&parent).await;
+        result
+    }
+
+    pub(crate) async fn list_resource_templates(&self) -> Result<Value, String> {
+        let parent = Span::current();
+        let service = Arc::clone(&self.service);
+        let result = collect_paginated("resources/templates/list", move |params| {
+            let service = Arc::clone(&service);
+            async move {
+                let result = service
+                    .list_resource_templates(params)
+                    .await
+                    .map_err(|error| error_chain(&error))?;
+                Ok((result.resource_templates, result.next_cursor))
+            }
+        })
+        .await
+        .and_then(|templates| serde_json::to_value(templates).map_err(|error| error.to_string()));
+        self.persist_oauth(&parent).await;
+        result
+    }
+
+    pub(crate) async fn read_resource(&self, uri: String) -> Result<Value, String> {
+        let parent = Span::current();
+        let result = self
+            .service
+            .read_resource(ReadResourceRequestParams::new(uri))
+            .await
+            .map_err(|error| error_chain(&error))
+            .and_then(|resource| serde_json::to_value(resource).map_err(|error| error.to_string()));
+        self.persist_oauth(&parent).await;
+        result
+    }
+
+    async fn persist_oauth(&self, parent: &Span) {
+        if let Some(oauth) = &self.oauth
+            && let Err(error) = oauth.persist_if_changed(parent).await
+        {
+            tracing::warn!(%error, "failed to persist refreshed MCP OAuth credentials");
+        }
     }
 }
 
