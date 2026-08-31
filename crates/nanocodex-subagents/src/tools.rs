@@ -751,15 +751,45 @@ fn wait_agent_output_schema() -> Value {
                         "task": { "type": "string" },
                         "parent_agent_id": { "type": ["integer", "null"] },
                         "status": agent_status_schema(),
+                        "lineage": {
+                            "type": "object",
+                            "properties": {
+                                "root_session_id": { "type": "string" },
+                                "parent_agent_id": { "type": ["integer", "null"] },
+                                "initiating_turn_token": { "type": "integer" }
+                            },
+                            "required": ["root_session_id", "parent_agent_id"],
+                            "additionalProperties": false
+                        },
+                        "usage": usage_schema(),
+                        "child_usage": usage_schema(),
                         "last_output": {}
                     },
-                    "required": ["agent_id", "role", "task", "parent_agent_id", "status"],
+                    "required": ["agent_id", "role", "task", "parent_agent_id", "status", "lineage", "usage", "child_usage"],
                     "additionalProperties": false
                 }
             },
             "timed_out": { "type": "boolean" }
         },
         "required": ["agents", "timed_out"],
+        "additionalProperties": false
+    })
+}
+
+fn usage_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "completed_turns": { "type": "integer", "minimum": 0 },
+            "turns_with_reported_usage": { "type": "integer", "minimum": 0 },
+            "input_tokens": { "type": "integer", "minimum": 0 },
+            "cached_input_tokens": { "type": "integer", "minimum": 0 },
+            "cache_write_input_tokens": { "type": "integer", "minimum": 0 },
+            "output_tokens": { "type": "integer", "minimum": 0 },
+            "reasoning_output_tokens": { "type": "integer", "minimum": 0 },
+            "total_tokens": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["completed_turns", "turns_with_reported_usage", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"],
         "additionalProperties": false
     })
 }

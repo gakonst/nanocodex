@@ -10,9 +10,10 @@ mod task_tree;
 mod tools;
 
 pub use model::{
-    AgentDescriptor, AgentId, AgentMessage, AgentMessageUpdate, AgentStatus, AgentThread,
-    AgentUpdate, MessageDeliveryState, MessageDisposition, MessageId, MessagePriority,
-    MessagePurpose, MessageSender, ScopedAgentUpdate, SubagentRuntimeId, ThreadId,
+    AgentDescriptor, AgentId, AgentLineage, AgentMessage, AgentMessageUpdate, AgentStatus,
+    AgentTerminalCompletion, AgentThread, AgentUpdate, AgentUsage, MessageDeliveryState,
+    MessageDisposition, MessageId, MessagePriority, MessagePurpose, MessageSender,
+    ScopedAgentUpdate, SubagentRuntimeId, ThreadId,
 };
 pub use runtime::{
     AgentDirectoryEntry, AgentSummary, MessageReceipt, Registry, SubagentControl, channel,

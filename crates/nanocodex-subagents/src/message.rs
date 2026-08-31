@@ -4,8 +4,8 @@
 //! Message identity, thread correlation, and bounded input validation.
 
 use super::model::{
-    AgentId, AgentMessage, AgentThread, MessageDisposition, MessageId, MessagePriority,
-    MessagePurpose, MessageSender, ThreadId,
+    AgentId, AgentMessage, AgentTerminalCompletion, AgentThread, MessageDisposition, MessageId,
+    MessagePriority, MessagePurpose, MessageSender, ThreadId,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -54,7 +54,28 @@ impl MessageThreads {
             purpose,
             in_reply_to,
             body,
+            terminal_completion: None,
         })
+    }
+
+    pub(super) fn prepare_terminal_completion(
+        &mut self,
+        from: AgentId,
+        to: AgentId,
+        completion: AgentTerminalCompletion,
+    ) -> AgentMessage {
+        let id = MessageId::next(&mut self.next_message_id);
+        AgentMessage {
+            id,
+            thread_id: ThreadId::for_message(id),
+            from: MessageSender::Agent { agent_id: from },
+            to,
+            priority: MessagePriority::Deferred,
+            purpose: MessagePurpose::Finding,
+            in_reply_to: None,
+            body: "A direct child reached a terminal state.".to_owned(),
+            terminal_completion: Some(completion),
+        }
     }
 
     pub(super) fn commit(&mut self, message: AgentMessage) -> AgentThread {

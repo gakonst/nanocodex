@@ -8,9 +8,10 @@ use super::{
     harness::{self, HarnessHandle},
     message::MessageThreads,
     model::{
-        AgentDescriptor, AgentId, AgentMessage, AgentMessageUpdate, AgentStatus, AgentThread,
-        AgentUpdate, MessageDeliveryState, MessageDisposition, MessageId, MessagePriority,
-        MessagePurpose, MessageSender, ScopedAgentUpdate, SubagentRuntimeId, ThreadId,
+        AgentDescriptor, AgentId, AgentLineage, AgentMessage, AgentMessageUpdate, AgentStatus,
+        AgentTerminalCompletion, AgentThread, AgentUpdate, AgentUsage, MessageDeliveryState,
+        MessageDisposition, MessageId, MessagePriority, MessagePurpose, MessageSender,
+        ScopedAgentUpdate, SubagentRuntimeId, ThreadId,
     },
     platform::{self, Task, timeout_at},
     task_tree::TaskTree,
@@ -31,6 +32,11 @@ use std::{
 use tokio::sync::{mpsc, oneshot, watch};
 use web_time::Instant;
 
+// A terminal completion shares the bounded agent mailbox with ordinary
+// coordination. Keeping the contract result below this limit means automatic
+// parent delivery is exact rather than a lossy summary.
+const MAX_TERMINAL_OUTPUT_BYTES: usize = 1024;
+
 pub(super) struct ChildSession {
     pub(super) descriptor: AgentDescriptor,
     pub(super) event_task: Option<Task<()>>,
@@ -46,6 +52,9 @@ pub(super) struct ChildSession {
     pub(super) last_output: Option<Value>,
     pub(super) last_used: u64,
     pub(super) evicted: bool,
+    pub(super) lineage: AgentLineage,
+    pub(super) usage: AgentUsage,
+    pub(super) child_usage: AgentUsage,
 }
 
 pub(super) struct OutputContract {
@@ -164,6 +173,9 @@ pub struct AgentSummary {
     pub task: String,
     pub parent_agent_id: Option<AgentId>,
     pub status: AgentStatus,
+    pub lineage: AgentLineage,
+    pub usage: AgentUsage,
+    pub child_usage: AgentUsage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_output: Option<Value>,
 }
@@ -208,6 +220,7 @@ pub(super) struct TurnSteer {
 struct ResidentEviction {
     id: AgentId,
     harness: HarnessHandle,
+    status: AgentStatus,
 }
 
 impl TurnSteer {
@@ -271,6 +284,14 @@ impl RegistryState {
             return Err(std::io::Error::other(format!(
                 "submitted output does not match the required schema: {}",
                 errors.join("; ")
+            )));
+        }
+        let encoded = serde_json::to_vec(&output).map_err(|error| {
+            std::io::Error::other(format!("could not encode submitted output: {error}"))
+        })?;
+        if encoded.len() > MAX_TERMINAL_OUTPUT_BYTES {
+            return Err(std::io::Error::other(format!(
+                "submitted output exceeds the {MAX_TERMINAL_OUTPUT_BYTES}-byte terminal mailbox limit"
             )));
         }
         session.submitted_output = Some(output);
@@ -556,6 +577,45 @@ impl RegistryState {
         })
     }
 
+    fn prepare_terminal_completion(
+        &mut self,
+        root_session_id: &str,
+        from: AgentId,
+        completion: AgentTerminalCompletion,
+    ) -> std::io::Result<PreparedMessage> {
+        let next_access = self.next_access.wrapping_add(1);
+        self.next_access = next_access;
+        let scope = self
+            .scopes
+            .get_mut(root_session_id)
+            .ok_or_else(|| std::io::Error::other("subagent scope disappeared"))?;
+        let parent = scope
+            .sessions
+            .get(&from)
+            .and_then(|session| session.descriptor.parent)
+            .ok_or_else(|| std::io::Error::other("root agents do not have a parent mailbox"))?;
+        let target = scope
+            .sessions
+            .get_mut(&parent)
+            .ok_or_else(|| std::io::Error::other("direct parent disappeared"))?;
+        if matches!(target.status, AgentStatus::Closing | AgentStatus::Closed) {
+            return Err(std::io::Error::other("direct parent mailbox is closed"));
+        }
+        let harness = target
+            .harness
+            .clone()
+            .ok_or_else(|| std::io::Error::other("direct parent is not resident"))?;
+        target.last_used = next_access;
+        let message = scope
+            .messages
+            .prepare_terminal_completion(from, parent, completion);
+        Ok(PreparedMessage {
+            root_session_id: root_session_id.to_owned(),
+            message,
+            harness,
+        })
+    }
+
     fn commit_message(
         &mut self,
         root_session_id: &str,
@@ -832,9 +892,11 @@ impl RegistryState {
         let session = scope.sessions.get_mut(&candidate)?;
         let harness = session.harness.take()?;
         session.evicted = true;
+        session.status = AgentStatus::Closed;
         Some(ResidentEviction {
             id: candidate,
             harness,
+            status: AgentStatus::Closed,
         })
     }
 
@@ -990,6 +1052,17 @@ impl Registry {
             Arc::downgrade(self),
             schema,
         );
+        let lineage = AgentLineage {
+            root_session_id: root_session_id.clone(),
+            parent_agent_id: descriptor.parent,
+            initiating_turn_token: descriptor.parent.and_then(|parent| {
+                state
+                    .scopes
+                    .get(&root_session_id)
+                    .and_then(|scope| scope.sessions.get(&parent))
+                    .and_then(|session| session.active_turn_token)
+            }),
+        };
         state.insert(
             root_session_id,
             descriptor.id,
@@ -1009,6 +1082,9 @@ impl Registry {
                 last_output: None,
                 last_used: 0,
                 evicted: false,
+                lineage,
+                usage: AgentUsage::default(),
+                child_usage: AgentUsage::default(),
             },
         )?;
         drop(state);
@@ -1104,38 +1180,88 @@ impl Registry {
         id: AgentId,
         result: AgentResult<TurnResult>,
     ) {
-        let status = {
+        let (status, completion) = {
             let mut state = self.state.lock().await;
-            let Some(session) = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            else {
-                return;
+            let reported_usage = result.as_ref().ok().and_then(|result| result.usage());
+            let turn_usage = AgentUsage::from_turn(reported_usage);
+            let (status, parent, lineage) = {
+                let Some(session) = state
+                    .scopes
+                    .get_mut(root_session_id)
+                    .and_then(|scope| scope.sessions.get_mut(&id))
+                else {
+                    return;
+                };
+                if !session.active {
+                    return;
+                }
+                session.active = false;
+                session.active_turn_token = None;
+                session.steering = false;
+                let submitted_output = session.submitted_output.take();
+                session.usage.add(&turn_usage);
+                if matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
+                    session.status.clone()
+                } else {
+                    match result {
+                        Ok(_) => complete_session(session, submitted_output),
+                        Err(NanocodexError::TurnCancelled) => AgentStatus::Interrupted,
+                        Err(error) => AgentStatus::Failed {
+                            error: error.to_string(),
+                        },
+                    }
+                }
+                .clone_into(&mut session.status);
+                (
+                    session.status.clone(),
+                    session.descriptor.parent,
+                    session.lineage.clone(),
+                )
             };
-            if !session.active {
-                return;
-            }
-            session.active = false;
-            session.active_turn_token = None;
-            session.steering = false;
-            let submitted_output = session.submitted_output.take();
-            if matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
-                session.status.clone()
-            } else {
-                match result {
-                    Ok(_) => complete_session(session, submitted_output),
-                    Err(NanocodexError::TurnCancelled) => AgentStatus::Interrupted,
-                    Err(error) => AgentStatus::Failed {
-                        error: error.to_string(),
-                    },
+            {
+                let mut ancestor_id = parent;
+                while let Some(ancestor_id_value) = ancestor_id {
+                    let Some(ancestor) = state
+                        .scopes
+                        .get_mut(root_session_id)
+                        .and_then(|scope| scope.sessions.get_mut(&ancestor_id_value))
+                    else {
+                        break;
+                    };
+                    ancestor.child_usage.add(&turn_usage);
+                    ancestor_id = ancestor.descriptor.parent;
                 }
             }
-            .clone_into(&mut session.status);
-            session.status.clone()
+            // Explicit subtree interruption/closure is already coordinated by
+            // the managing caller. Feeding a cancellation notification back
+            // into the parent while that subtree is draining can start fresh
+            // mailbox work and prevent the close boundary from settling.
+            let completion = parent
+                .filter(|_| {
+                    matches!(
+                        status,
+                        AgentStatus::Completed { .. } | AgentStatus::Failed { .. }
+                    )
+                })
+                .map(|_| AgentTerminalCompletion {
+                    agent_id: id,
+                    lineage,
+                    status: terminal_status(&status),
+                    usage: turn_usage,
+                });
+            (status, completion)
         };
         self.send(root_session_id, AgentUpdate::Status { id, status });
         self.changed();
+        if let Some(completion) = completion {
+            // A parent mailbox is the only automatic delivery path. The
+            // terminal state remains inspectable through wait_agent if a
+            // closing parent cannot accept the notification.
+            drop(
+                self.send_terminal_completion(root_session_id, id, completion)
+                    .await,
+            );
+        }
         let registry = Arc::clone(self);
         let root_session_id = root_session_id.to_owned();
         drop(platform::spawn(async move {
@@ -1155,10 +1281,16 @@ impl Registry {
                 .lock()
                 .await
                 .take_resident_eviction(root_session_id, self.max_resident.load(Ordering::Relaxed));
-            let Some(ResidentEviction { id, harness }) = eviction else {
+            let Some(ResidentEviction {
+                id,
+                harness,
+                status,
+            }) = eviction
+            else {
                 return;
             };
             self.changed();
+            self.send(root_session_id, AgentUpdate::Status { id, status });
             if harness.close().await.is_err() {
                 self.harness_closed(root_session_id, id).await;
             }
@@ -1275,6 +1407,35 @@ impl Registry {
             to_agent_id: prepared.message.to,
             disposition,
         })
+    }
+
+    async fn send_terminal_completion(
+        &self,
+        root_session_id: &str,
+        from: AgentId,
+        completion: AgentTerminalCompletion,
+    ) -> std::io::Result<()> {
+        let _message_guard = self.message_lock.lock().await;
+        let prepared = self.state.lock().await.prepare_terminal_completion(
+            root_session_id,
+            from,
+            completion,
+        )?;
+        let delivery = prepared
+            .harness
+            .enqueue_passive_delivery(prepared.message.clone())?;
+        self.state
+            .lock()
+            .await
+            .commit_message(&prepared.root_session_id, prepared.message.clone())?;
+        if let Err(error) = delivery.release().await {
+            self.state
+                .lock()
+                .await
+                .rollback_message(&prepared.root_session_id, prepared.message.id);
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(super) async fn message_admitted(
@@ -1655,19 +1816,69 @@ fn complete_session(session: &mut ChildSession, output: Option<Value>) -> AgentS
     AgentStatus::Completed { output }
 }
 
+fn terminal_status(status: &AgentStatus) -> AgentStatus {
+    match status {
+        AgentStatus::Failed { error } => AgentStatus::Failed {
+            error: bounded_bytes(error, 512),
+        },
+        status => status.clone(),
+    }
+}
+
+impl AgentUsage {
+    fn from_turn(usage: Option<&nanocodex_agent::TurnUsage>) -> Self {
+        let mut recorded = Self {
+            completed_turns: 1,
+            ..Self::default()
+        };
+        if let Some(usage) = usage {
+            recorded.turns_with_reported_usage = 1;
+            recorded.input_tokens = usage.input_tokens();
+            recorded.cached_input_tokens = usage.cached_input_tokens();
+            recorded.cache_write_input_tokens = usage.cache_write_input_tokens();
+            recorded.output_tokens = usage.output_tokens();
+            recorded.reasoning_output_tokens = usage.reasoning_output_tokens();
+            recorded.total_tokens = usage.total_tokens();
+        }
+        recorded
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.completed_turns = self.completed_turns.saturating_add(other.completed_turns);
+        self.turns_with_reported_usage = self
+            .turns_with_reported_usage
+            .saturating_add(other.turns_with_reported_usage);
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.cached_input_tokens = self
+            .cached_input_tokens
+            .saturating_add(other.cached_input_tokens);
+        self.cache_write_input_tokens = self
+            .cache_write_input_tokens
+            .saturating_add(other.cache_write_input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.reasoning_output_tokens = self
+            .reasoning_output_tokens
+            .saturating_add(other.reasoning_output_tokens);
+        self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+    }
+}
+
 fn first_error(results: Vec<std::io::Result<()>>) -> std::io::Result<()> {
     results.into_iter().find(Result::is_err).unwrap_or(Ok(()))
 }
 
 fn bounded_summary(value: &str) -> String {
-    const MAX_BYTES: usize = 160;
-    if value.len() <= MAX_BYTES {
+    bounded_bytes(value, 160)
+}
+
+fn bounded_bytes(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
         return value.to_owned();
     }
     let end = value
         .char_indices()
         .map(|(index, _)| index)
-        .take_while(|index| *index <= MAX_BYTES)
+        .take_while(|index| *index <= max_bytes)
         .last()
         .unwrap_or_default();
     value[..end].to_owned()
@@ -1686,6 +1897,9 @@ impl ChildSession {
             task: self.descriptor.task.clone(),
             parent_agent_id: self.descriptor.parent,
             status: self.status.clone(),
+            lineage: self.lineage.clone(),
+            usage: self.usage.clone(),
+            child_usage: self.child_usage.clone(),
             last_output,
         }
     }
@@ -1774,8 +1988,9 @@ pub fn channel(
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentDescriptor, AgentId, AgentStatus, ChildSession, OutputContract, Registry,
-        RegistryState, complete_session, completion_instructions, forward_events,
+        AgentDescriptor, AgentId, AgentLineage, AgentStatus, AgentUsage, ChildSession,
+        OutputContract, Registry, RegistryState, complete_session, completion_instructions,
+        forward_events,
     };
     use crate::platform;
     use crate::{
@@ -2049,6 +2264,13 @@ mod tests {
             last_output: None,
             last_used: 0,
             evicted: false,
+            lineage: AgentLineage {
+                root_session_id: "test-root".to_owned(),
+                parent_agent_id: parent,
+                initiating_turn_token: None,
+            },
+            usage: AgentUsage::default(),
+            child_usage: AgentUsage::default(),
         }
     }
 
@@ -2290,7 +2512,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eviction_preserves_interrupted_status_and_lifecycle_addressability() {
+    async fn eviction_marks_an_unresumable_agent_closed_and_non_manageable() {
         let (registry, _control, _updates) = super::channel(1);
         registry.set_max_resident(1);
         let (interrupted, _interrupted_session) =
@@ -2324,15 +2546,15 @@ mod tests {
             .into_iter()
             .find(|entry| entry.agent_id == interrupted)
             .expect("evicted agent should remain in the directory");
-        assert_eq!(entry.status, AgentStatus::Interrupted);
+        assert_eq!(entry.status, AgentStatus::Closed);
         assert!(!entry.can_message);
-        assert!(entry.can_manage);
+        assert!(!entry.can_manage);
         let (summaries, timed_out) = registry
             .wait("main", &[interrupted], Duration::from_millis(1))
             .await
             .unwrap();
         assert!(!timed_out);
-        assert_eq!(summaries[0].status, AgentStatus::Interrupted);
+        assert_eq!(summaries[0].status, AgentStatus::Closed);
         assert_eq!(
             registry.close("main", interrupted).await.unwrap()[0].status,
             AgentStatus::Closed

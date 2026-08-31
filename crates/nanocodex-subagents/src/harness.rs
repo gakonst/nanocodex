@@ -27,6 +27,7 @@ pub(super) struct HarnessHandle {
 
 struct DeliveryCommand {
     message: AgentMessage,
+    trigger_turn: bool,
     committed: Option<oneshot::Receiver<()>>,
     response: oneshot::Sender<std::io::Result<MessageDisposition>>,
 }
@@ -80,6 +81,7 @@ struct Harness {
     urgent: mpsc::Receiver<DeliveryCommand>,
     pending_deferred: VecDeque<AgentMessage>,
     pending_urgent: VecDeque<AgentMessage>,
+    pending_passive: VecDeque<AgentMessage>,
     output_schema: String,
     capacity: Capacity,
     capacity_revision: watch::Receiver<u64>,
@@ -128,11 +130,28 @@ impl HarnessHandle {
         &self,
         message: AgentMessage,
     ) -> std::io::Result<EnqueuedDelivery> {
+        self.enqueue_delivery_with_policy(message, true)
+    }
+
+    /// Queues contextual mail without starting an otherwise idle model turn.
+    pub(super) fn enqueue_passive_delivery(
+        &self,
+        message: AgentMessage,
+    ) -> std::io::Result<EnqueuedDelivery> {
+        self.enqueue_delivery_with_policy(message, false)
+    }
+
+    fn enqueue_delivery_with_policy(
+        &self,
+        message: AgentMessage,
+        trigger_turn: bool,
+    ) -> std::io::Result<EnqueuedDelivery> {
         let id = message.id;
         let (response, result) = oneshot::channel();
         let (committed, wait_for_commit) = oneshot::channel();
         let command = DeliveryCommand {
             message,
+            trigger_turn,
             committed: Some(wait_for_commit),
             response,
         };
@@ -197,6 +216,7 @@ pub(super) fn spawn(
             urgent: urgent_receiver,
             pending_deferred: VecDeque::new(),
             pending_urgent: VecDeque::new(),
+            pending_passive: VecDeque::new(),
             output_schema,
             capacity,
             capacity_revision,
@@ -301,6 +321,10 @@ impl Harness {
         if !command.wait_for_commit().await {
             return;
         }
+        if !command.trigger_turn {
+            self.accept_passive_delivery(command).await;
+            return;
+        }
         let steer = if priority == MessagePriority::Urgent && self.active.is_some() {
             match self.registry.upgrade() {
                 Some(registry) => {
@@ -380,6 +404,32 @@ impl Harness {
         self.queue_delivery(command, priority).await;
     }
 
+    async fn accept_passive_delivery(&mut self, command: DeliveryCommand) {
+        if let Some(active) = self.active.as_ref()
+            && active.control.steer(command.message.prompt()).await.is_ok()
+        {
+            self.admit(
+                command.message.id,
+                command.response,
+                MessageDisposition::Steered,
+            )
+            .await;
+            return;
+        }
+        if self.pending_passive.len() >= DEFERRED_CAPACITY {
+            self.reject(
+                command,
+                format!("passive mailbox for agent {} is full", self.id),
+            )
+            .await;
+            return;
+        }
+        let id = command.message.id;
+        self.pending_passive.push_back(command.message);
+        self.admit(id, command.response, MessageDisposition::Queued)
+            .await;
+    }
+
     async fn queue_delivery(&mut self, command: DeliveryCommand, priority: MessagePriority) {
         let queue = match priority {
             MessagePriority::Deferred => &mut self.pending_deferred,
@@ -448,6 +498,7 @@ impl Harness {
             .pending_urgent
             .drain(..)
             .chain(self.pending_deferred.drain(..))
+            .chain(self.pending_passive.drain(..))
             .map(|message| message.id)
             .collect::<Vec<_>>();
         for id in pending {
@@ -542,12 +593,37 @@ impl Harness {
                 self.id
             )));
         };
-        let prompt = format!(
-            "{prompt}\n\n{}",
-            completion_instructions(&self.output_schema, turn_token)
-        );
+        let passive = self
+            .pending_passive
+            .iter()
+            .map(AgentMessage::prompt)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let prompt = if passive.is_empty() {
+            format!(
+                "{prompt}\n\n{}",
+                completion_instructions(&self.output_schema, turn_token)
+            )
+        } else {
+            format!(
+                "{passive}\n\n{prompt}\n\n{}",
+                completion_instructions(&self.output_schema, turn_token)
+            )
+        };
         let turn = match agent.prompt(prompt).await {
-            Ok(turn) => turn,
+            Ok(turn) => {
+                let delivered = self.pending_passive.drain(..).collect::<Vec<_>>();
+                for message in delivered {
+                    registry
+                        .message_delivered(
+                            &self.root_session_id,
+                            message.id,
+                            MessageDisposition::Started,
+                        )
+                        .await;
+                }
+                turn
+            }
             Err(error) => {
                 let error = format!("could not start agent {}: {error}", self.id);
                 registry
