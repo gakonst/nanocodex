@@ -149,6 +149,15 @@ pub(crate) struct AgentArgs {
     )]
     fast_mode: bool,
 
+    /// Enable Codex-style local token accounting and fresh context windows.
+    #[arg(
+        long,
+        env = "NANOCODEX_TOKEN_BUDGET",
+        default_value_t = false,
+        action = ArgAction::Set
+    )]
+    token_budget: bool,
+
     /// Replace the standard system/developer instructions.
     #[arg(long, value_parser = NonEmptyStringValueParser::new())]
     instructions: Option<String>,
@@ -361,6 +370,9 @@ impl AgentArgs {
             .transport(responses_transport)
             .websocket_url(direct_websocket_url)
             .websocket_warmup(self.websocket_warmup);
+        if self.token_budget {
+            openai = openai.token_budget(nanocodex::oai::session::TokenBudgetConfig::default());
+        }
         if let Some(prefix) = self.model_id_prefix.as_deref() {
             openai = openai.model_id_prefix(prefix);
         }
@@ -1007,6 +1019,12 @@ mod tests {
             .find(|argument| argument.get_id() == "websocket_warmup")
             .expect("the CLI should expose the WebSocket warmup argument");
         assert_eq!(warmup.get_default_values(), ["false"]);
+
+        let token_budget = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "token_budget")
+            .expect("the CLI should expose local fresh-context policy");
+        assert_eq!(token_budget.get_default_values(), ["false"]);
     }
 
     #[test]
