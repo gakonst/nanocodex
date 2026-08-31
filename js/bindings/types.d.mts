@@ -415,6 +415,8 @@ export type ToolContext = {
   callId: string;
   parentCallId: string;
   sessionId: string;
+  /** Runtime-reported model identifier for the agent invoking this tool. */
+  model: string;
   signal: AbortSignal;
   /** Present for tools invoked by a subagent; absent for the root agent. */
   subagent?: SubagentToolContext | undefined;

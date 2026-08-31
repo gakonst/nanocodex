@@ -158,7 +158,7 @@ async function check() {
   const parallelTool: Tool = {
     description: "Parallel read-only fixture.",
     supportsParallelToolCalls: true,
-    handler: async (_input, context) => context.signal.aborted,
+    handler: async (_input, context) => context.model.length > 0 && context.signal.aborted,
   };
   const parallelMcp: McpServer = {
     url: "https://mcp.example.com",

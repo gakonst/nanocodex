@@ -17,6 +17,7 @@ const context = Object.freeze({
   callId: "call-1",
   parentCallId: "",
   sessionId: "session-1",
+  model: "gpt-5.6-terra",
   signal: new AbortController().signal,
 });
 
@@ -45,6 +46,7 @@ test("web forwards the complete command object through a caller-owned host adapt
   assert.deepEqual(JSON.parse(requests[0].init.body), {
     commands: { search_query: [{ q: "nanocodex" }] },
     session_id: "session-1",
+    model: "gpt-5.6-terra",
   });
   assert.equal(requests[0].init.headers.authorization, "Bearer host");
   assert.equal(requests[0].init.redirect, "manual");

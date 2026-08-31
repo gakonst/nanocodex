@@ -20,6 +20,7 @@ export function web(options = {}) {
       const result = requireObject(await request({
         commands,
         session_id: context.sessionId,
+        model: context.model,
       }, context.signal), "web__run response");
       return requireString(result.output, "web__run response.output");
     },

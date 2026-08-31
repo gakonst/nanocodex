@@ -339,8 +339,10 @@ schemas, bounds, and image-edit modes, and normalize common malformed model
 arguments before dispatch. In a browser, they default to the same-origin
 `/api/tools/web-search` and `/api/tools/image-generation` routes. The host owns
 only a bounded JSON endpoint, credentials, authorization, and persistence.
-`web(...)` posts `{ commands, session_id }`; `imageGeneration(...)` posts
-`{ images, prompt }`. Pass `url` when the host route lives elsewhere.
+`web(...)` posts `{ commands, session_id, model }`, where `model` is the
+effective model of the invoking root or subagent; `imageGeneration(...)` posts
+`{ images, prompt }`. The host owns model authorization and may ignore or
+override this value. Pass `url` when the host route lives elsewhere.
 
 `dataset()` runs entirely in the caller and inspects public HTTPS Parquet,
 uncompressed JSONL, and Hugging Face datasets. It opens a session-scoped handle,
