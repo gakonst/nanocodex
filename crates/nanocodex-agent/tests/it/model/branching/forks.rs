@@ -1,6 +1,61 @@
 use super::*;
 
 #[tokio::test]
+async fn completed_fork_replays_history_without_the_parent_transport_checkpoint() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut root = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut root).await?);
+        send_warmup(&mut root, "resp-warmup").await?;
+
+        let root_turn = next_json(&mut root).await?;
+        assert_eq!(root_turn["previous_response_id"], "resp-warmup");
+        send_final(&mut root, "resp-root").await?;
+
+        let (stream, _) = listener.accept().await?;
+        let mut branch = accept_async(stream).await?;
+        let fork = next_json(&mut branch).await?;
+        assert!(fork.get("previous_response_id").is_none());
+        let fork_text = fork.to_string();
+        assert!(fork_text.contains("completed root prompt"));
+        assert!(fork_text.contains("BTW question"));
+        send_final(&mut branch, "resp-branch").await
+    });
+
+    let workspace = temporary_workspace("completed-fork-full-replay")?;
+    let openai = OpenAi::builder("test-key")
+        .websocket_url(endpoint)
+        .build()?;
+    let (agent, root_events) = Nanocodex::builder(openai)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .build()?;
+    agent
+        .prompt("completed root prompt")
+        .await?
+        .result()
+        .await?;
+    let (fork, fork_events) = agent.fork().await?;
+    assert_eq!(
+        fork.prompt("BTW question")
+            .await?
+            .result()
+            .await?
+            .final_message(),
+        "done"
+    );
+
+    drop((agent, fork, root_events, fork_events));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn latest_fork_during_streaming_inherits_the_active_prompt_delta() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);

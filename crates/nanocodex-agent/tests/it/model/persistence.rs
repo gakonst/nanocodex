@@ -72,24 +72,23 @@ async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
         let first = next_json(&mut root).await?;
         send_final(&mut root, "resp-first").await?;
 
-        let (stream, _) = listener.accept().await?;
-        let mut branch = accept_async(stream).await?;
-        let checkpoint = next_json(&mut branch).await?;
+        let checkpoint = next_json(&mut root).await?;
         assert_eq!(checkpoint["previous_response_id"], "resp-first");
         assert_eq!(checkpoint["input"].as_array().map(Vec::len), Some(1));
         send_json(
-            &mut branch,
+            &mut root,
             json!({
                 "type": "error",
+                "status": 400,
                 "error": {
-                    "code": "previous_response_not_found",
-                    "message": "checkpoint expired"
+                    "type": "invalid_request_error",
+                    "message": "Invalid `previous_response_id`."
                 }
             }),
         )
         .await?;
 
-        let replay = next_json(&mut branch).await?;
+        let replay = next_json(&mut root).await?;
         assert!(replay.get("previous_response_id").is_none());
         assert_eq!(replay["store"], true);
         assert_eq!(replay["input"][0]["type"], "additional_tools");
@@ -102,8 +101,8 @@ async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
                 .as_array()
                 .is_some_and(|items| items.len() > 4)
         );
-        send_final(&mut branch, "resp-replayed").await?;
-        drop((root, first));
+        send_final(&mut root, "resp-replayed").await?;
+        drop(first);
         Result::<()>::Ok(())
     });
 
@@ -112,23 +111,22 @@ async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
         .websocket_url(endpoint)
         .store(true)
         .build()?;
-    let (agent, root_events) = Nanocodex::builder(openai)
+    let (agent, mut root_events) = Nanocodex::builder(openai)
         .thinking(Thinking::Low)
         .workspace(&workspace)
         .session_id(test_session_id())
         .build()?;
-    let first = agent
+    agent
         .prompt(Prompt::new("root prompt"))
         .await?
         .result()
         .await?;
-    let (fork, mut fork_events) = agent.fork_from(&first).await?;
-    let branch = fork.prompt("branch after eviction").await?;
-    assert_eq!(branch.result().await?.final_message(), "done");
+    let continuation = agent.prompt("branch after eviction").await?;
+    assert_eq!(continuation.result().await?.final_message(), "done");
 
-    drop((agent, fork, root_events));
+    drop(agent);
     let mut observed_checkpoint_retry = false;
-    while let Some(event) = fork_events.recv().await {
+    while let Some(event) = root_events.recv().await {
         if event.kind == AgentEventKind::ModelAttemptRetrying {
             let payload = event.decode_payload::<Value>()?;
             observed_checkpoint_retry = payload["error_class"] == "checkpoint_missing"

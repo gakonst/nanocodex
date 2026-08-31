@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::api_error::{api_error_has_code, retryable_api_error};
+use super::api_error::{api_error_has_code, api_error_is_checkpoint_missing, retryable_api_error};
 
 /// Errors produced by the standard `OpenAI` Responses transports.
 ///
@@ -240,9 +240,7 @@ impl ResponsesError {
             Self::EncodeRequest(_) => "encode_request",
             Self::InvalidPayload { .. } => "invalid_payload",
             Self::Closed { .. } => "closed",
-            Self::Api { event } if api_error_has_code(event, "previous_response_not_found") => {
-                "checkpoint_missing"
-            }
+            Self::Api { event } if api_error_is_checkpoint_missing(event) => "checkpoint_missing",
             Self::Api { .. } => "api",
             Self::ContextWindowExceeded { .. } => "context_window_exceeded",
             Self::InvalidImageRequest { .. } => "invalid_image_request",
@@ -258,7 +256,7 @@ impl ResponsesError {
     /// Returns whether the provider no longer recognizes a continuation ID.
     #[must_use]
     pub fn is_checkpoint_missing(&self) -> bool {
-        matches!(self, Self::Api { event } if api_error_has_code(event, "previous_response_not_found"))
+        matches!(self, Self::Api { event } if api_error_is_checkpoint_missing(event))
     }
 
     /// Returns whether the provider rejected the request for context exhaustion.

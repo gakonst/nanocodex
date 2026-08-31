@@ -43,6 +43,23 @@ pub(super) fn api_error_has_code(event: &str, expected: &str) -> bool {
     event.error().and_then(|error| error.code.as_deref()) == Some(expected)
 }
 
+pub(super) fn api_error_is_checkpoint_missing(event: &str) -> bool {
+    let Ok(event) = serde_json::from_str::<ApiErrorEnvelope>(event) else {
+        return false;
+    };
+    let Some(error) = event.error() else {
+        return false;
+    };
+    if error.code.as_deref() == Some("previous_response_not_found") {
+        return true;
+    }
+    error.kind.as_deref() == Some("invalid_request_error")
+        && error
+            .message
+            .as_deref()
+            .is_some_and(|message| message.eq_ignore_ascii_case("Invalid `previous_response_id`."))
+}
+
 fn is_terminal_response_failure(code: &str) -> bool {
     matches!(
         code,
@@ -97,6 +114,8 @@ struct ApiErrorDetail {
     #[serde(default)]
     code: Option<Box<str>>,
     #[serde(default)]
+    message: Option<Box<str>>,
+    #[serde(default)]
     retry_after: Option<f64>,
 }
 
@@ -120,7 +139,32 @@ impl RetryAfterValue {
 mod tests {
     use std::time::Duration;
 
-    use super::retryable_api_error;
+    use super::{api_error_is_checkpoint_missing, retryable_api_error};
+
+    #[test]
+    fn recognizes_both_checkpoint_missing_error_shapes() {
+        let coded = r#"{
+            "type": "error",
+            "error": {
+                "code": "previous_response_not_found",
+                "message": "checkpoint expired"
+            }
+        }"#;
+        let current = r#"{
+            "type": "error",
+            "status": 400,
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Invalid `previous_response_id`."
+            }
+        }"#;
+
+        assert!(api_error_is_checkpoint_missing(coded));
+        assert!(api_error_is_checkpoint_missing(current));
+        assert!(!api_error_is_checkpoint_missing(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Invalid model."}}"#
+        ));
+    }
 
     #[test]
     fn retries_incomplete_responses() {

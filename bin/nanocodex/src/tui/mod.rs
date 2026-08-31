@@ -3981,6 +3981,117 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn btw_first_prompt_replays_parent_history_on_its_fresh_socket() -> eyre::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("ws://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut root = accept_async(stream).await?;
+            let warmup = next_ws_json(&mut root).await?;
+            assert_eq!(warmup["generate"], false);
+            send_ws_json(
+                &mut root,
+                json!({
+                    "type": "response.completed",
+                    "response": { "id": "resp-warmup", "usage": null }
+                }),
+            )
+            .await?;
+            let root_turn = next_ws_json(&mut root).await?;
+            assert!(root_turn.to_string().contains("root prompt"));
+            send_completed(&mut root, "resp-root", "root answer").await?;
+
+            let (stream, _) = listener.accept().await?;
+            let mut btw = accept_async(stream).await?;
+            let btw_turn = next_ws_json(&mut btw).await?;
+            assert!(btw_turn.get("previous_response_id").is_none());
+            let text = btw_turn.to_string();
+            assert!(text.contains("root prompt"));
+            assert!(text.contains("root answer"));
+            assert!(text.contains("BTW question"));
+            send_completed(&mut btw, "resp-btw", "BTW answer").await
+        });
+
+        let workspace = temporary_workspace("tui-btw-full-replay")?;
+        let openai = OpenAi::builder("test-key")
+            .websocket_url(endpoint)
+            .build()?;
+        let session_id = nanocodex::agent::session::SessionId::new();
+        let (agent, mut events) = Nanocodex::builder(openai)
+            .workspace(&workspace)
+            .session_id(session_id)
+            .build()?;
+        let event_drain = tokio::spawn(async move { while events.recv().await.is_some() {} });
+        let (commands, worker_rx) = mpsc::unbounded_channel();
+        let (updates, mut update_rx) = mpsc::unbounded_channel();
+        let worker = spawn_agent_worker(
+            agent,
+            Arc::from(session_id.to_string()),
+            None,
+            None,
+            worker_rx,
+            updates,
+        );
+
+        commands.send(WorkerCommand::Prompt {
+            target: PaneId::Main,
+            prompt_id: 1,
+            prompt: "root prompt".into(),
+        })?;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    update_rx.recv().await,
+                    Some(WorkerEvent::TurnFinished {
+                        target: PaneId::Main,
+                        error: None,
+                        ..
+                    })
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .map_err(|_| eyre::eyre!("root turn did not finish"))?;
+
+        commands.send(WorkerCommand::OpenBtw {
+            id: 1,
+            prompt_id: Some(2),
+            prompt: Some("BTW question".into()),
+        })?;
+        timeout(Duration::from_secs(5), async {
+            let mut opened = false;
+            loop {
+                match update_rx.recv().await {
+                    Some(WorkerEvent::BtwOpened { id: 1, .. }) => opened = true,
+                    Some(WorkerEvent::TurnFinished {
+                        target: PaneId::Btw(1),
+                        error: None,
+                        ..
+                    }) if opened => break,
+                    Some(WorkerEvent::BtwOpenFailed { error, .. }) => {
+                        return Err(eyre::eyre!(error));
+                    }
+                    _ => {}
+                }
+            }
+            Ok::<(), eyre::Report>(())
+        })
+        .await
+        .map_err(|_| eyre::eyre!("BTW turn did not finish"))??;
+
+        timeout(Duration::from_secs(5), server)
+            .await
+            .map_err(|_| eyre::eyre!("mock Responses server did not finish"))???;
+        drop(commands);
+        worker.await?;
+        event_drain.await?;
+        std::fs::remove_dir_all(workspace)?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn tui_worker_steer_becomes_a_user_item_at_the_next_model_boundary() -> eyre::Result<()> {

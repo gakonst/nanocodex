@@ -476,6 +476,14 @@ pub(crate) fn prepare_resumed_checkpoint(
         .or(checkpoint.global_instructions);
     let runtime = tool_runtime(checkpoint.workspace(), config, tools);
     if rebase_context_window {
+        // A fork owns a fresh transport session. Provider continuation IDs may
+        // be connection-local when responses are not stored (including
+        // ChatGPT subscription auth), so its first request must replay the
+        // authoritative client-owned history instead of inheriting the
+        // parent's previous_response_id.
+        if !config.store_responses {
+            checkpoint.conversation.reset_for_full_request();
+        }
         checkpoint.conversation.rebase_context_window(
             session_id.parse().map_err(|_| {
                 NanocodexError::InvalidRequest("agent session id must be a UUIDv7 value".to_owned())
