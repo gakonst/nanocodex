@@ -1,11 +1,12 @@
 # Codex parity ledger
 
-This ledger records the review of all 1,357 commits in two contiguous exclusive
-local checkout ranges
+This ledger records the review of all 1,715 commits in three contiguous
+exclusive local-checkout ranges
 
 ```text
 openai/codex@35eaf3ffb0bf2001486c68c47a3d946b34d16634
     ..openai/codex@50ea8fd411422b3f7bc906bcde6c1c4432019a2e
+    ..openai/codex@13bc770eaf0ad8548776bde59c3d6e5316406279
 ```
 
 The review used the clean local Codex checkout at the range head. The earlier
@@ -17,7 +18,7 @@ the final seven are classified in
 latest 232 are classified in
 [`codex-parity/be2e4afc-7ada37a1.md`](codex-parity/be2e4afc-7ada37a1.md).
 
-The later `7ada37a1..50ea8fd4` range contains 802 commits. Every commit is
+The middle `7ada37a1..50ea8fd4` range contains 802 commits. Every commit is
 classified individually in eight ordered appendices:
 [`part 01`](codex-parity/7ada37a1-50ea8fd4-part01.md),
 [`part 02`](codex-parity/7ada37a1-50ea8fd4-part02.md),
@@ -27,9 +28,18 @@ classified individually in eight ordered appendices:
 [`part 06`](codex-parity/7ada37a1-50ea8fd4-part06.md),
 [`part 07`](codex-parity/7ada37a1-50ea8fd4-part07.md), and
 [`part 08`](codex-parity/7ada37a1-50ea8fd4-part08.md). Mechanical validation
-proves exact ordinal and SHA coverage for all 802 commits. The global reviewed
+proves exact ordinal and SHA coverage for all 802 commits.
+
+The latest `50ea8fd4..13bc770e` range contains 358 commits. Every commit is
+classified individually in five ordered appendices:
+[`part 09`](codex-parity/50ea8fd4-d58d0e58-part09.md),
+[`part 10`](codex-parity/50ea8fd4-d58d0e58-part10.md),
+[`part 11`](codex-parity/50ea8fd4-d58d0e58-part11.md),
+[`part 12`](codex-parity/50ea8fd4-d58d0e58-part12.md), and
+[`part 13`](codex-parity/d58d0e58-13bc770e-part13.md). Mechanical validation
+proves exact ordinal and SHA coverage for all 358 commits. The global reviewed
 checkpoint is now
-`openai/codex@50ea8fd411422b3f7bc906bcde6c1c4432019a2e`.
+`openai/codex@13bc770eaf0ad8548776bde59c3d6e5316406279`.
 
 The classifications mean:
 
@@ -48,11 +58,11 @@ claims.
 
 | Classification | Count |
 | --- | ---: |
-| `port` | 73 |
-| `evaluate` | 155 |
-| `defer` | 50 |
-| `out-of-scope` | 1,079 |
-| Total | 1,357 |
+| `port` | 109 |
+| `evaluate` | 205 |
+| `defer` | 77 |
+| `out-of-scope` | 1,324 |
+| Total | 1,715 |
 
 ## First range: `35eaf3ff..8431dc59`
 

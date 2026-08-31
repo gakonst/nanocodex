@@ -237,11 +237,11 @@ failure produces a focused fix, commit, redeploy, and rerun of the affected row
 plus its owning boundary.
 
 The Codex closeout ledger now reconciles every commit after the prior checkpoint
-through `50ea8fd411422b3f7bc906bcde6c1c4432019a2e`, classifies all 802 commits,
-and advances the reviewed checkpoint with code and regression evidence. Keep
-classifying every later commit before advancing it again. This is not permission
-to import Codex's app server, provider portability, approval framework, or
-unrelated UI architecture.
+through `13bc770eaf0ad8548776bde59c3d6e5316406279`, classifies the latest 358
+commits in addition to the earlier 1,357, and advances the reviewed checkpoint
+with code and regression evidence. Keep classifying every later commit before
+advancing it again. This is not permission to import Codex's app server,
+provider portability, approval framework, or unrelated UI architecture.
 
 ## Track A — Nanocodex anywhere
 
