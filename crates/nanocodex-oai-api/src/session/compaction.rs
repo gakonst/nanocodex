@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    ContentItem, FunctionOutputBody, FunctionOutputContent, ImageDetail, ResponseItem,
+    ContentItem, FunctionOutputBody, FunctionOutputContent, ImageDetail, Model, ResponseItem,
     responses::ResponseHistory,
 };
 #[cfg(not(target_family = "wasm"))]
@@ -26,6 +26,66 @@ const ORIGINAL_IMAGE_MAX_PATCHES: usize = 10_000;
 const ORIGINAL_IMAGE_ESTIMATE_CACHE_SIZE: usize = 32;
 const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
     "Output exceeded the available model context and was truncated";
+
+/// Model-owned context policy used by the narrow supported model family.
+///
+/// This keeps continuation behavior attached to typed model metadata rather
+/// than string matching on wire model IDs. A routing prefix is intentionally a
+/// transport concern and cannot change context behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModelContextPolicy {
+    default_context_window_tokens: u64,
+    max_context_window_tokens: u64,
+    auto_compact_percent: u8,
+}
+
+impl ModelContextPolicy {
+    /// Resolves a caller override against the model's advertised maximum.
+    #[must_use]
+    pub const fn resolve_context_window(self, configured_tokens: u64) -> u64 {
+        if configured_tokens == 0 {
+            self.default_context_window_tokens
+        } else if configured_tokens > self.max_context_window_tokens {
+            self.max_context_window_tokens
+        } else {
+            configured_tokens
+        }
+    }
+
+    /// Returns the model-owned automatic compaction threshold.
+    #[must_use]
+    pub const fn auto_compact_token_limit(self, configured_tokens: u64) -> u64 {
+        self.resolve_context_window(configured_tokens)
+            .saturating_mul(self.auto_compact_percent as u64)
+            / 100
+    }
+}
+
+/// Returns the context policy for a supported typed model.
+#[must_use]
+pub const fn model_context_policy(model: Model) -> ModelContextPolicy {
+    // Keep the entries distinct even while the currently supported family
+    // advertises the same limits. Future model metadata changes stay local to
+    // this typed table instead of leaking model-ID conditionals through the
+    // continuation runtime.
+    match model {
+        Model::Sol => ModelContextPolicy {
+            default_context_window_tokens: crate::CONTEXT_WINDOW_TOKENS,
+            max_context_window_tokens: crate::MAX_CONTEXT_WINDOW_TOKENS,
+            auto_compact_percent: 90,
+        },
+        Model::Terra => ModelContextPolicy {
+            default_context_window_tokens: crate::CONTEXT_WINDOW_TOKENS,
+            max_context_window_tokens: crate::MAX_CONTEXT_WINDOW_TOKENS,
+            auto_compact_percent: 90,
+        },
+        Model::Luna => ModelContextPolicy {
+            default_context_window_tokens: crate::CONTEXT_WINDOW_TOKENS,
+            max_context_window_tokens: crate::MAX_CONTEXT_WINDOW_TOKENS,
+            auto_compact_percent: 90,
+        },
+    }
+}
 
 #[cfg(not(target_family = "wasm"))]
 #[derive(Default)]
@@ -64,9 +124,8 @@ static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<Mutex<OriginalImageEstimateCache>
     LazyLock::new(|| Mutex::new(OriginalImageEstimateCache::default()));
 
 #[must_use]
-pub fn auto_compact_token_limit(model: &str, context_window_tokens: u64) -> Option<u64> {
-    matches!(model, "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna")
-        .then_some((context_window_tokens * 9) / 10)
+pub fn auto_compact_token_limit(model: Model, context_window_tokens: u64) -> u64 {
+    model_context_policy(model).auto_compact_token_limit(context_window_tokens)
 }
 
 #[must_use]
@@ -217,7 +276,7 @@ fn truncate_retained_messages(items: Vec<ResponseItem>, max_tokens: usize) -> Ve
         if remaining == 0 {
             continue;
         }
-        let tokens = message_text_token_count(&item).max(1);
+        let tokens = retained_message_token_count(&item).max(1);
         if tokens <= remaining {
             retained.push(item);
             remaining = remaining.saturating_sub(tokens);
@@ -230,22 +289,20 @@ fn truncate_retained_messages(items: Vec<ResponseItem>, max_tokens: usize) -> Ve
     retained
 }
 
-fn message_text_token_count(item: &ResponseItem) -> usize {
+fn retained_message_token_count(item: &ResponseItem) -> usize {
     let ResponseItem::Message { content, .. } = item else {
         return 0;
     };
-    content
-        .iter()
-        .filter_map(content_text)
-        .map(|text| approx_tokens(text.len()))
-        .sum()
-}
-
-fn content_text(content: &ContentItem) -> Option<&str> {
-    match content {
-        ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => Some(text),
-        ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => None,
-    }
+    content.iter().fold(0usize, |total, content| {
+        let tokens = match content {
+            ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
+                approx_tokens(text.len())
+            }
+            ContentItem::InputImage { image_url, detail } => image_token_count(image_url, *detail),
+            ContentItem::InputAudio { .. } => 0,
+        };
+        total.saturating_add(tokens)
+    })
 }
 
 fn truncate_message_text(mut item: ResponseItem, max_tokens: usize) -> Option<ResponseItem> {
@@ -269,7 +326,19 @@ fn truncate_message_text(mut item: ResponseItem, max_tokens: usize) -> Option<Re
                 }
                 truncated.push(content_item);
             }
-            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => {
+            ContentItem::InputImage { image_url, detail } => {
+                let tokens = image_token_count(image_url, *detail);
+                if tokens <= remaining {
+                    remaining = remaining.saturating_sub(tokens);
+                    truncated.push(content_item);
+                } else {
+                    // Do not retain an image that alone exceeds the bounded
+                    // compacted-message budget; otherwise a single data URL
+                    // silently defeats the 64k cap.
+                    remaining = 0;
+                }
+            }
+            ContentItem::InputAudio { .. } => {
                 truncated.push(content_item);
             }
         }
@@ -403,6 +472,22 @@ fn image_estimate_adjustment(item: &ResponseItem) -> (usize, usize) {
     )
 }
 
+fn image_token_count(image_url: &str, detail: Option<ImageDetail>) -> usize {
+    let Some(payload) = base64_image_payload(image_url) else {
+        return 0;
+    };
+    let bytes = if detail == Some(ImageDetail::Original) {
+        original_image_bytes_estimate(image_url).unwrap_or(RESIZED_IMAGE_BYTES_ESTIMATE)
+    } else {
+        RESIZED_IMAGE_BYTES_ESTIMATE
+    };
+    // Base64 itself does not count as model input; image patches do. Keeping
+    // the payload check makes remote URLs preserve their existing provider
+    // accounting behavior while locally supplied image bytes are bounded.
+    let _ = payload;
+    approx_tokens(bytes)
+}
+
 fn base64_image_payload(image_url: &str) -> Option<&str> {
     if !image_url
         .get(.."data:".len())
@@ -478,7 +563,7 @@ const fn approx_tokens(bytes: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::CONTEXT_WINDOW_TOKENS;
+    use crate::{CONTEXT_WINDOW_TOKENS, Model};
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
@@ -497,23 +582,41 @@ mod tests {
     }
 
     #[test]
-    fn supported_models_compact_at_ninety_percent_of_the_policy_budget() {
+    fn model_metadata_owns_auto_compaction_thresholds() {
         assert_eq!(
-            auto_compact_token_limit("gpt-5.6-sol", CONTEXT_WINDOW_TOKENS),
-            Some(244_800)
+            auto_compact_token_limit(Model::Sol, CONTEXT_WINDOW_TOKENS),
+            244_800
         );
         assert_eq!(
-            auto_compact_token_limit("gpt-5.6-terra", CONTEXT_WINDOW_TOKENS),
-            Some(244_800)
+            auto_compact_token_limit(Model::Terra, CONTEXT_WINDOW_TOKENS),
+            244_800
         );
         assert_eq!(
-            auto_compact_token_limit("gpt-5.6-luna", crate::MAX_CONTEXT_WINDOW_TOKENS),
-            Some(784_800)
+            auto_compact_token_limit(Model::Luna, crate::MAX_CONTEXT_WINDOW_TOKENS),
+            784_800
         );
-        assert_eq!(
-            auto_compact_token_limit("unknown-model", CONTEXT_WINDOW_TOKENS),
-            None
+    }
+
+    #[test]
+    fn retained_image_budget_prevents_a_data_url_from_defeating_the_64k_cap() {
+        let image = format!("data:image/png;base64,{}", "A".repeat(32));
+        let older = message("older user fact");
+        let latest = ResponseItem::message(
+            crate::MessageRole::User,
+            (0..40).map(|_| ContentItem::InputImage {
+                image_url: image.clone().into_boxed_str(),
+                detail: Some(ImageDetail::High),
+            }),
         );
+
+        let retained =
+            truncate_retained_messages(vec![older, latest], RETAINED_MESSAGE_TOKEN_BUDGET);
+
+        assert_eq!(retained.len(), 1);
+        let ResponseItem::Message { content, .. } = &retained[0] else {
+            panic!("the retained image message must remain a user message");
+        };
+        assert!(content.len() < 40);
     }
 
     #[test]

@@ -623,7 +623,7 @@ where
     let span = response_call_span(
         turn.session,
         turn.logical_turn,
-        "response.compact",
+        "response.create.compaction_v2",
         turn.session.history_len(),
     );
     let started_at = Instant::now();
@@ -713,7 +713,7 @@ where
     let server_reasoning_included = success.server_reasoning_included();
     let ResponsesOutput::Compaction(response) = success.into_output() else {
         return Err(ResponseError::protocol(
-            "response.compact returned a non-compaction output",
+            "compaction-v2 response.create returned a non-compaction output",
         ));
     };
 

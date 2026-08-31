@@ -12,7 +12,7 @@ use super::{
     load::{visible_rollout_event, visible_tool_call},
     store::{
         RolloutCommit,
-        writer::{RolloutWriter, write_line},
+        writer::{RolloutWriter, validate_context_window_transition, write_line},
     },
 };
 
@@ -165,6 +165,25 @@ fn prompt_previews_are_single_line_and_bounded() {
         load::prompt_preview("safe\u{1b}]52;c;payload\u{7} text"),
         Some("safe]52;c;payload text".to_owned())
     );
+}
+
+#[test]
+fn compaction_windows_must_form_one_contiguous_lineage() {
+    let valid = serde_json::json!({
+        "window_number": 1,
+        "first_window_id": "window-1",
+        "previous_window_id": "window-1",
+        "window_id": "window-2",
+    });
+    assert_eq!(
+        validate_context_window_transition(&valid, "window-1", "window-1", 0)
+            .expect("valid compaction lineage"),
+        (1, "window-2".to_owned())
+    );
+
+    let mut invalid = valid;
+    invalid["previous_window_id"] = Value::String("unrelated".to_owned());
+    assert!(validate_context_window_transition(&invalid, "window-1", "window-1", 0).is_err());
 }
 
 fn set_modified(path: &Path, seconds: u64) {

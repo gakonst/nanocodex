@@ -43,7 +43,7 @@ pub struct GenerationOutput {
     pub pipeline_stats: ResponsePipelineStats,
 }
 
-/// Complete provider output from one `response.compact` operation.
+/// Complete provider output from one compaction-v2 `response.create` operation.
 pub struct CompactionOutput {
     /// Provider response ID retained privately by a managed session.
     pub id: String,

@@ -90,12 +90,8 @@ where
         context: CompactionContext<'_>,
     ) -> Result<bool> {
         let CompactionContext { snapshot, phase } = context;
-        let Some(auto_compact_token_limit) = compaction::auto_compact_token_limit(
-            self.model.as_str(),
-            self.config.context_window_tokens,
-        ) else {
-            return Ok(false);
-        };
+        let auto_compact_token_limit =
+            compaction::auto_compact_token_limit(self.model, self.config.context_window_tokens);
         let active_context_tokens = conversation.active_context_tokens();
         if !self.force_compaction && active_context_tokens < auto_compact_token_limit {
             return Ok(false);

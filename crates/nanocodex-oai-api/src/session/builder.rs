@@ -258,7 +258,7 @@ where
         Response::new(events, run)
     }
 
-    /// Executes `response.compact` and atomically installs its completed
+    /// Executes a compaction-v2 `response.create` and atomically installs its completed
     /// history replacement.
     ///
     /// Pre-turn compaction defers the session's last caller-supplied developer,
@@ -291,7 +291,7 @@ where
         Response::new(events, run)
     }
 
-    /// Executes `response.compact` and atomically installs its completed
+    /// Executes a compaction-v2 `response.create` and atomically installs its completed
     /// history replacement.
     ///
     /// Pre-turn compaction defers the session's last caller-supplied developer,

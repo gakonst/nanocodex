@@ -18,6 +18,9 @@ use tokio::sync::mpsc;
 use crate::stream::{CompactionOutput, GenerationOutput};
 
 const RESPONSE_MAX_ATTEMPTS: NonZeroU32 = NonZeroU32::new(5).unwrap();
+// Compaction v2 streams can run much longer than an ordinary generation.
+// Match Codex by keeping their per-operation transport retry budget small.
+const COMPACTION_V2_MAX_ATTEMPTS: NonZeroU32 = NonZeroU32::new(2).unwrap();
 
 /// Kind of Responses operation passed through the Tower service stack.
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -28,7 +31,8 @@ pub enum ResponsesAttemptKind {
     Warmup,
     /// A `response.create` operation.
     Generation,
-    /// A `response.compact` operation.
+    /// A normal `response.create` stream whose input ends in
+    /// `compaction_trigger` (compaction-v2).
     Compaction,
 }
 
@@ -261,7 +265,7 @@ impl ResponsesAttempt {
             profile,
             observer,
             attempt: 1,
-            max_attempts: RESPONSE_MAX_ATTEMPTS.get(),
+            max_attempts: COMPACTION_V2_MAX_ATTEMPTS.get(),
             full_replay: previous_response_id.is_none(),
             logical_turn: 0,
             session_transport,
@@ -406,7 +410,7 @@ pub enum ResponsesOutput {
     Warmup(WarmupResponse),
     /// `response.create` completed.
     Generation(GenerationOutput),
-    /// `response.compact` completed.
+    /// A completed `response.create` compaction-v2 stream.
     Compaction(CompactionOutput),
 }
 
@@ -576,7 +580,7 @@ impl ResponsesAttemptFactory {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Builds a replayable `response.compact` attempt.
+    /// Builds a replayable compaction-v2 `response.create` attempt.
     #[must_use]
     pub fn compaction(
         &self,
@@ -611,7 +615,9 @@ impl ResponsesAttemptFactory {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResponseHistory, ResponsesAttemptFactory, TransportStats};
+    use super::{
+        COMPACTION_V2_MAX_ATTEMPTS, ResponseHistory, ResponsesAttemptFactory, TransportStats,
+    };
     use crate::{
         ContentItem, EventSink, MessageRole, Model, ResponseItem, ResponsesTransport, Thinking,
         responses::RequestProfile,
@@ -645,6 +651,31 @@ mod tests {
         assert_eq!(attempt.model(), Model::Luna);
         assert_eq!(attempt.thinking(), Thinking::High);
         assert!(attempt.fast_mode());
+    }
+
+    #[test]
+    fn compaction_v2_has_a_smaller_retry_budget_than_generation() {
+        let (events, _receiver) = EventSink::channel("attempt-test".to_owned());
+        let factory = ResponsesAttemptFactory::new(
+            RequestProfile::new("attempt-test", "attempt-test", Arc::from([])),
+            events,
+            Arc::new(TransportStats::default()),
+        );
+        let mut attempt = factory.compaction(
+            1,
+            ResponseHistory::default(),
+            ResponseHistory::default(),
+            0,
+            None,
+            ResponseItem::compaction_trigger(),
+            Model::Sol,
+            Thinking::Low,
+            false,
+        );
+
+        assert_eq!(attempt.max_attempts, COMPACTION_V2_MAX_ATTEMPTS.get());
+        assert!(attempt.prepare_retry());
+        assert!(!attempt.prepare_retry());
     }
 
     #[test]
