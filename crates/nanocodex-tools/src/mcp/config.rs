@@ -48,6 +48,7 @@ pub struct McpServer {
     pub(crate) tool_timeout: Duration,
     pub(crate) supports_parallel_tool_calls: bool,
     pub(crate) parallel_tools: BTreeSet<String>,
+    pub(crate) tool_output_token_limits: BTreeMap<String, usize>,
     pub(crate) tool_exposure: McpToolExposure,
     pub(crate) enabled_tools: Option<Vec<String>>,
     pub(crate) disabled_tools: Vec<String>,
@@ -116,6 +117,7 @@ impl McpServer {
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
             supports_parallel_tool_calls: false,
             parallel_tools: BTreeSet::new(),
+            tool_output_token_limits: BTreeMap::new(),
             tool_exposure: McpToolExposure::default(),
             enabled_tools: None,
             disabled_tools: Vec::new(),
@@ -138,6 +140,7 @@ impl McpServer {
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
             supports_parallel_tool_calls: false,
             parallel_tools: BTreeSet::new(),
+            tool_output_token_limits: BTreeMap::new(),
             tool_exposure: McpToolExposure::default(),
             enabled_tools: None,
             disabled_tools: Vec::new(),
@@ -184,6 +187,21 @@ impl McpServer {
     #[must_use]
     pub fn parallel_tools(mut self, tools: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.parallel_tools = tools.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Caps the model-visible output of one named remote tool.
+    ///
+    /// The invocation context remains the outer authority; this policy can
+    /// only tighten its budget, never broaden it.
+    #[must_use]
+    pub fn tool_output_token_limit(
+        mut self,
+        tool: impl Into<String>,
+        max_tokens: std::num::NonZeroUsize,
+    ) -> Self {
+        self.tool_output_token_limits
+            .insert(tool.into(), max_tokens.get());
         self
     }
 

@@ -43,16 +43,34 @@ pub(crate) struct ToolEntry {
     pub search_text: String,
     pub client: Client,
     pub timeout: Duration,
+    /// Optional per-tool ceiling, intersected with the invocation context.
+    pub output_token_limit: Option<usize>,
     /// An entry is only authority while its catalog revision remains current.
     /// Reload begins by revoking the old revision, so a failed replacement
     /// cannot leave the previous connection callable.
     valid: Arc<AtomicBool>,
 }
 
+#[derive(Clone)]
+pub(crate) struct CurrentClient {
+    client: Client,
+    valid: Arc<AtomicBool>,
+}
+
+impl CurrentClient {
+    pub(crate) fn is_current(&self) -> bool {
+        self.valid.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn client(&self) -> &Client {
+        &self.client
+    }
+}
+
 struct Catalog {
     entries: BTreeMap<String, Arc<ToolEntry>>,
     active: BTreeSet<String>,
-    clients: BTreeMap<String, Client>,
+    clients: BTreeMap<String, CurrentClient>,
     failures: BTreeMap<String, String>,
     search_index: Option<Arc<SearchIndex>>,
     pending_servers: BTreeSet<String>,
@@ -158,21 +176,27 @@ impl ProviderState {
         server_name: &str,
         generation: u64,
         result: Result<ConnectedCatalog, String>,
-    ) {
+    ) -> Vec<Client> {
         let mut catalog = self.catalog();
         if catalog.generations.get(server_name).copied() != Some(generation) {
-            return;
+            return match result {
+                Ok(ConnectedCatalog { client, .. }) => vec![client],
+                Err(_) => Vec::new(),
+            };
         }
+        let mut retired = Vec::new();
         match result {
             Ok(ConnectedCatalog { client, entries }) => {
                 let removed = catalog
                     .entries
                     .iter()
                     .filter_map(|(name, entry)| {
-                        (entry.server_name == server_name).then_some(name.clone())
+                        (entry.server_name == server_name)
+                            .then(|| (name.clone(), Arc::clone(entry)))
                     })
                     .collect::<Vec<_>>();
-                for name in removed {
+                for (name, entry) in removed {
+                    entry.valid.store(false, Ordering::Release);
                     catalog.entries.remove(&name);
                 }
                 for entry in entries {
@@ -190,7 +214,16 @@ impl ProviderState {
                         .entries
                         .insert(entry.canonical_name.clone(), Arc::new(entry));
                 }
-                catalog.clients.insert(server_name.to_owned(), client);
+                if let Some(previous) = catalog.clients.insert(
+                    server_name.to_owned(),
+                    CurrentClient {
+                        client,
+                        valid: Arc::new(AtomicBool::new(true)),
+                    },
+                ) {
+                    previous.valid.store(false, Ordering::Release);
+                    retired.push(previous.client);
+                }
                 let available = catalog.entries.keys().cloned().collect::<BTreeSet<_>>();
                 catalog.active.retain(|name| available.contains(name));
             }
@@ -218,9 +251,10 @@ impl ProviderState {
         let pending_servers = catalog.pending_servers.len();
         drop(catalog);
         self.remaining.send_replace(pending_servers);
+        retired
     }
 
-    pub(crate) fn begin_server(&self, server_name: &str) -> u64 {
+    pub(crate) fn begin_server(&self, server_name: &str) -> (u64, Vec<Client>) {
         let mut catalog = self.catalog();
         let generation = catalog
             .generations
@@ -228,16 +262,16 @@ impl ProviderState {
             .and_modify(|generation| *generation = generation.saturating_add(1))
             .or_insert(0);
         let generation = *generation;
-        revoke_server_entries(&mut catalog, server_name);
+        let retired = revoke_server_entries(&mut catalog, server_name);
         catalog.failures.remove(server_name);
         catalog.pending_servers.insert(server_name.to_owned());
         let pending_servers = catalog.pending_servers.len();
         drop(catalog);
         self.remaining.send_replace(pending_servers);
-        generation
+        (generation, retired)
     }
 
-    pub(crate) fn current_client(&self, server_name: &str) -> Option<Client> {
+    pub(crate) fn current_client(&self, server_name: &str) -> Option<CurrentClient> {
         self.catalog().clients.get(server_name).cloned()
     }
 
@@ -318,9 +352,36 @@ impl ProviderState {
         self.entry(name)
     }
 
-    pub(crate) async fn ready_client(&self, server_name: &str) -> Option<Client> {
+    pub(crate) async fn ready_client(&self, server_name: &str) -> Option<CurrentClient> {
         self.wait_for_startup().await;
         self.current_client(server_name)
+    }
+
+    /// Revokes every published entry and returns each connected client for
+    /// explicit awaited RMCP cleanup. Generation bumps prevent startup tasks
+    /// already in flight from republishing authority after shutdown begins.
+    pub(crate) fn revoke_all(&self) -> Vec<Client> {
+        let mut catalog = self.catalog();
+        for generation in catalog.generations.values_mut() {
+            *generation = generation.saturating_add(1);
+        }
+        let entries = std::mem::take(&mut catalog.entries);
+        for entry in entries.into_values() {
+            entry.valid.store(false, Ordering::Release);
+        }
+        catalog.active.clear();
+        catalog.search_index = Some(Arc::new(SearchIndex::new(Vec::new())));
+        catalog.pending_servers.clear();
+        let clients = std::mem::take(&mut catalog.clients)
+            .into_values()
+            .map(|client| {
+                client.valid.store(false, Ordering::Release);
+                client.client
+            })
+            .collect();
+        drop(catalog);
+        self.remaining.send_replace(0);
+        clients
     }
 
     pub(crate) async fn prepared_entries(&self) -> Result<Vec<Arc<ToolEntry>>, String> {
@@ -457,6 +518,11 @@ impl ToolEntry {
         self.valid.load(Ordering::Acquire)
     }
 
+    pub(crate) fn output_token_budget(&self, context_budget: usize) -> usize {
+        self.output_token_limit
+            .map_or(context_budget, |limit| limit.min(context_budget))
+    }
+
     pub(crate) fn attached_provider(&self) -> &str {
         &self.namespace
     }
@@ -550,6 +616,7 @@ impl ToolEntry {
             &properties.join(" "),
         ]
         .join(" ");
+        let output_token_limit = config.tool_output_token_limits.get(&remote_name).copied();
         Self {
             canonical_name,
             server_name: server_name.to_owned(),
@@ -562,6 +629,7 @@ impl ToolEntry {
             search_text,
             client,
             timeout: config.tool_timeout,
+            output_token_limit,
             valid: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -599,7 +667,7 @@ impl ToolEntry {
     }
 }
 
-fn revoke_server_entries(catalog: &mut Catalog, server_name: &str) {
+fn revoke_server_entries(catalog: &mut Catalog, server_name: &str) -> Vec<Client> {
     let removed = catalog
         .entries
         .iter()
@@ -612,8 +680,15 @@ fn revoke_server_entries(catalog: &mut Catalog, server_name: &str) {
         catalog.entries.remove(&name);
         catalog.active.remove(&name);
     }
-    catalog.clients.remove(server_name);
+    let retired = catalog
+        .clients
+        .remove(server_name)
+        .map_or_else(Vec::new, |client| {
+            client.valid.store(false, Ordering::Release);
+            vec![client.client]
+        });
     catalog.search_index = None;
+    retired
 }
 
 fn tool_is_read_only(tool: &RmcpTool) -> bool {

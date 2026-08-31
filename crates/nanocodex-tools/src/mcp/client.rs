@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use http::{
     HeaderName, HeaderValue,
@@ -27,7 +33,12 @@ const MCP_STDERR_CHUNK_BYTES: usize = 8 * 1024;
 pub(crate) type Client = Arc<ClientInner>;
 
 pub(crate) struct ClientInner {
-    service: Arc<RunningService<RoleClient, ()>>,
+    /// The peer is cheap to clone for concurrent requests. The owned service
+    /// remains behind a mutex so shutdown can take it and await RMCP's cleanup
+    /// task exactly once.
+    peer: rmcp::service::Peer<RoleClient>,
+    service: tokio::sync::Mutex<Option<RunningService<RoleClient, ()>>>,
+    closed: AtomicBool,
     oauth: Option<Arc<OAuthRuntime>>,
     payment: Option<Arc<dyn McpPaymentProvider>>,
 }
@@ -37,6 +48,22 @@ const MCP_PAYMENT_REQUIRED_CODE: i32 = -32042;
 const MCP_PAYMENT_REQUIRED_META_KEY: &str = "org.paymentauth/payment-required";
 
 impl ClientInner {
+    pub(crate) async fn shutdown(&self) {
+        self.closed.store(true, Ordering::Release);
+        let service = self.service.lock().await.take();
+        if let Some(service) = service
+            && let Err(error) = service.cancel().await
+        {
+            tracing::warn!(%error, "MCP service cleanup task failed");
+        }
+    }
+
+    fn peer(&self) -> Result<&rmcp::service::Peer<RoleClient>, String> {
+        (!self.closed.load(Ordering::Acquire))
+            .then_some(&self.peer)
+            .ok_or_else(|| "MCP connection has been retired".to_owned())
+    }
+
     pub(crate) async fn call_tool(
         &self,
         params: CallToolRequestParams,
@@ -55,7 +82,7 @@ impl ClientInner {
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, String> {
-        let first = self.service.call_tool(params.clone()).await;
+        let first = self.peer()?.call_tool(params.clone()).await;
         let (payment_required, payment) = match (&first, &self.payment) {
             (Err(ServiceError::McpError(error)), Some(payment))
                 if error.code.0 == MCP_PAYMENT_REQUIRED_CODE =>
@@ -86,7 +113,7 @@ impl ClientInner {
                 MCP_CREDENTIAL_META_KEY.to_owned(),
                 pending.credential().clone(),
             );
-        match self.service.call_tool(paid).await {
+        match self.peer()?.call_tool(paid).await {
             Ok(result) if payment_required_result(&result).is_some() => {
                 pending.rollback().await?;
                 Ok(result)
@@ -104,9 +131,9 @@ impl ClientInner {
     }
 
     async fn list_all_tools(&self, parent: &Span) -> Result<Vec<Tool>, String> {
-        let service = Arc::clone(&self.service);
+        let service = self.peer()?.clone();
         let tools = collect_paginated("tools/list", move |params| {
-            let service = Arc::clone(&service);
+            let service = service.clone();
             async move {
                 let result = service
                     .list_tools(params)
@@ -133,9 +160,9 @@ impl ClientInner {
 
     pub(crate) async fn list_resources(&self) -> Result<Value, String> {
         let parent = Span::current();
-        let service = Arc::clone(&self.service);
+        let service = self.peer()?.clone();
         let result = collect_paginated("resources/list", move |params| {
-            let service = Arc::clone(&service);
+            let service = service.clone();
             async move {
                 let result = service
                     .list_resources(params)
@@ -152,9 +179,9 @@ impl ClientInner {
 
     pub(crate) async fn list_resource_templates(&self) -> Result<Value, String> {
         let parent = Span::current();
-        let service = Arc::clone(&self.service);
+        let service = self.peer()?.clone();
         let result = collect_paginated("resources/templates/list", move |params| {
-            let service = Arc::clone(&service);
+            let service = service.clone();
             async move {
                 let result = service
                     .list_resource_templates(params)
@@ -172,7 +199,7 @@ impl ClientInner {
     pub(crate) async fn read_resource(&self, uri: String) -> Result<Value, String> {
         let parent = Span::current();
         let result = self
-            .service
+            .peer()?
             .read_resource(ReadResourceRequestParams::new(uri))
             .await
             .map_err(|error| error_chain(&error))
@@ -560,7 +587,9 @@ async fn finish_startup(
     parent: &Span,
 ) -> Result<ConnectedServer, String> {
     let client = Arc::new(ClientInner {
-        service: Arc::new(client),
+        peer: client.peer().clone(),
+        service: tokio::sync::Mutex::new(Some(client)),
+        closed: AtomicBool::new(false),
         oauth,
         payment: server.payment.clone(),
     });

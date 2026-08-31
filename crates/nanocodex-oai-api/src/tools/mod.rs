@@ -13,6 +13,12 @@ use crate::{ImageDetail, ResponseItem};
 
 /// Default maximum model-visible output budget for one tool call.
 pub const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 10_000;
+/// Maximum retained diagnostic/raw representation for one tool result.
+///
+/// This remains independent from the smaller model projection so events and
+/// process adapters retain useful evidence without retaining unbounded remote
+/// payloads.
+pub const DEFAULT_TOOL_DIAGNOSTIC_TOKENS: usize = 40_000;
 const APPROX_OUTPUT_BYTES_PER_TOKEN: usize = 4;
 
 /// Model-visible body returned by a tool.
@@ -127,14 +133,40 @@ pub type ToolError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type ToolResult = std::result::Result<ToolOutput, ToolError>;
 
 impl ToolOutput {
-    /// Bounds the model-visible projection while retaining the exact structured
-    /// result for diagnostics and non-model adapters.
+    /// Bounds the model-visible projection and its separately retained
+    /// diagnostic/raw representation.
     ///
     /// The limit is deliberately applied at the execution boundary rather than
     /// trusting individual tools to remember it. Text is shortened on UTF-8
     /// boundaries; oversized binary content is represented by a short notice.
     #[must_use]
     pub fn bounded_for_model(mut self, max_tokens: usize) -> Self {
+        let diagnostic_tokens = max_tokens
+            .saturating_mul(4)
+            .min(DEFAULT_TOOL_DIAGNOSTIC_TOKENS);
+        self = self.bounded_for_model_and_diagnostics(max_tokens, diagnostic_tokens);
+        self
+    }
+
+    /// Applies independent model and diagnostic/raw budgets.
+    ///
+    /// Callers with a tool-specific policy should intersect it with their
+    /// invocation context before calling this method; neither representation
+    /// is allowed to grow beyond the selected budget.
+    #[must_use]
+    pub fn bounded_for_model_and_diagnostics(
+        mut self,
+        max_tokens: usize,
+        diagnostic_tokens: usize,
+    ) -> Self {
+        let diagnostic = self
+            .structured_result
+            .take()
+            .unwrap_or_else(|| self.output.structured_result());
+        self.structured_result = Some(bound_diagnostic_value(
+            diagnostic,
+            diagnostic_tokens.saturating_mul(APPROX_OUTPUT_BYTES_PER_TOKEN),
+        ));
         let max_bytes = max_tokens.saturating_mul(APPROX_OUTPUT_BYTES_PER_TOKEN);
         self.output = match self.output {
             ToolOutputBody::Text(text) => {
@@ -225,7 +257,7 @@ impl ToolOutput {
         self
     }
 
-    /// Returns the exact machine-readable tool result.
+    /// Returns the bounded machine-readable diagnostic result.
     ///
     /// An explicit structured result takes precedence. Otherwise plain text
     /// remains a string and multimodal content becomes an array.
@@ -237,7 +269,10 @@ impl ToolOutput {
         self.output.structured_result()
     }
 
-    /// Sets the exact machine-readable result independently of model-visible output.
+    /// Sets the machine-readable result independently of model-visible output.
+    ///
+    /// The execution boundary bounds it before it reaches diagnostics or a
+    /// process adapter.
     #[must_use]
     pub fn with_structured_result(mut self, value: Value) -> Self {
         self.structured_result = Some(value);
@@ -355,6 +390,28 @@ fn bound_model_content(
         }
     }
     output
+}
+
+fn bound_diagnostic_value(value: Value, max_bytes: usize) -> Value {
+    let Ok(encoded) = serde_json::to_string(&value) else {
+        return Value::String("[tool diagnostic could not be serialized]".to_owned());
+    };
+    if encoded.len() <= max_bytes {
+        return value;
+    }
+    // Keep a valid, explicitly lossy JSON diagnostic rather than retaining a
+    // partially serialized value that adapters could mistake for authority.
+    let reserved = 96;
+    let preview = truncate_model_text(encoded.clone(), max_bytes.saturating_sub(reserved));
+    let diagnostic = serde_json::json!({
+        "truncated": true,
+        "original_bytes": encoded.len(),
+        "preview": preview,
+    });
+    match serde_json::to_string(&diagnostic) {
+        Ok(rendered) if rendered.len() <= max_bytes => diagnostic,
+        _ => Value::String(truncate_model_text(encoded, max_bytes)),
+    }
 }
 
 fn truncate_model_text(text: String, max_bytes: usize) -> String {
@@ -603,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_model_projection_keeps_the_raw_structured_result() {
+    fn bounded_model_projection_retains_a_separate_structured_diagnostic() {
         let output =
             ToolOutput::from_json(json!({"private": "x".repeat(100)}), true).bounded_for_model(8);
         assert!(matches!(&output.output, ToolOutputBody::Text(text) if text.len() <= 32));
@@ -623,5 +680,15 @@ mod tests {
         assert!(
             matches!(output.output, ToolOutputBody::Content(content) if content.iter().all(|item| matches!(item, ToolOutputContent::InputText { .. })))
         );
+    }
+
+    #[test]
+    fn model_and_diagnostic_projections_have_independent_bounded_budgets() {
+        let output = ToolOutput::from_json(json!({"payload": "x".repeat(8_000)}), true)
+            .bounded_for_model_and_diagnostics(8, 32);
+        assert!(matches!(&output.output, ToolOutputBody::Text(text) if text.len() <= 32));
+        let diagnostic = output.structured_result();
+        assert!(diagnostic["truncated"].as_bool().unwrap_or(false));
+        assert!(serde_json::to_string(&diagnostic).unwrap().len() <= 128);
     }
 }

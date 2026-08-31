@@ -172,6 +172,8 @@ impl PreparedToolCall {
 #[doc(hidden)]
 pub(crate) struct PreparedToolRuntime {
     entries: Vec<PreparedToolEntry>,
+    #[cfg(feature = "native")]
+    mcps: Vec<Arc<crate::mcp::Mcp>>,
     #[cfg(feature = "workspace-runtime")]
     workspaces: Vec<Arc<crate::workspace_runtime::WorkspaceToolRuntime>>,
 }
@@ -191,7 +193,7 @@ impl PreparedToolRuntime {
             workspaces,
         } = tools;
         #[cfg(feature = "native")]
-        for mcp in mcps {
+        for mcp in &mcps {
             let tools = mcp
                 .prepared_snapshot(std::time::Duration::from_millis(
                     HOSTED_TOOL_CALL_TIMEOUT_MS,
@@ -210,6 +212,8 @@ impl PreparedToolRuntime {
         }
         Ok(Self {
             entries,
+            #[cfg(feature = "native")]
+            mcps,
             #[cfg(feature = "workspace-runtime")]
             workspaces,
         })
@@ -308,7 +312,7 @@ impl PreparedToolRuntime {
                     .unwrap_or_else(|error| ToolOutput::error(error.to_string())),
                 #[cfg(feature = "native")]
                 (PreparedToolHandler::Mcp(tool), PreparedToolInput::Mcp(input)) => {
-                    tool.execute(input).await
+                    tool.execute(input, context).await
                 }
                 #[cfg(feature = "workspace-runtime")]
                 (PreparedToolHandler::Workspace(workspace), PreparedToolInput::Contract(input)) => {
@@ -360,6 +364,10 @@ impl PreparedToolRuntime {
 
     /// Terminates retained workspace subprocesses owned by this runtime.
     pub async fn shutdown(&self) {
+        #[cfg(feature = "native")]
+        for mcp in &self.mcps {
+            mcp.shutdown().await;
+        }
         #[cfg(feature = "workspace-runtime")]
         for workspace in &self.workspaces {
             workspace.control().cancel().await;

@@ -249,8 +249,14 @@ impl PreparedMcpTool {
         self.timeout
     }
 
-    pub(crate) async fn execute(&self, input: Value) -> ToolOutput {
-        execute_mcp_entry(&self.entry, input, self.timeout).await
+    pub(crate) async fn execute(&self, input: Value, context: ToolContext<'_>) -> ToolOutput {
+        execute_mcp_entry(
+            &self.entry,
+            input,
+            self.timeout,
+            context.output_token_budget(),
+        )
+        .await
     }
 }
 
@@ -329,12 +335,13 @@ impl McpBuilder {
 }
 
 impl Mcp {
-    /// Cancels and joins outstanding background server startup work.
+    /// Revokes catalog authority and awaits cleanup of every owned MCP service.
     ///
-    /// Successfully connected clients remain owned by the catalog until this
-    /// provider is dropped; this method only stops work that has not completed
-    /// its catalog handoff.
+    /// This is the explicit lifecycle boundary: no discovered tool or resource
+    /// client remains callable once shutdown starts, and RMCP transport tasks
+    /// are cancelled and joined before this method returns.
     pub async fn shutdown(&self) {
+        let clients = self.state.revoke_all();
         let mut tasks = {
             let mut tasks = self
                 .startup_tasks
@@ -347,6 +354,9 @@ impl Mcp {
         }
         while let Some(task) = tasks.pop() {
             let _ = task.await;
+        }
+        for client in clients {
+            client.shutdown().await;
         }
     }
 }
@@ -412,7 +422,10 @@ impl McpHandle {
             .iter()
             .find(|server| server.name == server_name)
             .ok_or_else(|| McpControlError::UnknownServer(server_name.to_owned()))?;
-        let generation = self.state.begin_server(server_name);
+        let (generation, retired) = self.state.begin_server(server_name);
+        for client in retired {
+            client.shutdown().await;
+        }
         let result = client::connect(
             server_name,
             &server.config,
@@ -431,7 +444,7 @@ impl McpHandle {
                     Arc::clone(&connected.client),
                     &server.config,
                 );
-                self.state.complete_server(
+                let retired = self.state.complete_server(
                     server_name,
                     generation,
                     Ok(ConnectedCatalog {
@@ -439,11 +452,18 @@ impl McpHandle {
                         entries,
                     }),
                 );
+                for client in retired {
+                    client.shutdown().await;
+                }
                 Ok(count)
             }
             Err(error) => {
-                self.state
-                    .complete_server(server_name, generation, Err(error.clone()));
+                let retired =
+                    self.state
+                        .complete_server(server_name, generation, Err(error.clone()));
+                for client in retired {
+                    client.shutdown().await;
+                }
                 Err(McpControlError::Reload {
                     server: server_name.to_owned(),
                     error,
@@ -638,7 +658,9 @@ impl DynamicToolProvider for Mcp {
                 if let Ok(catalog) = &result {
                     span.record("tool.count", catalog.entries.len());
                 }
-                state.complete_server(&name, 0, result);
+                for client in state.complete_server(&name, 0, result) {
+                    client.shutdown().await;
+                }
             });
             // Startup is provider-owned work. Retaining the task makes both
             // explicit shutdown and Drop cancellation deterministic.
@@ -705,13 +727,13 @@ impl DynamicToolProvider for Mcp {
         &self,
         name: &str,
         input: Value,
-        _context: ToolContext<'_>,
+        context: ToolContext<'_>,
     ) -> Option<ToolOutput> {
         let entry = self.state.ready_entry(name).await?;
         if !entry.tool_exposure.is_callable() {
             return None;
         }
-        Some(execute_mcp_entry(&entry, input, entry.timeout).await)
+        Some(execute_mcp_entry(&entry, input, entry.timeout, context.output_token_budget()).await)
     }
 }
 
@@ -751,16 +773,28 @@ impl Tool for McpResourceTool {
                 std::io::Error::other(format!("MCP server {} is not ready", self.server_name))
             })?;
         let call = async {
-            client.refresh_oauth().await?;
+            if !client.is_current() {
+                return Err(
+                    "MCP resource catalog revision was revoked before the call was sent".to_owned(),
+                );
+            }
+            client.client().refresh_oauth().await?;
+            if !client.is_current() {
+                return Err(
+                    "MCP resource catalog revision was revoked before the call was sent".to_owned(),
+                );
+            }
             match self.operation {
-                McpResourceOperation::List => client.list_resources().await,
-                McpResourceOperation::ListTemplates => client.list_resource_templates().await,
+                McpResourceOperation::List => client.client().list_resources().await,
+                McpResourceOperation::ListTemplates => {
+                    client.client().list_resource_templates().await
+                }
                 McpResourceOperation::Read => {
                     let uri = input
                         .get("uri")
                         .and_then(Value::as_str)
                         .ok_or_else(|| "MCP resource_read requires a string uri".to_owned())?;
-                    client.read_resource(uri.to_owned()).await
+                    client.client().read_resource(uri.to_owned()).await
                 }
             }
         };
@@ -780,7 +814,12 @@ impl Tool for McpResourceTool {
     }
 }
 
-async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -> ToolOutput {
+async fn execute_mcp_entry(
+    entry: &ToolEntry,
+    input: Value,
+    timeout: Duration,
+    context_budget: usize,
+) -> ToolOutput {
     if !entry.is_current() {
         return ToolOutput::error(format!(
             "MCP tool {}/{} is no longer available; refresh the catalog before retrying",
@@ -845,7 +884,7 @@ async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -
     span.record("status", if success { "completed" } else { "failed" });
     span.record("otel.status_code", if success { "OK" } else { "ERROR" });
     match tool_output_from_mcp_result(result, &entry.server_name, &entry.remote_name) {
-        Ok(output) => output,
+        Ok(output) => output.bounded_for_model(entry.output_token_budget(context_budget)),
         Err(error) => {
             span.record("status", "failed");
             span.record("otel.status_code", "ERROR");
@@ -1860,6 +1899,90 @@ mod tests {
         assert!(!escaped, "dropping MCP left a stdio descendant running");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_revokes_catalog_and_awaits_stdio_service_cleanup() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "nanocodex-mcp-shutdown-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let marker = directory.join("survived");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let mcp = Mcp::builder()
+            .server(
+                "fixture",
+                McpServer::stdio("node")
+                    .arg(fixture.to_string_lossy())
+                    .env("NANOCODEX_MCP_DESCENDANT_MARKER", marker.to_string_lossy()),
+            )
+            .build()
+            .unwrap();
+        mcp.start();
+        let search = mcp
+            .search
+            .execute(
+                ToolInput::Function(to_raw_value(&json!({ "query": "echo" })).unwrap()),
+                test_context("shutdown-session", "shutdown-call"),
+            )
+            .await
+            .unwrap();
+        assert!(search.success);
+        let prior = mcp.state.entry("mcp__fixture__echo").unwrap();
+
+        mcp.shutdown().await;
+
+        assert!(!prior.is_current());
+        assert!(mcp.state.entry("mcp__fixture__echo").is_none());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let escaped = marker.exists();
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(
+            !escaped,
+            "awaited MCP shutdown left a stdio descendant running"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_per_tool_output_limit_tightens_the_invocation_context() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let mcp = Mcp::builder()
+            .server(
+                "fixture",
+                McpServer::stdio("node")
+                    .arg(fixture.to_string_lossy())
+                    .tool_output_token_limit("echo", std::num::NonZeroUsize::new(4).unwrap()),
+            )
+            .build()
+            .unwrap();
+        mcp.start();
+        let search = mcp
+            .search
+            .execute(
+                ToolInput::Function(to_raw_value(&json!({ "query": "echo" })).unwrap()),
+                test_context("limit-session", "search"),
+            )
+            .await
+            .unwrap();
+        assert!(search.success);
+
+        let output = mcp
+            .execute(
+                "mcp__fixture__echo",
+                json!({ "message": "x".repeat(1_000) }),
+                ToolContext::new(MODEL, "limit-session", "call", &[], 100),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(&output.output, ToolOutputBody::Text(text) if text.len() <= 16));
+    }
+
     #[tokio::test]
     async fn reload_replaces_a_live_server_without_restarting_or_deactivating_tools() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1928,8 +2051,12 @@ mod tests {
         assert!(search.success);
         let name = "mcp__fixture__echo";
         let prior = mcp.state.entry(name).unwrap();
+        let resource_client = mcp.state.ready_client("fixture").await.unwrap();
 
-        let revision = mcp.state.begin_server("fixture");
+        let (revision, retired) = mcp.state.begin_server("fixture");
+        for client in retired {
+            client.shutdown().await;
+        }
         mcp.state.complete_server(
             "fixture",
             revision,
@@ -1937,6 +2064,10 @@ mod tests {
         );
 
         assert!(!prior.is_current());
+        assert!(
+            !resource_client.is_current(),
+            "resource calls must observe the same revision fence as tools"
+        );
         assert!(mcp.state.entry(name).is_none());
         assert!(
             mcp.execute(
