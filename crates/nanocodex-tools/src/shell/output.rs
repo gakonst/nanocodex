@@ -1,4 +1,7 @@
-use std::{io::Read, sync::Arc};
+use std::sync::Arc;
+
+#[cfg(not(unix))]
+use std::io::Read;
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -6,6 +9,8 @@ use tokio::{
 };
 
 use super::CapturedOutput;
+#[cfg(unix)]
+use super::process::PtyIo;
 
 const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -43,6 +48,7 @@ pub(super) async fn drain(
     }
 }
 
+#[cfg(not(unix))]
 pub(super) fn drain_blocking(
     mut pipe: Box<dyn Read + Send>,
     captured: Arc<Mutex<CapturedOutput>>,
@@ -62,6 +68,27 @@ pub(super) fn drain_blocking(
             }
         }
     })
+}
+
+/// Drain a Unix PTY through readiness-based I/O so cancelling the task does
+/// not leave Tokio waiting on a blocking reader when a descendant keeps the
+/// slave side open.
+#[cfg(unix)]
+pub(super) async fn drain_pty(
+    io: PtyIo,
+    captured: Arc<Mutex<CapturedOutput>>,
+    capture_limit: usize,
+) {
+    let mut buffer = [0_u8; READ_BUFFER_LENGTH];
+    loop {
+        match io.read(&mut buffer).await {
+            Ok(0) => return,
+            Ok(length) => captured.lock().await.push(&buffer[..length], capture_limit),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            // Unix PTY masters commonly report EIO after their slave closes.
+            Err(_) => return,
+        }
+    }
 }
 
 pub(super) fn redact_and_limit(

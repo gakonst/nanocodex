@@ -117,5 +117,18 @@ required-features = ["native"]
 name = "attached_workspace"
 required-features = ["attachment", "workspace-runtime"]
 
-[lints]
-workspace = true
+[lints.rust]
+# Native PTY descriptors are supplied by portable-pty as raw fds. The small,
+# audited bridge below duplicates and registers them with Tokio; no safe
+# portable-pty API exposes an owned descriptor for AsyncFd.
+unsafe_code = "allow"
+
+# Keep the workspace Clippy policy explicit because Cargo does not allow a
+# package to inherit workspace lints while overriding one Rust lint.
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing-const-for-fn = "warn"
+use-self = "warn"
+redundant-clone = "warn"
+large-enum-variant = "allow"
+result-large-err = "allow"

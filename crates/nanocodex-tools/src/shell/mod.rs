@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicI64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -27,6 +27,7 @@ const DEFAULT_EXEC_YIELD_MS: u64 = 10_000;
 const DEFAULT_WRITE_YIELD_MS: u64 = 250;
 const DEFAULT_POLL_YIELD_MS: u64 = 5_000;
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
+const CANCELLATION_TERM_GRACE: Duration = Duration::from_millis(500);
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 const MAX_LIVE_SESSIONS: usize = 64;
 
@@ -156,6 +157,14 @@ impl ShellSessions {
         // process has spawned, terminate_all must either observe it in the
         // store or have completed before this execution began spawning.
         let lifecycle_guard = self.lifecycle.lock().await;
+        if self.sessions.lock().await.is_full() {
+            return ExecCommandResult::failed(
+                started_at.elapsed(),
+                format!(
+                    "exec_command failed: maximum of {MAX_LIVE_SESSIONS} live shell sessions reached"
+                ),
+            );
+        }
         let spawned = match process::spawn(
             &command.script,
             &workdir,
@@ -178,11 +187,7 @@ impl ShellSessions {
         };
         let session = Session::new(session_id, spawned, secrets);
         let _interaction_guard = session.interaction.lock().await;
-        let _interaction = session.begin_interaction();
-        let pruned = self.sessions.lock().await.insert(Arc::clone(&session));
-        if let Some(pruned) = pruned {
-            pruned.terminate().await;
-        }
+        self.sessions.lock().await.insert(Arc::clone(&session));
         drop(lifecycle_guard);
 
         let yield_time = duration_ms(command.yield_time_ms, DEFAULT_EXEC_YIELD_MS, 250, 30_000);
@@ -210,7 +215,6 @@ impl ShellSessions {
         };
 
         let _interaction_guard = session.interaction.lock().await;
-        let _interaction = session.begin_interaction();
         if !request.chars.is_empty() {
             let written = if !session.tty {
                 if request.chars == "\u{3}" {
@@ -273,24 +277,13 @@ struct SessionStore {
 }
 
 impl SessionStore {
-    fn insert(&mut self, session: Arc<Session>) -> Option<Arc<Session>> {
-        let pruned = (self.sessions.len() >= MAX_LIVE_SESSIONS)
-            .then(|| {
-                let protected_from = self.recency.len().saturating_sub(8);
-                self.recency.iter().take(protected_from).position(|id| {
-                    self.sessions
-                        .get(id)
-                        .is_some_and(|session| !session.is_active())
-                })
-            })
-            .flatten()
-            .and_then(|index| {
-                let id = self.recency.remove(index)?;
-                self.sessions.remove(&id)
-            });
+    fn is_full(&self) -> bool {
+        self.sessions.len() >= MAX_LIVE_SESSIONS
+    }
+
+    fn insert(&mut self, session: Arc<Session>) {
         self.recency.push_back(session.id);
         self.sessions.insert(session.id, session);
-        pruned
     }
 
     fn get(&mut self, id: i64) -> Option<Arc<Session>> {
@@ -320,11 +313,15 @@ struct Session {
     interaction: Mutex<()>,
     child: Mutex<process::ProcessChild>,
     stdin: Mutex<Option<process::ProcessStdin>>,
+    #[cfg(unix)]
+    // The duplicate used by PtyIo shares the master descriptor's nonblocking
+    // flags; retain portable-pty's owner for the whole session so its terminal
+    // lifetime stays explicit and never depends on a reader task.
+    _pty_master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
     process_group: Mutex<process::ProcessGroupGuard>,
     drains: Mutex<Option<Vec<JoinHandle<()>>>>,
     captured: Arc<Mutex<CapturedOutput>>,
     secrets: Vec<String>,
-    active_interactions: AtomicU64,
 }
 
 impl Session {
@@ -344,6 +341,13 @@ impl Session {
                     MAX_CAPTURE_BYTES,
                 )),
             ],
+            #[cfg(unix)]
+            process::ProcessOutput::Pty(io) => vec![tokio::spawn(output::drain_pty(
+                io,
+                Arc::clone(&captured),
+                MAX_CAPTURE_BYTES,
+            ))],
+            #[cfg(not(unix))]
             process::ProcessOutput::Pty(reader) => vec![output::drain_blocking(
                 reader,
                 Arc::clone(&captured),
@@ -356,32 +360,47 @@ impl Session {
             interaction: Mutex::new(()),
             child: Mutex::new(spawned.child),
             stdin: Mutex::new(spawned.stdin),
+            #[cfg(unix)]
+            _pty_master: Mutex::new(spawned.pty_master),
             process_group: Mutex::new(spawned.process_group),
             drains: Mutex::new(Some(drains)),
             captured,
             secrets,
-            active_interactions: AtomicU64::new(0),
         })
-    }
-
-    fn begin_interaction(&self) -> ActiveInteraction<'_> {
-        self.active_interactions.fetch_add(1, Ordering::AcqRel);
-        ActiveInteraction { session: self }
-    }
-
-    fn is_active(&self) -> bool {
-        self.active_interactions.load(Ordering::Acquire) > 0
     }
 
     async fn terminate(&self) {
         // Signal first: a direct caller can hold the interaction lock while
         // awaiting this child, and waiting for that lock before terminating
         // would make cancellation wait for the command's full yield timeout.
+        if let Err(error) = self.process_group.lock().await.terminate_gracefully() {
+            tracing::warn!(
+                shell.session.id = self.id,
+                %error,
+                "failed to request graceful shell process-group termination"
+            );
+        }
+        // Runtime shutdown is explicit cancellation, so let TERM-aware
+        // commands clean up briefly. Timeouts and guard drops intentionally
+        // remain hard termination paths. Whether or not the root exits during
+        // grace, kill the exact owned group afterwards: a root shell can exit
+        // while descendants still retain its PTY.
+        let terminated_during_grace = {
+            let mut child = self.child.lock().await;
+            timeout(CANCELLATION_TERM_GRACE, child.wait()).await
+        };
         if let Err(error) = self.process_group.lock().await.terminate_and_disarm() {
             tracing::warn!(
                 shell.session.id = self.id,
                 %error,
-                "failed to terminate shell process group"
+                "failed to hard-terminate shell process group after cancellation grace"
+            );
+        }
+        if let Ok(Err(error)) = terminated_during_grace {
+            tracing::warn!(
+                shell.session.id = self.id,
+                %error,
+                "failed to reap shell process during cancellation grace"
             );
         }
         // The active interaction observes the signal and releases the child
@@ -482,18 +501,6 @@ impl Session {
         let limit = output::effective_token_limit(max_output_tokens);
         let (output, _) = output::redact_and_limit(raw, &self.secrets, limit);
         (output, Some(captured.total_bytes.saturating_add(3) / 4))
-    }
-}
-
-struct ActiveInteraction<'a> {
-    session: &'a Session,
-}
-
-impl Drop for ActiveInteraction<'_> {
-    fn drop(&mut self) {
-        self.session
-            .active_interactions
-            .fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -630,14 +637,13 @@ mod tests {
     #[cfg(unix)]
     use std::{
         ffi::OsString,
-        io::Write,
-        sync::{Arc, Barrier},
+        sync::Arc,
         time::{Duration, SystemTime},
     };
 
     #[cfg(unix)]
     use super::WriteStdin;
-    use super::{CapturedOutput, ExecCommand, ShellSessions, generate_chunk_id};
+    use super::{CapturedOutput, ExecCommand, MAX_LIVE_SESSIONS, ShellSessions, generate_chunk_id};
 
     #[test]
     fn chunk_ids_match_codex_shape() {
@@ -876,6 +882,61 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn refuses_new_shells_at_the_live_session_limit() {
+        let sessions = Arc::new(ShellSessions::new());
+        let mut starts = Vec::with_capacity(MAX_LIVE_SESSIONS);
+        for _ in 0..MAX_LIVE_SESSIONS {
+            let sessions = Arc::clone(&sessions);
+            starts.push(tokio::spawn(async move {
+                sessions
+                    .execute(
+                        ExecCommand::new(
+                            "sleep 30".to_owned(),
+                            None,
+                            Some("/bin/sh".to_owned()),
+                            Some(false),
+                            false,
+                            Some(250),
+                            None,
+                        ),
+                        std::path::Path::new("/"),
+                    )
+                    .await
+            }));
+        }
+        for start in starts {
+            assert!(
+                start
+                    .await
+                    .expect("shell task should not panic")
+                    .session_id
+                    .is_some()
+            );
+        }
+
+        let rejected = sessions
+            .execute(
+                ExecCommand::new(
+                    "printf should-not-run".to_owned(),
+                    None,
+                    Some("/bin/sh".to_owned()),
+                    Some(false),
+                    false,
+                    Some(250),
+                    None,
+                ),
+                std::path::Path::new("/"),
+            )
+            .await;
+        assert_eq!(
+            rejected.error.as_deref(),
+            Some("exec_command failed: maximum of 64 live shell sessions reached")
+        );
+        sessions.terminate_all().await;
+    }
+
+    #[cfg(unix)]
     async fn assert_direct_cancellation_finishes(tty: bool) {
         let sessions = Arc::new(ShellSessions::new());
         let execution = {
@@ -981,43 +1042,14 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn full_cancellation_signals_before_waiting_for_a_blocked_pty_write()
-    -> Result<(), Box<dyn std::error::Error>> {
-        struct BlockingWriter {
-            entered: std::sync::mpsc::SyncSender<()>,
-            release: Arc<Barrier>,
-        }
-
-        impl Write for BlockingWriter {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.entered
-                    .send(())
-                    .map_err(|error| std::io::Error::other(error.to_string()))?;
-                self.release.wait();
-                Ok(bytes.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let nonce = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "nanocodex-blocked-pty-cancel-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&directory)?;
-        let marker = directory.join("escaped");
+    async fn full_cancellation_does_not_hang_when_a_detached_descendant_keeps_the_pty_open() {
         let sessions = Arc::new(ShellSessions::new());
         let started = sessions
             .execute(
                 ExecCommand::new(
-                    format!("(sleep 1; printf escaped > '{}') & wait", marker.display()),
+                    "setsid sh -c 'sleep 30' & sleep 30".to_owned(),
                     None,
-                    None,
+                    Some("/bin/sh".to_owned()),
                     Some(false),
                     true,
                     Some(250),
@@ -1028,57 +1060,9 @@ mod tests {
             .await;
         assert_eq!(started.session_id, Some(1));
 
-        let session = sessions
-            .sessions
-            .lock()
+        tokio::time::timeout(Duration::from_secs(3), sessions.terminate_all())
             .await
-            .get(1)
-            .expect("yielded PTY session should remain registered");
-        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
-        let release = Arc::new(Barrier::new(2));
-        let writer: Box<dyn Write + Send> = Box::new(BlockingWriter {
-            entered: entered_tx,
-            release: Arc::clone(&release),
-        });
-        *session.stdin.lock().await = Some(super::process::ProcessStdin::Pty(Arc::new(
-            std::sync::Mutex::new(writer),
-        )));
-
-        let write = {
-            let sessions = Arc::clone(&sessions);
-            tokio::spawn(async move {
-                sessions
-                    .write_stdin(WriteStdin::new(1, "x".to_owned(), Some(250), None))
-                    .await
-            })
-        };
-        tokio::task::yield_now().await;
-        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(2)))
-            .await??;
-
-        let cancellation = {
-            let sessions = Arc::clone(&sessions);
-            tokio::spawn(async move { sessions.terminate_all().await })
-        };
-        tokio::time::sleep(Duration::from_millis(1_250)).await;
-        let escaped = marker.exists();
-
-        release.wait();
-        tokio::time::timeout(Duration::from_secs(2), write)
-            .await
-            .expect("blocked write should finish after release")
-            .expect("write task should not panic");
-        tokio::time::timeout(Duration::from_secs(2), cancellation)
-            .await
-            .expect("cancellation should finish after the write releases")
-            .expect("cancellation task should not panic");
-        std::fs::remove_dir_all(directory)?;
-
-        assert!(
-            !escaped,
-            "a blocked PTY write delayed the process-group signal"
-        );
-        Ok(())
+            .expect("runtime shutdown should abort readiness-based PTY I/O");
     }
 
     #[cfg(unix)]

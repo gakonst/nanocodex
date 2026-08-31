@@ -1,18 +1,27 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
-    io::{self, Read, Write},
+    io,
     path::Path,
     process::Stdio,
-    sync::{Arc, Mutex as StdMutex},
+    sync::Arc,
+};
+
+#[cfg(not(unix))]
+use std::{
+    io::{Read, Write},
+    sync::Mutex as StdMutex,
 };
 
 #[cfg(unix)]
 use nix::{
     errno::Errno,
-    sys::signal::{Signal, killpg},
+    libc,
+    sys::signal::{Signal, kill, killpg},
     unistd::Pid,
 };
+#[cfg(unix)]
+use portable_pty::MasterPty;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::task::JoinHandle;
@@ -51,6 +60,8 @@ pub(super) struct SpawnedProcess {
     pub(super) stdin: Option<ProcessStdin>,
     pub(super) output: ProcessOutput,
     pub(super) process_group: ProcessGroupGuard,
+    #[cfg(unix)]
+    pub(super) pty_master: Option<Box<dyn MasterPty + Send>>,
 }
 
 pub(super) enum ProcessChild {
@@ -103,12 +114,18 @@ impl ProcessChild {
 }
 
 pub(super) enum ProcessStdin {
+    #[cfg(unix)]
+    Pty(PtyIo),
+    #[cfg(not(unix))]
     Pty(Arc<StdMutex<Box<dyn Write + Send>>>),
 }
 
 impl ProcessStdin {
     pub(super) async fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
         match self {
+            #[cfg(unix)]
+            Self::Pty(io) => io.write_all(bytes).await,
+            #[cfg(not(unix))]
             Self::Pty(writer) => {
                 let writer = Arc::clone(writer);
                 let bytes = bytes.to_vec();
@@ -131,6 +148,9 @@ pub(super) enum ProcessOutput {
         stdout: Option<ChildStdout>,
         stderr: Option<ChildStderr>,
     },
+    #[cfg(unix)]
+    Pty(PtyIo),
+    #[cfg(not(unix))]
     Pty(Box<dyn Read + Send>),
 }
 
@@ -167,7 +187,20 @@ fn spawn_pipes(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     #[cfg(unix)]
-    command.process_group(0);
+    {
+        command.process_group(0);
+        #[cfg(target_os = "linux")]
+        {
+            let parent_pid = unsafe { libc::getpid() };
+            // `process_group(0)` alone does not prevent an owned child from
+            // outliving an abruptly terminated runtime. Arm PDEATHSIG in the
+            // child and recheck the recorded parent PID to close the fork/exec
+            // race where the parent disappears before prctl runs.
+            unsafe {
+                command.pre_exec(move || set_parent_death_signal(parent_pid));
+            }
+        }
+    }
 
     let mut child = command.spawn()?;
     let pid = child
@@ -184,6 +217,8 @@ fn spawn_pipes(
             exit_code: None,
         },
         process_group: ProcessGroupGuard::new(pid),
+        #[cfg(unix)]
+        pty_master: None,
     })
 }
 
@@ -217,7 +252,15 @@ fn spawn_pty(
     let pid = child
         .process_id()
         .ok_or_else(|| io::Error::other("spawned PTY command without a process identifier"))?;
+    #[cfg(unix)]
+    let io = PtyIo::new(
+        pair.master
+            .as_raw_fd()
+            .ok_or_else(|| io::Error::other("PTY master has no file descriptor"))?,
+    )?;
+    #[cfg(not(unix))]
     let reader = pair.master.try_clone_reader().map_err(pty_error)?;
+    #[cfg(not(unix))]
     let writer = pair.master.take_writer().map_err(pty_error)?;
     let wait = tokio::task::spawn_blocking(move || {
         child
@@ -230,14 +273,95 @@ fn spawn_pty(
             wait: Some(wait),
             exit_code: None,
         },
+        #[cfg(unix)]
+        stdin: Some(ProcessStdin::Pty(io.clone())),
+        #[cfg(not(unix))]
         stdin: Some(ProcessStdin::Pty(Arc::new(StdMutex::new(writer)))),
+        #[cfg(unix)]
+        output: ProcessOutput::Pty(io),
+        #[cfg(not(unix))]
         output: ProcessOutput::Pty(reader),
         process_group: ProcessGroupGuard::new(pid),
+        #[cfg(unix)]
+        pty_master: Some(pair.master),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn set_parent_death_signal(parent_pid: libc::pid_t) -> io::Result<()> {
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::getppid() } != parent_pid {
+        unsafe {
+            libc::raise(libc::SIGTERM);
+        }
+    }
+    Ok(())
 }
 
 fn pty_error(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
+}
+
+/// Abortable Unix PTY I/O backed by a duplicated nonblocking master fd.
+///
+/// `portable-pty` exposes blocking `Read`/`Write` trait objects. Driving
+/// those on Tokio's blocking pool makes runtime shutdown wait forever when a
+/// descendant retains the slave. A duplicated fd keeps the portable owner
+/// intact while readiness-based operations remain cancellable.
+#[cfg(unix)]
+#[derive(Clone)]
+pub(super) struct PtyIo {
+    fd: Arc<tokio::io::unix::AsyncFd<std::fs::File>>,
+}
+
+#[cfg(unix)]
+impl PtyIo {
+    fn new(master_fd: std::os::fd::RawFd) -> io::Result<Self> {
+        use std::os::fd::{AsRawFd, BorrowedFd};
+
+        let fd = unsafe { BorrowedFd::borrow_raw(master_fd) }.try_clone_to_owned()?;
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+        if flags == -1
+            || unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // AsyncFd panics without a Tokio I/O driver; surface a normal spawn
+        // error instead of taking down the tool runtime.
+        let fd = std::panic::catch_unwind(move || {
+            tokio::io::unix::AsyncFd::new(std::fs::File::from(fd))
+        })
+        .map_err(|_| io::Error::other("PTY I/O requires a Tokio runtime with I/O enabled"))??;
+        Ok(Self { fd: Arc::new(fd) })
+    }
+
+    pub(super) async fn read(&self, bytes: &mut [u8]) -> io::Result<usize> {
+        use std::io::Read;
+
+        self.fd
+            .async_io(tokio::io::Interest::READABLE, |mut file| file.read(bytes))
+            .await
+    }
+
+    async fn write_all(&self, mut bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+
+        while !bytes.is_empty() {
+            match self
+                .fd
+                .async_io(tokio::io::Interest::WRITABLE, |mut file| file.write(bytes))
+                .await
+            {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(count) => bytes = &bytes[count..],
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -273,13 +397,7 @@ impl ProcessGroupGuard {
 
     #[cfg(unix)]
     pub(super) fn interrupt(&self) -> io::Result<()> {
-        let Some(process_group) = self.process_group else {
-            return Err(io::Error::other("process identifier exceeds i32::MAX"));
-        };
-        match killpg(process_group, Signal::SIGINT) {
-            Ok(()) | Err(Errno::ESRCH) => Ok(()),
-            Err(error) => Err(io::Error::from_raw_os_error(error as i32)),
-        }
+        self.signal(Signal::SIGINT)
     }
 
     #[cfg(not(unix))]
@@ -289,11 +407,34 @@ impl ProcessGroupGuard {
 
     #[cfg(unix)]
     fn terminate(&self) -> io::Result<()> {
+        self.signal(Signal::SIGKILL)
+    }
+
+    #[cfg(unix)]
+    pub(super) fn terminate_gracefully(&self) -> io::Result<()> {
+        self.signal(Signal::SIGTERM)
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn terminate_gracefully(&self) -> io::Result<()> {
+        self.terminate()
+    }
+
+    #[cfg(unix)]
+    fn signal(&self, signal: Signal) -> io::Result<()> {
         let Some(process_group) = self.process_group else {
             return Err(io::Error::other("process identifier exceeds i32::MAX"));
         };
-        match killpg(process_group, Signal::SIGKILL) {
+        match killpg(process_group, signal) {
             Ok(()) | Err(Errno::ESRCH) => Ok(()),
+            // If a platform rejects a group signal, retry against the exact
+            // direct child rather than broadening the target to a guessed
+            // ancestor group. Normal operation remains process-group scoped
+            // so descendants are terminated too.
+            Err(Errno::EPERM) => match kill(process_group, signal) {
+                Ok(()) | Err(Errno::ESRCH) => Ok(()),
+                Err(error) => Err(io::Error::from_raw_os_error(error as i32)),
+            },
             Err(error) => Err(io::Error::from_raw_os_error(error as i32)),
         }
     }
@@ -303,16 +444,21 @@ impl ProcessGroupGuard {
         let Some(process_group) = self.process_group else {
             return Ok(());
         };
-        // `taskkill /T` is the Windows analogue of killing a Unix process group: it terminates
-        // the child and processes descended from it. A non-zero exit commonly means the child
-        // exited between the wait and cleanup paths, which is equivalent to ESRCH on Unix.
-        std::process::Command::new("taskkill.exe")
+        // `taskkill /T` is the Windows analogue of killing a Unix process
+        // group: it targets the child and its descendants. Do not treat a
+        // failed command as successful cleanup; callers must retain a real
+        // failure rather than falsely acknowledge termination.
+        let status = std::process::Command::new("taskkill.exe")
             .args(["/PID", &process_group.to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
-            .map(|_| ())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("taskkill exited with {status}")))
+        }
     }
 
     #[cfg(not(any(unix, windows)))]
