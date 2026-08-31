@@ -59,9 +59,9 @@ claims.
 | Classification | Count |
 | --- | ---: |
 | `port` | 109 |
-| `evaluate` | 205 |
-| `defer` | 77 |
-| `out-of-scope` | 1,324 |
+| `evaluate` | 206 |
+| `defer` | 79 |
+| `out-of-scope` | 1,321 |
 | Total | 1,715 |
 
 ## First range: `35eaf3ff..8431dc59`
