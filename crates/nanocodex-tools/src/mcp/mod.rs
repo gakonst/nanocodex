@@ -21,6 +21,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use catalog::{ConnectedCatalog, ProviderState, ToolEntry};
+use futures_util::future::join_all;
 use nanocodex_oai_api::tools::ToolDefinition;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use serde::Deserialize;
@@ -342,7 +343,7 @@ impl Mcp {
     /// are cancelled and joined before this method returns.
     pub async fn shutdown(&self) {
         let clients = self.state.revoke_all();
-        let mut tasks = {
+        let tasks = {
             let mut tasks = self
                 .startup_tasks
                 .lock()
@@ -352,12 +353,11 @@ impl Mcp {
         for task in &tasks {
             task.abort();
         }
-        while let Some(task) = tasks.pop() {
-            let _ = task.await;
-        }
-        for client in clients {
+        drop(join_all(tasks).await);
+        join_all(clients.into_iter().map(|client| async move {
             client.shutdown().await;
-        }
+        }))
+        .await;
     }
 }
 

@@ -187,11 +187,15 @@ impl ModelCheckpoint {
 
     pub(crate) fn pending_rollovers(
         &self,
-    ) -> &[(
+    ) -> Vec<(
         nanocodex_oai_api::session::ContextWindow,
         nanocodex_oai_api::responses::ResponseHistory,
-    )] {
+    )> {
         self.conversation.pending_rollovers()
+    }
+
+    pub(crate) fn acknowledge_rollovers(&self) {
+        self.conversation.acknowledge_rollovers();
     }
 
     #[allow(

@@ -20,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures_util::future::join_all;
 use serde::Serialize;
 use tokio::{sync::Mutex, task::JoinHandle, time::timeout};
 
@@ -264,9 +265,10 @@ impl ShellSessions {
                 .map(|(_, session)| session)
                 .collect::<Vec<_>>()
         };
-        for session in sessions {
+        join_all(sessions.into_iter().map(|session| async move {
             session.terminate().await;
-        }
+        }))
+        .await;
     }
 }
 

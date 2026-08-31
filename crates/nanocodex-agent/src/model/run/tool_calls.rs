@@ -159,15 +159,9 @@ where
         self.active_tool_batch_started_at = Some(Instant::now());
         let mut ordinary_calls = Vec::with_capacity(calls.len());
         for call in calls {
-            if self.config.token_budget.is_some()
-                && call.namespace.is_none()
-                && matches!(call.kind, CodeCallKind::Function)
-                && matches!(
-                    call.name.as_str(),
-                    NEW_CONTEXT_TOOL | CONTEXT_REMAINING_TOOL
-                )
+            if let Some(budget_call) = token_budget_call(&call, self.config.token_budget.is_some())
             {
-                let text = if call.name == NEW_CONTEXT_TOOL {
+                let text = if budget_call == TokenBudgetCall::NewContext {
                     conversation.request_new_context();
                     "A new context window will start without summarizing conversation history."
                         .to_owned()

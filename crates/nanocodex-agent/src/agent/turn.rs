@@ -176,19 +176,14 @@ pub enum ResponseOperation {
 }
 
 /// Whether a completion was observed live or recovered from a durable journal.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseCompletionSource {
     /// The provider completed during this runtime execution.
+    #[default]
     Live,
     /// A previously completed provider operation was replayed after recovery.
     DurableReplay,
-}
-
-impl Default for ResponseCompletionSource {
-    fn default() -> Self {
-        Self::Live
-    }
 }
 
 /// Exact non-aggregated completion data for one upstream response.

@@ -89,11 +89,7 @@ impl ClientInner {
         let (_admission, peer) = self.admitted_peer().await?;
         let parent = Span::current();
         let result = self.call_tool_with_payment(&peer, params).await;
-        if let Some(oauth) = &self.oauth
-            && let Err(error) = oauth.persist_if_changed(&parent).await
-        {
-            tracing::warn!(%error, "failed to persist refreshed MCP OAuth credentials");
-        }
+        self.persist_oauth(&parent).await;
         result
     }
 
@@ -163,11 +159,7 @@ impl ClientInner {
             }
         })
         .await;
-        if let Some(oauth) = &self.oauth
-            && let Err(error) = oauth.persist_if_changed(parent).await
-        {
-            tracing::warn!(%error, "failed to persist refreshed MCP OAuth credentials");
-        }
+        self.persist_oauth(parent).await;
         tools
     }
 

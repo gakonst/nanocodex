@@ -1,6 +1,6 @@
 use std::{any::Any, panic::AssertUnwindSafe, sync::Arc};
 
-use futures_util::FutureExt;
+use futures_util::{FutureExt, future::join_all};
 use nanocodex_oai_api::tools::ToolOutputWire;
 use serde::Serialize;
 use serde_json::{Value, value::to_raw_value};
@@ -365,13 +365,13 @@ impl PreparedToolRuntime {
     /// Terminates retained workspace subprocesses owned by this runtime.
     pub async fn shutdown(&self) {
         #[cfg(feature = "native")]
-        for mcp in &self.mcps {
-            mcp.shutdown().await;
-        }
+        join_all(self.mcps.iter().map(|mcp| mcp.shutdown())).await;
         #[cfg(feature = "workspace-runtime")]
-        for workspace in &self.workspaces {
-            workspace.control().cancel().await;
-        }
+        join_all(self.workspaces.iter().map(|workspace| {
+            let control = workspace.control();
+            async move { control.cancel().await }
+        }))
+        .await;
     }
 }
 

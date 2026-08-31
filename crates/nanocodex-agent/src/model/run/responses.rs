@@ -4,6 +4,23 @@ use serde_json::json;
 pub(super) const NEW_CONTEXT_TOOL: &str = "new_context";
 pub(super) const CONTEXT_REMAINING_TOOL: &str = "get_context_remaining";
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum TokenBudgetCall {
+    NewContext,
+    ContextRemaining,
+}
+
+pub(super) fn token_budget_call(call: &CodeCall, enabled: bool) -> Option<TokenBudgetCall> {
+    if !enabled || call.namespace.is_some() || !matches!(call.kind, CodeCallKind::Function) {
+        return None;
+    }
+    match call.name.as_str() {
+        NEW_CONTEXT_TOOL => Some(TokenBudgetCall::NewContext),
+        CONTEXT_REMAINING_TOOL => Some(TokenBudgetCall::ContextRemaining),
+        _ => None,
+    }
+}
+
 pub(super) fn token_budget_tools(
     config: &ModelConfig,
     tool_specs: &mut Vec<ToolDefinition>,

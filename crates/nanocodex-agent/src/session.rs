@@ -73,6 +73,10 @@ impl CommittedSession {
         &self.model
     }
 
+    pub(crate) fn acknowledge_rollovers(&self) {
+        self.model.acknowledge_rollovers();
+    }
+
     #[cfg(all(feature = "openai", not(target_family = "wasm")))]
     pub(crate) const fn selected_model(&self) -> Model {
         self.selected_model

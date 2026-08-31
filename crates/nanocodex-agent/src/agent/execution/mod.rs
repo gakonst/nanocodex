@@ -609,7 +609,9 @@ impl Execution {
             outcome,
         } = turn;
         persist_operation(policy, operation_id, operation_input, outcome, checkpoint).await?;
-        self.platform.persist(checkpoint, platform).await
+        self.platform.persist(checkpoint, platform).await?;
+        checkpoint.acknowledge_rollovers();
+        Ok(())
     }
 
     pub(crate) async fn persist_compaction(
@@ -625,7 +627,11 @@ impl Execution {
             outcome,
         } = turn;
         persist_operation(policy, operation_id, operation_input, outcome, checkpoint).await?;
-        self.platform.persist_compaction(checkpoint, platform).await
+        self.platform
+            .persist_compaction(checkpoint, platform)
+            .await?;
+        checkpoint.acknowledge_rollovers();
+        Ok(())
     }
 
     pub(crate) async fn commit_checkpoint(&self, checkpoint: &CommittedSession) -> Result<()> {

@@ -76,7 +76,7 @@ impl RolloutCommit {
             history: session.rollout_history(),
             revision: session.history_revision(),
             context_window: session.context_window(),
-            pending_rollovers: session.model().pending_rollovers().to_vec(),
+            pending_rollovers: session.model().pending_rollovers(),
             turn,
             model: session.selected_model(),
             context_baseline: session.context_baseline().clone(),
@@ -84,15 +84,7 @@ impl RolloutCommit {
     }
 
     fn compaction(session: &CommittedSession, turn: RolloutTurn) -> Self {
-        Self {
-            history: session.rollout_history(),
-            revision: session.history_revision(),
-            context_window: session.context_window(),
-            pending_rollovers: session.model().pending_rollovers().to_vec(),
-            turn,
-            model: session.selected_model(),
-            context_baseline: session.context_baseline().clone(),
-        }
+        Self::from_session(session, turn)
     }
 
     #[cfg(test)]

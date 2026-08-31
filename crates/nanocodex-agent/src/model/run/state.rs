@@ -37,10 +37,14 @@ pub(super) struct ConversationState {
     pub(super) managed: ManagedSessionState,
     pub(super) continuation_policy: Option<ContinuationPolicy>,
     pub(super) context_window: nanocodex_oai_api::session::ContextWindow,
-    pending_rollovers: Vec<(
-        nanocodex_oai_api::session::ContextWindow,
-        nanocodex_oai_api::responses::ResponseHistory,
-    )>,
+    pending_rollovers: Arc<
+        Mutex<
+            Vec<(
+                nanocodex_oai_api::session::ContextWindow,
+                nanocodex_oai_api::responses::ResponseHistory,
+            )>,
+        >,
+    >,
 }
 
 impl ConversationState {
@@ -55,7 +59,7 @@ impl ConversationState {
             context_window: nanocodex_oai_api::session::ContextWindow::initial_for_agent(
                 session_id,
             ),
-            pending_rollovers: Vec::new(),
+            pending_rollovers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -77,7 +81,7 @@ impl ConversationState {
             context_window: nanocodex_oai_api::session::ContextWindow::initial_for_agent(
                 session_id,
             ),
-            pending_rollovers: Vec::new(),
+            pending_rollovers: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -100,7 +104,7 @@ impl ConversationState {
             continuation_policy: None,
             context_window: context_window
                 .unwrap_or_else(nanocodex_oai_api::session::ContextWindow::new_for_agent),
-            pending_rollovers: Vec::new(),
+            pending_rollovers: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -155,16 +159,28 @@ impl ConversationState {
 
     pub(super) fn pending_rollovers(
         &self,
-    ) -> &[(
+    ) -> Vec<(
         nanocodex_oai_api::session::ContextWindow,
         nanocodex_oai_api::responses::ResponseHistory,
-    )] {
-        &self.pending_rollovers
+    )> {
+        self.pending_rollovers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(super) fn acknowledge_rollovers(&self) {
+        self.pending_rollovers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     pub(super) fn advance_context_window(&mut self) {
         self.context_window.advance_for_agent();
         self.pending_rollovers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((self.context_window.clone(), self.shared_history()));
     }
 
@@ -391,7 +407,7 @@ impl ConversationState {
     ) {
         self.context_window =
             nanocodex_oai_api::session::ContextWindow::initial_for_agent(session_id);
-        self.pending_rollovers.clear();
+        self.pending_rollovers = Arc::new(Mutex::new(Vec::new()));
         if config.token_budget.is_none() {
             return;
         }
@@ -441,6 +457,8 @@ impl ConversationState {
         self.managed.reset_for_full_request();
         self.canonical_context = Arc::new(canonical_context);
         self.pending_rollovers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((self.context_window.clone(), self.shared_history()));
     }
 }
@@ -535,5 +553,24 @@ mod tests {
         assert!(encoded.contains(&child.to_string()));
         assert!(!encoded.contains(&parent.to_string()));
         assert_eq!(encoded.matches("token_budget.context_window").count(), 1);
+    }
+
+    #[test]
+    fn persisted_rollover_acknowledgement_releases_shared_history() {
+        let session_id = nanocodex_oai_api::session::SessionId::new();
+        let mut conversation = ConversationState::new(
+            vec![ResponseItem::message(
+                MessageRole::User,
+                [ContentItem::input_text("task")],
+            )],
+            session_id,
+        )
+        .expect("user context is valid");
+        conversation.advance_context_window();
+        let checkpoint = conversation.clone();
+
+        assert_eq!(conversation.pending_rollovers().len(), 1);
+        checkpoint.acknowledge_rollovers();
+        assert!(conversation.pending_rollovers().is_empty());
     }
 }

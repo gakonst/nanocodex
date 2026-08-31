@@ -248,7 +248,7 @@ where
                 let usage = self.stats.turn_usage(self.model, self.fast_mode);
                 record_turn_usage(&tracing::Span::current(), &usage);
                 let checkpoint = self.commit_checkpoint()?;
-                let response_completions = self.stats.response_completions.clone();
+                let response_completions = std::mem::take(&mut self.stats.response_completions);
                 Ok(ModelTurnOutcome::Completed(CompletedModelTurn {
                     final_message: message,
                     usage,
@@ -777,9 +777,8 @@ where
             let code_calls = response.code_calls;
             session.conversation.append(response.output_items);
             let requests_new_context = code_calls.iter().any(|call| {
-                call.namespace.is_none()
-                    && matches!(call.kind, CodeCallKind::Function)
-                    && call.name == NEW_CONTEXT_TOOL
+                token_budget_call(call, self.config.token_budget.is_some())
+                    == Some(TokenBudgetCall::NewContext)
             });
             let allow_fallback = !requests_new_context
                 && session.conversation.active_context_tokens()
