@@ -1,6 +1,9 @@
 use super::backend::{BackendFuture, BackendTurnKey, LifecycleBackend};
 use super::*;
+
 use nanocodex_oai_api::PromptValidationError;
+use nanocodex_oai_api::responses::{ResponseUsageMetadata, Usage};
+use serde::{Deserialize, Serialize};
 
 /// Completion handle for an accepted turn.
 ///
@@ -155,8 +158,96 @@ pub struct TurnResult {
     pub(super) request_id: Option<String>,
     pub(super) final_message: String,
     pub(super) usage: Option<TurnUsage>,
+    pub(super) response_completions: Vec<ResponseCompletion>,
     #[cfg(feature = "openai")]
     pub(super) checkpoint: TurnCheckpoint,
+}
+
+/// Kind of upstream Responses operation represented by a completion record.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseOperation {
+    /// Non-generating cache warmup.
+    Warmup,
+    /// Ordinary model generation.
+    Generation,
+    /// Compaction-v2 response creation.
+    Compaction,
+}
+
+/// Whether a completion was observed live or recovered from a durable journal.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseCompletionSource {
+    /// The provider completed during this runtime execution.
+    Live,
+    /// A previously completed provider operation was replayed after recovery.
+    DurableReplay,
+}
+
+impl Default for ResponseCompletionSource {
+    fn default() -> Self {
+        Self::Live
+    }
+}
+
+/// Exact non-aggregated completion data for one upstream response.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ResponseCompletion {
+    response_id: String,
+    operation: ResponseOperation,
+    #[serde(default)]
+    source: ResponseCompletionSource,
+    usage: Option<Usage>,
+    usage_metadata: Option<ResponseUsageMetadata>,
+}
+
+impl ResponseCompletion {
+    pub(crate) const fn new(
+        response_id: String,
+        operation: ResponseOperation,
+        source: ResponseCompletionSource,
+        usage: Option<Usage>,
+        usage_metadata: Option<ResponseUsageMetadata>,
+    ) -> Self {
+        Self {
+            response_id,
+            operation,
+            source,
+            usage,
+            usage_metadata,
+        }
+    }
+
+    /// Returns the exact provider response identity.
+    #[must_use]
+    pub fn response_id(&self) -> &str {
+        &self.response_id
+    }
+
+    /// Returns the upstream operation kind.
+    #[must_use]
+    pub const fn operation(&self) -> ResponseOperation {
+        self.operation
+    }
+
+    /// Returns whether this completion was live or journal-replayed.
+    #[must_use]
+    pub const fn source(&self) -> ResponseCompletionSource {
+        self.source
+    }
+
+    /// Returns the unaggregated token usage for this response.
+    #[must_use]
+    pub const fn usage(&self) -> Option<&Usage> {
+        self.usage.as_ref()
+    }
+
+    /// Returns exact upstream usage metadata for this response.
+    #[must_use]
+    pub const fn usage_metadata(&self) -> Option<&ResponseUsageMetadata> {
+        self.usage_metadata.as_ref()
+    }
 }
 
 #[derive(Clone)]
@@ -192,6 +283,13 @@ impl TurnResult {
         self.usage.as_ref()
     }
 
+    /// Returns every upstream completion in execution order, including cache
+    /// warmup, compaction, and model-generation responses.
+    #[must_use]
+    pub fn response_completions(&self) -> &[ResponseCompletion] {
+        &self.response_completions
+    }
+
     /// Returns a serializable, caller-owned session snapshot when retained by the backend.
     ///
     /// The snapshot contains the complete unredacted model-visible conversation,
@@ -223,6 +321,7 @@ impl TurnResult {
             request_id,
             final_message,
             usage,
+            response_completions: Vec::new(),
             #[cfg(feature = "openai")]
             checkpoint: TurnCheckpoint::Unavailable,
         }

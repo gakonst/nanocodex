@@ -35,6 +35,25 @@ where
             .conversation
             .prepare_request_policy(self.continuation_policy());
 
+        if self.config.token_budget.is_some() {
+            let canonical_context = session
+                .context
+                .snapshot()
+                .map(ContextSnapshot::full_item)
+                .unwrap_or_else(|| session.conversation.canonical_context().clone());
+            session
+                .conversation
+                .start_fresh_context(canonical_context, &self.config);
+            session.conversation.commit_tail();
+            session.preserve_inherited_delta = false;
+            self.force_compaction = false;
+            self.stats.compactions = self.stats.compactions.saturating_add(1);
+            let checkpoint =
+                Self::checkpoint_from_session(&session, false, self.global_instructions.clone());
+            self.session = Some(session);
+            return Ok(ModelCompactOutcome::Completed(checkpoint));
+        }
+
         let active_context_tokens = session.conversation.active_context_tokens();
         let previous_response_id = session
             .conversation
@@ -85,6 +104,7 @@ where
         session
             .conversation
             .install_pre_turn_compaction(item, session.factory.profile().prefix());
+        session.conversation.advance_context_window();
         session.conversation.commit_tail();
         session.context.require_full_reinjection();
         session.preserve_inherited_delta = false;
@@ -182,7 +202,7 @@ where
         thinking: Thinking,
         fast_mode: bool,
         logical_turn: u64,
-        steers: tokio::sync::mpsc::Receiver<Prompt>,
+        mut steers: tokio::sync::mpsc::Receiver<Prompt>,
         mut cancel: tokio::sync::oneshot::Receiver<()>,
         fork_snapshots: watch::Sender<Option<ModelCheckpoint>>,
         execution_steps: Option<ExecutionSteps>,
@@ -216,7 +236,7 @@ where
                 task,
                 workspace,
                 logical_turn,
-                steers,
+                &mut steers,
                 &mut cancel,
                 &fork_snapshots,
             )
@@ -228,9 +248,11 @@ where
                 let usage = self.stats.turn_usage(self.model, self.fast_mode);
                 record_turn_usage(&tracing::Span::current(), &usage);
                 let checkpoint = self.commit_checkpoint()?;
+                let response_completions = self.stats.response_completions.clone();
                 Ok(ModelTurnOutcome::Completed(CompletedModelTurn {
                     final_message: message,
                     usage,
+                    response_completions,
                     checkpoint,
                 }))
             }
@@ -363,7 +385,7 @@ where
         } else {
             session.conversation.clear_delta();
         }
-        if compacted {
+        if compacted && self.config.token_budget.is_none() {
             session.context.require_full_reinjection();
         }
         let current_context = session.context.capture(
@@ -392,6 +414,9 @@ where
         session
             .conversation
             .append(prompt_messages(task, user_content));
+        session
+            .conversation
+            .install_initial_token_budget_context(&self.config);
         Ok(true)
     }
 
@@ -400,7 +425,7 @@ where
         task: Prompt,
         requested_workspace: Option<Arc<str>>,
         logical_turn: u64,
-        steers: tokio::sync::mpsc::Receiver<Prompt>,
+        steers: &mut tokio::sync::mpsc::Receiver<Prompt>,
         cancel: &mut tokio::sync::oneshot::Receiver<()>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTaskOutcome> {
@@ -457,7 +482,15 @@ where
                 history.splice(2..2, self.pending_developer_messages.drain(..));
             }
             context.establish(context_snapshot);
-            let conversation = ConversationState::new(history)?;
+            let mut conversation = ConversationState::new(
+                history,
+                self.events.request_id().parse().map_err(|_| {
+                    NanocodexError::InvalidRequest(
+                        "agent request id must be a UUIDv7 session id".to_owned(),
+                    )
+                })?,
+            )?;
+            conversation.install_initial_token_budget_context(&self.config);
             let mut session = ModelSessionState {
                 workspace,
                 tools,
@@ -511,13 +544,20 @@ where
             session
         };
 
-        let outcome = {
-            let task = self.drive_session(&mut session, steers, fork_snapshots);
-            tokio::pin!(task);
-            tokio::select! {
-                biased;
-                _ = &mut *cancel => None,
-                outcome = &mut task => Some(outcome),
+        let outcome = loop {
+            let outcome = {
+                let task = self.drive_session(&mut session, steers, fork_snapshots);
+                tokio::pin!(task);
+                tokio::select! {
+                    biased;
+                    _ = &mut *cancel => None,
+                    outcome = &mut task => Some(outcome),
+                }
+            };
+            let drained = self.drain_steers(&mut session.conversation, steers).await?;
+            match outcome {
+                Some(Ok(_message)) if drained > 0 => continue,
+                outcome => break outcome,
             }
         };
         self.session = Some(session);
@@ -654,7 +694,9 @@ where
                     }
                     Self::emit_completed_tool_result(&self.events, &completed)?;
                 }
-                retained.replace(completed);
+                if retained.is_none() {
+                    retained.replace(completed);
+                }
             }
         }
         self.commit_interrupted_checkpoint()
@@ -696,7 +738,7 @@ where
     pub(super) async fn drive_session(
         &mut self,
         session: &mut ModelSessionState,
-        mut steers: tokio::sync::mpsc::Receiver<Prompt>,
+        steers: &mut tokio::sync::mpsc::Receiver<Prompt>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<String> {
         // Match Codex's ordering: always sample the turn's initial prompt once
@@ -704,8 +746,7 @@ where
         let mut can_drain_steers = false;
         loop {
             if can_drain_steers {
-                self.drain_steers(&mut session.conversation, &mut steers)
-                    .await?;
+                self.drain_steers(&mut session.conversation, steers).await?;
             }
             Self::publish_fork_snapshot(session, fork_snapshots, self.global_instructions.as_ref());
             let call_index = self.stats.model_calls + 1;
@@ -735,6 +776,18 @@ where
             let final_message = response.final_message;
             let code_calls = response.code_calls;
             session.conversation.append(response.output_items);
+            let requests_new_context = code_calls.iter().any(|call| {
+                call.namespace.is_none()
+                    && matches!(call.kind, CodeCallKind::Function)
+                    && call.name == NEW_CONTEXT_TOOL
+            });
+            let allow_fallback = !requests_new_context
+                && session.conversation.active_context_tokens()
+                    < session.conversation.effective_context_limit(&self.config);
+            let budget_fragments = session
+                .conversation
+                .take_token_budget_fragments(&self.config, allow_fallback);
+            session.conversation.append(budget_fragments);
             can_drain_steers = true;
 
             if code_calls.is_empty() {
@@ -797,6 +850,24 @@ where
                 history,
             )
             .await?;
+            // `new_context` is a direct-only, one-shot rollover request. It
+            // applies only because tool calls require a follow-up model step;
+            // rebuild the client-owned window instead of asking the provider
+            // to summarize it.
+            if self.config.token_budget.is_some() && session.conversation.take_new_context_request()
+            {
+                let canonical_context = session
+                    .context
+                    .snapshot()
+                    .map(ContextSnapshot::full_item)
+                    .unwrap_or_else(|| session.conversation.canonical_context().clone());
+                session
+                    .conversation
+                    .start_fresh_context(canonical_context, &self.config);
+                self.stats.compactions = self.stats.compactions.saturating_add(1);
+                can_drain_steers = false;
+                continue;
+            }
             let compacted = self
                 .maybe_compact(
                     call_index,
@@ -818,7 +889,8 @@ where
         &mut self,
         conversation: &mut ConversationState,
         steers: &mut tokio::sync::mpsc::Receiver<Prompt>,
-    ) -> Result<()> {
+    ) -> Result<usize> {
+        let mut drained = 0;
         while let Ok(steer) = steers.try_recv() {
             if trace_content_enabled()
                 && let Ok(content) = serde_json::to_string(&steer)
@@ -834,6 +906,7 @@ where
             let user_content = prepare_user_input(&steer.instruction).await;
             conversation.append(prompt_messages(&steer, user_content));
             self.stats.steers += 1;
+            drained += 1;
             self.events.emit(
                 AgentEventKind::RunSteered,
                 RunSteered {
@@ -842,6 +915,6 @@ where
                 },
             )?;
         }
-        Ok(())
+        Ok(drained)
     }
 }

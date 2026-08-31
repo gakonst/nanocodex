@@ -150,6 +150,7 @@ impl Service<ResponsesAttempt> for RetainedShellCancellationService {
                 (0, ResponsesAttemptKind::Warmup) => ResponsesOutput::Warmup(WarmupResponse {
                     id: "resp-warmup".to_owned(),
                     usage: None,
+                    usage_metadata: None,
                 }),
                 (1, ResponsesAttemptKind::Generation) => tool_generation(
                     "resp-shell",
@@ -215,6 +216,7 @@ fn tool_generation(response_id: &str, call_id: &str, input: &str) -> ResponsesOu
             kind: CodeCallKind::Custom,
         }],
         usage: None,
+        usage_metadata: None,
         time_to_first_event_ns: 0,
         time_to_first_output_ns: None,
         pipeline_stats: ResponsePipelineStats::default(),
@@ -233,6 +235,7 @@ fn final_generation(response_id: &str) -> ResponsesOutput {
         )],
         code_calls: Vec::new(),
         usage: None,
+        usage_metadata: None,
         time_to_first_event_ns: 0,
         time_to_first_output_ns: None,
         pipeline_stats: ResponsePipelineStats::default(),

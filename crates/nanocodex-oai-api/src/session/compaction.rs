@@ -124,7 +124,7 @@ static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<Mutex<OriginalImageEstimateCache>
     LazyLock::new(|| Mutex::new(OriginalImageEstimateCache::default()));
 
 #[must_use]
-pub fn auto_compact_token_limit(model: Model, context_window_tokens: u64) -> u64 {
+pub const fn auto_compact_token_limit(model: Model, context_window_tokens: u64) -> u64 {
     model_context_policy(model).auto_compact_token_limit(context_window_tokens)
 }
 
@@ -306,12 +306,30 @@ fn retained_message_token_count(item: &ResponseItem) -> usize {
 }
 
 fn truncate_message_text(mut item: ResponseItem, max_tokens: usize) -> Option<ResponseItem> {
-    let ResponseItem::Message { content, .. } = &mut item else {
+    let ResponseItem::Message {
+        content,
+        internal_chat_message_metadata_passthrough,
+        ..
+    } = &mut item
+    else {
         return None;
     };
+    let original_len = content.len();
+    let mut kinds = internal_chat_message_metadata_passthrough
+        .as_mut()
+        .and_then(|metadata| metadata.content_item_kinds.take())
+        .map(|mut kinds| {
+            kinds.resize_with(original_len, || {
+                crate::responses::ContentItemKind("unknown".into())
+            });
+            kinds.into_iter()
+        });
     let mut remaining = max_tokens;
     let mut truncated = Vec::with_capacity(content.len());
+    let mut retained_kinds = kinds.as_ref().map(|_| Vec::with_capacity(content.len()));
     for mut content_item in std::mem::take(content) {
+        let kind = kinds.as_mut().and_then(Iterator::next);
+        let mut retained = false;
         match &mut content_item {
             ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                 if remaining == 0 {
@@ -325,12 +343,14 @@ fn truncate_message_text(mut item: ResponseItem, max_tokens: usize) -> Option<Re
                     remaining = 0;
                 }
                 truncated.push(content_item);
+                retained = true;
             }
             ContentItem::InputImage { image_url, detail } => {
                 let tokens = image_token_count(image_url, *detail);
                 if tokens <= remaining {
                     remaining = remaining.saturating_sub(tokens);
                     truncated.push(content_item);
+                    retained = true;
                 } else {
                     // Do not retain an image that alone exceeds the bounded
                     // compacted-message budget; otherwise a single data URL
@@ -340,13 +360,22 @@ fn truncate_message_text(mut item: ResponseItem, max_tokens: usize) -> Option<Re
             }
             ContentItem::InputAudio { .. } => {
                 truncated.push(content_item);
+                retained = true;
             }
+        }
+        if retained && let (Some(retained_kinds), Some(kind)) = (&mut retained_kinds, kind) {
+            retained_kinds.push(kind);
         }
     }
     if truncated.is_empty() {
         return None;
     }
     *content = truncated;
+    if let Some(metadata) = internal_chat_message_metadata_passthrough
+        && let Some(retained_kinds) = retained_kinds
+    {
+        metadata.content_item_kinds = Some(retained_kinds);
+    }
     Some(item)
 }
 
@@ -620,6 +649,32 @@ mod tests {
     }
 
     #[test]
+    fn retained_message_truncation_keeps_content_kinds_positional() {
+        let mut item = ResponseItem::message(
+            crate::MessageRole::User,
+            [
+                ContentItem::input_text("keep"),
+                ContentItem::input_image(format!("data:image/png;base64,{}", "A".repeat(32))),
+            ],
+        );
+        item.set_message_content_item_kinds([
+            crate::responses::ContentItemKind("user.text".into()),
+            crate::responses::ContentItemKind("user.image".into()),
+        ]);
+
+        let retained = truncate_message_text(item, 1).expect("text remains");
+        let ResponseItem::Message { content, .. } = &retained else {
+            panic!("retained item is a message");
+        };
+        assert_eq!(content.len(), 1);
+        let kinds = retained
+            .message_content_item_kinds()
+            .expect("retained kinds");
+        assert_eq!(kinds.len(), 1);
+        assert_eq!(kinds[0].as_str(), "user.text");
+    }
+
+    #[test]
     fn installed_history_retains_user_inputs_and_reinjects_context() {
         let permissions = ResponseItem::message(
             crate::MessageRole::Developer,
@@ -727,6 +782,8 @@ mod tests {
             internal_chat_message_metadata_passthrough: Some(
                 crate::responses::InternalMessageMetadata {
                     turn_id: Some("turn_search".into()),
+                    create_time: None,
+                    content_item_kinds: None,
                 },
             ),
         }]);

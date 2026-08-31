@@ -16,7 +16,8 @@ use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
 use nanocodex_agent::{
     AgentHandle, ExecutionEnvironment, Model, Nanocodex, NanocodexError, OpenAi, PromptRoute,
-    ReasoningMode, ResponseError, SpawnOptions, Thinking, Tools,
+    ReasoningMode, ResponseCompletionSource, ResponseError, ResponseOperation, SpawnOptions,
+    Thinking, Tools,
     events::{AgentEvent, AgentEventData, RunEvent},
     input::Prompt,
     rollout::RolloutConfig,
@@ -166,6 +167,22 @@ fn remove_client_item_id(item: &mut Value, expected_prefix: &str) {
         .expect("response item should be an object")
         .remove("id")
         .expect("validated response item ID should be present");
+}
+
+fn remove_generated_create_time(item: &mut Value) {
+    let metadata = item
+        .as_object_mut()
+        .expect("response item should be an object")
+        .remove("internal_chat_message_metadata_passthrough")
+        .expect("history item should carry generated provenance");
+    let object = metadata
+        .as_object()
+        .expect("history provenance should be an object");
+    assert_eq!(object.len(), 1, "unexpected history provenance: {metadata}");
+    assert!(
+        object.get("create_time").is_some_and(Value::is_number),
+        "history create_time should be an exact JSON number: {metadata}"
+    );
 }
 
 async fn run_model(endpoint: &str, workspace: &Path, instruction: &str) -> Result<String> {

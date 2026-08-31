@@ -6,6 +6,7 @@ pub(super) struct WarmupExecution {
     pub(super) attempt: u32,
     pub(super) connection_generation: u32,
     pub(super) usage: Option<Usage>,
+    pub(super) usage_metadata: Option<ResponseUsageMetadata>,
     pub(super) server_reasoning_included: bool,
 }
 
@@ -52,6 +53,7 @@ struct RecordedCompactionResult {
     status: String,
     item: ResponseItem,
     usage: Option<Usage>,
+    usage_metadata: Option<ResponseUsageMetadata>,
     attempt: u32,
     connection_generation: u32,
     server_reasoning_included: bool,
@@ -90,11 +92,19 @@ where
         context: CompactionContext<'_>,
     ) -> Result<bool> {
         let CompactionContext { snapshot, phase } = context;
-        let auto_compact_token_limit =
-            compaction::auto_compact_token_limit(self.model, self.config.context_window_tokens);
+        let auto_compact_token_limit = conversation.effective_context_limit(&self.config);
         let active_context_tokens = conversation.active_context_tokens();
         if !self.force_compaction && active_context_tokens < auto_compact_token_limit {
             return Ok(false);
+        }
+        if self.config.token_budget.is_some() {
+            let canonical_context = snapshot
+                .map(ContextSnapshot::full_item)
+                .unwrap_or_else(|| conversation.canonical_context().clone());
+            conversation.start_fresh_context(canonical_context, &self.config);
+            self.stats.compactions = self.stats.compactions.saturating_add(1);
+            self.force_compaction = false;
+            return Ok(true);
         }
         let previous_response_id = conversation.previous_response_id();
         let (item, _usage, server_reasoning_included) = self
@@ -126,6 +136,7 @@ where
                 );
             }
         }
+        conversation.advance_context_window();
         self.force_compaction = false;
         Ok(true)
     }
@@ -183,22 +194,34 @@ where
             }
         };
         let duration_ns = elapsed_ns(started_at);
-        let (response_id, source, attempt, connection_generation, usage, server_reasoning_included) =
-            if let Some(execution) = execution {
-                if let Some(usage) = &execution.usage {
-                    self.stats.warmup_usage.add(usage);
-                }
-                (
-                    Some(execution.response_id),
-                    "response",
-                    Some(execution.attempt),
-                    Some(execution.connection_generation),
-                    execution.usage,
-                    execution.server_reasoning_included,
-                )
-            } else {
-                (None, "shared_prefix", None, None, None, false)
-            };
+        let (
+            response_id,
+            source,
+            attempt,
+            connection_generation,
+            usage,
+            usage_metadata,
+            server_reasoning_included,
+            completion_source,
+        ) = if let Some((execution, completion_source)) = execution {
+            if completion_source == crate::agent::ResponseCompletionSource::Live
+                && let Some(usage) = &execution.usage
+            {
+                self.stats.warmup_usage.add(usage);
+            }
+            (
+                Some(execution.response_id),
+                "response",
+                Some(execution.attempt),
+                Some(execution.connection_generation),
+                execution.usage,
+                execution.usage_metadata,
+                execution.server_reasoning_included,
+                Some(completion_source),
+            )
+        } else {
+            (None, "shared_prefix", None, None, None, None, false, None)
+        };
         span.record("warmup.source", source);
         if let Some(usage) = &usage {
             record_usage(&span, usage, self.model, self.fast_mode);
@@ -208,6 +231,17 @@ where
         span.record("duration_ns", duration_ns);
         self.stats.warmup_duration_ns += duration_ns;
         self.stats.last_response_id.clone_from(&response_id);
+        if let Some(response_id) = response_id.clone() {
+            self.stats
+                .response_completions
+                .push(crate::agent::ResponseCompletion::new(
+                    response_id,
+                    crate::agent::ResponseOperation::Warmup,
+                    completion_source.unwrap_or(crate::agent::ResponseCompletionSource::Live),
+                    usage.clone(),
+                    usage_metadata.clone(),
+                ));
+        }
         self.events.emit(
             AgentEventKind::ModelWarmupCompleted,
             WarmupCompleted {
@@ -217,6 +251,7 @@ where
                 connection_generation,
                 duration_ns,
                 usage: usage.as_ref(),
+                usage_metadata: usage_metadata.as_ref(),
             },
         )?;
         Ok(WarmupOutcome {
@@ -229,10 +264,10 @@ where
         &mut self,
         factory: &ResponsesAttemptFactory,
         span: &tracing::Span,
-    ) -> Result<WarmupExecution> {
+    ) -> Result<(WarmupExecution, crate::agent::ResponseCompletionSource)> {
         let mut recorded_request_prefix = factory.profile().prefix().to_vec();
         for item in &mut recorded_request_prefix {
-            item.strip_id();
+            item.strip_for_durable_identity();
         }
         let recorded = RecordedWarmupCall {
             model: self.model.as_str(),
@@ -259,7 +294,12 @@ where
                 )
                 .await?
             {
-                crate::agent::ExecutionStep::Replay(output) => return Ok(output),
+                crate::agent::ExecutionStep::Replay(output) => {
+                    return Ok((
+                        output,
+                        crate::agent::ResponseCompletionSource::DurableReplay,
+                    ));
+                }
                 crate::agent::ExecutionStep::Execute => {}
                 crate::agent::ExecutionStep::Unknown => {
                     return Err(NanocodexError::ProviderOutcomeUnknown {
@@ -289,12 +329,13 @@ where
             attempt,
             connection_generation,
             usage: response.usage,
+            usage_metadata: response.usage_metadata,
             server_reasoning_included,
         };
         if let Some(steps) = &self.execution_steps {
             steps.complete("warmup", &output).await?;
         }
-        Ok(output)
+        Ok((output, crate::agent::ResponseCompletionSource::Live))
     }
 
     pub(super) fn warmup_failed<T>(
@@ -364,11 +405,11 @@ where
         let step_id = format!("compaction-{after_model_call_index}");
         let mut recorded_prompt_history = history.iter().cloned().collect::<Vec<_>>();
         for item in &mut recorded_prompt_history {
-            item.strip_id();
+            item.strip_for_durable_identity();
         }
         let mut recorded_request_prefix = factory.profile().prefix().to_vec();
         for item in &mut recorded_request_prefix {
-            item.strip_id();
+            item.strip_for_durable_identity();
         }
         let step_input = RecordedCompactionCall {
             after_model_call_index,
@@ -412,6 +453,7 @@ where
         } else {
             None
         };
+        let replayed = recovered.is_some();
         let recorded_result = if let Some(output) = recovered {
             output
         } else {
@@ -445,6 +487,7 @@ where
                 status: response.status,
                 item: response.item,
                 usage: response.usage,
+                usage_metadata: response.usage_metadata,
                 attempt,
                 connection_generation,
                 server_reasoning_included,
@@ -463,6 +506,7 @@ where
             status,
             item,
             usage,
+            usage_metadata,
             attempt,
             connection_generation,
             server_reasoning_included,
@@ -482,9 +526,24 @@ where
         self.stats.compaction_duration_ns += duration_ns;
         if let Some(usage) = &usage {
             record_usage(&span, usage, self.model, self.fast_mode);
-            self.stats.usage.add(usage);
+            if !replayed {
+                self.stats.usage.add(usage);
+            }
         }
         self.stats.last_response_id = Some(response_id.clone());
+        self.stats
+            .response_completions
+            .push(crate::agent::ResponseCompletion::new(
+                response_id.clone(),
+                crate::agent::ResponseOperation::Compaction,
+                if replayed {
+                    crate::agent::ResponseCompletionSource::DurableReplay
+                } else {
+                    crate::agent::ResponseCompletionSource::Live
+                },
+                usage.clone(),
+                usage_metadata.clone(),
+            ));
         self.events.emit(
             AgentEventKind::ModelCompactionCompleted,
             CompactionCompleted {
@@ -497,6 +556,7 @@ where
                 time_to_first_event_ns,
                 time_to_first_output_ns,
                 usage: usage.as_ref(),
+                usage_metadata: usage_metadata.as_ref(),
             },
         )?;
         Ok((item, usage, server_reasoning_included))

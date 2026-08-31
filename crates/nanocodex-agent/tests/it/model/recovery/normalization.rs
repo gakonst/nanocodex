@@ -60,6 +60,7 @@ impl Service<ResponsesAttempt> for UnmatchedToolCallService {
                 ResponsesOutput::Warmup(WarmupResponse {
                     id: "resp-warmup".to_owned(),
                     usage: None,
+                    usage_metadata: None,
                 })
             }
             ResponsesAttemptKind::Generation => {
@@ -117,6 +118,7 @@ impl Service<ResponsesAttempt> for UnmatchedToolCallService {
                     // while declining to dispatch it as an executable call.
                     code_calls: Vec::new(),
                     usage: None,
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: None,
                     pipeline_stats: ResponsePipelineStats::default(),

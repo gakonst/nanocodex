@@ -2054,6 +2054,17 @@ mod tests {
         let resource_client = mcp.state.ready_client("fixture").await.unwrap();
 
         let (revision, retired) = mcp.state.begin_server("fixture");
+        let stale_call = prior
+            .client
+            .call_tool(
+                CallToolRequestParams::new(prior.remote_name.clone())
+                    .with_arguments(serde_json::Map::new()),
+            )
+            .await;
+        assert!(
+            matches!(stale_call, Err(error) if error == "MCP connection has been retired"),
+            "a stale entry must fail at client admission before RMCP sees the call"
+        );
         for client in retired {
             client.shutdown().await;
         }

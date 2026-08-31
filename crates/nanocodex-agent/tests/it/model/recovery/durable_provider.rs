@@ -49,6 +49,7 @@ impl Service<ResponsesAttempt> for ProviderProbe {
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
                 id: "resp-warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             ResponsesAttemptKind::Generation => ResponsesOutput::Generation(GenerationOutput {
                 id: "resp-generation".to_owned(),
@@ -61,6 +62,7 @@ impl Service<ResponsesAttempt> for ProviderProbe {
                 )],
                 code_calls: Vec::new(),
                 usage: None,
+                usage_metadata: None,
                 time_to_first_event_ns: 0,
                 time_to_first_output_ns: None,
                 pipeline_stats: ResponsePipelineStats::default(),
@@ -75,6 +77,7 @@ impl Service<ResponsesAttempt> for ProviderProbe {
                     internal_chat_message_metadata_passthrough: None,
                 },
                 usage: None,
+                usage_metadata: None,
                 time_to_first_event_ns: 0,
                 time_to_first_output_ns: None,
                 pipeline_stats: ResponsePipelineStats::default(),
@@ -91,7 +94,7 @@ struct PendingProviderStep {
 }
 
 impl PendingProviderStep {
-    fn new(pending_kind: &'static str) -> Self {
+    const fn new(pending_kind: &'static str) -> Self {
         Self {
             pending_kind,
             admissions: Mutex::new(Vec::new()),

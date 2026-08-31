@@ -63,6 +63,8 @@ enum RolloutCommand {
 pub(super) struct RolloutCommit {
     history: ResponseHistory,
     revision: u64,
+    context_window: nanocodex_oai_api::session::ContextWindow,
+    pending_rollovers: Vec<(nanocodex_oai_api::session::ContextWindow, ResponseHistory)>,
     turn: RolloutTurn,
     model: Model,
     context_baseline: ContextBaseline,
@@ -73,6 +75,8 @@ impl RolloutCommit {
         Self {
             history: session.rollout_history(),
             revision: session.history_revision(),
+            context_window: session.context_window(),
+            pending_rollovers: session.model().pending_rollovers().to_vec(),
             turn,
             model: session.selected_model(),
             context_baseline: session.context_baseline().clone(),
@@ -83,6 +87,8 @@ impl RolloutCommit {
         Self {
             history: session.rollout_history(),
             revision: session.history_revision(),
+            context_window: session.context_window(),
+            pending_rollovers: session.model().pending_rollovers().to_vec(),
             turn,
             model: session.selected_model(),
             context_baseline: session.context_baseline().clone(),
@@ -90,19 +96,42 @@ impl RolloutCommit {
     }
 
     #[cfg(test)]
-    pub(super) const fn from_history(
+    pub(super) fn from_history(history: ResponseHistory, revision: u64, turn: RolloutTurn) -> Self {
+        Self::from_history_window(history, revision, revision, turn)
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_history_window(
         history: ResponseHistory,
         revision: u64,
+        window_number: u64,
         turn: RolloutTurn,
     ) -> Self {
+        let mut context_window = nanocodex_oai_api::session::ContextWindow::initial_for_agent(
+            test_initial_window_id()
+                .parse()
+                .expect("test window id is UUIDv7"),
+        );
+        let mut pending_rollovers = Vec::new();
+        for _ in 0..window_number {
+            context_window.advance_for_agent();
+            pending_rollovers.push((context_window.clone(), history.clone()));
+        }
         Self {
             history,
             revision,
+            context_window,
+            pending_rollovers,
             turn,
             model: Model::Sol,
             context_baseline: ContextBaseline::Missing,
         }
     }
+}
+
+#[cfg(test)]
+pub(super) const fn test_initial_window_id() -> &'static str {
+    "019c0d31-c308-7d91-bff4-5dca82d15ac6"
 }
 
 #[derive(Clone)]
@@ -222,7 +251,7 @@ impl RolloutRecorder {
         std::fs::create_dir_all(&directory)?;
         let filename_timestamp = local.format("%Y-%m-%dT%H-%M-%S");
         let path = directory.join(format!("rollout-{filename_timestamp}-{thread_id}.jsonl"));
-        let initial_window_id = uuid::Uuid::now_v7().to_string();
+        let initial_window_id = thread_id.to_owned();
         let timestamp = timestamp();
         let parent_thread_id = origin.parent_thread_id.map(ToOwned::to_owned);
         let meta = SessionMeta {

@@ -9,6 +9,7 @@ mod image_dimensions;
 mod response;
 #[doc(hidden)]
 pub(crate) mod state;
+mod token_budget;
 
 #[cfg(test)]
 mod tests;
@@ -19,3 +20,6 @@ pub use response::{
     ResponseInput,
 };
 pub use state::{SessionId, SessionIdError};
+pub use token_budget::{
+    ContextWindow, TokenBudgetAction, TokenBudgetConfig, TokenBudgetConfigError,
+};

@@ -62,7 +62,7 @@ impl CurrentClient {
         self.valid.load(Ordering::Acquire)
     }
 
-    pub(crate) fn client(&self) -> &Client {
+    pub(crate) const fn client(&self) -> &Client {
         &self.client
     }
 }
@@ -180,7 +180,10 @@ impl ProviderState {
         let mut catalog = self.catalog();
         if catalog.generations.get(server_name).copied() != Some(generation) {
             return match result {
-                Ok(ConnectedCatalog { client, .. }) => vec![client],
+                Ok(ConnectedCatalog { client, .. }) => {
+                    client.begin_shutdown();
+                    vec![client]
+                }
                 Err(_) => Vec::new(),
             };
         }
@@ -190,10 +193,8 @@ impl ProviderState {
                 let removed = catalog
                     .entries
                     .iter()
-                    .filter_map(|(name, entry)| {
-                        (entry.server_name == server_name)
-                            .then(|| (name.clone(), Arc::clone(entry)))
-                    })
+                    .filter(|(_, entry)| entry.server_name == server_name)
+                    .map(|(name, entry)| (name.clone(), Arc::clone(entry)))
                     .collect::<Vec<_>>();
                 for (name, entry) in removed {
                     entry.valid.store(false, Ordering::Release);
@@ -222,6 +223,7 @@ impl ProviderState {
                     },
                 ) {
                     previous.valid.store(false, Ordering::Release);
+                    previous.client.begin_shutdown();
                     retired.push(previous.client);
                 }
                 let available = catalog.entries.keys().cloned().collect::<BTreeSet<_>>();
@@ -368,6 +370,7 @@ impl ProviderState {
         let entries = std::mem::take(&mut catalog.entries);
         for entry in entries.into_values() {
             entry.valid.store(false, Ordering::Release);
+            entry.client.begin_shutdown();
         }
         catalog.active.clear();
         catalog.search_index = Some(Arc::new(SearchIndex::new(Vec::new())));
@@ -376,6 +379,7 @@ impl ProviderState {
             .into_values()
             .map(|client| {
                 client.valid.store(false, Ordering::Release);
+                client.client.begin_shutdown();
                 client.client
             })
             .collect();
@@ -671,12 +675,12 @@ fn revoke_server_entries(catalog: &mut Catalog, server_name: &str) -> Vec<Client
     let removed = catalog
         .entries
         .iter()
-        .filter_map(|(name, entry)| {
-            (entry.server_name == server_name).then(|| (name.clone(), Arc::clone(entry)))
-        })
+        .filter(|(_, entry)| entry.server_name == server_name)
+        .map(|(name, entry)| (name.clone(), Arc::clone(entry)))
         .collect::<Vec<_>>();
     for (name, entry) in removed {
         entry.valid.store(false, Ordering::Release);
+        entry.client.begin_shutdown();
         catalog.entries.remove(&name);
         catalog.active.remove(&name);
     }
@@ -685,6 +689,7 @@ fn revoke_server_entries(catalog: &mut Catalog, server_name: &str) -> Vec<Client
         .remove(server_name)
         .map_or_else(Vec::new, |client| {
             client.valid.store(false, Ordering::Release);
+            client.client.begin_shutdown();
             vec![client.client]
         });
     catalog.search_index = None;

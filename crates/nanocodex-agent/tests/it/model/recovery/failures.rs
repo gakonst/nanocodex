@@ -169,6 +169,89 @@ async fn failed_turn_forces_the_next_turn_to_replay_its_latest_safe_history() ->
 }
 
 #[tokio::test]
+async fn steer_accepted_before_an_initial_failure_survives_in_the_next_replay() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let (request_seen, request_seen_rx) = tokio::sync::oneshot::channel();
+    let (release_failure, release_failure_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let failed = next_json(&mut socket).await?;
+        assert!(failed.to_string().contains("initial failing task"));
+        request_seen
+            .send(())
+            .map_err(|()| eyre!("request observer dropped"))?;
+        release_failure_rx
+            .await
+            .map_err(|_| eyre!("failure release sender dropped"))?;
+        send_json(
+            &mut socket,
+            json!({
+                "type": "error",
+                "error": {
+                    "code": "invalid_request_error",
+                    "message": "fail after accepting steer"
+                }
+            }),
+        )
+        .await?;
+
+        let replay = next_json(&mut socket).await?;
+        assert!(replay.get("previous_response_id").is_none());
+        let replay = replay.to_string();
+        assert_eq!(
+            replay.matches("initial failing task").count(),
+            1,
+            "{replay}"
+        );
+        assert_eq!(replay.matches("retained steer").count(), 1, "{replay}");
+        assert_eq!(replay.matches("explicit retry task").count(), 1, "{replay}");
+        send_final(&mut socket, "resp-retry").await
+    });
+
+    let workspace = temporary_workspace("failed-initial-steer")?;
+    let openai = OpenAi::builder("test-key")
+        .websocket_url(endpoint)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .build()?;
+    drop(events);
+
+    let failed = agent.prompt("initial failing task").await?;
+    request_seen_rx
+        .await
+        .map_err(|_| eyre!("initial request was not observed"))?;
+    failed.steer("retained steer").await?;
+    release_failure
+        .send(())
+        .map_err(|()| eyre!("failure release receiver dropped"))?;
+    assert!(failed.result().await.is_err());
+    assert_eq!(
+        agent
+            .prompt("explicit retry task")
+            .await?
+            .result()
+            .await?
+            .final_message(),
+        "done"
+    );
+
+    drop(agent);
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn context_window_error_forces_compaction_before_the_next_prompt() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);

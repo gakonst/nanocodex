@@ -1843,7 +1843,7 @@ impl AgentUsage {
         recorded
     }
 
-    fn add(&mut self, other: &Self) {
+    const fn add(&mut self, other: &Self) {
         self.completed_turns = self.completed_turns.saturating_add(other.completed_turns);
         self.turns_with_reported_usage = self
             .turns_with_reported_usage

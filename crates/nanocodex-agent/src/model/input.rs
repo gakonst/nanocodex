@@ -50,7 +50,7 @@ pub(in crate::model) fn prompt_messages(
 }
 
 pub(in crate::model) fn turn_aborted() -> ResponseItem {
-    ResponseItem::message(
+    let mut item = ResponseItem::message(
         MessageRole::User,
         [ContentItem::InputText {
             text: concat!(
@@ -62,16 +62,20 @@ pub(in crate::model) fn turn_aborted() -> ResponseItem {
             )
             .into(),
         }],
-    )
+    );
+    item.set_message_content_item_kind("generic.turn_aborted");
+    item
 }
 
 pub(in crate::model) fn developer_context() -> ResponseItem {
-    ResponseItem::message(
+    let mut item = ResponseItem::message(
         MessageRole::Developer,
         [ContentItem::InputText {
             text: PERMISSIONS_INSTRUCTIONS.into(),
         }],
-    )
+    );
+    item.set_message_content_item_kind("permissions.instructions");
+    item
 }
 
 pub(in crate::model) fn custom_tool_output(
@@ -170,6 +174,9 @@ mod tests {
                 json!({
                     "type": "message",
                     "role": "developer",
+                    "internal_chat_message_metadata_passthrough": {
+                        "content_item_kinds": ["permissions.instructions"],
+                    },
                     "content": [
                         {
                             "type": "input_text",
@@ -180,6 +187,12 @@ mod tests {
                 json!({
                     "type": "message",
                     "role": "user",
+                    "internal_chat_message_metadata_passthrough": {
+                        "content_item_kinds": [
+                            "agents_md.instructions",
+                            "environments.environment_context",
+                        ],
+                    },
                     "content": [
                         {
                             "type": "input_text",
@@ -268,6 +281,9 @@ mod tests {
             json!({
                 "type": "message",
                 "role": "user",
+                "internal_chat_message_metadata_passthrough": {
+                    "content_item_kinds": ["generic.turn_aborted"],
+                },
                 "content": [{
                     "type": "input_text",
                     "text": concat!(

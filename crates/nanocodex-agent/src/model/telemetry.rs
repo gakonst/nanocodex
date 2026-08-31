@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use nanocodex_oai_api::{
-    __private::ModelConfig, Thinking, responses::Usage, transport::TransportStatsDelta,
+    __private::ModelConfig,
+    Thinking,
+    responses::{ResponseUsageMetadata, Usage},
+    transport::TransportStatsDelta,
 };
 use serde::Serialize;
 use serde_json::{Value, value::RawValue};
@@ -38,6 +41,7 @@ pub(super) struct WarmupCompleted<'a> {
     pub(super) connection_generation: Option<u32>,
     pub(super) duration_ns: u64,
     pub(super) usage: Option<&'a Usage>,
+    pub(super) usage_metadata: Option<&'a ResponseUsageMetadata>,
 }
 
 #[derive(Serialize)]
@@ -59,6 +63,7 @@ pub(super) struct ModelCallCompleted<'a> {
     pub(super) time_to_first_output_ns: Option<u64>,
     pub(super) tool_calls: usize,
     pub(super) usage: Option<&'a Usage>,
+    pub(super) usage_metadata: Option<&'a ResponseUsageMetadata>,
 }
 
 #[derive(Serialize)]
@@ -88,6 +93,7 @@ pub(super) struct CompactionCompleted<'a> {
     pub(super) time_to_first_event_ns: u64,
     pub(super) time_to_first_output_ns: Option<u64>,
     pub(super) usage: Option<&'a Usage>,
+    pub(super) usage_metadata: Option<&'a ResponseUsageMetadata>,
 }
 
 #[derive(Serialize)]
@@ -180,6 +186,7 @@ pub(super) struct RunStats {
     pub(super) usage: UsageTotals,
     pub(super) warmup_usage: UsageTotals,
     pub(super) last_response_id: Option<String>,
+    pub(super) response_completions: Vec<crate::agent::ResponseCompletion>,
 }
 
 impl RunStats {

@@ -33,6 +33,7 @@ impl Service<ResponsesAttempt> for ImmediateResponses {
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
                 id: "resp_warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             ResponsesAttemptKind::Generation => {
                 let message = ResponseItem::message(
@@ -52,6 +53,7 @@ impl Service<ResponsesAttempt> for ImmediateResponses {
                         total_tokens: 2,
                         ..Usage::default()
                     }),
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: Some(0),
                     pipeline_stats: ResponsePipelineStats::default(),

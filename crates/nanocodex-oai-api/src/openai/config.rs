@@ -1,5 +1,6 @@
 use std::{borrow::Cow, sync::Arc};
 
+use crate::session::TokenBudgetConfig;
 use crate::{
     CONTEXT_WINDOW_TOKENS, Model, OpenAiAuth, ReasoningMode, ResponsesHistory, ResponsesTransport,
     Thinking,
@@ -33,6 +34,8 @@ pub struct ModelConfig {
     pub fast_mode: bool,
     /// Resolved context window used for accounting and automatic compaction.
     pub context_window_tokens: u64,
+    /// Optional local fresh-context-window policy.
+    pub token_budget: Option<TokenBudgetConfig>,
     /// Preferred initial streaming transport.
     pub responses_transport: ResponsesTransport,
     /// Whether a WebSocket session sends an optional non-generating prewarm
@@ -90,6 +93,7 @@ impl Default for ModelConfig {
             thinking: Thinking::default(),
             fast_mode: false,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
+            token_budget: None,
             responses_transport: ResponsesTransport::default(),
             websocket_warmup: true,
             responses_history: ResponsesHistory::default(),

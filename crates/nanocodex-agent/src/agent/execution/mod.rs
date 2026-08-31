@@ -88,6 +88,9 @@ pub struct ExecutionOutput {
     pub final_message: String,
     /// Exact token and cost accounting for the turn.
     pub usage: TurnUsage,
+    /// Exact upstream completions retained for idempotent replay.
+    #[serde(default)]
+    pub response_completions: Vec<crate::agent::ResponseCompletion>,
 }
 
 /// Optional higher-layer policy for admitting executions and intercepting effects.
@@ -548,7 +551,7 @@ impl Execution {
         let base_checkpoint = base_checkpoint.map(|checkpoint| {
             let mut history = checkpoint.model().snapshot_history();
             for item in &mut history {
-                item.strip_id();
+                item.strip_for_durable_identity();
             }
             StandaloneCompactionBase {
                 lineage_id: checkpoint.lineage_id().to_owned(),
@@ -606,8 +609,7 @@ impl Execution {
             outcome,
         } = turn;
         persist_operation(policy, operation_id, operation_input, outcome, checkpoint).await?;
-        self.platform.persist(checkpoint, platform).await;
-        Ok(())
+        self.platform.persist(checkpoint, platform).await
     }
 
     pub(crate) async fn persist_compaction(
@@ -623,8 +625,7 @@ impl Execution {
             outcome,
         } = turn;
         persist_operation(policy, operation_id, operation_input, outcome, checkpoint).await?;
-        self.platform.persist_compaction(checkpoint, platform).await;
-        Ok(())
+        self.platform.persist_compaction(checkpoint, platform).await
     }
 
     pub(crate) async fn commit_checkpoint(&self, checkpoint: &CommittedSession) -> Result<()> {
@@ -791,11 +792,17 @@ impl ExecutionTurn {
         })
     }
 
-    pub(crate) fn completed(mut self, final_message: String, usage: TurnUsage) -> Self {
+    pub(crate) fn completed(
+        mut self,
+        final_message: String,
+        usage: TurnUsage,
+        response_completions: Vec<crate::agent::ResponseCompletion>,
+    ) -> Self {
         self.platform = self.platform.completed(final_message.clone());
         self.outcome = ExecutionOutcome::Completed(ExecutionOutput {
             final_message,
             usage,
+            response_completions,
         });
         self
     }
@@ -806,6 +813,7 @@ impl ExecutionTurn {
         self.outcome = ExecutionOutcome::Completed(ExecutionOutput {
             final_message: String::new(),
             usage: TurnUsage::default(),
+            response_completions: Vec::new(),
         });
         self
     }

@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use tracing::error;
-
 use crate::{
     NanocodexError, Result,
     rollout::{
@@ -105,22 +103,34 @@ impl Execution {
         )
     }
 
-    pub(super) async fn persist(&self, checkpoint: &CommittedSession, turn: Turn) {
+    pub(super) async fn persist(&self, checkpoint: &CommittedSession, turn: Turn) -> Result<()> {
         let (Some(recorder), Some(turn)) = (&self.recorder, turn.0) else {
-            return;
+            return Ok(());
         };
-        if let Err(source) = recorder.persist(checkpoint, turn).await {
-            error!(target: "nanocodex", rollout_path = %recorder.info().path().display(), error = %source, "failed to persist Codex rollout");
-        }
+        recorder
+            .persist(checkpoint, turn)
+            .await
+            .map_err(|source| NanocodexError::PersistRollout {
+                path: recorder.info().path().to_path_buf(),
+                source,
+            })
     }
 
-    pub(super) async fn persist_compaction(&self, checkpoint: &CommittedSession, turn: Turn) {
+    pub(super) async fn persist_compaction(
+        &self,
+        checkpoint: &CommittedSession,
+        turn: Turn,
+    ) -> Result<()> {
         let (Some(recorder), Some(turn)) = (&self.recorder, turn.0) else {
-            return;
+            return Ok(());
         };
-        if let Err(source) = recorder.persist_compaction(checkpoint, turn).await {
-            error!(target: "nanocodex", rollout_path = %recorder.info().path().display(), error = %source, "failed to persist Codex compaction boundary");
-        }
+        recorder
+            .persist_compaction(checkpoint, turn)
+            .await
+            .map_err(|source| NanocodexError::PersistRollout {
+                path: recorder.info().path().to_path_buf(),
+                source,
+            })
     }
 
     pub(super) async fn flush(&self) -> Result<()> {

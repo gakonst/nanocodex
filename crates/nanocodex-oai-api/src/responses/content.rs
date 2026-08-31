@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ImageDetail;
 
@@ -43,11 +43,55 @@ pub enum ItemStatus {
 }
 
 /// Opaque first-party metadata retained with a message.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct InternalMessageMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Provider turn identity when supplied.
     pub turn_id: Option<Box<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Provider creation timestamp retained without numeric precision loss.
+    pub create_time: Option<serde_json::Number>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_content_item_kinds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    /// Open-ended semantic kinds aligned with the message content array.
+    pub content_item_kinds: Option<Vec<ContentItemKind>>,
+}
+
+/// Open-ended semantic kind attached to one message content item.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ContentItemKind(pub Box<str>);
+
+impl ContentItemKind {
+    /// Returns the open semantic kind string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn deserialize_content_item_kinds<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<ContentItemKind>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(serde_json::Value::Array(values)) = value else {
+        return Ok(None);
+    };
+    values
+        .into_iter()
+        .map(|value| match value {
+            serde_json::Value::String(value) => Ok(ContentItemKind(value.into_boxed_str())),
+            _ => Err(()),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+        .or(Ok(None))
 }
 
 /// One ordered multimodal part of a message.
@@ -343,4 +387,43 @@ pub enum FunctionOutputContent {
         /// Provider-generated encrypted payload.
         encrypted_content: Box<str>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::InternalMessageMetadata;
+
+    #[test]
+    fn message_metadata_preserves_open_kinds_and_exact_time() {
+        let metadata: InternalMessageMetadata = serde_json::from_value(json!({
+            "turn_id": "turn-1",
+            "create_time": 173.125,
+            "content_item_kinds": ["user_text", "future.kind"]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            metadata.create_time.as_ref().map(ToString::to_string),
+            Some("173.125".to_owned())
+        );
+        assert_eq!(
+            metadata.content_item_kinds.unwrap()[1].0.as_ref(),
+            "future.kind"
+        );
+    }
+
+    #[test]
+    fn malformed_content_item_kinds_are_ignored_without_losing_the_message() {
+        for value in [json!("not-an-array"), json!(["text", 7])] {
+            let metadata: InternalMessageMetadata = serde_json::from_value(json!({
+                "turn_id": "turn-1",
+                "content_item_kinds": value
+            }))
+            .unwrap();
+            assert!(metadata.content_item_kinds.is_none());
+            assert_eq!(metadata.turn_id.as_deref(), Some("turn-1"));
+        }
+    }
 }

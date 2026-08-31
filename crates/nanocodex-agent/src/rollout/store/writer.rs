@@ -128,31 +128,83 @@ impl RolloutWriter {
 
     fn prepare_append(&self, commit: &RolloutCommit) -> io::Result<PreparedAppend> {
         let len = commit.history.len();
-        match self.written_revision {
-            None if commit.revision > 0 => {
-                let window_number = self.window_number.saturating_add(1);
-                let window_id = uuid::Uuid::now_v7().to_string();
-                Ok(PreparedAppend {
-                    records: PreparedRecords::Compacted(CompactedItem {
-                        message: String::new(),
-                        replacement_history: commit.history.iter().cloned().collect(),
-                        window_number,
-                        first_window_id: self.first_window_id.clone(),
-                        previous_window_id: self.current_window_id.clone(),
-                        window_id: window_id.clone(),
-                    }),
-                    revision: commit.revision,
-                    len,
-                    window: Some(WindowAdvance {
-                        number: window_number,
-                        id: window_id,
-                    }),
-                    turn: commit.turn.clone(),
-                    model: commit.model,
-                    context_baseline: commit.context_baseline.clone(),
-                    write_state: true,
-                })
+        let committed_window = commit.context_window.number();
+        let committed_first = commit.context_window.first_id().to_string();
+        let committed_current = commit.context_window.current_id().to_string();
+        if committed_first != self.first_window_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "committed context window changed its first-window identity",
+            ));
+        }
+        if committed_window < self.window_number {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "committed context window moved backwards",
+            ));
+        }
+        if committed_window > self.window_number {
+            let mut expected_number = self.window_number.saturating_add(1);
+            let mut previous_window_id = self.current_window_id.clone();
+            let mut compacted = Vec::new();
+            for (window, history) in commit
+                .pending_rollovers
+                .iter()
+                .filter(|(window, _)| window.number() > self.window_number)
+            {
+                if window.number() != expected_number
+                    || window.first_id().to_string() != self.first_window_id
+                    || window.previous_id().map(|id| id.to_string()).as_deref()
+                        != Some(previous_window_id.as_str())
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "committed context windows skipped or diverged from rollout lineage",
+                    ));
+                }
+                let window_id = window.current_id().to_string();
+                compacted.push(CompactedItem {
+                    message: String::new(),
+                    replacement_history: history.iter().cloned().collect(),
+                    window_number: window.number(),
+                    first_window_id: self.first_window_id.clone(),
+                    previous_window_id,
+                    window_id: window_id.clone(),
+                });
+                expected_number = expected_number.saturating_add(1);
+                previous_window_id = window_id;
             }
+            if expected_number != committed_window.saturating_add(1)
+                || previous_window_id != committed_current
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "committed context window skipped rollout lineage",
+                ));
+            }
+            return Ok(PreparedAppend {
+                records: PreparedRecords::Compacted(compacted),
+                revision: commit.revision,
+                len,
+                window: Some(WindowAdvance {
+                    number: committed_window,
+                    id: committed_current,
+                }),
+                turn: commit.turn.clone(),
+                model: commit.model,
+                context_baseline: commit.context_baseline.clone(),
+                write_state: true,
+            });
+        }
+
+        if committed_current != self.current_window_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "committed context window identity changed without advancing",
+            ));
+        }
+
+        match self.written_revision {
             None => Ok(PreparedAppend {
                 records: PreparedRecords::Items {
                     history: commit.history.clone(),
@@ -189,32 +241,10 @@ impl RolloutWriter {
                         != Some(&commit.context_baseline),
                 })
             }
-            Some(_) => {
-                let window_number = self.window_number.saturating_add(1);
-                let window_id = uuid::Uuid::now_v7().to_string();
-                Ok(PreparedAppend {
-                    records: PreparedRecords::Compacted(CompactedItem {
-                        message: String::new(),
-                        replacement_history: commit.history.iter().cloned().collect(),
-                        window_number,
-                        first_window_id: self.first_window_id.clone(),
-                        previous_window_id: self.current_window_id.clone(),
-                        window_id: window_id.clone(),
-                    }),
-                    revision: commit.revision,
-                    len,
-                    window: Some(WindowAdvance {
-                        number: window_number,
-                        id: window_id,
-                    }),
-                    turn: commit.turn.clone(),
-                    model: commit.model,
-                    context_baseline: commit.context_baseline.clone(),
-                    // A compaction starts a new history window, whose context
-                    // baseline must be independently reconstructable.
-                    write_state: true,
-                })
-            }
+            Some(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "history revision changed without advancing its context window",
+            )),
         }
     }
 
@@ -251,14 +281,16 @@ impl RolloutWriter {
                 }
             }
             PreparedRecords::Compacted(compacted) => {
-                write_async_line(
-                    &mut self.file,
-                    &RolloutLine {
-                        timestamp: timestamp(),
-                        item: RolloutItem::Compacted(compacted),
-                    },
-                )
-                .await?;
+                for compacted in compacted {
+                    write_async_line(
+                        &mut self.file,
+                        &RolloutLine {
+                            timestamp: timestamp(),
+                            item: RolloutItem::Compacted(compacted),
+                        },
+                    )
+                    .await?;
+                }
                 self.write_turn_context(turn, prepared.model).await?;
             }
         }
@@ -410,7 +442,7 @@ enum PreparedRecords {
         history: ResponseHistory,
         start: usize,
     },
-    Compacted(CompactedItem),
+    Compacted(Vec<CompactedItem>),
 }
 
 struct WindowAdvance {

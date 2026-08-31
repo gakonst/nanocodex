@@ -1246,6 +1246,7 @@ where
                     let CompletedModelTurn {
                         final_message,
                         usage,
+                        response_completions,
                         checkpoint,
                     } = completed;
                     let checkpoint = Arc::new(CommittedSession::new(
@@ -1253,8 +1254,11 @@ where
                         thread_model,
                         checkpoint,
                     ));
-                    let execution_turn =
-                        execution_turn.completed(final_message.clone(), usage.clone());
+                    let execution_turn = execution_turn.completed(
+                        final_message.clone(),
+                        usage.clone(),
+                        response_completions.clone(),
+                    );
                     let committed = self
                         .execution
                         .persist(&checkpoint, execution_turn)
@@ -1273,6 +1277,7 @@ where
                             request_id: execution_operation.clone(),
                             final_message,
                             usage: Some(usage),
+                            response_completions,
                             checkpoint: TurnCheckpoint::Live(checkpoint),
                         }),
                         false,
@@ -1644,6 +1649,7 @@ async fn accept_execution_command(
                 request_id: Some(operation_id),
                 final_message: output.final_message,
                 usage: Some(output.usage),
+                response_completions: output.response_completions,
                 checkpoint: TurnCheckpoint::Replayed(snapshot),
             })));
             None
@@ -1775,6 +1781,7 @@ async fn accept_idle_route(
                 request_id: Some(operation_id),
                 final_message: output.final_message,
                 usage: Some(output.usage),
+                response_completions: output.response_completions,
                 checkpoint: TurnCheckpoint::Replayed(snapshot),
             })));
             None

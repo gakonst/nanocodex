@@ -157,33 +157,61 @@ impl ContextSnapshot {
 
     pub(crate) fn full_item(&self) -> ResponseItem {
         let mut content = Vec::with_capacity(2);
+        let mut kinds = Vec::with_capacity(2);
         if let Some(agents_md) = &self.agents_md {
             content.push(ContentItem::InputText {
                 text: render_agents_md(agents_md, &agents_md.text).into_boxed_str(),
             });
+            kinds.push(nanocodex_oai_api::responses::ContentItemKind(
+                "agents_md.instructions".into(),
+            ));
         }
         if let Some(environment) = &self.environment {
             content.push(ContentItem::InputText {
                 text: render_environment(environment, /*full*/ true).into_boxed_str(),
             });
+            kinds.push(nanocodex_oai_api::responses::ContentItemKind(
+                "environments.environment_context".into(),
+            ));
         }
-        ResponseItem::message(MessageRole::User, content)
+        let mut item = ResponseItem::message(MessageRole::User, content);
+        item.set_message_content_item_kinds(kinds);
+        item
     }
 
     fn diff_item(&self, previous: &Self) -> Option<ResponseItem> {
         let mut content = Vec::with_capacity(2);
+        let mut kinds = Vec::with_capacity(2);
         match (&previous.agents_md, &self.agents_md) {
             (before, after) if before == after => {}
-            (Some(_), Some(after)) => content.push(ContentItem::InputText {
-                text: render_agents_md(after, &format!("{REPLACEMENT_NOTICE}\n\n{}", after.text))
+            (Some(_), Some(after)) => {
+                content.push(ContentItem::InputText {
+                    text: render_agents_md(
+                        after,
+                        &format!("{REPLACEMENT_NOTICE}\n\n{}", after.text),
+                    )
                     .into_boxed_str(),
-            }),
-            (Some(_), None) => content.push(ContentItem::InputText {
-                text: render_agents_md_removal().into_boxed_str(),
-            }),
-            (None, Some(after)) => content.push(ContentItem::InputText {
-                text: render_agents_md(after, &after.text).into_boxed_str(),
-            }),
+                });
+                kinds.push(nanocodex_oai_api::responses::ContentItemKind(
+                    "agents_md.instructions".into(),
+                ));
+            }
+            (Some(_), None) => {
+                content.push(ContentItem::InputText {
+                    text: render_agents_md_removal().into_boxed_str(),
+                });
+                kinds.push(nanocodex_oai_api::responses::ContentItemKind(
+                    "agents_md.instructions".into(),
+                ));
+            }
+            (None, Some(after)) => {
+                content.push(ContentItem::InputText {
+                    text: render_agents_md(after, &after.text).into_boxed_str(),
+                });
+                kinds.push(nanocodex_oai_api::responses::ContentItemKind(
+                    "agents_md.instructions".into(),
+                ));
+            }
             (None, None) => {}
         }
         match (&previous.environment, &self.environment) {
@@ -193,14 +221,26 @@ impl ContextSnapshot {
                     content.push(ContentItem::InputText {
                         text: rendered.into_boxed_str(),
                     });
+                    kinds.push(nanocodex_oai_api::responses::ContentItemKind(
+                        "environments.environment_context".into(),
+                    ));
                 }
             }
-            (_, Some(after)) => content.push(ContentItem::InputText {
-                text: render_environment(after, /*full*/ true).into_boxed_str(),
-            }),
+            (_, Some(after)) => {
+                content.push(ContentItem::InputText {
+                    text: render_environment(after, /*full*/ true).into_boxed_str(),
+                });
+                kinds.push(nanocodex_oai_api::responses::ContentItemKind(
+                    "environments.environment_context".into(),
+                ));
+            }
             (Some(_), None) | (None, None) => {}
         }
-        (!content.is_empty()).then(|| ResponseItem::message(MessageRole::User, content))
+        (!content.is_empty()).then(|| {
+            let mut item = ResponseItem::message(MessageRole::User, content);
+            item.set_message_content_item_kinds(kinds);
+            item
+        })
     }
 }
 

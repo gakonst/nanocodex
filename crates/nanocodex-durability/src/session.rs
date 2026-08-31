@@ -169,7 +169,7 @@ impl StepStartHandoff {
         self.resolved = true;
     }
 
-    fn disarm(&mut self) {
+    const fn disarm(&mut self) {
         self.resolved = true;
     }
 }

@@ -353,6 +353,7 @@ impl ExecutionPolicy for GatedCompletedPolicy {
                 output: ExecutionOutput {
                     final_message: "retained terminal".to_owned(),
                     usage: nanocodex_agent::usage::TurnUsage::default(),
+                    response_completions: Vec::new(),
                 },
             })
         })
@@ -376,6 +377,7 @@ impl ExecutionPolicy for GatedCompletedPolicy {
                     output: ExecutionOutput {
                         final_message: "retained terminal".to_owned(),
                         usage: nanocodex_agent::usage::TurnUsage::default(),
+                        response_completions: Vec::new(),
                     },
                 },
             ))
@@ -548,6 +550,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for PendingGener
                     WarmupResponse {
                         id: "warmup".to_owned(),
                         usage: None,
+                        usage_metadata: None,
                     },
                 )))
             }),
@@ -575,6 +578,7 @@ fn successful_attempt(
         ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
             id: "warmup".to_owned(),
             usage: None,
+            usage_metadata: None,
         }),
         ResponsesAttemptKind::Generation => ResponsesOutput::Generation(GenerationOutput {
             id: "durable-response".to_owned(),
@@ -587,6 +591,7 @@ fn successful_attempt(
             )],
             code_calls: Vec::new(),
             usage: None,
+            usage_metadata: None,
             time_to_first_event_ns: 0,
             time_to_first_output_ns: None,
             pipeline_stats: ResponsePipelineStats::default(),
@@ -601,6 +606,7 @@ fn successful_attempt(
                 internal_chat_message_metadata_passthrough: None,
             },
             usage: None,
+            usage_metadata: None,
             time_to_first_event_ns: 0,
             time_to_first_output_ns: None,
             pipeline_stats: ResponsePipelineStats::default(),
@@ -752,6 +758,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for AutomaticCom
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
                 id: "automatic-compaction-warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             ResponsesAttemptKind::Generation => {
                 let call = self.generations.fetch_add(1, Ordering::SeqCst) + 1;
@@ -770,6 +777,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for AutomaticCom
                         total_tokens: if call == 1 { 244_800 } else { 120 },
                         ..Usage::default()
                     }),
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: None,
                     pipeline_stats: ResponsePipelineStats::default(),
@@ -791,6 +799,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for AutomaticCom
                         total_tokens: 120,
                         ..Usage::default()
                     }),
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: None,
                     pipeline_stats: ResponsePipelineStats::default(),
@@ -829,6 +838,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for SteeredDurab
                     WarmupResponse {
                         id: "warmup".to_owned(),
                         usage: None,
+                        usage_metadata: None,
                     },
                 )))
             }),
@@ -848,6 +858,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for SteeredDurab
                                 output_items: Vec::new(),
                                 code_calls: Vec::new(),
                                 usage: None,
+                                usage_metadata: None,
                                 time_to_first_event_ns: 0,
                                 time_to_first_output_ns: None,
                                 pipeline_stats: ResponsePipelineStats::default(),
@@ -873,6 +884,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for SteeredDurab
                                 )],
                                 code_calls: Vec::new(),
                                 usage: None,
+                                usage_metadata: None,
                                 time_to_first_event_ns: 0,
                                 time_to_first_output_ns: None,
                                 pipeline_stats: ResponsePipelineStats::default(),
@@ -913,6 +925,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedSpawn
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
                 id: "warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             ResponsesAttemptKind::Generation => {
                 let generation = self
@@ -940,6 +953,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedSpawn
                             kind: CodeCallKind::Function,
                         }],
                         usage: None,
+                        usage_metadata: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
@@ -973,6 +987,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedSpawn
                         )],
                         code_calls: Vec::new(),
                         usage: None,
+                        usage_metadata: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
@@ -1011,6 +1026,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
                 id: "warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             ResponsesAttemptKind::Generation => {
                 let generation = self
@@ -1038,6 +1054,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
                             kind: CodeCallKind::Function,
                         }],
                         usage: None,
+                        usage_metadata: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
@@ -1069,6 +1086,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
                         )],
                         code_calls: Vec::new(),
                         usage: None,
+                        usage_metadata: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
@@ -1106,6 +1124,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
                 id: "warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             ResponsesAttemptKind::Generation => {
                 let generation = self.generations.fetch_add(1, Ordering::SeqCst);
@@ -1131,6 +1150,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
                             kind: CodeCallKind::Function,
                         }],
                         usage: None,
+                        usage_metadata: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
@@ -1179,6 +1199,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
                         )],
                         code_calls: Vec::new(),
                         usage: None,
+                        usage_metadata: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
@@ -1213,6 +1234,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableRepla
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
                 id: "warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             ResponsesAttemptKind::Generation => {
                 self.generations
@@ -1230,6 +1252,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableRepla
                     )],
                     code_calls: Vec::new(),
                     usage: None,
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: None,
                     pipeline_stats: ResponsePipelineStats::default(),

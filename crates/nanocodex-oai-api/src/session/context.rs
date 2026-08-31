@@ -94,6 +94,7 @@ impl ContextManager {
             {
                 continue;
             }
+            item.stamp_for_history();
             assign_missing_response_item_id(&mut item);
             self.calls.track(&item);
             self.items.push(item);
@@ -112,12 +113,25 @@ impl ContextManager {
         let mut items = self.flattened_items();
         for item in &mut items {
             match item {
-                ResponseItem::Message { content, .. } => {
-                    for content in content {
+                ResponseItem::Message {
+                    content,
+                    internal_chat_message_metadata_passthrough,
+                    ..
+                } => {
+                    let mut kinds = internal_chat_message_metadata_passthrough
+                        .as_mut()
+                        .and_then(|metadata| metadata.content_item_kinds.as_mut());
+                    for (index, content) in content.iter_mut().enumerate() {
                         if matches!(content, ContentItem::InputImage { .. }) {
                             *content = ContentItem::input_text(
                                 "[image omitted after the provider rejected its data]",
                             );
+                            if let Some(kinds) = kinds.as_deref_mut()
+                                && let Some(kind) = kinds.get_mut(index)
+                            {
+                                *kind =
+                                    crate::responses::ContentItemKind("images.unsupported".into());
+                            }
                             replaced += 1;
                         }
                     }
@@ -146,6 +160,9 @@ impl ContextManager {
     }
 
     pub fn replace_and_recompute(&mut self, mut items: Vec<ResponseItem>, prefix: &[ResponseItem]) {
+        for item in &mut items {
+            item.stamp_for_history();
+        }
         assign_missing_response_item_ids(&mut items);
         self.items.replace(items);
         let total_tokens = prefix
@@ -410,6 +427,7 @@ pub fn responses_lite_request_prefix(
             text: instructions.into(),
         }],
     );
+    instructions_item.set_message_content_item_kind("model.base_instructions");
     instructions_item.set_id(Some(instructions_id));
     Ok([tools_item, instructions_item])
 }
@@ -913,7 +931,10 @@ mod tests {
         let mut context = ContextManager::new(vec![
             ResponseItem::message(
                 MessageRole::User,
-                [ContentItem::input_image("data:image/png;base64,bad")],
+                [
+                    ContentItem::input_text("caption"),
+                    ContentItem::input_image("data:image/png;base64,bad"),
+                ],
             ),
             ResponseItem::custom_tool_output(
                 "call".to_owned(),
@@ -930,6 +951,12 @@ mod tests {
         assert!(!encoded.contains("input_image"));
         assert!(!encoded.contains("base64,bad"));
         assert!(encoded.contains("provider rejected its data"));
+        let items = context.flattened_items();
+        let kinds = items[0]
+            .message_content_item_kinds()
+            .expect("user message kinds");
+        assert_eq!(kinds[0].as_str(), "user.text");
+        assert_eq!(kinds[1].as_str(), "images.unsupported");
     }
 
     #[test]

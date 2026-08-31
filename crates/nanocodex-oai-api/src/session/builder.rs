@@ -11,11 +11,13 @@ use crate::{
 };
 
 use super::{
+    compaction,
     context::responses_lite_request_prefix,
     response::{
         CompletedCompaction, Response, ResponseError, ResponseInput, run_compact, run_create,
     },
     state::{ManagedSessionState, SessionId},
+    token_budget::{ContextWindow, TokenBudgetAction, TokenBudgetConfig},
 };
 
 const RESPONSE_EVENT_CAPACITY: usize = 64;
@@ -140,6 +142,8 @@ where
             thinking: config.thinking,
             fast_mode: config.fast_mode,
             context_window_tokens: config.context_window_tokens,
+            token_budget: config.token_budget,
+            context_window: ContextWindow::new(),
             transport_stats: Arc::new(TransportStats::default()),
         })
     }
@@ -176,6 +180,8 @@ pub struct Session<S> {
     pub(super) thinking: Thinking,
     pub(super) fast_mode: bool,
     pub(super) context_window_tokens: u64,
+    pub(super) token_budget: Option<TokenBudgetConfig>,
+    pub(super) context_window: ContextWindow,
     pub(super) transport_stats: Arc<TransportStats>,
 }
 
@@ -225,6 +231,31 @@ impl<S> Session<S> {
     pub fn active_context_tokens(&self) -> u64 {
         self.state.active_context_tokens()
     }
+
+    /// Returns the active fresh-context-window lineage.
+    #[must_use]
+    pub const fn context_window(&self) -> &ContextWindow {
+        &self.context_window
+    }
+
+    /// Requests one direct fresh-context replacement after the active step.
+    /// The request is intentionally one-shot and ignored while the feature is disabled.
+    pub const fn request_new_context_window(&mut self) -> bool {
+        if self.token_budget.is_none() {
+            return false;
+        }
+        self.context_window.request_new_context();
+        true
+    }
+
+    /// Returns remaining provider context tokens while token-budget policy is enabled.
+    #[must_use]
+    pub fn context_remaining(&self) -> Option<u64> {
+        self.token_budget.as_ref().map(|_| {
+            compaction::auto_compact_token_limit(self.model, self.context_window_tokens)
+                .saturating_sub(self.active_context_tokens())
+        })
+    }
 }
 
 /// Turn-scoped Responses operations borrowing one managed session.
@@ -239,6 +270,50 @@ impl<S> ResponseTurn<'_, S> {
     #[must_use]
     pub fn active_context_tokens(&self) -> u64 {
         self.session.active_context_tokens()
+    }
+
+    /// Consumes the direct new-context request exactly once.
+    pub fn take_new_context_window_request(&mut self) -> bool {
+        self.session.token_budget.is_some()
+            && self.session.context_window.take_new_context_request()
+    }
+
+    /// Returns the next one-time reminder or fallback action due for this window.
+    pub fn token_budget_action(&mut self) -> Option<TokenBudgetAction> {
+        let remaining = self.session.context_remaining()?;
+        let budget = self.session.token_budget.as_ref()?;
+        if budget
+            .reminder_threshold_tokens
+            .is_some_and(|limit| remaining <= limit)
+            && self.session.context_window.claim_reminder()
+        {
+            return Some(TokenBudgetAction::Reminder);
+        }
+        if budget.auto_compact_fallback_prompt.is_some()
+            && remaining == 0
+            && self.session.context_window.claim_fallback()
+        {
+            return Some(TokenBudgetAction::Fallback);
+        }
+        None
+    }
+
+    /// Starts a fresh full-replay window from canonical and caller-owned world state.
+    /// This never submits a compaction request and therefore never creates a summary.
+    pub fn start_new_context_window(
+        &mut self,
+        world_state: impl IntoIterator<Item = ResponseItem>,
+    ) -> bool {
+        if self.session.token_budget.is_none() {
+            return false;
+        }
+        let mut rebuilt = self.session.canonical_context.clone();
+        rebuilt.extend(world_state);
+        self.session.state = ManagedSessionState::new(rebuilt);
+        self.session.state.reset_for_full_request();
+        self.session.canonical_context_reinjection_pending = false;
+        self.session.context_window.advance();
+        true
     }
 }
 

@@ -74,6 +74,7 @@ impl Service<ResponsesAttempt> for PanicRecoveryService {
             (0, ResponsesAttemptKind::Warmup) => ResponsesOutput::Warmup(WarmupResponse {
                 id: "resp-warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             (1, ResponsesAttemptKind::Generation) => panic_generation(),
             (2, ResponsesAttemptKind::Generation) => {
@@ -123,6 +124,7 @@ fn panic_generation() -> ResponsesOutput {
             kind: CodeCallKind::Function,
         }],
         usage: None,
+        usage_metadata: None,
         time_to_first_event_ns: 0,
         time_to_first_output_ns: None,
         pipeline_stats: ResponsePipelineStats::default(),
@@ -141,6 +143,7 @@ fn final_generation(response_id: &str, message: &str) -> ResponsesOutput {
         )],
         code_calls: Vec::new(),
         usage: None,
+        usage_metadata: None,
         time_to_first_event_ns: 0,
         time_to_first_output_ns: None,
         pipeline_stats: ResponsePipelineStats::default(),

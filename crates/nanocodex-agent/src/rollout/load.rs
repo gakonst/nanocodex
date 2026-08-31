@@ -74,6 +74,23 @@ impl DurableSession {
             )
         })?;
         let materialized = materialize_rollout(&rollout_path, thread_id)?;
+        let context_window = nanocodex_oai_api::session::ContextWindow::restore_for_agent(
+            materialized
+                .first_window_id
+                .parse()
+                .map_err(io::Error::other)?,
+            materialized
+                .previous_window_id
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(io::Error::other)?,
+            materialized
+                .current_window_id
+                .parse()
+                .map_err(io::Error::other)?,
+            materialized.window_number,
+        );
         let snapshot = SessionSnapshot::from_rollout(
             materialized.model,
             thread_id.to_owned(),
@@ -82,6 +99,7 @@ impl DurableSession {
             materialized.base_instructions,
             materialized.history,
             materialized.context_baseline,
+            context_window,
         )
         .map_err(io::Error::other)?;
         Ok(Self {
@@ -378,6 +396,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
     let mut model = Model::Sol;
     let mut first_window_id = None;
     let mut current_window_id = None;
+    let mut previous_window_id = None;
     let mut window_number = 0;
     for (index, line) in BufReader::new(File::open(path)?).lines().enumerate() {
         let line = line?;
@@ -487,6 +506,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                         ),
                     )
                 })?;
+                previous_window_id = current_window_id.clone();
                 window_number = next_number;
                 current_window_id = Some(next_id);
                 context_baseline = None;
@@ -550,6 +570,20 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
         history,
         transcript,
         context_baseline,
+        first_window_id: first_window_id.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Codex rollout is missing its first context window",
+            )
+        })?,
+        previous_window_id,
+        current_window_id: current_window_id.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Codex rollout is missing its current context window",
+            )
+        })?,
+        window_number,
     })
 }
 
@@ -561,6 +595,10 @@ struct MaterializedRollout {
     history: Vec<ResponseItem>,
     transcript: Vec<RolloutTranscriptItem>,
     context_baseline: Option<ContextBaseline>,
+    first_window_id: String,
+    previous_window_id: Option<String>,
+    current_window_id: String,
+    window_number: u64,
 }
 
 pub(in crate::rollout) fn visible_rollout_event(

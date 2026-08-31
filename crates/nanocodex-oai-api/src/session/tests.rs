@@ -69,6 +69,7 @@ impl Service<crate::ResponsesAttempt> for Scripted {
                         total_tokens: 17,
                         ..crate::Usage::default()
                     }),
+                    usage_metadata: None,
                     time_to_first_event_ns: 1,
                     time_to_first_output_ns: Some(1),
                     pipeline_stats: ResponsePipelineStats::default(),
@@ -139,6 +140,56 @@ fn luna_usage_receives_a_model_specific_estimate() {
 
     assert_eq!(estimate.unwrap().amount().decimal(), "1.4");
     assert_eq!(status, crate::CostStatus::EstimatedFromUsage);
+}
+
+#[test]
+fn token_budget_fresh_window_is_direct_one_shot_and_forces_full_replay() {
+    let openai = OpenAi::builder("test-key")
+        .token_budget(crate::session::TokenBudgetConfig {
+            reminder_threshold_tokens: Some(16),
+            auto_compact_fallback_prompt: Some("Preserve state before rollover.".to_owned()),
+            auto_compact_fallback_buffer_tokens: Some(8),
+            ..crate::session::TokenBudgetConfig::default()
+        })
+        .service(|| Scripted {
+            calls: Arc::new(AtomicU32::new(0)),
+        })
+        .build()
+        .unwrap();
+    let mut session = openai.instructions("test instructions").build().unwrap();
+    let first_window = session.context_window().current_id();
+    assert_eq!(
+        session.context_remaining(),
+        Some(crate::session::compaction::auto_compact_token_limit(
+            session.model,
+            session.context_window_tokens
+        ))
+    );
+    assert!(session.request_new_context_window());
+    let mut turn = session.turn();
+    assert!(turn.take_new_context_window_request());
+    assert!(!turn.take_new_context_window_request());
+    assert!(turn.start_new_context_window([crate::ResponseItem::message(
+        MessageRole::User,
+        [ContentItem::InputText {
+            text: "world state".into(),
+        }],
+    )]));
+    assert_eq!(turn.session.state.previous_response_id(), None);
+    assert_eq!(turn.session.state.delta_start(), 0);
+    assert_eq!(
+        turn.session.context_window().previous_id(),
+        Some(first_window)
+    );
+    assert_eq!(
+        turn.session
+            .context_window()
+            .current_id()
+            .as_uuid()
+            .get_version_num(),
+        7
+    );
+    assert_eq!(turn.session.state.history_len(), 1);
 }
 
 #[derive(Debug)]
@@ -226,6 +277,7 @@ impl Service<crate::ResponsesAttempt> for RecordingScripted {
                 output_items,
                 code_calls: Vec::new(),
                 usage: None,
+                usage_metadata: None,
                 time_to_first_event_ns: 1,
                 time_to_first_output_ns: Some(1),
                 pipeline_stats: ResponsePipelineStats::default(),
@@ -456,6 +508,7 @@ impl Service<crate::ResponsesAttempt> for CompactingScripted {
                     internal_chat_message_metadata_passthrough: None,
                 },
                 usage: None,
+                usage_metadata: None,
                 time_to_first_event_ns: 1,
                 time_to_first_output_ns: Some(1),
                 pipeline_stats: ResponsePipelineStats::default(),
@@ -477,6 +530,7 @@ impl Service<crate::ResponsesAttempt> for CompactingScripted {
                 output_items: vec![item],
                 code_calls: Vec::new(),
                 usage: None,
+                usage_metadata: None,
                 time_to_first_event_ns: 1,
                 time_to_first_output_ns: Some(1),
                 pipeline_stats: ResponsePipelineStats::default(),

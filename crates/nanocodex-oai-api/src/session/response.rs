@@ -117,15 +117,22 @@ impl From<&str> for ResponseInput {
 /// A completed and atomically committed Responses operation.
 #[derive(Clone)]
 pub struct CompletedResponse {
+    response_id: Arc<str>,
     output: Arc<[ResponseItem]>,
     output_text: Arc<str>,
     usage: Option<Usage>,
+    usage_metadata: Option<crate::responses::ResponseUsageMetadata>,
     estimated_cost: Option<crate::EstimatedUsdCost>,
     cost_status: crate::CostStatus,
     end_turn: Option<bool>,
 }
 
 impl CompletedResponse {
+    /// Returns the exact completed provider response identity.
+    #[must_use]
+    pub fn response_id(&self) -> &str {
+        &self.response_id
+    }
     /// Returns every completed output item in provider order.
     #[must_use]
     pub fn output(&self) -> &[ResponseItem] {
@@ -155,6 +162,12 @@ impl CompletedResponse {
     #[must_use]
     pub const fn usage(&self) -> Option<&Usage> {
         self.usage.as_ref()
+    }
+
+    /// Returns exact provider usage metadata without folding it into token totals.
+    #[must_use]
+    pub const fn usage_metadata(&self) -> Option<&crate::responses::ResponseUsageMetadata> {
+        self.usage_metadata.as_ref()
     }
 
     /// Returns the automatic local USD estimate.
@@ -194,16 +207,30 @@ impl fmt::Debug for CompletedResponse {
 /// A completed and installed remote compaction.
 #[derive(Clone)]
 pub struct CompletedCompaction {
+    response_id: Arc<str>,
     usage: Option<Usage>,
+    usage_metadata: Option<crate::responses::ResponseUsageMetadata>,
     estimated_cost: Option<crate::EstimatedUsdCost>,
     cost_status: crate::CostStatus,
 }
 
 impl CompletedCompaction {
+    /// Returns the exact completed provider response identity.
+    #[must_use]
+    pub fn response_id(&self) -> &str {
+        &self.response_id
+    }
+
     /// Returns token usage reported by the compaction operation.
     #[must_use]
     pub const fn usage(&self) -> Option<&Usage> {
         self.usage.as_ref()
+    }
+
+    /// Returns the exact non-aggregated usage metadata reported by the provider.
+    #[must_use]
+    pub const fn usage_metadata(&self) -> Option<&crate::responses::ResponseUsageMetadata> {
+        self.usage_metadata.as_ref()
     }
 
     /// Returns the automatic local USD estimate when usage was available.
@@ -280,7 +307,9 @@ impl Stream for Response<'_> {
                 && let Some(Ok(result)) = self.result.as_ref()
             {
                 let event = ResponseEvent::Completed {
+                    response_id: result.response_id().to_owned(),
                     usage: result.usage.clone(),
+                    usage_metadata: result.usage_metadata.clone(),
                     end_turn: result.end_turn,
                 };
                 self.completed_event_seen = true;
@@ -533,6 +562,9 @@ where
     let session = &mut *turn.session;
     let call_index = session.next_call_index;
     session.next_call_index = session.next_call_index.saturating_add(1);
+    for item in &mut input.items {
+        item.stamp_for_history();
+    }
     assign_missing_response_item_ids(&mut input.items);
     let observed_canonical_context = input
         .items
@@ -584,6 +616,7 @@ where
     }
     candidate.append(response.output_items.clone());
     candidate.update_token_info(response.usage.as_ref());
+    let response_id: Arc<str> = response.id.clone().into();
     candidate.set_previous_response_id(response.id);
     candidate
         .commit()
@@ -602,9 +635,11 @@ where
     let (estimated_cost, cost_status) =
         estimate_cost(response.usage.as_ref(), session.model, session.fast_mode);
     let completed = CompletedResponse {
+        response_id,
         output,
         output_text,
         usage: response.usage,
+        usage_metadata: response.usage_metadata,
         estimated_cost,
         cost_status,
         end_turn: response.end_turn,
@@ -728,11 +763,14 @@ where
     candidate.install_compaction(response.item, canonical_context, session.profile.prefix());
     session.state = candidate;
     session.canonical_context_reinjection_pending = !mid_turn;
+    session.context_window.advance();
 
     let (estimated_cost, cost_status) =
         estimate_cost(response.usage.as_ref(), session.model, session.fast_mode);
     Ok(CompletedCompaction {
+        response_id: response.id.into(),
         usage: response.usage,
+        usage_metadata: response.usage_metadata,
         estimated_cost,
         cost_status,
     })

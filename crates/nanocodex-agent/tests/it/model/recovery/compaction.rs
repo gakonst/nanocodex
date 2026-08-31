@@ -405,6 +405,7 @@ impl Service<ResponsesAttempt> for ReplaceableCompactionService {
                         internal_chat_message_metadata_passthrough: None,
                     },
                     usage: None,
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: None,
                     pipeline_stats: ResponsePipelineStats::default(),
@@ -525,6 +526,7 @@ impl Service<ResponsesAttempt> for ActiveReplacementService {
                     ResponsesOutput::Warmup(WarmupResponse {
                         id: "resp-warmup".to_owned(),
                         usage: None,
+                        usage_metadata: None,
                     })
                 }
                 (1, ResponsesAttemptKind::Generation) => {
@@ -545,6 +547,7 @@ impl Service<ResponsesAttempt> for ActiveReplacementService {
                             internal_chat_message_metadata_passthrough: None,
                         },
                         usage: None,
+                        usage_metadata: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
@@ -563,6 +566,7 @@ impl Service<ResponsesAttempt> for ActiveReplacementService {
                         )],
                         code_calls: Vec::new(),
                         usage: None,
+                        usage_metadata: None,
                         time_to_first_event_ns: 0,
                         time_to_first_output_ns: None,
                         pipeline_stats: ResponsePipelineStats::default(),
@@ -687,6 +691,7 @@ impl Service<ResponsesAttempt> for PreTurnCompactionService {
                 ResponsesOutput::Warmup(WarmupResponse {
                     id: "resp-warmup".to_owned(),
                     usage: None,
+                    usage_metadata: None,
                 })
             }
             ResponsesAttemptKind::Generation => {
@@ -711,6 +716,7 @@ impl Service<ResponsesAttempt> for PreTurnCompactionService {
                         total_tokens: if call == 1 { 244_800 } else { 120 },
                         ..Usage::default()
                     }),
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: None,
                     pipeline_stats: ResponsePipelineStats::default(),
@@ -740,6 +746,7 @@ impl Service<ResponsesAttempt> for PreTurnCompactionService {
                         total_tokens: 120,
                         ..Usage::default()
                     }),
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: None,
                     pipeline_stats: ResponsePipelineStats::default(),

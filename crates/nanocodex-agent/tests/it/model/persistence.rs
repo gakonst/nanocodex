@@ -50,6 +50,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for FailFirstWar
                     )],
                     code_calls: Vec::new(),
                     usage: None,
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: None,
                     pipeline_stats: nanocodex_oai_api::tower::ResponsePipelineStats::default(),

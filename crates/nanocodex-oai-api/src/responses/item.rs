@@ -1,5 +1,6 @@
 //! Complete typed transcript items used by Responses input and output.
 
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fmt, ops::Deref};
 
 use serde::{Deserialize, Serialize};
@@ -348,6 +349,57 @@ impl ResponseItem {
         )
     }
 
+    /// Returns whether this is a developer-role message.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn is_developer_message(&self) -> bool {
+        matches!(
+            self,
+            Self::Message {
+                role: MessageRole::Developer,
+                ..
+            }
+        )
+    }
+
+    /// Returns semantic content kinds carried by a message.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn message_content_item_kinds(&self) -> Option<&[super::ContentItemKind]> {
+        let Self::Message {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        metadata.content_item_kinds.as_deref()
+    }
+
+    /// Labels a model-visible message fragment with one open semantic kind.
+    #[doc(hidden)]
+    pub fn set_message_content_item_kind(&mut self, kind: impl Into<Box<str>>) {
+        self.set_message_content_item_kinds([super::ContentItemKind(kind.into())]);
+    }
+
+    /// Labels each content entry in a model-visible message with an open semantic kind.
+    #[doc(hidden)]
+    pub fn set_message_content_item_kinds(
+        &mut self,
+        kinds: impl IntoIterator<Item = super::ContentItemKind>,
+    ) {
+        let Self::Message {
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = self
+        else {
+            return;
+        };
+        let metadata = internal_chat_message_metadata_passthrough
+            .get_or_insert_with(InternalMessageMetadata::default);
+        metadata.content_item_kinds = Some(kinds.into_iter().collect());
+    }
+
     /// Returns the Responses API item ID, if present.
     #[must_use]
     pub const fn id(&self) -> Option<&ResponseItemId> {
@@ -419,6 +471,128 @@ impl ResponseItem {
     pub fn strip_id(&mut self) {
         self.set_id(None);
     }
+
+    /// Removes generated identity fields from a copy used to fingerprint a
+    /// durable provider step while preserving semantic content provenance.
+    #[doc(hidden)]
+    pub fn strip_for_durable_identity(&mut self) {
+        self.strip_id();
+        let Some(metadata) = self.internal_metadata_mut() else {
+            return;
+        };
+        let Some(value) = metadata else {
+            return;
+        };
+        value.create_time = None;
+        if value.content_item_kinds.is_none() {
+            *metadata = None;
+        }
+    }
+
+    /// Adds missing first-party history provenance without overwriting provider values.
+    #[doc(hidden)]
+    pub fn stamp_for_history(&mut self) {
+        let compaction_summary = matches!(
+            self,
+            Self::Compaction { .. } | Self::ContextCompaction { .. }
+        );
+        let user_kinds = match self {
+            Self::Message {
+                role: MessageRole::User,
+                content,
+                ..
+            } => Some(content.iter().map(user_content_kind).collect::<Vec<_>>()),
+            _ => None,
+        };
+        let Some(metadata) = self.internal_metadata_mut() else {
+            return;
+        };
+        let metadata = metadata.get_or_insert_with(InternalMessageMetadata::default);
+        if metadata.create_time.is_none() {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            metadata.create_time = serde_json::Number::from_f64(elapsed.as_secs_f64())
+                .or_else(|| Some(serde_json::Number::from(elapsed.as_secs())));
+        }
+        if metadata.content_item_kinds.is_none() {
+            metadata.content_item_kinds = user_kinds.or_else(|| {
+                compaction_summary
+                    .then(|| vec![super::ContentItemKind("compaction.summary".into())])
+            });
+        }
+    }
+
+    const fn internal_metadata_mut(&mut self) -> Option<&mut Option<InternalMessageMetadata>> {
+        match self {
+            Self::Message {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::AgentMessage {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::Reasoning {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::LocalShellCall {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::FunctionCall {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::FunctionCallOutput {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::ToolSearchCall {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::CustomToolCall {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::CustomToolCallOutput {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::ToolSearchOutput {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::WebSearchCall {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::ImageGenerationCall {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::Compaction {
+                internal_chat_message_metadata_passthrough,
+                ..
+            }
+            | Self::ContextCompaction {
+                internal_chat_message_metadata_passthrough,
+                ..
+            } => Some(internal_chat_message_metadata_passthrough),
+            Self::AdditionalTools { .. } | Self::CompactionTrigger {} | Self::Other(_) => None,
+        }
+    }
+}
+
+fn user_content_kind(content: &ContentItem) -> super::ContentItemKind {
+    let kind = match content {
+        ContentItem::InputText { .. } | ContentItem::OutputText { .. } => "user.text",
+        ContentItem::InputImage { .. } => "user.image",
+        ContentItem::InputAudio { .. } => "user.audio",
+    };
+    super::ContentItemKind(kind.into())
 }
 
 #[cfg(test)]
@@ -482,6 +656,58 @@ mod tests {
         assert_eq!(client.as_str(), "msg_stable");
         assert!(client.is_prefixed());
         assert!(!server.is_prefixed());
+    }
+
+    #[test]
+    fn history_stamp_adds_user_kinds_and_preserves_provider_provenance() {
+        let mut user = ResponseItem::message(
+            MessageRole::User,
+            [
+                ContentItem::input_text("hello"),
+                ContentItem::input_image("https://example.com/image.png"),
+                ContentItem::input_audio("data:audio/wav;base64,AA=="),
+            ],
+        );
+        user.stamp_for_history();
+        let encoded = serde_json::to_value(&user).unwrap();
+        assert!(encoded["internal_chat_message_metadata_passthrough"]["create_time"].is_number());
+        assert_eq!(
+            encoded["internal_chat_message_metadata_passthrough"]["content_item_kinds"],
+            serde_json::json!(["user.text", "user.image", "user.audio"])
+        );
+
+        let mut provider: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "retained"}],
+            "internal_chat_message_metadata_passthrough": {
+                "create_time": 1234.567890123,
+                "content_item_kinds": ["future.semantic_kind"]
+            }
+        }))
+        .unwrap();
+        provider.stamp_for_history();
+        let encoded = serde_json::to_value(&provider).unwrap();
+        assert_eq!(
+            encoded["internal_chat_message_metadata_passthrough"]["create_time"],
+            serde_json::json!(1234.567890123)
+        );
+        assert_eq!(
+            encoded["internal_chat_message_metadata_passthrough"]["content_item_kinds"],
+            serde_json::json!(["future.semantic_kind"])
+        );
+
+        provider.strip_for_durable_identity();
+        let durable = serde_json::to_value(provider).unwrap();
+        assert!(
+            durable["internal_chat_message_metadata_passthrough"]
+                .get("create_time")
+                .is_none()
+        );
+        assert_eq!(
+            durable["internal_chat_message_metadata_passthrough"]["content_item_kinds"],
+            serde_json::json!(["future.semantic_kind"])
+        );
     }
 
     #[test]

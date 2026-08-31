@@ -93,6 +93,11 @@ impl CommittedSession {
         self.model.context_baseline()
     }
 
+    #[cfg(all(feature = "openai", not(target_family = "wasm")))]
+    pub(crate) fn context_window(&self) -> nanocodex_oai_api::session::ContextWindow {
+        self.model.context_window()
+    }
+
     pub(crate) fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
             version: SESSION_SNAPSHOT_VERSION,
@@ -105,6 +110,7 @@ impl CommittedSession {
             canonical_context: self.model.canonical_context().clone(),
             history: self.model.snapshot_history(),
             context_snapshot: Some(self.model.context_baseline().clone()),
+            context_window: Some(self.model.context_window()),
         }
     }
 }
@@ -134,6 +140,8 @@ pub struct SessionSnapshot {
     history: Vec<ResponseItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_snapshot: Option<ContextBaseline>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_window: Option<nanocodex_oai_api::session::ContextWindow>,
 }
 
 impl fmt::Debug for SessionSnapshot {
@@ -149,6 +157,10 @@ impl fmt::Debug for SessionSnapshot {
 
 impl SessionSnapshot {
     #[cfg(all(feature = "openai", not(target_family = "wasm")))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the rollout boundary validates and installs each materialized field explicitly"
+    )]
     pub(crate) fn from_rollout(
         model: Model,
         thread_id: String,
@@ -157,6 +169,7 @@ impl SessionSnapshot {
         base_instructions: Option<String>,
         history: Vec<ResponseItem>,
         context_snapshot: Option<ContextBaseline>,
+        context_window: nanocodex_oai_api::session::ContextWindow,
     ) -> Result<Self> {
         let canonical_context = history
             .iter()
@@ -178,6 +191,7 @@ impl SessionSnapshot {
             canonical_context,
             history,
             context_snapshot,
+            context_window: Some(context_window),
         })
     }
 
@@ -253,6 +267,7 @@ impl SessionSnapshot {
                     self.history.clone(),
                     None,
                     self.context_snapshot.clone(),
+                    self.context_window.clone(),
                 )
             })
             .transpose()?;

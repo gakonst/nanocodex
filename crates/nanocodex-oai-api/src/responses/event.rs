@@ -42,6 +42,16 @@ pub struct OutputTokenDetails {
     pub reasoning_tokens: u64,
 }
 
+/// Exact per-response billing metadata reported by the upstream service.
+///
+/// The amount remains a string so decimal precision and zero values survive
+/// transport without being coerced through floating point.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResponseUsageMetadata {
+    /// Provider-reported amount when present.
+    pub amount: Option<String>,
+}
+
 #[doc(hidden)]
 #[allow(missing_docs)]
 #[derive(Deserialize)]
@@ -159,8 +169,12 @@ pub enum ResponseEvent {
     OutputItemDone(ResponseItem),
     /// The provider terminally completed the response.
     Completed {
+        /// Exact provider response identity.
+        response_id: String,
         /// Token usage reported for this API operation.
         usage: Option<Usage>,
+        /// Exact non-aggregated usage metadata for this response.
+        usage_metadata: Option<ResponseUsageMetadata>,
         /// Whether the model affirmatively ended its logical turn.
         end_turn: Option<bool>,
     },
@@ -220,7 +234,9 @@ impl ServerEvent {
             }
             Self::OutputItemDone { item } => Some(ResponseEvent::OutputItemDone(item.clone())),
             Self::Completed { response } => Some(ResponseEvent::Completed {
+                response_id: response.id.clone(),
                 usage: response.usage.clone(),
+                usage_metadata: response.usage_metadata.clone(),
                 end_turn: response.end_turn,
             }),
             Self::ReasoningSummaryDelta {
@@ -261,6 +277,8 @@ pub struct WarmupResponse {
     pub id: String,
     #[serde(default)]
     pub usage: Option<Usage>,
+    #[serde(default)]
+    pub usage_metadata: Option<ResponseUsageMetadata>,
 }
 
 #[doc(hidden)]
@@ -276,6 +294,8 @@ pub struct CompletedResponse {
     pub output: Vec<ResponseItem>,
     #[serde(default)]
     pub usage: Option<Usage>,
+    #[serde(default)]
+    pub usage_metadata: Option<ResponseUsageMetadata>,
 }
 
 fn completed_status() -> String {
@@ -376,13 +396,18 @@ mod tests {
                         "input_tokens": 5,
                         "output_tokens": 3,
                         "total_tokens": 8
-                    }
+                    },
+                    "usage_metadata": { "amount": "0.000000000000000001" }
                 }
             })),
             Some(ResponseEvent::Completed {
+                response_id,
                 usage: Some(usage),
+                usage_metadata: Some(metadata),
                 end_turn: Some(true),
-            }) if usage.total_tokens == 8
+            }) if response_id == "resp-1"
+                && usage.total_tokens == 8
+                && metadata.amount.as_deref() == Some("0.000000000000000001")
         ));
     }
 

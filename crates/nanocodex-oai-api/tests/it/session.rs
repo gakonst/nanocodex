@@ -91,6 +91,7 @@ impl Service<ResponsesAttempt> for ScriptedResponses {
                     total_tokens: 5,
                     ..Usage::default()
                 }),
+                usage_metadata: None,
                 time_to_first_event_ns: 0,
                 time_to_first_output_ns: Some(0),
                 pipeline_stats: ResponsePipelineStats::default(),

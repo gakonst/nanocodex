@@ -39,9 +39,17 @@ impl Execution {
         Turn
     }
 
-    pub(super) async fn persist(&self, _checkpoint: &CommittedSession, _turn: Turn) {}
+    pub(super) async fn persist(&self, _checkpoint: &CommittedSession, _turn: Turn) -> Result<()> {
+        Ok(())
+    }
 
-    pub(super) async fn persist_compaction(&self, _checkpoint: &CommittedSession, _turn: Turn) {}
+    pub(super) async fn persist_compaction(
+        &self,
+        _checkpoint: &CommittedSession,
+        _turn: Turn,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     pub(super) async fn shutdown(&self) -> Result<()> {
         Ok(())

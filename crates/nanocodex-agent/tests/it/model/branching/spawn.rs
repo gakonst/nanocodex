@@ -90,7 +90,7 @@ async fn per_agent_tool_factory_binds_recursive_forks_to_the_invoking_driver() -
 }
 
 #[tokio::test]
-async fn clean_spawn_reuses_the_root_cache_key_without_history() -> Result<()> {
+async fn clean_spawn_uses_a_child_owned_implicit_cache_key_without_history() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -117,7 +117,7 @@ async fn clean_spawn_reuses_the_root_cache_key_without_history() -> Result<()> {
             .as_str()
             .ok_or_else(|| eyre!("clean child warmup omitted its session id"))?;
         assert_ne!(child_session, TEST_SESSION_ID);
-        assert_eq!(child_warmup["prompt_cache_key"], TEST_SESSION_ID);
+        assert_eq!(child_warmup["prompt_cache_key"], child_session);
         assert!(child_warmup.get("previous_response_id").is_none());
         assert!(
             child_warmup

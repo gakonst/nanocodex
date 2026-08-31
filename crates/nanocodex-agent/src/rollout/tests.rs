@@ -11,7 +11,7 @@ use super::*;
 use super::{
     load::{visible_rollout_event, visible_tool_call},
     store::{
-        RolloutCommit,
+        RolloutCommit, test_initial_window_id,
         writer::{RolloutWriter, validate_context_window_transition, write_line},
     },
 };
@@ -112,7 +112,7 @@ fn write_discoverable_rollout(home: &Path, relative: &str, thread_id: &str) -> P
                 "id": thread_id,
                 "cwd": home,
                 "history_mode": "legacy",
-                "context_window": {"window_id": "window-1"}
+                "context_window": {"window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac7"}
             }
         }),
     )
@@ -241,7 +241,7 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
                 "cwd": home.path(),
                 "originator": "codex-tui",
                 "history_mode": "legacy",
-                "context_window": {"window_id": "window-1"}
+                "context_window": {"window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac7"}
             }
         }),
         serde_json::json!({
@@ -280,9 +280,9 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
                     "content": [{"type": "input_text", "text": "retained"}]
                 }],
                 "window_number": 1,
-                "first_window_id": "window-1",
-                "previous_window_id": "window-1",
-                "window_id": "window-2"
+                "first_window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac7",
+                "previous_window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac7",
+                "window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac8"
             }
         }),
         serde_json::json!({
@@ -353,7 +353,7 @@ fn loads_the_latest_supported_model_from_codex_turn_context() {
                 "id": thread_id,
                 "cwd": home.path(),
                 "history_mode": "legacy",
-                "context_window": {"window_id": "window-1"}
+                "context_window": {"window_id": "019c0d31-c308-7d91-bff4-5dca82d15ac7"}
             }
         }),
         serde_json::json!({
@@ -727,13 +727,98 @@ async fn fork_metadata_retains_parent_identity() {
 }
 
 #[tokio::test]
+async fn fresh_context_is_a_rollout_replacement_even_without_a_revision_change() {
+    let home = tempdir().expect("temporary rollout directory");
+    let path = home.path().join("fresh-context.jsonl");
+    let file = File::create(&path).expect("create temporary rollout");
+    let mut writer = RolloutWriter::new(
+        tokio::fs::File::from_std(file),
+        test_initial_window_id().to_owned(),
+        PathBuf::from("/worktree"),
+    );
+    writer.pending = Some(RolloutCommit::from_history_window(
+        ResponseHistory::new(vec![message("old window")]),
+        0,
+        0,
+        completed_turn("old window", "first"),
+    ));
+    writer
+        .persist_pending()
+        .await
+        .expect("persist first window");
+    writer.pending = Some(RolloutCommit::from_history_window(
+        ResponseHistory::new(vec![message("fresh window")]),
+        0,
+        1,
+        completed_turn("fresh window", "second"),
+    ));
+    writer
+        .persist_pending()
+        .await
+        .expect("persist fresh window");
+    writer.flush().await.expect("flush fresh window");
+    drop(writer);
+
+    let lines = BufReader::new(File::open(path).expect("open rollout"))
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(&line.expect("read rollout line")))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("decode rollout");
+    let compacted = lines
+        .iter()
+        .find(|line| line["type"] == "compacted")
+        .expect("fresh context replacement");
+    assert_eq!(compacted["payload"]["window_number"], 1);
+    assert_eq!(
+        compacted["payload"]["replacement_history"][0]["content"][0]["text"],
+        "fresh window"
+    );
+}
+
+#[tokio::test]
+async fn multiple_fresh_contexts_persist_every_rollout_boundary() {
+    let home = tempdir().expect("temporary rollout directory");
+    let path = home.path().join("multiple-fresh-contexts.jsonl");
+    let file = File::create(&path).expect("create temporary rollout");
+    let mut writer = RolloutWriter::new(
+        tokio::fs::File::from_std(file),
+        test_initial_window_id().to_owned(),
+        PathBuf::from("/worktree"),
+    );
+    writer.pending = Some(RolloutCommit::from_history_window(
+        ResponseHistory::new(vec![message("latest window")]),
+        2,
+        2,
+        completed_turn("roll twice", "done"),
+    ));
+
+    writer
+        .persist_pending()
+        .await
+        .expect("persist both fresh windows");
+    drop(writer);
+
+    let lines = BufReader::new(File::open(path).expect("open rollout"))
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(&line.expect("read rollout line")))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("decode rollout");
+    let windows = lines
+        .iter()
+        .filter(|line| line["type"] == "compacted")
+        .map(|line| line["payload"]["window_number"].as_u64())
+        .collect::<Vec<_>>();
+    assert_eq!(windows, vec![Some(1), Some(2)]);
+}
+
+#[tokio::test]
 async fn failed_append_remains_pending_and_retries_without_duplicates() {
     let home = tempdir().expect("temporary rollout directory");
     let path = home.path().join("rollout.jsonl");
     let file = File::create(&path).expect("create temporary rollout");
     let mut writer = RolloutWriter::new(
         tokio::fs::File::from_std(file),
-        uuid::Uuid::now_v7().to_string(),
+        test_initial_window_id().to_owned(),
         PathBuf::from("/worktree"),
     );
     writer.pending = Some(RolloutCommit::from_history(

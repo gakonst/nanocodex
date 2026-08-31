@@ -1,4 +1,47 @@
 use super::*;
+use serde_json::json;
+
+pub(super) const NEW_CONTEXT_TOOL: &str = "new_context";
+pub(super) const CONTEXT_REMAINING_TOOL: &str = "get_context_remaining";
+
+pub(super) fn token_budget_tools(
+    config: &ModelConfig,
+    tool_specs: &mut Vec<ToolDefinition>,
+) -> Result<()> {
+    if config.token_budget.is_none() {
+        return Ok(());
+    }
+    if let Some(conflict) = tool_specs
+        .iter()
+        .find(|tool| matches!(tool.name(), NEW_CONTEXT_TOOL | CONTEXT_REMAINING_TOOL))
+    {
+        return Err(NanocodexError::InvalidRequest(format!(
+            "tool name `{}` is reserved by token-budget context management",
+            conflict.name()
+        )));
+    }
+    tool_specs.push(ToolDefinition::function(
+        NEW_CONTEXT_TOOL,
+        "Start a new context window without summarizing conversation history. Does not reset environment state.",
+        json!({"type":"object","properties":{},"additionalProperties":false}),
+    ));
+    tool_specs.push(
+        ToolDefinition::function(
+            CONTEXT_REMAINING_TOOL,
+            "Get the remaining tokens in the current context window.",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+        )
+        .with_output_schema(json!({
+            "type": "object",
+            "properties": {
+                "tokens_left": {"anyOf": [{"type": "integer"}, {"type": "null"}]}
+            },
+            "required": ["tokens_left"],
+            "additionalProperties": false
+        })),
+    );
+    Ok(())
+}
 
 #[derive(Serialize)]
 struct RecordedModelCall<'a> {
@@ -88,11 +131,11 @@ where
         let step_id = format!("model-{call_index}");
         let mut recorded_prompt_history = prompt_history.iter().cloned().collect::<Vec<_>>();
         for item in &mut recorded_prompt_history {
-            item.strip_id();
+            item.strip_for_durable_identity();
         }
         let mut recorded_request_prefix = factory.profile().prefix().to_vec();
         for item in &mut recorded_request_prefix {
-            item.strip_id();
+            item.strip_for_durable_identity();
         }
         let step_input = RecordedModelCall {
             call_index,
@@ -140,6 +183,7 @@ where
         } else {
             None
         };
+        let replayed = recovered.is_some();
         let (recorded_result, transport_continuation_valid) = if let Some(output) = recovered {
             (output, false)
         } else {
@@ -199,10 +243,23 @@ where
             record_usage(&span, usage, self.model, self.fast_mode);
         }
         self.stats.model_duration_ns += duration_ns;
-        if let Some(usage) = &response.usage {
+        if !replayed && let Some(usage) = &response.usage {
             self.stats.usage.add(usage);
         }
         self.stats.last_response_id = transport_continuation_valid.then(|| response.id.clone());
+        self.stats
+            .response_completions
+            .push(crate::agent::ResponseCompletion::new(
+                response.id.clone(),
+                crate::agent::ResponseOperation::Generation,
+                if replayed {
+                    crate::agent::ResponseCompletionSource::DurableReplay
+                } else {
+                    crate::agent::ResponseCompletionSource::Live
+                },
+                response.usage.clone(),
+                response.usage_metadata.clone(),
+            ));
         self.events.emit(
             AgentEventKind::ModelCallCompleted,
             ModelCallCompleted {
@@ -217,6 +274,7 @@ where
                 time_to_first_output_ns: response.time_to_first_output_ns,
                 tool_calls: response.code_calls.len(),
                 usage: response.usage.as_ref(),
+                usage_metadata: response.usage_metadata.as_ref(),
             },
         )?;
         Ok(ModelCallOutcome {
@@ -618,8 +676,10 @@ pub(super) fn attempt_factory(
     prompt_cache_key: &str,
     tools: &ToolRuntime,
     system_prompt: &str,
+    config: &ModelConfig,
 ) -> Result<ResponsesAttemptFactory> {
-    let (tool_specs, code_mode_tool_names) = model_tool_contract(tools, events.request_id());
+    let (mut tool_specs, code_mode_tool_names) = model_tool_contract(tools, events.request_id());
+    token_budget_tools(config, &mut tool_specs)?;
     Ok(ResponsesAttemptFactory::new(
         request_profile(
             events.request_id(),
@@ -661,12 +721,28 @@ pub(super) const fn otel_status(success: bool) -> &'static str {
 
 #[cfg(test)]
 mod response_id_tests {
-    use super::validate_provider_response_id;
+    use super::*;
 
     #[test]
     fn provider_response_ids_must_contain_non_whitespace_text() {
         assert!(validate_provider_response_id("response-1").is_ok());
         assert!(validate_provider_response_id("").is_err());
         assert!(validate_provider_response_id(" \n\t").is_err());
+    }
+
+    #[test]
+    fn token_budget_tool_names_are_reserved() {
+        let config = ModelConfig {
+            token_budget: Some(nanocodex_oai_api::session::TokenBudgetConfig::default()),
+            ..ModelConfig::default()
+        };
+        let mut tools = vec![ToolDefinition::function(
+            NEW_CONTEXT_TOOL,
+            "caller collision",
+            json!({"type":"object"}),
+        )];
+
+        let error = token_budget_tools(&config, &mut tools).expect_err("reserved collision");
+        assert!(error.to_string().contains(NEW_CONTEXT_TOOL));
     }
 }

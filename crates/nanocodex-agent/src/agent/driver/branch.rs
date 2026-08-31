@@ -5,6 +5,7 @@ pub(in crate::agent) struct BranchSpawner<S> {
     pub(in crate::agent) tools: ToolsConfiguration,
     pub(in crate::agent) lineage_id: Arc<str>,
     pub(in crate::agent) prompt_cache_key: Option<Arc<str>>,
+    pub(in crate::agent) prompt_cache_key_is_explicit: bool,
     pub(in crate::agent) shared_prompt_cache: Option<SharedPromptCache>,
     pub(in crate::agent) context_config: ContextSourceConfig,
     pub(in crate::agent) context_source: ContextSource,
@@ -27,6 +28,7 @@ impl<S> BranchSpawner<S> {
             tools: self.tools.clone(),
             lineage_id: Arc::clone(&self.lineage_id),
             prompt_cache_key: self.prompt_cache_key.as_ref().map(Arc::clone),
+            prompt_cache_key_is_explicit: self.prompt_cache_key_is_explicit,
             shared_prompt_cache: self.shared_prompt_cache.clone(),
             context_config: self.context_config.clone(),
             context_source: self.context_source.clone(),
@@ -91,15 +93,21 @@ where
         config.model = model;
         config.thinking = thinking;
         config.fast_mode = fast_mode;
-        let prompt_cache_key = self
-            .prompt_cache_key
-            .as_ref()
-            .map_or_else(|| Arc::clone(&self.lineage_id), Arc::clone);
+        // Explicit application cache scopes remain shared. Otherwise a clean
+        // child owns a fresh cache identity, matching Codex subagent sessions.
+        let prompt_cache_key = if self.prompt_cache_key_is_explicit {
+            self.prompt_cache_key
+                .as_ref()
+                .map_or_else(|| Arc::<str>::from(session_id_text.as_str()), Arc::clone)
+        } else {
+            Arc::<str>::from(session_id_text.as_str())
+        };
         let spawner = Self {
             config: Arc::new(config),
             tools: self.tools.clone(),
             lineage_id: Arc::from(session_id_text.as_str()),
             prompt_cache_key: Some(prompt_cache_key),
+            prompt_cache_key_is_explicit: self.prompt_cache_key_is_explicit,
             shared_prompt_cache: self.shared_prompt_cache.clone(),
             context_config: self.context_config.clone(),
             context_source: self.context_config.build(),

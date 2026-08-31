@@ -22,6 +22,7 @@ where
     let session_id_text = session_id.to_string();
     let context_source = codex.context.build();
     let PromptCacheConfig { key, shared } = prompt_cache;
+    let prompt_cache_key_is_explicit = key.is_some();
     let is_resume = resume.is_some();
     let (lineage_id, prompt_cache_key, initial_resume) = if let Some(snapshot) = resume {
         let SessionResume {
@@ -102,6 +103,9 @@ where
             tools,
             lineage_id,
             prompt_cache_key,
+            // A restored lineage is durable state, not a caller override;
+            // clean internal children must remain parent-scoped after resume.
+            prompt_cache_key_is_explicit,
             shared_prompt_cache: shared,
             context_config: codex.context,
             context_source,
@@ -168,6 +172,7 @@ where
                 &spawner.config,
                 &tools,
                 &session_id_text,
+                origin.kind == "fork",
                 spawner.context_source.clone(),
             ),
             InitialResume::History(resume) => prepare_history_checkpoint(

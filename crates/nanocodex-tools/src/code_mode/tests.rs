@@ -2308,7 +2308,11 @@ fn test_live_cell(
 }
 
 fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
-    ToolRuntime::new(
+    let tools = Tools::builder()
+        .plan(true)
+        .build()
+        .expect("test tool selection should be valid");
+    ToolRuntime::new_with_tools(
         workspace,
         Some(WebSearchConfig {
             endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
@@ -2319,6 +2323,7 @@ fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
             auth: nanocodex_oai_api::auth::OpenAiAuth::api_key("test-key"),
             save_root: workspace.to_path_buf(),
         }),
+        &tools,
     )
 }
 

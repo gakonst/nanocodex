@@ -8,7 +8,7 @@ use serde_json::{Value, value::RawValue};
 use super::stream::AgentEventKind;
 use crate::{
     pricing::{CostStatus, EstimatedUsdCost},
-    responses::{MessagePhase, Usage},
+    responses::{MessagePhase, ResponseUsageMetadata, Usage},
     tools::ToolOutputBody,
 };
 
@@ -407,6 +407,8 @@ pub struct ModelCallCompleted {
     pub call_index: u32,
     /// Fixed model contract.
     pub model: String,
+    /// Exact provider response identity.
+    pub response_id: String,
     /// Successful physical attempt number.
     pub attempt: u32,
     /// Connection generation used by the attempt.
@@ -423,6 +425,8 @@ pub struct ModelCallCompleted {
     pub tool_calls: usize,
     /// Provider token usage when supplied.
     pub usage: Option<Usage>,
+    /// Exact non-aggregated upstream usage metadata.
+    pub usage_metadata: Option<ResponseUsageMetadata>,
 }
 
 /// Failed logical `response.create` call.
@@ -466,6 +470,8 @@ pub struct CompactionStarted {
 pub struct CompactionCompleted {
     /// Model-call boundary after which compaction ran.
     pub after_model_call_index: u32,
+    /// Exact provider response identity.
+    pub response_id: String,
     /// Successful physical attempt number.
     pub attempt: u32,
     /// Connection generation used by the attempt.
@@ -480,6 +486,8 @@ pub struct CompactionCompleted {
     pub time_to_first_output_ns: Option<u64>,
     /// Provider token usage when supplied.
     pub usage: Option<Usage>,
+    /// Exact non-aggregated upstream usage metadata.
+    pub usage_metadata: Option<ResponseUsageMetadata>,
 }
 
 /// Failed automatic context compaction.

@@ -1,5 +1,215 @@
 use super::*;
 
+async fn reject_provider_call(
+    _attempt: nanocodex_oai_api::tower::ResponsesAttempt,
+) -> std::result::Result<nanocodex_oai_api::tower::ResponsesServiceResponse, ResponseError> {
+    panic!("token-budget local compaction must not call the provider")
+}
+
+#[tokio::test]
+async fn new_context_rebuilds_a_full_window_and_persists_rollover_lineage() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        let warmup = next_json(&mut socket).await?;
+        let warmup_text = warmup.to_string();
+        assert!(warmup_text.contains("new_context"), "{warmup}");
+        assert!(warmup_text.contains("get_context_remaining"), "{warmup}");
+        send_json(
+            &mut socket,
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-warmup",
+                    "usage": null,
+                    "usage_metadata": { "amount": "0.000001" }
+                }
+            }),
+        )
+        .await?;
+
+        let first = next_json(&mut socket).await?;
+        assert!(first.to_string().contains("<context_window>"), "{first}");
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-rollover",
+                &[json!({
+                    "type": "function_call",
+                    "call_id": "call-new-context",
+                    "name": "new_context",
+                    "arguments": "{}"
+                })],
+            ),
+        )
+        .await?;
+
+        let fresh = next_json(&mut socket).await?;
+        assert!(fresh.get("previous_response_id").is_none(), "{fresh}");
+        let fresh_text = fresh.to_string();
+        assert!(!fresh_text.contains("new context task"), "{fresh}");
+        assert!(fresh_text.contains("<environment_context>"), "{fresh}");
+        assert!(
+            fresh_text.contains("Previous context window id:"),
+            "{fresh}"
+        );
+        assert!(!fresh_text.contains("call-new-context"), "{fresh}");
+        send_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("new-context-window")?;
+    let openai = OpenAi::builder("test-key")
+        .token_budget(nanocodex_oai_api::session::TokenBudgetConfig::default())
+        .websocket_url(endpoint)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .build()?;
+
+    let result = agent.prompt("new context task").await?.result().await?;
+    assert_eq!(result.final_message(), "done");
+    let completions = result.response_completions();
+    assert_eq!(completions.len(), 3);
+    assert_eq!(completions[0].response_id(), "resp-warmup");
+    assert_eq!(completions[0].operation(), ResponseOperation::Warmup);
+    assert_eq!(
+        completions[0]
+            .usage_metadata()
+            .and_then(|metadata| metadata.amount.as_deref()),
+        Some("0.000001")
+    );
+    assert_eq!(completions[1].operation(), ResponseOperation::Generation);
+    assert_eq!(completions[2].operation(), ResponseOperation::Generation);
+    let snapshot = serde_json::to_value(result.snapshot().expect("completed turn snapshot"))?;
+    assert_eq!(snapshot["context_window"]["number"], 1);
+    assert_eq!(snapshot["context_window"]["first_id"], TEST_SESSION_ID);
+    assert!(snapshot["context_window"]["previous_id"].is_string());
+    assert_ne!(snapshot["context_window"]["current_id"], TEST_SESSION_ID);
+    assert!(
+        completions
+            .iter()
+            .all(|completion| completion.source() == ResponseCompletionSource::Live)
+    );
+    drop((agent, events));
+
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn token_budget_limit_rolls_over_locally_without_remote_compaction() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+
+        let first = next_json(&mut socket).await?;
+        assert!(first.to_string().contains("exhaust this window"), "{first}");
+        let mut exhausted = completed_response(
+            "resp-exhausted",
+            &[json!({
+                "type": "function_call",
+                "call_id": "call-context-remaining",
+                "name": "get_context_remaining",
+                "arguments": "{}"
+            })],
+        );
+        exhausted["response"]["usage"] = json!({
+            "input_tokens": 90,
+            "output_tokens": 10,
+            "total_tokens": 100
+        });
+        send_json(&mut socket, exhausted).await?;
+
+        let fresh = next_json(&mut socket).await?;
+        assert!(fresh.get("previous_response_id").is_none(), "{fresh}");
+        let fresh_text = fresh.to_string();
+        assert!(!fresh_text.contains("exhaust this window"), "{fresh}");
+        assert!(!fresh_text.contains("call-context-remaining"), "{fresh}");
+        assert!(
+            fresh_text.contains("Previous context window id:"),
+            "{fresh}"
+        );
+        send_final(&mut socket, "resp-final").await
+    });
+
+    let workspace = temporary_workspace("token-budget-local-rollover")?;
+    let openai = OpenAi::builder("test-key")
+        .token_budget(nanocodex_oai_api::session::TokenBudgetConfig::default())
+        .websocket_url(endpoint)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .thinking(Thinking::Low)
+        .context_window_tokens(100)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .build()?;
+
+    let result = agent.prompt("exhaust this window").await?.result().await?;
+    assert_eq!(result.final_message(), "done");
+    assert!(
+        result
+            .response_completions()
+            .iter()
+            .all(|completion| completion.operation() != ResponseOperation::Compaction)
+    );
+    drop((agent, events));
+
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn token_budget_manual_compaction_is_a_local_fresh_window() -> Result<()> {
+    let workspace = temporary_workspace("token-budget-manual-local")?;
+    let rollout_home = temporary_workspace("token-budget-manual-rollout")?;
+    let openai = OpenAi::builder("test-key")
+        .token_budget(nanocodex_oai_api::session::TokenBudgetConfig::default())
+        .service(|| tower::service_fn(reject_provider_call))
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .rollout(RolloutConfig::new(&rollout_home))
+        .build()?;
+
+    agent.compact().await?;
+    agent.flush_rollout().await?;
+    let rollout_path = agent
+        .rollout()
+        .ok_or_else(|| eyre!("manual local compaction rollout was not configured"))?
+        .path();
+    let lines = std::fs::read_to_string(rollout_path)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    let compacted = lines
+        .iter()
+        .find(|line| line["type"] == "compacted")
+        .ok_or_else(|| eyre!("local fresh window did not persist a compacted boundary"))?;
+    assert_eq!(compacted["payload"]["window_number"], 1);
+    assert_eq!(compacted["payload"]["message"], "");
+
+    agent.shutdown().await?;
+    drop((agent, events));
+    std::fs::remove_dir_all(workspace)?;
+    std::fs::remove_dir_all(rollout_home)?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn execution_environment_suppresses_host_context_discovery() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;

@@ -98,6 +98,7 @@ impl Service<ResponsesAttempt> for NestedCancellationService {
                 (0, ResponsesAttemptKind::Warmup) => ResponsesOutput::Warmup(WarmupResponse {
                     id: "resp-warmup".to_owned(),
                     usage: None,
+                    usage_metadata: None,
                 }),
                 (1, ResponsesAttemptKind::Generation) => nested_tool_generation(),
                 _ => panic!("unexpected attempt {call}: {:?}", request.kind()),
@@ -134,6 +135,7 @@ text("unreachable");
             kind: CodeCallKind::Custom,
         }],
         usage: None,
+        usage_metadata: None,
         time_to_first_event_ns: 0,
         time_to_first_output_ns: None,
         pipeline_stats: ResponsePipelineStats::default(),

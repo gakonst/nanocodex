@@ -136,6 +136,7 @@ impl Service<ResponsesAttempt> for PendingToolService {
             (0, ResponsesAttemptKind::Warmup) => ResponsesOutput::Warmup(WarmupResponse {
                 id: "resp-warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             (1, ResponsesAttemptKind::Generation) => pending_tool_generation(),
             _ => panic!("unexpected attempt {call}: {:?}", request.kind()),
@@ -159,6 +160,7 @@ impl Service<ResponsesAttempt> for SteeringTraceService {
             (0, ResponsesAttemptKind::Warmup) => ResponsesOutput::Warmup(WarmupResponse {
                 id: "resp-warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             (1, ResponsesAttemptKind::Generation) => pending_tool_generation(),
             (2, ResponsesAttemptKind::Generation) => final_generation(),
@@ -184,6 +186,7 @@ impl Service<ResponsesAttempt> for PricingTraceService {
             (0, ResponsesAttemptKind::Warmup) => ResponsesOutput::Warmup(WarmupResponse {
                 id: "resp-warmup".to_owned(),
                 usage: None,
+                usage_metadata: None,
             }),
             (1, ResponsesAttemptKind::Generation) => {
                 ResponsesOutput::Generation(GenerationOutput {
@@ -199,6 +202,7 @@ impl Service<ResponsesAttempt> for PricingTraceService {
                         total_tokens: 2_000_000,
                         ..Usage::default()
                     }),
+                    usage_metadata: None,
                     time_to_first_event_ns: 0,
                     time_to_first_output_ns: Some(0),
                     pipeline_stats: ResponsePipelineStats::default(),
@@ -233,6 +237,7 @@ fn pending_tool_generation() -> ResponsesOutput {
             kind: CodeCallKind::Function,
         }],
         usage: None,
+        usage_metadata: None,
         time_to_first_event_ns: 0,
         time_to_first_output_ns: None,
         pipeline_stats: ResponsePipelineStats::default(),
@@ -248,6 +253,7 @@ fn final_generation() -> ResponsesOutput {
         output_items: Vec::new(),
         code_calls: Vec::new(),
         usage: None,
+        usage_metadata: None,
         time_to_first_event_ns: 0,
         time_to_first_output_ns: Some(0),
         pipeline_stats: ResponsePipelineStats::default(),

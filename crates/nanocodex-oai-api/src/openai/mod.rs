@@ -266,6 +266,13 @@ impl<F> OpenAiBuilder<F> {
         self
     }
 
+    /// Enables local fresh-context-window accounting for new sessions.
+    #[must_use]
+    pub fn token_budget(mut self, token_budget: crate::session::TokenBudgetConfig) -> Self {
+        self.config.token_budget = Some(token_budget);
+        self
+    }
+
     /// Replaces the standard Responses WebSocket endpoint.
     #[must_use]
     pub fn websocket_url(mut self, url: impl Into<String>) -> Self {
@@ -365,6 +372,7 @@ impl<F> OpenAiBuilder<F> {
     ///                     output_items: vec![item],
     ///                     code_calls: Vec::new(),
     ///                     usage: None,
+    ///                     usage_metadata: None,
     ///                     time_to_first_event_ns: 0,
     ///                     time_to_first_output_ns: Some(0),
     ///                     pipeline_stats: ResponsePipelineStats::default(),
@@ -561,6 +569,13 @@ fn apply_mode_defaults(config: &mut ModelConfig, mode: OpenAiAuthMode) {
 
 fn validate(config: &ModelConfig) -> Result<(), OpenAiError> {
     config.auth.validate()?;
+    if let Some(token_budget) = &config.token_budget
+        && token_budget.validate().is_err()
+    {
+        return Err(OpenAiError::InvalidConfiguration {
+            detail: "token-budget settings are invalid",
+        });
+    }
     if config.context_window_tokens == 0 {
         return Err(OpenAiError::InvalidConfiguration {
             detail: "the model context window must be greater than zero",

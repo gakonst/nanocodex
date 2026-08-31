@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     AgentEventKind, ContentItem, EventSink, MessagePhase, MessageRole, ResponseItem,
     ResponseItemId, monotonic_now_ns,
-    responses::{ServerEvent, Usage},
+    responses::{ResponseUsageMetadata, ServerEvent, Usage},
 };
 use serde::{Deserialize, Serialize};
 use web_time::Instant;
@@ -35,6 +35,8 @@ pub struct GenerationOutput {
     pub code_calls: Vec<CodeCall>,
     /// Provider token usage.
     pub usage: Option<Usage>,
+    /// Exact non-aggregated usage metadata for this response.
+    pub usage_metadata: Option<ResponseUsageMetadata>,
     /// Nanoseconds from attempt start to the first provider event.
     pub time_to_first_event_ns: u64,
     /// Nanoseconds from attempt start to the first model output.
@@ -53,6 +55,8 @@ pub struct CompactionOutput {
     pub item: ResponseItem,
     /// Provider token usage.
     pub usage: Option<Usage>,
+    /// Exact non-aggregated usage metadata for this response.
+    pub usage_metadata: Option<ResponseUsageMetadata>,
     /// Nanoseconds from attempt start to the first provider event.
     pub time_to_first_event_ns: u64,
     /// Nanoseconds from attempt start to the first compaction output.
@@ -331,6 +335,7 @@ where
                     output_items,
                     code_calls,
                     usage: response.usage,
+                    usage_metadata: response.usage_metadata,
                     time_to_first_event_ns: timing.first_event_ns.unwrap_or_default(),
                     time_to_first_output_ns: timing.first_output_ns,
                     pipeline_stats: timing.pipeline,
@@ -440,6 +445,7 @@ where
                     status: response.status,
                     item,
                     usage: response.usage,
+                    usage_metadata: response.usage_metadata,
                     time_to_first_event_ns: timing.first_event_ns.unwrap_or_default(),
                     time_to_first_output_ns: timing.first_output_ns,
                     pipeline_stats: timing.pipeline,

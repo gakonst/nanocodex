@@ -27,7 +27,10 @@ use nanocodex_oai_api::{
     Model, Prompt, Thinking,
     events::AgentEventKind,
     pricing::{ServiceTier, estimate_for_model},
-    responses::{ContentItem, MessageRole, RequestProfile, ResponseItem, ToolDefinition, Usage},
+    responses::{
+        ContentItem, MessageRole, RequestProfile, ResponseItem, ResponseUsageMetadata,
+        ToolDefinition, Usage,
+    },
     tower::{
         CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesAttempt, ResponsesClient,
         ResponsesOutput, ResponsesServiceResponse,
@@ -115,6 +118,7 @@ pub(crate) enum ModelCompactOutcome {
 pub(crate) struct CompletedModelTurn {
     pub(crate) final_message: String,
     pub(crate) usage: TurnUsage,
+    pub(crate) response_completions: Vec<crate::agent::ResponseCompletion>,
     pub(crate) checkpoint: ModelCheckpoint,
 }
 
@@ -177,6 +181,23 @@ impl ModelCheckpoint {
         &self.context_baseline
     }
 
+    pub(crate) fn context_window(&self) -> nanocodex_oai_api::session::ContextWindow {
+        self.conversation.context_window.clone()
+    }
+
+    pub(crate) fn pending_rollovers(
+        &self,
+    ) -> &[(
+        nanocodex_oai_api::session::ContextWindow,
+        nanocodex_oai_api::responses::ResponseHistory,
+    )] {
+        self.conversation.pending_rollovers()
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the checkpoint boundary restores each serialized session field explicitly"
+    )]
     pub(crate) fn resume(
         workspace: String,
         request_prefix: Vec<ResponseItem>,
@@ -185,12 +206,13 @@ impl ModelCheckpoint {
         history: Vec<ResponseItem>,
         global_instructions: Option<Arc<str>>,
         context_baseline: Option<ContextBaseline>,
+        context_window: Option<nanocodex_oai_api::session::ContextWindow>,
     ) -> Result<Self> {
         let context_baseline =
             context_baseline.unwrap_or_else(|| ContextBaseline::reconstruct(&history));
         Ok(Self {
             workspace,
-            conversation: ConversationState::resume(canonical_context, history)?,
+            conversation: ConversationState::resume(canonical_context, history, context_window)?,
             request_prefix: Arc::from(request_prefix),
             prompt_cache_key,
             preserve_inherited_delta: false,
@@ -328,12 +350,13 @@ impl<S> ModelRun<S> {
         text: String,
         requested_workspace: Option<&str>,
     ) -> Result<ModelCheckpoint> {
-        let item = ResponseItem::message(
+        let mut item = ResponseItem::message(
             MessageRole::Developer,
             [ContentItem::InputText {
                 text: text.into_boxed_str(),
             }],
         );
+        item.set_message_content_item_kind("generic.developer_instructions");
         if self.session.is_none() {
             self.session = Some(self.empty_session(requested_workspace)?);
         }
@@ -386,7 +409,14 @@ impl<S> ModelRun<S> {
             workspace,
             tools,
             factory,
-            conversation: ConversationState::empty(canonical_context),
+            conversation: ConversationState::empty(
+                canonical_context,
+                self.events.request_id().parse().map_err(|_| {
+                    NanocodexError::InvalidRequest(
+                        "agent request id must be a UUIDv7 session id".to_owned(),
+                    )
+                })?,
+            ),
             context,
             preserve_inherited_delta: false,
         })
@@ -399,6 +429,7 @@ impl<S> ModelRun<S> {
             self.prompt_cache.key(),
             tools,
             self.config.system_prompt(),
+            &self.config,
         )
     }
 
@@ -433,13 +464,23 @@ pub(crate) fn prepare_resumed_checkpoint(
     config: &ModelConfig,
     tools: &Tools,
     session_id: &str,
+    rebase_context_window: bool,
     context_source: ContextSource,
 ) -> Result<PreparedCheckpoint> {
     checkpoint.global_instructions = context_source
         .global_instructions()
         .or(checkpoint.global_instructions);
     let runtime = tool_runtime(checkpoint.workspace(), config, tools);
-    let (tool_specs, code_mode_tool_names) = model_tool_contract(&runtime, session_id);
+    if rebase_context_window {
+        checkpoint.conversation.rebase_context_window(
+            session_id.parse().map_err(|_| {
+                NanocodexError::InvalidRequest("agent session id must be a UUIDv7 value".to_owned())
+            })?,
+            config,
+        );
+    }
+    let (mut tool_specs, code_mode_tool_names) = model_tool_contract(&runtime, session_id);
+    token_budget_tools(config, &mut tool_specs)?;
     checkpoint.request_prefix = Arc::from(
         request_profile(
             session_id,
@@ -480,7 +521,8 @@ pub(crate) fn prepare_history_checkpoint(
         .project_instructions(&workspace)
         .map(Arc::from);
     let runtime = tool_runtime(&workspace, config, tools);
-    let (tool_specs, code_mode_tool_names) = model_tool_contract(&runtime, session_id);
+    let (mut tool_specs, code_mode_tool_names) = model_tool_contract(&runtime, session_id);
+    token_budget_tools(config, &mut tool_specs)?;
     let request_prefix = request_profile(
         session_id,
         prompt_cache_key.as_ref(),
@@ -498,6 +540,15 @@ pub(crate) fn prepare_history_checkpoint(
         history,
         context_source.global_instructions(),
         context_baseline,
+        Some(
+            nanocodex_oai_api::session::ContextWindow::initial_for_agent(
+                session_id.parse().map_err(|_| {
+                    NanocodexError::InvalidRequest(
+                        "agent session id must be a UUIDv7 value".to_owned(),
+                    )
+                })?,
+            ),
+        ),
     )?;
     Ok(PreparedCheckpoint {
         checkpoint,

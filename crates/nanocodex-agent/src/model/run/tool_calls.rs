@@ -20,7 +20,7 @@ pub(super) struct ActiveToolProgress {
     pub(super) nested_tool_calls: u32,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct CompletedToolCall {
     pub(super) call_id: String,
     pub(super) tool: String,
@@ -157,8 +157,43 @@ where
         history: Option<Arc<Vec<ResponseItem>>>,
     ) -> Result<()> {
         self.active_tool_batch_started_at = Some(Instant::now());
-        let mut prepared = Vec::with_capacity(calls.len());
+        let mut ordinary_calls = Vec::with_capacity(calls.len());
         for call in calls {
+            if self.config.token_budget.is_some()
+                && call.namespace.is_none()
+                && matches!(call.kind, CodeCallKind::Function)
+                && matches!(
+                    call.name.as_str(),
+                    NEW_CONTEXT_TOOL | CONTEXT_REMAINING_TOOL
+                )
+            {
+                let text = if call.name == NEW_CONTEXT_TOOL {
+                    conversation.request_new_context();
+                    "A new context window will start without summarizing conversation history."
+                        .to_owned()
+                } else {
+                    let tokens_left = conversation.context_remaining(&self.config);
+                    tokens_left.map_or_else(
+                        || "You have unknown tokens left in this context window.".to_owned(),
+                        |tokens_left| {
+                            format!("You have {tokens_left} tokens left in this context window.")
+                        },
+                    )
+                };
+                conversation.append([function_tool_output(
+                    call.call_id,
+                    ToolOutputBody::Text(text),
+                )]);
+            } else {
+                ordinary_calls.push(call);
+            }
+        }
+        if ordinary_calls.is_empty() {
+            self.finish_active_tool_batch_wall();
+            return Ok(());
+        }
+        let mut prepared = Vec::with_capacity(ordinary_calls.len());
+        for call in ordinary_calls {
             let active = self.prepare_model_tool_call(call_index, &call)?;
             let supports_parallel = tools.supports_parallel_tool_calls(&qualified_tool_name(&call));
             prepared.push((call, supports_parallel, active));
@@ -273,16 +308,20 @@ where
                             if persist_result {
                                 completed.work_duration_ns =
                                     Self::completed_tool_work_duration(&active);
-                                if let Some(steps) = &execution_steps {
-                                    steps.complete(&step_id, &completed).await?;
-                                }
                             }
-                            Self::emit_completed_tool_result(&events, &completed)?;
+                            // Claim the exact terminal outcome before any
+                            // cancellable persistence or event handoff. The
+                            // cancellation path consults this slot and must
+                            // never rewrite a completed side effect as aborted.
                             active
                                 .completion
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .replace(completed);
+                                .replace(completed.clone());
+                            Self::emit_completed_tool_result(&events, &completed)?;
+                            if persist_result && let Some(steps) = &execution_steps {
+                                steps.complete(&step_id, &completed).await?;
+                            }
                             Ok(active)
                         }
                         Err(error) => Err(error),

@@ -189,6 +189,7 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
 
     let workspace = temporary_workspace("normal-code-mode-direct-tools")?;
     let tools = Tools::builder()
+        .plan(true)
         .exposure(nanocodex_tools::ToolExposure::DirectAndCodeMode)
         .tool(NamespacedEcho)
         .build()?;
@@ -371,6 +372,7 @@ async fn configured_native_tool_search_round_trips_its_dedicated_items() -> Resu
         assert_eq!(continuation["previous_response_id"], "resp-search");
         let mut input = continuation["input"].clone();
         remove_client_item_id(&mut input[0], "tso");
+        remove_generated_create_time(&mut input[0]);
         assert_eq!(
             input,
             json!([{
@@ -473,6 +475,7 @@ async fn mcp_tool_search_exposes_and_dispatches_a_native_namespace() -> Result<(
         let searched = next_json(&mut socket).await?;
         let mut input = searched["input"].clone();
         remove_client_item_id(&mut input[0], "tso");
+        remove_generated_create_time(&mut input[0]);
         assert_eq!(
             input,
             json!([{
