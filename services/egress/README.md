@@ -181,6 +181,10 @@ IDs and display labels. A provider request uses the sole connection
 automatically; once more than one is present, callers select one with
 `X-Nanocodex-Connector-Connection: <id>`. Connect grants snapshot those IDs, so
 authorizing another Google account later cannot broaden an existing grant.
+The agent receives only the grant-approved ID/label pairs, chooses an account by
+label for each request, and sends the opaque ID to the egress proxy. The proxy
+validates the choice against the active grant before the private broker replaces
+the credential placeholder; provider tokens never enter the agent runtime.
 Disconnecting `DELETE /v1/connectors/{gmail|gdrive}/<id>` revokes only that
 Google identity and its sibling Gmail/Drive grant for the same Google subject.
 

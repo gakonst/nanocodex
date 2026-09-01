@@ -28,6 +28,19 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
       properties: Object.fromEntries(CONNECTOR_IDS.map((id) => [id, { type: "string" }])),
       additionalProperties: false,
     },
+    connectorAccounts: {
+      type: "object",
+      properties: Object.fromEntries(CONNECTOR_IDS.map((id) => [id, {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { id: { type: "string" }, label: { type: "string" } },
+          required: ["id", "label"],
+          additionalProperties: false,
+        },
+      }])),
+      additionalProperties: false,
+    },
     identity: {
       type: "object",
       properties: { tempoAddress: { type: "string" } },
@@ -109,7 +122,7 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
       },
     },
   },
-  required: ["status", "authenticated", "accounts", "identity", "stablecoins", "authorizations"],
+  required: ["status", "authenticated", "accounts", "connectorAccounts", "identity", "stablecoins", "authorizations"],
   additionalProperties: false,
 });
 
@@ -169,11 +182,19 @@ export async function browserAccountInfo(options, signal) {
     const value = await response.json();
     if (!record(value) || !record(value.connectors)) return emptyInfo("unavailable");
     const accounts = {};
+    const connectorAccounts = {};
     const authenticated = CONNECTOR_IDS.filter((id) => {
       const connector = value.connectors[id];
       if (!record(connector) || connector.connected !== true) return false;
       if (typeof connector.label === "string" && connector.label.trim()) {
         accounts[id] = connector.label.trim();
+      }
+      if (Array.isArray(connector.connections)) {
+        const connections = connector.connections.map(connectorAccount);
+        if (connections.length > 32) throw new Error("too many connector accounts");
+        connectorAccounts[id] = connections;
+        if (connections.length === 1) accounts[id] = connections[0].label;
+        else delete accounts[id];
       }
       return true;
     });
@@ -195,6 +216,7 @@ export async function browserAccountInfo(options, signal) {
       status: "ready",
       authenticated,
       accounts,
+      connectorAccounts,
       identity: accountIdentity,
       stablecoins: accountStablecoins,
       authorizations: accountAuthorizations,
@@ -210,10 +232,19 @@ function emptyInfo(status) {
     status,
     authenticated: [],
     accounts: {},
+    connectorAccounts: {},
     identity: {},
     stablecoins: [],
     authorizations: [],
   };
+}
+
+function connectorAccount(value) {
+  if (!record(value) || typeof value.id !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.id)
+    || typeof value.label !== "string" || !value.label.trim()) {
+    throw new Error("invalid connector account");
+  }
+  return { id: value.id, label: value.label.trim() };
 }
 
 function identity(value) {

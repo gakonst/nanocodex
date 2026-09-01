@@ -116,7 +116,9 @@ export function withInitialAccountInfo(input: PromptInput, info: AccountInfo): P
   const explanation = [
     "The managed runtime already resolved the following non-secret accountInfo snapshot for",
     "this agent. Use it as the current connected-account context. Do not call accountInfo",
-    "again unless the task requires state refreshed after this first prompt.",
+    "again unless the task requires state refreshed after this first prompt. When multiple Gmail",
+    "or Google Drive accounts are listed, choose the appropriate account by label and pass its id",
+    "as X-Nanocodex-Connector-Connection on that provider request. Never invent an account id.",
   ].join(" ");
   const context = {
     type: "text" as const,

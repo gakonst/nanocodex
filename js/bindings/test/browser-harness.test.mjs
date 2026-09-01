@@ -41,7 +41,10 @@ test("the default browser harness exposes one exact model-visible tool set", asy
         connectors: {
           github: { connected: true, label: "Nano Cat (nanocat)", account_id: "hidden" },
           gmail: { connected: false },
-          gdrive: { connected: true, label: "Drive User", access_token: "hidden" },
+          gdrive: { connected: true, connections: [
+            { id: "a".repeat(43), label: "Work Drive", account_id: "hidden-work" },
+            { id: "b".repeat(43), label: "Personal Drive", account_id: "hidden-personal" },
+          ], access_token: "hidden" },
           x: { connected: true, label: "Nano Cat (@nanocat)", account_id: "hidden" },
         },
       });
@@ -106,7 +109,11 @@ test("the default browser harness exposes one exact model-visible tool set", asy
   assert.deepEqual(accountInfo, {
     status: "ready",
     authenticated: ["github", "gdrive", "x"],
-    accounts: { github: "Nano Cat (nanocat)", gdrive: "Drive User", x: "Nano Cat (@nanocat)" },
+    accounts: { github: "Nano Cat (nanocat)", x: "Nano Cat (@nanocat)" },
+    connectorAccounts: { gdrive: [
+      { id: "a".repeat(43), label: "Work Drive" },
+      { id: "b".repeat(43), label: "Personal Drive" },
+    ] },
     identity: {},
     stablecoins: [],
     authorizations: [],
@@ -222,6 +229,7 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
     status: "ready",
     authenticated: ["chatgpt"],
     accounts: { chatgpt: "Subscription" },
+    connectorAccounts: {},
     identity: { tempoAddress: "0xabc" },
     stablecoins: [{ token: "0x01", symbol: "MACHUSD", balance: "5000000", decimals: 6 }],
     authorizations: [{

@@ -23,7 +23,10 @@ test("browser egress sends one credential-free thread-scoped envelope", async ()
   });
 
   const result = await fetch("https://www.googleapis.com/drive/v3/files?pageSize=1", {
-    headers: { accept: "application/json" },
+    headers: {
+      accept: "application/json",
+      "x-nanocodex-connector-connection": "a".repeat(43),
+    },
   });
   assert.equal(new TextDecoder().decode(result.body), "drive");
   assert.equal(requests.length, 1);
@@ -33,7 +36,10 @@ test("browser egress sends one credential-free thread-scoped envelope", async ()
     thread_id: THREAD_ID,
     url: "https://www.googleapis.com/drive/v3/files?pageSize=1",
     method: "GET",
-    headers: { accept: "application/json" },
+    headers: {
+      accept: "application/json",
+      "x-nanocodex-connector-connection": "a".repeat(43),
+    },
   });
 });
 

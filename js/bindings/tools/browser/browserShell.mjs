@@ -267,6 +267,10 @@ session, or sandbox escalation. HTTP commands use one thread-scoped, same-origin
 Destination policy and connected-account credentials stay outside the browser runtime. The C/C++
 commands compile sources to WASI WebAssembly in a lazy worker. Browser SSH is noninteractive and
 requires a wss:// endpoint that carries raw SSH because browsers cannot open TCP sockets. The
+accountInfo tool lists the grant-approved Gmail and Google Drive accounts. When more than one is
+available, choose the appropriate account by label and send its id in the
+X-Nanocodex-Connector-Connection header on that provider request. Never invent an account id.
+The
 repository's only publish branch is nanocodex; publish with git add, git commit -m "...", and git
 push origin nanocodex. Use the standard Rust apply_patch tool for focused edits. Create or update
 custom React interfaces with the render_artifact tool. Its source defines function App({ sendPrompt });

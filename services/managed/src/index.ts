@@ -4738,6 +4738,7 @@ export class DurableAgentSession extends DurableComputerSession {
             "Never claim that a phone action happened unless the phone tool returned ok=true and status=completed. Report failed, unavailable, and ambiguous phone outcomes accurately.",
             "Your /workspace filesystem is durable Cloudflare Computer storage backed by this agent's Durable Object.",
             "Use accountInfo only when the user asks about account state or an operation fails because its authorization is unclear. Do not call accountInfo before an explicit gh, git, curl, or other shell command. Those commands use transparent authenticated egress when the current grant permits it. accountInfo is a tool, not a shell command.",
+            "When accountInfo lists multiple Gmail or Google Drive accounts, choose the appropriate account by label and pass its id as X-Nanocodex-Connector-Connection on that provider request. Never invent an account id. The egress proxy validates the selected id against the active grant and injects the provider credential.",
             computer.instructions,
             "No process sandbox is attached. Bounded Just Bash is the complete local execution boundary.",
             MEMORY_INSTRUCTIONS,
