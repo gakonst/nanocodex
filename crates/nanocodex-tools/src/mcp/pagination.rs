@@ -7,14 +7,12 @@ const MAX_MCP_CATALOG_ITEMS: usize = 2_048;
 const MAX_MCP_PAGINATION_CURSOR_BYTES: usize = 64 * 1024;
 const DEFAULT_MCP_PAGINATION_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub(super) async fn collect_paginated<T, F, Fut>(
-    method: &str,
-    mut fetch: F,
-) -> Result<Vec<T>, String>
+pub(super) async fn collect_paginated<T, F, Fut>(method: &str, fetch: F) -> Result<Vec<T>, String>
 where
     F: FnMut(Option<PaginatedRequestParams>) -> Fut,
     Fut: Future<Output = Result<(Vec<T>, Option<String>), String>>,
 {
+    let mut fetch = fetch;
     let collect = async {
         let mut collected = Vec::new();
         let mut cursor: Option<String> = None;
@@ -51,10 +49,11 @@ where
         ))
     };
 
-    let timeout = DEFAULT_MCP_PAGINATION_TIMEOUT;
-    tokio::time::timeout(timeout, collect)
+    tokio::time::timeout(DEFAULT_MCP_PAGINATION_TIMEOUT, collect)
         .await
-        .map_err(|_| format!("{method} pagination timed out after {timeout:?}"))?
+        .map_err(|_| {
+            format!("{method} pagination timed out after {DEFAULT_MCP_PAGINATION_TIMEOUT:?}")
+        })?
 }
 
 #[cfg(test)]

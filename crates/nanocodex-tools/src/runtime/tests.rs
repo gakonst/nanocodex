@@ -717,10 +717,54 @@ for (const name of ["direct_only", "hidden"]) {
     );
 }
 
+#[tokio::test]
+async fn code_mode_cannot_guess_providers_hidden_by_global_exposure() {
+    for exposure in [ToolExposure::DirectOnly, ToolExposure::Hidden] {
+        let tools = Tools::builder()
+            .without_defaults()
+            .exposure(exposure)
+            .provider(DeclaredProvider {
+                name: "provider_only",
+                parallel_safe: false,
+                output: "provider",
+            })
+            .build()
+            .unwrap();
+        let runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
+
+        assert!(
+            runtime
+                .model_contract("test-session")
+                .1
+                .iter()
+                .all(|(_, name)| name != "provider_only")
+        );
+        let execution = runtime
+            .registry
+            .execute_nested(
+                "provider_only",
+                json!({}),
+                ToolContext::new(
+                    "test-model",
+                    "test-session",
+                    "test-call",
+                    &[],
+                    DEFAULT_TOOL_OUTPUT_TOKENS,
+                ),
+            )
+            .await;
+        assert!(!execution.success);
+        assert!(matches!(
+            execution.output,
+            ToolOutputBody::Text(output)
+                if output == "unsupported nested tool call: provider_only"
+        ));
+    }
+}
+
 #[test]
 fn update_plan_is_disabled_by_default_and_independent_of_workspace() {
     let defaults = Tools::builder().build().unwrap();
-    assert!(!defaults.plan_enabled());
     let defaults = ToolRuntime::new_with_tools(".", None, None, &defaults);
     assert!(
         defaults
@@ -732,10 +776,9 @@ fn update_plan_is_disabled_by_default_and_independent_of_workspace() {
 
     let plan_only = Tools::builder()
         .without_defaults()
-        .plan(true)
+        .tool(crate::standard::UpdatePlanTool::new())
         .build()
         .unwrap();
-    assert!(plan_only.plan_enabled());
     assert!(!plan_only.workspace_enabled());
     let plan_only = ToolRuntime::new_with_tools(".", None, None, &plan_only);
     assert!(

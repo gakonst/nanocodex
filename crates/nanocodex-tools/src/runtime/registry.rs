@@ -10,6 +10,7 @@ pub(crate) struct ToolRegistry {
     exposures: Vec<ToolExposure>,
     by_name: HashMap<Box<str>, usize>,
     pub(super) providers: Vec<Arc<dyn DynamicToolProvider>>,
+    pub(super) provider_exposure: ToolExposure,
 }
 
 impl ToolRegistry {
@@ -174,12 +175,10 @@ impl ToolRegistry {
         context: ToolContext<'_>,
     ) -> ToolOutput {
         let Some((handler, definition)) = self.get_for_code_mode(name) else {
-            let Some(provider) = self.providers.iter().find(|provider| {
-                provider
-                    .available_definitions()
-                    .iter()
-                    .any(|definition| definition.name() == name)
-            }) else {
+            let Some(provider) = self
+                .code_mode_providers()
+                .find(|provider| provider.contains(name))
+            else {
                 return ToolOutput::error(format!("unsupported nested tool call: {name}"));
             };
             if let Some(execution) = provider.execute(name, input, context).await {
@@ -246,6 +245,7 @@ impl ToolRegistry {
             definitions,
             by_name,
             providers: Vec::new(),
+            provider_exposure: ToolExposure::CodeModeOnly,
         }
     }
 
@@ -285,6 +285,12 @@ impl ToolRegistry {
             return None;
         }
         Some((self.ordered.get(index)?, self.definitions.get(index)?))
+    }
+
+    fn code_mode_providers(&self) -> impl Iterator<Item = &Arc<dyn DynamicToolProvider>> {
+        self.providers
+            .iter()
+            .filter(|_| self.provider_exposure.is_available_in_code_mode())
     }
 
     pub(crate) fn definitions(&self) -> &[ToolDefinition] {
@@ -333,8 +339,7 @@ impl ToolRegistry {
             .map(|definition| crate::selection::normalize_public_tool_name(definition.name()))
             .collect::<HashSet<_>>();
         let mut summaries = self
-            .providers
-            .iter()
+            .code_mode_providers()
             .flat_map(|provider| provider.code_mode_tool_summaries())
             .filter_map(|(name, description)| {
                 let normalized = crate::selection::normalize_public_tool_name(&name);
@@ -354,8 +359,7 @@ impl ToolRegistry {
             .filter(|(_, exposure)| exposure.is_available_in_code_mode())
             .map(|(definition, _)| definition.clone())
             .chain(
-                self.providers
-                    .iter()
+                self.code_mode_providers()
                     .flat_map(|provider| provider.available_definitions()),
             )
             .filter(|definition| {

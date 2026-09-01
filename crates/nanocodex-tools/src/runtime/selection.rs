@@ -73,6 +73,12 @@ pub trait DynamicToolProvider: Send + Sync {
         self.direct_tools()
     }
 
+    /// Reserves fixed runtime names before asynchronous discovery begins.
+    ///
+    /// Providers that discover tools after build time must omit names that
+    /// would collide with this fixed catalog.
+    fn reserve_names(&self, _names: &[String]) {}
+
     /// Returns deferred tools currently callable from new Code Mode cells.
     fn available_definitions(&self) -> Vec<ToolDefinition>;
 
@@ -173,7 +179,6 @@ impl ToolSource for crate::mcp::Mcp {
 pub struct Tools {
     exposure: ToolExposure,
     workspace: bool,
-    plan: bool,
     web_search: bool,
     image_generation: bool,
     #[cfg(all(not(target_family = "wasm"), feature = "native"))]
@@ -206,7 +211,6 @@ impl Default for Tools {
         Self {
             exposure: ToolExposure::default(),
             workspace: true,
-            plan: false,
             web_search: true,
             image_generation: true,
             #[cfg(all(not(target_family = "wasm"), feature = "native"))]
@@ -244,7 +248,6 @@ impl fmt::Debug for Tools {
             .debug_struct("Tools")
             .field("exposure", &self.exposure)
             .field("workspace", &self.workspace)
-            .field("plan", &self.plan)
             .field("web_search", &self.web_search)
             .field("image_generation", &self.image_generation)
             .field("working_directory", &self.working_directory)
@@ -287,7 +290,6 @@ impl fmt::Debug for Tools {
         debug
             .field("exposure", &self.exposure)
             .field("workspace", &self.workspace)
-            .field("plan", &self.plan)
             .field("web_search", &self.web_search)
             .field("image_generation", &self.image_generation)
             .field(
@@ -334,12 +336,6 @@ impl Tools {
     #[must_use]
     pub const fn workspace_enabled(&self) -> bool {
         self.workspace
-    }
-
-    /// Returns whether the host-owned task-plan tool is enabled.
-    #[must_use]
-    pub const fn plan_enabled(&self) -> bool {
-        self.plan
     }
 
     /// Returns whether the standard web-search tool is enabled.
@@ -494,7 +490,6 @@ impl ToolsBuilder {
     #[must_use]
     pub const fn without_defaults(mut self) -> Self {
         self.tools.workspace = false;
-        self.tools.plan = false;
         self.tools.web_search = false;
         self.tools.image_generation = false;
         self
@@ -518,16 +513,6 @@ impl ToolsBuilder {
     #[cfg(target_family = "wasm")]
     pub const fn workspace(mut self, enabled: bool) -> Self {
         self.tools.workspace = enabled;
-        self
-    }
-
-    /// Enables or disables the host-owned task-plan tool.
-    ///
-    /// The plan tool is disabled by default and is independent of workspace
-    /// command and file access.
-    #[must_use]
-    pub const fn plan(mut self, enabled: bool) -> Self {
-        self.tools.plan = enabled;
         self
     }
 
@@ -723,6 +708,27 @@ impl ToolsBuilder {
             }
         }
         #[cfg(all(not(target_family = "wasm"), feature = "native"))]
+        {
+            let mut reserved = names.iter().cloned().collect::<Vec<_>>();
+            reserved.extend(enabled_built_in_names(&self.tools).map(str::to_owned));
+            reserved.extend([
+                "exec".to_owned(),
+                "wait".to_owned(),
+                "tool_search".to_owned(),
+            ]);
+            reserved.extend(
+                reserved
+                    .clone()
+                    .into_iter()
+                    .map(|name| normalize_public_tool_name(&name)),
+            );
+            reserved.sort();
+            reserved.dedup();
+            for provider in &self.tools.providers {
+                provider.reserve_names(&reserved);
+            }
+        }
+        #[cfg(all(not(target_family = "wasm"), feature = "native"))]
         for provider in &self.tools.providers {
             for definition in provider.available_definitions() {
                 let name = definition.name();
@@ -872,7 +878,6 @@ fn built_in_name(tools: &Tools, name: &str) -> bool {
             name,
             "exec_command" | "write_stdin" | "apply_patch" | "view_image"
         ))
-        || (tools.plan && name == "update_plan")
         || (tools.web_search && name == "web__run")
         || (tools.image_generation && name == "image_gen__imagegen")
 }
@@ -882,7 +887,6 @@ fn enabled_built_in_names(tools: &Tools) -> impl Iterator<Item = &'static str> {
     [
         (tools.workspace, "exec_command"),
         (tools.workspace, "write_stdin"),
-        (tools.plan, "update_plan"),
         (tools.workspace, "apply_patch"),
         (tools.workspace, "view_image"),
         (tools.web_search, "web__run"),

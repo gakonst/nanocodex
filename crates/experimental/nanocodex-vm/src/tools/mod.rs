@@ -344,7 +344,10 @@ pub async fn serve_overlay_guest(
 mod tests {
     use std::sync::Mutex;
 
-    use nanocodex_tools::{Tool, ToolContext, ToolInput, ToolOutput, standard::StandardTool};
+    use nanocodex_tools::{
+        Tool, ToolContext, ToolInput, ToolOutput,
+        standard::{StandardTool, UpdatePlanTool},
+    };
 
     use super::{VmToolClient, VmTools};
 
@@ -377,12 +380,13 @@ mod tests {
             .unwrap();
 
         assert!(!tools.workspace_enabled());
-        assert!(!tools.plan_enabled());
         assert!(tools.web_search_enabled());
         assert!(tools.image_generation_enabled());
 
-        let tools = vm.tools_builder().plan(true).build().unwrap();
-        assert!(tools.plan_enabled());
+        vm.tools_builder()
+            .tool(UpdatePlanTool::new())
+            .build()
+            .unwrap();
     }
 
     #[test]

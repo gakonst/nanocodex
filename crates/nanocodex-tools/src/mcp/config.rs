@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -46,6 +47,8 @@ pub struct McpServer {
     pub(crate) description: Option<String>,
     pub(crate) startup_timeout: Duration,
     pub(crate) tool_timeout: Duration,
+    pub(crate) output_token_limit: Option<NonZeroUsize>,
+    pub(crate) tool_output_token_limits: BTreeMap<String, NonZeroUsize>,
     pub(crate) supports_parallel_tool_calls: bool,
     pub(crate) parallel_tools: BTreeSet<String>,
     pub(crate) tool_exposure: McpToolExposure,
@@ -114,6 +117,8 @@ impl McpServer {
             description: None,
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
+            output_token_limit: None,
+            tool_output_token_limits: BTreeMap::new(),
             supports_parallel_tool_calls: false,
             parallel_tools: BTreeSet::new(),
             tool_exposure: McpToolExposure::default(),
@@ -136,6 +141,8 @@ impl McpServer {
             description: None,
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
+            output_token_limit: None,
+            tool_output_token_limits: BTreeMap::new(),
             supports_parallel_tool_calls: false,
             parallel_tools: BTreeSet::new(),
             tool_exposure: McpToolExposure::default(),
@@ -164,6 +171,25 @@ impl McpServer {
     #[must_use]
     pub const fn tool_timeout(mut self, timeout: Duration) -> Self {
         self.tool_timeout = timeout;
+        self
+    }
+
+    /// Restricts every tool on this server to the given model-visible output budget.
+    ///
+    /// The budget is measured in approximate tokens before the standard serialization
+    /// allowance. A per-tool limit may restrict it further.
+    #[must_use]
+    pub const fn output_token_limit(mut self, limit: NonZeroUsize) -> Self {
+        self.output_token_limit = Some(limit);
+        self
+    }
+
+    /// Restricts one remote tool to the given model-visible output budget.
+    ///
+    /// When both server-wide and per-tool limits are present, the stricter limit wins.
+    #[must_use]
+    pub fn tool_output_token_limit(mut self, tool: impl Into<String>, limit: NonZeroUsize) -> Self {
+        self.tool_output_token_limits.insert(tool.into(), limit);
         self
     }
 
@@ -332,6 +358,7 @@ impl SecretSource {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::num::NonZeroUsize;
 
     use super::McpServer;
 
@@ -348,6 +375,23 @@ mod tests {
                 .parallel_tools(["lookup", "search"])
                 .parallel_tools,
             BTreeSet::from(["lookup".to_owned(), "search".to_owned()])
+        );
+    }
+
+    #[test]
+    fn server_and_tool_output_limits_are_retained_as_nonzero_bounds() {
+        let server = McpServer::stdio("fixture")
+            .output_token_limit(NonZeroUsize::new(100).unwrap())
+            .tool_output_token_limit("lookup", NonZeroUsize::new(40).unwrap());
+
+        assert_eq!(server.output_token_limit.map(NonZeroUsize::get), Some(100));
+        assert_eq!(
+            server
+                .tool_output_token_limits
+                .get("lookup")
+                .copied()
+                .map(NonZeroUsize::get),
+            Some(40)
         );
     }
 }

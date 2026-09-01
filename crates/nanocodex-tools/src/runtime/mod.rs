@@ -37,7 +37,7 @@ use crate::code_mode::{self, CodeModeExecution, CodeModeObserver};
 pub use crate::embedded::OwnedToolContext;
 pub use crate::runtime_config::{ImageGenerationConfig, WebSearchConfig};
 use crate::{
-    apply_patch, plan,
+    apply_patch,
     shell::{self, ShellSessions},
     view_image,
 };

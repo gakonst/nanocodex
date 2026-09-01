@@ -28,7 +28,7 @@ lines.on("line", (line) => {
       id: request.id,
       result: {
         protocolVersion: request.params.protocolVersion,
-        capabilities: { tools: {}, resources: {} },
+        capabilities: { tools: {} },
         serverInfo: { name: "nanocodex-test-mcp", version: "0.1.0" },
       },
     });
@@ -114,43 +114,5 @@ lines.on("line", (line) => {
         },
       });
     }, delayMs);
-  } else if (request.method === "resources/list") {
-    const secondPage = request.params?.cursor === "fixture-next";
-    send({
-      jsonrpc: "2.0",
-      id: request.id,
-      result: {
-        resources: [{
-          uri: secondPage ? "fixture://second" : "fixture://first",
-          name: secondPage ? "fixture-second" : "fixture-first",
-          mimeType: "text/plain",
-        }],
-        ...(secondPage ? {} : { nextCursor: "fixture-next" }),
-      },
-    });
-  } else if (request.method === "resources/templates/list") {
-    send({
-      jsonrpc: "2.0",
-      id: request.id,
-      result: {
-        resourceTemplates: [{
-          uriTemplate: "fixture://item/{id}",
-          name: "fixture-item",
-          mimeType: "text/plain",
-        }],
-      },
-    });
-  } else if (request.method === "resources/read") {
-    send({
-      jsonrpc: "2.0",
-      id: request.id,
-      result: {
-        contents: [{
-          uri: request.params.uri,
-          mimeType: "text/plain",
-          text: "fixture resource body",
-        }],
-      },
-    });
   }
 });

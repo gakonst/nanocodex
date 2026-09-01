@@ -10,14 +10,15 @@ mod stdio;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use crate::{
-    DynamicToolProvider, Tool, ToolContext, ToolInput, ToolOutput, ToolOutputContent, ToolResult,
+    DynamicToolProvider, Tool, ToolContext, ToolInput, ToolOutput, ToolOutputBody,
+    ToolOutputContent, ToolResult,
 };
 use async_trait::async_trait;
 use catalog::{ConnectedCatalog, ProviderState, ToolEntry};
@@ -72,10 +73,12 @@ pub struct Mcp {
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
     oauth_metadata: Arc<oauth::OAuthMetadataCache>,
     started: AtomicBool,
+    startup_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 pub(crate) struct PreparedMcpTool {
     entry: Arc<ToolEntry>,
+    state: Arc<ProviderState>,
     timeout: Duration,
 }
 
@@ -137,6 +140,9 @@ pub enum McpControlError {
     /// The spawned login task stopped before returning its result.
     #[error("MCP OAuth login task stopped: {0}")]
     LoginTask(String),
+    /// The provider owner was dropped and revoked its catalog.
+    #[error("MCP provider is stopped")]
+    ProviderStopped,
 }
 
 /// Invalid MCP provider configuration.
@@ -205,6 +211,7 @@ impl Mcp {
                 .into_iter()
                 .map(|entry| PreparedMcpTool {
                     timeout: entry.timeout.min(max_timeout),
+                    state: Arc::clone(&self.state),
                     entry,
                 })
                 .collect()
@@ -233,8 +240,21 @@ impl PreparedMcpTool {
         self.timeout
     }
 
-    pub(crate) async fn execute(&self, input: Value) -> ToolOutput {
-        execute_mcp_entry(&self.entry, input, self.timeout).await
+    pub(crate) async fn execute(&self, input: Value, output_token_budget: usize) -> ToolOutput {
+        let output_token_budget = self
+            .entry
+            .output_token_limit
+            .map_or(output_token_budget, |configured| {
+                configured.min(output_token_budget)
+            });
+        execute_mcp_entry(
+            &self.state,
+            &self.entry,
+            input,
+            self.timeout,
+            output_token_budget,
+        )
+        .await
     }
 }
 
@@ -307,6 +327,7 @@ impl McpBuilder {
             oauth_store: self.oauth_store,
             oauth_metadata: Arc::new(oauth::OAuthMetadataCache::default()),
             started: AtomicBool::new(false),
+            startup_tasks: Mutex::new(Vec::new()),
         })
     }
 }
@@ -360,7 +381,10 @@ impl McpHandle {
             .iter()
             .find(|server| server.name == server_name)
             .ok_or_else(|| McpControlError::UnknownServer(server_name.to_owned()))?;
-        let generation = self.state.begin_server(server_name);
+        let generation = self
+            .state
+            .begin_server(server_name)
+            .ok_or(McpControlError::ProviderStopped)?;
         let result = client::connect(
             server_name,
             &server.config,
@@ -379,18 +403,24 @@ impl McpHandle {
                     Arc::clone(&connected.client),
                     &server.config,
                 );
-                self.state.complete_server(
-                    server_name,
-                    generation,
-                    Ok(ConnectedCatalog {
-                        client: connected.client,
-                        entries,
-                    }),
-                );
+                self.state
+                    .complete_server(
+                        server_name,
+                        generation,
+                        Ok(ConnectedCatalog {
+                            client: connected.client,
+                            entries,
+                        }),
+                    )
+                    .map_err(|error| McpControlError::Reload {
+                        server: server_name.to_owned(),
+                        error,
+                    })?;
                 Ok(count)
             }
             Err(error) => {
-                self.state
+                let _ = self
+                    .state
                     .complete_server(server_name, generation, Err(error.clone()));
                 Err(McpControlError::Reload {
                     server: server_name.to_owned(),
@@ -540,7 +570,7 @@ impl DynamicToolProvider for Mcp {
                 status = tracing::field::Empty,
                 tool.count = tracing::field::Empty,
             );
-            drop(tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 let result = client::connect(&name, &config, oauth_store, oauth_metadata, &span)
                     .await
                     .map(|connected| {
@@ -571,13 +601,21 @@ impl DynamicToolProvider for Mcp {
                 if let Ok(catalog) = &result {
                     span.record("tool.count", catalog.entries.len());
                 }
-                state.complete_server(&name, 0, result);
-            }));
+                let _ = state.complete_server(&name, 0, result);
+            });
+            self.startup_tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(task);
         }
     }
 
     fn direct_tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::clone(&self.search) as Arc<dyn Tool>]
+    }
+
+    fn reserve_names(&self, names: &[String]) {
+        self.state.reserve_names(names);
     }
 
     fn available_definitions(&self) -> Vec<ToolDefinition> {
@@ -600,17 +638,52 @@ impl DynamicToolProvider for Mcp {
         &self,
         name: &str,
         input: Value,
-        _context: ToolContext<'_>,
+        context: ToolContext<'_>,
     ) -> Option<ToolOutput> {
         let entry = self.state.ready_entry(name).await?;
         if !entry.tool_exposure.is_callable() {
             return None;
         }
-        Some(execute_mcp_entry(&entry, input, entry.timeout).await)
+        Some(
+            execute_mcp_entry(
+                &self.state,
+                &entry,
+                input,
+                entry.timeout,
+                context.output_token_budget(),
+            )
+            .await,
+        )
     }
 }
 
-async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -> ToolOutput {
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        self.state.shutdown();
+        for task in self
+            .startup_tasks
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+        {
+            task.abort();
+        }
+    }
+}
+
+async fn execute_mcp_entry(
+    state: &ProviderState,
+    entry: &Arc<ToolEntry>,
+    input: Value,
+    timeout: Duration,
+    fallback_output_token_budget: usize,
+) -> ToolOutput {
+    if !state.is_current_entry(entry) {
+        return ToolOutput::error(format!(
+            "MCP tool {}/{} is no longer in the current catalog",
+            entry.server_name, entry.remote_name
+        ));
+    }
     let Value::Object(arguments) = input else {
         return ToolOutput::error(format!(
             "MCP tool {} requires an object argument",
@@ -645,6 +718,12 @@ async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -
             entry.server_name, entry.remote_name
         ));
     }
+    if !state.is_current_entry(entry) {
+        return ToolOutput::error(format!(
+            "MCP tool {}/{} was revoked before dispatch",
+            entry.server_name, entry.remote_name
+        ));
+    }
     let result = match tokio::time::timeout(
         timeout,
         entry.client.call_tool(params).instrument(span.clone()),
@@ -674,7 +753,17 @@ async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -
     let success = !result.is_error.unwrap_or(false);
     span.record("status", if success { "completed" } else { "failed" });
     span.record("otel.status_code", if success { "OK" } else { "ERROR" });
-    match tool_output_from_mcp_result(result, &entry.server_name, &entry.remote_name) {
+    let output_token_budget = entry
+        .output_token_limit
+        .map_or(fallback_output_token_budget, |configured| {
+            configured.min(fallback_output_token_budget)
+        });
+    match tool_output_from_mcp_result(
+        result,
+        &entry.server_name,
+        &entry.remote_name,
+        output_token_budget,
+    ) {
         Ok(output) => output,
         Err(error) => {
             span.record("status", "failed");
@@ -688,10 +777,14 @@ fn tool_output_from_mcp_result(
     result: CallToolResult,
     server_name: &str,
     remote_name: &str,
+    output_token_budget: usize,
 ) -> Result<ToolOutput, serde_json::Error> {
     let success = !result.is_error.unwrap_or(false);
-    let value = serde_json::to_value(&result)?;
-    let result_metadata = result.meta.as_ref().map(|metadata| &metadata.0);
+    let mut value = serde_json::to_value(&result)?;
+    let result_metadata = match &mut value {
+        Value::Object(fields) => fields.remove("_meta"),
+        _ => None,
+    };
     let direct_content = direct_mcp_content(&result.content)?;
     let contains_encrypted_content = direct_content.as_ref().is_some_and(|content| {
         content
@@ -701,27 +794,40 @@ fn tool_output_from_mcp_result(
     let mut output = if contains_encrypted_content {
         let mut output = ToolOutput::content(direct_content.unwrap_or_default());
         output.success = success;
-        output.with_structured_result(value)
+        output
     } else if let Some(structured_content) = result
         .structured_content
         .as_ref()
         .filter(|content| !content.is_null())
     {
-        ToolOutput::from_json(structured_content.clone(), success).with_structured_result(value)
+        ToolOutput::from_json(structured_content.clone(), success)
     } else if let Some(content) = direct_content {
         let mut output = ToolOutput::content(content);
         output.success = success;
-        output.with_structured_result(value)
+        output
     } else {
         ToolOutput::from_json(serde_json::to_value(&result.content)?, success)
-            .with_structured_result(value)
     };
-    output = output.with_metadata(json!({
+    truncate_model_projection(&mut output, output_token_budget);
+    output = output.with_structured_result(value).with_metadata(json!({
         "mcp_server": server_name,
         "mcp_tool": remote_name,
         "mcp_result_meta": result_metadata,
     }));
     Ok(output)
+}
+
+fn truncate_model_projection(output: &mut ToolOutput, token_budget: usize) {
+    let token_budget = token_budget.saturating_mul(6) / 5;
+    match &mut output.output {
+        ToolOutputBody::Text(text) => {
+            *text = crate::code_mode::output::truncate_middle_tokens_bounded(text, token_budget);
+        }
+        ToolOutputBody::Content(content) => {
+            *content =
+                crate::code_mode::output::truncate_mixed(std::mem::take(content), token_budget);
+        }
+    }
 }
 
 fn direct_mcp_content(
@@ -976,6 +1082,23 @@ mod tests {
     use rmcp::model::ContentBlock;
     use serde_json::value::to_raw_value;
 
+    struct FixedMcpCollision;
+
+    #[async_trait]
+    impl Tool for FixedMcpCollision {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition::function(
+                "mcp__fixture--echo",
+                "Fixed collision fixture.",
+                json!({"type": "object", "properties": {}}),
+            )
+        }
+
+        async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+            Ok(ToolOutput::text("fixed"))
+        }
+    }
+
     fn test_context(session_id: &'static str, call_id: &'static str) -> ToolContext<'static> {
         ToolContext::new(MODEL, session_id, call_id, &[], DEFAULT_TOOL_OUTPUT_TOKENS)
     }
@@ -996,9 +1119,12 @@ mod tests {
             ContentBlock::image("aW1hZ2U=", "image/png"),
         ]);
         result.structured_content = Some(json!({"answer": 42}));
-        let expected = serde_json::to_value(&result).unwrap();
+        let mut expected = serde_json::to_value(&result).unwrap();
+        expected.as_object_mut().unwrap().remove("_meta");
 
-        let output = tool_output_from_mcp_result(result, "fixture", "media").unwrap();
+        let output =
+            tool_output_from_mcp_result(result, "fixture", "media", DEFAULT_TOOL_OUTPUT_TOKENS)
+                .unwrap();
         assert!(output.success);
         assert_eq!(output.structured_result(), expected);
         assert!(matches!(output.output, ToolOutputBody::Text(text) if text == r#"{"answer":42}"#));
@@ -1025,9 +1151,12 @@ mod tests {
             ]
         }))
         .unwrap();
-        let expected = serde_json::to_value(&result).unwrap();
+        let mut expected = serde_json::to_value(&result).unwrap();
+        expected.as_object_mut().unwrap().remove("_meta");
 
-        let output = tool_output_from_mcp_result(result, "fixture", "media").unwrap();
+        let output =
+            tool_output_from_mcp_result(result, "fixture", "media", DEFAULT_TOOL_OUTPUT_TOKENS)
+                .unwrap();
         assert_eq!(output.structured_result(), expected);
         assert!(matches!(
             output.output,
@@ -1055,7 +1184,9 @@ mod tests {
         .unwrap();
         let expected = serde_json::to_value(&result).unwrap();
 
-        let output = tool_output_from_mcp_result(result, "fixture", "encrypted").unwrap();
+        let output =
+            tool_output_from_mcp_result(result, "fixture", "encrypted", DEFAULT_TOOL_OUTPUT_TOKENS)
+                .unwrap();
         assert_eq!(output.structured_result(), expected);
         let ToolOutputBody::Content(content) = output.output else {
             panic!("encrypted MCP text must use typed function output content");
@@ -1086,9 +1217,12 @@ mod tests {
             "_meta": {"trace": "retained"}
         }))
         .unwrap();
-        let expected = serde_json::to_value(&result).unwrap();
+        let mut expected = serde_json::to_value(&result).unwrap();
+        expected.as_object_mut().unwrap().remove("_meta");
 
-        let output = tool_output_from_mcp_result(result, "fixture", "resource").unwrap();
+        let output =
+            tool_output_from_mcp_result(result, "fixture", "resource", DEFAULT_TOOL_OUTPUT_TOKENS)
+                .unwrap();
         assert!(!output.success);
         assert_eq!(output.structured_result(), expected);
         assert!(matches!(
@@ -1105,6 +1239,31 @@ mod tests {
                 "mcp_result_meta": {"trace": "retained"}
             })
         );
+    }
+
+    #[test]
+    fn configured_budget_bounds_model_projection_but_not_sanitized_code_mode_result() {
+        let mut result = CallToolResult::success(vec![ContentBlock::text("x".repeat(2_000))]);
+        result.structured_content = Some(json!({"body": "y".repeat(2_000)}));
+        result.meta = Some(rmcp::model::MetaObject(serde_json::Map::from_iter([(
+            "private".to_owned(),
+            json!(true),
+        )])));
+
+        let output = tool_output_from_mcp_result(result, "fixture", "bounded", 10).unwrap();
+        let ToolOutputBody::Text(model_projection) = &output.output else {
+            panic!("structured MCP content must be projected as text");
+        };
+        assert!(model_projection.len() <= 48);
+        assert!(model_projection.contains("truncated"));
+        assert_eq!(
+            output.structured_result()["structuredContent"]["body"],
+            "y".repeat(2_000)
+        );
+        assert!(output.structured_result().get("_meta").is_none());
+        let diagnostics: Value =
+            serde_json::from_str(output.metadata.as_ref().unwrap().get()).unwrap();
+        assert_eq!(diagnostics["mcp_result_meta"]["private"], true);
     }
 
     #[derive(Default)]
@@ -1378,6 +1537,50 @@ mod tests {
             .unwrap();
         assert!(execution.success);
         assert!(output_contains_text(&execution.output, "fixture:hello"));
+    }
+
+    #[tokio::test]
+    async fn asynchronous_mcp_discovery_cannot_shadow_a_fixed_runtime_tool() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let mcp = Mcp::builder()
+            .server(
+                "fixture",
+                McpServer::stdio("node").arg(fixture.to_string_lossy()),
+            )
+            .build()
+            .unwrap();
+        let tools = Tools::builder()
+            .without_defaults()
+            .tool(FixedMcpCollision)
+            .provider(mcp)
+            .build()
+            .unwrap();
+        let runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
+
+        let search = runtime
+            .execute_tool(
+                "tool_search",
+                ToolInput::Function(to_raw_value(&json!({"query": "echo"})).unwrap()),
+                test_context("collision-session", "search-call"),
+            )
+            .await;
+        assert!(search.success);
+        assert!(matches!(
+            search.output,
+            ToolOutputBody::Text(output)
+                if output.contains("MCP tool name collides with fixed runtime tool")
+                    && !output.contains("\"name\":\"mcp__fixture__echo\"")
+        ));
+
+        let fixed = runtime
+            .execute_tool(
+                "mcp__fixture--echo",
+                ToolInput::Function(to_raw_value(&json!({})).unwrap()),
+                test_context("collision-session", "fixed-call"),
+            )
+            .await;
+        assert!(matches!(fixed.output, ToolOutputBody::Text(output) if output == "fixed"));
     }
 
     #[tokio::test]
@@ -1697,8 +1900,23 @@ mod tests {
             .await
             .unwrap();
         assert!(search.success);
+        let old_entry = mcp.state.entry("mcp__fixture__echo").unwrap();
 
         assert_eq!(handle.reload("fixture").await.unwrap(), 1);
+        assert!(!mcp.state.is_current_entry(&old_entry));
+        let stale = execute_mcp_entry(
+            &mcp.state,
+            &old_entry,
+            json!({"message": "stale"}),
+            Duration::from_secs(1),
+            DEFAULT_TOOL_OUTPUT_TOKENS,
+        )
+        .await;
+        assert!(!stale.success);
+        assert!(output_contains_text(
+            &stale.output,
+            "no longer in the current catalog"
+        ));
         assert!(
             mcp.available_definitions()
                 .iter()
@@ -1717,6 +1935,91 @@ mod tests {
             &execution.output,
             "fixture:after-reload"
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_reload_preserves_the_previous_live_catalog_and_client() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("server.mjs");
+        std::fs::copy(source, &fixture).unwrap();
+        let mcp = Mcp::builder()
+            .server(
+                "fixture",
+                McpServer::stdio("node")
+                    .arg(fixture.to_string_lossy())
+                    .startup_timeout(Duration::from_secs(2)),
+            )
+            .build()
+            .unwrap();
+        let handle = mcp.handle();
+        mcp.start();
+        mcp.state.search("echo", None).await.unwrap();
+        let original = mcp.state.entry("mcp__fixture__echo").unwrap();
+
+        std::fs::remove_file(fixture).unwrap();
+        assert!(handle.reload("fixture").await.is_err());
+        assert!(mcp.state.is_current_entry(&original));
+        let output = mcp
+            .execute(
+                "mcp__fixture__echo",
+                json!({"message": "still-live"}),
+                test_context("failed-reload", "tool-call"),
+            )
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert!(output_contains_text(&output.output, "fixture:still-live"));
+    }
+
+    #[tokio::test]
+    async fn colliding_reload_is_atomic_and_preserves_the_previous_catalog() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("server.mjs");
+        std::fs::copy(&source, &fixture).unwrap();
+        let mcp = Mcp::builder()
+            .server(
+                "fixture",
+                McpServer::stdio("node")
+                    .arg(fixture.to_string_lossy())
+                    .startup_timeout(Duration::from_secs(2)),
+            )
+            .build()
+            .unwrap();
+        mcp.state
+            .reserve_names(&["mcp__fixture__echo_1".to_owned()]);
+        let handle = mcp.handle();
+        mcp.start();
+        mcp.state.search("echo", None).await.unwrap();
+        let original = mcp.state.entry("mcp__fixture__echo").unwrap();
+
+        let expanded = std::fs::read_to_string(&source).unwrap().replace(
+            "NANOCODEX_MCP_FIXTURE_TOOL_COUNT ?? \"1\"",
+            "NANOCODEX_MCP_FIXTURE_TOOL_COUNT ?? \"2\"",
+        );
+        std::fs::write(&fixture, expanded).unwrap();
+        let error = handle.reload("fixture").await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("collides with fixed runtime tool")
+        );
+        assert!(mcp.state.is_current_entry(&original));
+        assert!(mcp.state.entry("mcp__fixture__echo_1").is_none());
+
+        let output = mcp
+            .execute(
+                "mcp__fixture__echo",
+                json!({"message": "still-atomic"}),
+                test_context("atomic-reload", "tool-call"),
+            )
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert!(output_contains_text(&output.output, "fixture:still-atomic"));
     }
 
     #[tokio::test]

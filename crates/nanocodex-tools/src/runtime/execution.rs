@@ -38,7 +38,6 @@ impl ToolRuntime {
             web_search,
             image_generation,
             true,
-            false,
             Arc::new(Vec::new()),
             None,
         )
@@ -62,7 +61,6 @@ impl ToolRuntime {
             web_search,
             image_generation,
             tools.workspace_enabled(),
-            tools.plan_enabled(),
             tools.process_environment(),
             tools.remote_http_client(),
         )
@@ -74,7 +72,6 @@ impl ToolRuntime {
         web_search: Option<WebSearchConfig>,
         image_generation: Option<ImageGenerationConfig>,
         workspace_enabled: bool,
-        plan_enabled: bool,
         process_environment: Arc<Vec<(OsString, OsString)>>,
         remote_http_client: Option<reqwest::Client>,
     ) -> Self {
@@ -96,9 +93,6 @@ impl ToolRuntime {
                 Arc::new(view_image::ViewImageHandler::new(workspace)),
                 Arc::new(shell::WriteStdinHandler::new(Arc::clone(&sessions))),
             ]);
-        }
-        if plan_enabled {
-            handlers.push(Arc::new(plan::UpdatePlanTool::new()));
         }
         let remote_http_client = remote_http_client.unwrap_or_default();
         if let Some(web_search) = web_search {
@@ -152,6 +146,7 @@ impl ToolRuntime {
                 .cloned()
                 .map(|tool| (tool, tools.exposure())),
         );
+        registry.provider_exposure = tools.exposure();
         registry.providers.extend(tools.providers.iter().cloned());
         if let Some(working_directory) = &tools.working_directory {
             self.working_directory = Arc::clone(working_directory);

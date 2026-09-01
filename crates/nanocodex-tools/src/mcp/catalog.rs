@@ -40,6 +40,7 @@ pub(crate) struct ToolEntry {
     pub search_text: String,
     pub client: Client,
     pub timeout: Duration,
+    pub output_token_limit: Option<usize>,
 }
 
 struct Catalog {
@@ -50,6 +51,8 @@ struct Catalog {
     search_index: Option<Arc<SearchIndex>>,
     pending_servers: BTreeSet<String>,
     generations: BTreeMap<String, u64>,
+    reserved_names: BTreeSet<String>,
+    closed: bool,
 }
 
 pub(crate) struct ConnectedCatalog {
@@ -121,10 +124,10 @@ struct LoadableFunction {
 
 impl ProviderState {
     pub(crate) fn new(
-        server_names: impl IntoIterator<Item = String>,
+        servers: impl IntoIterator<Item = String>,
         discovery_timeout: Duration,
     ) -> Self {
-        let pending_servers = server_names.into_iter().collect::<BTreeSet<_>>();
+        let pending_servers = servers.into_iter().collect::<BTreeSet<_>>();
         let generations = pending_servers
             .iter()
             .cloned()
@@ -140,6 +143,8 @@ impl ProviderState {
                 search_index: None,
                 pending_servers,
                 generations,
+                reserved_names: BTreeSet::new(),
+                closed: false,
             }),
             remaining,
             discovery_timeout,
@@ -151,46 +156,64 @@ impl ProviderState {
         server_name: &str,
         generation: u64,
         result: Result<ConnectedCatalog, String>,
-    ) {
+    ) -> Result<(), String> {
         let mut catalog = self.catalog();
-        if catalog.generations.get(server_name).copied() != Some(generation) {
-            return;
+        if catalog.closed || catalog.generations.get(server_name).copied() != Some(generation) {
+            return Err(format!(
+                "MCP server `{server_name}` completion was stopped or superseded"
+            ));
         }
-        match result {
+        let failure = match result {
             Ok(ConnectedCatalog { client, entries }) => {
-                let removed = catalog
-                    .entries
-                    .iter()
-                    .filter_map(|(name, entry)| {
-                        (entry.server_name == server_name).then_some(name.clone())
-                    })
-                    .collect::<Vec<_>>();
-                for name in removed {
-                    catalog.entries.remove(&name);
-                }
-                for entry in entries {
-                    if catalog.entries.contains_key(&entry.canonical_name) {
-                        catalog.failures.insert(
-                            server_name.to_owned(),
-                            format!(
-                                "MCP tool name collision after normalization: `{}`",
-                                entry.canonical_name
-                            ),
-                        );
-                        continue;
+                let mut candidate_names = BTreeSet::new();
+                let collision = entries.iter().find_map(|entry| {
+                    if catalog.reserved_names.contains(&entry.canonical_name) {
+                        return Some(format!(
+                            "MCP tool name collides with fixed runtime tool: `{}`",
+                            entry.canonical_name
+                        ));
                     }
+                    if !candidate_names.insert(entry.canonical_name.clone())
+                        || catalog
+                            .entries
+                            .get(&entry.canonical_name)
+                            .is_some_and(|current| current.server_name != server_name)
+                    {
+                        return Some(format!(
+                            "MCP tool name collision after normalization: `{}`",
+                            entry.canonical_name
+                        ));
+                    }
+                    None
+                });
+                if let Some(error) = collision {
+                    catalog
+                        .failures
+                        .insert(server_name.to_owned(), error.clone());
+                    Some(error)
+                } else {
                     catalog
                         .entries
-                        .insert(entry.canonical_name.clone(), Arc::new(entry));
+                        .retain(|_, entry| entry.server_name != server_name);
+                    for entry in entries {
+                        catalog
+                            .entries
+                            .insert(entry.canonical_name.clone(), Arc::new(entry));
+                    }
+                    catalog.clients.insert(server_name.to_owned(), client);
+                    catalog.failures.remove(server_name);
+                    let available = catalog.entries.keys().cloned().collect::<BTreeSet<_>>();
+                    catalog.active.retain(|name| available.contains(name));
+                    None
                 }
-                catalog.clients.insert(server_name.to_owned(), client);
-                let available = catalog.entries.keys().cloned().collect::<BTreeSet<_>>();
-                catalog.active.retain(|name| available.contains(name));
             }
             Err(error) => {
-                catalog.failures.insert(server_name.to_owned(), error);
+                catalog
+                    .failures
+                    .insert(server_name.to_owned(), error.clone());
+                Some(error)
             }
-        }
+        };
         catalog.pending_servers.remove(server_name);
         if catalog.pending_servers.is_empty() {
             tracing::info!(
@@ -211,10 +234,14 @@ impl ProviderState {
         let pending_servers = catalog.pending_servers.len();
         drop(catalog);
         self.remaining.send_replace(pending_servers);
+        failure.map_or(Ok(()), Err)
     }
 
-    pub(crate) fn begin_server(&self, server_name: &str) -> u64 {
+    pub(crate) fn begin_server(&self, server_name: &str) -> Option<u64> {
         let mut catalog = self.catalog();
+        if catalog.closed {
+            return None;
+        }
         let generation = catalog
             .generations
             .entry(server_name.to_owned())
@@ -226,7 +253,7 @@ impl ProviderState {
         let pending_servers = catalog.pending_servers.len();
         drop(catalog);
         self.remaining.send_replace(pending_servers);
-        generation
+        Some(generation)
     }
 
     pub(crate) async fn search(
@@ -297,8 +324,34 @@ impl ProviderState {
             .collect()
     }
 
+    pub(crate) fn reserve_names(&self, names: &[String]) {
+        self.catalog().reserved_names.extend(names.iter().cloned());
+    }
+
     pub(crate) fn entry(&self, name: &str) -> Option<Arc<ToolEntry>> {
         self.catalog().entries.get(name).cloned()
+    }
+
+    pub(crate) fn is_current_entry(&self, expected: &Arc<ToolEntry>) -> bool {
+        self.catalog()
+            .entries
+            .get(&expected.canonical_name)
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+    }
+
+    pub(crate) fn shutdown(&self) {
+        let mut catalog = self.catalog();
+        catalog.closed = true;
+        catalog.entries.clear();
+        catalog.active.clear();
+        catalog.clients.clear();
+        catalog.pending_servers.clear();
+        catalog.search_index = None;
+        for generation in catalog.generations.values_mut() {
+            *generation = generation.saturating_add(1);
+        }
+        drop(catalog);
+        self.remaining.send_replace(0);
     }
 
     pub(crate) async fn ready_entry(&self, name: &str) -> Option<Arc<ToolEntry>> {
@@ -492,6 +545,17 @@ impl ToolEntry {
             config.supports_parallel_tool_calls,
             config.parallel_tools.contains(tool.name.as_ref()),
         );
+        let output_token_limit = config
+            .output_token_limit
+            .into_iter()
+            .chain(
+                config
+                    .tool_output_token_limits
+                    .get(remote_name.as_str())
+                    .copied(),
+            )
+            .map(std::num::NonZeroUsize::get)
+            .min();
         let mut input_schema = tool.input_schema.as_ref().clone();
         if input_schema.get("properties").is_none_or(Value::is_null) {
             input_schema.insert("properties".to_owned(), Value::Object(Map::new()));
@@ -541,6 +605,7 @@ impl ToolEntry {
             search_text,
             client,
             timeout: config.tool_timeout,
+            output_token_limit,
         }
     }
 
@@ -588,16 +653,17 @@ fn tool_supports_parallel_calls(tool: &RmcpTool, server_opt_in: bool, tool_polic
 }
 
 fn normalize_name(name: &str) -> String {
-    let normalized = name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '_' {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
+    let mut normalized = String::with_capacity(name.len());
+    let mut previous_was_separator = false;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character);
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            normalized.push('_');
+            previous_was_separator = true;
+        }
+    }
     if normalized.is_empty() {
         "_".to_owned()
     } else {
@@ -678,6 +744,7 @@ fn unique_bounded_name(
         let suffix = name_hash_suffix(&identity);
         let prefix_bytes = maximum_bytes.saturating_sub(suffix.len());
         let prefix = &base[..base.len().min(prefix_bytes)];
+        let prefix = prefix.trim_end_matches('_');
         let candidate = format!("{prefix}{suffix}");
         if used.insert(candidate.clone()) {
             return candidate;
@@ -750,6 +817,22 @@ mod tests {
                 .values()
                 .all(|name| namespace.len() + name.len() <= 128)
         );
+    }
+
+    #[test]
+    fn flattened_names_cannot_alias_across_server_tool_boundaries() {
+        let namespaces = normalized_server_names(["a__b", "a"]);
+        let nested_server = &namespaces["a__b"];
+        let short_server = &namespaces["a"];
+        let nested_tool = normalized_tool_names(nested_server, ["c"]);
+        let compound_tool = normalized_tool_names(short_server, ["b__c"]);
+
+        assert_ne!(
+            format!("{nested_server}{}", nested_tool["c"]),
+            format!("{short_server}{}", compound_tool["b__c"])
+        );
+        assert!(!nested_tool["c"].contains("__"));
+        assert!(!compound_tool["b__c"].contains("__"));
     }
 
     #[test]

@@ -644,7 +644,17 @@ where
                     ToolOutput::error(format!("failed to encode tool_search arguments: {error}"))
                 }
             };
-            let tools = tool_search_tools(&execution)?;
+            let structured_result = execution.structured_result();
+            let tools = if execution.success {
+                let Value::Array(tools) = &structured_result else {
+                    return Err(NanocodexError::MalformedResponse {
+                        detail: "successful tool_search did not return an array structured result",
+                    });
+                };
+                tools.clone()
+            } else {
+                Vec::new()
+            };
             if let Some(content) = serialize_trace_content(&execution.output) {
                 record_span_content(tool_span, "tool.output", &content);
             }
@@ -652,7 +662,6 @@ where
             tool_span.record("status", status(execution.success));
             tool_span.record("otel.status_code", otel_status(execution.success));
             tool_span.record("duration_ns", duration_ns);
-            let structured_result = execution.structured_result();
             return Ok(CompletedToolCall {
                 call_id: call.call_id.clone(),
                 tool: qualified_name,
@@ -727,46 +736,5 @@ where
             metadata: None,
             response_items: outputs,
         })
-    }
-}
-
-fn tool_search_tools(execution: &ToolOutput) -> Result<Vec<Value>> {
-    if !execution.success {
-        return Ok(Vec::new());
-    }
-    let Value::Array(tools) = execution.structured_result() else {
-        return Err(NanocodexError::MalformedResponse {
-            detail: "successful tool_search did not return an array structured result",
-        });
-    };
-    Ok(tools)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::tool_search_tools;
-    use crate::NanocodexError;
-    use nanocodex_tools::contract::ToolOutput;
-    use serde_json::{Value, json};
-
-    #[test]
-    fn malformed_successful_tool_search_result_is_a_protocol_error() {
-        let execution = ToolOutput::from_json(json!({ "name": "not-an-array" }), true);
-
-        let error = tool_search_tools(&execution).unwrap_err();
-
-        assert!(matches!(
-            error,
-            NanocodexError::MalformedResponse {
-                detail: "successful tool_search did not return an array structured result"
-            }
-        ));
-    }
-
-    #[test]
-    fn successful_tool_search_array_remains_successful() {
-        let execution = ToolOutput::from_json(json!([]), true);
-
-        assert_eq!(tool_search_tools(&execution).unwrap(), Vec::<Value>::new());
     }
 }

@@ -4,7 +4,7 @@ use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 
-use super::ResponseItem;
+use super::{ContentItem, FunctionOutputBody, FunctionOutputContent, ResponseItem};
 use crate::{ModelConfig, Thinking};
 
 /// Stable request metadata and prefix shared by every operation in a session.
@@ -501,13 +501,68 @@ impl Serialize for RequestResponseItem<'_> {
     where
         S: serde::Serializer,
     {
-        if self.item.id().is_some_and(|id| !id.is_prefixed()) {
+        let strips_id = self.item.id().is_some_and(|id| !id.is_prefixed());
+        if strips_id || response_item_has_image_detail(self.item) {
             let mut item = self.item.clone();
-            item.set_id(None);
+            if strips_id {
+                item.set_id(None);
+            }
+            strip_image_details(&mut item);
             item.serialize(serializer)
         } else {
             self.item.serialize(serializer)
         }
+    }
+}
+
+fn response_item_has_image_detail(item: &ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { content, .. } => content.iter().any(|item| {
+            matches!(
+                item,
+                ContentItem::InputImage {
+                    detail: Some(_),
+                    ..
+                }
+            )
+        }),
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => match output {
+            FunctionOutputBody::Content(content) => content.iter().any(|item| {
+                matches!(
+                    item,
+                    FunctionOutputContent::InputImage {
+                        detail: Some(_),
+                        ..
+                    }
+                )
+            }),
+            FunctionOutputBody::Text(_) => false,
+        },
+        _ => false,
+    }
+}
+
+fn strip_image_details(item: &mut ResponseItem) {
+    match item {
+        ResponseItem::Message { content, .. } => {
+            for item in content {
+                if let ContentItem::InputImage { detail, .. } = item {
+                    *detail = None;
+                }
+            }
+        }
+        ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. } => {
+            if let FunctionOutputBody::Content(content) = output {
+                for item in content {
+                    if let FunctionOutputContent::InputImage { detail, .. } = item {
+                        *detail = None;
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 

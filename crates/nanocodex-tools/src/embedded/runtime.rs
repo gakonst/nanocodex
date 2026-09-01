@@ -32,7 +32,6 @@ pub struct EmbeddedToolRuntime {
     working_directory: Arc<str>,
     host: Option<Arc<dyn CodeModeHost>>,
     session_id: Option<Arc<str>>,
-    plan_enabled: bool,
     local: Vec<LocalTool>,
     callable_tool_names: RwLock<HashSet<String>>,
 }
@@ -40,7 +39,7 @@ pub struct EmbeddedToolRuntime {
 struct LocalTool {
     name: Arc<str>,
     handler: Arc<dyn Tool>,
-    model_visible: bool,
+    exposure: ToolExposure,
 }
 
 /// Cancellation handle for work owned by an embedding host.
@@ -63,7 +62,6 @@ impl EmbeddedToolRuntime {
             working_directory: Arc::from(workspace.to_string_lossy().into_owned()),
             host: None,
             session_id: None,
-            plan_enabled: false,
             local: Vec::new(),
             callable_tool_names: RwLock::new(HashSet::new()),
         }
@@ -83,15 +81,13 @@ impl EmbeddedToolRuntime {
     fn with_tools(mut self, tools: &Tools) -> Self {
         self.host.clone_from(&tools.embedded_host);
         self.session_id.clone_from(&tools.embedded_session_id);
-        self.plan_enabled = tools.plan_enabled();
         self.local = tools
             .registered
             .iter()
             .map(|registered| LocalTool {
                 name: Arc::from(registered.handler.definition().name()),
                 handler: Arc::clone(&registered.handler),
-                model_visible: registered.exposure.unwrap_or_else(|| tools.exposure())
-                    != ToolExposure::Hidden,
+                exposure: registered.exposure.unwrap_or_else(|| tools.exposure()),
             })
             .collect();
         self
@@ -132,26 +128,7 @@ impl EmbeddedToolRuntime {
             .host
             .as_ref()
             .map_or(EmbeddedToolMode::Code, |host| host.tool_mode());
-        let mut definitions = self.host.as_ref().map_or_else(Vec::new, |host| {
-            match host.tool_definitions(session_id) {
-                Ok(definitions) => definitions,
-                Err(error) => {
-                    tracing::warn!(
-                        target: "nanocodex_tools",
-                        %error,
-                        "embedded Code Mode tool discovery failed"
-                    );
-                    Vec::new()
-                }
-            }
-        });
-        definitions.retain(|definition| {
-            (self.plan_enabled || definition.name() != "update_plan")
-                && !self
-                    .local
-                    .iter()
-                    .any(|tool| tool.name.as_ref() == definition.name())
-        });
+        let mut definitions = self.host_definitions(session_id);
         crate::code_mode_order::sort_definitions(&mut definitions);
         if let Ok(mut names) = self.callable_tool_names.write() {
             names.clear();
@@ -170,7 +147,7 @@ impl EmbeddedToolRuntime {
             definitions.extend(
                 self.local
                     .iter()
-                    .filter(|tool| tool.model_visible)
+                    .filter(|tool| tool.exposure != ToolExposure::Hidden)
                     .map(|tool| tool.handler.definition()),
             );
             crate::code_mode_order::sort_definitions(&mut definitions);
@@ -203,7 +180,7 @@ impl EmbeddedToolRuntime {
         direct_definitions.extend(
             self.local
                 .iter()
-                .filter(|tool| tool.model_visible)
+                .filter(|tool| tool.exposure != ToolExposure::Hidden)
                 .map(|tool| tool.handler.definition()),
         );
         crate::code_mode_order::sort_direct_definitions(&mut direct_definitions);
@@ -276,9 +253,10 @@ impl EmbeddedToolRuntime {
         {
             return true;
         }
-        if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
-            && let Ok(definitions) = host.tool_definitions(session_id)
+        if self.host.is_some()
+            && let Some(session_id) = &self.session_id
         {
+            let definitions = self.host_definitions(session_id);
             let found = definitions
                 .iter()
                 .any(|definition| definition.name() == name);
@@ -293,6 +271,30 @@ impl EmbeddedToolRuntime {
             return found;
         }
         false
+    }
+
+    fn host_definitions(&self, session_id: &str) -> Vec<ToolDefinition> {
+        let mut definitions = self.host.as_ref().map_or_else(Vec::new, |host| {
+            match host.tool_definitions(session_id) {
+                Ok(definitions) => definitions,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "nanocodex_tools",
+                        %error,
+                        "embedded Code Mode tool discovery failed"
+                    );
+                    Vec::new()
+                }
+            }
+        });
+        definitions.retain(|definition| {
+            definition.name() != "update_plan"
+                && !self
+                    .local
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == definition.name())
+        });
+        definitions
     }
 
     /// Dispatches a direct embedded definition or returns a model-visible failure.
@@ -494,6 +496,8 @@ mod tests {
 
     struct DirectHost;
 
+    struct PlanHost;
+
     struct WebHost;
 
     #[derive(Clone)]
@@ -540,6 +544,27 @@ mod tests {
             _session_id: &str,
         ) -> Result<Vec<ToolDefinition>, CodeModeHostError> {
             Ok(Vec::new())
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _source: &'a str,
+            _context: ToolContext<'a>,
+        ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+            Box::pin(async { unreachable!("direct host does not execute Code Mode") })
+        }
+    }
+
+    impl CodeModeHost for PlanHost {
+        fn tool_mode(&self) -> EmbeddedToolMode {
+            EmbeddedToolMode::Direct
+        }
+
+        fn tool_definitions(
+            &self,
+            _session_id: &str,
+        ) -> Result<Vec<ToolDefinition>, CodeModeHostError> {
+            Ok(vec![crate::StandardTool::UpdatePlan.definition()])
         }
 
         fn execute<'a>(
@@ -829,7 +854,7 @@ mod tests {
     async fn rust_extension_tools_shadow_host_tools_and_dispatch_directly() {
         let tools = Tools::builder()
             .without_defaults()
-            .tool(LocalAlpha)
+            .tool_with_exposure(LocalAlpha, ToolExposure::DirectAndCodeMode)
             .build()
             .unwrap();
         let tools = bind_host(tools, EchoHost);
@@ -850,6 +875,73 @@ mod tests {
             .await;
         assert!(output.success);
         assert_eq!(output.structured_result()["session_id"], "session-1");
+    }
+
+    #[test]
+    fn rust_extension_tool_specs_preserve_all_exposure_states() {
+        for (exposure, visible) in [
+            (ToolExposure::CodeModeOnly, true),
+            (ToolExposure::DirectAndCodeMode, true),
+            (ToolExposure::DirectOnly, true),
+            (ToolExposure::Hidden, false),
+        ] {
+            let tools = Tools::builder()
+                .without_defaults()
+                .tool_with_exposure(LocalAlpha, exposure)
+                .build()
+                .unwrap();
+            let code_tools = bind_host(tools.clone(), EchoHost).for_session("session-1");
+            let direct_tools = bind_host(tools, DirectHost);
+            let code_runtime = EmbeddedToolRuntime::new_with_tools(".", None, None, &code_tools);
+            let direct_runtime =
+                EmbeddedToolRuntime::new_with_tools(".", None, None, &direct_tools);
+
+            assert_eq!(
+                code_runtime
+                    .model_specs("session-1")
+                    .iter()
+                    .any(|definition| definition.name() == "alpha"),
+                visible
+            );
+            assert_eq!(
+                direct_runtime
+                    .model_specs("session-1")
+                    .iter()
+                    .any(|definition| definition.name() == "alpha"),
+                visible
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_plan_is_not_callable_through_an_embedded_host() {
+        let disabled = bound_tools(PlanHost).for_session("session-1");
+        let disabled = EmbeddedToolRuntime::new_with_tools(".", None, None, &disabled);
+        assert!(!disabled.contains("update_plan"));
+        assert!(
+            disabled
+                .model_specs("session-1")
+                .iter()
+                .all(|definition| definition.name() != "update_plan")
+        );
+
+        let enabled = bind_host(
+            Tools::builder()
+                .without_defaults()
+                .tool(crate::standard::UpdatePlanTool::new())
+                .build()
+                .unwrap(),
+            PlanHost,
+        )
+        .for_session("session-1");
+        let enabled = EmbeddedToolRuntime::new_with_tools(".", None, None, &enabled);
+        assert!(enabled.contains("update_plan"));
+        assert!(
+            enabled
+                .model_specs("session-1")
+                .iter()
+                .any(|definition| definition.name() == "update_plan")
+        );
     }
 
     #[tokio::test]

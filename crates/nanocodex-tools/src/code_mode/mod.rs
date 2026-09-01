@@ -1,7 +1,7 @@
 //! Code Mode execution results, notifications, and nested-tool observation.
 
 mod embedded;
-mod output;
+pub(crate) mod output;
 mod spec;
 
 use std::{

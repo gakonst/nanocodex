@@ -112,6 +112,10 @@ path = "tests/managed_memory.rs"
 name = "login"
 path = "tests/login.rs"
 
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
 [[bin]]
 name = "nanocodex"
 path = "src/main.rs"

@@ -22,7 +22,7 @@ use nanocodex::{
         tower::ResponsesServiceConfig,
         transport::ResponsesTransport,
     },
-    tools::mcp::McpHandle,
+    tools::{mcp::McpHandle, standard::UpdatePlanTool},
 };
 
 use crate::browser::{BrowserArgs, ConfiguredBrowser};
@@ -396,9 +396,11 @@ impl AgentArgs {
         let mut tools = configured_vm
             .as_ref()
             .map_or_else(Tools::builder, ConfiguredVm::tools_builder)
-            .plan(tui)
             .web_search(web_search)
             .image_generation(self.image_generation);
+        if tui {
+            tools = tools.tool(UpdatePlanTool::new());
+        }
         let managed_mcp = if self.mcp.loads_managed() {
             load_managed_mcp_credential(&codex_home).await?
         } else {

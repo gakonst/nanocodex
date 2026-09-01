@@ -190,7 +190,7 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
 
     let workspace = temporary_workspace("normal-code-mode-direct-tools")?;
     let tools = Tools::builder()
-        .plan(true)
+        .tool(nanocodex_tools::standard::UpdatePlanTool::new())
         .exposure(nanocodex_tools::ToolExposure::DirectAndCodeMode)
         .tool(NamespacedEcho)
         .build()?;

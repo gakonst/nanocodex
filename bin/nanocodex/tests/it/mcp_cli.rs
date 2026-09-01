@@ -33,6 +33,10 @@ async fn repeated_cli_turns_search_and_call_mcp_through_the_library() -> Result<
             .arg(&workspace)
             .arg("--mcp-defaults")
             .arg("false")
+            .arg("--mcp-codex-config")
+            .arg("false")
+            .arg("--websocket-warmup")
+            .arg("true")
             .arg("--mcp-stdio")
             .arg("fixture=node")
             .arg("--mcp-arg")
@@ -64,6 +68,17 @@ async fn repeated_cli_turns_search_and_call_mcp_through_the_library() -> Result<
     );
     assert_eq!(tool_results(&events, "tool_search"), TURNS);
     assert_eq!(tool_results(&events, "mcp__fixture__echo"), TURNS);
+    assert!(
+        events
+            .iter()
+            .filter(|event| {
+                event["type"] == "model.call.completed"
+                    && event["payload"]["usage"]["input_tokens_details"]["cached_tokens"] == 5
+            })
+            .count()
+            >= TURNS * 3,
+        "every turn should retain prompt-cache hits across search, tool execution, and completion"
+    );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

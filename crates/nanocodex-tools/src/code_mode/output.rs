@@ -1,9 +1,6 @@
 use crate::ToolOutputContent;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-
 const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
-const MAX_SUPPORTED_WAV_BYTES: usize = 256 * 1024;
 
 pub(super) fn truncate_content(
     content: Vec<ToolOutputContent>,
@@ -49,13 +46,14 @@ fn truncate_text_only(
     }]
 }
 
-fn truncate_mixed(
+pub(crate) fn truncate_mixed(
     content: Vec<ToolOutputContent>,
     max_output_tokens: usize,
 ) -> Vec<ToolOutputContent> {
     let mut output = Vec::with_capacity(content.len());
     let mut remaining = max_output_tokens;
     let mut omitted_text_items = 0_usize;
+    let mut omitted_audio_items = 0_usize;
     for item in content {
         match item {
             ToolOutputContent::InputText { text } => {
@@ -79,10 +77,18 @@ fn truncate_mixed(
             }
             image @ ToolOutputContent::InputImage { .. } => output.push(image),
             encrypted @ ToolOutputContent::EncryptedContent { .. } => output.push(encrypted),
-            ToolOutputContent::InputAudio { audio_url } if supported_audio(&audio_url) => {
-                output.push(ToolOutputContent::InputAudio { audio_url });
+            ToolOutputContent::InputAudio { audio_url } => {
+                // Codex estimates decoded audio duration when its media stack can do so,
+                // then falls back to the encoded data URL size. Nanocodex deliberately
+                // has no audio decoder dependency, so use the same fallback.
+                let cost = approx_tokens(audio_url.len());
+                if cost <= remaining {
+                    output.push(ToolOutputContent::InputAudio { audio_url });
+                    remaining = remaining.saturating_sub(cost);
+                } else {
+                    omitted_audio_items = omitted_audio_items.saturating_add(1);
+                }
             }
-            ToolOutputContent::InputAudio { .. } => {}
         }
     }
     if omitted_text_items > 0 {
@@ -90,26 +96,15 @@ fn truncate_mixed(
             text: format!("[omitted {omitted_text_items} text items ...]"),
         });
     }
+    if omitted_audio_items > 0 {
+        output.push(ToolOutputContent::InputText {
+            text: format!("[omitted {omitted_audio_items} audio items ...]"),
+        });
+    }
     output
 }
 
-fn supported_audio(audio_url: &str) -> bool {
-    let Some((header, payload)) = audio_url.split_once(',') else {
-        return false;
-    };
-    if !header.eq_ignore_ascii_case("data:audio/wav;base64")
-        || payload.len() > MAX_SUPPORTED_WAV_BYTES.saturating_mul(4).div_ceil(3)
-    {
-        return false;
-    }
-    BASE64_STANDARD.decode(payload).is_ok_and(|wav| {
-        wav.len() <= MAX_SUPPORTED_WAV_BYTES
-            && wav.get(..4) == Some(b"RIFF")
-            && wav.get(8..12) == Some(b"WAVE")
-    })
-}
-
-fn truncate_middle_tokens(text: &str, max_tokens: usize) -> String {
+pub(crate) fn truncate_middle_tokens(text: &str, max_tokens: usize) -> String {
     if text.is_empty() {
         return String::new();
     }
@@ -118,6 +113,15 @@ fn truncate_middle_tokens(text: &str, max_tokens: usize) -> String {
         return text.to_owned();
     }
     truncate_middle(text, byte_budget, true)
+}
+
+pub(crate) fn truncate_middle_tokens_bounded(text: &str, max_tokens: usize) -> String {
+    let byte_budget = max_tokens.saturating_mul(APPROX_BYTES_PER_TOKEN);
+    let mut output = truncate_middle_tokens(text, max_tokens);
+    if output.len() > byte_budget {
+        output.truncate(floor_char_boundary(&output, byte_budget));
+    }
+    output
 }
 
 fn truncate_middle(text: &str, byte_budget: usize, use_tokens: bool) -> String {
@@ -246,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_only_bounded_wav_audio() {
+    fn preserves_audio_within_the_output_budget_and_omits_the_rest() {
         let wav =
             "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
         let output = truncate_content(
@@ -255,18 +259,17 @@ mod tests {
                     audio_url: wav.to_owned(),
                 },
                 ToolOutputContent::InputAudio {
-                    audio_url: "data:audio/wav;base64,YXVkaW8=".to_owned(),
-                },
-                ToolOutputContent::InputAudio {
-                    audio_url: "data:audio/mpeg;base64,SUQz".to_owned(),
+                    audio_url: format!("data:audio/mpeg;base64,{}", "A".repeat(100)),
                 },
             ],
-            None,
+            Some(25),
         );
 
-        assert!(matches!(
-            output.as_slice(),
-            [ToolOutputContent::InputAudio { audio_url }] if audio_url == wav
-        ));
+        assert!(
+            matches!(&output[0], ToolOutputContent::InputAudio { audio_url } if audio_url == wav)
+        );
+        assert!(
+            matches!(&output[1], ToolOutputContent::InputText { text } if text == "[omitted 1 audio items ...]")
+        );
     }
 }

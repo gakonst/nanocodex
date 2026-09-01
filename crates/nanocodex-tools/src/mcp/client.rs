@@ -43,11 +43,7 @@ impl ClientInner {
     ) -> Result<CallToolResult, String> {
         let parent = Span::current();
         let result = self.call_tool_with_payment(params).await;
-        if let Some(oauth) = &self.oauth
-            && let Err(error) = oauth.persist_if_changed(&parent).await
-        {
-            tracing::warn!(%error, "failed to persist refreshed MCP OAuth credentials");
-        }
+        self.persist_oauth(&parent).await;
         result
     }
 
@@ -116,11 +112,7 @@ impl ClientInner {
             }
         })
         .await;
-        if let Some(oauth) = &self.oauth
-            && let Err(error) = oauth.persist_if_changed(parent).await
-        {
-            tracing::warn!(%error, "failed to persist refreshed MCP OAuth credentials");
-        }
+        self.persist_oauth(parent).await;
         tools
     }
 
@@ -129,6 +121,14 @@ impl ClientInner {
             oauth.refresh_if_needed().await?;
         }
         Ok(())
+    }
+
+    async fn persist_oauth(&self, parent: &Span) {
+        if let Some(oauth) = &self.oauth
+            && let Err(error) = oauth.persist_if_changed(parent).await
+        {
+            tracing::warn!(%error, "failed to persist refreshed MCP OAuth credentials");
+        }
     }
 }
 

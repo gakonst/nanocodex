@@ -1920,36 +1920,27 @@ try {
 }
 
 #[tokio::test]
-async fn update_plan_rejects_multiple_in_progress_steps() -> Result<()> {
+async fn update_plan_matches_codex_handler_acceptance() -> Result<()> {
     let workspace = temporary_workspace("update-plan-acceptance")?;
     let tools = test_tools(&workspace);
     let history = Vec::new();
     let execution = tools
         .execute_code(
             r#"
-try {
-  await tools.update_plan({
-    plan: [
-      { step: "", status: "in_progress" },
-      { step: "also active", status: "in_progress" },
-    ],
-  });
-  text("unexpected success");
-} catch (error) {
-  text(error);
-}
+const result = await tools.update_plan({
+  plan: [
+    { step: "", status: "in_progress" },
+    { step: "also active", status: "in_progress" },
+  ],
+});
+text(result);
 "#,
             test_context(&history),
         )
         .await;
 
     assert!(execution.success, "{}", execution_output(&execution));
-    assert_eq!(
-        emitted_text(&execution)?,
-        "at most one plan step may be in_progress"
-    );
-    assert_eq!(execution.nested_calls.len(), 1);
-    assert!(!execution.nested_calls[0].success);
+    assert_eq!(emitted_text(&execution)?, "{}");
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -2322,7 +2313,10 @@ fn test_live_cell(
 }
 
 fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
-    let selected = Tools::builder().plan(true).build().unwrap();
+    let selected = Tools::builder()
+        .tool(crate::standard::UpdatePlanTool::new())
+        .build()
+        .unwrap();
     ToolRuntime::new_with_tools(
         workspace,
         Some(WebSearchConfig {

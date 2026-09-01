@@ -308,7 +308,7 @@ impl PreparedToolRuntime {
                     .unwrap_or_else(|error| ToolOutput::error(error.to_string())),
                 #[cfg(feature = "native")]
                 (PreparedToolHandler::Mcp(tool), PreparedToolInput::Mcp(input)) => {
-                    tool.execute(input).await
+                    tool.execute(input, context.output_token_budget()).await
                 }
                 #[cfg(feature = "workspace-runtime")]
                 (PreparedToolHandler::Workspace(workspace), PreparedToolInput::Contract(input)) => {
