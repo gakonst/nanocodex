@@ -29,6 +29,8 @@ fi
 stamp_path="js/nanocodex/pkg-web/.nanocodex-bindgen-stamp"
 fingerprint="$(wasm-bindgen --version; "$binaryen" --version; printf 'worker-bundler-v1-simd\n'; cksum < "$wasm_artifact")"
 if [[ -f "$stamp_path" ]] \
+  && [[ -f js/nanocodex/pkg-web/nanocodex.js ]] \
+  && [[ -f js/nanocodex/pkg-web/nanocodex.d.ts ]] \
   && [[ -f js/nanocodex/pkg-web/nanocodex_bg.wasm ]] \
   && [[ -f js/nanocodex/pkg-web/nanocodex_bg.js ]] \
   && [[ -f js/nanocodex/pkg-web/nanocodex_worker.js ]] \

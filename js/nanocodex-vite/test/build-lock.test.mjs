@@ -89,8 +89,13 @@ test("signals terminate the whole generator process group", {
   }
 });
 
-test("the WASM cache requires every Node package artifact", async () => {
-  for (const missingArtifact of ["nanocodex.d.ts", "package.json"]) {
+test("the WASM cache requires every generated glue artifact", async () => {
+  for (const [missingPackage, missingArtifact] of [
+    ["pkg-web", "nanocodex.js"],
+    ["pkg-web", "nanocodex.d.ts"],
+    ["pkg-node", "nanocodex.d.ts"],
+    ["pkg-node", "package.json"],
+  ]) {
     const directory = await mkdtemp(join(tmpdir(), "nanocodex-build-cache-"));
     const repository = join(directory, "repository");
     const scripts = join(repository, "js/nanocodex-vite/scripts");
@@ -115,19 +120,16 @@ test("the WASM cache requires every Node package artifact", async () => {
       await chmod(builder, 0o755);
       await writeFile(wasmArtifact, "fake wasm\n");
       await Promise.all([
+        writeFile(join(webPackage, "nanocodex.js"), "web glue\n"),
+        writeFile(join(webPackage, "nanocodex.d.ts"), "web types\n"),
         writeFile(join(webPackage, "nanocodex_bg.wasm"), "web wasm\n"),
         writeFile(join(webPackage, "nanocodex_bg.js"), "web glue\n"),
         writeFile(join(webPackage, "nanocodex_worker.js"), "worker glue\n"),
         writeFile(join(nodePackage, "nanocodex.js"), "node glue\n"),
+        writeFile(join(nodePackage, "nanocodex.d.ts"), "node types\n"),
+        writeFile(join(nodePackage, "package.json"), '{"type":"commonjs"}\n'),
       ]);
-      if (missingArtifact !== "nanocodex.d.ts") {
-        await writeFile(join(nodePackage, "nanocodex.d.ts"), "node types\n");
-      } else {
-        await rm(join(nodePackage, missingArtifact), { force: true });
-      }
-      if (missingArtifact !== "package.json") {
-        await writeFile(join(nodePackage, "package.json"), '{"type":"commonjs"}\n');
-      }
+      await rm(join(repository, missingPackage, missingArtifact), { force: true });
       await writeFakeCommand(fakeBin, "cargo", "exit 0");
       await writeFakeCommand(
         fakeBin,
