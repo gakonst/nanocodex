@@ -1106,7 +1106,7 @@ describe("per-user OAuth connectors", () => {
         state: authorization.searchParams.get("state"),
       });
       expect(completed.status).toBe(200);
-      expect(await completed.json()).toEqual({
+      expect(await completed.json()).toMatchObject({
         connected: true,
         return_to: "/agent?thread=connector-test",
       });
@@ -1122,6 +1122,38 @@ describe("per-user OAuth connectors", () => {
       }
     });
   }
+
+  it("retains multiple Gmail accounts and requires an exact account selection", async () => {
+    const user = "connector-many-gmail";
+    const subject = connectorSubject("many-gmail");
+    await control(`/subjects/${subject}`, "PUT", { user_id: user });
+    await connect(user, "gmail", "gmail-code");
+    await connect(user, "gmail", "gmail-second-code");
+
+    const status = await (await SELF.fetch(`https://broker.test/users/${user}/connectors`)).json<{
+      connectors: { gmail: { connected: boolean; connections: { id: string; label: string }[] } };
+    }>();
+    expect(status.connectors.gmail.connections.map(({ label }) => label)).toEqual([
+      "mail@example.test",
+      "mail-two@example.test",
+    ]);
+    expect((await SELF.fetch(connectorRequest(
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+      subject,
+    ))).status).toBe(409);
+
+    const accounts = [];
+    for (const connection of status.connectors.gmail.connections) {
+      const response = await SELF.fetch(connectorRequest(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+        subject,
+        { connectionId: connection.id },
+      ));
+      expect(response.status).toBe(200);
+      accounts.push((await response.json<{ account: string }>()).account);
+    }
+    expect(accounts).toEqual(["mail-one", "mail-two"]);
+  });
 
   for (const [code, label] of [
     ["x-no-refresh-code", "refresh token"],
@@ -1709,6 +1741,7 @@ function connectorRequest(
     authorization?: string;
     body?: string;
     contentType?: string;
+    connectionId?: string;
   }> = {},
 ): Request {
   return new Request(url, {
@@ -1718,6 +1751,7 @@ function connectorRequest(
       cookie: "caller-secret=cookie",
       "proxy-authorization": "Basic caller-proxy-secret",
       ...(subject ? { "x-nanocodex-subject": subject } : {}),
+      ...(override.connectionId ? { "x-nanocodex-connector-connection": override.connectionId } : {}),
       ...(override.body === undefined
         ? {}
         : { "content-type": override.contentType ?? "application/octet-stream" }),

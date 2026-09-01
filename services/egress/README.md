@@ -175,6 +175,15 @@ PKCE/state validation, code exchange, identity lookup, encrypted token storage,
 and disconnect. OAuth callbacks return only a relative profile destination and
 connection result through the managed Worker.
 
+Gmail and Google Drive retain multiple Google identities per Nanocodex account.
+Their public status includes a secret-free `connections` list with stable opaque
+IDs and display labels. A provider request uses the sole connection
+automatically; once more than one is present, callers select one with
+`X-Nanocodex-Connector-Connection: <id>`. Connect grants snapshot those IDs, so
+authorizing another Google account later cannot broaden an existing grant.
+Disconnecting `DELETE /v1/connectors/{gmail|gdrive}/<id>` revokes only that
+Google identity and its sibling Gmail/Drive grant for the same Google subject.
+
 Register these exact callbacks on the provider applications, replacing the
 origin with the deployed website origin:
 

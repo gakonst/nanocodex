@@ -51,6 +51,7 @@ const CONNECTOR_TIMEOUT_MS = 20_000;
 const EXPIRY_SKEW_MS = 30_000;
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
 const CONNECTOR = /^(github|gmail|gdrive|x)$/;
+const CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 
 type ProviderRule = Readonly<{
@@ -119,10 +120,19 @@ type PendingAuthorization = {
 };
 
 type ConnectorState = {
+  version: 2;
+  connectors: Partial<Record<ConnectorId, StoredConnector>>;
+  googleConnections: Partial<Record<GoogleConnectorId, Record<string, StoredConnector>>>;
+  pending: Partial<Record<ConnectorId, PendingAuthorization>>;
+};
+
+type LegacyConnectorState = {
   version: 1;
   connectors: Partial<Record<ConnectorId, StoredConnector>>;
   pending: Partial<Record<ConnectorId, PendingAuthorization>>;
 };
+
+type GoogleConnectorId = "gmail" | "gdrive";
 
 type StoredRow = { envelope: EncryptedEnvelope };
 
@@ -132,7 +142,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   readonly #vault: CredentialVault;
   readonly #mcpConnections: McpConnectionOwner;
   readonly #ready: Promise<void>;
-  #connectors: ConnectorState = { version: 1, connectors: {}, pending: {} };
+  #connectors: ConnectorState = { version: 2, connectors: {}, googleConnections: {}, pending: {} };
   #tail: Promise<void> = Promise.resolve();
 
   constructor(state: DurableObjectState, env: ConnectorBrokerEnv) {
@@ -165,9 +175,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       this.#mcpConnections.initialize(),
     ]);
     if (row) {
-      const opened = await this.#vault.open<ConnectorState>(row.envelope);
-      this.#connectors = opened.value;
-      if (opened.reseal) await this.#persist();
+      const opened = await this.#vault.open<ConnectorState | LegacyConnectorState>(row.envelope);
+      this.#connectors = migrateConnectorState(opened.value);
+      if (opened.reseal || opened.value.version === 1) await this.#persist();
     }
   }
 
@@ -195,10 +205,11 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       if (request.method === "GET" && url.pathname === "/v1/status") {
         return json({ connectors: this.#publicStatus() }, 200);
       }
-      const match = url.pathname.match(/^\/v1\/(github|gmail|gdrive|x)(?:\/(start|callback))?$/);
+      const match = url.pathname.match(/^\/v1\/(github|gmail|gdrive|x)(?:\/(start|callback)|\/connections\/([A-Za-z0-9_-]{43}))?$/);
       const id = connectorId(match?.[1]);
       if (!id) return jsonError(404, "not_found");
       const operation = match?.[2];
+      const connectionId = match?.[3];
       if (request.method === "POST" && operation === "start") {
         auditAction = "authorize_start";
         auditConnector = id;
@@ -216,12 +227,34 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         });
         return json(callback, 200);
       }
+      if (request.method === "DELETE" && connectionId) {
+        if (!isGoogleConnector(id)) return jsonError(404, "not_found");
+        auditAction = "disconnect";
+        auditConnector = id;
+        const connector = this.#googleConnections(id)[connectionId];
+        if (!connector) return jsonError(404, "connector_connection_not_found");
+        const providerRevoked = await this.#revoke(id, connector);
+        const disconnected = this.#deleteGoogleGrant(id, connectionId, connector);
+        await this.#persist();
+        connectorAudit("disconnect", "allow", id, {
+          status: 204,
+          provider_revoked: providerRevoked,
+          disconnected_connectors: disconnected,
+          connection_id: connectionId,
+        });
+        return new Response(null, { status: 204, headers: noStoreHeaders() });
+      }
       if (request.method === "DELETE" && operation === undefined) {
         auditAction = "disconnect";
         auditConnector = id;
-        const connector = this.#connectors.connectors[id];
-        const providerRevoked = connector ? await this.#revoke(id, connector) : false;
-        const disconnected = this.#deleteConnectorGrant(id, connector);
+        const google = isGoogleConnector(id) ? Object.entries(this.#googleConnections(id)) : [];
+        const connector = isGoogleConnector(id) ? undefined : this.#connectors.connectors[id];
+        let providerRevoked = false;
+        for (const [, connection] of google) providerRevoked = await this.#revoke(id, connection) || providerRevoked;
+        if (connector) providerRevoked = await this.#revoke(id, connector);
+        const disconnected = isGoogleConnector(id)
+          ? google.flatMap(([selectedId, connection]) => this.#deleteGoogleGrant(id, selectedId, connection))
+          : this.#deleteConnectorGrant(id, connector);
         delete this.#connectors.pending[id];
         await this.#persist();
         connectorAudit("disconnect", "allow", id, {
@@ -255,7 +288,11 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       throw new ConnectorFailure(403, "destination_denied");
     }
     if (!safeQuery(url.searchParams)) throw new ConnectorFailure(403, "destination_denied");
-    const connector = await this.#usableConnector(provider.id);
+    const selectedConnectionId = request.headers.get("x-nanocodex-connector-connection");
+    if (selectedConnectionId !== null && !CONNECTION_ID.test(selectedConnectionId)) {
+      throw new ConnectorFailure(400, "connector_connection_invalid");
+    }
+    const connector = await this.#usableConnector(provider.id, selectedConnectionId ?? undefined);
     const headers = connectorRequestHeaders(request.headers, provider.id, connector.accessToken);
     let upstream: Response;
     try {
@@ -275,7 +312,12 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     }
     if (upstream.status === 401) {
       await upstream.body?.cancel();
-      this.#deleteConnectorGrant(provider.id, connector);
+      const effectiveConnectionId = selectedConnectionId
+        ?? (isGoogleConnector(provider.id)
+          ? Object.entries(this.#googleConnections(provider.id))
+            .find(([, candidate]) => candidate.accountId === connector.accountId)?.[0]
+          : undefined);
+      this.#deleteSelectedGrant(provider.id, effectiveConnectionId, connector);
       await this.#persist();
       throw new ConnectorFailure(409, "connector_reauthentication_required");
     }
@@ -300,24 +342,25 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     });
   }
 
-  async #usableConnector(id: ConnectorId): Promise<StoredConnector> {
-    const connector = this.#connectors.connectors[id];
+  async #usableConnector(id: ConnectorId, connectionId?: string): Promise<StoredConnector> {
+    const selected = this.#selectConnector(id, connectionId);
+    const connector = selected.connector;
     if (!connector) throw new ConnectorFailure(409, "connector_not_connected");
     if (connector.expiresAt === undefined || connector.expiresAt > Date.now() + EXPIRY_SKEW_MS) {
       return connector;
     }
     if (!connector.refreshToken) {
-      return this.#rejectRefresh(id, connector);
+      return this.#rejectRefresh(id, connector, selected.connectionId);
     }
     if (connector.refreshExpiresAt !== undefined
       && connector.refreshExpiresAt <= Date.now() + EXPIRY_SKEW_MS) {
-      this.#deleteConnectorGrant(id, connector);
+      this.#deleteSelectedGrant(id, selected.connectionId, connector);
       await this.#persist();
       throw new ConnectorFailure(409, "connector_reauthentication_required");
     }
     if (id === "github") return this.#refreshGitHubConnector(connector);
     if (id === "x") return this.#refreshXConnector(connector);
-    return this.#refreshGoogleConnector(id, connector);
+    return this.#refreshGoogleConnector(id, connector, selected.connectionId!);
   }
 
   async #refreshGitHubConnector(connector: StoredConnector): Promise<StoredConnector> {
@@ -364,8 +407,8 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     return next;
   }
 
-  async #rejectRefresh(id: ConnectorId, connector: StoredConnector): Promise<never> {
-    this.#deleteConnectorGrant(id, connector);
+  async #rejectRefresh(id: ConnectorId, connector: StoredConnector, connectionId?: string): Promise<never> {
+    this.#deleteSelectedGrant(id, connectionId, connector);
     await this.#persist();
     connectorAudit("refresh", "deny", id, {
       status: 409,
@@ -414,6 +457,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   async #refreshGoogleConnector(
     id: "gmail" | "gdrive",
     connector: StoredConnector,
+    connectionId: string,
   ): Promise<StoredConnector> {
     const credentials = providerCredentials(id, this.#env);
     const response = await providerFetch(new Request("https://oauth2.googleapis.com/token", {
@@ -432,7 +476,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     if (REDIRECT_STATUS.has(response.status) || !response.ok) {
       await response.body?.cancel();
       if (response.status === 400 || response.status === 401) {
-        return this.#rejectRefresh(id, connector);
+        return this.#rejectRefresh(id, connector, connectionId);
       }
       connectorAudit("refresh", "error", id, {
         status: 503,
@@ -447,7 +491,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       expiresAt: Date.now() + refreshed.expiresIn * 1_000,
       ...(refreshed.scopes ? { scopes: refreshed.scopes } : {}),
     };
-    this.#connectors.connectors[id] = next;
+    this.#googleConnections(id)[connectionId] = next;
     await this.#persist();
     connectorAudit("refresh", "allow", id, { status: 200 });
     return next;
@@ -499,17 +543,76 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     return connectorIds;
   }
 
+  #googleConnections(id: GoogleConnectorId): Record<string, StoredConnector> {
+    return this.#connectors.googleConnections[id] ??= {};
+  }
+
+  #selectConnector(id: ConnectorId, connectionId?: string): { connector?: StoredConnector; connectionId?: string } {
+    if (!isGoogleConnector(id)) {
+      const connector = this.#connectors.connectors[id];
+      return connector ? { connector } : {};
+    }
+    const connections = this.#googleConnections(id);
+    if (connectionId) return { connector: connections[connectionId], connectionId };
+    const usable = Object.entries(connections).filter(([, connector]) => this.#isUsable(connector));
+    if (usable.length > 1) throw new ConnectorFailure(409, "connector_connection_required");
+    return usable[0] ? { connectionId: usable[0][0], connector: usable[0][1] } : {};
+  }
+
+  #deleteSelectedGrant(id: ConnectorId, connectionId: string | undefined, connector: StoredConnector): void {
+    if (isGoogleConnector(id) && connectionId) {
+      this.#deleteGoogleGrant(id, connectionId, connector);
+      return;
+    }
+    this.#deleteConnectorGrant(id, connector);
+  }
+
+  #deleteGoogleGrant(id: GoogleConnectorId, connectionId: string, connector: StoredConnector): number {
+    let deleted = 0;
+    for (const candidate of ["gmail", "gdrive"] as const) {
+      for (const [candidateId, candidateConnector] of Object.entries(this.#googleConnections(candidate))) {
+        if ((candidate === id && candidateId === connectionId)
+          || candidateConnector.accountId === connector.accountId) {
+          delete this.#googleConnections(candidate)[candidateId];
+          deleted += 1;
+        }
+      }
+    }
+    return deleted;
+  }
+
+  #isUsable(connector: StoredConnector): boolean {
+    const refreshable = connector.refreshToken
+      && (connector.refreshExpiresAt === undefined
+        || connector.refreshExpiresAt > Date.now() + EXPIRY_SKEW_MS);
+    return connector.expiresAt === undefined
+      || connector.expiresAt > Date.now() + EXPIRY_SKEW_MS
+      || Boolean(refreshable);
+  }
+
   #publicStatus(): Record<ConnectorId, Record<string, unknown>> {
     const status = (id: ConnectorId): Record<string, unknown> => {
+      if (isGoogleConnector(id)) {
+        const connections = Object.entries(this.#googleConnections(id))
+          .filter(([, connector]) => this.#isUsable(connector))
+          .sort(([, left], [, right]) => left.connectedAt - right.connectedAt)
+          .map(([connectionId, connector]) => ({
+            id: connectionId,
+            account_id: connector.accountId,
+            label: connector.label,
+          }));
+        return connections.length ? {
+          connected: true,
+          connections,
+          ...(connections.length === 1 ? {
+            connection_id: connections[0]!.id,
+            account_id: connections[0]!.account_id,
+            label: connections[0]!.label,
+          } : {}),
+        } : { connected: false, connections: [] };
+      }
       const connector = this.#connectors.connectors[id];
-      const refreshable = connector?.refreshToken
-        && (connector.refreshExpiresAt === undefined
-          || connector.refreshExpiresAt > Date.now() + EXPIRY_SKEW_MS);
-      const usable = connector
-        && (connector.expiresAt === undefined
-          || connector.expiresAt > Date.now() + EXPIRY_SKEW_MS
-          || refreshable);
-      return usable ? {
+      return connector && this.#isUsable(connector) ? {
         connected: true,
         account_id: connector.accountId,
         label: connector.label,
@@ -593,7 +696,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         if (error instanceof ConnectorFailure) throw error;
         throw new ConnectorFailure(502, "connector_identity_response_invalid");
       }
-      this.#connectors.connectors[id] = {
+      const next = {
         accessToken: token.accessToken,
         ...(token.refreshToken ? { refreshToken: token.refreshToken } : {}),
         ...(token.expiresIn ? { expiresAt: Date.now() + token.expiresIn * 1_000 } : {}),
@@ -605,8 +708,17 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         label: identity.displayLabel,
         connectedAt: Date.now(),
       };
+      let connectionId: string | undefined;
+      if (isGoogleConnector(id)) {
+        connectionId = Object.entries(this.#googleConnections(id))
+          .find(([, connector]) => connector.accountId === identity.accountId)?.[0]
+          ?? randomBase64Url(32);
+        this.#googleConnections(id)[connectionId] = next;
+      } else {
+        this.#connectors.connectors[id] = next;
+      }
       await this.#persist();
-      return { connected: true, return_to: pending.returnTo };
+      return { connected: true, return_to: pending.returnTo, ...(connectionId ? { connection_id: connectionId } : {}) };
     } catch (error) {
       const problem = connectorFailure(error);
       throw new ConnectorFailure(problem.status, problem.code, pending.returnTo);
@@ -623,10 +735,10 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     try {
       const row = await this.#state.storage.get<StoredRow>(STATE_KEY);
       this.#connectors = row
-        ? (await this.#vault.open<ConnectorState>(row.envelope)).value
-        : { version: 1, connectors: {}, pending: {} };
+        ? migrateConnectorState((await this.#vault.open<ConnectorState | LegacyConnectorState>(row.envelope)).value)
+        : { version: 2, connectors: {}, googleConnections: {}, pending: {} };
     } catch {
-      this.#connectors = { version: 1, connectors: {}, pending: {} };
+      this.#connectors = { version: 2, connectors: {}, googleConnections: {}, pending: {} };
     }
   }
 }
@@ -997,6 +1109,23 @@ function stringField(value: unknown, key: string): string | undefined {
 
 function connectorId(value: string | undefined): ConnectorId | undefined {
   return value && CONNECTOR.test(value) ? value as ConnectorId : undefined;
+}
+
+function isGoogleConnector(id: ConnectorId): id is GoogleConnectorId {
+  return id === "gmail" || id === "gdrive";
+}
+
+function migrateConnectorState(value: ConnectorState | LegacyConnectorState): ConnectorState {
+  if (value.version === 2) return value;
+  const connectors = { ...value.connectors };
+  const googleConnections: ConnectorState["googleConnections"] = {};
+  for (const id of ["gmail", "gdrive"] as const) {
+    const connector = connectors[id];
+    if (!connector) continue;
+    delete connectors[id];
+    googleConnections[id] = { [randomBase64Url(32)]: connector };
+  }
+  return { version: 2, connectors, googleConnections, pending: value.pending };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

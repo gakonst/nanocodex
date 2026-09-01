@@ -558,18 +558,22 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const connectorMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|gmail|gdrive|x)(\/callback)?)?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|gmail|gdrive|x)(\/callback)?(?:\/([A-Za-z0-9_-]{43}))?)?$/,
   );
   if (connectorMatch) {
     const userId = connectorMatch[1]!;
     const connector = connectorMatch[2];
     const callback = connectorMatch[3] === "/callback";
+    const connectionId = connectorMatch[4];
     const target = connector
-      ? `https://connectors.internal/v1/${connector}${callback ? "/callback" : request.method === "POST" ? "/start" : ""}`
+      ? `https://connectors.internal/v1/${connector}${callback
+        ? "/callback"
+        : connectionId ? `/connections/${connectionId}` : request.method === "POST" ? "/start" : ""}`
       : "https://connectors.internal/v1/status";
     if ((!connector && request.method !== "GET")
       || (connector && callback && request.method !== "POST")
-      || (connector && !callback && request.method !== "POST" && request.method !== "DELETE")) {
+      || (connectionId && (connector === "github" || connector === "x" || request.method !== "DELETE"))
+      || (connector && !callback && !connectionId && request.method !== "POST" && request.method !== "DELETE")) {
       return jsonError(405, "method_not_allowed");
     }
     return connectorBroker(env, userId).fetch(target, {

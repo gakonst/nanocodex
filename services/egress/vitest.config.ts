@@ -178,6 +178,7 @@ export default defineConfig({
             }
             const code = String(body.get("code") ?? "");
             const sharedAccount = code.endsWith("-shared-account-code");
+            const secondAccount = code === "gmail-second-code";
             const drive = code === "gdrive-code" || code === "gdrive-shared-account-code";
             const expiring = body.get("code") === "gmail-expiring-code";
             const revoked = body.get("code") === "gmail-revoked-code";
@@ -185,10 +186,12 @@ export default defineConfig({
             return Response.json({
               access_token: sharedAccount
                 ? drive ? "gdrive-shared-account-access" : "gmail-shared-account-access"
+                : secondAccount ? "gmail-second-access"
                 : drive ? "gdrive-connector-access" : "gmail-connector-access",
               ...(body.get("code") === "gmail-no-refresh-code" ? {} : {
                 refresh_token: drive
                   ? "gdrive-connector-refresh"
+                  : secondAccount ? "gmail-second-refresh"
                   : revoked
                     ? "gmail-revoked-refresh"
                     : revokeFailure ? "gmail-revoke-failure-refresh" : "gmail-connector-refresh",
@@ -216,14 +219,17 @@ export default defineConfig({
             && url.pathname === "/v1/userinfo") {
             const authorization = request.headers.get("authorization");
             const sharedAccount = authorization?.endsWith("shared-account-access") === true;
+            const secondAccount = authorization === "Bearer gmail-second-access";
             const drive = authorization === "Bearer gdrive-connector-access"
               || authorization === "Bearer gdrive-shared-account-access";
             return Response.json({
               sub: sharedAccount
                 ? "google-shared-account"
+                : secondAccount ? "google-gmail-account-second"
                 : drive ? "google-drive-account" : "google-gmail-account",
               email: sharedAccount
                 ? "shared@example.test"
+                : secondAccount ? "mail-two@example.test"
                 : drive ? "drive@example.test" : "mail@example.test",
               email_verified: true,
               name: drive ? "Drive User" : "Mail User",
@@ -253,6 +259,8 @@ export default defineConfig({
               : authorization === "Bearer github-beta-access" ? "beta"
               : authorization === "Bearer github-refreshed-access" ? "github-refreshed"
               : authorization === "Bearer gmail-refreshed-access" ? "gmail-refreshed"
+              : authorization === "Bearer gmail-second-access" ? "mail-two"
+              : authorization === "Bearer gmail-connector-access" ? "mail-one"
               : authorization === "Bearer x-refreshed-access" ? "x-refreshed"
               : authorization.startsWith("Bearer ") ? "connected" : "missing";
             return Response.json({
