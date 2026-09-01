@@ -9,6 +9,7 @@ members = [
     "crates/nanocodex-managed",
     "crates/nanocodex-durability",
     "crates/experimental/nanocodex-browser",
+    "crates/experimental/nanocodex-spacewasm",
     "crates/experimental/nanocodex-egress",
     "crates/experimental/nanocodex-voice",
     "crates/experimental/nanocodex-voice-protocol",

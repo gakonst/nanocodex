@@ -225,6 +225,28 @@ impl ToolDefinition {
         }
     }
 
+    /// Returns whether this declaration authorizes one exact client-executed call.
+    #[must_use]
+    pub fn accepts_call(&self, namespace: Option<&str>, name: &str) -> bool {
+        match self {
+            Self::Function { name: declared, .. } | Self::Custom { name: declared, .. } => {
+                namespace.is_none() && declared.as_ref() == name
+            }
+            Self::Namespace {
+                name: declared,
+                tools,
+                ..
+            } => {
+                namespace == Some(declared.as_ref())
+                    && tools.iter().any(|tool| {
+                        matches!(tool, Self::Function { .. } | Self::Custom { .. })
+                            && tool.name() == name
+                    })
+            }
+            Self::ToolSearch { .. } => namespace.is_none() && name == "tool_search",
+        }
+    }
+
     /// Returns the model-visible tool description.
     #[must_use]
     pub fn description(&self) -> &str {
@@ -342,6 +364,22 @@ mod tests {
             serde_json::to_value(namespace).unwrap()["tools"][0]["type"],
             "custom"
         );
+    }
+
+    #[test]
+    fn exact_call_authorization_respects_namespaces() {
+        let direct = ToolDefinition::function("read_sensor", "Read", json!({}));
+        let namespaced = ToolDefinition::namespace(
+            "flight",
+            "Flight tools",
+            [ToolDefinition::function("read_sensor", "Read", json!({}))],
+        );
+
+        assert!(direct.accepts_call(None, "read_sensor"));
+        assert!(!direct.accepts_call(Some("flight"), "read_sensor"));
+        assert!(namespaced.accepts_call(Some("flight"), "read_sensor"));
+        assert!(!namespaced.accepts_call(None, "read_sensor"));
+        assert!(!namespaced.accepts_call(Some("other"), "read_sensor"));
     }
 
     #[test]

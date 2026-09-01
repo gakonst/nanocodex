@@ -273,7 +273,76 @@ pub enum ResponseItem {
     Other(JsonValue),
 }
 
+/// Borrowed model-requested tool call extracted from a response item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResponseToolCallRef<'a> {
+    /// JSON-schema function call.
+    Function {
+        /// Tool name.
+        name: &'a str,
+        /// Optional Responses namespace.
+        namespace: Option<&'a str>,
+        /// JSON-encoded arguments.
+        arguments: &'a str,
+        /// Provider call identity.
+        call_id: &'a str,
+    },
+    /// Grammar-constrained custom tool call.
+    Custom {
+        /// Tool name.
+        name: &'a str,
+        /// Optional Responses namespace.
+        namespace: Option<&'a str>,
+        /// Free-form tool input.
+        input: &'a str,
+        /// Provider call identity.
+        call_id: &'a str,
+    },
+}
+
+impl ResponseToolCallRef<'_> {
+    /// Returns the provider call identity.
+    #[must_use]
+    pub const fn call_id(&self) -> &str {
+        match self {
+            Self::Function { call_id, .. } | Self::Custom { call_id, .. } => call_id,
+        }
+    }
+}
+
 impl ResponseItem {
+    /// Returns the model-requested host tool call carried by this item.
+    #[must_use]
+    pub fn tool_call(&self) -> Option<ResponseToolCallRef<'_>> {
+        match self {
+            Self::FunctionCall {
+                name,
+                namespace,
+                arguments,
+                call_id,
+                ..
+            } => Some(ResponseToolCallRef::Function {
+                name,
+                namespace: namespace.as_deref(),
+                arguments,
+                call_id,
+            }),
+            Self::CustomToolCall {
+                name,
+                namespace,
+                input,
+                call_id,
+                ..
+            } => Some(ResponseToolCallRef::Custom {
+                name,
+                namespace: namespace.as_deref(),
+                input,
+                call_id,
+            }),
+            _ => None,
+        }
+    }
+
     /// Creates the stable developer item that declares session tools.
     #[must_use]
     pub const fn additional_tools(tools: Vec<ToolDefinition>) -> Self {

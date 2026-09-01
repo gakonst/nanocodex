@@ -3,9 +3,15 @@
 #![deny(missing_docs, rustdoc::broken_intra_doc_links)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-#[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
+#[cfg(all(
+    target_family = "wasm",
+    not(target_os = "unknown"),
+    feature = "client"
+))]
 compile_error!(
-    "nanocodex-oai-api supports native targets and hosted wasm*-unknown-unknown targets; WASI is not yet supported"
+    "nanocodex-oai-api client transports support native targets and hosted \
+     wasm*-unknown-unknown targets; WASI supports protocol-only builds with \
+     default features disabled"
 );
 
 /// Authentication sources and managed credential snapshots.

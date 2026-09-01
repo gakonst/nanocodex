@@ -1,0 +1,19 @@
+[package]
+name = "nanocodex-spacewasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Host-stepped Nanocodex core for SpaceWasm and WASI Preview 1"
+
+[dependencies]
+nanocodex-oai-api = { version = "0.5.0", path = "../../nanocodex-oai-api", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -5579,6 +5579,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocodex-spacewasm"
+version = "0.5.0"
+dependencies = [
+ "nanocodex-oai-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nanocodex-subagents"
 version = "0.5.0"
 dependencies = [
