@@ -84,6 +84,8 @@ type ConnectorId = typeof connectorIds[number];
 type ConnectorStatus = Readonly<{
   connected: boolean;
   account_id?: string | undefined;
+  connection_id?: string | undefined;
+  connections?: readonly Readonly<{ id: string; account_id: string; label: string }>[] | undefined;
   label?: string | undefined;
 }>;
 type ConnectorStatuses = Partial<Record<ConnectorId, ConnectorStatus>>;

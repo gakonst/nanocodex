@@ -478,11 +478,16 @@ test("device callback continuation is short-lived, exact, account-bound, and sec
     apiUrl: "http://demo.nanocodex.localhost:20735",
     accountAddress: "0x1111111111111111111111111111111111111111",
     token: "connect-session-token",
-    requestedConnectors: ["github"],
+    requestedConnectors: ["github", "gmail"],
     requestedMcpConnections: [
       { id: LINEAR_MCP, name: "Linear", status: "authorization_required" },
     ],
-    connectorStatuses: { github: { connected: true, label: "octocat" } },
+    connectorStatuses: {
+      github: { connected: true, label: "octocat" },
+      gmail: { connected: true, connections: [
+        { id: "g".repeat(43), account_id: "google-account", label: "mail@example.test" },
+      ] },
+    },
     result: {
       accounts: [{
         address: "0x1111111111111111111111111111111111111111",

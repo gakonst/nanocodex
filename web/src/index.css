@@ -696,6 +696,11 @@ body.agent-viewport-locked {
   min-width: 0;
 }
 
+.connector-account-row {
+  margin-left: 18px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
 .connector-row span {
   overflow: hidden;
   text-overflow: ellipsis;

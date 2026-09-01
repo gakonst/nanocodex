@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AccountConnectionCard,
   AccountConnectionGrid,
@@ -15,11 +15,13 @@ import {
 } from "@nanocodex-connect/connectorCompletion";
 
 type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+type ConnectorConnection = Readonly<{ id: string; accountId: string; label: string }>;
 type ConnectorStatus = Readonly<{
   connected: boolean;
   accountId?: string;
   label?: string;
   unavailable?: string;
+  connections?: readonly ConnectorConnection[];
 }>;
 type McpConnectionStatus =
   | "authorization_required"
@@ -343,12 +345,15 @@ export function ProfileConnectors({
     }
   };
 
-  const disconnect = async (id: ConnectorId) => {
+  const disconnect = async (id: ConnectorId, connectionId?: string) => {
     if (operation) return;
-    setOperation(id);
+    setOperation(connectionId ?? id);
     setError(null);
     try {
-      const response = await connectorRequest(`/v1/connectors/${id}`, { method: "DELETE" });
+      const response = await connectorRequest(
+        `/v1/connectors/${id}${connectionId ? `/${encodeURIComponent(connectionId)}` : ""}`,
+        { method: "DELETE" },
+      );
       if (!response.ok) throw await responseFailure(response, `Couldn’t disconnect ${connectorLabel(id)}.`);
       await response.body?.cancel();
       await load();
@@ -531,22 +536,32 @@ export function ProfileConnectors({
           {connectors ? connectorDefinitions.map((definition) => {
             const status = connectors[definition.id];
             const unavailable = status.unavailable;
-            return <AccountConnectionCard
-              action={unavailable ? "Unavailable" : status.connected ? "Disconnect" : "Connect"}
-              connected={status.connected}
-              detail={unavailable
-                ? unavailable
-                : status.connected
-                  ? status.label || status.accountId || "Connected"
-                  : definition.description}
-              disabled={operation !== null || unavailable !== undefined}
-              key={definition.id}
-              logo={<ConnectionLogo id={definition.id} />}
-              onClick={() => void (status.connected
-                ? disconnect(definition.id)
-                : connect(definition.id))}
-              title={definition.label}
-            />;
+            const multi = isGoogleConnector(definition.id);
+            return <Fragment key={definition.id}>
+              <AccountConnectionCard
+                action={unavailable ? "Unavailable" : multi && status.connected ? "Add account" : status.connected ? "Disconnect" : "Connect"}
+                connected={status.connected}
+                detail={unavailable
+                  ? unavailable
+                  : multi && status.connected
+                    ? `${status.connections?.length ?? 0} account${status.connections?.length === 1 ? "" : "s"} connected`
+                    : status.connected ? status.label || status.accountId || "Connected" : definition.description}
+                disabled={operation !== null || unavailable !== undefined}
+                logo={<ConnectionLogo id={definition.id} />}
+                onClick={() => void (multi || !status.connected ? connect(definition.id) : disconnect(definition.id))}
+                title={definition.label}
+              />
+              {status.connections?.map((connection) => <AccountConnectionCard
+                action="Disconnect"
+                connected
+                detail={connection.label}
+                disabled={operation !== null}
+                key={connection.id}
+                logo={<ConnectionLogo id={definition.id} />}
+                onClick={() => void disconnect(definition.id, connection.id)}
+                title={connection.label}
+              />)}
+            </Fragment>;
           }) : null}
           {mcpError && !mcpConnections ? <AccountConnectionCard
             action="Retry"
@@ -608,20 +623,20 @@ export function ProfileConnectors({
       {connectors ? connectorDefinitions.map((definition) => {
         const status = connectors[definition.id];
         const unavailable = status.unavailable;
+        const multi = isGoogleConnector(definition.id);
         const detail = unavailable
           ? unavailable
+          : multi && status.connected
+            ? `${status.connections?.length ?? 0} account${status.connections?.length === 1 ? "" : "s"} connected`
           : status.connected
             ? status.label || status.accountId || "Connected"
             : definition.description;
-        return (
+        return (<Fragment key={definition.id}>
           <button
             className={`connection-card connector-row${status.connected ? " is-connected" : ""}${unavailable ? " is-unavailable" : ""}`}
-            key={definition.id}
             type="button"
             disabled={operation !== null || unavailable !== undefined}
-            onClick={() => void (status.connected
-              ? disconnect(definition.id)
-              : connect(definition.id))}
+            onClick={() => void (multi || !status.connected ? connect(definition.id) : disconnect(definition.id))}
           >
             <ConnectionLogo id={definition.id} />
             <span className="connection-card-copy">
@@ -629,10 +644,21 @@ export function ProfileConnectors({
               <span>{detail}</span>
             </span>
             <span className="connection-card-action">
-              {unavailable ? "Unavailable" : status.connected ? "Disconnect" : "Connect"}
+              {unavailable ? "Unavailable" : multi && status.connected ? "Add account" : status.connected ? "Disconnect" : "Connect"}
             </span>
           </button>
-        );
+          {status.connections?.map((connection) => <button
+            className="connection-card connector-row connector-account-row is-connected"
+            disabled={operation !== null}
+            key={connection.id}
+            onClick={() => void disconnect(definition.id, connection.id)}
+            type="button"
+          >
+            <ConnectionLogo id={definition.id} />
+            <span className="connection-card-copy"><strong>{connection.label}</strong><span>Google account</span></span>
+            <span className="connection-card-action">Disconnect</span>
+          </button>)}
+        </Fragment>);
       }) : null}
       {mcpConnections ? <McpConnectionAddCard
         disabled={operation !== null}
@@ -699,8 +725,23 @@ function decodeConnectorStatus(value: unknown): Record<ConnectorId, ConnectorSta
       connected: candidate.connected,
       ...(typeof candidate.account_id === "string" ? { accountId: candidate.account_id } : {}),
       ...(typeof candidate.label === "string" ? { label: candidate.label } : {}),
+      ...(Array.isArray(candidate.connections) ? {
+        connections: candidate.connections.map(decodeConnectorConnection),
+      } : {}),
     }];
   })) as Record<ConnectorId, ConnectorStatus>;
+}
+
+function decodeConnectorConnection(value: unknown): ConnectorConnection {
+  if (!isRecord(value) || typeof value.id !== "string" || !mcpConnectionId.test(value.id)
+    || typeof value.account_id !== "string" || typeof value.label !== "string") {
+    throw new Error("Invalid connector account response.");
+  }
+  return { id: value.id, accountId: value.account_id, label: value.label };
+}
+
+function isGoogleConnector(id: ConnectorId): id is "gmail" | "gdrive" {
+  return id === "gmail" || id === "gdrive";
 }
 
 function unavailableConnectorStatuses(message: string): Record<ConnectorId, ConnectorStatus> {

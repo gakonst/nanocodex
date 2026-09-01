@@ -59,6 +59,13 @@ test("Account owns MCP creation and in-place authorization without broadening em
   assert.doesNotMatch(app, /McpConnectionAddCard/);
 });
 
+test("Account supports adding and disconnecting individual Google accounts", () => {
+  assert.match(profileConnectors, /multi && status\.connected \? "Add account"/);
+  assert.match(profileConnectors, /status\.connections\?\.map/);
+  assert.match(profileConnectors, /disconnect\(definition\.id, connection\.id\)/);
+  assert.match(profileConnectors, /connectors\/\$\{id\}\$\{connectionId \? `\/\$\{encodeURIComponent\(connectionId\)\}` : ""\}/);
+});
+
 test("Account and embedded Connect share strict in-place OAuth completion", () => {
   assert.match(app, /connectorCompletionFor\(event/);
   assert.match(profileConnectors, /from "@nanocodex-connect\/connectorCompletion"/);

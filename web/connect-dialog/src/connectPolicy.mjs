@@ -498,15 +498,25 @@ function sanitizeConnectorStatuses(value) {
   const result = {};
   for (const [id, status] of Object.entries(value)) {
     if (!connectorIds.has(id) || !isRecord(status)
-      || Object.keys(status).some((key) => key !== "connected" && key !== "account_id" && key !== "label")
+      || Object.keys(status).some((key) => !["connected", "account_id", "connection_id", "connections", "label"].includes(key))
       || typeof status.connected !== "boolean"
       || (status.account_id !== undefined && typeof status.account_id !== "string")
+      || (status.connection_id !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(status.connection_id))
+      || (status.connections !== undefined && (!Array.isArray(status.connections)
+        || status.connections.length > 32
+        || status.connections.some((connection) => !isRecord(connection)
+          || Object.keys(connection).some((key) => !["id", "account_id", "label"].includes(key))
+          || typeof connection.id !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(connection.id)
+          || typeof connection.account_id !== "string"
+          || typeof connection.label !== "string")))
       || (status.label !== undefined && typeof status.label !== "string")) {
       throw new Error("Nanocodex Connect received invalid connector statuses.");
     }
     result[id] = Object.freeze({
       connected: status.connected,
       ...(status.account_id === undefined ? {} : { account_id: status.account_id }),
+      ...(status.connection_id === undefined ? {} : { connection_id: status.connection_id }),
+      ...(status.connections === undefined ? {} : { connections: Object.freeze(status.connections.map((connection) => Object.freeze({ ...connection }))) }),
       ...(status.label === undefined ? {} : { label: status.label }),
     });
   }
