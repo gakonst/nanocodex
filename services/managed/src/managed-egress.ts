@@ -64,7 +64,7 @@ export async function handleManagedEgress(
   request: Request,
   binding: Fetcher,
   subject?: string,
-  connectorAllowed: (connector: ManagedEgressConnectorId) => boolean = () => true,
+  connectorAllowed: (connector: ManagedEgressConnectorId, connectionId?: string) => boolean | string = () => true,
 ): Promise<Response> {
   const method = request.method.toUpperCase();
   if (!ORDINARY_METHODS.has(method)) return failure(403, "method_denied");
@@ -76,12 +76,17 @@ export async function handleManagedEgress(
   const provider = providerFor(url);
   if (!provider && PROVIDERS.has(url.hostname)) return failure(403, "destination_denied");
   if (provider) {
-    if (!connectorAllowed(provider.connector)) return failure(403, "connector_forbidden");
+    const requestedConnection = request.headers.get("x-nanocodex-connector-connection") ?? undefined;
+    const allowedConnection = connectorAllowed(provider.connector, requestedConnection);
+    if (allowedConnection === false) return failure(403, "connector_forbidden");
     if (!subject || !SUBJECT.test(subject)) return failure(403, "requires_login");
     if (!canonicalProviderPath(provider, url.pathname) || !provider.path(url.pathname)) {
       return failure(403, "connector_path_denied");
     }
     const headers = new Headers(request.headers);
+    if (typeof allowedConnection === "string") {
+      headers.set("x-nanocodex-connector-connection", allowedConnection);
+    }
     headers.set("authorization", PROVIDER_PLACEHOLDER);
     headers.set("x-nanocodex-subject", subject);
     return projectResponse(await binding.fetch(new Request(request.url, {

@@ -28,6 +28,7 @@ describe("Connect grant assertions", () => {
       headers: connectHeaders({
         capabilities: ["agents:read", "agents:write", "tools:use", "memory:read"],
         connectors: ["github", "chatgpt"],
+        connectorConnections: {},
         mcpIds: [CONNECT_MCP_ID],
         appToolCatalogDigest: APP_TOOL_CATALOG_DIGEST,
       }),
@@ -470,6 +471,7 @@ function connectHeaders(overrides: Readonly<{
   appToolCatalogDigest?: string;
   capabilities?: readonly string[];
   connectors?: readonly string[];
+  connectorConnections?: Readonly<Record<string, readonly string[]>>;
   mcpIds?: readonly string[];
 }> = {}): Headers {
   return new Headers({
@@ -479,6 +481,7 @@ function connectHeaders(overrides: Readonly<{
       overrides.capabilities ?? ["agents:read", "agents:write", "tools:use"],
     ),
     "x-nanocodex-connect-connectors": JSON.stringify(overrides.connectors ?? []),
+    "x-nanocodex-connect-connector-connections": JSON.stringify(overrides.connectorConnections ?? {}),
     "x-nanocodex-connect-mcp-ids": JSON.stringify(overrides.mcpIds ?? []),
     ...(overrides.appToolCatalogDigest === undefined
       ? {}

@@ -222,6 +222,7 @@ const SESSION_AUTHORIZATION_EPOCH_ASSERTION = "x-nanocodex-authorization-epoch";
 const SESSION_CAPABILITIES_ASSERTION = "x-nanocodex-capabilities";
 const CONNECT_GRANT_ID_ASSERTION = "x-nanocodex-connect-grant-id";
 const CONNECT_CONNECTORS_ASSERTION = "x-nanocodex-connect-connectors";
+const CONNECT_CONNECTOR_CONNECTIONS_ASSERTION = "x-nanocodex-connect-connector-connections";
 const CONNECT_MCP_IDS_ASSERTION = "x-nanocodex-connect-mcp-ids";
 const CONNECT_APP_TOOL_CATALOG_DIGEST_ASSERTION = "x-nanocodex-connect-app-tool-catalog-digest";
 const MEMORY_ORGANIZATION_ASSERTION = "x-nanocodex-organization-id";
@@ -560,9 +561,10 @@ function forwardedPrincipal(headers: Headers): Readonly<{
   try {
     const grantId = headers.get(CONNECT_GRANT_ID_ASSERTION);
     const encodedConnectors = headers.get(CONNECT_CONNECTORS_ASSERTION);
+    const encodedConnectorConnections = headers.get(CONNECT_CONNECTOR_CONNECTIONS_ASSERTION);
     const encodedMcpIds = headers.get(CONNECT_MCP_IDS_ASSERTION);
     const appToolCatalogDigest = headers.get(CONNECT_APP_TOOL_CATALOG_DIGEST_ASSERTION);
-    const connectAssertions = [grantId, encodedConnectors, encodedMcpIds];
+    const connectAssertions = [grantId, encodedConnectors, encodedConnectorConnections, encodedMcpIds];
     if (connectAssertions.some((value) => value !== null)
       && connectAssertions.some((value) => value === null)) return undefined;
     if (appToolCatalogDigest !== null && grantId === null) return undefined;
@@ -572,6 +574,7 @@ function forwardedPrincipal(headers: Headers): Readonly<{
         connectGrant: {
           grantId,
           connectors: JSON.parse(encodedConnectors!),
+          connectorConnections: JSON.parse(encodedConnectorConnections!),
           mcpIds: JSON.parse(encodedMcpIds!),
           ...(appToolCatalogDigest === null ? {} : { appToolCatalogDigest }),
         },
@@ -603,7 +606,7 @@ function isConnectGrantSlice(value: unknown): value is ConnectGrantSlice {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const grant = value as Partial<ConnectGrantSlice>;
   return Object.keys(value).every((key) => (
-    key === "grantId" || key === "connectors" || key === "mcpIds" || key === "appToolCatalogDigest"
+    key === "grantId" || key === "connectors" || key === "connectorConnections" || key === "mcpIds" || key === "appToolCatalogDigest"
   ))
     && typeof grant.grantId === "string" && /^0x[0-9a-f]{64}$/.test(grant.grantId)
     && isUniqueStringArray(grant.connectors)
@@ -611,10 +614,22 @@ function isConnectGrantSlice(value: unknown): value is ConnectGrantSlice {
       connector === "github" || connector === "gmail" || connector === "gdrive"
       || connector === "x" || connector === "chatgpt"
     ))
+    && isConnectorConnectionSlice(grant.connectorConnections, grant.connectors)
     && isUniqueStringArray(grant.mcpIds) && grant.mcpIds.length <= 16
     && grant.mcpIds.every((id) => /^[A-Za-z0-9_-]{43}$/.test(id))
     && (grant.appToolCatalogDigest === undefined
       || isAppToolCatalogDigest(grant.appToolCatalogDigest));
+}
+
+function isConnectorConnectionSlice(
+  value: unknown,
+  connectors: readonly string[],
+): value is Readonly<Record<string, readonly string[]>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([connector, ids]) => connectors.includes(connector)
+    && Array.isArray(ids) && ids.length <= 32
+    && ids.every((id) => typeof id === "string" && /^[A-Za-z0-9_-]{43}$/.test(id))
+    && new Set(ids).size === ids.length);
 }
 
 function isUniqueStringArray(value: unknown): value is string[] {
@@ -4342,10 +4357,11 @@ export class DurableAgentSession extends DurableComputerSession {
     ).toArray()[0];
     if (!first) return undefined;
     let allowedConnectors: readonly ManagedEgressConnectorId[] = [];
+    let allowedConnectorConnections: ConnectGrantSlice["connectorConnections"] | undefined;
     try {
-      allowedConnectors = accountConnectorProjection(
-        parseTurnAuthorization(first.authorization_json),
-      ) ?? ["github", "gmail", "gdrive", "x"];
+      const authorization = parseTurnAuthorization(first.authorization_json);
+      allowedConnectors = accountConnectorProjection(authorization) ?? ["github", "gmail", "gdrive", "x"];
+      allowedConnectorConnections = authorization.connectGrant?.connectorConnections;
     } catch { /* Malformed authorization fails closed. */ }
     const retained = await this.ctx.storage.get<InitialAccountContext>(
       INITIAL_ACCOUNT_CONTEXT_KEY,
@@ -4353,7 +4369,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (retained) {
       return {
         ...retained,
-        account: projectAccountInfo(retained.account, allowedConnectors),
+        account: projectAccountInfo(retained.account, allowedConnectors, allowedConnectorConnections),
       };
     }
     const prepared = {
@@ -4363,6 +4379,7 @@ export class DurableAgentSession extends DurableComputerSession {
         session.owner_id,
         true,
         allowedConnectors,
+        allowedConnectorConnections,
       ),
     } satisfies InitialAccountContext;
     await this.ctx.storage.put(INITIAL_ACCOUNT_CONTEXT_KEY, prepared);
@@ -4516,7 +4533,7 @@ export class DurableAgentSession extends DurableComputerSession {
       computerProvider: configuredComputerProvider(this.env, this.ctx.id.toString()),
       egress: this.env.NANOCODEX,
       ...(multiplayer ? {} : { subject: this.ctx.id.toString() }),
-      connectorAllowed: (connector) => this.#activeTurnConnectorAllowed(connector),
+      connectorAllowed: (connector, connectionId) => this.#activeTurnConnectorAllowed(connector, connectionId),
       sshIdentityAllowed: (reference) => this.#activeTurnSshIdentityAllowed(reference),
     });
     const currentAccountInfo = () => {
@@ -4526,6 +4543,7 @@ export class DurableAgentSession extends DurableComputerSession {
         session.owner_id,
         !multiplayer,
         authorization === undefined ? [] : accountConnectorProjection(authorization),
+        authorization?.connectGrant?.connectorConnections,
       );
     };
     const internalRuntime = Symbol.for("nanocodex.cloudflare.internalRuntime");
@@ -4885,11 +4903,15 @@ export class DurableAgentSession extends DurableComputerSession {
     catch { return undefined; }
   }
 
-  #activeTurnConnectorAllowed(connector: ManagedEgressConnectorId): boolean {
+  #activeTurnConnectorAllowed(connector: ManagedEgressConnectorId, connectionId?: string): boolean | string {
     const authorization = this.#activeTurnAuthorization();
-    return authorization !== undefined
-      && (authorization.connectGrant === undefined
-        || authorization.connectGrant.connectors.includes(connector));
+    if (!authorization) return false;
+    if (authorization.connectGrant === undefined) return true;
+    if (!authorization.connectGrant.connectors.includes(connector)) return false;
+    if (connector !== "gmail" && connector !== "gdrive") return true;
+    const granted = authorization.connectGrant.connectorConnections[connector] ?? [];
+    if (connectionId) return granted.includes(connectionId) ? connectionId : false;
+    return granted.length === 1 ? granted[0]! : false;
   }
 
   #activeTurnMcpAllowed(connectionId: string): boolean {

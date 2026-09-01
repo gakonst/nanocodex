@@ -11,6 +11,7 @@ export type AccountInfo = Readonly<{
   status: "disabled" | "ready" | "unavailable";
   authenticated: readonly ConnectorId[];
   accounts: Readonly<Partial<Record<ConnectorId, string>>>;
+  connectorAccounts: Readonly<Partial<Record<ConnectorId, readonly Readonly<{ id: string; label: string }>[]>>>;
   identity: Readonly<Record<string, never>>;
   stablecoins: readonly [];
   authorizations: readonly [];
@@ -21,6 +22,7 @@ export async function accountInfo(
   userId: string,
   enabled: boolean,
   allowedConnectors?: readonly ConnectorId[],
+  allowedConnectorConnections?: Readonly<Partial<Record<ConnectorId, readonly string[]>>>,
 ): Promise<AccountInfo> {
   if (!enabled) return emptyInfo("disabled");
   try {
@@ -37,6 +39,7 @@ export async function accountInfo(
     }
     const connectors = value.connectors;
     const accounts: Partial<Record<ConnectorId, string>> = {};
+    const connectorAccounts: Partial<Record<ConnectorId, readonly Readonly<{ id: string; label: string }>[]>> = {};
     const allowed = allowedConnectors === undefined ? undefined : new Set(allowedConnectors);
     const authenticated = CONNECTOR_IDS.filter((id) => {
       if (allowed && !allowed.has(id)) return false;
@@ -45,16 +48,30 @@ export async function accountInfo(
       if (typeof connector.label === "string" && connector.label.trim()) {
         accounts[id] = connector.label.trim();
       }
+      if (Array.isArray(connector.connections)) {
+        const decoded = connector.connections.map((connection) => {
+          if (!isRecord(connection) || typeof connection.id !== "string"
+            || !/^[A-Za-z0-9_-]{43}$/.test(connection.id)
+            || typeof connection.label !== "string" || !connection.label.trim()) {
+            throw new Error("invalid connector account");
+          }
+          return { id: connection.id, label: connection.label.trim() };
+        });
+        if (decoded.length > 32) throw new Error("too many connector accounts");
+        connectorAccounts[id] = decoded;
+        if (decoded.length === 1) accounts[id] = decoded[0]!.label;
+      }
       return true;
     });
     return projectAccountInfo({
       status: "ready",
       authenticated,
       accounts,
+      connectorAccounts,
       identity: {},
       stablecoins: [],
       authorizations: [],
-    }, allowedConnectors);
+    }, allowedConnectors, allowedConnectorConnections);
   } catch {
     return emptyInfo("unavailable");
   }
@@ -63,15 +80,35 @@ export async function accountInfo(
 export function projectAccountInfo(
   info: AccountInfo,
   allowedConnectors?: readonly ConnectorId[],
+  allowedConnectorConnections?: Readonly<Partial<Record<ConnectorId, readonly string[]>>>,
 ): AccountInfo {
-  if (allowedConnectors === undefined) return info;
+  if (allowedConnectors === undefined && allowedConnectorConnections === undefined) return info;
   const allowed = new Set(allowedConnectors);
+  const connectorAccounts = Object.fromEntries(Object.entries(info.connectorAccounts).flatMap(([id, connections]) => {
+    if (!allowed.has(id as ConnectorId)) return [];
+    const allowedIds = allowedConnectorConnections?.[id as ConnectorId];
+    const filtered = allowedIds === undefined
+      ? connections
+      : connections.filter(({ id: connectionId }) => allowedIds.includes(connectionId));
+    return filtered.length ? [[id, filtered]] : [];
+  }));
+  const authenticated = info.authenticated.filter((id) => allowed.has(id)
+    && ((id !== "gmail" && id !== "gdrive")
+      || allowedConnectorConnections === undefined
+      || Object.hasOwn(connectorAccounts, id)));
+  const accounts = Object.fromEntries(Object.entries(info.accounts).filter(([id]) => (
+    authenticated.includes(id as ConnectorId)
+  )));
+  for (const id of ["gmail", "gdrive"] as const) {
+    const connections = connectorAccounts[id];
+    if (connections?.length === 1) accounts[id] = connections[0]!.label;
+    else delete accounts[id];
+  }
   return {
     ...info,
-    authenticated: info.authenticated.filter((id) => allowed.has(id)),
-    accounts: Object.fromEntries(Object.entries(info.accounts).filter(([id]) => (
-      allowed.has(id as ConnectorId)
-    ))),
+    authenticated,
+    accounts,
+    connectorAccounts,
   };
 }
 
@@ -95,6 +132,7 @@ function emptyInfo(status: "disabled" | "unavailable"): AccountInfo {
     status,
     authenticated: [],
     accounts: {},
+    connectorAccounts: {},
     identity: {},
     stablecoins: [],
     authorizations: [],

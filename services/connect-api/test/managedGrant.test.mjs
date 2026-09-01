@@ -57,7 +57,8 @@ test("managed grant headers serialize only the exact delegated slice", () => {
       "github",
       "mcp:not-a-header-capability",
     ],
-    connectors: ["github"],
+    connectors: ["github", "gmail"],
+    connectorConnections: { gmail: ["g".repeat(43)] },
     grantId: `0x${"a".repeat(64)}`,
     mcpIds: ["mcp-1"],
     appToolCatalogDigest: `0x${"c".repeat(64)}`,
@@ -70,7 +71,10 @@ test("managed grant headers serialize only the exact delegated slice", () => {
     "history:read",
     "memory:write",
   ]);
-  assert.deepEqual(JSON.parse(headers["x-nanocodex-connect-connectors"]), ["github"]);
+  assert.deepEqual(JSON.parse(headers["x-nanocodex-connect-connectors"]), ["github", "gmail"]);
+  assert.deepEqual(JSON.parse(headers["x-nanocodex-connect-connector-connections"]), {
+    gmail: ["g".repeat(43)],
+  });
   assert.deepEqual(JSON.parse(headers["x-nanocodex-connect-mcp-ids"]), ["mcp-1"]);
   assert.equal(
     headers["x-nanocodex-connect-app-tool-catalog-digest"],

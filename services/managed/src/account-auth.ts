@@ -27,6 +27,7 @@ const CONNECT_USER_HEADER = "x-nanocodex-connect-user";
 const CONNECT_GRANT_ID_HEADER = "x-nanocodex-connect-grant-id";
 const CONNECT_CAPABILITIES_HEADER = "x-nanocodex-connect-capabilities";
 const CONNECT_CONNECTORS_HEADER = "x-nanocodex-connect-connectors";
+const CONNECT_CONNECTOR_CONNECTIONS_HEADER = "x-nanocodex-connect-connector-connections";
 const CONNECT_MCP_IDS_HEADER = "x-nanocodex-connect-mcp-ids";
 const CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER = "x-nanocodex-connect-app-tool-catalog-digest";
 const SESSION_OWNER_ASSERTION = "x-nanocodex-owner-id";
@@ -70,6 +71,7 @@ export type ConnectConnectorId = "github" | "gmail" | "gdrive" | "x" | "chatgpt"
 export type ConnectGrantSlice = Readonly<{
   grantId: string;
   connectors: readonly ConnectConnectorId[];
+  connectorConnections: Readonly<Partial<Record<ConnectConnectorId, readonly string[]>>>;
   mcpIds: readonly string[];
   appToolCatalogDigest?: `0x${string}`;
 }>;
@@ -112,6 +114,7 @@ export function forwardPrincipalAssertions(headers: Headers, principal: Principa
     CONNECT_GRANT_ID_HEADER,
     CONNECT_CAPABILITIES_HEADER,
     CONNECT_CONNECTORS_HEADER,
+    CONNECT_CONNECTOR_CONNECTIONS_HEADER,
     CONNECT_MCP_IDS_HEADER,
     CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER,
   ]) {
@@ -120,6 +123,7 @@ export function forwardPrincipalAssertions(headers: Headers, principal: Principa
   if (principal.connectGrant) {
     headers.set(CONNECT_GRANT_ID_HEADER, principal.connectGrant.grantId);
     headers.set(CONNECT_CONNECTORS_HEADER, JSON.stringify(principal.connectGrant.connectors));
+    headers.set(CONNECT_CONNECTOR_CONNECTIONS_HEADER, JSON.stringify(principal.connectGrant.connectorConnections));
     headers.set(CONNECT_MCP_IDS_HEADER, JSON.stringify(principal.connectGrant.mcpIds));
     if (principal.connectGrant.appToolCatalogDigest !== undefined) {
       headers.set(CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER, principal.connectGrant.appToolCatalogDigest);
@@ -1713,6 +1717,7 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
   const grantId = headers.get(CONNECT_GRANT_ID_HEADER);
   const capabilities = parseUniqueJsonArray(headers.get(CONNECT_CAPABILITIES_HEADER));
   const connectors = parseUniqueJsonArray(headers.get(CONNECT_CONNECTORS_HEADER));
+  const connectorConnections = parseConnectorConnections(headers.get(CONNECT_CONNECTOR_CONNECTIONS_HEADER));
   const mcpIds = parseUniqueJsonArray(headers.get(CONNECT_MCP_IDS_HEADER));
   const appToolCatalogDigest = headers.get(CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER);
   if (!grantId || !CONNECT_GRANT_ID.test(grantId)
@@ -1722,6 +1727,8 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
     || !connectors || !connectors.every((value): value is ConnectConnectorId => (
       CONNECT_CONNECTORS.has(value as ConnectConnectorId)
     ))
+    || !connectorConnections
+    || Object.keys(connectorConnections).some((connector) => !connectors.includes(connector as ConnectConnectorId))
     || !mcpIds || mcpIds.length > 16 || !mcpIds.every((value) => CONNECT_MCP_ID.test(value))
     || (appToolCatalogDigest !== null && !isAppToolCatalogDigest(appToolCatalogDigest))) {
     return undefined;
@@ -1731,10 +1738,27 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
     slice: {
       grantId: grantId.toLowerCase(),
       connectors,
+      connectorConnections,
       mcpIds,
       ...(appToolCatalogDigest === null ? {} : { appToolCatalogDigest }),
     },
   };
+}
+
+function parseConnectorConnections(encoded: string | null): Partial<Record<ConnectConnectorId, readonly string[]>> | undefined {
+  if (encoded === null) return undefined;
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch { return undefined; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result: Partial<Record<ConnectConnectorId, readonly string[]>> = {};
+  for (const [connector, ids] of Object.entries(value)) {
+    if (!CONNECT_CONNECTORS.has(connector as ConnectConnectorId)
+      || !Array.isArray(ids) || ids.length > 32
+      || ids.some((id) => typeof id !== "string" || !CONNECT_MCP_ID.test(id))
+      || new Set(ids).size !== ids.length) return undefined;
+    result[connector as ConnectConnectorId] = ids as string[];
+  }
+  return result;
 }
 
 function parseUniqueJsonArray(encoded: string | null): string[] | undefined {

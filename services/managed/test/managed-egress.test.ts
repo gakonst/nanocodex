@@ -91,6 +91,35 @@ describe("Computer egress gateway", () => {
     expect(publicFetch).not.toHaveBeenCalled();
   });
 
+  it("pins Google requests to an account allowed by the active Connect grant", async () => {
+    const selected = "a".repeat(43);
+    let seen: Request | undefined;
+    const binding = {
+      async fetch(input: RequestInfo | URL, init?: RequestInit) {
+        seen = new Request(input, init);
+        return Response.json({ ok: true });
+      },
+    } as Fetcher;
+    const allowed = await handleManagedEgress(
+      new Request("https://gmail.googleapis.com/gmail/v1/users/me/messages"),
+      binding,
+      SUBJECT,
+      (connector, requested) => connector === "gmail" && requested === undefined ? selected : false,
+    );
+    expect(allowed.status).toBe(200);
+    expect(seen?.headers.get("x-nanocodex-connector-connection")).toBe(selected);
+
+    const denied = await handleManagedEgress(
+      new Request("https://gmail.googleapis.com/gmail/v1/users/me/messages", {
+        headers: { "x-nanocodex-connector-connection": "b".repeat(43) },
+      }),
+      binding,
+      SUBJECT,
+      (_connector, requested) => requested === selected ? selected : false,
+    );
+    expect(denied.status).toBe(403);
+  });
+
   it("manually follows only revalidated public redirects", async () => {
     const requests: Request[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

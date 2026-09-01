@@ -7,7 +7,10 @@ describe("account info", () => {
     const fetch = vi.fn(async () => Response.json({
       connectors: {
         github: { connected: true, account_id: "secret-account", label: "Nano Cat (nanocat)" },
-        gmail: { connected: false },
+        gmail: { connected: true, connections: [
+          { id: "a".repeat(43), account_id: "google-one", label: "one@example.test" },
+          { id: "b".repeat(43), account_id: "google-two", label: "two@example.test" },
+        ] },
         gdrive: { connected: true, access_token: "secret-token" },
         x: { connected: true, account_id: "secret-x-account", label: "Nano Cat (@nanocat)" },
       },
@@ -17,8 +20,12 @@ describe("account info", () => {
 
     expect(info).toEqual({
       status: "ready",
-      authenticated: ["github", "gdrive", "x"],
+      authenticated: ["github", "gmail", "gdrive", "x"],
       accounts: { github: "Nano Cat (nanocat)", x: "Nano Cat (@nanocat)" },
+      connectorAccounts: { gmail: [
+        { id: "a".repeat(43), label: "one@example.test" },
+        { id: "b".repeat(43), label: "two@example.test" },
+      ] },
       identity: {},
       stablecoins: [],
       authorizations: [],
@@ -33,12 +40,12 @@ describe("account info", () => {
     expect(await accountInfo({
       fetch: async () => Response.json({ error: "down" }, { status: 503 }),
     }, "user", true)).toEqual({
-      status: "unavailable", authenticated: [], accounts: {}, identity: {}, stablecoins: [], authorizations: [],
+      status: "unavailable", authenticated: [], accounts: {}, connectorAccounts: {}, identity: {}, stablecoins: [], authorizations: [],
     });
     expect(await accountInfo({
       fetch: async () => Response.json({ connectors: null }),
     }, "user", true)).toEqual({
-      status: "unavailable", authenticated: [], accounts: {}, identity: {}, stablecoins: [], authorizations: [],
+      status: "unavailable", authenticated: [], accounts: {}, connectorAccounts: {}, identity: {}, stablecoins: [], authorizations: [],
     });
   });
 
@@ -58,12 +65,31 @@ describe("account info", () => {
     expect(JSON.stringify(info)).not.toMatch(/Private Gmail|Private Drive|gmail|gdrive/);
   });
 
+  it("projects only Google accounts pinned into the Connect grant", async () => {
+    const first = "a".repeat(43);
+    const second = "b".repeat(43);
+    const info = await accountInfo({
+      fetch: async () => Response.json({ connectors: {
+        gmail: { connected: true, connections: [
+          { id: first, account_id: "google-one", label: "one@example.test" },
+          { id: second, account_id: "google-two", label: "two@example.test" },
+        ] },
+      } }),
+    }, "user", true, ["gmail"], { gmail: [second] });
+
+    expect(info.authenticated).toEqual(["gmail"]);
+    expect(info.accounts).toEqual({ gmail: "two@example.test" });
+    expect(info.connectorAccounts).toEqual({ gmail: [{ id: second, label: "two@example.test" }] });
+    expect(JSON.stringify(info)).not.toContain("one@example.test");
+  });
+
   it("does not query account connectors for shared rooms", async () => {
     const fetch = vi.fn(async () => Response.json({}));
     expect(await accountInfo({ fetch }, "owner", false)).toEqual({
       status: "disabled",
       authenticated: [],
       accounts: {},
+      connectorAccounts: {},
       identity: {},
       stablecoins: [],
       authorizations: [],
@@ -76,6 +102,7 @@ describe("account info", () => {
       status: "ready" as const,
       authenticated: ["github" as const],
       accounts: { github: "Nano Cat (nanocat)" },
+      connectorAccounts: {},
       identity: {},
       stablecoins: [] as const,
       authorizations: [] as const,

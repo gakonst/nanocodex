@@ -163,6 +163,7 @@ const CONNECTOR_REQUEST_HEADERS = new Set([
   "if-modified-since",
   "if-none-match",
   "if-unmodified-since",
+  "x-nanocodex-connector-connection",
 ]);
 const CONNECTOR_RESPONSE_HEADERS = new Set([
   "accept-ranges",
@@ -198,7 +199,10 @@ type ConnectorStatus = Readonly<{
   connected: boolean;
   label?: string;
   account_id?: string;
+  connection_id?: string;
+  connections?: readonly ConnectorConnection[];
 }>;
+type ConnectorConnection = Readonly<{ id: string; label: string; account_id: string }>;
 type ConnectorState = Readonly<{
   accountAddress: `0x${string}`;
   brokerUserId: string;
@@ -294,6 +298,7 @@ type GrantRecord = Readonly<{
   conversationId?: string;
   appToolCatalogDigest?: `0x${string}`;
   mcpConnections?: readonly Readonly<{ id: string; name: string }>[];
+  connectorConnections?: Readonly<Record<string, readonly string[]>>;
   accessKey?: Record<string, unknown>;
   balanceAtomics?: string;
   spentAtomics: string;
@@ -636,9 +641,10 @@ export default {
         return error(request, 405, "method_not_allowed", "Unsupported MCP connection operation.");
       }
 
-      const connectorRoute = url.pathname.match(/^\/v1\/connectors\/(github|gmail|gdrive|x|chatgpt)$/);
+      const connectorRoute = url.pathname.match(/^\/v1\/connectors\/(github|gmail|gdrive|x|chatgpt)(?:\/([A-Za-z0-9_-]{43}))?$/);
       if (connectorRoute) {
         const connector = connectorRoute[1] as ConnectorId;
+        const connectionId = connectorRoute[2];
         const identity = await brokerIdentity(env, accountAddress);
         logContext = {
           ...logContext,
@@ -647,6 +653,7 @@ export default {
           connector,
         };
         if (request.method === "POST") {
+          if (connectionId) return error(request, 405, "method_not_allowed", "Unsupported connector operation.");
           const response = await startConnector(env, store, request, accountAddress, identity.userId, connector);
           console.info({
             type: "connect.connector.start",
@@ -657,7 +664,10 @@ export default {
           return cors(response, request);
         }
         if (request.method === "DELETE") {
-          await disconnectConnector(env, identity.userId, connector);
+          if (connectionId && connector !== "gmail" && connector !== "gdrive") {
+            return error(request, 404, "not_found", "Connector connection not found.");
+          }
+          await disconnectConnector(env, identity.userId, connector, connectionId);
           console.info({
             type: "connect.connector.disconnect",
             outcome: "success",
@@ -1270,6 +1280,10 @@ async function createConnection(
   const liveConnectorStatuses = (await connectorStatuses(env, identity.userId)).connectors;
   const connectors = requested.filter((connector) => liveConnectorStatuses[connector].connected);
   requireRequestedConnectors(connectors, requested);
+  const connectorConnections = Object.fromEntries(connectors.flatMap((connector) => {
+    const ids = liveConnectorStatuses[connector].connections?.map(({ id }) => id) ?? [];
+    return ids.length ? [[connector, ids] as const] : [];
+  }));
   if (credentialImport
     && liveConnectorStatuses.chatgpt.account_id !== credentialImport.account_id) {
     throw new ApiFailure(
@@ -1298,6 +1312,7 @@ async function createConnection(
     brokerUserId: identity.userId,
     capabilities: grantCapabilities,
     connectors,
+    connectorConnections,
     grantId,
     mcpIds: mcpConnections.map(({ id }) => id),
     ...(approvedAppToolCatalogDigest ? { appToolCatalogDigest: approvedAppToolCatalogDigest } : {}),
@@ -1329,6 +1344,7 @@ async function createConnection(
     status: "active",
     expiresAt,
     capabilities: grantCapabilities,
+    connectorConnections,
     ...(conversationId ? { conversationId } : {}),
     ...(approvedAppToolCatalogDigest ? { appToolCatalogDigest: approvedAppToolCatalogDigest } : {}),
     mcpConnections: mcpConnections.map(({ id, name }) => ({ id, name })),
@@ -1855,6 +1871,7 @@ function managedGrantAssertion(grant: GrantRecord): ManagedGrantAssertion {
     brokerUserId: grant.brokerUserId,
     capabilities: grant.capabilities,
     connectors: CONNECTOR_IDS.filter((connector) => grant.capabilities.includes(connector)),
+    connectorConnections: grant.connectorConnections ?? {},
     grantId: grant.id,
     mcpIds: (grant.mcpConnections ?? []).map(({ id }) => id),
     ...(grant.appToolCatalogDigest === undefined
@@ -2242,7 +2259,7 @@ async function connectAccountInfo(env: Env, store: Kv.Kv, current: GrantRecord) 
     accountAuthorizations(store, current),
   ]);
   return {
-    ...connectorInfo,
+    ...projectGrantConnectorStatuses(connectorInfo, current),
     identity: { tempoAddress: current.accountAddress },
     stablecoins: [
       { token: MACHINE_USD, symbol: "MACHUSD", balance: machineUsd.toString(), decimals: 6 },
@@ -2250,6 +2267,28 @@ async function connectAccountInfo(env: Env, store: Kv.Kv, current: GrantRecord) 
     ],
     authorizations,
   };
+}
+
+function projectGrantConnectorStatuses(
+  info: { connectors: Record<ConnectorId, ConnectorStatus> },
+  grant: GrantRecord,
+): { connectors: Record<ConnectorId, ConnectorStatus> } {
+  return { connectors: Object.fromEntries(CONNECTOR_IDS.map((connector) => {
+    if (!grant.capabilities.includes(connector)) return [connector, { connected: false }];
+    const status = info.connectors[connector];
+    if (connector !== "gmail" && connector !== "gdrive") return [connector, status];
+    const granted = new Set(grant.connectorConnections?.[connector] ?? []);
+    const connections = (status.connections ?? []).filter(({ id }) => granted.has(id));
+    return [connector, connections.length === 0 ? { connected: false, connections: [] } : {
+      connected: true,
+      connections,
+      ...(connections.length === 1 ? {
+        connection_id: connections[0]!.id,
+        account_id: connections[0]!.account_id,
+        label: connections[0]!.label,
+      } : {}),
+    }];
+  })) as Record<ConnectorId, ConnectorStatus> };
 }
 
 async function accountAuthorizations(store: Kv.Kv, current: GrantRecord) {
@@ -2290,6 +2329,7 @@ function grantAuthorization(grant: GrantRecord) {
     expiresAt: grant.expiresAt,
     capabilities: [...grant.capabilities],
     connectors: CONNECTOR_IDS.filter((connector) => grant.capabilities.includes(connector)),
+    connectorConnections: grant.connectorConnections ?? {},
     ...(accessKey ? { accessKey: {
       id: address(accessKey.key_id),
       expiry: safeInteger(accessKey.expiry, "access_key.expiry"),
@@ -2376,6 +2416,7 @@ async function grantBrowserEgress(request: Request, env: Env, grant: GrantRecord
       method: value.method,
       headers: value.headers,
       body: value.body,
+      connection_id: value.connection_id,
     });
     return new Response(result.body, { status: result.status, headers: result.headers });
   }
@@ -3196,6 +3237,8 @@ function isGrantRecord(value: unknown): value is GrantRecord {
     && Number.isSafeInteger(value.expiresAt)
     && Array.isArray(value.capabilities)
     && value.capabilities.every((capability) => typeof capability === "string")
+    && (value.connectorConnections === undefined
+      || validConnectorConnections(value.connectorConnections))
     && (value.appToolCatalogDigest === undefined
       || /^0x[0-9a-f]{64}$/.test(String(value.appToolCatalogDigest)))
     && (value.mcpConnections === undefined
@@ -3212,6 +3255,15 @@ function isGrantRecord(value: unknown): value is GrantRecord {
     && typeof value.egressSubject === "string"
     && (value.settlementBalanceAtomics === undefined || /^\d+$/.test(String(value.settlementBalanceAtomics)))
     && (value.sharedEgressSubject === undefined || typeof value.sharedEgressSubject === "boolean");
+}
+
+function validConnectorConnections(value: unknown): value is Readonly<Record<string, readonly string[]>> {
+  return isRecord(value) && Object.entries(value).every(([connector, ids]) => (
+    (connector === "gmail" || connector === "gdrive")
+    && Array.isArray(ids) && ids.length <= 32
+    && ids.every(isConnectorConnectionId)
+    && new Set(ids).size === ids.length
+  ));
 }
 
 function isBrokerUserId(value: unknown): value is string {
@@ -3371,11 +3423,33 @@ function connectorStatus(value: unknown): ConnectorStatus {
   if (!isRecord(value) || value.connected !== true) return { connected: false };
   const label = boundedOptionalString(value.label, 256);
   const accountId = boundedOptionalString(value.account_id, 256);
+  const connectionId = isConnectorConnectionId(value.connection_id) ? value.connection_id : undefined;
+  const connections = Array.isArray(value.connections) && value.connections.length <= 32
+    ? value.connections.map(publicConnectorConnection)
+    : undefined;
   return {
     connected: true,
     ...(label ? { label } : {}),
     ...(accountId ? { account_id: accountId } : {}),
+    ...(connectionId ? { connection_id: connectionId } : {}),
+    ...(connections ? { connections } : {}),
   };
+}
+
+function publicConnectorConnection(value: unknown): ConnectorConnection {
+  if (!isRecord(value) || !isConnectorConnectionId(value.id)) {
+    throw new ApiFailure(502, "connector_broker_invalid", "The connector broker returned invalid account metadata.");
+  }
+  const label = boundedOptionalString(value.label, 256);
+  const accountId = boundedOptionalString(value.account_id, 256);
+  if (!label || !accountId) {
+    throw new ApiFailure(502, "connector_broker_invalid", "The connector broker returned invalid account metadata.");
+  }
+  return { id: value.id, label, account_id: accountId };
+}
+
+function isConnectorConnectionId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 }
 
 async function startConnector(
@@ -3593,10 +3667,11 @@ async function disconnectConnector(
   env: Env,
   brokerUserId: string,
   connector: ConnectorId,
+  connectionId?: string,
 ): Promise<void> {
   const path = connector === "chatgpt"
     ? `/users/${encodeURIComponent(brokerUserId)}/credentials/chatgpt`
-    : `/users/${encodeURIComponent(brokerUserId)}/connectors/${connector}`;
+    : `/users/${encodeURIComponent(brokerUserId)}/connectors/${connector}${connectionId ? `/${connectionId}` : ""}`;
   const response = await brokerFetch(env, path, { method: "DELETE" });
   if (!response.ok) {
     await response.body?.cancel();
@@ -4107,6 +4182,21 @@ async function grantConnectorRequest(
   }
   const target = connectorTarget(connector, value.path);
   const headers = connectorHeaders(value.headers);
+  const grantedConnections = grant.connectorConnections?.[connector] ?? [];
+  const requestedConnection = value.connection_id ?? headers.get("x-nanocodex-connector-connection") ?? undefined;
+  const connectionId = requestedConnection ?? (grantedConnections.length === 1 ? grantedConnections[0] : undefined);
+  if (grantedConnections.length > 1 && connectionId === undefined) {
+    throw new ApiFailure(409, "connector_connection_required", "Choose which connected account to use.");
+  }
+  if (connectionId !== undefined) {
+    if (!isConnectorConnectionId(connectionId)) {
+      throw new ApiFailure(400, "invalid_connector_connection", "The connector connection ID is invalid.");
+    }
+    if (grantedConnections.length > 0 && !grantedConnections.includes(connectionId)) {
+      throw new ApiFailure(403, "connector_connection_not_granted", "The connected account is outside this grant.");
+    }
+    headers.set("x-nanocodex-connector-connection", connectionId);
+  }
   headers.set("authorization", PROVIDER_CREDENTIAL_PLACEHOLDER);
   headers.set("x-nanocodex-subject", grant.egressSubject);
   const body = value.body;
@@ -4804,6 +4894,7 @@ function grantWire(grant: GrantRecord) {
     status: grant.status,
     expires_at: grant.expiresAt,
     capabilities: grant.capabilities,
+    connector_connections: grant.connectorConnections ?? {},
     ...(grant.conversationId ? { conversation_id: grant.conversationId } : {}),
     mcp_connections: grant.mcpConnections ?? [],
     ...(grant.appToolCatalogDigest
@@ -4952,7 +5043,7 @@ function cors(response: Response, request: Request) {
     }
     response.headers.set(
       "access-control-allow-headers",
-      "accept-payment, authorization, content-type, git-protocol, idempotency-key, last-event-id, mcp-protocol-version, mcp-session-id, payment-session, payment-session-snapshot, payment-signature, x-nanocodex-app-id, x-nanocodex-connect-client",
+      "accept-payment, authorization, content-type, git-protocol, idempotency-key, last-event-id, mcp-protocol-version, mcp-session-id, payment-session, payment-session-snapshot, payment-signature, x-nanocodex-app-id, x-nanocodex-connect-client, x-nanocodex-connector-connection",
     );
     response.headers.set("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
     response.headers.set("access-control-max-age", "86400");

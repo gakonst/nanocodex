@@ -3,6 +3,7 @@ export type ManagedGrantAssertion = Readonly<{
   brokerUserId: string;
   capabilities: readonly string[];
   connectors: readonly string[];
+  connectorConnections?: Readonly<Record<string, readonly string[]>>;
   grantId: `0x${string}`;
   mcpIds: readonly string[];
 }>;

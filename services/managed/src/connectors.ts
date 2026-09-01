@@ -204,13 +204,15 @@ export async function routeConnectorRequest(
     );
   }
 
-  const match = url.pathname.match(/^\/v1\/connectors\/([^/]+)(\/callback)?$/);
+  const match = url.pathname.match(/^\/v1\/connectors\/([^/]+)(\/callback)?(?:\/([A-Za-z0-9_-]{43}))?$/);
   if (!match) return undefined;
   const connector = connectorId(match[1]);
   if (!connector) return json({ error: "not_found" }, 404);
   const callback = match[2] === CALLBACK_SUFFIX;
+  const connectionId = match[3];
   if ((!callback && request.method !== "POST" && request.method !== "DELETE")
-    || (callback && request.method !== "GET")) {
+    || (callback && request.method !== "GET")
+    || (connectionId && (connector === "github" || connector === "x" || request.method !== "DELETE"))) {
     return json({ error: "method_not_allowed" }, 405);
   }
 
@@ -221,7 +223,7 @@ export async function routeConnectorRequest(
     if (originFailure) return originFailure;
   }
 
-  const target = `https://broker.internal/users/${encodeURIComponent(principal.userId)}/connectors/${connector}${callback ? "/callback" : ""}`;
+  const target = `https://broker.internal/users/${encodeURIComponent(principal.userId)}/connectors/${connector}${callback ? "/callback" : connectionId ? `/${connectionId}` : ""}`;
   if (callback) return finishCallback(await env.NANOCODEX.fetch(target, {
     method: "POST",
     headers: { "content-type": "application/json" },
