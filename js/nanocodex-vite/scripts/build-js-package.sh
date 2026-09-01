@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$repository_root"
+# Vite consumers start this builder in separate processes. Serialize the whole
+# generation so the cache check and in-place Node glue rewrite are atomic.
+if [[ "${NANOCODEX_WASM_BUILD_LOCK_HELD:-}" != "1" ]]; then
+  exec node "$repository_root/js/nanocodex-vite/scripts/build-lock.mjs" \
+    "$repository_root/js/nanocodex/pkg-web/.nanocodex-bindgen.lock" \
+    "$script_path" "$@"
+fi
+
 
 wasm_target=wasm32-unknown-unknown
 target_dir="${CARGO_TARGET_DIR:-$repository_root/target}"
