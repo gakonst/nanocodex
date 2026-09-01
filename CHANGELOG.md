@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [cli] Fall back to another installed Chromium-family browser when the default
   Brave installation is absent, or omit browser tools when none is available,
   while keeping explicit browser selection strict.
+- [web] Prepare the managed QuickJS WASM asset before starting Cloudflare Vite
+  development workers.
+- [vite] Serialize concurrent Rust/WASM binding generation across dev workers.
 
 ## [0.5.0](https://github.com/gakonst/nanocodex/releases/tag/v0.5.0) - 2026-08-12
 
