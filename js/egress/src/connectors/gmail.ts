@@ -18,6 +18,7 @@ export type GmailAuthorizationInput = Readonly<{
   redirectUri: string;
   state: string;
   codeChallenge: string;
+  loginHint?: string;
 }>;
 
 export type GmailTokenExchangeInput = Readonly<{
@@ -63,6 +64,9 @@ export function buildGmailAuthorizationParams(
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "true",
+    ...(input.loginHint === undefined ? {} : {
+      login_hint: nonEmptyInput(input.loginHint, "loginHint"),
+    }),
   });
 }
 

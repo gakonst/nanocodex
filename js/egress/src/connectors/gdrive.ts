@@ -22,6 +22,7 @@ export interface GDriveAuthorizationInput {
   redirectUri: string;
   state: string;
   codeChallenge: string;
+  loginHint?: string;
 }
 
 export interface GDriveTokenExchangeInput {
@@ -66,6 +67,9 @@ export function buildGDriveAuthorizationParams(
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "true",
+    ...(input.loginHint === undefined ? {} : {
+      login_hint: requiredString(input.loginHint, "loginHint"),
+    }),
   });
 }
 

@@ -49,6 +49,8 @@ const MAX_CONNECTOR_URL_BYTES = 8 * 1024;
 const MAX_CONNECTOR_RESPONSE_BYTES = 8 * 1024 * 1024;
 const CONNECTOR_TIMEOUT_MS = 20_000;
 const EXPIRY_SKEW_MS = 30_000;
+const REVOCATION_RETRY_BASE_MS = 30_000;
+const REVOCATION_RETRY_MAX_MS = 60 * 60_000;
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
 const CONNECTOR = /^(github|gmail|gdrive|x)$/;
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
@@ -115,6 +117,7 @@ type PendingAuthorization = {
   verifier: string;
   redirectUri: string;
   returnTo: string;
+  accountHint?: string;
   expiresAt: number;
 };
 
@@ -122,6 +125,13 @@ type ConnectorState = {
   version: 1;
   connectors: Partial<Record<ConnectorId, StoredConnector>>;
   pending: Partial<Record<ConnectorId, PendingAuthorization>>;
+  revocations?: PendingRevocation[];
+};
+
+type PendingRevocation = {
+  id: ConnectorId;
+  connector: StoredConnector;
+  attempts: number;
 };
 
 type StoredRow = { envelope: EncryptedEnvelope };
@@ -151,6 +161,13 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     });
   }
 
+  alarm(): Promise<void> {
+    return this.#exclusive(async () => {
+      await this.#ready;
+      await this.#retryPendingRevocations();
+    });
+  }
+
   async #exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.#tail;
     let release!: () => void;
@@ -168,6 +185,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       const opened = await this.#vault.open<ConnectorState>(row.envelope);
       this.#connectors = opened.value;
       if (opened.reseal) await this.#persist();
+    }
+    if (this.#pendingRevocations().length > 0) {
+      await this.#schedulePendingRevocations();
     }
   }
 
@@ -479,6 +499,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     const response = await providerFetch(revocationRequest(id, connector, this.#env));
     await response.body?.cancel();
     const revoked = id === "github" ? response.status === 204 : response.status === 200;
+    connectorAudit("revoke", revoked ? "allow" : "error", id, {
+      status: response.status,
+    });
     if (!revoked) throw new ConnectorFailure(503, "connector_revocation_failed");
     return true;
   }
@@ -527,8 +550,10 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     const body = await readJson(request, MAX_BODY_BYTES);
     const redirectUri = stringField(body, "redirect_uri");
     const returnTo = stringField(body, "return_to");
+    const accountHint = optionalAccountHint(body, id);
     if (!redirectUri || !validRedirectUri(redirectUri, this.#env)
-      || !returnTo || !validReturnTo(returnTo)) {
+      || !returnTo || !validReturnTo(returnTo)
+      || accountHint === null) {
       throw new ConnectorFailure(400, "invalid_request");
     }
     const verifier = randomBase64Url(64);
@@ -541,6 +566,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       verifier,
       redirectUri,
       returnTo,
+      ...(accountHint === undefined ? {} : { accountHint }),
       expiresAt: Date.now() + PENDING_TTL_MS,
     };
     await this.#persist();
@@ -549,6 +575,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         redirectUri,
         state,
         codeChallenge: challenge,
+        ...(accountHint === undefined ? {} : { loginHint: accountHint }),
       }).href,
     };
   }
@@ -593,7 +620,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         if (error instanceof ConnectorFailure) throw error;
         throw new ConnectorFailure(502, "connector_identity_response_invalid");
       }
-      this.#connectors.connectors[id] = {
+      const connected: StoredConnector = {
         accessToken: token.accessToken,
         ...(token.refreshToken ? { refreshToken: token.refreshToken } : {}),
         ...(token.expiresIn ? { expiresAt: Date.now() + token.expiresIn * 1_000 } : {}),
@@ -605,6 +632,29 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         label: identity.displayLabel,
         connectedAt: Date.now(),
       };
+      if (pending.accountHint !== undefined
+        && identity.displayLabel.toLowerCase() !== pending.accountHint.toLowerCase()) {
+        this.#pendingRevocations().push({ id, connector: connected, attempts: 0 });
+        await this.#persist();
+        await this.#schedulePendingRevocations();
+        try {
+          if (!await this.#revoke(id, connected)) {
+            throw new ConnectorFailure(503, "connector_revocation_failed");
+          }
+          this.#connectors.revocations = this.#pendingRevocations().filter(
+            (revocation) => revocation.connector !== connected,
+          );
+          await this.#persist();
+          await this.#schedulePendingRevocations();
+        } catch {
+          connectorAudit("revoke", "error", id, {
+            status: 503,
+            code: "connector_mismatched_grant_revocation_failed",
+          });
+        }
+        throw new ConnectorFailure(409, "connector_account_mismatch");
+      }
+      this.#connectors.connectors[id] = connected;
       await this.#persist();
       return { connected: true, return_to: pending.returnTo };
     } catch (error) {
@@ -619,6 +669,37 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     } satisfies StoredRow);
   }
 
+  #pendingRevocations(): PendingRevocation[] {
+    return this.#connectors.revocations ??= [];
+  }
+
+  async #retryPendingRevocations(): Promise<void> {
+    const retained: PendingRevocation[] = [];
+    for (const revocation of this.#pendingRevocations()) {
+      try {
+        if (!await this.#revoke(revocation.id, revocation.connector)) {
+          throw new ConnectorFailure(503, "connector_revocation_failed");
+        }
+      } catch {
+        retained.push({ ...revocation, attempts: revocation.attempts + 1 });
+      }
+    }
+    this.#connectors.revocations = retained;
+    await this.#persist();
+    await this.#schedulePendingRevocations();
+  }
+
+  async #schedulePendingRevocations(): Promise<void> {
+    const pending = this.#pendingRevocations();
+    if (pending.length === 0) {
+      await this.#state.storage.deleteAlarm();
+      return;
+    }
+    const attempts = Math.min(...pending.map((revocation) => revocation.attempts));
+    const delay = Math.min(REVOCATION_RETRY_BASE_MS * 2 ** attempts, REVOCATION_RETRY_MAX_MS);
+    await this.#state.storage.setAlarm(Date.now() + delay);
+  }
+
   async #restoreDurableState(): Promise<void> {
     try {
       const row = await this.#state.storage.get<StoredRow>(STATE_KEY);
@@ -631,7 +712,12 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   }
 }
 
-type AuthorizationFields = { redirectUri: string; state: string; codeChallenge: string };
+type AuthorizationFields = {
+  redirectUri: string;
+  state: string;
+  codeChallenge: string;
+  loginHint?: string;
+};
 type ExchangeFields = { redirectUri: string; code: string; codeVerifier: string };
 type DecodedToken = {
   accessToken: string;
@@ -651,6 +737,17 @@ function authorizationUrl(
   if (id === "gmail") return buildGmailAuthorizationUrl({ clientId, ...fields });
   if (id === "x") return buildXAuthorizationUrl({ clientId, ...fields });
   return buildGDriveAuthorizationUrl({ clientId, ...fields });
+}
+
+function optionalAccountHint(
+  value: unknown,
+  id: ConnectorId,
+): string | null | undefined {
+  if (!isRecord(value) || value.account_hint === undefined) return undefined;
+  if ((id !== "gmail" && id !== "gdrive")
+    || typeof value.account_hint !== "string") return null;
+  const hint = value.account_hint.trim().toLowerCase();
+  return hint.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hint) ? hint : null;
 }
 
 function tokenExchangeRequest(

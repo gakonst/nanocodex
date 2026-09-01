@@ -1,6 +1,8 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
+const transientGoogleRevocations = new Set<string>();
+
 const TEST_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
 const TEST_CHATGPT_EGRESS = `
 export class ChatGptEgress {
@@ -191,6 +193,8 @@ export default defineConfig({
                   ? "gdrive-connector-refresh"
                   : revoked
                     ? "gmail-revoked-refresh"
+                    : body.get("code") === "gmail-revoke-once-code"
+                      ? "gmail-revoke-once-refresh"
                     : revokeFailure ? "gmail-revoke-failure-refresh" : "gmail-connector-refresh",
               }),
               expires_in: expiring || revoked || body.get("code") === "gmail-no-refresh-code"
@@ -206,6 +210,11 @@ export default defineConfig({
             const body = await request.clone().formData();
             const token = String(body.get("token") ?? "");
             if (token === "gmail-revoke-failure-refresh") {
+              return Response.json({ error: "temporarily_unavailable" }, { status: 503 });
+            }
+            if (token === "gmail-revoke-once-refresh"
+              && !transientGoogleRevocations.has(token)) {
+              transientGoogleRevocations.add(token);
               return Response.json({ error: "temporarily_unavailable" }, { status: 503 });
             }
             return token

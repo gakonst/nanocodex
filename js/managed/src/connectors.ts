@@ -57,6 +57,7 @@ const CALLBACK_SUFFIX = "/callback";
 const CONNECTOR_ERROR_CODES = new Set([
   "authorization_code_missing",
   "connector_broker_failed",
+  "connector_account_mismatch",
   "connector_identity_failed",
   "connector_identity_response_invalid",
   "connector_not_configured",
@@ -285,10 +286,12 @@ async function finishCallback(
   if (!isRecord(value) || typeof value.return_to !== "string") {
     return connectorCompletionPage(requestUrl, connector, "failed");
   }
+  const returnTo = safeReturnTo(value.return_to, requestUrl);
   return connectorCompletionPage(
     requestUrl,
     connector,
     response.ok ? value.connected === true ? "connected" : "cancelled" : "failed",
+    returnTo,
   );
 }
 
@@ -314,6 +317,7 @@ function connectorCompletionPage(
   requestUrl: URL,
   connector: ConnectorId,
   result: "connected" | "cancelled" | "failed",
+  returnTo?: string,
 ): Response {
   const completion = JSON.stringify(result === "connected" ? {
     type: "nanocodex:connector-complete",
@@ -330,7 +334,10 @@ function connectorCompletionPage(
       ? "The account authorization was cancelled. Connect again when you are ready."
       : "The account provider could not complete authorization. Try connecting again.",
   });
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Nanocodex connector</title></head><body><p>Connection flow complete. This window can be closed.</p><script>window.opener?.postMessage(${completion},${JSON.stringify(requestUrl.origin)});window.close();</script></body></html>`;
+  const fallback = returnTo === undefined
+    ? ""
+    : `else{window.location.replace(${JSON.stringify(new URL(returnTo, requestUrl.origin).href)})}`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Nanocodex connector</title></head><body><p>Connection flow complete. This window can be closed.</p><script>if(window.opener){window.opener.postMessage(${completion},${JSON.stringify(requestUrl.origin)});window.close()}${fallback}</script></body></html>`;
   return new Response(html, {
     headers: {
       "cache-control": "no-store",

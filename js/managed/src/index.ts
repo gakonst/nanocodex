@@ -131,6 +131,7 @@ import {
   type AccountInfo,
   withInitialAccountInfo,
 } from "./account-info";
+import { accountConnectorsTool } from "./account-connectors-tool";
 import { routeConnectorRequest } from "./connectors";
 import {
   attachAgent,
@@ -4633,6 +4634,22 @@ export class DurableAgentSession extends DurableComputerSession {
         parameters: { type: "object", additionalProperties: false },
         handler: currentAccountInfo,
       }]),
+      ...(multiplayer ? [] : [accountConnectorsTool({
+        broker: this.env.NANOCODEX,
+        userId: session.owner_id,
+        sessionId: session.session_id,
+        publicOrigin: session.public_origin,
+        canManage: () => {
+          const authorization = this.#activeTurnAuthorization();
+          return authorization !== undefined
+            && authorization.connectGrant === undefined
+            && authorization.capabilities.includes("organization:write");
+        },
+        allowedConnectors: () => {
+          const authorization = this.#activeTurnAuthorization();
+          return authorization === undefined ? [] : accountConnectorProjection(authorization);
+        },
+      })]),
       web({
         url: "https://managed-tools.internal/web-search",
         fetch: managedWebFetch(this.env, this.ctx.id.toString()),
@@ -4779,6 +4796,7 @@ export class DurableAgentSession extends DurableComputerSession {
             "Never claim that a phone action happened unless the phone tool returned ok=true and status=completed. Report failed, unavailable, and ambiguous phone outcomes accurately.",
             "Your /workspace filesystem is durable Cloudflare Computer storage backed by this agent's Durable Object.",
             "Use accountInfo only when the user asks about account state or an operation fails because its authorization is unclear. Do not call accountInfo before an explicit gh, git, curl, or other shell command. Those commands use transparent authenticated egress when the current grant permits it. accountInfo is a tool, not a shell command.",
+            "Use account_connectors when the user asks to connect, reconnect, inspect, or disconnect an account service. For connect results with authorization_required, return the exact authorization_url as a Markdown link. Never claim the account is connected until a later list reports connected=true.",
             computer.instructions,
             "No process sandbox is attached. Bounded Just Bash is the complete local execution boundary.",
             MEMORY_INSTRUCTIONS,
