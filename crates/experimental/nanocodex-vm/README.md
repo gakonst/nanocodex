@@ -121,8 +121,9 @@ guest runtime, filesystem, and interactive shell sessions. The non-cloneable
 workspace owner is the graceful-shutdown capability; drop agents, registries,
 and cloned tool handles before calling [`VmWorkspace::shutdown`].
 
-The default tool selection keeps web search, image generation, and
-`update_plan` on the host. It replaces only `exec_command`, `write_stdin`,
+The default tool selection keeps web search and image generation on the host.
+Callers opt into the host-owned `update_plan` tool with
+`ToolsBuilder::plan(true)`. The VM replaces only `exec_command`, `write_stdin`,
 `apply_patch`, and `view_image`, preserving their standard model-visible names
 and schemas.
 

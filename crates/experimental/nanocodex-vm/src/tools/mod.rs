@@ -119,7 +119,7 @@ use std::sync::Arc;
 ))]
 use nanocodex_tools::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolResult, Tools, ToolsBuilder,
-    standard::{StandardTool, UpdatePlanTool},
+    standard::StandardTool,
 };
 
 #[cfg(all(feature = "guest-runtime", target_os = "linux"))]
@@ -225,9 +225,9 @@ impl VmTools {
     /// forwarded to this VM.
     ///
     /// Web search and image generation retain their normal host-side
-    /// implementations. `update_plan` also stays host-side because it has no
-    /// workspace effect. Callers can keep configuring the returned builder,
-    /// including setting the guest-visible working directory and shell.
+    /// implementations. Callers can explicitly opt into the host-owned
+    /// `update_plan` tool and keep configuring the returned builder, including
+    /// setting the guest-visible working directory and shell.
     #[must_use]
     pub fn tools_builder(&self) -> ToolsBuilder {
         Tools::builder()
@@ -236,7 +236,6 @@ impl VmTools {
             .tool(self.write_stdin_tool())
             .tool(self.apply_patch_tool())
             .tool(self.view_image_tool())
-            .tool(UpdatePlanTool::new())
     }
 
     fn tool(&self, standard: StandardTool) -> VmTool {
@@ -368,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn composes_vm_workspace_tools_with_the_host_plan_tool() {
+    fn composes_vm_workspace_tools_without_implicitly_enabling_plan() {
         let vm = VmTools::new(RecordingClient::default());
         let tools = vm
             .tools_builder()
@@ -378,8 +377,12 @@ mod tests {
             .unwrap();
 
         assert!(!tools.workspace_enabled());
+        assert!(!tools.plan_enabled());
         assert!(tools.web_search_enabled());
         assert!(tools.image_generation_enabled());
+
+        let tools = vm.tools_builder().plan(true).build().unwrap();
+        assert!(tools.plan_enabled());
     }
 
     #[test]
