@@ -5,6 +5,7 @@ mod panic;
 mod parallel;
 
 struct NativeToolSearch;
+struct MalformedNativeToolSearch;
 struct NamespacedEcho;
 
 #[nanocodex_tools::contract::async_trait]
@@ -189,6 +190,7 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
 
     let workspace = temporary_workspace("normal-code-mode-direct-tools")?;
     let tools = Tools::builder()
+        .plan(true)
         .exposure(nanocodex_tools::ToolExposure::DirectAndCodeMode)
         .tool(NamespacedEcho)
         .build()?;
@@ -293,6 +295,32 @@ impl nanocodex_tools::Tool for NativeToolSearch {
                 "additionalProperties": false
             }
         }])))
+    }
+}
+
+#[nanocodex_tools::contract::async_trait]
+impl nanocodex_tools::Tool for MalformedNativeToolSearch {
+    fn definition(&self) -> nanocodex_tools::ToolDefinition {
+        nanocodex_tools::ToolDefinition::tool_search(
+            "client",
+            "Returns a malformed discovery result for protocol testing.",
+            nanocodex_oai_api::responses::JsonSchema::from(json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"],
+                "additionalProperties": false
+            })),
+        )
+    }
+
+    async fn execute(
+        &self,
+        _input: nanocodex_tools::ToolInput,
+        _context: nanocodex_tools::ToolContext<'_>,
+    ) -> nanocodex_tools::ToolResult {
+        Ok(nanocodex_tools::ToolOutput::json(&json!({
+            "name": "not-an-array"
+        })))
     }
 }
 
@@ -423,6 +451,69 @@ async fn configured_native_tool_search_round_trips_its_dedicated_items() -> Resu
     let output = String::from_utf8(output)?;
     assert!(output.contains(r#""tool":"tool_search""#), "{output}");
     assert!(output.contains("\"run.completed\""), "{output}");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_successful_native_tool_search_fails_the_turn() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+
+        let _warmup = next_json(&mut socket).await?;
+        send_warmup(&mut socket, "resp-warmup").await?;
+        let generation = next_json(&mut socket).await?;
+        assert_eq!(generation["previous_response_id"], "resp-warmup");
+        send_json(
+            &mut socket,
+            completed_response(
+                "resp-malformed-search",
+                &[json!({
+                    "type": "tool_search_call",
+                    "call_id": "search-malformed",
+                    "execution": "client",
+                    "arguments": { "query": "anything" }
+                })],
+            ),
+        )
+        .await
+    });
+
+    let workspace = temporary_workspace("malformed-native-tool-search")?;
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(MalformedNativeToolSearch)
+        .build()?;
+    let openai = OpenAi::builder("test-key")
+        .websocket_url(&endpoint)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .tools(tools)
+        .build()?;
+    let turn = agent.prompt("Search for anything.").await?;
+    drop(agent);
+    let mut output = Vec::new();
+    let (event_result, turn_result) = tokio::join!(events.write_jsonl(&mut output), turn.result());
+    event_result?;
+    let error = turn_result.expect_err("malformed tool_search must fail the turn");
+    assert!(matches!(
+        error,
+        NanocodexError::MalformedResponse {
+            detail: "successful tool_search did not return an array structured result"
+        }
+    ));
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("\"run.failed\""), "{output}");
+    assert!(!output.contains("tool_search_output"), "{output}");
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

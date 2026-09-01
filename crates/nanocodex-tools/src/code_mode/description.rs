@@ -88,7 +88,7 @@ type CallToolResult<TStructured = { [key: string]: unknown }> = {
 };"#;
 #[cfg(not(target_family = "wasm"))]
 const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose tool calls
-- Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.
+- Evaluates the provided JavaScript code in a fresh QuickJS context as an async module.
 - All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.
 - Nested tool methods take either a string or an object as their input argument.
 - Nested tools return either an object or a string, based on the description.

@@ -117,13 +117,12 @@ fn function_output(output: ToolOutputBody) -> FunctionOutputBody {
                     ToolOutputContent::InputText { text } => FunctionOutputContent::InputText {
                         text: text.into_boxed_str(),
                     },
-                    ToolOutputContent::InputImage {
-                        image_url,
-                        detail: _,
-                    } => FunctionOutputContent::InputImage {
-                        image_url: image_url.into_boxed_str(),
-                        detail: None,
-                    },
+                    ToolOutputContent::InputImage { image_url, detail } => {
+                        FunctionOutputContent::InputImage {
+                            image_url: image_url.into_boxed_str(),
+                            detail: Some(detail),
+                        }
+                    }
                     ToolOutputContent::InputAudio { audio_url } => {
                         FunctionOutputContent::InputAudio {
                             audio_url: audio_url.into_boxed_str(),
@@ -283,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn responses_lite_tool_output_omits_image_details_without_request_copy() {
+    fn tool_output_preserves_image_detail_for_model_input() {
         let input = vec![custom_tool_output(
             "call-1".to_owned(),
             ToolOutputBody::Content(vec![
@@ -302,7 +301,7 @@ mod tests {
 
         let request = serde_json::to_value(input).expect("tool output should serialize");
 
-        assert!(request[0]["output"][1].get("detail").is_none());
+        assert_eq!(request[0]["output"][1]["detail"], "original");
         assert_eq!(
             request[0]["output"][2],
             json!({

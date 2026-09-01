@@ -32,6 +32,7 @@ pub struct EmbeddedToolRuntime {
     working_directory: Arc<str>,
     host: Option<Arc<dyn CodeModeHost>>,
     session_id: Option<Arc<str>>,
+    plan_enabled: bool,
     local: Vec<LocalTool>,
     callable_tool_names: RwLock<HashSet<String>>,
 }
@@ -62,6 +63,7 @@ impl EmbeddedToolRuntime {
             working_directory: Arc::from(workspace.to_string_lossy().into_owned()),
             host: None,
             session_id: None,
+            plan_enabled: false,
             local: Vec::new(),
             callable_tool_names: RwLock::new(HashSet::new()),
         }
@@ -81,6 +83,7 @@ impl EmbeddedToolRuntime {
     fn with_tools(mut self, tools: &Tools) -> Self {
         self.host.clone_from(&tools.embedded_host);
         self.session_id.clone_from(&tools.embedded_session_id);
+        self.plan_enabled = tools.plan_enabled();
         self.local = tools
             .registered
             .iter()
@@ -143,10 +146,11 @@ impl EmbeddedToolRuntime {
             }
         });
         definitions.retain(|definition| {
-            !self
-                .local
-                .iter()
-                .any(|tool| tool.name.as_ref() == definition.name())
+            (self.plan_enabled || definition.name() != "update_plan")
+                && !self
+                    .local
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == definition.name())
         });
         crate::code_mode_order::sort_definitions(&mut definitions);
         if let Ok(mut names) = self.callable_tool_names.write() {

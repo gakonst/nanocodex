@@ -53,7 +53,8 @@ let tools = Tools::builder()
 Matching Codex, direct-plus-Code-Mode exposure keeps `exec` terse and
 adds each typed `exec` declaration to the corresponding direct tool; Code
 Mode-only instead carries the complete nested catalog in `exec`. Selection
-changes model-visible exposure, not registration or dispatch behavior.
+keeps handlers registered for trusted direct runtime dispatch while Code Mode
+dispatch honors each tool's placement.
 `tool_with_exposure` can override one registered tool with `DirectOnly`,
 `CodeModeOnly`, `DirectAndCodeMode`, or `Hidden` while preserving the global
 default for the rest. Host-owned `exec`, `wait`, and `tool_search` names cannot

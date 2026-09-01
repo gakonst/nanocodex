@@ -173,6 +173,7 @@ impl ToolSource for crate::mcp::Mcp {
 pub struct Tools {
     exposure: ToolExposure,
     workspace: bool,
+    plan: bool,
     web_search: bool,
     image_generation: bool,
     #[cfg(all(not(target_family = "wasm"), feature = "native"))]
@@ -205,6 +206,7 @@ impl Default for Tools {
         Self {
             exposure: ToolExposure::default(),
             workspace: true,
+            plan: false,
             web_search: true,
             image_generation: true,
             #[cfg(all(not(target_family = "wasm"), feature = "native"))]
@@ -242,6 +244,7 @@ impl fmt::Debug for Tools {
             .debug_struct("Tools")
             .field("exposure", &self.exposure)
             .field("workspace", &self.workspace)
+            .field("plan", &self.plan)
             .field("web_search", &self.web_search)
             .field("image_generation", &self.image_generation)
             .field("working_directory", &self.working_directory)
@@ -284,6 +287,7 @@ impl fmt::Debug for Tools {
         debug
             .field("exposure", &self.exposure)
             .field("workspace", &self.workspace)
+            .field("plan", &self.plan)
             .field("web_search", &self.web_search)
             .field("image_generation", &self.image_generation)
             .field(
@@ -304,7 +308,7 @@ impl fmt::Debug for Tools {
 }
 
 impl Tools {
-    /// Starts a builder with all standard tools enabled.
+    /// Starts a builder with the default built-ins enabled.
     #[must_use]
     pub fn builder() -> ToolsBuilder {
         ToolsBuilder::default()
@@ -330,6 +334,12 @@ impl Tools {
     #[must_use]
     pub const fn workspace_enabled(&self) -> bool {
         self.workspace
+    }
+
+    /// Returns whether the host-owned task-plan tool is enabled.
+    #[must_use]
+    pub const fn plan_enabled(&self) -> bool {
+        self.plan
     }
 
     /// Returns whether the standard web-search tool is enabled.
@@ -471,9 +481,9 @@ impl ToolsBuilder {
 
     /// Selects whether registered tools are also exposed directly to the model.
     ///
-    /// The default is [`ToolExposure::CodeModeOnly`]. This changes only the
-    /// model-visible declaration set; all registered handlers remain callable
-    /// from Code Mode.
+    /// The default is [`ToolExposure::CodeModeOnly`]. Handlers remain
+    /// registered for direct runtime dispatch, while Code Mode dispatch honors
+    /// each tool's selected exposure.
     #[must_use]
     pub const fn exposure(mut self, exposure: ToolExposure) -> Self {
         self.tools.exposure = exposure;
@@ -484,12 +494,13 @@ impl ToolsBuilder {
     #[must_use]
     pub const fn without_defaults(mut self) -> Self {
         self.tools.workspace = false;
+        self.tools.plan = false;
         self.tools.web_search = false;
         self.tools.image_generation = false;
         self
     }
 
-    /// Enables or disables the standard command, patch, plan, and file tools.
+    /// Enables or disables the standard command, patch, and file tools.
     #[must_use]
     #[cfg(not(target_family = "wasm"))]
     #[allow(clippy::missing_const_for_fn)]
@@ -502,11 +513,21 @@ impl ToolsBuilder {
         self
     }
 
-    /// Enables or disables the standard command, patch, plan, and file tools.
+    /// Enables or disables the standard command, patch, and file tools.
     #[must_use]
     #[cfg(target_family = "wasm")]
     pub const fn workspace(mut self, enabled: bool) -> Self {
         self.tools.workspace = enabled;
+        self
+    }
+
+    /// Enables or disables the host-owned task-plan tool.
+    ///
+    /// The plan tool is disabled by default and is independent of workspace
+    /// command and file access.
+    #[must_use]
+    pub const fn plan(mut self, enabled: bool) -> Self {
+        self.tools.plan = enabled;
         self
     }
 
@@ -849,8 +870,9 @@ fn built_in_name(tools: &Tools, name: &str) -> bool {
     (tools.workspace
         && matches!(
             name,
-            "exec_command" | "write_stdin" | "update_plan" | "apply_patch" | "view_image"
+            "exec_command" | "write_stdin" | "apply_patch" | "view_image"
         ))
+        || (tools.plan && name == "update_plan")
         || (tools.web_search && name == "web__run")
         || (tools.image_generation && name == "image_gen__imagegen")
 }
@@ -860,7 +882,7 @@ fn enabled_built_in_names(tools: &Tools) -> impl Iterator<Item = &'static str> {
     [
         (tools.workspace, "exec_command"),
         (tools.workspace, "write_stdin"),
-        (tools.workspace, "update_plan"),
+        (tools.plan, "update_plan"),
         (tools.workspace, "apply_patch"),
         (tools.workspace, "view_image"),
         (tools.web_search, "web__run"),

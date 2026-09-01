@@ -1,7 +1,9 @@
 use crate::ToolOutputContent;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
 const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
+const MAX_SUPPORTED_WAV_BYTES: usize = 256 * 1024;
 
 pub(super) fn truncate_content(
     content: Vec<ToolOutputContent>,
@@ -77,6 +79,9 @@ fn truncate_mixed(
             }
             image @ ToolOutputContent::InputImage { .. } => output.push(image),
             encrypted @ ToolOutputContent::EncryptedContent { .. } => output.push(encrypted),
+            ToolOutputContent::InputAudio { audio_url } if supported_audio(&audio_url) => {
+                output.push(ToolOutputContent::InputAudio { audio_url });
+            }
             ToolOutputContent::InputAudio { .. } => {}
         }
     }
@@ -86,6 +91,22 @@ fn truncate_mixed(
         });
     }
     output
+}
+
+fn supported_audio(audio_url: &str) -> bool {
+    let Some((header, payload)) = audio_url.split_once(',') else {
+        return false;
+    };
+    if !header.eq_ignore_ascii_case("data:audio/wav;base64")
+        || payload.len() > MAX_SUPPORTED_WAV_BYTES.saturating_mul(4).div_ceil(3)
+    {
+        return false;
+    }
+    BASE64_STANDARD.decode(payload).is_ok_and(|wav| {
+        wav.len() <= MAX_SUPPORTED_WAV_BYTES
+            && wav.get(..4) == Some(b"RIFF")
+            && wav.get(8..12) == Some(b"WAVE")
+    })
 }
 
 fn truncate_middle_tokens(text: &str, max_tokens: usize) -> String {
@@ -222,5 +243,30 @@ mod tests {
         assert!(!output.iter().any(|item| {
             matches!(item, ToolOutputContent::InputText { text } if text.contains(ciphertext))
         }));
+    }
+
+    #[test]
+    fn preserves_only_bounded_wav_audio() {
+        let wav =
+            "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+        let output = truncate_content(
+            vec![
+                ToolOutputContent::InputAudio {
+                    audio_url: wav.to_owned(),
+                },
+                ToolOutputContent::InputAudio {
+                    audio_url: "data:audio/wav;base64,YXVkaW8=".to_owned(),
+                },
+                ToolOutputContent::InputAudio {
+                    audio_url: "data:audio/mpeg;base64,SUQz".to_owned(),
+                },
+            ],
+            None,
+        );
+
+        assert!(matches!(
+            output.as_slice(),
+            [ToolOutputContent::InputAudio { audio_url }] if audio_url == wav
+        ));
     }
 }

@@ -173,7 +173,7 @@ impl ToolRegistry {
         input: Value,
         context: ToolContext<'_>,
     ) -> ToolOutput {
-        let Some((handler, definition)) = self.get(name) else {
+        let Some((handler, definition)) = self.get_for_code_mode(name) else {
             let Some(provider) = self.providers.iter().find(|provider| {
                 provider
                     .available_definitions()
@@ -276,6 +276,14 @@ impl ToolRegistry {
 
     fn get(&self, name: &str) -> Option<(&Arc<dyn Tool>, &ToolDefinition)> {
         let index = *self.by_name.get(name)?;
+        Some((self.ordered.get(index)?, self.definitions.get(index)?))
+    }
+
+    fn get_for_code_mode(&self, name: &str) -> Option<(&Arc<dyn Tool>, &ToolDefinition)> {
+        let index = *self.by_name.get(name)?;
+        if !self.exposures.get(index)?.is_available_in_code_mode() {
+            return None;
+        }
         Some((self.ordered.get(index)?, self.definitions.get(index)?))
     }
 

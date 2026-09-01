@@ -66,10 +66,6 @@ fn exec_command_definition(name: &'static str) -> ToolDefinition {
             "type": "object",
             "properties": {
                 "cmd": { "type": "string", "description": "Shell command to execute." },
-                "justification": {
-                    "type": "string",
-                    "description": "User-facing approval question for `require_escalated`; omit otherwise."
-                },
                 "workdir": {
                     "type": "string",
                     "description": "Working directory for the command. Defaults to the turn cwd."
@@ -93,16 +89,6 @@ fn exec_command_definition(name: &'static str) -> ToolDefinition {
                 "max_output_tokens": {
                     "type": "number",
                     "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
-                },
-                "prefix_rule": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"]."
-                },
-                "sandbox_permissions": {
-                    "type": "string",
-                    "enum": ["use_default", "require_escalated"],
-                    "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution."
                 }
             },
             "required": ["cmd"],
@@ -283,6 +269,12 @@ mod tests {
             exec["parameters"]["properties"]["max_output_tokens"]["type"],
             "number"
         );
+        for unsupported in ["justification", "prefix_rule", "sandbox_permissions"] {
+            assert!(
+                exec["parameters"]["properties"].get(unsupported).is_none(),
+                "full-access exec_command must not advertise {unsupported}"
+            );
+        }
 
         let write_definition = StandardTool::WriteStdin.definition();
         let write = serde_json::to_value(&write_definition).unwrap();

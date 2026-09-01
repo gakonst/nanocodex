@@ -396,6 +396,7 @@ impl AgentArgs {
         let mut tools = configured_vm
             .as_ref()
             .map_or_else(Tools::builder, ConfiguredVm::tools_builder)
+            .plan(tui)
             .web_search(web_search)
             .image_generation(self.image_generation);
         let managed_mcp = if self.mcp.loads_managed() {

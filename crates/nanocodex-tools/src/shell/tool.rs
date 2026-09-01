@@ -132,11 +132,6 @@ fn shell_response_text(result: &super::ExecCommandResult) -> String {
 #[serde(deny_unknown_fields)]
 struct ExecCommandArguments {
     cmd: String,
-    // Codex exposes these approval metadata fields even under a fixed
-    // full-access/never-ask policy. Nanocodex accepts but does not act on
-    // them; this does not add a second approval or sandbox policy owner.
-    #[serde(default)]
-    _justification: Option<String>,
     #[serde(default)]
     workdir: Option<String>,
     #[serde(default)]
@@ -149,10 +144,6 @@ struct ExecCommandArguments {
     yield_time_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
-    #[serde(default)]
-    _prefix_rule: Option<Vec<String>>,
-    #[serde(default)]
-    _sandbox_permissions: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -171,9 +162,12 @@ struct WriteStdinArguments {
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
+    use nanocodex_oai_api::tools::DEFAULT_TOOL_OUTPUT_TOKENS;
+    use serde_json::{json, value::to_raw_value};
+
     use super::{ExecCommandHandler, Tool, shell_execution};
     use crate::{
-        ToolOutputBody,
+        ToolContext, ToolInput, ToolOutputBody,
         shell::{ExecCommandResult, ShellSessions},
     };
 
@@ -194,6 +188,46 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("string")
         );
+        for unsupported in ["justification", "prefix_rule", "sandbox_permissions"] {
+            assert!(
+                spec.pointer(&format!("/parameters/properties/{unsupported}"))
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_command_rejects_unsupported_approval_and_sandbox_fields() {
+        let handler = ExecCommandHandler::new(PathBuf::from("/"), Arc::new(ShellSessions::new()));
+        for (field, value) in [
+            ("justification", json!("approve this")),
+            ("prefix_rule", json!(["git", "pull"])),
+            ("sandbox_permissions", json!("require_escalated")),
+        ] {
+            let mut arguments = json!({ "cmd": "true" });
+            arguments[field] = value;
+            let result = handler
+                .execute(
+                    ToolInput::Function(to_raw_value(&arguments).unwrap()),
+                    ToolContext::new(
+                        "test-model",
+                        "test-session",
+                        "test-call",
+                        &[],
+                        DEFAULT_TOOL_OUTPUT_TOKENS,
+                    ),
+                )
+                .await;
+            let Err(error) = result else {
+                panic!("exec_command accepted unsupported field {field}");
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{field}`")),
+                "{error}"
+            );
+        }
     }
 
     #[test]

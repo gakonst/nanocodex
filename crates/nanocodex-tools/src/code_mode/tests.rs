@@ -847,7 +847,7 @@ const returnsUndefined = [
   }),
   audio({
     type: "audio",
-    data: "YXVkaW8=",
+    data: "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=",
     mimeType: "audio/wav",
   }),
 ].map((value) => value === undefined);
@@ -867,6 +867,11 @@ text(returnsUndefined);
             image_url,
             detail: crate::ImageDetail::Original,
         }) if image_url == "data:image/png;base64,a"
+    ));
+    assert!(matches!(
+        content.get(2),
+        Some(ToolOutputContent::InputAudio { audio_url })
+            if audio_url == "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="
     ));
     assert_eq!(emitted_text(&execution)?, "[true,true]");
     std::fs::remove_dir_all(workspace)?;
@@ -1915,27 +1920,36 @@ try {
 }
 
 #[tokio::test]
-async fn update_plan_matches_codex_handler_acceptance() -> Result<()> {
+async fn update_plan_rejects_multiple_in_progress_steps() -> Result<()> {
     let workspace = temporary_workspace("update-plan-acceptance")?;
     let tools = test_tools(&workspace);
     let history = Vec::new();
     let execution = tools
         .execute_code(
             r#"
-const result = await tools.update_plan({
-  plan: [
-    { step: "", status: "in_progress" },
-    { step: "also active", status: "in_progress" },
-  ],
-});
-text(result);
+try {
+  await tools.update_plan({
+    plan: [
+      { step: "", status: "in_progress" },
+      { step: "also active", status: "in_progress" },
+    ],
+  });
+  text("unexpected success");
+} catch (error) {
+  text(error);
+}
 "#,
             test_context(&history),
         )
         .await;
 
     assert!(execution.success, "{}", execution_output(&execution));
-    assert_eq!(emitted_text(&execution)?, "{}");
+    assert_eq!(
+        emitted_text(&execution)?,
+        "at most one plan step may be in_progress"
+    );
+    assert_eq!(execution.nested_calls.len(), 1);
+    assert!(!execution.nested_calls[0].success);
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -2308,7 +2322,8 @@ fn test_live_cell(
 }
 
 fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
-    ToolRuntime::new(
+    let selected = Tools::builder().plan(true).build().unwrap();
+    ToolRuntime::new_with_tools(
         workspace,
         Some(WebSearchConfig {
             endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
@@ -2319,6 +2334,7 @@ fn test_tools(workspace: &std::path::Path) -> ToolRuntime {
             auth: nanocodex_oai_api::auth::OpenAiAuth::api_key("test-key"),
             save_root: workspace.to_path_buf(),
         }),
+        &selected,
     )
 }
 

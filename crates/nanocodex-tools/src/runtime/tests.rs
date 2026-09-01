@@ -663,6 +663,90 @@ fn per_tool_exposure_selects_direct_and_code_mode_surfaces_independently() {
     );
 }
 
+#[tokio::test]
+async fn code_mode_cannot_guess_direct_only_or_hidden_tools() {
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool_with_exposure(
+            NamedTool {
+                name: "direct_only",
+                output: "direct",
+            },
+            ToolExposure::DirectOnly,
+        )
+        .tool_with_exposure(
+            NamedTool {
+                name: "hidden",
+                output: "hidden",
+            },
+            ToolExposure::Hidden,
+        )
+        .build()
+        .unwrap();
+    let runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
+
+    let execution = runtime
+        .execute_code(
+            r#"
+for (const name of ["direct_only", "hidden"]) {
+  try {
+    await tools[name]({});
+  } catch (_) {}
+}
+"#,
+            ToolContext::new(
+                "test-model",
+                "test-session",
+                "test-call",
+                &[],
+                DEFAULT_TOOL_OUTPUT_TOKENS,
+            ),
+        )
+        .await;
+
+    assert!(execution.success);
+    assert_eq!(execution.nested_calls.len(), 2);
+    assert!(execution.nested_calls.iter().all(|call| !call.success));
+    assert_eq!(
+        execution.nested_calls[0].structured_result,
+        json!("unsupported nested tool call: direct_only")
+    );
+    assert_eq!(
+        execution.nested_calls[1].structured_result,
+        json!("unsupported nested tool call: hidden")
+    );
+}
+
+#[test]
+fn update_plan_is_disabled_by_default_and_independent_of_workspace() {
+    let defaults = Tools::builder().build().unwrap();
+    assert!(!defaults.plan_enabled());
+    let defaults = ToolRuntime::new_with_tools(".", None, None, &defaults);
+    assert!(
+        defaults
+            .model_contract("test-session")
+            .1
+            .iter()
+            .all(|(_, name)| name != "update_plan")
+    );
+
+    let plan_only = Tools::builder()
+        .without_defaults()
+        .plan(true)
+        .build()
+        .unwrap();
+    assert!(plan_only.plan_enabled());
+    assert!(!plan_only.workspace_enabled());
+    let plan_only = ToolRuntime::new_with_tools(".", None, None, &plan_only);
+    assert!(
+        plan_only
+            .model_contract("test-session")
+            .1
+            .iter()
+            .any(|(_, name)| name == "update_plan")
+    );
+}
+
 #[test]
 fn registered_normalized_code_mode_name_collisions_are_rejected() {
     let result = Tools::builder()

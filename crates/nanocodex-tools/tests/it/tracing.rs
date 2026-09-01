@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use nanocodex_tools::{
-    ToolContext, ToolInput, contract::DEFAULT_TOOL_OUTPUT_TOKENS, runtime::ToolRuntime,
+    ToolContext, ToolInput, Tools, contract::DEFAULT_TOOL_OUTPUT_TOKENS, runtime::ToolRuntime,
 };
 use serde_json::{json, value::to_raw_value};
 use tracing::{Instrument, Subscriber, span::Attributes};
@@ -120,7 +120,8 @@ fn direct_runtime_execution_emits_the_tools_owned_span() {
         std::process::id()
     ));
     std::fs::create_dir_all(&workspace).unwrap();
-    let tools = ToolRuntime::new(&workspace, None, None);
+    let selected = Tools::builder().plan(true).build().unwrap();
+    let tools = ToolRuntime::new_with_tools(&workspace, None, None, &selected);
     let history = Vec::new();
     let context = ToolContext::new(
         "test-model",
