@@ -20,7 +20,7 @@ const BLOCKED_RESPONSE_HEADERS = new Set([
   "x-nanocodex-subject",
 ]);
 
-export type ManagedEgressConnectorId = "github" | "gmail" | "gdrive" | "x";
+export type ManagedEgressConnectorId = "github" | "gmail" | "gdrive" | "x" | "slack";
 
 type ProviderPolicy = Readonly<{
   connector: ManagedEgressConnectorId;
@@ -44,6 +44,10 @@ const PROVIDERS = new Map<string, ProviderPolicy>([
     connector: "x",
     path: (path) => /^\/2\/(?:tweets|users|lists|dm_(?:conversations|events)|media)(?:\/|$)/.test(path),
   }],
+  ["slack.com", {
+    connector: "slack",
+    path: (path) => /^\/api\/[a-zA-Z0-9._-]+$/.test(path),
+  }],
 ]);
 
 const PRIVATE_HEADER = /(?:^|[-_])(?:auth(?:orization)?|cookie|credential|password|proxy|secret|token|api[-_]?key)(?:$|[-_]|\d)/i;
@@ -64,7 +68,7 @@ export async function handleManagedEgress(
   request: Request,
   binding: Fetcher,
   subject?: string,
-  connectorAllowed: (connector: ManagedEgressConnectorId) => boolean = () => true,
+  connectorAllowed: (connector: ManagedEgressConnectorId, instance?: string) => boolean = () => true,
 ): Promise<Response> {
   const method = request.method.toUpperCase();
   if (!ORDINARY_METHODS.has(method)) return failure(403, "method_denied");
@@ -76,7 +80,13 @@ export async function handleManagedEgress(
   const provider = providerFor(url);
   if (!provider && PROVIDERS.has(url.hostname)) return failure(403, "destination_denied");
   if (provider) {
-    if (!connectorAllowed(provider.connector)) return failure(403, "connector_forbidden");
+    const instance = provider.connector === "slack"
+      ? request.headers.get("x-nanocodex-connector-instance") ?? undefined
+      : undefined;
+    if (provider.connector === "slack" && !/^[A-Z0-9]{1,32}$/.test(instance ?? "")) {
+      return failure(400, "connector_instance_required");
+    }
+    if (!connectorAllowed(provider.connector, instance)) return failure(403, "connector_forbidden");
     if (!subject || !SUBJECT.test(subject)) return failure(403, "requires_login");
     if (!canonicalProviderPath(provider, url.pathname) || !provider.path(url.pathname)) {
       return failure(403, "connector_path_denied");
@@ -105,7 +115,7 @@ function providerFor(url: URL): ProviderPolicy | undefined {
 }
 
 function canonicalProviderPath(provider: ProviderPolicy, pathname: string): boolean {
-  return provider.connector === "github"
+  return provider.connector === "github" || provider.connector === "slack"
     || (!pathname.includes("\\") && !/%(?:2e|2f|5c|25)/i.test(pathname));
 }
 

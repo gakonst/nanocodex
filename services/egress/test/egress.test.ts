@@ -1074,6 +1074,53 @@ describe("per-user credential broker", () => {
 });
 
 describe("per-user OAuth connectors", () => {
+  it("keeps multiple Slack workspaces independently selectable for one account", async () => {
+    const user = "connector-slack-many";
+    const subject = connectorSubject("slack-many");
+    await control(`/subjects/${subject}`, "PUT", { user_id: user });
+    await connect(user, "slack", "workspace-a-code");
+    await connect(user, "slack", "workspace-b-code");
+
+    const status = await (await SELF.fetch(
+      `https://broker.test/users/${user}/connectors`,
+    )).json<Record<string, { slack?: { connections?: unknown[] } }>>();
+    expect(status.connectors?.slack?.connections).toEqual([
+      { id: "TA", workspace_id: "TA", workspace: "Workspace A", user_id: "UA", label: "Workspace A (UA)" },
+      { id: "TB", workspace_id: "TB", workspace: "Workspace B", user_id: "UB", label: "Workspace B (UB)" },
+    ]);
+
+    for (const [connectionId, account] of [["TA", "slack-a"], ["TB", "slack-b"]] as const) {
+      const response = await SELF.fetch(connectorRequest(
+        "https://slack.com/api/chat.postMessage",
+        subject,
+        { method: "POST", body: JSON.stringify({ channel: "C1", text: "hello" }),
+          contentType: "application/json", connectionId },
+      ));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ account, method: "POST" });
+    }
+
+    for (const [body, contentType] of [
+      [JSON.stringify({ channel: "C1", text: "hello", token: "xoxp-attacker" }), "application/json"],
+      ["channel=C1&text=hello&token=xoxp-attacker", "application/x-www-form-urlencoded"],
+    ] as const) {
+      const denied = await SELF.fetch(connectorRequest(
+        "https://slack.com/api/chat.postMessage",
+        subject,
+        { method: "POST", body, contentType, connectionId: "TA" },
+      ));
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toEqual({ error: "credential_input_denied" });
+    }
+
+    const missing = await SELF.fetch(connectorRequest(
+      "https://slack.com/api/conversations.list",
+      subject,
+    ));
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error: "connector_instance_required" });
+  });
+
   it("accepts the fixed loopback relay used by every browser development stack", async () => {
     const started = await control("/users/connector-localhost/connectors/github", "POST", {
       redirect_uri: "http://127.0.0.1:47891/v1/connectors/github/callback",
@@ -1685,7 +1732,7 @@ function connectorSubject(label: string): string {
 
 async function connect(
   user: string,
-  connector: "github" | "gmail" | "gdrive" | "x",
+  connector: "github" | "gmail" | "gdrive" | "x" | "slack",
   code: string,
 ): Promise<void> {
   const started = await control(`/users/${user}/connectors/${connector}`, "POST", {
@@ -1709,6 +1756,7 @@ function connectorRequest(
     authorization?: string;
     body?: string;
     contentType?: string;
+    connectionId?: string;
   }> = {},
 ): Request {
   return new Request(url, {
@@ -1718,6 +1766,7 @@ function connectorRequest(
       cookie: "caller-secret=cookie",
       "proxy-authorization": "Basic caller-proxy-secret",
       ...(subject ? { "x-nanocodex-subject": subject } : {}),
+      ...(override.connectionId ? { "x-nanocodex-connector-instance": override.connectionId } : {}),
       ...(override.body === undefined
         ? {}
         : { "content-type": override.contentType ?? "application/octet-stream" }),

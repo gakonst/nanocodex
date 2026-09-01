@@ -42,6 +42,8 @@ export default defineConfig({
           GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
           X_OAUTH_CLIENT_ID: "x-client-id",
           X_OAUTH_CLIENT_SECRET: "x-client-secret",
+          SLACK_OAUTH_CLIENT_ID: "slack-client-id",
+          SLACK_OAUTH_CLIENT_SECRET: "slack-client-secret",
         },
         workers: [{
           name: "nanocodex",
@@ -51,6 +53,26 @@ export default defineConfig({
         }],
         outboundService: async (request) => {
           const url = new URL(request.url);
+          if (request.method === "POST" && url.hostname === "slack.com"
+            && url.pathname === "/api/oauth.v2.access") {
+            const body = await request.clone().formData();
+            const code = String(body.get("code") ?? "");
+            const workspace = code === "workspace-b-code" ? "B" : "A";
+            return Response.json({
+              ok: true,
+              team: { id: `T${workspace}`, name: `Workspace ${workspace}` },
+              authed_user: {
+                id: `U${workspace}`,
+                scope: "channels:history,channels:read,chat:write,groups:history,groups:read,im:history,im:read,im:write,mpim:history,mpim:read,mpim:write,reactions:read,reactions:write,search:read,users:read",
+                access_token: `slack-${workspace.toLowerCase()}-access`,
+                token_type: "user",
+              },
+            });
+          }
+          if (request.method === "POST" && url.hostname === "slack.com"
+            && url.pathname === "/api/auth.revoke") {
+            return Response.json({ ok: request.headers.get("authorization")?.startsWith("Bearer slack-") });
+          }
           if (request.method === "POST" && url.hostname === "github.com"
             && url.pathname === "/login/oauth/access_token") {
             const body = await request.clone().formData();
@@ -232,7 +254,8 @@ export default defineConfig({
           if ((url.hostname === "api.github.com"
               || url.hostname === "gmail.googleapis.com"
               || url.hostname === "www.googleapis.com"
-              || url.hostname === "api.x.com")) {
+              || url.hostname === "api.x.com"
+              || url.hostname === "slack.com")) {
             const authorization = request.headers.get("authorization") ?? "";
             if (url.searchParams.has("redirect")) {
               return new Response(null, {
@@ -254,6 +277,8 @@ export default defineConfig({
               : authorization === "Bearer github-refreshed-access" ? "github-refreshed"
               : authorization === "Bearer gmail-refreshed-access" ? "gmail-refreshed"
               : authorization === "Bearer x-refreshed-access" ? "x-refreshed"
+              : authorization === "Bearer slack-a-access" ? "slack-a"
+              : authorization === "Bearer slack-b-access" ? "slack-b"
               : authorization.startsWith("Bearer ") ? "connected" : "missing";
             return Response.json({
               account,

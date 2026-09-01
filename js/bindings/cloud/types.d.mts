@@ -1,6 +1,7 @@
 export type Hex = `0x${string}`;
 
-export type CloudAccount = "github" | "gmail" | "gdrive" | "x" | "chatgpt";
+export type CloudAccount = "github" | "gmail" | "gdrive" | "x" | "slack" | "chatgpt";
+export type CloudConnectorReference = Exclude<CloudAccount, "slack"> | `slack:${string}`;
 
 export type AccessKey = Readonly<{
   address: Hex;
@@ -97,7 +98,7 @@ export type Grant = Readonly<{
   capabilities: readonly string[];
   visibility: AgentVisibility;
   /** Secret-free cloud account providers bound to this grant. */
-  connectors: readonly CloudAccount[];
+  connectors: readonly CloudConnectorReference[];
   /** Exact secret-free hosted MCP connections bound to this grant. */
   mcpConnections: readonly McpConnection[];
   /** Exact signed app-local reverse-tool catalog, when present. */

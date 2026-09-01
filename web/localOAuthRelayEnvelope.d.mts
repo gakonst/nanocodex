@@ -1,4 +1,4 @@
-export type LocalOAuthProvider = "github" | "gmail" | "gdrive" | "x";
+export type LocalOAuthProvider = "github" | "gmail" | "gdrive" | "x" | "slack";
 export type LocalOAuthFlow = "connect" | "managed";
 export type LocalOAuthRelayEnvelope = Readonly<{
   v: 1;

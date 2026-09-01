@@ -16,7 +16,6 @@ import {
   parseCliWalletRequest,
   sanitizeCliWalletResult,
   managedMemoryCapability,
-  requestedConnectorsSatisfied,
 } from "./devicePolicy.mjs";
 import {
   connectAuthOrigin,
@@ -100,8 +99,10 @@ const MERCATOR_SETTLEMENT = "0xa295C42FBCC026a62304A7701f25B4c91799B0dA";
 const MPP_LIMIT = 10_000_000n;
 const MPP_PERIOD = 86_400;
 const MPP_MAX_PER_REQUEST = 250_000n;
-const CONNECTOR_IDS = ["github", "gmail", "gdrive", "x", "chatgpt"] as const;
-const OAUTH_CONNECTOR_IDS = ["github", "gmail", "gdrive", "x"] as const;
+const CONNECTOR_IDS = ["github", "gmail", "gdrive", "x", "slack", "chatgpt"] as const;
+const OAUTH_CONNECTOR_IDS = ["github", "gmail", "gdrive", "x", "slack"] as const;
+const SLACK_CONNECTION = /^[A-Z0-9]{1,32}$/;
+const SLACK_CONNECTOR_REFERENCE = /^slack:([A-Z0-9]{1,32})$/;
 const BASE_APPROVAL_RESOURCES = [
   "urn:nanocodex:agent:run",
   "urn:nanocodex:capability:mercator:boost",
@@ -194,10 +195,19 @@ const PUBLIC_REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
 type ConnectorId = typeof CONNECTOR_IDS[number];
 type OAuthConnectorId = typeof OAUTH_CONNECTOR_IDS[number];
+type ConnectorReference = ConnectorId | `slack:${string}`;
 type ConnectorStatus = Readonly<{
   connected: boolean;
   label?: string;
   account_id?: string;
+  connections?: readonly SlackConnection[];
+}>;
+type SlackConnection = Readonly<{
+  id: string;
+  workspace_id: string;
+  workspace: string;
+  user_id: string;
+  label: string;
 }>;
 type ConnectorState = Readonly<{
   accountAddress: `0x${string}`;
@@ -245,7 +255,7 @@ type ConnectApproval = Readonly<{
   appId: string;
   appOrigin: string;
   brokerUserId?: string;
-  connectedConnectors?: readonly ConnectorId[];
+  connectedConnectors?: readonly ConnectorReference[];
   mcpConnections?: readonly McpConnection[];
   durableAgentId?: string;
   keyAuthorization?: `0x${string}`;
@@ -511,7 +521,7 @@ export default {
         return cors(proxy(upstream), request);
       }
 
-      const connectorCallback = url.pathname.match(/^\/v1\/connectors\/(github|gmail|gdrive|x)\/callback$/);
+      const connectorCallback = url.pathname.match(/^\/v1\/connectors\/(github|gmail|gdrive|x|slack)\/callback$/);
       if (connectorCallback) {
         if (request.method !== "GET") {
           return error(request, 405, "method_not_allowed", "Connector callbacks require GET.");
@@ -636,7 +646,17 @@ export default {
         return error(request, 405, "method_not_allowed", "Unsupported MCP connection operation.");
       }
 
-      const connectorRoute = url.pathname.match(/^\/v1\/connectors\/(github|gmail|gdrive|x|chatgpt)$/);
+      const slackConnectionRoute = url.pathname.match(/^\/v1\/connectors\/slack\/([A-Z0-9]{1,32})$/);
+      if (slackConnectionRoute) {
+        if (request.method !== "DELETE") {
+          return error(request, 405, "method_not_allowed", "Unsupported Slack connection operation.");
+        }
+        const identity = await brokerIdentity(env, accountAddress);
+        await disconnectSlackConnection(env, identity.userId, slackConnectionRoute[1]!);
+        return cors(new Response(null, { status: 204 }), request);
+      }
+
+      const connectorRoute = url.pathname.match(/^\/v1\/connectors\/(github|gmail|gdrive|x|slack|chatgpt)$/);
       if (connectorRoute) {
         const connector = connectorRoute[1] as ConnectorId;
         const identity = await brokerIdentity(env, accountAddress);
@@ -656,7 +676,7 @@ export default {
           });
           return cors(response, request);
         }
-        if (request.method === "DELETE") {
+        if (request.method === "DELETE" && connector !== "slack") {
           await disconnectConnector(env, identity.userId, connector);
           console.info({
             type: "connect.connector.disconnect",
@@ -927,7 +947,7 @@ async function createHostedAuthorization(
     throw new ApiFailure(403, "hosted_authorization_denied", "Hosted authorization cannot request MPP or spending access.");
   }
   const approvedConnectorSet = approvedConnectors(resources);
-  const connectors = CONNECTOR_IDS.filter((connector) => approvedConnectorSet.has(connector));
+  const connectors = [...approvedConnectorSet].filter(isConnectorReference);
   const approvedMcpIds = approvedMcpConnectionIds(resources);
   requireApprovedCapabilities(resources, app.appId, connectors, approvedMcpIds);
 
@@ -968,7 +988,7 @@ async function createHostedAuthorization(
   const approvalId = randomSubject();
   const token = randomSubject();
   const expiresAt = Math.floor(Date.now() / 1000) + CONNECT_APPROVAL_TTL;
-  const connectedConnectors = CONNECTOR_IDS.filter((connector) => status.connectors[connector].connected);
+  const connectedConnectors = connectedConnectorReferences(status.connectors);
   if (!store.create) {
     throw new ApiFailure(503, "hosted_authorization_unavailable", "Atomic hosted authorization is unavailable.");
   }
@@ -1268,7 +1288,11 @@ async function createConnection(
   // connector and MCP immediately after broker success, then consume the
   // approval before creating any grant state.
   const liveConnectorStatuses = (await connectorStatuses(env, identity.userId)).connectors;
-  const connectors = requested.filter((connector) => liveConnectorStatuses[connector].connected);
+  const connectors = connectedConnectorSelection(
+    liveConnectorStatuses,
+    requested,
+    approval.connectedConnectors,
+  );
   requireRequestedConnectors(connectors, requested);
   if (credentialImport
     && liveConnectorStatuses.chatgpt.account_id !== credentialImport.account_id) {
@@ -1447,7 +1471,7 @@ async function approvedChatGptCredentialImport(
   value: unknown,
   approval: ConnectApproval,
   app: CallerApp,
-  requested: readonly ConnectorId[],
+  requested: readonly ConnectorReference[],
 ): Promise<ChatGptCredentialImport | undefined> {
   let approvedDigest: string | undefined;
   try {
@@ -1854,7 +1878,7 @@ function managedGrantAssertion(grant: GrantRecord): ManagedGrantAssertion {
   return {
     brokerUserId: grant.brokerUserId,
     capabilities: grant.capabilities,
-    connectors: CONNECTOR_IDS.filter((connector) => grant.capabilities.includes(connector)),
+    connectors: grant.capabilities.filter(isConnectorReference),
     grantId: grant.id,
     mcpIds: (grant.mcpConnections ?? []).map(({ id }) => id),
     ...(grant.appToolCatalogDigest === undefined
@@ -2289,7 +2313,7 @@ function grantAuthorization(grant: GrantRecord) {
     status: grant.expiresAt <= now ? "expired" : grant.status,
     expiresAt: grant.expiresAt,
     capabilities: [...grant.capabilities],
-    connectors: CONNECTOR_IDS.filter((connector) => grant.capabilities.includes(connector)),
+    connectors: grant.capabilities.filter(isConnectorReference),
     ...(accessKey ? { accessKey: {
       id: address(accessKey.key_id),
       expiry: safeInteger(accessKey.expiry, "access_key.expiry"),
@@ -2376,6 +2400,7 @@ async function grantBrowserEgress(request: Request, env: Env, grant: GrantRecord
       method: value.method,
       headers: value.headers,
       body: value.body,
+      connection_id: value.connection_id,
     });
     return new Response(result.body, { status: result.status, headers: result.headers });
   }
@@ -2387,6 +2412,7 @@ function connectorForUrl(url: URL): OAuthConnectorId | undefined {
   if (url.origin === "https://gmail.googleapis.com") return "gmail";
   if (url.origin === "https://www.googleapis.com") return "gdrive";
   if (url.origin === "https://api.x.com") return "x";
+  if (url.origin === "https://slack.com") return "slack";
   return undefined;
 }
 
@@ -3314,6 +3340,7 @@ async function connectorStatuses(
       gmail: connectorStatus(statuses.gmail),
       gdrive: connectorStatus(statuses.gdrive),
       x: connectorStatus(statuses.x),
+      slack: slackConnectorStatus(statuses.slack),
       chatgpt: connectorStatus(chatGpt),
     },
   };
@@ -3376,6 +3403,33 @@ function connectorStatus(value: unknown): ConnectorStatus {
     ...(label ? { label } : {}),
     ...(accountId ? { account_id: accountId } : {}),
   };
+}
+
+function slackConnectorStatus(value: unknown): ConnectorStatus {
+  if (!isRecord(value) || !Array.isArray(value.connections) || value.connections.length > 64) {
+    return { connected: false, connections: [] };
+  }
+  const connections = value.connections.map((candidate): SlackConnection => {
+    if (!isRecord(candidate)
+      || typeof candidate.id !== "string" || !SLACK_CONNECTION.test(candidate.id)
+      || candidate.workspace_id !== candidate.id
+      || typeof candidate.workspace !== "string" || !candidate.workspace.trim() || candidate.workspace.length > 256
+      || typeof candidate.user_id !== "string" || !SLACK_CONNECTION.test(candidate.user_id)
+      || typeof candidate.label !== "string" || !candidate.label.trim() || candidate.label.length > 256) {
+      throw new ApiFailure(502, "connector_broker_invalid", "The Slack broker returned invalid connection metadata.");
+    }
+    return {
+      id: candidate.id,
+      workspace_id: candidate.id,
+      workspace: candidate.workspace.trim(),
+      user_id: candidate.user_id,
+      label: candidate.label.trim(),
+    };
+  });
+  if (new Set(connections.map((connection) => connection.id)).size !== connections.length) {
+    throw new ApiFailure(502, "connector_broker_invalid", "The Slack broker returned duplicate workspaces.");
+  }
+  return { connected: connections.length > 0, connections };
 }
 
 async function startConnector(
@@ -3582,6 +3636,8 @@ function connectorAuthorizationUrl(value: unknown, connector: OAuthConnectorId):
     ? ["https://github.com", "/login/oauth/authorize"]
     : connector === "x"
       ? ["https://x.com", "/i/oauth2/authorize"]
+      : connector === "slack"
+        ? ["https://slack.com", "/oauth/v2/authorize"]
       : ["https://accounts.google.com", "/o/oauth2/v2/auth"];
   if (url.origin !== expected[0] || url.pathname !== expected[1] || url.username || url.password || url.hash) {
     throw new ApiFailure(502, "connector_broker_invalid", "The connector broker returned an invalid authorization URL.");
@@ -3601,6 +3657,23 @@ async function disconnectConnector(
   if (!response.ok) {
     await response.body?.cancel();
     throw new ApiFailure(502, "connector_broker_failed", "The connector broker could not disconnect the account.");
+  }
+  await response.body?.cancel();
+}
+
+async function disconnectSlackConnection(
+  env: Env,
+  brokerUserId: string,
+  connectionId: string,
+): Promise<void> {
+  const response = await brokerFetch(
+    env,
+    `/users/${encodeURIComponent(brokerUserId)}/connectors/slack/${connectionId}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new ApiFailure(502, "connector_broker_failed", "The Slack broker could not disconnect the workspace.");
   }
   await response.body?.cancel();
 }
@@ -3978,22 +4051,37 @@ function isDeviceMcpReturn(value: unknown, dialogOrigin: string): value is strin
   }
 }
 
-function requestedConnectors(value: unknown): ConnectorId[] {
+function requestedConnectors(value: unknown): ConnectorReference[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
     throw new ApiFailure(400, "invalid_requested_connectors", "requested_connectors must be a connector ID array.");
   }
-  const requested = new Set<ConnectorId>();
+  const requested = new Set<ConnectorReference>();
   for (const item of value) {
-    if (typeof item !== "string" || !CONNECTOR_IDS.includes(item as ConnectorId)) {
+    if (typeof item !== "string"
+      || (!(CONNECTOR_IDS as readonly string[]).includes(item) && !SLACK_CONNECTOR_REFERENCE.test(item))) {
       throw new ApiFailure(400, "invalid_requested_connectors", "requested_connectors contains an unknown connector.");
     }
-    requested.add(item as ConnectorId);
+    requested.add(item as ConnectorReference);
   }
   if (requested.size !== value.length) {
     throw new ApiFailure(400, "invalid_requested_connectors", "requested_connectors cannot contain duplicates.");
   }
   return [...requested];
+}
+
+function isConnectorReference(value: unknown): value is ConnectorReference {
+  return typeof value === "string"
+    && ((CONNECTOR_IDS as readonly string[]).includes(value) || SLACK_CONNECTOR_REFERENCE.test(value));
+}
+
+function connectedConnectorReferences(
+  statuses: Record<ConnectorId, ConnectorStatus>,
+): ConnectorReference[] {
+  return [
+    ...CONNECTOR_IDS.filter((connector) => connector !== "slack" && statuses[connector].connected),
+    ...(statuses.slack.connections ?? []).map((connection) => `slack:${connection.id}` as const),
+  ];
 }
 
 function requestedMcpConnections(value: unknown): string[] {
@@ -4023,22 +4111,36 @@ function optionalCatalogDigest(value: unknown, name: string): `0x${string}` | un
 }
 
 function requireRequestedConnectors(
-  connected: readonly ConnectorId[],
-  requested: readonly ConnectorId[],
+  connected: readonly ConnectorReference[],
+  requested: readonly ConnectorReference[],
 ): void {
-  if (!requestedConnectorsSatisfied(connected, requested)) {
+  if (requested.some((connector) => connector === "slack"
+    ? !connected.some((candidate) => candidate.startsWith("slack:"))
+    : !connected.includes(connector))) {
     throw new ApiFailure(403, "connector_not_connected", "Every requested connector must be connected before creating a grant.");
   }
 }
 
-async function connectedRequestedConnectors(
-  env: Env,
-  brokerUserId: string,
-  requested: readonly ConnectorId[],
-): Promise<ConnectorId[]> {
-  if (requested.length === 0) return [];
-  const current = (await connectorStatuses(env, brokerUserId)).connectors;
-  return requested.filter((connector) => current[connector].connected);
+function connectedConnectorSelection(
+  current: Record<ConnectorId, ConnectorStatus>,
+  requested: readonly ConnectorReference[],
+  approvedSnapshot: readonly ConnectorReference[] | undefined,
+): ConnectorReference[] {
+  const approved = new Set(approvedSnapshot ?? []);
+  return [...new Set(requested.flatMap((connector): ConnectorReference[] => {
+    if (connector === "slack") {
+      return (current.slack.connections ?? [])
+        .map((connection) => `slack:${connection.id}` as const)
+        .filter((reference) => approved.has(reference));
+    }
+    const slack = SLACK_CONNECTOR_REFERENCE.exec(connector);
+    if (slack) {
+      return current.slack.connections?.some((connection) => connection.id === slack[1])
+        ? [connector]
+        : [];
+    }
+    return current[connector as ConnectorId].connected ? [connector] : [];
+  }))];
 }
 
 function randomSubject(): string {
@@ -4094,7 +4196,15 @@ async function grantConnectorRequest(
   if (grant.expiresAt <= Math.floor(Date.now() / 1000)) {
     throw new ApiFailure(409, "grant_expired", "The grant has expired.");
   }
-  if (!grant.capabilities.includes(connector)) {
+  const slackConnectionId = connector === "slack" && typeof value.connection_id === "string"
+    && SLACK_CONNECTION.test(value.connection_id) ? value.connection_id : undefined;
+  if (connector === "slack" && !slackConnectionId) {
+    throw new ApiFailure(400, "connector_instance_required", "A Slack workspace connection is required.");
+  }
+  const connectorCapability = connector === "slack"
+    ? `slack:${slackConnectionId}`
+    : connector;
+  if (!grant.capabilities.includes(connectorCapability)) {
     throw new ApiFailure(403, "connector_not_granted", "The connector is not granted to this connection.");
   }
   if (!EGRESS_SUBJECT.test(grant.egressSubject)) {
@@ -4109,6 +4219,7 @@ async function grantConnectorRequest(
   const headers = connectorHeaders(value.headers);
   headers.set("authorization", PROVIDER_CREDENTIAL_PLACEHOLDER);
   headers.set("x-nanocodex-subject", grant.egressSubject);
+  if (slackConnectionId) headers.set("x-nanocodex-connector-instance", slackConnectionId);
   const body = value.body;
   if (body !== undefined && typeof body !== "string") {
     throw new ApiFailure(400, "invalid_connector_body", "The connector request body must be a string.");
@@ -4195,12 +4306,13 @@ function connectorTarget(connector: OAuthConnectorId, value: unknown): URL {
       ? "https://gmail.googleapis.com"
       : connector === "gdrive"
         ? "https://www.googleapis.com"
-        : "https://api.x.com";
+        : connector === "x" ? "https://api.x.com" : "https://slack.com";
   const target = new URL(value, origin);
   const pathAllowed = connector === "github"
     || (connector === "gmail" && /^\/gmail\/v1\/users\/me(?:\/|$)/.test(target.pathname))
     || (connector === "gdrive" && /^(?:\/drive\/v3|\/upload\/drive\/v3)(?:\/|$)/.test(target.pathname))
-    || (connector === "x" && /^\/2\/(?:tweets|users|lists|dm_(?:conversations|events)|media)(?:\/|$)/.test(target.pathname));
+    || (connector === "x" && /^\/2\/(?:tweets|users|lists|dm_(?:conversations|events)|media)(?:\/|$)/.test(target.pathname))
+    || (connector === "slack" && /^\/api\/[a-zA-Z0-9._-]+$/.test(target.pathname));
   if (target.origin !== origin || target.username || target.password || target.hash || !pathAllowed) {
     throw new ApiFailure(403, "connector_destination_denied", "The connector destination is not allowed.");
   }
@@ -4512,7 +4624,7 @@ function createAuth(
           : pendingMcpConnections(env, store, approvedMcpConnectionIds(resources)),
       ]);
       mark("resources");
-      const connectedConnectors = CONNECTOR_IDS.filter((connector) => status.connectors[connector].connected);
+      const connectedConnectors = connectedConnectorReferences(status.connectors);
       await store.set(`connect-approval:${approvalId}`, {
         accountAddress,
         appId: app.appId,
@@ -4613,7 +4725,7 @@ function isConnectApproval(value: unknown): value is ConnectApproval {
     && (value.brokerUserId === undefined || isBrokerUserId(value.brokerUserId))
     && (value.connectedConnectors === undefined
       || (Array.isArray(value.connectedConnectors)
-        && value.connectedConnectors.every((connector) => CONNECTOR_IDS.includes(connector as ConnectorId))))
+        && value.connectedConnectors.every(isConnectorReference)))
     && (value.mcpConnections === undefined
       || (Array.isArray(value.mcpConnections)
         && value.mcpConnections.length <= 16
@@ -4630,7 +4742,7 @@ function isConnectApproval(value: unknown): value is ConnectApproval {
 function requireApprovedCapabilities(
   resources: readonly string[],
   appId: string,
-  requested: readonly ConnectorId[],
+  requested: readonly ConnectorReference[],
   requestedMcpIds: readonly string[],
 ) {
   const approvedResources = new Set(resources);
@@ -4735,7 +4847,8 @@ function approvedConnectors(resources: readonly string[]): Set<string> {
       return resource.slice(CONNECTORS_RESOURCE_PREFIX.length).split(",");
     }
     return [];
-  }).filter((connector) => (CONNECTOR_IDS as readonly string[]).includes(connector)));
+  }).filter((connector) => (CONNECTOR_IDS as readonly string[]).includes(connector)
+    || SLACK_CONNECTOR_REFERENCE.test(connector)));
 }
 
 function approvedMcpConnectionIds(resources: readonly string[]): string[] {

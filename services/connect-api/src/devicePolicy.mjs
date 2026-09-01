@@ -34,7 +34,7 @@ const optionalResources = new Set([
   "urn:nanocodex:mpp:machusd:spend",
   "urn:nanocodex:authorization:hosted",
 ]);
-const connectors = new Set(["github", "gmail", "gdrive", "x", "chatgpt"]);
+const connectors = new Set(["github", "gmail", "gdrive", "x", "slack", "chatgpt"]);
 const connectorFocusPrefix = "urn:nanocodex:connector-focus:";
 const visibility = new Set(["reply", "actions", "history", "traces"]);
 const chainId = "0x1079";

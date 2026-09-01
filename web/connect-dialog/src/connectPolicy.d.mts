@@ -55,7 +55,7 @@ export function chatGptConnectorDisposition(value: unknown): "connected" | "devi
 export function focusedConnectorFromResources(
   resources: unknown,
   requestedConnectors: unknown,
-): "chatgpt" | "github" | "gmail" | "gdrive" | "x" | undefined;
+): "chatgpt" | "github" | "gmail" | "gdrive" | "x" | "slack" | undefined;
 export type McpConnectionStatus =
   | "authorization_required"
   | "reauthorization_required"
@@ -83,7 +83,7 @@ export type McpCallbackContinuation = Readonly<{
   apiUrl: string;
   accountAddress: `0x${string}`;
   token: string;
-  requestedConnectors: readonly ("chatgpt" | "github" | "gmail" | "gdrive" | "x")[];
+  requestedConnectors: readonly ("chatgpt" | "github" | "gmail" | "gdrive" | "x" | "slack")[];
   requestedMcpConnections: readonly McpConnection[];
   connectorStatuses: Readonly<Record<string, Readonly<{
     connected: boolean;
@@ -98,7 +98,7 @@ export function restoreMcpCallbackContinuation(
   expected: Readonly<{
     requestId: string;
     apiUrl: string;
-    returnedConnector?: "github" | "gmail" | "gdrive" | "x" | undefined;
+    returnedConnector?: "github" | "gmail" | "gdrive" | "x" | "slack" | undefined;
     returnedMcpConnection?: string | undefined;
     requestedConnectors: readonly string[];
     requestedMcpConnections: readonly McpConnection[];

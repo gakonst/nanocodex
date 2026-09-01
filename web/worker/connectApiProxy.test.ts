@@ -50,6 +50,10 @@ test("local Connect routing owns device, auth, and authenticated onboarding rout
     new Request(`http://nanocodex.localhost:5173/v1/connectors/github/callback?state=connect.${"a".repeat(43)}`),
     "/v1/connectors/github/callback",
   ), true);
+  assert.equal(isConnectApiRequest(
+    new Request(`http://nanocodex.localhost:5173/v1/connectors/slack/callback?state=connect.${"a".repeat(43)}`),
+    "/v1/connectors/slack/callback",
+  ), true);
 });
 
 test("local Connect proxy preserves the canonical HTTPS request origin", async () => {

@@ -64,6 +64,21 @@ test("managed callbacks return only to the signed fixed provider path", async ()
   );
 });
 
+test("Slack callbacks use the same isolated local relay", async () => {
+  const target = "http://feature-a.nanocodex.localhost:20735";
+  const local = localConnectorAuthorization(target, "slack", "connect")!;
+  assert.equal(local.redirectUri, `${LOCAL_OAUTH_RELAY_ORIGIN}/v1/connectors/slack/callback`);
+  const authorization = new URL("https://slack.com/oauth/v2/authorize?state=inner");
+  await wrapLocalConnectorAuthorizationState(authorization, local, RELAY_KEY);
+  const callback = new URL(local.redirectUri);
+  callback.searchParams.set("code", "provider-code");
+  callback.searchParams.set("state", authorization.searchParams.get("state")!);
+  assert.equal(
+    (await localOAuthRelayCallbackRedirect(callback, RELAY_KEY))?.href,
+    `${target}/v1/connect/auth/connector-callback/slack?code=provider-code&state=inner`,
+  );
+});
+
 test("generic MCP callbacks bind the opaque connection and return to its fixed backend path", async () => {
   const target = "http://feature-a.nanocodex.localhost:20735";
   const local = localMcpAuthorization(target, MCP_CONNECTION_ID, "connect");

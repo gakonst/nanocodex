@@ -39,6 +39,11 @@ test("connection import is bounded and precedes live recheck, approval take, and
   assert.match(approval, /approvedConnectors\(approval\.resources\)\.has\("chatgpt"\)/);
 });
 
+test("generic Slack approval expands only its captured workspace snapshot", () => {
+  assert.match(source, /connectedConnectorSelection\(\s*liveConnectorStatuses,\s*requested,\s*approval\.connectedConnectors,\s*\)/);
+  assert.match(source, /\.filter\(\(reference\) => approved\.has\(reference\)\)/);
+});
+
 test("credential bytes cross only the private EGRESS import call and never enter grant storage", () => {
   const importer = section("async function importChatGptCredential(", "async function connectionCredential(");
   assert.match(importer, /env\.EGRESS\.fetch/);

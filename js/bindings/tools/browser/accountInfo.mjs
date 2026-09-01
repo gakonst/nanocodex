@@ -1,6 +1,13 @@
 import { namedTool } from "../namedTool.mjs";
 
 const CONNECTOR_IDS = ["github", "gmail", "gdrive", "x", "chatgpt"];
+const SLACK_CONNECTOR = /^slack:[A-Z0-9]{1,32}$/;
+const CONNECTOR_SCHEMA = {
+  anyOf: [
+    { type: "string", enum: CONNECTOR_IDS },
+    { type: "string", pattern: "^slack:[A-Z0-9]{1,32}$" },
+  ],
+};
 const LIMIT_SCHEMA = {
   type: "object",
   properties: {
@@ -21,11 +28,12 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
     },
     authenticated: {
       type: "array",
-      items: { type: "string", enum: CONNECTOR_IDS },
+      items: CONNECTOR_SCHEMA,
     },
     accounts: {
       type: "object",
       properties: Object.fromEntries(CONNECTOR_IDS.map((id) => [id, { type: "string" }])),
+      patternProperties: { "^slack:[A-Z0-9]{1,32}$": { type: "string" } },
       additionalProperties: false,
     },
     identity: {
@@ -57,7 +65,7 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
           status: { type: "string", enum: ["active", "revoked", "expired"] },
           expiresAt: { type: "integer" },
           capabilities: { type: "array", items: { type: "string" } },
-          connectors: { type: "array", items: { type: "string", enum: CONNECTOR_IDS } },
+          connectors: { type: "array", items: CONNECTOR_SCHEMA },
           accessKey: {
             type: "object",
             properties: {
@@ -177,6 +185,18 @@ export async function browserAccountInfo(options, signal) {
       }
       return true;
     });
+    const slack = value.connectors.slack;
+    if (record(slack) && Array.isArray(slack.connections)) {
+      for (const connection of slack.connections.slice(0, 64)) {
+        if (!record(connection) || typeof connection.id !== "string"
+          || !/^[A-Z0-9]{1,32}$/.test(connection.id)) continue;
+        const reference = `slack:${connection.id}`;
+        authenticated.push(reference);
+        if (typeof connection.label === "string" && connection.label.trim()) {
+          accounts[reference] = connection.label.trim();
+        }
+      }
+    }
     const accountIdentity = identity(value.identity);
     const accountStablecoins = stablecoins(value.stablecoins);
     const accountAuthorizations = authorizations(value.authorizations);
@@ -274,7 +294,8 @@ function validAuthorization(value) {
     && Number.isSafeInteger(value.expiresAt)
     && stringArray(value.capabilities)
     && Array.isArray(value.connectors)
-    && value.connectors.every((connector) => CONNECTOR_IDS.includes(connector))
+    && value.connectors.every((connector) => CONNECTOR_IDS.includes(connector)
+      || (typeof connector === "string" && SLACK_CONNECTOR.test(connector)))
     && validAccessKey(value.accessKey)
     && validSpend(value.spend);
 }

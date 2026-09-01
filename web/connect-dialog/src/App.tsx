@@ -70,7 +70,7 @@ export async function logoutAccount() {
   }
 }
 
-const connectorIds = ["github", "gmail", "gdrive", "x", "chatgpt"] as const;
+const connectorIds = ["github", "gmail", "gdrive", "x", "slack", "chatgpt"] as const;
 const connectDialogRoutingHeaders = { "x-nanocodex-connect-client": "onboarding" } as const;
 const connectDeviceRoutingHeaders = { "x-nanocodex-connect-client": "device" } as const;
 const connectorResourcePrefix = "urn:nanocodex:connector:";
@@ -2108,6 +2108,7 @@ function connectorDefinition(id: ConnectorId) {
   if (id === "gmail") return { id, name: "Gmail", detail: "Read and send email" };
   if (id === "gdrive") return { id, name: "Google Drive", detail: "Read and create files" };
   if (id === "x") return { id, name: "X", detail: "Posts, follows, likes, lists, and messages" };
+  if (id === "slack") return { id, name: "Slack", detail: "Act as you in connected workspaces" };
   return { id, name: "ChatGPT", detail: "Model access through your account" };
 }
 

@@ -21,6 +21,8 @@ const connectorSecrets = {
   NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
   NANOCODEX_X_OAUTH_CLIENT_ID: "x-client-id",
   NANOCODEX_X_OAUTH_CLIENT_SECRET: "x-client-secret",
+  NANOCODEX_SLACK_OAUTH_CLIENT_ID: "slack-client-id",
+  NANOCODEX_SLACK_OAUTH_CLIENT_SECRET: "slack-client-secret",
 };
 
 test("production deployment selects only owned broker and connector secrets", () => {
@@ -39,6 +41,8 @@ test("production deployment selects only owned broker and connector secrets", ()
     GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
     X_OAUTH_CLIENT_ID: "x-client-id",
     X_OAUTH_CLIENT_SECRET: "x-client-secret",
+    SLACK_OAUTH_CLIENT_ID: "slack-client-id",
+    SLACK_OAUTH_CLIENT_SECRET: "slack-client-secret",
   });
   assert.throws(() => productionBrokerSecrets({}), /CREDENTIAL_ENCRYPTION_KEY/);
 });
@@ -59,6 +63,8 @@ test("production deployment accepts an optional previous encryption key for rota
     GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
     X_OAUTH_CLIENT_ID: "x-client-id",
     X_OAUTH_CLIENT_SECRET: "x-client-secret",
+    SLACK_OAUTH_CLIENT_ID: "slack-client-id",
+    SLACK_OAUTH_CLIENT_SECRET: "slack-client-secret",
   });
   assert.throws(() => productionBrokerSecrets({
     NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
@@ -93,6 +99,27 @@ test("production deployment treats X OAuth as an optional atomic pair", () => {
     ...withoutX,
     NANOCODEX_X_OAUTH_CLIENT_SECRET: "x-client-secret",
   }), /X OAuth application credentials must be configured together/);
+});
+
+test("production deployment treats Slack OAuth as an optional atomic pair", () => {
+  const {
+    NANOCODEX_SLACK_OAUTH_CLIENT_ID: _slackId,
+    NANOCODEX_SLACK_OAUTH_CLIENT_SECRET: _slackSecret,
+    ...withoutSlack
+  } = connectorSecrets;
+  const secrets = productionBrokerSecrets({
+    NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    NANOCODEX_BROKER_PROBE_TOKEN: probeToken,
+    ...withoutSlack,
+  });
+  assert.equal("SLACK_OAUTH_CLIENT_ID" in secrets, false);
+  assert.equal("SLACK_OAUTH_CLIENT_SECRET" in secrets, false);
+  assert.throws(() => productionBrokerSecrets({
+    NANOCODEX_CREDENTIAL_ENCRYPTION_KEY: encryptionKey,
+    NANOCODEX_BROKER_PROBE_TOKEN: probeToken,
+    ...withoutSlack,
+    NANOCODEX_SLACK_OAUTH_CLIENT_ID: "slack-client-id",
+  }), /Slack OAuth application credentials must be configured together/);
 });
 
 test("production deployment requires a full immutable Git revision", () => {

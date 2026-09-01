@@ -86,7 +86,7 @@ export type ManagedComputerRuntime = Readonly<{
 export async function createManagedComputerRuntime(options: Readonly<{
   computer: DisposableComputerWorkspace;
   computerProvider?: ComputerProviderOption;
-  connectorAllowed?: (connector: ManagedEgressConnectorId) => boolean;
+  connectorAllowed?: (connector: ManagedEgressConnectorId, instance?: string) => boolean;
   egress: Fetcher;
   sshIdentityAllowed?: (reference: string) => boolean;
   subject?: string;

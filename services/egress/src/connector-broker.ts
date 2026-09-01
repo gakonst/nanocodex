@@ -40,6 +40,15 @@ import {
   decodeXIdentity,
   decodeXTokenResponse,
 } from "./connectors/x";
+import {
+  buildSlackAuthorizationUrl,
+  buildSlackRevocationRequest,
+  buildSlackTokenRefreshRequest,
+  buildSlackTokenRequest,
+  decodeSlackRefreshResponse,
+  decodeSlackTokenResponse,
+  slackConnectionLabel,
+} from "./connectors/slack";
 
 const STATE_KEY = "connector-state";
 const PENDING_TTL_MS = 10 * 60_000;
@@ -47,14 +56,17 @@ const MAX_BODY_BYTES = 8 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES = 64 * 1024;
 const MAX_CONNECTOR_URL_BYTES = 8 * 1024;
 const MAX_CONNECTOR_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_SLACK_REQUEST_BYTES = 1024 * 1024;
 const CONNECTOR_TIMEOUT_MS = 20_000;
 const EXPIRY_SKEW_MS = 30_000;
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
 const CONNECTOR = /^(github|gmail|gdrive|x)$/;
+const SLACK_CONNECTION_ID = /^[A-Z0-9]{1,32}$/;
+const SLACK_CONNECTION_HEADER = "x-nanocodex-connector-instance";
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 
 type ProviderRule = Readonly<{
-  id: ConnectorId;
+  id: ProviderConnectorId;
   origin: `https://${string}`;
   paths: readonly RegExp[];
 }>;
@@ -86,9 +98,15 @@ const PROVIDER_RULES: readonly ProviderRule[] = [
       /^\/2\/media(?:\/|$)/,
     ],
   },
+  {
+    id: "slack",
+    origin: "https://slack.com",
+    paths: [/^\/api\/[a-zA-Z0-9._-]+$/],
+  },
 ];
 
 export type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+export type ProviderConnectorId = ConnectorId | "slack";
 
 export interface ConnectorBrokerEnv extends McpConnectionBrokerEnv {
   GITHUB_OAUTH_CLIENT_ID?: string;
@@ -97,6 +115,8 @@ export interface ConnectorBrokerEnv extends McpConnectionBrokerEnv {
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
   X_OAUTH_CLIENT_ID?: string;
   X_OAUTH_CLIENT_SECRET?: string;
+  SLACK_OAUTH_CLIENT_ID?: string;
+  SLACK_OAUTH_CLIENT_SECRET?: string;
 }
 
 type StoredConnector = {
@@ -110,6 +130,12 @@ type StoredConnector = {
   connectedAt: number;
 };
 
+type StoredSlackConnector = StoredConnector & {
+  teamId: string;
+  teamName: string;
+  userId: string;
+};
+
 type PendingAuthorization = {
   state: string;
   verifier: string;
@@ -121,7 +147,8 @@ type PendingAuthorization = {
 type ConnectorState = {
   version: 1;
   connectors: Partial<Record<ConnectorId, StoredConnector>>;
-  pending: Partial<Record<ConnectorId, PendingAuthorization>>;
+  slack?: Record<string, StoredSlackConnector>;
+  pending: Partial<Record<ProviderConnectorId, PendingAuthorization>>;
 };
 
 type StoredRow = { envelope: EncryptedEnvelope };
@@ -174,7 +201,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   async #dispatch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     let auditAction: ConnectorAuditAction | undefined;
-    let auditConnector: ConnectorId | undefined;
+    let auditConnector: ProviderConnectorId | undefined;
     try {
       if (url.origin === "https://mcp-connections.internal") {
         return this.#mcpConnections.fetch(request);
@@ -195,8 +222,24 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       if (request.method === "GET" && url.pathname === "/v1/status") {
         return json({ connectors: this.#publicStatus() }, 200);
       }
-      const match = url.pathname.match(/^\/v1\/(github|gmail|gdrive|x)(?:\/(start|callback))?$/);
-      const id = connectorId(match?.[1]);
+      const slackDelete = url.pathname.match(/^\/v1\/slack\/([A-Z0-9]{1,32})$/);
+      if (request.method === "DELETE" && slackDelete) {
+        const connectionId = slackDelete[1]!;
+        auditAction = "disconnect";
+        auditConnector = "slack";
+        const connector = this.#connectors.slack?.[connectionId];
+        if (connector) await this.#revokeSlack(connector);
+        if (this.#connectors.slack) delete this.#connectors.slack[connectionId];
+        await this.#persist();
+        connectorAudit("disconnect", "allow", "slack", {
+          status: 204,
+          connection_id: connectionId,
+          disconnected_connectors: connector ? 1 : 0,
+        });
+        return new Response(null, { status: 204, headers: noStoreHeaders() });
+      }
+      const match = url.pathname.match(/^\/v1\/(github|gmail|gdrive|x|slack)(?:\/(start|callback))?$/);
+      const id = providerConnectorId(match?.[1]);
       if (!id) return jsonError(404, "not_found");
       const operation = match?.[2];
       if (request.method === "POST" && operation === "start") {
@@ -217,6 +260,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         return json(callback, 200);
       }
       if (request.method === "DELETE" && operation === undefined) {
+        if (id === "slack") return jsonError(400, "connector_instance_required");
         auditAction = "disconnect";
         auditConnector = id;
         const connector = this.#connectors.connectors[id];
@@ -255,16 +299,21 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       throw new ConnectorFailure(403, "destination_denied");
     }
     if (!safeQuery(url.searchParams)) throw new ConnectorFailure(403, "destination_denied");
-    const connector = await this.#usableConnector(provider.id);
+    const connector = provider.id === "slack"
+      ? await this.#usableSlackConnector(request.headers.get(SLACK_CONNECTION_HEADER))
+      : await this.#usableConnector(provider.id);
     const headers = connectorRequestHeaders(request.headers, provider.id, connector.accessToken);
+    const requestBody = provider.id === "slack"
+      ? await slackRequestBody(request)
+      : request.body;
     let upstream: Response;
     try {
       upstream = await fetch(new Request(url, {
         method: request.method,
         headers,
-        ...(request.method === "GET" || request.method === "HEAD" || !request.body
+        ...(request.method === "GET" || request.method === "HEAD" || requestBody === null
           ? {}
-          : { body: request.body }),
+          : { body: requestBody }),
         redirect: "manual",
       }), {
         redirect: "manual",
@@ -275,7 +324,12 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     }
     if (upstream.status === 401) {
       await upstream.body?.cancel();
-      this.#deleteConnectorGrant(provider.id, connector);
+      if (provider.id === "slack") {
+        const connectionId = request.headers.get(SLACK_CONNECTION_HEADER)!;
+        delete this.#connectors.slack![connectionId];
+      } else {
+        this.#deleteConnectorGrant(provider.id, connector);
+      }
       await this.#persist();
       throw new ConnectorFailure(409, "connector_reauthentication_required");
     }
@@ -298,6 +352,58 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       statusText: upstream.statusText,
       headers: connectorResponseHeaders(upstream.headers),
     });
+  }
+
+  async #usableSlackConnector(connectionId: string | null): Promise<StoredSlackConnector> {
+    if (!connectionId || !SLACK_CONNECTION_ID.test(connectionId)) {
+      throw new ConnectorFailure(400, "connector_instance_required");
+    }
+    const connector = this.#connectors.slack?.[connectionId];
+    if (!connector) throw new ConnectorFailure(409, "connector_not_connected");
+    if (connector.expiresAt === undefined || connector.expiresAt > Date.now() + EXPIRY_SKEW_MS) {
+      return connector;
+    }
+    if (!connector.refreshToken) {
+      delete this.#connectors.slack![connectionId];
+      await this.#persist();
+      throw new ConnectorFailure(409, "connector_reauthentication_required");
+    }
+    const credentials = providerCredentials("slack", this.#env);
+    const response = await providerFetch(buildSlackTokenRefreshRequest({
+      ...credentials,
+      refreshToken: connector.refreshToken,
+    }));
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (response.status === 400 || response.status === 401) {
+        delete this.#connectors.slack![connectionId];
+        await this.#persist();
+        throw new ConnectorFailure(409, "connector_reauthentication_required");
+      }
+      throw new ConnectorFailure(503, "connector_provider_unavailable");
+    }
+    let refreshed;
+    try {
+      refreshed = decodeSlackRefreshResponse(await providerJson(response), connector);
+    } catch {
+      delete this.#connectors.slack![connectionId];
+      await this.#persist();
+      throw new ConnectorFailure(409, "connector_reauthentication_required");
+    }
+    if (!refreshed.refreshToken || !refreshed.expiresIn) {
+      throw new ConnectorFailure(409, "connector_reauthentication_required");
+    }
+    const next: StoredSlackConnector = {
+      ...connector,
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken,
+      expiresAt: Date.now() + refreshed.expiresIn! * 1_000,
+      scopes: [...refreshed.scopes],
+    };
+    this.#connectors.slack![connectionId] = next;
+    await this.#persist();
+    connectorAudit("refresh", "allow", "slack", { status: 200, connection_id: connectionId });
+    return next;
   }
 
   async #usableConnector(id: ConnectorId): Promise<StoredConnector> {
@@ -499,7 +605,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     return connectorIds;
   }
 
-  #publicStatus(): Record<ConnectorId, Record<string, unknown>> {
+  #publicStatus(): Record<ProviderConnectorId, Record<string, unknown>> {
     const status = (id: ConnectorId): Record<string, unknown> => {
       const connector = this.#connectors.connectors[id];
       const refreshable = connector?.refreshToken
@@ -520,10 +626,25 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       gmail: status("gmail"),
       gdrive: status("gdrive"),
       x: status("x"),
+      slack: {
+        connected: Object.keys(this.#connectors.slack ?? {}).length > 0,
+        connections: Object.values(this.#connectors.slack ?? {})
+          .filter((connector) => connector.expiresAt === undefined
+            || connector.expiresAt > Date.now() + EXPIRY_SKEW_MS
+            || Boolean(connector.refreshToken))
+          .sort((left, right) => left.connectedAt - right.connectedAt)
+          .map((connector) => ({
+            id: connector.teamId,
+            workspace_id: connector.teamId,
+            workspace: connector.teamName,
+            user_id: connector.userId,
+            label: connector.label,
+          })),
+      },
     };
   }
 
-  async #start(id: ConnectorId, request: Request): Promise<Record<string, unknown>> {
+  async #start(id: ProviderConnectorId, request: Request): Promise<Record<string, unknown>> {
     const body = await readJson(request, MAX_BODY_BYTES);
     const redirectUri = stringField(body, "redirect_uri");
     const returnTo = stringField(body, "return_to");
@@ -553,7 +674,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     };
   }
 
-  async #callback(id: ConnectorId, request: Request): Promise<Record<string, unknown>> {
+  async #callback(id: ProviderConnectorId, request: Request): Promise<Record<string, unknown>> {
     const body = await readJson(request, MAX_BODY_BYTES);
     const state = stringField(body, "state");
     const pending = this.#connectors.pending[id];
@@ -577,6 +698,31 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       });
       const tokenResponse = await providerFetch(tokenRequest);
       if (!tokenResponse.ok) throw new ConnectorFailure(502, "connector_token_exchange_failed");
+      if (id === "slack") {
+        let slack;
+        try { slack = decodeSlackTokenResponse(await providerJson(tokenResponse)); } catch {
+          throw new ConnectorFailure(502, "connector_token_response_invalid");
+        }
+        const stored: StoredSlackConnector = {
+          accessToken: slack.accessToken,
+          ...(slack.refreshToken ? { refreshToken: slack.refreshToken } : {}),
+          ...(slack.expiresIn ? { expiresAt: Date.now() + slack.expiresIn * 1_000 } : {}),
+          scopes: [...slack.scopes],
+          accountId: `${slack.teamId}:${slack.userId}`,
+          label: slackConnectionLabel(slack.teamName, slack.userId),
+          connectedAt: Date.now(),
+          teamId: slack.teamId,
+          teamName: slack.teamName,
+          userId: slack.userId,
+        };
+        (this.#connectors.slack ??= {})[slack.teamId] = stored;
+        await this.#persist();
+        return {
+          connected: true,
+          connection_id: slack.teamId,
+          return_to: pending.returnTo,
+        };
+      }
       let token: DecodedToken;
       try {
         token = decodeToken(id, await providerJson(tokenResponse));
@@ -613,6 +759,21 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     }
   }
 
+  async #revokeSlack(connector: StoredSlackConnector): Promise<void> {
+    const response = await providerFetch(buildSlackRevocationRequest(connector.accessToken));
+    let revoked = false;
+    if (response.ok) {
+      try { revoked = (await providerJson(response)).ok === true; } catch { revoked = false; }
+    } else {
+      await response.body?.cancel();
+    }
+    connectorAudit("revoke", revoked ? "allow" : "error", "slack", {
+      status: response.status,
+      connection_id: connector.teamId,
+    });
+    if (!revoked) throw new ConnectorFailure(503, "connector_revocation_failed");
+  }
+
   async #persist(): Promise<void> {
     await this.#state.storage.put(STATE_KEY, {
       envelope: await this.#vault.seal(this.#connectors),
@@ -642,11 +803,16 @@ type DecodedToken = {
 };
 
 function authorizationUrl(
-  id: ConnectorId,
+  id: ProviderConnectorId,
   env: ConnectorBrokerEnv,
   fields: AuthorizationFields,
 ): URL {
   const clientId = providerCredentials(id, env).clientId;
+  if (id === "slack") return buildSlackAuthorizationUrl({
+    clientId,
+    redirectUri: fields.redirectUri,
+    state: fields.state,
+  });
   if (id === "github") return buildGitHubAuthorizationUrl({ clientId, ...fields });
   if (id === "gmail") return buildGmailAuthorizationUrl({ clientId, ...fields });
   if (id === "x") return buildXAuthorizationUrl({ clientId, ...fields });
@@ -654,11 +820,17 @@ function authorizationUrl(
 }
 
 function tokenExchangeRequest(
-  id: ConnectorId,
+  id: ProviderConnectorId,
   env: ConnectorBrokerEnv,
   fields: ExchangeFields,
 ): Request {
   const credentials = providerCredentials(id, env);
+  if (id === "slack") return buildSlackTokenRequest({
+    clientId: credentials.clientId,
+    clientSecret: credentials.clientSecret,
+    code: fields.code,
+    redirectUri: fields.redirectUri,
+  });
   if (id === "github") return buildGitHubTokenRequest({
     clientId: credentials.clientId,
     clientSecret: credentials.clientSecret,
@@ -777,15 +949,17 @@ function decodeIdentity(id: ConnectorId, value: unknown): { accountId: string; d
 }
 
 function providerCredentials(
-  id: ConnectorId,
+  id: ProviderConnectorId,
   env: ConnectorBrokerEnv,
 ): { clientId: string; clientSecret: string } {
   const clientId = (id === "github" ? env.GITHUB_OAUTH_CLIENT_ID
     : id === "x" ? env.X_OAUTH_CLIENT_ID
+    : id === "slack" ? env.SLACK_OAUTH_CLIENT_ID
     : env.GOOGLE_OAUTH_CLIENT_ID)?.trim();
   const clientSecret = (id === "github"
     ? env.GITHUB_OAUTH_CLIENT_SECRET
     : id === "x" ? env.X_OAUTH_CLIENT_SECRET
+    : id === "slack" ? env.SLACK_OAUTH_CLIENT_SECRET
     : env.GOOGLE_OAUTH_CLIENT_SECRET)?.trim();
   if (!clientId || !clientSecret) throw new ConnectorFailure(503, "connector_not_configured");
   return { clientId, clientSecret };
@@ -843,9 +1017,35 @@ function safeQuery(parameters: URLSearchParams): boolean {
   return true;
 }
 
+async function slackRequestBody(request: Request): Promise<string | null> {
+  if (request.body === null) return null;
+  const contentType = (request.headers.get("content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
+  const body = await readBoundedText(request, MAX_SLACK_REQUEST_BYTES);
+  const forbidden = new Set(["access_token", "api_key", "authorization", "oauth_token", "token"]);
+  if (contentType === "application/json") {
+    let value: unknown;
+    try { value = JSON.parse(body); } catch { throw new ConnectorFailure(400, "invalid_request_body"); }
+    if (!isRecord(value)) throw new ConnectorFailure(400, "invalid_request_body");
+    if (Object.keys(value).some((name) => forbidden.has(name.toLowerCase()))) {
+      throw new ConnectorFailure(403, "credential_input_denied");
+    }
+    return body;
+  }
+  if (contentType === "application/x-www-form-urlencoded") {
+    const parameters = new URLSearchParams(body);
+    for (const name of parameters.keys()) {
+      if (forbidden.has(name.toLowerCase())) {
+        throw new ConnectorFailure(403, "credential_input_denied");
+      }
+    }
+    return body;
+  }
+  throw new ConnectorFailure(415, "unsupported_media_type");
+}
+
 function connectorRequestHeaders(
   caller: Headers,
-  id: ConnectorId,
+  id: ProviderConnectorId,
   accessToken: string,
 ): Headers {
   const headers = new Headers({
@@ -999,6 +1199,10 @@ function connectorId(value: string | undefined): ConnectorId | undefined {
   return value && CONNECTOR.test(value) ? value as ConnectorId : undefined;
 }
 
+function providerConnectorId(value: string | undefined): ProviderConnectorId | undefined {
+  return value === "slack" ? value : connectorId(value);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -1014,7 +1218,7 @@ type ConnectorAuditAction =
 function connectorAudit(
   action: ConnectorAuditAction,
   outcome: "allow" | "deny" | "error",
-  connector: ConnectorId,
+  connector: ProviderConnectorId,
   detail: Readonly<Record<string, boolean | number | string>>,
 ): void {
   console.log({

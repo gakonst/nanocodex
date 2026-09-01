@@ -144,6 +144,7 @@ import {
   requireSameOriginMutation,
   routeAccountRequest,
   type AccountAuthEnv,
+  type ConnectConnectorId,
   type ConnectGrantSlice,
   type OrganizationCapability,
   type Principal,
@@ -609,7 +610,7 @@ function isConnectGrantSlice(value: unknown): value is ConnectGrantSlice {
     && isUniqueStringArray(grant.connectors)
     && grant.connectors.every((connector) => (
       connector === "github" || connector === "gmail" || connector === "gdrive"
-      || connector === "x" || connector === "chatgpt"
+      || connector === "x" || connector === "chatgpt" || /^slack:[A-Z0-9]{1,32}$/.test(connector)
     ))
     && isUniqueStringArray(grant.mcpIds) && grant.mcpIds.length <= 16
     && grant.mcpIds.every((id) => /^[A-Za-z0-9_-]{43}$/.test(id))
@@ -624,10 +625,10 @@ function isUniqueStringArray(value: unknown): value is string[] {
 
 function accountConnectorProjection(
   authorization: TurnAuthorization,
-): readonly ManagedEgressConnectorId[] | undefined {
+): readonly Exclude<ConnectConnectorId, "chatgpt">[] | undefined {
   if (!authorization.connectGrant) return undefined;
   return authorization.connectGrant.connectors.filter(
-    (connector): connector is ManagedEgressConnectorId => connector !== "chatgpt",
+    (connector): connector is Exclude<ConnectConnectorId, "chatgpt"> => connector !== "chatgpt",
   );
 }
 
@@ -4341,7 +4342,7 @@ export class DurableAgentSession extends DurableComputerSession {
        FROM managed_turns ORDER BY created_at, id LIMIT 1`,
     ).toArray()[0];
     if (!first) return undefined;
-    let allowedConnectors: readonly ManagedEgressConnectorId[] = [];
+    let allowedConnectors: readonly Exclude<ConnectConnectorId, "chatgpt">[] = [];
     try {
       allowedConnectors = accountConnectorProjection(
         parseTurnAuthorization(first.authorization_json),
@@ -4516,7 +4517,7 @@ export class DurableAgentSession extends DurableComputerSession {
       computerProvider: configuredComputerProvider(this.env, this.ctx.id.toString()),
       egress: this.env.NANOCODEX,
       ...(multiplayer ? {} : { subject: this.ctx.id.toString() }),
-      connectorAllowed: (connector) => this.#activeTurnConnectorAllowed(connector),
+      connectorAllowed: (connector, instance) => this.#activeTurnConnectorAllowed(connector, instance),
       sshIdentityAllowed: (reference) => this.#activeTurnSshIdentityAllowed(reference),
     });
     const currentAccountInfo = () => {
@@ -4885,11 +4886,12 @@ export class DurableAgentSession extends DurableComputerSession {
     catch { return undefined; }
   }
 
-  #activeTurnConnectorAllowed(connector: ManagedEgressConnectorId): boolean {
+  #activeTurnConnectorAllowed(connector: ManagedEgressConnectorId, instance?: string): boolean {
     const authorization = this.#activeTurnAuthorization();
+    const capability = connector === "slack" && instance ? `slack:${instance}` : connector;
     return authorization !== undefined
       && (authorization.connectGrant === undefined
-        || authorization.connectGrant.connectors.includes(connector));
+        || authorization.connectGrant.connectors.includes(capability as ConnectConnectorId));
   }
 
   #activeTurnMcpAllowed(connectionId: string): boolean {

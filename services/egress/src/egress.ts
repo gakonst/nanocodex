@@ -54,7 +54,7 @@ const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefine
 };
 
 type ConnectorOperation = Readonly<{
-  id: "github" | "gmail" | "gdrive" | "x";
+  id: "github" | "gmail" | "gdrive" | "x" | "slack";
   origin: `https://${string}`;
   paths: readonly RegExp[];
 }>;
@@ -85,6 +85,11 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
       /^\/2\/dm_(?:conversations|events)(?:\/|$)/,
       /^\/2\/media(?:\/|$)/,
     ],
+  },
+  {
+    id: "slack",
+    origin: "https://slack.com",
+    paths: [/^\/api\/[a-zA-Z0-9._-]+$/],
   },
 ];
 
@@ -452,6 +457,10 @@ async function handleConnectorEgress(
   if (request.headers.get("authorization") !== PROVIDER_PLACEHOLDER) {
     return auditedError(403, "credential_placeholder_mismatch", request, url, connector.id, started);
   }
+  const connectorInstance = request.headers.get("x-nanocodex-connector-instance");
+  if (connector.id === "slack" && !/^[A-Z0-9]{1,32}$/.test(connectorInstance ?? "")) {
+    return auditedError(400, "connector_instance_required", request, url, connector.id, started);
+  }
   let userId: string | undefined;
   try {
     userId = await resolveSubject(env, subject);
@@ -558,18 +567,22 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const connectorMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|gmail|gdrive|x)(\/callback)?)?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|gmail|gdrive|x|slack)(?:\/(callback|[A-Z0-9]{1,32}))?)?$/,
   );
   if (connectorMatch) {
     const userId = connectorMatch[1]!;
     const connector = connectorMatch[2];
-    const callback = connectorMatch[3] === "/callback";
+    const suffix = connectorMatch[3];
+    const callback = suffix === "callback";
+    const instance = connector === "slack" && suffix && !callback ? suffix : undefined;
     const target = connector
-      ? `https://connectors.internal/v1/${connector}${callback ? "/callback" : request.method === "POST" ? "/start" : ""}`
+      ? `https://connectors.internal/v1/${connector}${callback ? "/callback" : instance ? `/${instance}` : request.method === "POST" ? "/start" : ""}`
       : "https://connectors.internal/v1/status";
     if ((!connector && request.method !== "GET")
       || (connector && callback && request.method !== "POST")
-      || (connector && !callback && request.method !== "POST" && request.method !== "DELETE")) {
+      || (instance && request.method !== "DELETE")
+      || (connector && !callback && !instance && request.method !== "POST"
+        && !(connector !== "slack" && request.method === "DELETE"))) {
       return jsonError(405, "method_not_allowed");
     }
     return connectorBroker(env, userId).fetch(target, {
@@ -1095,7 +1108,7 @@ function auditControl(
   const subject = url.pathname.startsWith("/subjects/");
   const tail = user?.[3];
   const connector = user?.[2] === "connectors"
-    ? tail?.match(/^(github|gmail|gdrive|x)/)?.[1]
+    ? tail?.match(/^(github|gmail|gdrive|x|slack)/)?.[1]
     : undefined;
   const mcpConnectionId = user?.[2] === "mcp-connections"
     ? tail?.match(/^([A-Za-z0-9_-]{43})/)?.[1]
@@ -1123,7 +1136,7 @@ function audit(
   detail: Record<string, unknown>,
 ): void {
   const connector = rule === "github" || rule === "gmail" || rule === "gdrive"
-    || rule === "x" || rule === "mcp";
+    || rule === "x" || rule === "slack" || rule === "mcp";
   console.log({
     type: "egress.request",
     action,

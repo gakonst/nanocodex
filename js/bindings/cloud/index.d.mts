@@ -12,6 +12,7 @@ export type {
   AgentTurnResult,
   AgentVisibility,
   CloudAccount,
+  CloudConnectorReference,
   Connection,
   ConnectAgent,
   Grant,

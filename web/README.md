@@ -79,7 +79,7 @@ isolated worktree verify the same credential without sharing mutable
 Wrangler/Miniflare state. Exact origin, challenge, credential, and signature
 checks remain local to each instance.
 
-Provider OAuth applications register the four fixed
+Provider OAuth applications register the five fixed
 `http://127.0.0.1:47891/v1/connectors/<provider>/callback` URLs. A standalone
 stateless relay verifies a ten-minute HMAC-authenticated routing envelope and
 returns the browser to a fixed callback path on the initiating worktree. The
@@ -151,10 +151,12 @@ NANOCODEX_GOOGLE_OAUTH_CLIENT_ID=...
 NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET=...
 NANOCODEX_X_OAUTH_CLIENT_ID=...
 NANOCODEX_X_OAUTH_CLIENT_SECRET=...
+NANOCODEX_SLACK_OAUTH_CLIENT_ID=...
+NANOCODEX_SLACK_OAUTH_CLIENT_SECRET=...
 ```
 
-Register the four callback paths under the instance URL printed at startup, as
-described in `services/egress/README.md`. Connector controls remain visible
+Register the five fixed relay callback paths described in
+`services/egress/README.md`. Connector controls remain visible
 but disabled for browser-only guest sessions; a persistent passkey account is
 required even when that guest session already has a ChatGPT connection.
 

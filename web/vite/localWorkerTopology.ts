@@ -128,6 +128,13 @@ function localConnectorVars(environment: NodeJS.ProcessEnv): Record<string, stri
       targetSecret: "X_OAUTH_CLIENT_SECRET",
       label: "X",
     }),
+    ...credentialPair(environment, {
+      id: "NANOCODEX_LOCAL_SLACK_OAUTH_CLIENT_ID",
+      secret: "NANOCODEX_LOCAL_SLACK_OAUTH_CLIENT_SECRET",
+      targetId: "SLACK_OAUTH_CLIENT_ID",
+      targetSecret: "SLACK_OAUTH_CLIENT_SECRET",
+      label: "Slack",
+    }),
   };
 }
 

@@ -10,6 +10,10 @@ describe("account info", () => {
         gmail: { connected: false },
         gdrive: { connected: true, access_token: "secret-token" },
         x: { connected: true, account_id: "secret-x-account", label: "Nano Cat (@nanocat)" },
+        slack: { connected: true, connections: [
+          { id: "TACME", label: "Acme (U123)", access_token: "must-not-project" },
+          { id: "TBETA", label: "Beta (U456)" },
+        ] },
       },
     }));
 
@@ -17,8 +21,13 @@ describe("account info", () => {
 
     expect(info).toEqual({
       status: "ready",
-      authenticated: ["github", "gdrive", "x"],
-      accounts: { github: "Nano Cat (nanocat)", x: "Nano Cat (@nanocat)" },
+      authenticated: ["github", "gdrive", "x", "slack:TACME", "slack:TBETA"],
+      accounts: {
+        github: "Nano Cat (nanocat)",
+        x: "Nano Cat (@nanocat)",
+        "slack:TACME": "Acme (U123)",
+        "slack:TBETA": "Beta (U456)",
+      },
       identity: {},
       stablecoins: [],
       authorizations: [],
@@ -26,7 +35,7 @@ describe("account info", () => {
     expect(fetch).toHaveBeenCalledWith(
       "https://broker.internal/users/user%2Fwith%20spaces/connectors",
     );
-    expect(JSON.stringify(info)).not.toMatch(/secret-account|secret-token|secret-x-account/);
+    expect(JSON.stringify(info)).not.toMatch(/secret-account|secret-token|secret-x-account|must-not-project/);
   });
 
   it("fails closed when status is unavailable or malformed", async () => {
@@ -49,13 +58,17 @@ describe("account info", () => {
           github: { connected: true, label: "Allowed GitHub" },
           gmail: { connected: true, label: "Private Gmail" },
           gdrive: { connected: true, label: "Private Drive" },
+          slack: { connected: true, connections: [
+            { id: "TALLOW", label: "Allowed Slack" },
+            { id: "TPRIVATE", label: "Private Slack" },
+          ] },
         },
       }),
-    }, "user", true, ["github"]);
+    }, "user", true, ["github", "slack:TALLOW"]);
 
-    expect(info.authenticated).toEqual(["github"]);
-    expect(info.accounts).toEqual({ github: "Allowed GitHub" });
-    expect(JSON.stringify(info)).not.toMatch(/Private Gmail|Private Drive|gmail|gdrive/);
+    expect(info.authenticated).toEqual(["github", "slack:TALLOW"]);
+    expect(info.accounts).toEqual({ github: "Allowed GitHub", "slack:TALLOW": "Allowed Slack" });
+    expect(JSON.stringify(info)).not.toMatch(/Private Gmail|Private Drive|Private Slack|gmail|gdrive|TPRIVATE/);
   });
 
   it("does not query account connectors for shared rooms", async () => {
@@ -85,7 +98,7 @@ describe("account info", () => {
       {
         type: "text",
         text: [
-          "The managed runtime already resolved the following non-secret accountInfo snapshot for this agent. Use it as the current connected-account context. Do not call accountInfo again unless the task requires state refreshed after this first prompt.",
+          "The managed runtime already resolved the following non-secret accountInfo snapshot for this agent. Use it as the current connected-account context. Do not call accountInfo again unless the task requires state refreshed after this first prompt. Slack accounts are named slack:<workspace-id>; send that workspace ID in x-nanocodex-connector-instance on requests to https://slack.com/api/<method>.",
           `<account_info>\n${JSON.stringify(info)}\n</account_info>`,
         ].join("\n\n"),
       },

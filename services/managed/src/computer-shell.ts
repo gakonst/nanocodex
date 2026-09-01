@@ -43,7 +43,7 @@ const MAX_GIT_ENTRIES = 20_000;
 export function createManagedShellFetch(
   binding: Fetcher,
   subject?: string,
-  connectorAllowed?: (connector: ManagedEgressConnectorId) => boolean,
+  connectorAllowed?: (connector: ManagedEgressConnectorId, instance?: string) => boolean,
 ): ManagedShellFetch {
   return async (url, options = {}) => {
     const method = (options.method ?? "GET").toUpperCase();

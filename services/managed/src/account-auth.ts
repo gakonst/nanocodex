@@ -65,7 +65,7 @@ export type OrganizationCapability =
   | "organization:read"
   | "organization:write";
 
-export type ConnectConnectorId = "github" | "gmail" | "gdrive" | "x" | "chatgpt";
+export type ConnectConnectorId = "github" | "gmail" | "gdrive" | "x" | "chatgpt" | `slack:${string}`;
 
 export type ConnectGrantSlice = Readonly<{
   grantId: string;
@@ -1705,6 +1705,7 @@ const CONNECT_CONNECTORS = new Set<ConnectConnectorId>([
 ]);
 const CONNECT_GRANT_ID = /^0x[0-9a-fA-F]{64}$/;
 const CONNECT_MCP_ID = /^[A-Za-z0-9_-]{43}$/;
+const CONNECT_SLACK = /^slack:[A-Z0-9]{1,32}$/;
 
 function parseConnectGrantAssertions(headers: Headers): Readonly<{
   capabilities: readonly OrganizationCapability[];
@@ -1720,7 +1721,7 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
       CONNECT_CAPABILITIES.has(value as OrganizationCapability)
     ))
     || !connectors || !connectors.every((value): value is ConnectConnectorId => (
-      CONNECT_CONNECTORS.has(value as ConnectConnectorId)
+      CONNECT_CONNECTORS.has(value as ConnectConnectorId) || CONNECT_SLACK.test(value)
     ))
     || !mcpIds || mcpIds.length > 16 || !mcpIds.every((value) => CONNECT_MCP_ID.test(value))
     || (appToolCatalogDigest !== null && !isAppToolCatalogDigest(appToolCatalogDigest))) {

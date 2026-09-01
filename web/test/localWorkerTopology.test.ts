@@ -15,6 +15,8 @@ test("local development mirrors the private Workers and same-session Connect API
     NANOCODEX_LOCAL_GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_ID: "x-client",
     NANOCODEX_LOCAL_X_OAUTH_CLIENT_SECRET: "x-secret",
+    NANOCODEX_LOCAL_SLACK_OAUTH_CLIENT_ID: "slack-client",
+    NANOCODEX_LOCAL_SLACK_OAUTH_CLIENT_SECRET: "slack-secret",
     OPENAI_API_KEY: "must-not-enter-managed-worker",
   });
   assert.equal(egress?.configPath, "../services/egress/wrangler.broker.jsonc");
@@ -33,6 +35,8 @@ test("local development mirrors the private Workers and same-session Connect API
       GOOGLE_OAUTH_CLIENT_SECRET: "google-secret",
       X_OAUTH_CLIENT_ID: "x-client",
       X_OAUTH_CLIENT_SECRET: "x-secret",
+      SLACK_OAUTH_CLIENT_ID: "slack-client",
+      SLACK_OAUTH_CLIENT_SECRET: "slack-secret",
     },
   });
   assert.equal(managed?.configPath, "../services/managed/wrangler.jsonc");

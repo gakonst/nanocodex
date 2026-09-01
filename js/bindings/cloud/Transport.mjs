@@ -107,7 +107,7 @@ export function mock(options = {}) {
                   "nanocodex.agent",
                   "mercator.boost",
                   "mpp.machusd",
-                  ...connectors,
+                  ...connectors.map((connector) => connector === "slack" ? "slack:TMOCK" : connector),
                   ...mcpConnections.map(({ id }) => `mcp:${id}`),
                 ],
                 mcp_connections: mcpConnections,
@@ -365,7 +365,7 @@ function requiredGrant(grants, grantId) {
 function requestedConnectors(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new TypeError("requested_connectors must be an array");
-  const supported = ["github", "gmail", "gdrive", "x", "chatgpt"];
+  const supported = ["github", "gmail", "gdrive", "x", "slack", "chatgpt"];
   if (value.some((provider) => !supported.includes(provider))) {
     throw new TypeError("requested_connectors contains an unsupported provider");
   }
@@ -389,7 +389,7 @@ function connectorResources(resources) {
 }
 
 function connectorName(provider) {
-  return ({ github: "GitHub", gmail: "Gmail", gdrive: "Google Drive", x: "X", chatgpt: "ChatGPT" })[provider];
+  return ({ github: "GitHub", gmail: "Gmail", gdrive: "Google Drive", x: "X", slack: "Slack", chatgpt: "ChatGPT" })[provider];
 }
 
 function requiredActiveGrant(grants, grantId) {

@@ -1,6 +1,7 @@
 import { InvalidResponseError } from "./Errors.mjs";
 
-const CLOUD_ACCOUNT_PROVIDERS = Object.freeze(["github", "gmail", "gdrive", "x", "chatgpt"]);
+const CLOUD_ACCOUNT_PROVIDERS = Object.freeze(["github", "gmail", "gdrive", "x", "slack", "chatgpt"]);
+const SLACK_CONNECTOR = /^slack:[A-Z0-9]{1,32}$/;
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const AGENT_CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CATALOG_DIGEST = /^0x[0-9a-f]{64}$/;
@@ -92,8 +93,10 @@ export function connectionMatchesRequest(connection, options = {}) {
     const requested = CLOUD_ACCOUNT_PROVIDERS.filter(
       (provider) => requestedCloudAccounts?.[provider] === true,
     );
-    if (requested.length !== connection.grant.connectors.length
-      || requested.some((provider) => !connection.grant.connectors.includes(provider))) {
+    const returnedProviders = connection.grant.connectors.map((connector) =>
+      connector.startsWith("slack:") ? "slack" : connector);
+    if (returnedProviders.some((provider) => !requested.includes(provider))
+      || requested.some((provider) => !returnedProviders.includes(provider))) {
       return false;
     }
   }
@@ -347,11 +350,16 @@ function strings(value, label) {
 }
 
 function connectors(capabilities, label) {
-  const providers = ["github", "gmail", "gdrive", "x", "chatgpt"];
   const items = strings(capabilities, label);
-  return Object.freeze(providers.filter((provider) =>
-    items.includes(provider) || items.includes(`urn:nanocodex:connector:${provider}`)
-  ));
+  const connectors = [
+    ...CLOUD_ACCOUNT_PROVIDERS.filter((provider) => provider !== "slack"
+      && (items.includes(provider) || items.includes(`urn:nanocodex:connector:${provider}`))),
+    ...items.filter((item) => SLACK_CONNECTOR.test(item)),
+  ];
+  if (new Set(connectors).size !== connectors.length) {
+    throw new InvalidResponseError(`${label} contains duplicate connector capabilities`);
+  }
+  return Object.freeze(connectors);
 }
 
 function mcpConnections(value, label) {

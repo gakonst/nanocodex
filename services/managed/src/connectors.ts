@@ -15,7 +15,7 @@ type ConnectorEnv = AccountAuthEnv & {
   NANOCODEX: Fetcher;
   NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY?: string;
 };
-type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+type ConnectorId = "github" | "gmail" | "gdrive" | "x" | "slack";
 type McpConnectionStatus =
   | "authorization_required"
   | "connected"
@@ -28,7 +28,8 @@ type McpConnection = Readonly<{
   status: McpConnectionStatus;
 }>;
 
-const CONNECTOR = /^(github|gmail|gdrive|x)$/;
+const CONNECTOR = /^(github|gmail|gdrive|x|slack)$/;
+const SLACK_CONNECTION_ID = /^[A-Z0-9]{1,32}$/;
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const MCP_CONNECTION_NAME = /^[^\u0000-\u001f\u007f]{1,256}$/u;
 const MCP_CONNECTION_STATUSES = new Set<McpConnectionStatus>([
@@ -53,7 +54,6 @@ const MCP_PROXY_RESPONSE_HEADERS = [
   "mcp-session-id",
   "retry-after",
 ] as const;
-const CALLBACK_SUFFIX = "/callback";
 const CONNECTOR_ERROR_CODES = new Set([
   "authorization_code_missing",
   "connector_broker_failed",
@@ -204,13 +204,16 @@ export async function routeConnectorRequest(
     );
   }
 
-  const match = url.pathname.match(/^\/v1\/connectors\/([^/]+)(\/callback)?$/);
+  const match = url.pathname.match(/^\/v1\/connectors\/([^/]+)(?:\/(callback|[A-Z0-9]{1,32}))?$/);
   if (!match) return undefined;
   const connector = connectorId(match[1]);
   if (!connector) return json({ error: "not_found" }, 404);
-  const callback = match[2] === CALLBACK_SUFFIX;
+  const callback = match[2] === "callback";
+  const instance = connector === "slack" && match[2] && !callback ? match[2] : undefined;
   if ((!callback && request.method !== "POST" && request.method !== "DELETE")
-    || (callback && request.method !== "GET")) {
+    || (callback && request.method !== "GET")
+    || (instance && request.method !== "DELETE")
+    || (connector === "slack" && request.method === "DELETE" && !instance)) {
     return json({ error: "method_not_allowed" }, 405);
   }
 
@@ -221,7 +224,7 @@ export async function routeConnectorRequest(
     if (originFailure) return originFailure;
   }
 
-  const target = `https://broker.internal/users/${encodeURIComponent(principal.userId)}/connectors/${connector}${callback ? "/callback" : ""}`;
+  const target = `https://broker.internal/users/${encodeURIComponent(principal.userId)}/connectors/${connector}${callback ? "/callback" : instance ? `/${instance}` : ""}`;
   if (callback) return finishCallback(await env.NANOCODEX.fetch(target, {
     method: "POST",
     headers: { "content-type": "application/json" },

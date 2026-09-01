@@ -36,6 +36,7 @@ http://127.0.0.1:47891/v1/connectors/github/callback
 http://127.0.0.1:47891/v1/connectors/gmail/callback
 http://127.0.0.1:47891/v1/connectors/gdrive/callback
 http://127.0.0.1:47891/v1/connectors/x/callback
+http://127.0.0.1:47891/v1/connectors/slack/callback
 http://127.0.0.1:47891/v1/mcp-connections/<opaque-connection-id>/callback
 ```
 

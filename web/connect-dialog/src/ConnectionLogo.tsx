@@ -1,4 +1,4 @@
-export type ConnectionLogoId = "chatgpt" | "openai" | "github" | "gmail" | "gdrive" | "mcp" | "x";
+export type ConnectionLogoId = "chatgpt" | "openai" | "github" | "gmail" | "gdrive" | "mcp" | "slack" | "x";
 
 export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
   if (id === "chatgpt" || id === "openai") {
@@ -42,6 +42,9 @@ export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
         </svg>
       </span>
     );
+  }
+  if (id === "slack") {
+    return <span className="connector-logo connector-logo-slack" aria-hidden="true">S</span>;
   }
   if (id === "mcp") {
     return (

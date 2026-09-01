@@ -11,7 +11,7 @@ Dialog.popup({ target: "nanocodex-connect", features: "popup=yes" });
 const standalone: Promise<Connection> = Actions.connection.connect(client, {
   capabilities: {
     auth: { resources: ["urn:nanocodex:connector:github:repo-read"] },
-    cloudAccounts: { github: true, gmail: true, gdrive: true, x: true, chatgpt: true },
+    cloudAccounts: { github: true, gmail: true, gdrive: true, x: true, slack: true, chatgpt: true },
   },
 });
 const decorated: Promise<Connection> = client.connection.connect({
@@ -34,7 +34,7 @@ declare const connection: Connection;
 connection.agentId satisfies string;
 connection.sessionId satisfies string;
 const connector = connection.grant.connectors[0];
-connector satisfies "github" | "gmail" | "gdrive" | "x" | "chatgpt" | undefined;
+connector satisfies "github" | "gmail" | "gdrive" | "x" | `slack:${string}` | "chatgpt" | undefined;
 
 client.connection.connect({
   capabilities: {

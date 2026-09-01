@@ -145,6 +145,14 @@ export function localConnectorEnvironment(environment) {
       targetId: "NANOCODEX_LOCAL_X_OAUTH_CLIENT_ID",
       targetSecret: "NANOCODEX_LOCAL_X_OAUTH_CLIENT_SECRET",
     }),
+    ...connectorEnvironmentPair(environment, {
+      explicitId: "NANOCODEX_SLACK_OAUTH_CLIENT_ID",
+      explicitSecret: "NANOCODEX_SLACK_OAUTH_CLIENT_SECRET",
+      fallbackId: "SLACK_CLIENT_ID",
+      fallbackSecret: "SLACK_CLIENT_SECRET",
+      targetId: "NANOCODEX_LOCAL_SLACK_OAUTH_CLIENT_ID",
+      targetSecret: "NANOCODEX_LOCAL_SLACK_OAUTH_CLIENT_SECRET",
+    }),
   };
 }
 

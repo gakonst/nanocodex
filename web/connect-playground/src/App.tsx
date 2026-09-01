@@ -42,7 +42,7 @@ type ConnectRequest = Readonly<{
 }>;
 
 const DEFAULT_REQUEST: ConnectRequest = {
-  connectors: { github: true, gmail: true, gdrive: true, x: true, chatgpt: true },
+  connectors: { github: true, gmail: true, gdrive: true, x: true, slack: true, chatgpt: true },
   visibility: {
     finalMessages: true,
     actionSummaries: true,

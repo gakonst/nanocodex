@@ -125,7 +125,7 @@ async function loadPendingDeviceRequest(url: URL, signal: AbortSignal): Promise<
   pending: PendingDeviceAuthorization;
   requestedMcpConnections: readonly McpConnection[];
   focusMcpConnection?: string | undefined;
-  returnedConnector?: "github" | "gmail" | "gdrive" | "x" | undefined;
+  returnedConnector?: "github" | "gmail" | "gdrive" | "x" | "slack" | undefined;
   returnedConnectorResult?: "connected" | "cancelled" | "failed" | undefined;
   returnedMcpConnection?: string | undefined;
   returnedMcpResult?: "connected" | "cancelled" | "failed" | undefined;
@@ -171,7 +171,7 @@ async function loadPendingDeviceRequest(url: URL, signal: AbortSignal): Promise<
     requestedMcpConnections,
     ...(focusMcp ? { focusMcpConnection: focusMcp } : {}),
     ...(returnedConnector ? {
-      returnedConnector: returnedConnector as "github" | "gmail" | "gdrive" | "x",
+      returnedConnector: returnedConnector as "github" | "gmail" | "gdrive" | "x" | "slack",
       returnedConnectorResult: returnedConnectorResult as "connected" | "cancelled" | "failed",
     } : {}),
     ...(returnedMcp ? { returnedMcpConnection: returnedMcp } : {}),
@@ -183,7 +183,7 @@ async function loadPendingDeviceRequest(url: URL, signal: AbortSignal): Promise<
 
 function focusedRequestConnector(
   request: PendingDeviceAuthorization["request"],
-): "chatgpt" | "github" | "gmail" | "gdrive" | "x" | undefined {
+): "chatgpt" | "github" | "gmail" | "gdrive" | "x" | "slack" | undefined {
   const params = Array.isArray(request.params) ? request.params[0] : undefined;
   if (!isRecord(params) || !isRecord(params.capabilities) || !isRecord(params.capabilities.auth)) {
     return undefined;
@@ -195,8 +195,8 @@ function focusedRequestConnector(
       ? [resource.slice("urn:nanocodex:connector-focus:".length)]
       : []);
   if (focused.length !== 1
-    || !["chatgpt", "github", "gmail", "gdrive", "x"].includes(focused[0]!)) return undefined;
-  return focused[0] as "chatgpt" | "github" | "gmail" | "gdrive" | "x";
+    || !["chatgpt", "github", "gmail", "gdrive", "x", "slack"].includes(focused[0]!)) return undefined;
+  return focused[0] as "chatgpt" | "github" | "gmail" | "gdrive" | "x" | "slack";
 }
 
 function focusedRequestName(

@@ -91,6 +91,35 @@ describe("Computer egress gateway", () => {
     expect(publicFetch).not.toHaveBeenCalled();
   });
 
+  it("requires and authorizes one exact Slack workspace connection", async () => {
+    const binding = { fetch: vi.fn(async () => Response.json({ ok: true })) } as unknown as Fetcher;
+    const allowed = vi.fn((connector: string, instance?: string) => (
+      connector === "slack" && instance === "TACME"
+    ));
+    const request = new Request("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-nanocodex-connector-instance": "TACME",
+      },
+      body: JSON.stringify({ channel: "C1", text: "hello" }),
+    });
+    expect((await handleManagedEgress(request, binding, SUBJECT, allowed)).status).toBe(200);
+    expect(allowed).toHaveBeenCalledWith("slack", "TACME");
+    const forwarded = (binding.fetch as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Request;
+    expect(forwarded.headers.get("x-nanocodex-connector-instance")).toBe("TACME");
+    expect(forwarded.headers.get("authorization")).toBe("Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+
+    const missing = await handleManagedEgress(
+      new Request("https://slack.com/api/conversations.list"),
+      binding,
+      SUBJECT,
+      allowed,
+    );
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error: "connector_instance_required" });
+  });
+
   it("manually follows only revalidated public redirects", async () => {
     const requests: Request[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

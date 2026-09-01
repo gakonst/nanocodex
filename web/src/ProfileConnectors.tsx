@@ -14,12 +14,19 @@ import {
   connectorCompletionFor,
 } from "@nanocodex-connect/connectorCompletion";
 
-type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+type ConnectorId = "github" | "gmail" | "gdrive" | "x" | "slack";
+type SlackConnection = Readonly<{
+  id: string;
+  workspace: string;
+  userId: string;
+  label: string;
+}>;
 type ConnectorStatus = Readonly<{
   connected: boolean;
   accountId?: string;
   label?: string;
   unavailable?: string;
+  connections?: readonly SlackConnection[];
 }>;
 type McpConnectionStatus =
   | "authorization_required"
@@ -62,6 +69,7 @@ const connectorDefinitions = [
   { id: "gmail", label: "Gmail", description: "Read, send, modify, and permanently delete mail" },
   { id: "gdrive", label: "Google Drive", description: "Read, create, edit, and delete all Drive files" },
   { id: "x", label: "X", description: "Read and publish posts; manage follows, likes, bookmarks, lists, and messages" },
+  { id: "slack", label: "Slack", description: "Read and send messages as you in any connected workspace" },
 ] as const satisfies ReadonlyArray<{
   id: ConnectorId;
   label: string;
@@ -359,6 +367,25 @@ export function ProfileConnectors({
     }
   };
 
+  const disconnectSlack = async (connection: SlackConnection) => {
+    if (operation) return;
+    setOperation(`slack:${connection.id}`);
+    setError(null);
+    try {
+      const response = await connectorRequest(
+        `/v1/connectors/slack/${encodeURIComponent(connection.id)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) throw await responseFailure(response, `Couldn’t disconnect ${connection.workspace}.`);
+      await response.body?.cancel();
+      await load();
+    } catch (cause) {
+      setError(failureMessage(cause, `Couldn’t disconnect ${connection.workspace}.`));
+    } finally {
+      setOperation(null);
+    }
+  };
+
   const disconnectMcp = async (connection: McpConnection) => {
     if (operation || connection.status !== "connected") return;
     setOperation(connection.id);
@@ -532,22 +559,34 @@ export function ProfileConnectors({
             const status = connectors[definition.id];
             const unavailable = status.unavailable;
             return <AccountConnectionCard
-              action={unavailable ? "Unavailable" : status.connected ? "Disconnect" : "Connect"}
+              action={unavailable ? "Unavailable" : definition.id === "slack" ? "Add workspace" : status.connected ? "Disconnect" : "Connect"}
               connected={status.connected}
               detail={unavailable
                 ? unavailable
                 : status.connected
-                  ? status.label || status.accountId || "Connected"
+                  ? definition.id === "slack"
+                    ? `${status.connections?.length ?? 0} workspace${status.connections?.length === 1 ? "" : "s"} connected`
+                    : status.label || status.accountId || "Connected"
                   : definition.description}
               disabled={operation !== null || unavailable !== undefined}
               key={definition.id}
               logo={<ConnectionLogo id={definition.id} />}
-              onClick={() => void (status.connected
+              onClick={() => void (status.connected && definition.id !== "slack"
                 ? disconnect(definition.id)
                 : connect(definition.id))}
               title={definition.label}
             />;
           }) : null}
+          {connectors?.slack.connections?.map((connection) => <AccountConnectionCard
+            action="Disconnect"
+            connected
+            detail={`Acting as ${connection.userId}`}
+            disabled={operation !== null}
+            key={`slack:${connection.id}`}
+            logo={<ConnectionLogo id="slack" />}
+            onClick={() => void disconnectSlack(connection)}
+            title={connection.workspace}
+          />)}
           {mcpError && !mcpConnections ? <AccountConnectionCard
             action="Retry"
             detail={mcpError}
@@ -611,7 +650,9 @@ export function ProfileConnectors({
         const detail = unavailable
           ? unavailable
           : status.connected
-            ? status.label || status.accountId || "Connected"
+            ? definition.id === "slack"
+              ? `${status.connections?.length ?? 0} workspace${status.connections?.length === 1 ? "" : "s"} connected`
+              : status.label || status.accountId || "Connected"
             : definition.description;
         return (
           <button
@@ -619,7 +660,7 @@ export function ProfileConnectors({
             key={definition.id}
             type="button"
             disabled={operation !== null || unavailable !== undefined}
-            onClick={() => void (status.connected
+            onClick={() => void (status.connected && definition.id !== "slack"
               ? disconnect(definition.id)
               : connect(definition.id))}
           >
@@ -629,11 +670,27 @@ export function ProfileConnectors({
               <span>{detail}</span>
             </span>
             <span className="connection-card-action">
-              {unavailable ? "Unavailable" : status.connected ? "Disconnect" : "Connect"}
+              {unavailable ? "Unavailable" : definition.id === "slack" ? "Add workspace" : status.connected ? "Disconnect" : "Connect"}
             </span>
           </button>
         );
       }) : null}
+      {connectors?.slack.connections?.map((connection) => (
+        <button
+          className="connection-card connector-row is-connected"
+          disabled={operation !== null}
+          key={`slack:${connection.id}`}
+          onClick={() => void disconnectSlack(connection)}
+          type="button"
+        >
+          <ConnectionLogo id="slack" />
+          <span className="connection-card-copy">
+            <strong>{connection.workspace}</strong>
+            <span>Acting as {connection.userId}</span>
+          </span>
+          <span className="connection-card-action">Disconnect</span>
+        </button>
+      ))}
       {mcpConnections ? <McpConnectionAddCard
         disabled={operation !== null}
         error={mcpError ?? undefined}
@@ -699,8 +756,31 @@ function decodeConnectorStatus(value: unknown): Record<ConnectorId, ConnectorSta
       connected: candidate.connected,
       ...(typeof candidate.account_id === "string" ? { accountId: candidate.account_id } : {}),
       ...(typeof candidate.label === "string" ? { label: candidate.label } : {}),
+      ...(id === "slack" ? { connections: decodeSlackConnections(candidate.connections) } : {}),
     }];
   })) as Record<ConnectorId, ConnectorStatus>;
+}
+
+function decodeSlackConnections(value: unknown): readonly SlackConnection[] {
+  if (!Array.isArray(value) || value.length > 64) throw new Error("Invalid Slack connector response.");
+  const seen = new Set<string>();
+  return value.map((candidate): SlackConnection => {
+    if (!isRecord(candidate)
+      || typeof candidate.id !== "string" || !/^[A-Z0-9]{1,32}$/.test(candidate.id)
+      || typeof candidate.workspace !== "string" || !candidate.workspace.trim()
+      || typeof candidate.user_id !== "string" || !/^[A-Z0-9]{1,32}$/.test(candidate.user_id)
+      || typeof candidate.label !== "string" || !candidate.label.trim()
+      || seen.has(candidate.id)) {
+      throw new Error("Invalid Slack connector response.");
+    }
+    seen.add(candidate.id);
+    return {
+      id: candidate.id,
+      workspace: candidate.workspace.trim(),
+      userId: candidate.user_id,
+      label: candidate.label.trim(),
+    };
+  });
 }
 
 function unavailableConnectorStatuses(message: string): Record<ConnectorId, ConnectorStatus> {

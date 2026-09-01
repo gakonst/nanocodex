@@ -8,7 +8,7 @@ import {
 export type LocalConnectorFlow = "connect" | "managed";
 
 export type LocalConnectorAuthorization = Readonly<{
-  connector: "github" | "gmail" | "gdrive" | "x";
+  connector: "github" | "gmail" | "gdrive" | "x" | "slack";
   redirectUri: string;
   targetOrigin: string;
   flow: LocalConnectorFlow;
@@ -21,8 +21,8 @@ export type LocalMcpAuthorization = Readonly<{
   flow: LocalConnectorFlow;
 }>;
 
-const CONNECTOR = /^(github|gmail|gdrive|x)$/;
-const CONNECTOR_RETURN = /^\/v1\/connect\/auth\/connector-callback\/(github|gmail|gdrive|x)$/;
+const CONNECTOR = /^(github|gmail|gdrive|x|slack)$/;
+const CONNECTOR_RETURN = /^\/v1\/connect\/auth\/connector-callback\/(github|gmail|gdrive|x|slack)$/;
 const MCP_CONNECTION = /^[A-Za-z0-9_-]{43}$/;
 const MCP_CONNECTION_RETURN = /^\/v1\/connect\/auth\/mcp-connection-callback\/([A-Za-z0-9_-]{43})$/;
 const MAX_STATE_LENGTH = 512;

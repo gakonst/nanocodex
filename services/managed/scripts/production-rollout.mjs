@@ -86,6 +86,8 @@ const APPLICATION_SECRET_NAMES = [
   "NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET",
   "NANOCODEX_X_OAUTH_CLIENT_ID",
   "NANOCODEX_X_OAUTH_CLIENT_SECRET",
+  "NANOCODEX_SLACK_OAUTH_CLIENT_ID",
+  "NANOCODEX_SLACK_OAUTH_CLIENT_SECRET",
   "NANOCODEX_BOUNDARY_PROBE_TOKEN",
   "SESSION_CREDENTIAL_KEY",
   "SESSION_CREDENTIAL_KEY_PREVIOUS",
@@ -111,6 +113,12 @@ export function assertProductionPreflight(environment) {
     "NANOCODEX_X_OAUTH_CLIENT_ID_CONFIGURED",
     "NANOCODEX_X_OAUTH_CLIENT_SECRET_CONFIGURED",
     "X OAuth application credentials",
+  );
+  requireOptionalConfiguredPair(
+    environment,
+    "NANOCODEX_SLACK_OAUTH_CLIENT_ID_CONFIGURED",
+    "NANOCODEX_SLACK_OAUTH_CLIENT_SECRET_CONFIGURED",
+    "Slack OAuth application credentials",
   );
   requireConfigured(environment, "NANOCODEX_GIT_TOKEN_CONFIGURED");
   const adminToken = requiredSecret(environment, "NANOCODEX_ADMIN_TOKEN");
