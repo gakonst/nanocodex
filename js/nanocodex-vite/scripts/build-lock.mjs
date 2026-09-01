@@ -99,17 +99,44 @@ function delay(milliseconds) {
 async function runCommand(lockPath, command, arguments_) {
   await withBuildLock(lockPath, () => new Promise((resolve, reject) => {
     const child = spawn(command, arguments_, {
+      detached: process.platform !== "win32",
       env: { ...process.env, NANOCODEX_WASM_BUILD_LOCK_HELD: "1" },
       stdio: "inherit",
     });
-    child.once("error", reject);
+    const signals = process.platform === "win32"
+      ? ["SIGINT", "SIGTERM"]
+      : ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
+    const signalHandlers = new Map();
+    const removeSignalHandlers = () => {
+      for (const [signal, handler] of signalHandlers) {
+        process.removeListener(signal, handler);
+      }
+    };
+    const forwardSignal = (signal) => {
+      if (process.platform === "win32" || typeof child.pid !== "number") {
+        child.kill(signal);
+        return;
+      }
+      try {
+        process.kill(-child.pid, signal);
+      } catch (error) {
+        if (error?.code !== "ESRCH") child.kill(signal);
+      }
+    };
+    for (const signal of signals) {
+      const handler = () => forwardSignal(signal);
+      signalHandlers.set(signal, handler);
+      process.once(signal, handler);
+    }
+    child.once("error", (error) => {
+      removeSignalHandlers();
+      reject(error);
+    });
     child.once("exit", (code, signal) => {
+      removeSignalHandlers();
       if (code === 0) resolve();
       else reject(new Error(`${command} exited with ${code ?? signal}`));
     });
-    for (const signal of ["SIGINT", "SIGTERM"]) {
-      process.once(signal, () => child.kill(signal));
-    }
   }));
 }
 
