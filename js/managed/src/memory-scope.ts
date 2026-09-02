@@ -665,7 +665,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
   #memory(operation: MemoryOperation, teamId: string, subjectId: string) {
     switch (operation.operation) {
       case "scan": {
-        const result = this.#scanMemories(operation.query, operation.limit);
+        const result = this.#scanMemories(operation.query, operation.limit, teamId);
         this.ctx.storage.sql.exec(
           `INSERT INTO memory_scan_receipts (subject_id, expires_at_ms) VALUES (?, ?)
            ON CONFLICT(subject_id) DO UPDATE SET expires_at_ms = excluded.expires_at_ms`,
@@ -674,7 +674,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         );
         return result;
       }
-      case "read": return this.#readMemories(operation.keys);
+      case "read": return this.#readMemories(operation.keys, teamId);
       case "put": {
         const receipt = this.ctx.storage.sql.exec<{ expires_at_ms: number }>(
           "SELECT expires_at_ms FROM memory_scan_receipts WHERE subject_id = ?",
@@ -690,13 +690,15 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     }
   }
 
-  #scanMemories(query: string, limit: number): MemoryScanResult {
+  #scanMemories(query: string, limit: number, teamId: string): MemoryScanResult {
     const now = Date.now();
     return this.ctx.storage.transactionSync(() => {
       this.#pruneMemories(now);
       const rows = this.ctx.storage.sql.exec<DurableMemoryRow>(
         `SELECT * FROM durable_memories
+         WHERE owner_team_id = ?
          ORDER BY id`,
+        teamId,
       ).toArray();
       const scan = rankMemories(query, rows.map(memoryRecord), limit);
       for (const candidate of scan.candidates) {
@@ -704,17 +706,18 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           `UPDATE durable_memories
            SET last_scanned_at_ms = ?,
                scan_count = CASE WHEN scan_count < 9223372036854775807 THEN scan_count + 1 ELSE scan_count END
-           WHERE id = ? AND version = ?`,
+           WHERE id = ? AND version = ? AND owner_team_id = ?`,
           now,
           candidate.key.id,
           candidate.key.version,
+          teamId,
         );
       }
       return { operation: "scan", ...scan };
     });
   }
 
-  #readMemories(keys: readonly MemoryKey[]): MemoryReadResult {
+  #readMemories(keys: readonly MemoryKey[], teamId: string): MemoryReadResult {
     const now = Date.now();
     return this.ctx.storage.transactionSync(() => {
       this.#pruneMemories(now);
@@ -722,19 +725,21 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       for (const key of keys) {
         const row = this.ctx.storage.sql.exec<DurableMemoryRow>(
           `SELECT * FROM durable_memories
-           WHERE id = ? AND version = ?`,
+           WHERE id = ? AND version = ? AND owner_team_id = ?`,
           key.id,
           key.version,
+          teamId,
         ).toArray()[0];
         if (!row) continue;
         this.ctx.storage.sql.exec(
           `UPDATE durable_memories
            SET last_used_at_ms = ?, probation_until_ms = NULL,
                use_count = CASE WHEN use_count < 9223372036854775807 THEN use_count + 1 ELSE use_count END
-           WHERE id = ? AND version = ?`,
+           WHERE id = ? AND version = ? AND owner_team_id = ?`,
           now,
           key.id,
           key.version,
+          teamId,
         );
         memories.push(memoryRecord({
           ...row,

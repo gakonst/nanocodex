@@ -5,6 +5,8 @@ tool router and Code Mode runtime, attachment and hosted-tool protocols,
 durable-memory parsing and ranking, artifact and dataset tools, persistent
 workspace adaptation, a bounded Just Bash runtime, Git/GitHub compatibility
 commands, repository materialization, and workspace-backed SSH composition.
+Session-search parsing, retrieval policy, and bounded model-visible projections
+are exposed through the dedicated `nanocodex-tools/session` entrypoint.
 
 Hosts own persistence, network policy, credentials, and socket transports and
 inject those capabilities through the package's narrow interfaces.

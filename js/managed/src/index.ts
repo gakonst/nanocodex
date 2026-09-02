@@ -148,6 +148,9 @@ import { routeAccountLinkRequest } from "./account-links";
 import { routeManagedRealtimeTransport } from "./managed-realtime-transport";
 import {
   HistorySearchError,
+  MAX_HISTORY_SEARCH_LIMIT,
+  groupHistoryCitations,
+  mergeHistoryCitations,
   parseHistoryFindSessionsInput,
   parseHistoryReadSessionInput,
   type HistoryCitation,
@@ -159,10 +162,14 @@ import {
 } from "./history-search";
 import {
   DurableMemoryError,
+  MEMORY_TOOL_INSTRUCTIONS,
   parseMemoryKey,
   parseMemoryOperation,
+  parseMemoryResult,
   type MemoryOperation,
+  type MemoryResult,
 } from "./durable-memory";
+import { memorySessionTools } from "./memory-session-tools";
 import { MemoryScope } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
 export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account-auth";
@@ -4541,6 +4548,27 @@ export class DurableAgentSession extends DurableComputerSession {
           account: await currentAccountInfo(),
         }),
       },
+      ...(multiplayer ? [] : memorySessionTools({
+        findSessions: (input) => this.#findSessions(input),
+        readSession: (input) => this.#readHistorySession(input),
+        memory: (operation) => this.#memoryOperation(operation),
+        requireCapability: (capability) => this.#requireActiveTurnCapability(capability),
+        requireRootMemoryMutation: (context) => {
+          if (context.subagent !== undefined) {
+            throw new ManagedRequestError(
+              403,
+              "memory_root_only",
+              "memory put and delete are available only to the root agent",
+            );
+          }
+        },
+        recordCitations: (citations) => {
+          const turnId = this.#eventTurnId;
+          if (turnId !== undefined && citations.length > 0) {
+            this.#recordHistoryCitations(turnId, citations);
+          }
+        },
+      })),
     ];
     let preparedTools: Tools | undefined;
     let agent: CloudflareAgent.Agent;
@@ -4581,6 +4609,7 @@ export class DurableAgentSession extends DurableComputerSession {
             "Use account_connectors when the user asks to connect, reconnect, inspect, or disconnect an account service. For connect results with authorization_required, return the exact authorization_url as a Markdown link. Never claim the account is connected until a later list reports connected=true.",
             computer.instructions,
             "No process sandbox is attached. Bounded Just Bash is the complete local execution boundary.",
+            MEMORY_TOOL_INSTRUCTIONS,
           ].join("\n\n"),
         tools: preparedTools ?? cloudTools,
       };
@@ -4642,6 +4671,113 @@ export class DurableAgentSession extends DurableComputerSession {
     };
   }
 
+  async #findSessions(input: HistoryFindSessionsInput): Promise<HistoryFindSessionsResponse> {
+    const session = this.#session();
+    if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const initialized = await initializeMemoryScope(memory, session.organization_id);
+    if (!initialized.ok) {
+      throw new HistorySearchError(
+        initialized.status,
+        "memory_scope_unavailable",
+        "memory scope is unavailable",
+      );
+    }
+    const response = await memory.fetch("https://memory.internal/search", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
+        [MEMORY_TEAM_ASSERTION]: session.team_id,
+        [MEMORY_SUBJECT_ASSERTION]: `agent:${session.session_id}`,
+      },
+      body: JSON.stringify({
+        ...input,
+        limit: Math.min(MAX_HISTORY_SEARCH_LIMIT, input.limit + 1),
+      }),
+    });
+    if (!response.ok) throw await historySearchResponseError(response);
+    const found = await response.json<HistoryFindSessionsResponse>();
+    const results = found.results
+      .filter((result) => result.thread_id !== session.session_id)
+      .slice(0, input.limit);
+    return {
+      query: found.query,
+      results,
+      citations: groupHistoryCitations(results),
+    };
+  }
+
+  async #readHistorySession(input: HistoryReadSessionInput): Promise<HistoryReadSessionResponse> {
+    const session = this.#session();
+    if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const initialized = await initializeMemoryScope(memory, session.organization_id);
+    if (!initialized.ok) {
+      throw new HistorySearchError(
+        initialized.status,
+        "memory_scope_unavailable",
+        "memory scope is unavailable",
+      );
+    }
+    const response = await memory.fetch("https://memory.internal/read", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
+        [MEMORY_TEAM_ASSERTION]: session.team_id,
+        [MEMORY_SUBJECT_ASSERTION]: `agent:${session.session_id}`,
+      },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) throw await historySearchResponseError(response);
+    return response.json<HistoryReadSessionResponse>();
+  }
+
+  async #memoryOperation(operation: MemoryOperation): Promise<MemoryResult> {
+    const session = this.#session();
+    if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const initialized = await initializeMemoryScope(memory, session.organization_id);
+    if (!initialized.ok) {
+      throw new HistorySearchError(
+        initialized.status,
+        "memory_scope_unavailable",
+        "memory scope is unavailable",
+      );
+    }
+    const mutating = operation.operation === "put" || operation.operation === "delete";
+    const response = await memory.fetch("https://memory.internal/memory", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
+        [MEMORY_TEAM_ASSERTION]: session.team_id,
+        [MEMORY_SUBJECT_ASSERTION]: `agent:${session.session_id}`,
+        ...(mutating ? { [MEMORY_MUTATION_ASSERTION]: "1" } : {}),
+      },
+      body: JSON.stringify(operation),
+    });
+    if (!response.ok) {
+      const value = await response.json<{ error?: unknown; message?: unknown }>()
+        .catch(() => undefined);
+      throw new DurableMemoryError(
+        typeof value?.error === "string" ? value.error : "memory_failed",
+        typeof value?.message === "string"
+          ? value.message
+          : `memory operation failed with HTTP ${response.status}`,
+      );
+    }
+    return parseMemoryResult(await response.json<unknown>(), operation.operation);
+  }
+
+  #requireActiveTurnCapability(capability: OrganizationCapability): void {
+    const authorization = this.#activeTurnAuthorization();
+    if (!authorization?.capabilities.includes(capability)) {
+      throw new ManagedRequestError(403, "forbidden", `turn lacks ${capability} capability`);
+    }
+  }
+
   #activeTurnAuthorization(): TurnAuthorization | undefined {
     // The driver requests tool definitions before emitting run.started. The
     // head of the owned admission queue is therefore the exact authorization
@@ -4694,6 +4830,18 @@ export class DurableAgentSession extends DurableComputerSession {
       turnId,
     ).toArray()[0];
     return row === undefined ? [] : JSON.parse(row.citations_json) as HistoryCitation[];
+  }
+
+  #recordHistoryCitations(turnId: string, citations: readonly HistoryCitation[]): void {
+    this.ctx.storage.transactionSync(() => {
+      const merged = mergeHistoryCitations(this.#historyCitations(turnId), citations);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO turn_history_citations (turn_id, citations_json) VALUES (?, ?)
+         ON CONFLICT(turn_id) DO UPDATE SET citations_json = excluded.citations_json`,
+        turnId,
+        JSON.stringify(merged),
+      );
+    });
   }
 
   async #complete(id: string, turn: Turn): Promise<void> {

@@ -30,6 +30,10 @@
       "types": "./dist/memory.d.ts",
       "import": "./dist/memory.js"
     },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
+    },
     "./named-tool": {
       "types": "./tools/namedTool.d.mts",
       "import": "./tools/namedTool.mjs"
@@ -75,6 +79,7 @@
     "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.json",
     "prepack": "npm run build",
+    "test": "npm run build && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
