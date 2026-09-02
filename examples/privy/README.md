@@ -15,17 +15,21 @@ On `POST`, the Worker verifies the `privy-token` cookie with
 claims to `HostPrincipal`. The browser receives only a short-lived opaque
 `{ token, expires_at }` exchange.
 
-`PRIVY_APP_SECRET`, `NANOCODEX_HOST_PROJECT_SECRET`, the Privy token, and the
-verified subject/session claims never enter public config, HTML, Connect
-requests, browser storage, or Vite variables. Public `/api/config` contains only
-the identifiers, exact origin, and public Nanocodex service URLs needed by the
-browser.
+`PRIVY_APP_SECRET` and `NANOCODEX_HOST_PROJECT_SECRET` remain Worker-only. The
+provider SDK owns its session token; this example never copies it into public
+config, HTML, Connect requests, application state, or Vite variables. The Worker
+keeps the verified claims only in an AES-GCM-sealed, HttpOnly, same-site cookie
+so it can revoke the exact old session after provider expiry or a cold-start
+account switch. Public `/api/config` contains only the identifiers, exact origin,
+and public Nanocodex service URLs needed by the browser.
 
-The **Securely log out** action aborts and awaits an in-flight connect, revokes
+The **Securely log out** action aborts and awaits an in-flight connect or turn, revokes
 the exact Nanocodex host session while the old Privy cookie is still valid,
 clears the persisted Connect session, and only then calls Privy logout. A failed
 revocation blocks provider logout so it can be retried. Use the same ordering
-before adding any account-switch control.
+before adding any account-switch control. Provider-driven logout and account
+replacement use the sealed old-session cookie to apply the same revocation
+fence before local state is reused.
 
 ## Configure Privy and Nanocodex
 
