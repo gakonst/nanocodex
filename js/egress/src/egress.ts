@@ -1,3 +1,4 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   AgentSubjectDirectory,
   type BrokerEnv,
@@ -35,6 +36,7 @@ const SUBJECT_DIRECTORY_PREFIX = "agent-subject-v1:";
 const READINESS_SUBJECT_DIRECTORY_NAME = "agent-subject-readiness-v1";
 const SUBJECT = /^[A-Za-z0-9_-]{43,128}$/;
 const USER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const CHIEF_USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SUBJECT_HEADER = "x-nanocodex-subject";
 const PROVIDER_PLACEHOLDER = "Bearer NANOCODEX_PROVIDER_CREDENTIAL";
 const MODEL_STATUS_PATH = "/.well-known/nanocodex/model-status";
@@ -181,6 +183,23 @@ export interface EgressEnv extends BrokerEnv, ConnectorBrokerEnv {
   ALLOW_INSECURE_LOOPBACK_RELAY?: string;
   NANOCODEX_BROKER_PROBE_TOKEN?: string;
   DEPLOYMENT_SHA?: string;
+}
+
+export class ChiefOfStaffEgress extends WorkerEntrypoint<EgressEnv> {
+  async ensureCredential(userIdValue: unknown): Promise<void> {
+    if (typeof userIdValue !== "string" || !CHIEF_USER_ID.test(userIdValue)) {
+      throw new Error("invalid_chief_user");
+    }
+    const response = await userBroker(this.env, userIdValue).fetch(
+      "https://credentials.internal/v1/chief-of-staff/openai-key",
+      { method: "PUT" },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error("chief_credential_unavailable");
+    }
+    await response.body?.cancel();
+  }
 }
 
 type ModelOperation = Readonly<{

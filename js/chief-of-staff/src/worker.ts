@@ -26,7 +26,11 @@ import {
   type WhatsAppMessageIdentity,
 } from "./protocol.ts";
 import { slackAuthorizationUrl, verifySlackInstallState } from "./slack-oauth.ts";
-import { DurableChatStateAdapter } from "./state-adapter.ts";
+import {
+  DurableChatStateAdapter,
+  SlackInstallationOwnershipError,
+  SlackOAuthStateAdapter,
+} from "./state-adapter.ts";
 import {
   readViberWebhook,
   sendViberText,
@@ -151,7 +155,7 @@ async function finishSlackInstall(request: Request, env: Env): Promise<Response>
     return json({ error: "invalid_oauth_state" }, { status: 400 });
   }
   try {
-    const runtime = slackRuntime(env);
+    const runtime = slackRuntime(env, state.accountId);
     await runtime.chat.initialize();
     const result = await runtime.slack.handleOAuthCallback(request, {
       redirectUri: new URL("/v1/slack/callback", env.CHIEF_OF_STAFF_PUBLIC_ORIGIN).href,
@@ -159,10 +163,6 @@ async function finishSlackInstall(request: Request, env: Env): Promise<Response>
     if (result.isEnterpriseInstall || !SLACK_TEAM_ID.test(result.teamId)) {
       await runtime.slack.deleteInstallation(result.teamId);
       return installationReturn(env, "workspace_required");
-    }
-    const retained = await installationMetadata(env, result.teamId);
-    if (retained && retained.accountId !== state.accountId) {
-      return installationReturn(env, "workspace_already_installed");
     }
     const metadata = {
       accountId: state.accountId,
@@ -174,6 +174,9 @@ async function finishSlackInstall(request: Request, env: Env): Promise<Response>
     await writeInstallationMetadata(env, metadata, "PUT");
     return installationReturn(env, "installed");
   } catch (error) {
+    if (error instanceof SlackInstallationOwnershipError) {
+      return installationReturn(env, "workspace_already_installed");
+    }
     console.warn({
       type: "chief_of_staff.slack_install_failed",
       error_kind: error instanceof Error ? error.name : typeof error,
@@ -422,10 +425,13 @@ function deliveryRequest(
   }));
 }
 
-function slackRuntime(env: Env): SlackRuntime {
-  const retained = slackRuntimes.get(env as object);
+function slackRuntime(env: Env, oauthAccountId?: string): SlackRuntime {
+  const retained = oauthAccountId === undefined ? slackRuntimes.get(env as object) : undefined;
   if (retained) return retained;
   const stateObject = env.CHIEF_OF_STAFF_STATE.getByName(SLACK_STATE_OBJECT);
+  const state = oauthAccountId === undefined
+    ? new DurableChatStateAdapter(stateObject)
+    : new SlackOAuthStateAdapter(stateObject, oauthAccountId);
   const slack = createSlackAdapter({
     agentView: true,
     apiUrl: env.SLACK_API_URL,
@@ -441,7 +447,7 @@ function slackRuntime(env: Env): SlackRuntime {
     concurrency: "concurrent",
     dedupeTtlMs: 24 * 60 * 60 * 1_000,
     logger: "warn",
-    state: new DurableChatStateAdapter(stateObject),
+    state,
     userName: "chief-of-staff",
   });
   const handle = async (thread: Thread, message: Message) => {
@@ -458,7 +464,7 @@ function slackRuntime(env: Env): SlackRuntime {
   chat.onNewMention(handle);
   chat.onSubscribedMessage(handle);
   const runtime = { chat, slack };
-  slackRuntimes.set(env as object, runtime);
+  if (oauthAccountId === undefined) slackRuntimes.set(env as object, runtime);
   return runtime;
 }
 

@@ -20,13 +20,19 @@ export type ChiefOfStaffIdentity = Readonly<{
   tenant: string;
 }>;
 
+export interface ChiefOfStaffPrincipalEnv extends AccountAuthEnv {
+  NANOCODEX_CHIEF_EGRESS: Readonly<{
+    ensureCredential(userId: unknown): Promise<void>;
+  }>;
+}
+
 type IdentityMapping = ChiefOfStaffIdentity & Readonly<{
   digest: string;
   userId: string;
 }>;
 
 export async function resolveChiefOfStaffIdentity(
-  env: AccountAuthEnv,
+  env: ChiefOfStaffPrincipalEnv,
   value: unknown,
 ): Promise<Principal> {
   const identity = chiefOfStaffIdentity(value);
@@ -52,6 +58,7 @@ export async function resolveChiefOfStaffIdentity(
     throw new Error("chief_identity_conflict");
   }
   await ensureAccount(env, mapping.userId, true);
+  await env.NANOCODEX_CHIEF_EGRESS.ensureCredential(mapping.userId);
   const principal = await resolveChiefOfStaffPrincipal(
     env,
     mapping.userId,

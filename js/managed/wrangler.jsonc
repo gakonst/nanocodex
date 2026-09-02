@@ -26,6 +26,11 @@
     {
       "binding": "NANOCODEX",
       "service": "nanocodex-egress"
+    },
+    {
+      "binding": "NANOCODEX_CHIEF_EGRESS",
+      "service": "nanocodex-egress",
+      "entrypoint": "ChiefOfStaffEgress"
     }
   ],
   "r2_buckets": [
@@ -110,7 +115,13 @@
     "development": {
       "name": "nanocodex-durable-agent",
       "services": [
-        { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false }
+        { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false },
+        {
+          "binding": "NANOCODEX_CHIEF_EGRESS",
+          "service": "nanocodex-egress",
+          "entrypoint": "ChiefOfStaffEgress",
+          "remote": false
+        }
       ],
       "r2_buckets": [
         { "binding": "NANOCODEX_HISTORY", "bucket_name": "nanocodex-managed-history" }

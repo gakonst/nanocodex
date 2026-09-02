@@ -4,6 +4,7 @@ import type { AccountAuthEnv } from "../src/account-auth";
 import {
   chiefOfStaffIdentity,
   resolveChiefOfStaffIdentity,
+  type ChiefOfStaffPrincipalEnv,
 } from "../src/chief-of-staff-principal";
 
 describe("Chief of Staff provider identities", () => {
@@ -52,7 +53,7 @@ describe("Chief of Staff provider identities", () => {
   });
 });
 
-function identityEnv(): AccountAuthEnv {
+function identityEnv(): ChiefOfStaffPrincipalEnv {
   const authStores = new Map<string, Map<string, unknown>>();
   const accounts = new Map<string, { id: string; organizationId: string; persistent: boolean }>();
   const organizationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -111,8 +112,15 @@ function identityEnv(): AccountAuthEnv {
   } as unknown as DurableObjectNamespace;
   return {
     NANOCODEX_AUTH: auth,
-    NANOCODEX_API_KEYS: {} as DurableObjectNamespace,
-    NANOCODEX_ORGANIZATIONS: organizations,
-    NANOCODEX_USERS: users,
+    NANOCODEX_API_KEYS: {} as AccountAuthEnv["NANOCODEX_API_KEYS"],
+    NANOCODEX_CHIEF_EGRESS: {
+      async ensureCredential(userId) {
+        if (typeof userId !== "string" || !accounts.has(userId)) {
+          throw new Error("credential provisioned before account");
+        }
+      },
+    },
+    NANOCODEX_ORGANIZATIONS: organizations as unknown as AccountAuthEnv["NANOCODEX_ORGANIZATIONS"],
+    NANOCODEX_USERS: users as unknown as AccountAuthEnv["NANOCODEX_USERS"],
   };
 }

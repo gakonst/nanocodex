@@ -33,6 +33,7 @@ const SUBJECT_TOMBSTONE_PREFIX = "!deleted:";
 
 export interface BrokerEnv extends CredentialVaultEnv {
   AGENT_SUBJECTS: DurableObjectNamespace<AgentSubjectDirectory>;
+  CHIEF_OF_STAFF_OPENAI_API_KEY?: string;
   CHATGPT_ISSUER?: string;
   ALLOW_LOCAL_CREDENTIAL_CLAIM?: string;
   LOCAL_CHATGPT_BOOTSTRAP?: string;
@@ -430,6 +431,25 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         const secret = stringField(body, "api_key")?.trim();
         if (!secret || secret.length > 8_192 || /[\u0000-\u001f\u007f]/.test(secret)) {
           return jsonError(400, "invalid_openai_api_key");
+        }
+        this.#credentials.openai = {
+          secret,
+          createdAt: Date.now(),
+          revision: (this.#credentials.openai?.revision ?? -1) + 1,
+        };
+        this.#credentials.active = "openai";
+        await this.#persist();
+        return new Response(null, { status: 204, headers: noStoreHeaders() });
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/chief-of-staff/openai-key") {
+        if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
+        const secret = this.#env.CHIEF_OF_STAFF_OPENAI_API_KEY?.trim();
+        if (!secret || secret.length > 8_192 || /[\u0000-\u001f\u007f]/.test(secret)) {
+          return jsonError(503, "chief_of_staff_credential_unavailable");
+        }
+        if (this.#credentials.active === "openai"
+          && this.#credentials.openai?.secret === secret) {
+          return new Response(null, { status: 204, headers: noStoreHeaders() });
         }
         this.#credentials.openai = {
           secret,

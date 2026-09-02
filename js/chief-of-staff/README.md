@@ -19,6 +19,14 @@ binding; it holds no Nanocodex bearer credential and cannot select a Nanocodex
 account ID. The account app receives only non-secret installation and readiness
 metadata.
 
+The egress Worker funds these generated accounts with one operator-owned OpenAI
+credential. It remains encrypted inside egress credential storage and never
+crosses the Chief RPC or browser boundary:
+
+```sh
+pnpm --filter nanocodex-egress-service exec wrangler secret put CHIEF_OF_STAFF_OPENAI_API_KEY --config wrangler.broker.jsonc
+```
+
 The same Worker also exposes an official Viber Bot REST API channel. It verifies
 the raw callback HMAC, maps each bot/subscriber pair to a durable conversation,
 and returns the retained managed agent's reply through the configured Viber bot.
@@ -117,9 +125,11 @@ the user's isolated agent. Reactive replies are sent inside WhatsApp's 24-hour
 customer-service window; initiating a later conversation requires an approved
 message template.
 
-Deploy the managed service first, then this Worker, and the account application:
+Deploy egress first, then the managed service, this Worker, and the account
+application:
 
 ```sh
+pnpm deploy:egress
 pnpm deploy:managed
 pnpm deploy:chief-of-staff
 pnpm deploy:account

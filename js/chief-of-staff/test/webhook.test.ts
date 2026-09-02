@@ -296,6 +296,63 @@ test("the Slack callback stores an encrypted bot installation and returns to the
   }
 });
 
+test("a second account cannot replace an owned Slack workspace installation", async () => {
+  const fixture = statefulEnv();
+  fixture.metadata.set("T123ABC", {
+    accountId,
+    botUserId: "U123ABC",
+    installedAt: 1,
+    teamId: "T123ABC",
+    teamName: "Acme",
+  });
+  fixture.values.set("slack:installation:T123ABC", "encrypted-original-installation");
+  fixture.env.NANOCODEX_BACKEND = {
+    async requestingAccountId() { return "00000000-0000-4000-8000-000000000002"; },
+    async createAgent() { throw new Error("not used"); },
+    async runTurn() { throw new Error("not used"); },
+  };
+  const start = await worker.fetch(new Request("https://chief.example/v1/slack/install"), fixture.env);
+  const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
+  const slack = createServer((request, response) => {
+    if (request.url === "/api/oauth.v2.access") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        access_token: "xoxb-replacement-secret",
+        app_id: "A123ABC",
+        bot_user_id: "U999XYZ",
+        ok: true,
+        scope: "chat:write",
+        team: { id: "T123ABC", name: "Acme" },
+        token_type: "bot",
+      }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end();
+  });
+  await new Promise<void>((resolve) => slack.listen(0, "127.0.0.1", resolve));
+  const address = slack.address();
+  if (!address || typeof address === "string") throw new Error("Slack fixture did not bind");
+  fixture.env.SLACK_API_URL = `http://127.0.0.1:${address.port}/api/`;
+  try {
+    const callback = await worker.fetch(new Request(
+      `https://chief.example/v1/slack/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+    ), fixture.env);
+    assert.equal(callback.status, 303);
+    assert.equal(
+      callback.headers.get("location"),
+      "https://nanocodex.example/demos/chief-of-staff?slack=workspace_already_installed",
+    );
+    assert.equal(fixture.metadata.get("T123ABC")?.accountId, accountId);
+    assert.equal(
+      fixture.values.get("slack:installation:T123ABC"),
+      "encrypted-original-installation",
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => slack.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test("Slack app_uninstalled removes the bot installation without touching the user connector", async () => {
   const fixture = statefulEnv();
   fixture.metadata.set("T123ABC", {
@@ -528,6 +585,17 @@ function statefulEnv(): {
       return {
         async fetch(request) {
           const url = new URL(request.url);
+          if (url.pathname === "/slack/installations/claim" && request.method === "POST") {
+            const body = await request.json<{ accountId: string; teamId: string }>();
+            const ownerKey = `slack:owner:${body.teamId}`;
+            const current = values.get(ownerKey)
+              ?? (metadata.get(body.teamId) as { accountId?: string } | undefined)?.accountId;
+            if (current !== undefined && current !== body.accountId) {
+              return Response.json({ error: "workspace_already_installed" }, { status: 409 });
+            }
+            values.set(ownerKey, body.accountId);
+            return new Response(null, { status: 204 });
+          }
           if (url.pathname === "/slack/installations") {
             if (request.method === "GET") {
               return Response.json({ installations: [...metadata.values()] });
@@ -539,8 +607,17 @@ function statefulEnv(): {
               teamId: string;
               teamName: string;
             }>();
+            const ownerKey = `slack:owner:${body.teamId}`;
+            const owner = values.get(ownerKey)
+              ?? (metadata.get(body.teamId) as { accountId?: string } | undefined)?.accountId;
+            if (owner !== undefined && owner !== body.accountId) {
+              return Response.json({ error: "account_forbidden" }, { status: 409 });
+            }
             if (request.method === "PUT") metadata.set(body.teamId, body);
-            if (request.method === "DELETE") metadata.delete(body.teamId);
+            if (request.method === "DELETE") {
+              metadata.delete(body.teamId);
+              values.delete(ownerKey);
+            }
             return new Response(null, { status: 204 });
           }
           if (url.pathname === "/chat-sdk") {

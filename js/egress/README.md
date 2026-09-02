@@ -8,7 +8,9 @@ production evidence live in [../../AGENTS.md](../../AGENTS.md).
 
 - `wrangler.broker.jsonc` deploys `src/egress.ts` as `nanocodex-egress`.
   It has `workers_dev = false` and no public routes; managed services reach it
-  only through a Service Binding.
+  only through a Service Binding. Its named `ChiefOfStaffEgress` RPC can only
+  idempotently install the operator-funded model credential for a managed,
+  server-generated Chief user ID.
 - `wrangler.agent.jsonc` deploys `src/agent.ts` as the public
   `nanocodex-egress-agent-example`. Its `EGRESS` binding demonstrates the
   private call shape; it is not the broker or a production control surface.
@@ -24,6 +26,10 @@ connection material, and brokered SSH private keys. Durable Objects encrypt
 that state with AES-256-GCM before storage. Production requires
 `CREDENTIAL_ENCRYPTION_KEY`; a static Secrets Store binding can supply it, and
 `CREDENTIAL_ENCRYPTION_KEY_PREVIOUS` supports key rotation.
+
+Chief of Staff deployments also require `CHIEF_OF_STAFF_OPENAI_API_KEY` on
+this broker. The named RPC copies it directly into the generated user's
+encrypted credential vault; the value is never returned to managed or Chief.
 
 Credentials and encryption keys never enter browser code, managed Workers,
 agent configuration, tool output, or status/control responses. The managed

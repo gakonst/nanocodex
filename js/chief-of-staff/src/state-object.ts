@@ -54,6 +54,9 @@ export class ChiefOfStaffState extends DurableObject<Env> {
     if (url.pathname === "/conversation/delivery" && request.method === "POST") {
       return this.conversationDelivery(request);
     }
+    if (url.pathname === "/slack/installations/claim" && request.method === "POST") {
+      return this.claimSlackInstallation(request);
+    }
     if (url.pathname === "/slack/installations") return this.slackInstallations(request);
     return json({ error: "not_found" }, 404);
   }
@@ -113,14 +116,55 @@ export class ChiefOfStaffState extends DurableObject<Env> {
     if (!validSlackInstallationMetadata(body)) return json({ error: "invalid_request" }, 400);
     const key = `slack:metadata:${body.teamId}`;
     if (request.method === "PUT") {
-      await this.ctx.storage.put(key, body);
-      return new Response(null, { status: 204 });
+      return this.ctx.storage.transaction(async (transaction) => {
+        const ownerKey = `slack:owner:${body.teamId}`;
+        const owner = await transaction.get<string>(ownerKey);
+        const current = await transaction.get<unknown>(key);
+        const expected = owner ?? (validSlackInstallationMetadata(current) ? current.accountId : undefined);
+        if (expected !== body.accountId) return json({ error: "account_forbidden" }, 409);
+        await transaction.put(key, body);
+        return new Response(null, { status: 204 });
+      });
     }
     if (request.method === "DELETE") {
-      await this.ctx.storage.delete(key);
-      return new Response(null, { status: 204 });
+      return this.ctx.storage.transaction(async (transaction) => {
+        const ownerKey = `slack:owner:${body.teamId}`;
+        const owner = await transaction.get<string>(ownerKey);
+        const current = await transaction.get<unknown>(key);
+        const expected = owner ?? (validSlackInstallationMetadata(current) ? current.accountId : undefined);
+        if (expected !== undefined && expected !== body.accountId) {
+          return json({ error: "account_forbidden" }, 409);
+        }
+        await Promise.all([transaction.delete(key), transaction.delete(ownerKey)]);
+        return new Response(null, { status: 204 });
+      });
     }
     return json({ error: "method_not_allowed" }, 405);
+  }
+
+  private async claimSlackInstallation(request: Request): Promise<Response> {
+    let body: unknown;
+    try { body = await request.json(); }
+    catch { return json({ error: "invalid_request" }, 400); }
+    if (!isRecord(body)
+      || Object.keys(body).length !== 2
+      || typeof body.accountId !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.accountId)
+      || typeof body.teamId !== "string"
+      || !/^T[A-Z0-9]+$/.test(body.teamId)) {
+      return json({ error: "invalid_request" }, 400);
+    }
+    return this.ctx.storage.transaction(async (transaction) => {
+      const ownerKey = `slack:owner:${body.teamId}`;
+      const metadata = await transaction.get<unknown>(`slack:metadata:${body.teamId}`);
+      const owner = await transaction.get<string>(ownerKey)
+        ?? (validSlackInstallationMetadata(metadata) ? metadata.accountId : undefined);
+      if (owner !== undefined && owner !== body.accountId) {
+        return json({ error: "workspace_already_installed" }, 409);
+      }
+      if (owner === undefined) await transaction.put(ownerKey, body.accountId);
+      return new Response(null, { status: 204 });
+    });
   }
 
   private async conversationTurn(request: Request): Promise<Response> {

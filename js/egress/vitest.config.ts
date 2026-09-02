@@ -30,6 +30,7 @@ export default defineConfig({
         bindings: {
           ENVIRONMENT: "test",
           CREDENTIAL_ENCRYPTION_KEY: TEST_KEY,
+          CHIEF_OF_STAFF_OPENAI_API_KEY: "sk-chief-of-staff-test-secret",
           ALLOW_LOCAL_CREDENTIAL_CLAIM: "true",
           LOCAL_CHATGPT_BOOTSTRAP: JSON.stringify({
             access_token: jwt({ exp: 4_102_444_800, marker: "local-access" }),

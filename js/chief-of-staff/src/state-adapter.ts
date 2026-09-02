@@ -3,7 +3,7 @@ import type { Lock, QueueEntry, StateAdapter } from "chat";
 type Fetcher = Readonly<{ fetch(request: Request): Promise<Response> }>;
 
 export class DurableChatStateAdapter implements StateAdapter {
-  private readonly state: Fetcher;
+  protected readonly state: Fetcher;
 
   constructor(state: Fetcher) {
     this.state = state;
@@ -89,5 +89,36 @@ export class DurableChatStateAdapter implements StateAdapter {
     if (!response.ok) throw new Error(`Chat SDK state operation failed: ${operation}`);
     const result = await response.json<{ value: T }>();
     return result.value;
+  }
+}
+
+export class SlackInstallationOwnershipError extends Error {
+  constructor() { super("slack_workspace_already_installed"); }
+}
+
+export class SlackOAuthStateAdapter extends DurableChatStateAdapter {
+  private readonly accountId: string;
+
+  constructor(state: Fetcher, accountId: string) {
+    super(state);
+    this.accountId = accountId;
+  }
+
+  override async set<T = unknown>(key: string, value: T, ttlMs?: number): Promise<void> {
+    const teamId = /^slack:installation:(T[A-Z0-9]+)$/.exec(key)?.[1];
+    if (teamId) {
+      const claimed = await this.state.fetch(new Request(
+        "https://state.internal/slack/installations/claim",
+        {
+          body: JSON.stringify({ accountId: this.accountId, teamId }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      ));
+      if (claimed.status === 409) throw new SlackInstallationOwnershipError();
+      if (!claimed.ok) throw new Error("Slack installation ownership claim failed");
+      await claimed.body?.cancel();
+    }
+    await super.set(key, value, ttlMs);
   }
 }
