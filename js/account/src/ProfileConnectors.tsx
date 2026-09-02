@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AccountConnectionCard,
   AccountConnectionGrid,
@@ -13,14 +13,21 @@ import {
   connectorCompletion,
   connectorCompletionFor,
 } from "nanocodex-connect-ui/connectorCompletion";
+import {
+  connectorCapabilityLabel,
+  connectorConnectionsForCapabilities,
+  connectorStatusesFromWire,
+  googleConnectorCapabilities,
+  type ConnectorCapability,
+  type ConnectorConnection,
+  type ConnectorProvider,
+  type ConnectorStatus,
+} from "nanocodex-connect-ui/connectorPolicy.mjs";
 
-type ConnectorId = "github" | "gmail" | "gdrive" | "x";
-type ConnectorStatus = Readonly<{
-  connected: boolean;
-  accountId?: string;
-  label?: string;
-  unavailable?: string;
-}>;
+type AccountConnectorCapability = Exclude<ConnectorCapability, "chatgpt">;
+type AccountConnectorProvider = Exclude<ConnectorProvider, "chatgpt">;
+type AccountConnectorStatus = ConnectorStatus & Readonly<{ unavailable?: string }>;
+type AccountConnectorStatuses = Record<AccountConnectorCapability, AccountConnectorStatus>;
 type McpConnectionStatus =
   | "authorization_required"
   | "connected"
@@ -34,7 +41,8 @@ type McpConnection = Readonly<{
 }>;
 type ConnectorAttempt = {
   abort: AbortController;
-  connector: ConnectorId;
+  provider: AccountConnectorProvider;
+  capabilities: readonly AccountConnectorCapability[];
   popup: Window;
   popupCheck: number;
   popupClosed?: number | undefined;
@@ -57,13 +65,21 @@ const mcpConnectionStatuses = new Set<McpConnectionStatus>([
   "revoked",
 ]);
 
+const accountConnectorCapabilities = [
+  "github",
+  ...googleConnectorCapabilities,
+  "slack",
+  "x",
+] as const satisfies readonly AccountConnectorCapability[];
+
 const connectorDefinitions = [
-  { id: "github", label: "GitHub", description: "Clone, push, and manage repositories and workflows" },
-  { id: "gmail", label: "Gmail", description: "Read, send, modify, and permanently delete mail" },
-  { id: "gdrive", label: "Google Drive", description: "Read, create, edit, and delete all Drive files" },
-  { id: "x", label: "X", description: "Read and publish posts; manage follows, likes, bookmarks, lists, and messages" },
+  { provider: "github", capabilities: ["github"], label: "GitHub", description: "Clone, push, and manage repositories and workflows" },
+  { provider: "google", capabilities: googleConnectorCapabilities, label: "Google Workspace", description: "Mail, Drive, Calendar, Tasks, Docs, Sheets, Slides, and Contacts" },
+  { provider: "slack", capabilities: ["slack"], label: "Slack", description: "Read and send messages as you in connected workspaces" },
+  { provider: "x", capabilities: ["x"], label: "X", description: "Read and publish posts; manage follows, likes, bookmarks, lists, and messages" },
 ] as const satisfies ReadonlyArray<{
-  id: ConnectorId;
+  provider: AccountConnectorProvider;
+  capabilities: readonly AccountConnectorCapability[];
   label: string;
   description: string;
 }>;
@@ -83,7 +99,7 @@ export function ProfileConnectors({
   requiresLogin?: boolean;
   refreshSession(): Promise<void>;
 }) {
-  const [connectors, setConnectors] = useState<Record<ConnectorId, ConnectorStatus> | null>(null);
+  const [connectors, setConnectors] = useState<AccountConnectorStatuses | null>(null);
   const [mcpConnections, setMcpConnections] = useState<readonly McpConnection[] | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpConnectionError, setMcpConnectionError] = useState<Readonly<{
@@ -217,7 +233,7 @@ export function ProfileConnectors({
       const attempt = activeConnector.current;
       if (attempt) {
         const completion = connectorCompletionFor(event, {
-          connector: attempt.connector,
+          connector: attempt.provider,
           origin: window.location.origin,
           source: attempt.popup,
         });
@@ -235,13 +251,13 @@ export function ProfileConnectors({
           if (!statuses) {
             throw new Error("Your account session expired. Sign in again and retry the connection.");
           }
-          if (!statuses[attempt.connector].connected) {
+          if (!attempt.capabilities.some((capability) => statuses[capability].connected)) {
             throw new Error("The account provider completed without connecting the requested account.");
           }
           finishConnectorAttempt(attempt);
         }).catch((cause) => {
           if (finishConnectorAttempt(attempt)) {
-            setError(failureMessage(cause, `Couldn’t connect ${connectorLabel(attempt.connector)}.`));
+            setError(failureMessage(cause, `Couldn’t connect ${connectorLabel(attempt.provider)}.`));
           }
         });
         return;
@@ -291,7 +307,10 @@ export function ProfileConnectors({
     });
   }, [mcpResult]);
 
-  const connect = async (id: ConnectorId) => {
+  const connect = async (
+    provider: AccountConnectorProvider,
+    capabilities: readonly AccountConnectorCapability[],
+  ) => {
     if (operation || activeConnector.current) return;
     const popup = window.open(
       "about:blank",
@@ -304,7 +323,8 @@ export function ProfileConnectors({
     }
     const attempt: ConnectorAttempt = {
       abort: new AbortController(),
-      connector: id,
+      provider,
+      capabilities,
       popup,
       popupCheck: window.setInterval(() => {
         if (activeConnector.current !== attempt || !popup.closed) return;
@@ -317,17 +337,17 @@ export function ProfileConnectors({
       }, 300),
     };
     activeConnector.current = attempt;
-    setOperation(id);
+    setOperation(provider);
     setError(null);
     try {
-      const response = await connectorRequest(`/v1/connectors/${id}`, {
+      const response = await connectorRequest(`/v1/connectors/${provider}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ return_to: connectorReturnTo() }),
         signal: attempt.abort.signal,
       });
       if (activeConnector.current !== attempt) return;
-      if (!response.ok) throw await responseFailure(response, `Couldn’t connect ${connectorLabel(id)}.`);
+      if (!response.ok) throw await responseFailure(response, `Couldn’t connect ${connectorLabel(provider)}.`);
       const body: unknown = await response.json();
       if (!isRecord(body) || typeof body.authorization_url !== "string") {
         throw new Error("Invalid connector authorization response.");
@@ -338,22 +358,28 @@ export function ProfileConnectors({
       popup.location.href = authorizationUrl.href;
     } catch (cause) {
       if (finishConnectorAttempt(attempt) && !isAbortError(cause)) {
-        setError(failureMessage(cause, `Couldn’t connect ${connectorLabel(id)}.`));
+        setError(failureMessage(cause, `Couldn’t connect ${connectorLabel(provider)}.`));
       }
     }
   };
 
-  const disconnect = async (id: ConnectorId) => {
+  const disconnect = async (
+    provider: AccountConnectorProvider,
+    connection?: ConnectorConnection,
+  ) => {
     if (operation) return;
-    setOperation(id);
+    setOperation(connection?.id ?? provider);
     setError(null);
     try {
-      const response = await connectorRequest(`/v1/connectors/${id}`, { method: "DELETE" });
-      if (!response.ok) throw await responseFailure(response, `Couldn’t disconnect ${connectorLabel(id)}.`);
+      const path = connection
+        ? `/v1/connectors/${provider}/connections/${encodeURIComponent(connection.id)}`
+        : `/v1/connectors/${provider}`;
+      const response = await connectorRequest(path, { method: "DELETE" });
+      if (!response.ok) throw await responseFailure(response, `Couldn’t disconnect ${connection?.label ?? connectorLabel(provider)}.`);
       await response.body?.cancel();
       await load();
     } catch (cause) {
-      setError(failureMessage(cause, `Couldn’t disconnect ${connectorLabel(id)}.`));
+      setError(failureMessage(cause, `Couldn’t disconnect ${connection?.label ?? connectorLabel(provider)}.`));
     } finally {
       setOperation(null);
     }
@@ -491,8 +517,8 @@ export function ProfileConnectors({
                 action="Connect"
                 detail={definition.description}
                 disabled
-                key={definition.id}
-                logo={<ConnectionLogo id={definition.id} />}
+                key={definition.provider}
+                logo={<ConnectionLogo id={definition.provider} />}
                 onClick={() => undefined}
                 title={definition.label}
               />
@@ -508,10 +534,10 @@ export function ProfileConnectors({
         {connectorDefinitions.map((definition) => <button
           className="connection-card connector-row"
           disabled
-          key={definition.id}
+          key={definition.provider}
           type="button"
         >
-          <ConnectionLogo id={definition.id} />
+          <ConnectionLogo id={definition.provider} />
           <span className="connection-card-copy">
             <strong>{definition.label}</strong>
             <span>{definition.description}</span>
@@ -529,24 +555,30 @@ export function ProfileConnectors({
         <AccountConnectionGrid>
           {children}
           {connectors ? connectorDefinitions.map((definition) => {
-            const status = connectors[definition.id];
-            const unavailable = status.unavailable;
-            return <AccountConnectionCard
-              action={unavailable ? "Unavailable" : status.connected ? "Disconnect" : "Connect"}
-              connected={status.connected}
-              detail={unavailable
-                ? unavailable
-                : status.connected
-                  ? status.label || status.accountId || "Connected"
-                  : definition.description}
-              disabled={operation !== null || unavailable !== undefined}
-              key={definition.id}
-              logo={<ConnectionLogo id={definition.id} />}
-              onClick={() => void (status.connected
-                ? disconnect(definition.id)
-                : connect(definition.id))}
-              title={definition.label}
-            />;
+            const view = connectorProviderView(connectors, definition);
+            return <Fragment key={definition.provider}>
+              <AccountConnectionCard
+                action={view.unavailable ? "Unavailable" : providerConnectAction(definition.provider, view)}
+                connected={view.connected}
+                detail={view.detail}
+                disabled={operation !== null || view.unavailable !== undefined}
+                logo={<ConnectionLogo id={definition.provider} />}
+                onClick={() => void (view.legacy
+                  ? disconnect(definition.provider)
+                  : connect(definition.provider, definition.capabilities))}
+                title={definition.label}
+              />
+              {view.connections.map((connection) => <AccountConnectionCard
+                action="Revoke"
+                connected
+                detail={connectorConnectionDetail(definition.provider, connection)}
+                disabled={operation !== null}
+                key={`${definition.provider}:${connection.id}`}
+                logo={<ConnectionLogo id={definition.provider} />}
+                onClick={() => void disconnect(definition.provider, connection)}
+                title={connection.label}
+              />)}
+            </Fragment>;
           }) : null}
           {mcpError && !mcpConnections ? <AccountConnectionCard
             action="Retry"
@@ -606,33 +638,40 @@ export function ProfileConnectors({
         </div>
       ) : null}
       {connectors ? connectorDefinitions.map((definition) => {
-        const status = connectors[definition.id];
-        const unavailable = status.unavailable;
-        const detail = unavailable
-          ? unavailable
-          : status.connected
-            ? status.label || status.accountId || "Connected"
-            : definition.description;
-        return (
+        const view = connectorProviderView(connectors, definition);
+        return (<Fragment key={definition.provider}>
           <button
-            className={`connection-card connector-row${status.connected ? " is-connected" : ""}${unavailable ? " is-unavailable" : ""}`}
-            key={definition.id}
+            className={`connection-card connector-row${view.connected ? " is-connected" : ""}${view.unavailable ? " is-unavailable" : ""}`}
             type="button"
-            disabled={operation !== null || unavailable !== undefined}
-            onClick={() => void (status.connected
-              ? disconnect(definition.id)
-              : connect(definition.id))}
+            disabled={operation !== null || view.unavailable !== undefined}
+            onClick={() => void (view.legacy
+              ? disconnect(definition.provider)
+              : connect(definition.provider, definition.capabilities))}
           >
-            <ConnectionLogo id={definition.id} />
+            <ConnectionLogo id={definition.provider} />
             <span className="connection-card-copy">
               <strong>{definition.label}</strong>
-              <span>{detail}</span>
+              <span>{view.detail}</span>
             </span>
             <span className="connection-card-action">
-              {unavailable ? "Unavailable" : status.connected ? "Disconnect" : "Connect"}
+              {view.unavailable ? "Unavailable" : providerConnectAction(definition.provider, view)}
             </span>
           </button>
-        );
+          {view.connections.map((connection) => <button
+            className="connection-card connector-row connector-account-row is-connected"
+            disabled={operation !== null}
+            key={`${definition.provider}:${connection.id}`}
+            onClick={() => void disconnect(definition.provider, connection)}
+            type="button"
+          >
+            <ConnectionLogo id={definition.provider} />
+            <span className="connection-card-copy">
+              <strong>{connection.label}</strong>
+              <span>{connectorConnectionDetail(definition.provider, connection)}</span>
+            </span>
+            <span className="connection-card-action">Revoke</span>
+          </button>)}
+        </Fragment>);
       }) : null}
       {mcpConnections ? <McpConnectionAddCard
         disabled={operation !== null}
@@ -685,29 +724,26 @@ async function connectorRequest(path: string, init: RequestInit = {}): Promise<R
   });
 }
 
-function decodeConnectorStatus(value: unknown): Record<ConnectorId, ConnectorStatus> {
+function decodeConnectorStatus(value: unknown): AccountConnectorStatuses {
   if (!isRecord(value) || !isRecord(value.connectors)) {
     throw new Error("Invalid connector response.");
   }
-  const encoded = value.connectors;
-  return Object.fromEntries(connectorDefinitions.map(({ id }) => {
-    const candidate = encoded[id];
-    if (!isRecord(candidate) || typeof candidate.connected !== "boolean") {
-      return [id, { connected: false, unavailable: "Status unavailable." }];
-    }
-    return [id, {
-      connected: candidate.connected,
-      ...(typeof candidate.account_id === "string" ? { accountId: candidate.account_id } : {}),
-      ...(typeof candidate.label === "string" ? { label: candidate.label } : {}),
-    }];
-  })) as Record<ConnectorId, ConnectorStatus>;
+  const decoded = connectorStatusesFromWire(value.connectors);
+  return Object.fromEntries(accountConnectorCapabilities.map((capability) => [
+    capability,
+    decoded[capability] ?? {
+      connected: false,
+      connections: [],
+    },
+  ])) as unknown as AccountConnectorStatuses;
 }
 
-function unavailableConnectorStatuses(message: string): Record<ConnectorId, ConnectorStatus> {
-  return Object.fromEntries(connectorDefinitions.map(({ id }) => [id, {
+function unavailableConnectorStatuses(message: string): AccountConnectorStatuses {
+  return Object.fromEntries(accountConnectorCapabilities.map((capability) => [capability, {
     connected: false,
+    connections: [],
     unavailable: message,
-  }])) as Record<ConnectorId, ConnectorStatus>;
+  }])) as unknown as AccountConnectorStatuses;
 }
 
 function decodeMcpConnections(value: unknown): readonly McpConnection[] {
@@ -784,21 +820,21 @@ function connectorReturnTo(): string {
   return `${url.pathname}${url.search}`;
 }
 
-function readConnectorResult(): { id: ConnectorId; result: "connected" | "cancelled" | "failed" } | null {
+function readConnectorResult(): { id: AccountConnectorProvider; result: "connected" | "cancelled" | "failed" } | null {
   const url = new URL(window.location.href);
   const id = url.searchParams.get("connector");
   const result = url.searchParams.get("connector_result");
-  if (!connectorDefinitions.some((candidate) => candidate.id === id)
+  if (!connectorDefinitions.some((candidate) => candidate.provider === id)
     || (result !== "connected" && result !== "cancelled" && result !== "failed")) return null;
   if (window.opener && window.opener !== window) {
-    window.opener.postMessage(connectorCompletion(id as ConnectorId, result), window.location.origin);
+    window.opener.postMessage(connectorCompletion(id as AccountConnectorProvider, result), window.location.origin);
     window.close();
     return null;
   }
   url.searchParams.delete("connector");
   url.searchParams.delete("connector_result");
   window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-  return { id: id as ConnectorId, result };
+  return { id: id as AccountConnectorProvider, result };
 }
 
 function readMcpResult(): { id: string; result: "connected" | "cancelled" | "failed" } | null {
@@ -829,8 +865,65 @@ function connectorResultMessage(result: NonNullable<ReturnType<typeof readConnec
   return `${label} couldn’t be connected. Try again.`;
 }
 
-function connectorLabel(id: ConnectorId): string {
-  return connectorDefinitions.find((candidate) => candidate.id === id)!.label;
+function connectorLabel(id: AccountConnectorProvider): string {
+  return connectorDefinitions.find((candidate) => candidate.provider === id)!.label;
+}
+
+type ConnectorDefinition = typeof connectorDefinitions[number];
+
+function connectorProviderView(
+  statuses: AccountConnectorStatuses,
+  definition: ConnectorDefinition,
+): Readonly<{
+  connected: boolean;
+  connections: readonly ConnectorConnection[];
+  detail: string;
+  legacy: boolean;
+  unavailable?: string | undefined;
+}> {
+  const capabilityStatuses = definition.capabilities.map((capability) => statuses[capability]);
+  const unavailable = capabilityStatuses.find((status) => status.unavailable)?.unavailable;
+  if (unavailable) {
+    return { connected: false, connections: [], detail: unavailable, legacy: false, unavailable };
+  }
+  const connections = connectorConnectionsForCapabilities(statuses, definition.capabilities);
+  const connectedCapabilities = definition.capabilities.filter((capability) => statuses[capability].connected);
+  const connected = connectedCapabilities.length > 0;
+  const legacy = connected && connections.length === 0;
+  const legacyLabel = capabilityStatuses.find((status) => status.label || status.account_id);
+  const detail = legacy
+    ? legacyLabel?.label ?? legacyLabel?.account_id ?? "Connected"
+    : connections.length === 0
+      ? definition.description
+      : definition.provider === "google"
+        ? `${connections.length} account${connections.length === 1 ? "" : "s"} · ${connectedCapabilities.map(connectorCapabilityLabel).join(", ")}`
+        : definition.provider === "slack"
+          ? `${connections.length} workspace identit${connections.length === 1 ? "y" : "ies"} connected`
+          : `${connections.length} account${connections.length === 1 ? "" : "s"} connected`;
+  return { connected, connections, detail, legacy };
+}
+
+function providerConnectAction(
+  provider: AccountConnectorProvider,
+  view: ReturnType<typeof connectorProviderView>,
+): string {
+  if (view.legacy) return "Disconnect";
+  if (view.connections.length === 0) return "Connect";
+  return provider === "slack" ? "Add workspace" : "Add account";
+}
+
+function connectorConnectionDetail(
+  provider: AccountConnectorProvider,
+  connection: ConnectorConnection,
+): string {
+  if (provider === "google") {
+    const capabilities = googleConnectorCapabilities
+      .filter((capability) => connection.capabilities.includes(capability))
+      .map(connectorCapabilityLabel);
+    return capabilities.length ? `Access: ${capabilities.join(", ")}` : "Google Workspace identity";
+  }
+  if (provider === "slack") return "Slack workspace and user identity";
+  return `${connectorLabel(provider)} identity`;
 }
 
 function failureMessage(cause: unknown, fallback: string): string {

@@ -19,6 +19,18 @@ import {
 import { ConnectionLogo } from "./ConnectionLogo.js";
 import { connectorCompletionFor } from "./connectorCompletion.js";
 import {
+  connectorCapabilityLabel,
+  connectorControlsForCapabilities,
+  connectorProviderFor,
+  connectorStatusesFromWire,
+  googleConnectorCapabilities,
+  type ConnectorCapability,
+  type ConnectorControl as ConnectorControlProjection,
+  type ConnectorConnection,
+  type ConnectorProvider,
+  type ConnectorStatuses,
+} from "./connectorPolicy.mjs";
+import {
   BrowserAccountReauthenticationRequiredError,
   logoutBrowserAccountSession,
   readBrowserAccountSession,
@@ -68,7 +80,13 @@ export async function logoutAccount() {
   }
 }
 
-const connectorIds = ["github", "gmail", "gdrive", "x", "chatgpt"] as const;
+const connectorIds = [
+  "github",
+  ...googleConnectorCapabilities,
+  "slack",
+  "x",
+  "chatgpt",
+] as const satisfies readonly ConnectorCapability[];
 const connectDialogRoutingHeaders = { "x-nanocodex-connect-client": "onboarding" } as const;
 const connectDeviceRoutingHeaders = { "x-nanocodex-connect-client": "device" } as const;
 const connectorResourcePrefix = "urn:nanocodex:connector:";
@@ -79,12 +97,6 @@ const hostedAuthorizationResource = "urn:nanocodex:authorization:hosted";
 const productionNanocodexOrigin = "https://nanocodex.gakonst.workers.dev";
 const mcpCallbackContinuationPrefix = "nanocodex:mcp-callback:";
 type ConnectorId = typeof connectorIds[number];
-type ConnectorStatus = Readonly<{
-  connected: boolean;
-  account_id?: string | undefined;
-  label?: string | undefined;
-}>;
-type ConnectorStatuses = Partial<Record<ConnectorId, ConnectorStatus>>;
 type PendingApproval = Readonly<{
   accountAddress: `0x${string}`;
   apiUrl: string;
@@ -97,7 +109,8 @@ type PendingApproval = Readonly<{
 }>;
 type ConnectorAttempt = {
   abort: AbortController;
-  connector: ConnectorId;
+  provider: ConnectorProvider;
+  capabilities: readonly ConnectorId[];
   expiryTimer?: number | undefined;
   popup?: Window | undefined;
   popupCheck?: number | undefined;
@@ -138,7 +151,7 @@ export function ConnectOnboarding({
   const [wizardAccount, setWizardAccount] = useState<WizardAccountSelection>();
   const [pendingApproval, setPendingApproval] = useState<PendingApproval>();
   const [connectorStatuses, setConnectorStatuses] = useState<ConnectorStatuses>();
-  const [connectorAction, setConnectorAction] = useState<ConnectorId>();
+  const [connectorAction, setConnectorAction] = useState<ConnectorProvider>();
   const [mcpConnections, setMcpConnections] = useState<readonly McpConnection[]>();
   const [mcpConnectionAction, setMcpConnectionAction] = useState<string>();
   const [completedRequestId, setCompletedRequestId] = useState<string>();
@@ -284,9 +297,9 @@ export function ConnectOnboarding({
     if (!pendingApproval) return;
     const onMessage = (event: MessageEvent<unknown>) => {
       const attempt = activeConnector.current;
-      if (!attempt || attempt.connector === "chatgpt") return;
+      if (!attempt || attempt.provider === "chatgpt") return;
       const completion = connectorCompletionFor(event, {
-        connector: attempt.connector,
+        connector: attempt.provider,
         origin: pendingApproval.apiUrl,
         source: attempt.popup,
       });
@@ -304,7 +317,7 @@ export function ConnectOnboarding({
       void (async () => {
         try {
           const state = await refreshConnectors(pendingApproval);
-          if (!state.connectors[attempt.connector]?.connected) {
+          if (!attempt.capabilities.some((capability) => state.connectors[capability]?.connected)) {
             throw new Error("The account provider completed without connecting the requested account.");
           }
         } catch (error) {
@@ -562,19 +575,20 @@ export function ConnectOnboarding({
           token,
         };
         if (auth?.connectors && auth.profile?.linked === true) {
+          const authenticatedConnectors = decodeConnectorStatuses(auth.connectors);
           const authenticatedMcpConnections = requestedMcpConnections(
             next.requestedMcpConnections,
             auth.mcp_connections,
           );
-          setConnectorStatuses(auth.connectors);
+          setConnectorStatuses(authenticatedConnectors);
           setMcpConnections(authenticatedMcpConnections);
-          if (wizard && approvalReady(next, auth.connectors, authenticatedMcpConnections)) {
+          if (wizard && approvalReady(next, authenticatedConnectors, authenticatedMcpConnections)) {
             await completeRequest(next.result, next.requestId);
             return;
           }
           setPendingApproval(next);
           if (focusedConnector) {
-            void connectDeviceConnector(next, auth.connectors, focusedConnector);
+            void connectDeviceConnector(next, authenticatedConnectors, focusedConnector);
           } else if (focusedMcp) {
             void connectMcpConnection(next, authenticatedMcpConnections, focusedMcp, true);
           }
@@ -623,9 +637,10 @@ export function ConnectOnboarding({
     if (currentRequestId.current !== approval.requestId) {
       throw new DOMException("The Connect request changed.", "AbortError");
     }
-    setConnectorStatuses(body.connectors);
-    if (body.connectors.chatgpt?.connected) setDeviceCode(undefined);
-    return { connectors: body.connectors };
+    const connectors = decodeConnectorStatuses(body.connectors);
+    setConnectorStatuses(connectors);
+    if (connectors.chatgpt?.connected) setDeviceCode(undefined);
+    return { connectors };
   }
 
   async function authorizeNanocodexAccount(approval: PendingApproval): Promise<Readonly<{
@@ -678,14 +693,15 @@ export function ConnectOnboarding({
     if (currentRequestId.current !== approval.requestId) {
       throw new DOMException("The Connect request changed.", "AbortError");
     }
-    setConnectorStatuses(completed.connectors);
+    const connectors = decodeConnectorStatuses(completed.connectors);
+    setConnectorStatuses(connectors);
     const completedMcpConnections = requestedMcpConnections(
       approval.requestedMcpConnections,
       completed.mcp_connections,
     );
     setMcpConnections(completedMcpConnections);
-    if (completed.connectors.chatgpt?.connected) setDeviceCode(undefined);
-    return { connectors: completed.connectors, mcpConnections: completedMcpConnections };
+    if (connectors.chatgpt?.connected) setDeviceCode(undefined);
+    return { connectors, mcpConnections: completedMcpConnections };
   }
 
   async function authorizeHostedRegistration(
@@ -747,7 +763,7 @@ export function ConnectOnboarding({
     }
     return {
       approvalId: exchanged.approval_id,
-      connectors: exchanged.connectors,
+      connectors: decodeConnectorStatuses(exchanged.connectors),
       mcpConnections: requestedMcpConnections(
         walletView(activeRequest).mcpConnections,
         exchanged.mcp_connections,
@@ -761,13 +777,15 @@ export function ConnectOnboarding({
     statuses: ConnectorStatuses,
     id: ConnectorId,
   ) {
+    const provider = requiredConnectorProvider(id);
+    const capabilities = connectorCapabilitiesForProvider(approval.requestedConnectors, provider);
     if (activeConnector.current
-      || statuses[id]?.connected
+      || capabilities.every((capability) => statuses[capability]?.connected)
       || (id === "chatgpt" && approval.deferredChatGptImport)) return;
     setFailure(undefined);
-    setConnectorAction(id);
+    setConnectorAction(provider);
     try {
-      const response = await fetch(`${approval.apiUrl}/v1/connectors/${id}`, {
+      const response = await fetch(`${approval.apiUrl}/v1/connectors/${provider}`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${approval.token}`,
@@ -777,7 +795,7 @@ export function ConnectOnboarding({
         body: JSON.stringify({ return_to: deviceReturnPath() }),
       });
       const body = await response.json() as Record<string, any>;
-      if (!response.ok) throw new Error(apiError(body, `Unable to connect ${id}.`));
+      if (!response.ok) throw new Error(apiError(body, `Unable to connect ${connectorProviderLabel(provider)}.`));
       if (id === "chatgpt") {
         const disposition = chatGptConnectorDisposition(body);
         if (disposition !== "connected") {
@@ -789,6 +807,7 @@ export function ConnectOnboarding({
           ...statuses,
           chatgpt: {
             connected: true,
+            connections: [],
             ...(typeof body.account_id === "string" ? { account_id: body.account_id } : {}),
           },
         });
@@ -876,12 +895,14 @@ export function ConnectOnboarding({
   }
 
   async function connectConnector(id: ConnectorId) {
+    const provider = requiredConnectorProvider(id);
+    const capabilities = connectorCapabilitiesForProvider(pendingApproval?.requestedConnectors ?? [id], provider);
     if (
       !pendingApproval
       || ceremonyActive
       || connectorAction
       || !connectorStatuses
-      || connectorStatuses[id]?.connected
+      || capabilities.every((capability) => connectorStatuses[capability]?.connected)
       || (id === "chatgpt" && pendingApproval.deferredChatGptImport)
     ) return;
     if (wizard) {
@@ -912,17 +933,20 @@ export function ConnectOnboarding({
     id: ConnectorId,
     popup: Window | undefined,
   ) {
+    const provider = requiredConnectorProvider(id);
+    const capabilities = connectorCapabilitiesForProvider(approval.requestedConnectors, provider);
     if (
       activeConnector.current
-      || statuses[id]?.connected
+      || capabilities.every((capability) => statuses[capability]?.connected)
       || (id === "chatgpt" && approval.deferredChatGptImport)
       || (id !== "chatgpt" && (!popup || popup.closed))
     ) {
       popup?.close();
-      if (!statuses[id]?.connected && currentRequestId.current === approval.requestId) {
+      if (!capabilities.every((capability) => statuses[capability]?.connected)
+        && currentRequestId.current === approval.requestId) {
         setFailure({
           id: approval.requestId,
-          message: `The ${connectorDefinition(id).name} window closed before the connection started. Try again.`,
+          message: `The ${connectorProviderLabel(provider)} window closed before the connection started. Try again.`,
         });
       }
       return;
@@ -930,28 +954,29 @@ export function ConnectOnboarding({
     setFailure(undefined);
     const attempt: ConnectorAttempt = {
       abort: new AbortController(),
-      connector: id,
+      provider,
+      capabilities,
       popup,
       requestId: approval.requestId,
       token: crypto.randomUUID(),
     };
     activeConnector.current = attempt;
-    setConnectorAction(id);
+    setConnectorAction(provider);
     if (id !== "chatgpt") monitorPopup(attempt);
     try {
-      const response = await fetch(`${approval.apiUrl}/v1/connectors/${id}`, {
+      const response = await fetch(`${approval.apiUrl}/v1/connectors/${provider}`, {
         method: "POST",
-      headers: {
-        authorization: `Bearer ${approval.token}`,
-        "content-type": "application/json",
-        ...connectRoutingHeaders,
+        headers: {
+          authorization: `Bearer ${approval.token}`,
+          "content-type": "application/json",
+          ...connectRoutingHeaders,
         },
         body: JSON.stringify(wizard ? { return_to: deviceReturnPath() } : {}),
         signal: attempt.abort.signal,
       });
       const body = await response.json() as Record<string, unknown>;
       if (!isActiveConnector(activeConnector.current, attempt, currentRequestId.current)) return;
-      if (!response.ok) throw new Error(apiError(body, `Unable to connect ${id}.`));
+      if (!response.ok) throw new Error(apiError(body, `Unable to connect ${connectorProviderLabel(provider)}.`));
       if (id === "chatgpt") {
         const url = requiredUrl(body.verification_url);
         const code = requiredText(body.user_code, "ChatGPT device code");
@@ -1231,7 +1256,7 @@ function ConnectionApproval({
   storedPasskeys,
 }: Readonly<{
   accountAddress?: `0x${string}` | undefined;
-  connectorAction?: ConnectorId | undefined;
+  connectorAction?: ConnectorProvider | undefined;
   connectorStatuses?: ConnectorStatuses | undefined;
   completed: boolean;
   confirmationCode?: string | undefined;
@@ -1297,7 +1322,7 @@ function ConnectionWizard({
 }: Readonly<{
   accountAddress?: `0x${string}` | undefined;
   appVisibility: ReturnType<typeof appVisibilityPermissions>;
-  connectorAction?: ConnectorId | undefined;
+  connectorAction?: ConnectorProvider | undefined;
   connectorStatuses?: ConnectorStatuses | undefined;
   completed: boolean;
   confirmationCode?: string | undefined;
@@ -1316,6 +1341,11 @@ function ConnectionWizard({
   storedPasskeys: readonly StoredPasskey[];
 }>) {
   const focused = request.focusConnector ? connectorDefinition(request.focusConnector) : undefined;
+  const focusedProvider = focused ? requiredConnectorProvider(focused.id) : undefined;
+  const focusedControl = focusedProvider
+    ? connectorControls(request.permission.connectors, connectorStatuses)
+      .find((control) => control.provider === focusedProvider)
+    : undefined;
   const focusedMcp = request.focusMcpConnection
     ? request.mcpConnections.find(({ id }) => id === request.focusMcpConnection)
     : undefined;
@@ -1355,10 +1385,10 @@ function ConnectionWizard({
             : ""}{focused
                 ? focused.id === "chatgpt" && deferredChatGptImport
                   ? <DeferredChatGptImportStatus approved={false} />
-                  : connectorStatuses?.[focused.id]?.connected
-                  ? `${focused.name} is connected. You can return to ${requester}.`
-                  : connectorAction === focused.id
-                  ? `Continue in ${focused.name}. You’ll return here when it is connected.`
+                  : focusedControl?.connected
+                  ? `${connectorProviderLabel(focusedControl.provider)} is connected. You can return to ${requester}.`
+                  : connectorAction === focusedProvider
+                  ? `Continue in ${connectorProviderLabel(requiredConnectorProvider(focused.id))}. You’ll return here when the requested access is connected.`
                   : "Continue with your passkey."
                 : focusedMcp
                   ? mcpConnections?.find(({ id }) => id === focusedMcp.id)?.status === "connected"
@@ -1374,12 +1404,12 @@ function ConnectionWizard({
           <a href="/connect">Connect more accounts</a>
         </div>
       ) : undefined}
-      title={focused ? `Connect ${focused.name}` : focusedMcp ? `Connect ${focusedMcp.name}` : `Authorize ${requester}`}
+      title={focused ? `Connect ${connectorProviderLabel(requiredConnectorProvider(focused.id))}` : focusedMcp ? `Connect ${focusedMcp.name}` : `Authorize ${requester}`}
     >
         {request.permission.connectors.length ? <AccountConnectionSection
           eyebrow="Service"
           meta={focused ? `Requested by ${requester}` : `${request.permission.connectors.length} requested by ${requester}`}
-          title={focused ? focused.name : "Connections"}
+          title={focusedProvider ? connectorProviderLabel(focusedProvider) : "Connections"}
           titleId="wizard-services-heading"
         >
           <WizardConnectorList connectorAction={connectorAction} connectorStatuses={connectorStatuses} disabled={disabled} onConnectConnector={onConnectConnector} request={request} />
@@ -1468,40 +1498,43 @@ function RequestedConnectionContext({ appVisibility, request, requester }: Reado
 }
 
 function WizardConnectorList({ connectorAction, connectorStatuses, disabled, onConnectConnector, request }: Readonly<{
-  connectorAction?: ConnectorId | undefined;
+  connectorAction?: ConnectorProvider | undefined;
   connectorStatuses?: ConnectorStatuses | undefined;
   disabled: boolean;
   onConnectConnector(id: ConnectorId): void;
   request: ConnectionView;
 }>) {
-  const connectors = request.focusConnector
-    ? request.permission.connectors.filter((connector) => connector.id === request.focusConnector)
-    : request.permission.connectors;
+  const controls = connectorControls(request.permission.connectors, connectorStatuses).filter((control) => (
+    !request.focusConnector
+    || control.provider === requiredConnectorProvider(request.focusConnector)
+  ));
   return (
     <AccountConnectionGrid>
-      {connectors.map((connector) => {
-        const id = connector.id as ConnectorId;
-        if (id === "chatgpt" && request.connectPolicy.chatGptCredentialImport) {
-          return <DeferredChatGptImportCard key={id} />;
+      {controls.map((control) => {
+        if (control.provider === "chatgpt" && request.connectPolicy.chatGptCredentialImport) {
+          return <DeferredChatGptImportCard key={control.provider} />;
         }
-        const status = connectorStatuses?.[id];
-        const resolved = connectorStatuses !== undefined;
-        const actionDisabled = disabled || connectorAction !== undefined || !resolved || status?.connected === true;
+        const actionDisabled = disabled || connectorAction !== undefined || !control.resolved || control.connected;
         return <AccountConnectionCard
-          action={!resolved
+          action={!control.resolved
             ? "Required"
-            : status?.connected
+            : control.connected
               ? "Connected"
-              : connectorAction === id ? "Connecting…" : "Connect"}
-          connected={status?.connected === true}
-          detail={status?.connected
-            ? status.label ? `Connected as ${status.label}` : "Connected"
-            : connector.detail}
+              : connectorAction === control.provider ? "Connecting…" : "Connect"}
+          connected={control.connected}
+          detail={connectorControlDetail(
+            control,
+            connectorStatuses,
+            control.connections,
+            control.connectedCapabilities,
+            control.missingCapabilities,
+            control.resolved,
+          )}
           disabled={actionDisabled}
-          key={id}
-          logo={<ConnectionLogo id={id} />}
-          onClick={() => onConnectConnector(id)}
-          title={permissionTitle(id, connector.name)}
+          key={control.provider}
+          logo={<ConnectionLogo id={control.provider} />}
+          onClick={() => onConnectConnector(control.missingCapabilities[0] ?? control.capabilities[0]!)}
+          title={control.name}
         />;
       })}
     </AccountConnectionGrid>
@@ -2093,8 +2126,115 @@ function connectorDefinition(id: ConnectorId) {
   if (id === "github") return { id, name: "GitHub", detail: "Repositories and workflows" };
   if (id === "gmail") return { id, name: "Gmail", detail: "Read and send email" };
   if (id === "gdrive") return { id, name: "Google Drive", detail: "Read and create files" };
+  if (id === "gcalendar") return { id, name: "Google Calendar", detail: "Read and manage calendars" };
+  if (id === "gtasks") return { id, name: "Google Tasks", detail: "Read and manage tasks" };
+  if (id === "gdocs") return { id, name: "Google Docs", detail: "Read and edit documents" };
+  if (id === "gsheets") return { id, name: "Google Sheets", detail: "Read and edit spreadsheets" };
+  if (id === "gslides") return { id, name: "Google Slides", detail: "Read and edit presentations" };
+  if (id === "gcontacts") return { id, name: "Google Contacts", detail: "Read and manage contacts" };
+  if (id === "slack") return { id, name: "Slack", detail: "Act as you in connected workspaces" };
   if (id === "x") return { id, name: "X", detail: "Posts, follows, likes, lists, and messages" };
   return { id, name: "ChatGPT", detail: "Model access through your account" };
+}
+
+type ConnectorControl = ConnectorControlProjection & Readonly<{
+  name: string;
+  detail: string;
+}>;
+
+function connectorControls(
+  connectors: ConnectionView["permission"]["connectors"],
+  statuses?: ConnectorStatuses | undefined,
+): readonly ConnectorControl[] {
+  const definitions = new Map<ConnectorProvider, Readonly<{ detail: string; name: string }>>();
+  for (const connector of connectors) {
+    const id = connector.id as ConnectorId;
+    const provider = requiredConnectorProvider(id);
+    const current = definitions.get(provider);
+    const requested = connectors
+      .map((candidate) => candidate.id as ConnectorId)
+      .filter((capability) => requiredConnectorProvider(capability) === provider);
+    definitions.set(provider, {
+      name: connectorProviderLabel(provider),
+      detail: provider === "google"
+        ? `Requested: ${requested.map(connectorCapabilityLabel).join(", ")}`
+        : current?.detail ?? connector.detail,
+    });
+  }
+  return connectorControlsForCapabilities(
+    connectors.map((connector) => connector.id as ConnectorId),
+    statuses,
+  ).map((control) => ({
+    ...control,
+    capabilities: control.capabilities as readonly ConnectorId[],
+    connectedCapabilities: control.connectedCapabilities as readonly ConnectorId[],
+    missingCapabilities: control.missingCapabilities as readonly ConnectorId[],
+    name: definitions.get(control.provider)!.name,
+    detail: definitions.get(control.provider)!.detail,
+  }));
+}
+
+function connectorControlDetail(
+  control: ConnectorControl,
+  statuses: ConnectorStatuses | undefined,
+  connections: readonly ConnectorConnection[],
+  connected: readonly ConnectorId[],
+  missing: readonly ConnectorId[],
+  resolved: boolean,
+): string {
+  if (!resolved) return control.detail;
+  const labels = connections.map(({ label }) => label);
+  if (labels.length === 0 && statuses) {
+    for (const capability of connected) {
+      const status = statuses[capability];
+      const label = status?.label ?? status?.account_id;
+      if (label && !labels.includes(label)) labels.push(label);
+    }
+  }
+  if (control.provider === "google") {
+    const granted = connected.length
+      ? connected.map(connectorCapabilityLabel).join(", ")
+      : "None yet";
+    const remainder = missing.length
+      ? ` Still needed: ${missing.map(connectorCapabilityLabel).join(", ")}.`
+      : "";
+    const identities = labels.length ? ` ${labels.join(" · ")}.` : "";
+    return `Granted: ${granted}.${remainder}${identities}`;
+  }
+  if (connected.length === 0) return control.detail;
+  if (control.provider === "slack") {
+    return labels.length ? `Connected workspace users: ${labels.join(" · ")}` : "Slack workspace user connected";
+  }
+  return labels.length ? `Connected as ${labels.join(" · ")}` : "Connected";
+}
+
+function requiredConnectorProvider(capability: ConnectorId): ConnectorProvider {
+  const provider = connectorProviderFor(capability);
+  if (!provider) throw new Error("The connector capability is invalid.");
+  return provider;
+}
+
+function connectorCapabilitiesForProvider(
+  capabilities: readonly ConnectorId[],
+  provider: ConnectorProvider,
+): readonly ConnectorId[] {
+  return capabilities.filter((capability) => requiredConnectorProvider(capability) === provider);
+}
+
+function connectorProviderLabel(provider: ConnectorProvider): string {
+  if (provider === "google") return "Google Workspace";
+  if (provider === "github") return "GitHub";
+  if (provider === "slack") return "Slack";
+  if (provider === "chatgpt") return "ChatGPT";
+  return "X";
+}
+
+function decodeConnectorStatuses(value: unknown): ConnectorStatuses {
+  try {
+    return connectorStatusesFromWire(value);
+  } catch {
+    throw new Error("The account broker returned invalid connector statuses.");
+  }
 }
 
 function isConnectorId(value: string): value is ConnectorId {

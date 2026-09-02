@@ -319,6 +319,16 @@
   font-weight: 600;
 }
 
+.connector-logo-google {
+  color: #4285f4;
+  font-weight: 700;
+}
+
+.connector-logo-slack {
+  color: #611f69;
+  font-weight: 700;
+}
+
 .connector-logo-mercator svg {
   fill: none;
   stroke: currentColor;

@@ -1,4 +1,19 @@
-export type ConnectionLogoId = "chatgpt" | "openai" | "github" | "gmail" | "gdrive" | "mcp" | "x";
+export type ConnectionLogoId =
+  | "chatgpt"
+  | "openai"
+  | "github"
+  | "google"
+  | "gmail"
+  | "gdrive"
+  | "gcalendar"
+  | "gtasks"
+  | "gdocs"
+  | "gsheets"
+  | "gslides"
+  | "gcontacts"
+  | "mcp"
+  | "slack"
+  | "x";
 
 export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
   if (id === "chatgpt" || id === "openai") {
@@ -18,6 +33,10 @@ export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
         </svg>
       </span>
     );
+  }
+  if (id === "google" || id === "gcalendar" || id === "gtasks" || id === "gdocs"
+    || id === "gsheets" || id === "gslides" || id === "gcontacts") {
+    return <span className="connector-logo connector-logo-google" aria-hidden="true">G</span>;
   }
   if (id === "gmail") {
     return (
@@ -51,6 +70,9 @@ export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
         </svg>
       </span>
     );
+  }
+  if (id === "slack") {
+    return <span className="connector-logo connector-logo-slack" aria-hidden="true">S</span>;
   }
   return <span className="connector-logo connector-logo-x" aria-hidden="true">X</span>;
 }

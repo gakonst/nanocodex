@@ -1,4 +1,4 @@
-const PROVIDERS = new Set(["github", "gmail", "gdrive", "x"]);
+const PROVIDERS = new Set(["github", "google", "gmail", "gdrive", "slack", "x"]);
 const FLOWS = new Set(["connect", "managed"]);
 const BASE64_URL = /^[A-Za-z0-9_-]+$/;
 const INSTANCE_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.nanocodex\.localhost$/;
@@ -9,7 +9,7 @@ const MAX_CLOCK_SKEW_SECONDS = 30;
 const MAX_INNER_STATE_LENGTH = 512;
 const MAX_ENVELOPE_LENGTH = 2_048;
 const CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
-const CONNECTOR_CALLBACK = /^\/v1\/connectors\/(github|gmail|gdrive|x)\/callback$/;
+const CONNECTOR_CALLBACK = /^\/v1\/connectors\/(github|google|gmail|gdrive|slack|x)\/callback$/;
 const MCP_CALLBACK = /^\/v1\/mcp-connections\/([A-Za-z0-9_-]{43})\/callback$/;
 const SAFE_QUERY = ["code", "error", "error_description"];
 

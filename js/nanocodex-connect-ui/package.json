@@ -39,6 +39,10 @@
       "types": "./dist/connectorCompletion.d.ts",
       "import": "./dist/connectorCompletion.js"
     },
+    "./connectorPolicy.mjs": {
+      "types": "./dist/connectorPolicy.d.mts",
+      "import": "./dist/connectorPolicy.mjs"
+    },
     "./connectPolicy.mjs": {
       "types": "./dist/connectPolicy.d.mts",
       "import": "./dist/connectPolicy.mjs"
@@ -60,8 +64,9 @@
   },
   "scripts": {
     "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc -p tsconfig.json && cp src/connectPolicy.mjs src/connectPolicy.d.mts src/machineUsdOrder.mjs src/machineUsdOrder.d.mts dist/",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "build": "npm run clean && tsc -p tsconfig.json && cp src/connectPolicy.mjs src/connectPolicy.d.mts src/connectorPolicy.mjs src/connectorPolicy.d.mts src/machineUsdOrder.mjs src/machineUsdOrder.d.mts dist/",
+    "test": "npm run build && node --test test/*.test.mjs && npm run test:typecheck",
+    "test:typecheck": "tsc -p test/tsconfig.json"
   },
   "dependencies": {
     "accounts": "0.17.0"

@@ -1,6 +1,6 @@
 import type { LocalConnectorFlow } from "nanocodex-vite/oauth-relay";
 
-const CONNECTOR_RETURN = /^\/v1\/connect\/auth\/connector-callback\/(github|gmail|gdrive|x)$/;
+const CONNECTOR_RETURN = /^\/v1\/connect\/auth\/connector-callback\/(github|google|gmail|gdrive|slack|x)$/;
 const MCP_CONNECTION_RETURN = /^\/v1\/connect\/auth\/mcp-connection-callback\/([A-Za-z0-9_-]{43})$/;
 
 export function localConnectorCallbackReturn(url: URL): Readonly<{

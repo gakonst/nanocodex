@@ -16,6 +16,13 @@ import {
   mcpConnectionsFromWire,
 } from "nanocodex-connect-ui/connectPolicy.mjs";
 import type { McpConnection } from "nanocodex-connect-ui/connectTypes";
+import {
+  connectorCapabilityIds,
+  connectorCapabilityLabel,
+  connectorProviderFor,
+  type ConnectorCapability,
+  type ConnectorProvider,
+} from "nanocodex-connect-ui/connectorPolicy.mjs";
 import { ConnectHome } from "./ConnectHome";
 import "nanocodex-connect-ui/styles.css";
 import "./DeviceConnect.css";
@@ -125,7 +132,7 @@ async function loadPendingDeviceRequest(url: URL, signal: AbortSignal): Promise<
   pending: PendingDeviceAuthorization;
   requestedMcpConnections: readonly McpConnection[];
   focusMcpConnection?: string | undefined;
-  returnedConnector?: "github" | "gmail" | "gdrive" | "x" | undefined;
+  returnedConnector?: Exclude<ConnectorProvider, "chatgpt"> | undefined;
   returnedConnectorResult?: "connected" | "cancelled" | "failed" | undefined;
   returnedMcpConnection?: string | undefined;
   returnedMcpResult?: "connected" | "cancelled" | "failed" | undefined;
@@ -147,8 +154,9 @@ async function loadPendingDeviceRequest(url: URL, signal: AbortSignal): Promise<
   const focusConnector = focusedRequestConnector(body.request);
   const returnedConnector = optionalSingleParameter(url, "connector");
   const returnedConnectorResult = optionalSingleParameter(url, "connector_result");
+  const focusedProvider = focusConnector ? connectorProviderFor(focusConnector) : undefined;
   if (returnedConnector !== null
-    && (returnedConnector !== focusConnector || returnedConnector === "chatgpt")) {
+    && (returnedConnector !== focusedProvider || returnedConnector === "chatgpt")) {
     throw new Error("The connector callback is invalid.");
   }
   if ((returnedConnector === null) !== (returnedConnectorResult === null)
@@ -171,7 +179,7 @@ async function loadPendingDeviceRequest(url: URL, signal: AbortSignal): Promise<
     requestedMcpConnections,
     ...(focusMcp ? { focusMcpConnection: focusMcp } : {}),
     ...(returnedConnector ? {
-      returnedConnector: returnedConnector as "github" | "gmail" | "gdrive" | "x",
+      returnedConnector: returnedConnector as Exclude<ConnectorProvider, "chatgpt">,
       returnedConnectorResult: returnedConnectorResult as "connected" | "cancelled" | "failed",
     } : {}),
     ...(returnedMcp ? { returnedMcpConnection: returnedMcp } : {}),
@@ -183,7 +191,7 @@ async function loadPendingDeviceRequest(url: URL, signal: AbortSignal): Promise<
 
 function focusedRequestConnector(
   request: PendingDeviceAuthorization["request"],
-): "chatgpt" | "github" | "gmail" | "gdrive" | "x" | undefined {
+): ConnectorCapability | undefined {
   const params = Array.isArray(request.params) ? request.params[0] : undefined;
   if (!isRecord(params) || !isRecord(params.capabilities) || !isRecord(params.capabilities.auth)) {
     return undefined;
@@ -195,8 +203,8 @@ function focusedRequestConnector(
       ? [resource.slice("urn:nanocodex:connector-focus:".length)]
       : []);
   if (focused.length !== 1
-    || !["chatgpt", "github", "gmail", "gdrive", "x"].includes(focused[0]!)) return undefined;
-  return focused[0] as "chatgpt" | "github" | "gmail" | "gdrive" | "x";
+    || !connectorCapabilityIds.includes(focused[0] as ConnectorCapability)) return undefined;
+  return focused[0] as ConnectorCapability;
 }
 
 function focusedRequestName(
@@ -218,12 +226,7 @@ function focusedRequestName(
       ? [resource.slice("urn:nanocodex:connector-focus:".length)]
       : []);
   if (focused.length !== 1) return undefined;
-  if (focused[0] === "chatgpt") return "ChatGPT";
-  if (focused[0] === "github") return "GitHub";
-  if (focused[0] === "gmail") return "Gmail";
-  if (focused[0] === "gdrive") return "Google Drive";
-  if (focused[0] === "x") return "X";
-  return undefined;
+  return connectorCapabilityLabel(focused[0]);
 }
 
 function isPendingDeviceResponse(value: unknown, userCode: string): value is Readonly<{

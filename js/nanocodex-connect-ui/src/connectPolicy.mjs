@@ -1,3 +1,8 @@
+import {
+  connectorProviderMatchesCapabilities,
+  connectorStatusesFromWire,
+} from "./connectorPolicy.mjs";
+
 export const productionConnectApiOrigin = "https://nanocodex-connect-api.gakonst.workers.dev";
 
 const appResourcePrefix = "urn:nanocodex:app:";
@@ -8,7 +13,10 @@ const agentConversationResourcePrefix = "urn:nanocodex:agent:conversation:";
 const appToolCatalogResource = /^urn:nanocodex:app-tool-catalog:sha256:[0-9a-f]{64}$/;
 const agentConversationId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const chatGptCredentialImportResource = /^urn:nanocodex:credential-import:chatgpt:codex-auth-v1:sha256:[A-Za-z0-9_-]{43}$/;
-const connectorIds = new Set(["chatgpt", "github", "gmail", "gdrive", "x"]);
+const connectorIds = new Set([
+  "chatgpt", "github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets",
+  "gslides", "gcontacts", "slack", "x",
+]);
 const mcpConnectionId = /^[A-Za-z0-9_-]{43}$/;
 const mcpConnectionStatuses = new Set([
   "authorization_required",
@@ -440,7 +448,8 @@ export function restoreMcpCallbackContinuation(value, expected, now = Date.now()
   const expectedMcpConnections = mcpConnectionsFromWire(expected.requestedMcpConnections);
   if (!sameStrings(restored.requestedConnectors, expectedConnectors)
     || !sameMcpConnections(restored.requestedMcpConnections, expectedMcpConnections)
-    || (returnedConnector !== undefined && !expectedConnectors.includes(returnedConnector))
+    || (returnedConnector !== undefined
+      && !connectorProviderMatchesCapabilities(returnedConnector, expectedConnectors))
     || (returnedMcpConnection !== undefined
       && !expectedMcpConnections.some(({ id }) => id === returnedMcpConnection))
     || restored.result.accounts[0]?.address.toLowerCase() !== restored.accountAddress.toLowerCase()) {
@@ -499,22 +508,11 @@ export function deviceMcpReturnPath(value) {
 }
 
 function sanitizeConnectorStatuses(value) {
-  const result = {};
-  for (const [id, status] of Object.entries(value)) {
-    if (!connectorIds.has(id) || !isRecord(status)
-      || Object.keys(status).some((key) => key !== "connected" && key !== "account_id" && key !== "label")
-      || typeof status.connected !== "boolean"
-      || (status.account_id !== undefined && typeof status.account_id !== "string")
-      || (status.label !== undefined && typeof status.label !== "string")) {
-      throw new Error("Nanocodex Connect received invalid connector statuses.");
-    }
-    result[id] = Object.freeze({
-      connected: status.connected,
-      ...(status.account_id === undefined ? {} : { account_id: status.account_id }),
-      ...(status.label === undefined ? {} : { label: status.label }),
-    });
+  try {
+    return connectorStatusesFromWire(value);
+  } catch {
+    throw new Error("Nanocodex Connect received invalid connector statuses.");
   }
-  return Object.freeze(result);
 }
 
 function sameStrings(left, right) {
