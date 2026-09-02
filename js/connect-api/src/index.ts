@@ -16,7 +16,6 @@ import {
   parseCliWalletRequest,
   sanitizeCliWalletResult,
   managedMemoryCapability,
-  requestedConnectorsSatisfied,
 } from "./devicePolicy.mjs";
 import {
   connectAuthOrigin,
@@ -51,6 +50,27 @@ import {
   CHROME_EXTENSION_APP_ID,
   isChromeExtensionGrantResources,
 } from "./appToolPolicy.mjs";
+import {
+  applyConnectorConnectionSelector,
+  ConnectorPolicyFailure,
+  connectorCapabilities,
+  connectorCapabilityForUrl,
+  connectorConnectionSnapshot,
+  connectorProvider,
+  connectorRequestTarget,
+  intersectConnectorConnectionSnapshot,
+  isConnectorCapability,
+  isConnectorConnectionSnapshot,
+  oauthConnectorProviders,
+  publicConnectorStatus,
+} from "./connectorPolicy.mjs";
+import type {
+  ConnectorCapability,
+  ConnectorConnectionSnapshot,
+  ConnectorStatus,
+  OAuthConnectorProvider,
+  RoutableConnectorCapability,
+} from "./connectorPolicy.mjs";
 
 type WorkerWebSocket = WebSocket & { accept(): void };
 declare const WebSocketPair: {
@@ -152,8 +172,8 @@ const MERCATOR_SETTLEMENT = "0xa295C42FBCC026a62304A7701f25B4c91799B0dA";
 const MPP_LIMIT = 10_000_000n;
 const MPP_PERIOD = 86_400;
 const MPP_MAX_PER_REQUEST = 250_000n;
-const CONNECTOR_IDS = ["github", "gmail", "gdrive", "x", "chatgpt"] as const;
-const OAUTH_CONNECTOR_IDS = ["github", "gmail", "gdrive", "x"] as const;
+const CONNECTOR_IDS = connectorCapabilities;
+const OAUTH_CONNECTOR_IDS = oauthConnectorProviders;
 const BASE_APPROVAL_RESOURCES = [
   "urn:nanocodex:agent:run",
   "urn:nanocodex:capability:mercator:boost",
@@ -215,6 +235,7 @@ const CONNECTOR_REQUEST_HEADERS = new Set([
   "if-modified-since",
   "if-none-match",
   "if-unmodified-since",
+  "x-nanocodex-connector-connection",
 ]);
 const CONNECTOR_RESPONSE_HEADERS = new Set([
   "accept-ranges",
@@ -244,18 +265,11 @@ const PRIVATE_HOST_SUFFIXES = [
 ];
 const PUBLIC_REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
-type ConnectorId = typeof CONNECTOR_IDS[number];
-type OAuthConnectorId = typeof OAUTH_CONNECTOR_IDS[number];
-type ConnectorStatus = Readonly<{
-  connected: boolean;
-  label?: string;
-  account_id?: string;
-}>;
 type ConnectorState = Readonly<{
   accountAddress: `0x${string}`;
   brokerUserId: string;
   dialogOrigin: string;
-  provider: OAuthConnectorId;
+  provider: OAuthConnectorProvider;
   returnTo?: string;
 }>;
 type McpConnectionStatus = "authorization_required" | "connected" | "reauthorization_required" | "disabled" | "revoked";
@@ -297,7 +311,8 @@ type ConnectApproval = Readonly<{
   appId: string;
   appOrigin: string;
   brokerUserId?: string;
-  connectedConnectors?: readonly ConnectorId[];
+  connectedConnectors?: readonly ConnectorCapability[];
+  connectorConnections?: ConnectorConnectionSnapshot;
   mcpConnections?: readonly McpConnection[];
   durableAgentId?: string;
   keyAuthorization?: `0x${string}`;
@@ -316,7 +331,7 @@ type WorkerContext = Readonly<{
 type ConnectLogContext = Readonly<{
   deployment_sha?: string;
   authenticated?: boolean;
-  connector?: ConnectorId;
+  connector?: ConnectorCapability | OAuthConnectorProvider;
 }>;
 
 type Env = Readonly<{
@@ -342,6 +357,7 @@ type GrantRecord = Readonly<{
   conversationId?: string;
   appToolCatalogDigest?: `0x${string}`;
   mcpConnections?: readonly Readonly<{ id: string; name: string }>[];
+  connectorConnections?: ConnectorConnectionSnapshot;
   accessKey?: Record<string, unknown>;
   balanceAtomics?: string;
   spentAtomics: string;
@@ -558,16 +574,22 @@ export default {
         return cors(proxy(upstream), request);
       }
 
-      const connectorCallback = url.pathname.match(/^\/v1\/connectors\/(github|gmail|gdrive|x)\/callback$/);
+      const connectorCallback = url.pathname.match(
+        /^\/v1\/connectors\/(github|google|gmail|gdrive|gcalendar|gtasks|gdocs|gsheets|gslides|gcontacts|slack|x)\/callback$/,
+      );
       if (connectorCallback) {
         if (request.method !== "GET") {
           return error(request, 405, "method_not_allowed", "Connector callbacks require GET.");
         }
+        const provider = connectorCallback[1] === "google"
+          ? "google"
+          : connectorProvider(connectorCallback[1]);
+        if (!provider) return error(request, 404, "not_found", "Connector callback not found.");
         return cors(await completeConnectorCallback(
           env,
           store,
           url,
-          connectorCallback[1] as OAuthConnectorId,
+          provider,
         ), request);
       }
 
@@ -679,17 +701,26 @@ export default {
         return error(request, 405, "method_not_allowed", "Unsupported MCP connection operation.");
       }
 
-      const connectorRoute = url.pathname.match(/^\/v1\/connectors\/(github|gmail|gdrive|x|chatgpt)$/);
+      const connectorRoute = url.pathname.match(
+        /^\/v1\/connectors\/(github|google|gmail|gdrive|gcalendar|gtasks|gdocs|gsheets|gslides|gcontacts|slack|x|chatgpt)(?:\/connections\/([A-Za-z0-9_-]{43})|\/([A-Za-z0-9_-]{43}))?$/,
+      );
       if (connectorRoute) {
-        const connector = connectorRoute[1] as ConnectorId;
+        const connector = connectorRoute[1]!;
+        const connectionId = connectorRoute[2] ?? connectorRoute[3];
+        const provider = connector === "chatgpt"
+          ? undefined
+          : connector === "google" ? "google" : connectorProvider(connector);
         const identity = await brokerIdentity(env, accountAddress);
         logContext = {
           ...logContext,
           authenticated: true,
-          connector,
+          connector: connector as ConnectorCapability | OAuthConnectorProvider,
         };
         if (request.method === "POST") {
-          const response = await startConnector(env, store, request, accountAddress, identity.userId, connector);
+          if (connectionId) return error(request, 405, "method_not_allowed", "Unsupported connector operation.");
+          const response = connector === "chatgpt"
+            ? await startChatGptConnector(env, identity.userId)
+            : await startConnector(env, store, request, accountAddress, identity.userId, provider!);
           console.info({
             type: "connect.connector.start",
             outcome: "success",
@@ -699,7 +730,12 @@ export default {
           return cors(response, request);
         }
         if (request.method === "DELETE") {
-          await disconnectConnector(env, identity.userId, connector);
+          if (connector === "chatgpt") {
+            if (connectionId) return error(request, 404, "not_found", "Connector connection not found.");
+            await disconnectConnector(env, identity.userId, "chatgpt");
+          } else {
+            await disconnectConnector(env, identity.userId, provider!, connectionId);
+          }
           console.info({
             type: "connect.connector.disconnect",
             outcome: "success",
@@ -708,7 +744,7 @@ export default {
           });
           return cors(new Response(null, { status: 204 }), request);
         }
-        if (request.method === "GET" && connector === "chatgpt") {
+        if (request.method === "GET" && connector === "chatgpt" && !connectionId) {
           return cors(await pollChatGpt(env, identity.userId), request);
         }
         return error(request, 405, "method_not_allowed", "Unsupported connector operation.");
@@ -839,6 +875,14 @@ class ApiFailure extends Error {
   ) {
     super(message);
   }
+}
+
+function connectorPolicyApiFailure(cause: unknown): ApiFailure {
+  if (cause instanceof ConnectorPolicyFailure) {
+    return new ApiFailure(cause.status, cause.code, cause.message);
+  }
+  if (cause instanceof ApiFailure) return cause;
+  throw cause;
 }
 
 function failureStatus(cause: unknown): string {
@@ -1010,7 +1054,8 @@ async function createHostedAuthorization(
   const approvalId = randomSubject();
   const token = randomSubject();
   const expiresAt = Math.floor(Date.now() / 1000) + CONNECT_APPROVAL_TTL;
-  const connectedConnectors = CONNECTOR_IDS.filter((connector) => status.connectors[connector].connected);
+  const connectedConnectors = connectors.filter((connector) => status.connectors[connector].connected);
+  const connectorConnections = connectorConnectionSnapshot(status.connectors, connectors);
   if (!store.create) {
     throw new ApiFailure(503, "hosted_authorization_unavailable", "Atomic hosted authorization is unavailable.");
   }
@@ -1021,6 +1066,7 @@ async function createHostedAuthorization(
     authorization: "hosted",
     brokerUserId: identity.user_id,
     connectedConnectors,
+    connectorConnections,
     mcpConnections,
     profileLinked: true,
     resources,
@@ -1310,7 +1356,16 @@ async function createConnection(
   // connector and MCP immediately after broker success, then consume the
   // approval before creating any grant state.
   const liveConnectorStatuses = (await connectorStatuses(env, identity.userId)).connectors;
-  const connectors = requested.filter((connector) => liveConnectorStatuses[connector].connected);
+  const connectorConnections = intersectConnectorConnectionSnapshot(
+    approval.connectorConnections,
+    liveConnectorStatuses,
+    requested,
+  );
+  const connectors = requested.filter((connector) => {
+    if (!liveConnectorStatuses[connector].connected) return false;
+    if (connector === "chatgpt" || connectorConnections === undefined) return true;
+    return (connectorConnections[connector]?.length ?? 0) > 0;
+  });
   requireRequestedConnectors(connectors, requested);
   if (credentialImport
     && liveConnectorStatuses.chatgpt.account_id !== credentialImport.account_id) {
@@ -1340,6 +1395,7 @@ async function createConnection(
     brokerUserId: identity.userId,
     capabilities: grantCapabilities,
     connectors,
+    ...(connectorConnections === undefined ? {} : { connectorConnections }),
     grantId,
     mcpIds: mcpConnections.map(({ id }) => id),
     ...(approvedAppToolCatalogDigest ? { appToolCatalogDigest: approvedAppToolCatalogDigest } : {}),
@@ -1370,6 +1426,7 @@ async function createConnection(
     status: "active",
     expiresAt,
     capabilities: grantCapabilities,
+    ...(connectorConnections === undefined ? {} : { connectorConnections }),
     ...(conversationId ? { conversationId } : {}),
     ...(approvedAppToolCatalogDigest ? { appToolCatalogDigest: approvedAppToolCatalogDigest } : {}),
     mcpConnections: mcpConnections.map(({ id, name }) => ({ id, name })),
@@ -1476,7 +1533,7 @@ async function approvedChatGptCredentialImport(
   value: unknown,
   approval: ConnectApproval,
   app: CallerApp,
-  requested: readonly ConnectorId[],
+  requested: readonly ConnectorCapability[],
 ): Promise<ChatGptCredentialImport | undefined> {
   let approvedDigest: string | undefined;
   try {
@@ -1964,6 +2021,9 @@ function managedGrantAssertion(grant: GrantRecord): ManagedGrantAssertion {
     brokerUserId: grant.brokerUserId,
     capabilities: grant.capabilities,
     connectors: CONNECTOR_IDS.filter((connector) => grant.capabilities.includes(connector)),
+    ...(grant.connectorConnections === undefined
+      ? {}
+      : { connectorConnections: grant.connectorConnections }),
     grantId: grant.id,
     mcpIds: (grant.mcpConnections ?? []).map(({ id }) => id),
     ...(grant.appToolCatalogDigest === undefined
@@ -2336,7 +2396,7 @@ async function connectAccountInfo(env: Env, store: Kv.Kv, current: GrantRecord) 
     accountAuthorizations(store, current),
   ]);
   return {
-    ...connectorInfo,
+    ...projectGrantConnectorStatuses(connectorInfo, current),
     identity: { tempoAddress: current.accountAddress },
     stablecoins: [
       { token: MACHINE_USD, symbol: "MACH", balance: machineUsd.toString(), decimals: 6 },
@@ -2344,6 +2404,31 @@ async function connectAccountInfo(env: Env, store: Kv.Kv, current: GrantRecord) 
     ],
     authorizations,
   };
+}
+
+function projectGrantConnectorStatuses(
+  info: { connectors: Record<ConnectorCapability, ConnectorStatus> },
+  grant: GrantRecord,
+): { connectors: Record<ConnectorCapability, ConnectorStatus> } {
+  const connectors = Object.fromEntries(CONNECTOR_IDS.map((capability) => {
+    if (!grant.capabilities.includes(capability)) {
+      return [capability, { connected: false, connections: [] }];
+    }
+    const status = info.connectors[capability];
+    if (capability === "chatgpt" || grant.connectorConnections === undefined) {
+      return [capability, status];
+    }
+    const granted = new Set(grant.connectorConnections[capability] ?? []);
+    const connections = status.connections.filter(({ id }) => granted.has(id));
+    const sole = connections.length === 1 ? connections[0] : undefined;
+    return [capability, {
+      connected: connections.length > 0,
+      connections,
+      ...(sole ? { label: sole.label } : {}),
+      ...(sole?.account_id ? { account_id: sole.account_id } : {}),
+    }];
+  })) as Record<ConnectorCapability, ConnectorStatus>;
+  return { connectors };
 }
 
 async function accountAuthorizations(store: Kv.Kv, current: GrantRecord) {
@@ -2384,6 +2469,9 @@ function grantAuthorization(grant: GrantRecord) {
     expiresAt: grant.expiresAt,
     capabilities: [...grant.capabilities],
     connectors: CONNECTOR_IDS.filter((connector) => grant.capabilities.includes(connector)),
+    ...(grant.connectorConnections === undefined
+      ? {}
+      : { connectorConnections: grant.connectorConnections }),
     ...(accessKey ? { accessKey: {
       id: address(accessKey.key_id),
       expiry: safeInteger(accessKey.expiry, "access_key.expiry"),
@@ -2470,18 +2558,15 @@ async function grantBrowserEgress(request: Request, env: Env, grant: GrantRecord
       method: value.method,
       headers: value.headers,
       body: value.body,
+      connection_id: value.connection_id,
     });
     return new Response(result.body, { status: result.status, headers: result.headers });
   }
   return publicBrowserEgress(target, value, request.signal);
 }
 
-function connectorForUrl(url: URL): OAuthConnectorId | undefined {
-  if (url.origin === "https://api.github.com") return "github";
-  if (url.origin === "https://gmail.googleapis.com") return "gmail";
-  if (url.origin === "https://www.googleapis.com") return "gdrive";
-  if (url.origin === "https://api.x.com") return "x";
-  return undefined;
+function connectorForUrl(url: URL): RoutableConnectorCapability | undefined {
+  return connectorCapabilityForUrl(url);
 }
 
 async function publicBrowserEgress(
@@ -3289,6 +3374,8 @@ function isGrantRecord(value: unknown): value is GrantRecord {
     && Number.isSafeInteger(value.expiresAt)
     && Array.isArray(value.capabilities)
     && value.capabilities.every((capability) => typeof capability === "string")
+    && (value.connectorConnections === undefined
+      || isConnectorConnectionSnapshot(value.connectorConnections))
     && (value.appToolCatalogDigest === undefined
       || /^0x[0-9a-f]{64}$/.test(String(value.appToolCatalogDigest)))
     && (value.mcpConnections === undefined
@@ -3394,22 +3481,17 @@ async function chargeGrant(
 async function connectorStatuses(
   env: Env,
   brokerUserId: string,
-): Promise<{ connectors: Record<ConnectorId, ConnectorStatus> }> {
+): Promise<{ connectors: Record<ConnectorCapability, ConnectorStatus> }> {
   const [connectorValue, credentialValue] = await Promise.all([
     brokerJson(env, `/users/${encodeURIComponent(brokerUserId)}/connectors`),
     brokerJson(env, `/users/${encodeURIComponent(brokerUserId)}/credentials`),
   ]);
   const statuses = isRecord(connectorValue.connectors) ? connectorValue.connectors : {};
   const chatGpt = isRecord(credentialValue.chatgpt) ? credentialValue.chatgpt : {};
-  return {
-    connectors: {
-      github: connectorStatus(statuses.github),
-      gmail: connectorStatus(statuses.gmail),
-      gdrive: connectorStatus(statuses.gdrive),
-      x: connectorStatus(statuses.x),
-      chatgpt: connectorStatus(chatGpt),
-    },
-  };
+  return { connectors: Object.fromEntries(CONNECTOR_IDS.map((capability) => [
+    capability,
+    connectorStatus(capability === "chatgpt" ? chatGpt : statuses[capability]),
+  ])) as Record<ConnectorCapability, ConnectorStatus> };
 }
 
 async function mcpConnectionStatuses(env: Env, brokerUserId: string): Promise<McpConnection[]> {
@@ -3461,14 +3543,11 @@ async function connectedRequestedMcpConnections(
 }
 
 function connectorStatus(value: unknown): ConnectorStatus {
-  if (!isRecord(value) || value.connected !== true) return { connected: false };
-  const label = boundedOptionalString(value.label, 256);
-  const accountId = boundedOptionalString(value.account_id, 256);
-  return {
-    connected: true,
-    ...(label ? { label } : {}),
-    ...(accountId ? { account_id: accountId } : {}),
-  };
+  try {
+    return publicConnectorStatus(value);
+  } catch (cause) {
+    throw connectorPolicyApiFailure(cause);
+  }
 }
 
 async function startConnector(
@@ -3477,30 +3556,26 @@ async function startConnector(
   request: Request,
   accountAddress: `0x${string}`,
   brokerUserId: string,
-  connector: ConnectorId,
+  provider: OAuthConnectorProvider,
 ): Promise<Response> {
-  if (connector === "chatgpt") {
-    return startChatGptConnector(env, brokerUserId);
-  }
-
   const requestOrigin = connectApiRequestOrigin(request);
   const dialogOrigin = requiredDialogOrigin(request);
-  const local = localConnectorAuthorization(requestOrigin, connector, "connect");
+  const local = localConnectorAuthorization(requestOrigin, provider, "connect");
   const requestBody = request.headers.get("x-nanocodex-connect-client") === "device"
     ? await boundedJson(request, 4 * 1024, "connector authorization")
     : undefined;
   const deviceReturn = requestBody
     ? deviceMcpReturn(requestBody.return_to, dialogOrigin)
     : undefined;
-  const started = await brokerJson(env, `/users/${encodeURIComponent(brokerUserId)}/connectors/${connector}`, {
+  const started = await brokerJson(env, `/users/${encodeURIComponent(brokerUserId)}/connectors/${provider}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      redirect_uri: local?.redirectUri ?? `${NANOCODEX_ORIGIN}/v1/connectors/${connector}/callback`,
+      redirect_uri: local?.redirectUri ?? `${NANOCODEX_ORIGIN}/v1/connectors/${provider}/callback`,
       return_to: "/",
     }),
   });
-  const authorizationUrl = connectorAuthorizationUrl(started.authorization_url, connector);
+  const authorizationUrl = connectorAuthorizationUrl(started.authorization_url, provider);
   const state = authorizationUrl.searchParams.get("state");
   if (!state || state.length > 512) {
     throw new ApiFailure(502, "connector_broker_invalid", "The connector broker returned an invalid authorization state.");
@@ -3525,7 +3600,7 @@ async function startConnector(
     accountAddress,
     brokerUserId,
     dialogOrigin,
-    provider: connector,
+    provider,
     ...(deviceReturn ? { returnTo: deviceReturn } : {}),
   } satisfies ConnectorState, { ttl: CONNECTOR_STATE_TTL });
   if (!created) {
@@ -3663,7 +3738,7 @@ async function startChatGptConnector(env: Env, brokerUserId: string): Promise<Re
   )));
 }
 
-function connectorAuthorizationUrl(value: unknown, connector: OAuthConnectorId): URL {
+function connectorAuthorizationUrl(value: unknown, provider: OAuthConnectorProvider): URL {
   if (typeof value !== "string" || value.length > 8_192) {
     throw new ApiFailure(502, "connector_broker_invalid", "The connector broker returned an invalid authorization URL.");
   }
@@ -3671,11 +3746,13 @@ function connectorAuthorizationUrl(value: unknown, connector: OAuthConnectorId):
   try { url = new URL(value); } catch {
     throw new ApiFailure(502, "connector_broker_invalid", "The connector broker returned an invalid authorization URL.");
   }
-  const expected = connector === "github"
+  const expected = provider === "github"
     ? ["https://github.com", "/login/oauth/authorize"]
-    : connector === "x"
+    : provider === "x"
       ? ["https://x.com", "/i/oauth2/authorize"]
-      : ["https://accounts.google.com", "/o/oauth2/v2/auth"];
+      : provider === "slack"
+        ? ["https://slack.com", "/oauth/v2/authorize"]
+        : ["https://accounts.google.com", "/o/oauth2/v2/auth"];
   if (url.origin !== expected[0] || url.pathname !== expected[1] || url.username || url.password || url.hash) {
     throw new ApiFailure(502, "connector_broker_invalid", "The connector broker returned an invalid authorization URL.");
   }
@@ -3685,11 +3762,14 @@ function connectorAuthorizationUrl(value: unknown, connector: OAuthConnectorId):
 async function disconnectConnector(
   env: Env,
   brokerUserId: string,
-  connector: ConnectorId,
+  provider: OAuthConnectorProvider | "chatgpt",
+  connectionId?: string,
 ): Promise<void> {
-  const path = connector === "chatgpt"
+  const path = provider === "chatgpt"
     ? `/users/${encodeURIComponent(brokerUserId)}/credentials/chatgpt`
-    : `/users/${encodeURIComponent(brokerUserId)}/connectors/${connector}`;
+    : `/users/${encodeURIComponent(brokerUserId)}/connectors/${provider}${connectionId
+      ? `/connections/${connectionId}`
+      : ""}`;
   const response = await brokerFetch(env, path, { method: "DELETE" });
   if (!response.ok) {
     await response.body?.cancel();
@@ -3737,7 +3817,7 @@ async function completeConnectorCallback(
   env: Env,
   store: Kv.Kv,
   url: URL,
-  provider: OAuthConnectorId,
+  provider: OAuthConnectorProvider,
 ): Promise<Response> {
   const state = url.searchParams.get("state");
   const fallbackOrigin = connectDialogOrigin(url);
@@ -3887,7 +3967,7 @@ async function completeMcpConnectionCallback(
 
 function logConnectorCallback(
   correlation: ConnectorState,
-  connector: OAuthConnectorId,
+  connector: OAuthConnectorProvider,
   outcome: "success" | "cancelled" | "failure",
   status: string,
   deploymentSha: string | undefined,
@@ -3967,7 +4047,7 @@ function mcpCompletionPage(connectionId: string, status: number, targetOrigin: s
 }
 
 function connectorCompletionRedirect(
-  provider: OAuthConnectorId,
+  provider: OAuthConnectorProvider,
   returnTo: string,
   result: "connected" | "cancelled" | "failed",
   failure?: string,
@@ -3988,7 +4068,7 @@ function connectorCompletionRedirect(
 }
 
 function connectorCompletionPage(
-  provider: OAuthConnectorId,
+  provider: OAuthConnectorProvider,
   status: number,
   targetOrigin: string,
   failure?: string,
@@ -4018,7 +4098,7 @@ function isConnectorState(value: unknown): value is ConnectorState {
     && typeof value.dialogOrigin === "string"
     && isAllowedDialogOrigin(value.dialogOrigin)
     && typeof value.provider === "string"
-    && OAUTH_CONNECTOR_IDS.includes(value.provider as OAuthConnectorId)
+    && OAUTH_CONNECTOR_IDS.includes(value.provider as OAuthConnectorProvider)
     && (value.returnTo === undefined
       || isDeviceMcpReturn(value.returnTo, value.dialogOrigin));
 }
@@ -4066,17 +4146,17 @@ function isDeviceMcpReturn(value: unknown, dialogOrigin: string): value is strin
   }
 }
 
-function requestedConnectors(value: unknown): ConnectorId[] {
+function requestedConnectors(value: unknown): ConnectorCapability[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
     throw new ApiFailure(400, "invalid_requested_connectors", "requested_connectors must be a connector ID array.");
   }
-  const requested = new Set<ConnectorId>();
+  const requested = new Set<ConnectorCapability>();
   for (const item of value) {
-    if (typeof item !== "string" || !CONNECTOR_IDS.includes(item as ConnectorId)) {
+    if (!isConnectorCapability(item)) {
       throw new ApiFailure(400, "invalid_requested_connectors", "requested_connectors contains an unknown connector.");
     }
-    requested.add(item as ConnectorId);
+    requested.add(item);
   }
   if (requested.size !== value.length) {
     throw new ApiFailure(400, "invalid_requested_connectors", "requested_connectors cannot contain duplicates.");
@@ -4111,22 +4191,13 @@ function optionalCatalogDigest(value: unknown, name: string): `0x${string}` | un
 }
 
 function requireRequestedConnectors(
-  connected: readonly ConnectorId[],
-  requested: readonly ConnectorId[],
+  connected: readonly ConnectorCapability[],
+  requested: readonly ConnectorCapability[],
 ): void {
-  if (!requestedConnectorsSatisfied(connected, requested)) {
+  if (connected.length !== requested.length
+    || requested.some((connector) => !connected.includes(connector))) {
     throw new ApiFailure(403, "connector_not_connected", "Every requested connector must be connected before creating a grant.");
   }
-}
-
-async function connectedRequestedConnectors(
-  env: Env,
-  brokerUserId: string,
-  requested: readonly ConnectorId[],
-): Promise<ConnectorId[]> {
-  if (requested.length === 0) return [];
-  const current = (await connectorStatuses(env, brokerUserId)).connectors;
-  return requested.filter((connector) => current[connector].connected);
 }
 
 function randomSubject(): string {
@@ -4173,7 +4244,7 @@ async function unbindSubject(
 async function grantConnectorRequest(
   env: Env,
   grant: GrantRecord,
-  connector: OAuthConnectorId,
+  connector: RoutableConnectorCapability,
   value: Record<string, unknown>,
 ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
   if (grant.status !== "active") {
@@ -4195,6 +4266,16 @@ async function grantConnectorRequest(
   }
   const target = connectorTarget(connector, value.path);
   const headers = connectorHeaders(value.headers);
+  try {
+    applyConnectorConnectionSelector(
+      headers,
+      grant.connectorConnections,
+      connector,
+      value.connection_id,
+    );
+  } catch (cause) {
+    throw connectorPolicyApiFailure(cause);
+  }
   headers.set("authorization", PROVIDER_CREDENTIAL_PLACEHOLDER);
   headers.set("x-nanocodex-subject", grant.egressSubject);
   const body = value.body;
@@ -4272,35 +4353,12 @@ async function grantMcpRequest(
   });
 }
 
-function connectorTarget(connector: OAuthConnectorId, value: unknown): URL {
-  if (typeof value !== "string" || value.length === 0 || value.length > 8_192
-    || !value.startsWith("/") || value.startsWith("//")) {
-    throw new ApiFailure(400, "invalid_connector_path", "The connector request path is invalid.");
+function connectorTarget(connector: RoutableConnectorCapability, value: unknown): URL {
+  try {
+    return connectorRequestTarget(connector, value);
+  } catch (cause) {
+    throw connectorPolicyApiFailure(cause);
   }
-  const origin = connector === "github"
-    ? "https://api.github.com"
-    : connector === "gmail"
-      ? "https://gmail.googleapis.com"
-      : connector === "gdrive"
-        ? "https://www.googleapis.com"
-        : "https://api.x.com";
-  const target = new URL(value, origin);
-  const pathAllowed = connector === "github"
-    || (connector === "gmail" && /^\/gmail\/v1\/users\/me(?:\/|$)/.test(target.pathname))
-    || (connector === "gdrive" && /^(?:\/drive\/v3|\/upload\/drive\/v3)(?:\/|$)/.test(target.pathname))
-    || (connector === "x" && /^\/2\/(?:tweets|users|lists|dm_(?:conversations|events)|media)(?:\/|$)/.test(target.pathname));
-  if (target.origin !== origin || target.username || target.password || target.hash || !pathAllowed) {
-    throw new ApiFailure(403, "connector_destination_denied", "The connector destination is not allowed.");
-  }
-  let count = 0;
-  for (const [name, queryValue] of target.searchParams) {
-    count += 1;
-    if (count > 64 || name.length > 128 || queryValue.length > 4_096
-      || /^(?:access_token|api_key|authorization|key|oauth_token)$/i.test(name)) {
-      throw new ApiFailure(403, "connector_destination_denied", "The connector query is not allowed.");
-    }
-  }
-  return target;
 }
 
 function connectorHeaders(value: unknown): Headers {
@@ -4600,7 +4658,10 @@ function createAuth(
           : pendingMcpConnections(env, store, approvedMcpConnectionIds(resources)),
       ]);
       mark("resources");
-      const connectedConnectors = CONNECTOR_IDS.filter((connector) => status.connectors[connector].connected);
+      const approvedConnectorSet = approvedConnectors(resources);
+      const approvedConnectorIds = CONNECTOR_IDS.filter((connector) => approvedConnectorSet.has(connector));
+      const connectedConnectors = approvedConnectorIds.filter((connector) => status.connectors[connector].connected);
+      const connectorConnections = connectorConnectionSnapshot(status.connectors, approvedConnectorIds);
       await store.set(`connect-approval:${approvalId}`, {
         accountAddress,
         appId: app.appId,
@@ -4608,6 +4669,7 @@ function createAuth(
         authorization: hostedAuthorization ? "hosted" : "signed",
         brokerUserId: identity.userId,
         connectedConnectors,
+        connectorConnections,
         mcpConnections,
         ...(context.keyAuthorization ? { keyAuthorization: context.keyAuthorization } : {}),
         profileLinked: identity.linked,
@@ -4701,7 +4763,9 @@ function isConnectApproval(value: unknown): value is ConnectApproval {
     && (value.brokerUserId === undefined || isBrokerUserId(value.brokerUserId))
     && (value.connectedConnectors === undefined
       || (Array.isArray(value.connectedConnectors)
-        && value.connectedConnectors.every((connector) => CONNECTOR_IDS.includes(connector as ConnectorId))))
+        && value.connectedConnectors.every(isConnectorCapability)))
+    && (value.connectorConnections === undefined
+      || isConnectorConnectionSnapshot(value.connectorConnections))
     && (value.mcpConnections === undefined
       || (Array.isArray(value.mcpConnections)
         && value.mcpConnections.length <= 16
@@ -4718,7 +4782,7 @@ function isConnectApproval(value: unknown): value is ConnectApproval {
 function requireApprovedCapabilities(
   resources: readonly string[],
   appId: string,
-  requested: readonly ConnectorId[],
+  requested: readonly ConnectorCapability[],
   requestedMcpIds: readonly string[],
 ) {
   const approvedResources = new Set(resources);
@@ -4898,6 +4962,9 @@ function grantWire(grant: GrantRecord) {
     status: grant.status,
     expires_at: grant.expiresAt,
     capabilities: grant.capabilities,
+    ...(grant.connectorConnections === undefined
+      ? {}
+      : { connector_connections: grant.connectorConnections }),
     ...(grant.conversationId ? { conversation_id: grant.conversationId } : {}),
     mcp_connections: grant.mcpConnections ?? [],
     ...(grant.appToolCatalogDigest
@@ -5046,7 +5113,7 @@ function cors(response: Response, request: Request) {
     }
     response.headers.set(
       "access-control-allow-headers",
-      "accept-payment, authorization, content-type, git-protocol, idempotency-key, last-event-id, mcp-protocol-version, mcp-session-id, payment-session, payment-session-snapshot, payment-signature, x-nanocodex-app-id, x-nanocodex-connect-client",
+      "accept-payment, authorization, content-type, git-protocol, idempotency-key, last-event-id, mcp-protocol-version, mcp-session-id, payment-session, payment-session-snapshot, payment-signature, x-nanocodex-app-id, x-nanocodex-connect-client, x-nanocodex-connector-connection",
     );
     response.headers.set("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
     response.headers.set("access-control-max-age", "86400");

@@ -23,6 +23,9 @@ export function managedGrantHeaders(assertion) {
       ...(portability ? ["agents:portability"] : []),
     ]),
     "x-nanocodex-connect-connectors": JSON.stringify(assertion.connectors),
+    ...(assertion.connectorConnections === undefined ? {} : {
+      "x-nanocodex-connect-connector-connections": JSON.stringify(assertion.connectorConnections),
+    }),
     "x-nanocodex-connect-mcp-ids": JSON.stringify(assertion.mcpIds),
     ...(assertion.appToolCatalogDigest === undefined
       ? {}
