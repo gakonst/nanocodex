@@ -12,7 +12,10 @@ import {
   type DeliveryRecord,
   releaseDelivery,
 } from "./delivery.ts";
-import { NanocodexManagedGateway } from "./managed.ts";
+import {
+  NanocodexManagedGateway,
+  type ChiefOfStaffIdentity,
+} from "./managed.ts";
 import {
   sameChannelIdentity,
   validSlackInstallationMetadata,
@@ -22,6 +25,26 @@ import {
 import type { Env } from "./worker.ts";
 
 type ExpiringValue = Readonly<{ expiresAt: number | null; value: unknown }>;
+
+function chiefIdentity(channel: ChannelIdentity): ChiefOfStaffIdentity {
+  switch (channel.platform) {
+    case "slack": return {
+      provider: "slack",
+      subject: channel.userId,
+      tenant: channel.teamId,
+    };
+    case "viber": return {
+      provider: "viber",
+      subject: channel.userId,
+      tenant: channel.botUri,
+    };
+    case "whatsapp": return {
+      provider: "whatsapp",
+      subject: channel.userId,
+      tenant: channel.businessPhoneNumberId,
+    };
+  }
+}
 
 export class ChiefOfStaffState extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
@@ -101,7 +124,7 @@ export class ChiefOfStaffState extends DurableObject<Env> {
   }
 
   private async conversationTurn(request: Request): Promise<Response> {
-    if (!this.env.NANOCODEX_BACKEND || !this.env.NANOCODEX_API_KEY) {
+    if (!this.env.NANOCODEX_BACKEND) {
       return json({ error: "managed_service_unavailable" }, 503);
     }
     let body: ConversationTurnRequest;
@@ -110,7 +133,7 @@ export class ChiefOfStaffState extends DurableObject<Env> {
     try {
       const engine = new ConversationEngine(
         new DurableConversationStore(this.ctx.storage),
-        new NanocodexManagedGateway(this.env.NANOCODEX_BACKEND, this.env.NANOCODEX_API_KEY),
+        new NanocodexManagedGateway(this.env.NANOCODEX_BACKEND, chiefIdentity(body.channel)),
       );
       return json(await engine.turn(body), 200);
     } catch (error) {

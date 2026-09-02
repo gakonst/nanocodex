@@ -1,4 +1,4 @@
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import {
   getWorkspace,
   withWorkspace,
@@ -15,6 +15,7 @@ import type {
   Turn,
 } from "nanocodex";
 import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
+import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
 import { managedCodeEvaluator } from "./code-evaluator";
 import {
@@ -150,6 +151,10 @@ import {
   type OrganizationCapability,
   type Principal,
 } from "./account-auth";
+import {
+  chiefOfStaffIdentity,
+  resolveChiefOfStaffIdentity,
+} from "./chief-of-staff-principal";
 import { routeBrowserModel } from "./browser-model";
 import { routeAccountLinkRequest } from "./account-links";
 import {
@@ -696,8 +701,12 @@ function observeManagedPrincipal(
   });
 }
 
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function managedFetch(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  trustedAgentPrincipal?: Principal,
+): Promise<Response> {
     const url = new URL(request.url);
     const browserModel = await routeBrowserModel(request, env, url);
     if (browserModel) return browserModel;
@@ -728,7 +737,7 @@ export default {
       return json({ service: "nanocodex", runtime: "cloudflare-durable-objects", status: "ok" });
     }
     if (request.method === "GET" && url.pathname === "/v1/agents") {
-      const principal = await authenticate(request, env, url);
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
       if (!principal) return json({ error: "unauthorized" }, { status: 401 });
       if (!principal.capabilities.includes("agents:read")) return json({ error: "forbidden" }, { status: 403 });
       const agents = await listAgents(env, principal.userId);
@@ -818,7 +827,7 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/v1/agents") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
-      const principal = await authenticate(request, env, url);
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
       if (!principal) return json({ error: "unauthorized" }, { status: 401 });
       observeManagedPrincipal(env, "managed.agent.create_requested", principal, {
         method: request.method,
@@ -1075,7 +1084,7 @@ export default {
     }
     const agentId = match[1]!;
     const resource = match[2] ?? "";
-    const principal = await authenticate(request, env, url);
+    const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
     if (!principal) return json({ error: "unauthorized" }, { status: 401 });
     const routedTurnId = resource.match(/^turns\/([^/]+)/)?.[1];
     observeManagedPrincipal(env, "managed.agent.request", principal, {
@@ -1298,7 +1307,91 @@ export default {
       }
     }
     return json({ error: "method_not_allowed" }, { status: 405 });
-  },
+}
+
+export class ChiefOfStaffBackend extends WorkerEntrypoint<Env> {
+  async requestingAccountId(request: Request): Promise<string | null> {
+    const principal = await authenticate(
+      request,
+      this.env,
+      new URL("https://managed.nanocodex.internal/v1/me"),
+    );
+    return principal?.kind === "account_session" ? principal.userId : null;
+  }
+
+  async createAgent(identityValue: unknown, idempotencyKey: unknown): Promise<string> {
+    const identity = chiefOfStaffIdentity(identityValue);
+    if (!identity || typeof idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(idempotencyKey)) {
+      throw new Error("invalid_chief_request");
+    }
+    const principal = await resolveChiefOfStaffIdentity(this.env, identity);
+    const response = await managedFetch(new Request("https://chief-of-staff.internal/v1/agents", {
+      method: "POST",
+      headers: { "idempotency-key": idempotencyKey },
+    }), this.env, this.ctx, principal);
+    if (!response.ok) throw await chiefManagedFailure(response);
+    const body: unknown = await response.json();
+    const agentId = isRecord(body) && typeof body.agent_id === "string" ? body.agent_id : "";
+    if (!SESSION_ID.test(agentId)) throw new Error("invalid_chief_agent_response");
+    return agentId;
+  }
+
+  async runTurn(
+    identityValue: unknown,
+    agentIdValue: unknown,
+    requestValue: unknown,
+  ): Promise<string> {
+    const identity = chiefOfStaffIdentity(identityValue);
+    const request = chiefTurnRequest(requestValue);
+    if (!identity || typeof agentIdValue !== "string" || !SESSION_ID.test(agentIdValue) || !request) {
+      throw new Error("invalid_chief_request");
+    }
+    const principal = await resolveChiefOfStaffIdentity(this.env, identity);
+    const fetcher = (input: RequestInfo | URL, init?: RequestInit) => {
+      const outbound = new Request(input, init);
+      const url = new URL(outbound.url);
+      if (url.origin !== "https://chief-of-staff.internal"
+        || !url.pathname.startsWith(`/v1/agents/${agentIdValue}/`)) {
+        throw new Error("chief_managed_route_escape");
+      }
+      return managedFetch(outbound, this.env, this.ctx, principal);
+    };
+    const result = await ManagedAgent.open(agentIdValue, {
+      baseUrl: "https://chief-of-staff.internal",
+      fetch: fetcher,
+    }).turn.prompt(request).result();
+    return result.finalMessage;
+  }
+}
+
+type ChiefTurnRequest = Readonly<{
+  id: string;
+  idempotencyKey: string;
+  input: string;
+}>;
+
+function chiefTurnRequest(value: unknown): ChiefTurnRequest | undefined {
+  if (!isRecord(value) || Object.keys(value).length !== 3
+    || typeof value.id !== "string" || !TURN_ID.test(value.id)
+    || typeof value.idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(value.idempotencyKey)
+    || typeof value.input !== "string" || value.input.length === 0
+    || value.input.length > 120_000) return undefined;
+  return { id: value.id, idempotencyKey: value.idempotencyKey, input: value.input };
+}
+
+async function chiefManagedFailure(response: Response): Promise<Error> {
+  let code = `http_${response.status}`;
+  try {
+    const body: unknown = await response.json();
+    if (isRecord(body) && typeof body.error === "string") code = body.error;
+  } catch {
+    await response.body?.cancel();
+  }
+  return new Error(`chief_managed_${code}`);
+}
+
+export default {
+  fetch: managedFetch,
 };
 
 class DurableComputerObject extends DurableObject<Env> {

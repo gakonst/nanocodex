@@ -4,7 +4,6 @@ const SLACK_TEAM_ID = /^T[A-Z0-9]+$/;
 const SLACK_CHANNEL_ID = /^[CDG][A-Z0-9]+$/;
 const SLACK_USER_ID = /^[UW][A-Z0-9]+$/;
 const SLACK_THREAD_ID = /^slack:[CDG][A-Z0-9]+:(?:[0-9]+\.[0-9]+)?$/;
-const API_KEY = /^ncx_live_[A-Za-z0-9_-]{12}_[A-Za-z0-9_-]{43}$/;
 const SLACK_CLIENT_ID = /^[0-9]+\.[0-9]+$/;
 const BASE64_URL = /^[A-Za-z0-9_-]+$/;
 const WHATSAPP_PHONE_NUMBER_ID = /^[0-9]{5,32}$/;
@@ -13,15 +12,14 @@ const WHATSAPP_BUSINESS_USER_ID = /^[A-Z]{2}\.(?:ENT\.)?[A-Za-z0-9]{1,128}$/;
 const WHATSAPP_MESSAGE_ID = /^[A-Za-z0-9._=-]{1,512}$/;
 
 export type SlackChannelIdentity = Readonly<{
-  accountId: string;
   channelId: string;
   conversationId: string;
   platform: "slack";
   teamId: string;
+  userId: string;
 }>;
 
 export type ViberChannelIdentity = Readonly<{
-  accountId: string;
   botUri: string;
   conversationId: string;
   platform: "viber";
@@ -29,7 +27,6 @@ export type ViberChannelIdentity = Readonly<{
 }>;
 
 export type WhatsAppChannelIdentity = Readonly<{
-  accountId: string;
   businessPhoneNumberId: string;
   conversationId: string;
   platform: "whatsapp";
@@ -90,7 +87,6 @@ export function slackMessageIdentity(
   raw: unknown,
   threadId: string,
   isDirectMessage: boolean,
-  accountId: string,
 ): SlackMessageIdentity {
   if (!isRecord(raw)) throw new Error("Slack message payload is missing");
   const teamId = stringValue(raw.team_id) ?? stringValue(raw.team);
@@ -112,11 +108,11 @@ export function slackMessageIdentity(
     actorId,
     messageId,
     channel: {
-      accountId,
       channelId,
       conversationId: isDirectMessage ? `dm:${actorId}` : threadId,
       platform: "slack",
       teamId,
+      userId: actorId,
     },
   };
 }
@@ -124,7 +120,6 @@ export function slackMessageIdentity(
 export function whatsAppMessageIdentity(
   raw: unknown,
   threadId: string,
-  accountId: string,
   expectedPhoneNumberId: string,
 ): WhatsAppMessageIdentity {
   if (!isRecord(raw) || !isRecord(raw.message)) {
@@ -150,7 +145,6 @@ export function whatsAppMessageIdentity(
     actorId,
     messageId,
     channel: {
-      accountId,
       businessPhoneNumberId: phoneNumberId,
       conversationId: threadId,
       platform: "whatsapp",
@@ -161,7 +155,6 @@ export function whatsAppMessageIdentity(
 
 export function configurationReadiness(env: {
   CHIEF_OF_STAFF_PUBLIC_ORIGIN?: string;
-  NANOCODEX_API_KEY?: string;
   SLACK_CLIENT_ID?: string;
   SLACK_CLIENT_SECRET?: string;
   SLACK_ENCRYPTION_KEY?: string;
@@ -194,10 +187,8 @@ export function configurationReadiness(env: {
     && origin.pathname === "/"
     && !origin.search
     && !origin.hash);
-  const validAccount = API_KEY.test(env.NANOCODEX_API_KEY ?? "");
   const slackConfigured = Boolean(
     validOrigin
-    && validAccount
     && SLACK_CLIENT_ID.test(env.SLACK_CLIENT_ID ?? "")
     && (env.SLACK_CLIENT_SECRET?.length ?? 0) >= 16
     && validBase64Key(env.SLACK_ENCRYPTION_KEY)
@@ -206,7 +197,6 @@ export function configurationReadiness(env: {
   );
   const viberConfigured = Boolean(
     validOrigin
-    && validAccount
     && validViberToken(env.VIBER_AUTH_TOKEN)
     && validOptionalHttpsUrl(env.VIBER_BOT_AVATAR)
     && validViberBotName(env.VIBER_BOT_NAME)
@@ -214,7 +204,6 @@ export function configurationReadiness(env: {
   );
   const whatsappConfigured = Boolean(
     validOrigin
-    && validAccount
     && (env.WHATSAPP_ACCESS_TOKEN?.length ?? 0) >= 32
     && (env.WHATSAPP_APP_SECRET?.length ?? 0) >= 16
     && WHATSAPP_PHONE_NUMBER_ID.test(env.WHATSAPP_PHONE_NUMBER_ID ?? "")
@@ -259,10 +248,11 @@ export async function digest(value: unknown): Promise<string> {
 }
 
 export function sameChannelIdentity(left: ChannelIdentity, right: ChannelIdentity): boolean {
-  if (left.platform !== right.platform || left.accountId !== right.accountId
-    || left.conversationId !== right.conversationId) return false;
+  if (left.platform !== right.platform || left.conversationId !== right.conversationId) return false;
   if (left.platform === "slack" && right.platform === "slack") {
-    return left.channelId === right.channelId && left.teamId === right.teamId;
+    return left.channelId === right.channelId
+      && left.teamId === right.teamId
+      && left.userId === right.userId;
   }
   if (left.platform === "viber" && right.platform === "viber") {
     return left.botUri === right.botUri && left.userId === right.userId;

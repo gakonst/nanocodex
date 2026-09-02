@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   authenticate,
   ensureAccount,
+  resolveChiefOfStaffPrincipal,
   routeAccountRequest,
   type AccountAuthEnv,
 } from "../src/account-auth";
@@ -132,6 +133,20 @@ describe("connector route compatibility", () => {
 });
 
 describe("account provisioning", () => {
+  it("narrows Chief of Staff principals to the agent tool boundary", async () => {
+    const { env } = portableEnv();
+    const principal = await resolveChiefOfStaffPrincipal(env, USER_ID, `chief:${"a".repeat(64)}`);
+
+    expect(principal).toMatchObject({
+      kind: "service",
+      userId: USER_ID,
+      capabilities: ["agents:read", "agents:write", "tools:use"],
+    });
+    expect(principal?.capabilities).not.toContain("organization:write");
+    expect(principal?.capabilities).not.toContain("api_keys:write");
+    expect(principal?.capabilities).not.toContain("agents:portability");
+  });
+
   it("accepts a matching persistent account after a create conflict", async () => {
     const requests: string[] = [];
     const env = accountEnv(async (request) => {

@@ -58,13 +58,11 @@ export async function readViberWebhook(request: Request, authToken: string): Pro
 }
 
 export function viberChannelIdentity(
-  accountId: string,
   botUri: string,
   userId: string,
 ): ChannelIdentity {
   if (!VIBER_USER_ID.test(userId)) throw new ViberWebhookError("invalid_payload");
   return {
-    accountId,
     botUri,
     conversationId: `dm:${userId}`,
     platform: "viber",

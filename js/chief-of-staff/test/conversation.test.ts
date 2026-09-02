@@ -36,15 +36,14 @@ class RememberingGateway implements ManagedAgentGateway {
 }
 
 const channel: ChannelIdentity = {
-  accountId: "account-a",
   channelId: "D123ABC",
   conversationId: "dm:U123ABC",
   platform: "slack",
   teamId: "T123ABC",
+  userId: "U123ABC",
 };
 
 const viberChannel: ChannelIdentity = {
-  accountId: "account-a",
   botUri: "nanocodex-chief",
   conversationId: "dm:01234567890A=",
   platform: "viber",
@@ -52,7 +51,6 @@ const viberChannel: ChannelIdentity = {
 };
 
 const whatsappChannel: ChannelIdentity = {
-  accountId: "account-a",
   businessPhoneNumberId: "123456789012345",
   conversationId: "whatsapp:123456789012345:15551234567",
   platform: "whatsapp",
@@ -124,7 +122,7 @@ test("a replayed message id with altered input is fenced", async () => {
   );
 });
 
-test("durable state cannot be rebound across accounts or Slack channels", async () => {
+test("durable state cannot be rebound across Slack actors or channels", async () => {
   const store = new MemoryConversationStore();
   const gateway = new RememberingGateway();
   const engine = new ConversationEngine(store, gateway);
@@ -136,7 +134,7 @@ test("durable state cannot be rebound across accounts or Slack channels", async 
   });
 
   for (const conflicting of [
-    { ...channel, accountId: "account-b" },
+    { ...channel, userId: "U999XYZ" },
     { ...channel, channelId: "D999XYZ" },
   ]) {
     await assert.rejects(
@@ -151,7 +149,7 @@ test("durable state cannot be rebound across accounts or Slack channels", async 
         && error.code === "channel_identity_conflict",
     );
   }
-  assert.notEqual(await digest(channel), await digest({ ...channel, accountId: "account-b" }));
+  assert.notEqual(await digest(channel), await digest({ ...channel, userId: "U999XYZ" }));
   assert.notEqual(await digest(channel), await digest({ ...channel, channelId: "D999XYZ" }));
 });
 

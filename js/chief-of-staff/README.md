@@ -12,9 +12,12 @@ encrypts the workspace bot token in Durable Object state, records the workspace
 installation, and immediately accepts signed mentions and DMs. Users never copy a
 token or configure a webhook.
 
-Each account/channel/conversation maps to a retained managed Nanocodex agent.
-The account app receives only non-secret installation and readiness metadata
-through a service binding.
+Each verified provider user maps to a private, persistent Nanocodex account and
+each conversation maps to one retained managed agent. The Chief Worker reaches
+the managed Worker through the capability-scoped `ChiefOfStaffBackend` service
+binding; it holds no Nanocodex bearer credential and cannot select a Nanocodex
+account ID. The account app receives only non-secret installation and readiness
+metadata.
 
 The same Worker also exposes an official Viber Bot REST API channel. It verifies
 the raw callback HMAC, maps each bot/subscriber pair to a durable conversation,
@@ -41,7 +44,6 @@ Configure the deployment once. `SLACK_ENCRYPTION_KEY` and
 `SLACK_OAUTH_STATE_SECRET` are independent base64url-encoded 32-byte keys.
 
 ```sh
-pnpm --filter @nanocodex/chief-of-staff exec wrangler secret put NANOCODEX_API_KEY --config wrangler.jsonc
 pnpm --filter @nanocodex/chief-of-staff exec wrangler secret put SLACK_CLIENT_ID --config wrangler.jsonc
 pnpm --filter @nanocodex/chief-of-staff exec wrangler secret put SLACK_CLIENT_SECRET --config wrangler.jsonc
 pnpm --filter @nanocodex/chief-of-staff exec wrangler secret put SLACK_SIGNING_SECRET --config wrangler.jsonc
@@ -76,9 +78,14 @@ into turns. Replies respect Viber's 7,000-character text limit. A durable delive
 claim suppresses duplicate outbound messages when Viber retries an already handled
 callback; expired claims are recoverable after an interrupted send.
 
-`NANOCODEX_API_KEY` binds this deployment to its owning Nanocodex account. Slack
-OAuth installations are accepted only when initiated by that signed-in owner.
-Set both public origins in Wrangler when deploying under other names or domains.
+Slack OAuth installation metadata remains owned by the signed-in Nanocodex user
+who installed it, so only that user can list or remove the installation. Runtime
+Slack actors are intentionally separate: `(team_id, event.user)` identifies the
+actor's managed account, including in shared channels. Viber uses `(bot URI,
+subscriber ID)` and WhatsApp uses `(phone-number ID, user ID)`. These mappings are
+persistent; uninstalling a provider stops new ingress but does not currently
+delete retained Nanocodex data. Set both public origins in Wrangler when deploying
+under other names or domains.
 
 ## Configure WhatsApp
 
@@ -106,7 +113,7 @@ pnpm --filter @nanocodex/chief-of-staff exec wrangler secret put WHATSAPP_VERIFY
 
 Meta verifies `GET /webhooks/whatsapp` with the verify token. The official
 adapter verifies `X-Hub-Signature-256` on every POST before the message can reach
-an account-owned agent. Reactive replies are sent inside WhatsApp's 24-hour
+the user's isolated agent. Reactive replies are sent inside WhatsApp's 24-hour
 customer-service window; initiating a later conversation requires an approved
 message template.
 
@@ -133,5 +140,5 @@ pnpm deploy:account
 
 Run `pnpm --filter @nanocodex/chief-of-staff check` for OAuth state, Slack,
 WhatsApp, and Viber signatures, workspace fencing, idempotency,
-cross-account/channel isolation, durable two-turn, type, and dry-run deployment
+cross-provider/user/channel isolation, durable two-turn, type, and dry-run deployment
 coverage.

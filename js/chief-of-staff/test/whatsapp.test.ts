@@ -23,14 +23,12 @@ test("WhatsApp identity is bound to the configured business phone and canonical 
     whatsAppMessageIdentity(
       raw,
       "whatsapp:123456789012345:15551234567",
-      "account-a",
       "123456789012345",
     ),
     {
       actorId: "15551234567",
       messageId: raw.message.id,
       channel: {
-        accountId: "account-a",
         businessPhoneNumberId: "123456789012345",
         conversationId: "whatsapp:123456789012345:15551234567",
         platform: "whatsapp",
@@ -43,7 +41,6 @@ test("WhatsApp identity is bound to the configured business phone and canonical 
     () => whatsAppMessageIdentity(
       raw,
       "whatsapp:999999999999999:15551234567",
-      "account-a",
       "123456789012345",
     ),
     /thread is not bound/,
@@ -52,7 +49,6 @@ test("WhatsApp identity is bound to the configured business phone and canonical 
     () => whatsAppMessageIdentity(
       raw,
       "whatsapp:123456789012345:15551234567",
-      "account-a",
       "999999999999999",
     ),
     /business phone identity/,
@@ -62,7 +58,6 @@ test("WhatsApp identity is bound to the configured business phone and canonical 
 test("WhatsApp readiness is independent from Slack configuration", () => {
   const readiness = configurationReadiness({
     CHIEF_OF_STAFF_PUBLIC_ORIGIN: "https://chief.example",
-    NANOCODEX_API_KEY: `ncx_live_${"a".repeat(12)}_${"b".repeat(43)}`,
     WHATSAPP_ACCESS_TOKEN: "token".repeat(12),
     WHATSAPP_APP_SECRET: "app-secret-which-is-long-enough",
     WHATSAPP_PHONE_NUMBER_ID: "123456789012345",

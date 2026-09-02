@@ -23,7 +23,8 @@
   "services": [
     {
       "binding": "NANOCODEX_BACKEND",
-      "service": "nanocodex-durable-agent"
+      "service": "nanocodex-durable-agent",
+      "entrypoint": "ChiefOfStaffBackend"
     }
   ],
   "durable_objects": {
@@ -51,6 +52,7 @@
         {
           "binding": "NANOCODEX_BACKEND",
           "service": "nanocodex-durable-agent",
+          "entrypoint": "ChiefOfStaffBackend",
           "remote": false
         }
       ],

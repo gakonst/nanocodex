@@ -97,7 +97,7 @@ const OWNER_CAPABILITIES = [
 ] as const satisfies readonly OrganizationCapability[];
 
 export type Principal = Readonly<{
-  kind: "account_session" | "api_key" | "connect_grant";
+  kind: "account_session" | "api_key" | "connect_grant" | "service";
   userId: string;
   organizationId: string;
   teamId: string;
@@ -500,6 +500,20 @@ async function resolveUserPrincipal(
     subjectId: `user:${userId}`,
     credentialId,
   };
+}
+
+export async function resolveChiefOfStaffPrincipal(
+  env: AccountAuthEnv,
+  userId: string,
+  credentialId: string,
+): Promise<Principal | undefined> {
+  if (!isUserId(userId) || !/^chief:[a-f0-9]{64}$/.test(credentialId)) return undefined;
+  const principal = await resolveUserPrincipal(env, userId, credentialId);
+  return principal ? {
+    ...principal,
+    kind: "service",
+    capabilities: ["agents:read", "agents:write", "tools:use"],
+  } : undefined;
 }
 
 export async function authenticatePersistentAccount(

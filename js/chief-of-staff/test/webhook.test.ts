@@ -196,7 +196,6 @@ test("a signed WhatsApp DM reaches the exact durable route and posts its reply",
     assert.deepEqual(fixture.turns[0], {
       actorId: "15551234567",
       channel: {
-        accountId,
         businessPhoneNumberId: "123456789012345",
         conversationId: "whatsapp:123456789012345:15551234567",
         platform: "whatsapp",
@@ -335,9 +334,9 @@ test("readiness reports bot installations without returning provider credentials
     teamName: "Acme",
   }]));
   configured.NANOCODEX_BACKEND = {
-    async fetch() {
-      return Response.json({ user: { id: accountId } });
-    },
+    async requestingAccountId() { return accountId; },
+    async createAgent() { throw new Error("not used"); },
+    async runTurn() { throw new Error("not used"); },
   };
   const response = await worker.fetch(new Request("https://chief.example/v1/readiness", {
     headers: { authorization: "Bearer browser-session" },
@@ -429,7 +428,6 @@ test("signed Viber messages preserve the exact token and route one replay-safe r
     assert.deepEqual(calls.stateBody, {
       actorId: "01234567890A=",
       channel: {
-        accountId,
         botUri: "nanocodex-chief",
         conversationId: "dm:01234567890A=",
         platform: "viber",
@@ -490,8 +488,11 @@ function env(installations: readonly unknown[] = [{
         };
       },
     },
-    NANOCODEX_API_KEY: `ncx_live_${"a".repeat(12)}_${"b".repeat(43)}`,
-    NANOCODEX_BACKEND: { async fetch() { return Response.json({ user: { id: accountId } }); } },
+    NANOCODEX_BACKEND: {
+      async requestingAccountId() { return accountId; },
+      async createAgent() { throw new Error("not used"); },
+      async runTurn() { throw new Error("not used"); },
+    },
     SLACK_CLIENT_ID: "123.456",
     SLACK_CLIENT_SECRET: "test-client-secret",
     SLACK_ENCRYPTION_KEY: key,
