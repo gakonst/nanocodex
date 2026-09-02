@@ -41,6 +41,7 @@
     }
   ],
   "vars": {
+    "CHIEF_OF_STAFF_ACCOUNT_ORIGIN": "https://nanocodex.gakonst.workers.dev",
     "CHIEF_OF_STAFF_PUBLIC_ORIGIN": "https://nanocodex-chief-of-staff.gakonst.workers.dev"
   },
   "env": {
@@ -62,6 +63,7 @@
         ]
       },
       "vars": {
+        "CHIEF_OF_STAFF_ACCOUNT_ORIGIN": "https://nanocodex.gakonst.workers.dev",
         "CHIEF_OF_STAFF_PUBLIC_ORIGIN": "https://nanocodex-chief-of-staff.gakonst.workers.dev"
       }
     }

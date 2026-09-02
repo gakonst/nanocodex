@@ -5,7 +5,8 @@ const SLACK_CHANNEL_ID = /^[CDG][A-Z0-9]+$/;
 const SLACK_USER_ID = /^[UW][A-Z0-9]+$/;
 const SLACK_THREAD_ID = /^slack:[CDG][A-Z0-9]+:(?:[0-9]+\.[0-9]+)?$/;
 const API_KEY = /^ncx_live_[A-Za-z0-9_-]{12}_[A-Za-z0-9_-]{43}$/;
-const BOT_TOKEN = /^xoxb-[A-Za-z0-9-]+$/;
+const SLACK_CLIENT_ID = /^[0-9]+\.[0-9]+$/;
+const BASE64_URL = /^[A-Za-z0-9_-]+$/;
 
 export type ChannelIdentity = Readonly<{
   accountId: string;
@@ -30,8 +31,20 @@ export type Readiness = Readonly<{
     detail: string;
   }>[];
   configured: boolean;
+  installations: readonly SlackInstallationSummary[];
+  installUrl: string | null;
   webhookUrl: string | null;
 }>;
+
+export type SlackInstallationMetadata = Readonly<{
+  accountId: string;
+  botUserId: string | null;
+  installedAt: number;
+  teamId: string;
+  teamName: string;
+}>;
+
+export type SlackInstallationSummary = Omit<SlackInstallationMetadata, "accountId">;
 
 export function slackTeamId(payload: SlackWebhookPayload): string | undefined {
   if ("teamId" in payload && SLACK_TEAM_ID.test(payload.teamId ?? "")) {
@@ -42,14 +55,6 @@ export function slackTeamId(payload: SlackWebhookPayload): string | undefined {
   const candidate = stringValue(event?.team_id) ?? stringValue(event?.team)
     ?? stringValue(payload.raw.team_id);
   return candidate && SLACK_TEAM_ID.test(candidate) ? candidate : undefined;
-}
-
-export function slackPayloadIsFenced(
-  payload: SlackWebhookPayload,
-  configuredTeamId: string,
-): boolean {
-  if (payload.kind === "url_verification") return true;
-  return slackTeamId(payload) === configuredTeamId;
 }
 
 export function slackMessageIdentity(
@@ -90,10 +95,11 @@ export function slackMessageIdentity(
 export function configurationReadiness(env: {
   CHIEF_OF_STAFF_PUBLIC_ORIGIN?: string;
   NANOCODEX_API_KEY?: string;
-  SLACK_BOT_TOKEN?: string;
-  SLACK_BOT_USER_ID?: string;
+  SLACK_CLIENT_ID?: string;
+  SLACK_CLIENT_SECRET?: string;
+  SLACK_ENCRYPTION_KEY?: string;
+  SLACK_OAUTH_STATE_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
-  SLACK_TEAM_ID?: string;
 }): Readonly<{ configured: boolean; webhookUrl: string | null }> {
   let origin: URL | undefined;
   try {
@@ -109,15 +115,31 @@ export function configurationReadiness(env: {
     && !origin.search
     && !origin.hash
     && API_KEY.test(env.NANOCODEX_API_KEY ?? "")
-    && BOT_TOKEN.test(env.SLACK_BOT_TOKEN ?? "")
-    && SLACK_USER_ID.test(env.SLACK_BOT_USER_ID ?? "")
+    && SLACK_CLIENT_ID.test(env.SLACK_CLIENT_ID ?? "")
+    && (env.SLACK_CLIENT_SECRET?.length ?? 0) >= 16
+    && validBase64Key(env.SLACK_ENCRYPTION_KEY)
+    && validBase64Key(env.SLACK_OAUTH_STATE_SECRET)
     && (env.SLACK_SIGNING_SECRET?.length ?? 0) >= 16
-    && SLACK_TEAM_ID.test(env.SLACK_TEAM_ID ?? ""),
   );
   return {
     configured,
     webhookUrl: origin ? new URL("/webhooks/slack", origin).href : null,
   };
+}
+
+export function validSlackInstallationMetadata(value: unknown): value is SlackInstallationMetadata {
+  return isRecord(value)
+    && typeof value.accountId === "string"
+    && value.accountId.length > 0
+    && (value.botUserId === null || (typeof value.botUserId === "string" && SLACK_USER_ID.test(value.botUserId)))
+    && typeof value.installedAt === "number"
+    && Number.isSafeInteger(value.installedAt)
+    && value.installedAt > 0
+    && typeof value.teamId === "string"
+    && SLACK_TEAM_ID.test(value.teamId)
+    && typeof value.teamName === "string"
+    && value.teamName.trim().length > 0
+    && value.teamName.length <= 200;
 }
 
 export async function digest(value: unknown): Promise<string> {
@@ -149,4 +171,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
+}
+
+function validBase64Key(value: unknown): boolean {
+  if (typeof value !== "string" || !BASE64_URL.test(value)) return false;
+  try {
+    const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
+    return atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")).length === 32;
+  } catch {
+    return false;
+  }
 }

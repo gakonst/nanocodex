@@ -36,6 +36,15 @@
 .chief-setup > header div { display: grid; gap: 7px; }
 .chief-setup h2 { font-size: clamp(20px, 3vw, 30px); font-weight: 400; }
 .chief-setup > header > svg { width: 25px; color: var(--positive); }
+.chief-install-action, .chief-installation { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 18px 0; border-top: 1px solid var(--border-soft); }
+.chief-install-action > div, .chief-installation > div { display: grid; gap: 7px; }
+.chief-install-action strong, .chief-installation strong { font-size: 11px; font-weight: 400; }
+.chief-install-action p, .chief-installation p { color: var(--text-muted); font-size: 10px; line-height: 1.6; }
+.chief-add-slack, .chief-installation button { display: inline-flex; flex: 0 0 auto; gap: 7px; align-items: center; padding: 9px 12px; color: var(--surface); background: var(--text); border: 1px solid var(--text); cursor: pointer; font: 10px var(--font-mono); text-decoration: none; }
+.chief-installation button { color: var(--text); background: transparent; border-color: var(--border-soft); }
+.chief-add-slack svg, .chief-installation button svg { width: 12px; height: 12px; }
+.chief-installation button:disabled { cursor: wait; opacity: .55; }
+.chief-install-unavailable { color: var(--text-muted); font-size: 9px; text-transform: uppercase; }
 .chief-setup ol { display: grid; padding: 0; margin: 0; list-style: none; }
 .chief-setup li { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 18px 0; border-top: 1px solid var(--border-soft); }
 .chief-setup li > span { color: var(--text-muted); font-size: 9px; }
@@ -55,10 +64,12 @@
   .chief-setup li { grid-template-columns: 32px minmax(0, 1fr); }
   .chief-setup li button { grid-column: 2; width: fit-content; }
   .chief-webhook { margin-left: 44px; }
+  .chief-install-action, .chief-installation { align-items: start; }
 }
 
 @media (pointer: coarse) {
-  .chief-hero-status button, .chief-channel a, .chief-error button, .chief-setup li button {
+  .chief-hero-status button, .chief-channel a, .chief-error button, .chief-setup li button,
+  .chief-add-slack, .chief-installation button {
     min-height: var(--coarse-target-size);
   }
 }

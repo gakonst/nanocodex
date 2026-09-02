@@ -1,4 +1,4 @@
-import { Check, Copy, ExternalLink, RefreshCw, ShieldCheck } from "lucide-react";
+import { Bot, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useAccountSession } from "./AccountSession";
 import "./ChiefOfStaffDemo.css";
@@ -14,6 +14,13 @@ type Readiness = Readonly<{
   accountMatch: boolean;
   channels: readonly Channel[];
   configured: boolean;
+  installations: readonly Readonly<{
+    botUserId: string | null;
+    installedAt: number;
+    teamId: string;
+    teamName: string;
+  }>[];
+  installUrl: string | null;
   webhookUrl: string | null;
 }>;
 
@@ -29,7 +36,7 @@ export function ChiefOfStaffDemo() {
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [copied, setCopied] = useState(false);
+  const [operation, setOperation] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -56,12 +63,23 @@ export function ChiefOfStaffDemo() {
     void refresh();
   }, [account.status, refresh]);
 
-  const copyWebhook = useCallback(async () => {
-    if (!readiness?.webhookUrl) return;
-    await navigator.clipboard.writeText(readiness.webhookUrl);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1_500);
-  }, [readiness?.webhookUrl]);
+  const removeInstallation = useCallback(async (teamId: string) => {
+    if (operation) return;
+    setOperation(teamId);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/chief-of-staff/slack/installations/${encodeURIComponent(teamId)}`,
+        { method: "DELETE", credentials: "same-origin" },
+      );
+      if (!response.ok) throw new Error("Couldn’t remove the Slack app.");
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Couldn’t remove the Slack app.");
+    } finally {
+      setOperation(null);
+    }
+  }, [operation, refresh]);
 
   return (
     <article className="chief-demo page-grid">
@@ -69,9 +87,9 @@ export function ChiefOfStaffDemo() {
         <p className="eyebrow">Demos · Chat SDK integration</p>
         <h1>Chief of Staff</h1>
         <p>
-          Bring one account-owned, durable Nanocodex agent into supported messaging channels.
-          The integration Worker verifies provider traffic and keeps every account, workspace,
-          channel, and conversation on its own route.
+          Install a durable Nanocodex agent into Slack as its own AI teammate. It has a bot
+          identity, receives mentions and DMs, and keeps every workspace and conversation on
+          its own route.
         </p>
         <div className="chief-hero-status" aria-live="polite">
           <span className={`chief-status-dot${readiness?.configured ? " is-ready" : ""}`} />
@@ -111,31 +129,40 @@ export function ChiefOfStaffDemo() {
       <section className="chief-setup" aria-labelledby="chief-setup-title">
         <header>
           <div>
-            <p className="eyebrow">Slack deployment</p>
-            <h2 id="chief-setup-title">Wire the signed ingress</h2>
+            <p className="eyebrow">Slack AI bot</p>
+            <h2 id="chief-setup-title">Add Chief of Staff to Slack</h2>
           </div>
-          <ShieldCheck aria-hidden="true" />
+          <Bot aria-hidden="true" />
         </header>
-        <ol>
-          <li>
-            <span>01</span>
-            <div><strong>Bind the account</strong><p>Set the Worker-only <code>NANOCODEX_API_KEY</code>. Its account must match this page’s signed-in account.</p></div>
-          </li>
-          <li>
-            <span>02</span>
-            <div><strong>Configure Slack</strong><p>Set <code>SLACK_BOT_TOKEN</code>, <code>SLACK_SIGNING_SECRET</code>, <code>SLACK_BOT_USER_ID</code>, and <code>SLACK_TEAM_ID</code> as Worker secrets.</p></div>
-          </li>
-          <li>
-            <span>03</span>
-            <div><strong>Register the webhook</strong><p>Use this URL for Slack Events API requests. Subscribe to app mentions and message events for each enabled channel type.</p></div>
-            {readiness?.webhookUrl ? <button type="button" onClick={() => void copyWebhook()}>
-              {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-              {copied ? "Copied" : "Copy URL"}
-            </button> : null}
-          </li>
-        </ol>
-        {readiness?.webhookUrl ? <code className="chief-webhook">{readiness.webhookUrl}</code> : null}
-        <p className="chief-secret-note">Credential values stay inside Worker bindings and are never returned to this application.</p>
+        <div className="chief-install-action">
+          <div>
+            <strong>One workspace approval</strong>
+            <p>Slack shows the bot permissions, then installs the app and returns you here. No token or webhook setup.</p>
+          </div>
+          {readiness?.installUrl ? <a className="chief-add-slack" href={readiness.installUrl}>
+            <Plus aria-hidden="true" /> Add to Slack
+          </a> : <span className="chief-install-unavailable">Deployment setup required</span>}
+        </div>
+        {(readiness?.installations ?? []).map((installation) => (
+          <div className="chief-installation" key={installation.teamId}>
+            <div>
+              <strong>{installation.teamName}</strong>
+              <p>Bot installed{installation.botUserId ? ` as ${installation.botUserId}` : ""}</p>
+            </div>
+            <button
+              type="button"
+              disabled={operation !== null}
+              onClick={() => void removeInstallation(installation.teamId)}
+            >
+              <Trash2 aria-hidden="true" />
+              {operation === installation.teamId ? "Removing" : "Remove"}
+            </button>
+          </div>
+        ))}
+        <p className="chief-secret-note">
+          This installs the AI bot. The separate Slack connector acts as your own Slack user and
+          has its own authorization, tokens, and workspace grants.
+        </p>
       </section>
     </article>
   );

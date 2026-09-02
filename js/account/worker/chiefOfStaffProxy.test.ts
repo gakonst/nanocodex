@@ -22,6 +22,30 @@ test("the account route preserves browser identity and targets only readiness", 
   assert.equal(forwarded!.headers.get("origin"), "https://nanocodex.example");
 });
 
+test("the account route exposes the bot install and exact workspace removal journeys", async () => {
+  const forwarded: string[] = [];
+  const binding = {
+    async fetch(request: Request) {
+      forwarded.push(`${request.method} ${new URL(request.url).pathname}`);
+      return new Response(null, { status: request.method === "GET" ? 302 : 204 });
+    },
+  };
+  const installUrl = new URL("https://nanocodex.example/api/chief-of-staff/slack/install");
+  const removeUrl = new URL("https://nanocodex.example/api/chief-of-staff/slack/installations/T123ABC");
+
+  await routeChiefOfStaff(new Request(installUrl), { CHIEF_OF_STAFF: binding }, installUrl);
+  await routeChiefOfStaff(
+    new Request(removeUrl, { method: "DELETE" }),
+    { CHIEF_OF_STAFF: binding },
+    removeUrl,
+  );
+
+  assert.deepEqual(forwarded, [
+    "GET /v1/slack/install",
+    "DELETE /v1/slack/installations/T123ABC",
+  ]);
+});
+
 test("the account route fences methods and missing bindings", async () => {
   const endpoint = "https://nanocodex.example/api/chief-of-staff/status";
   const post = await routeChiefOfStaff(

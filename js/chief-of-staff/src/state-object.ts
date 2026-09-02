@@ -7,7 +7,12 @@ import {
   type ConversationTurnRequest,
 } from "./conversation.ts";
 import { NanocodexManagedGateway } from "./managed.ts";
-import { sameChannelIdentity, type ChannelIdentity } from "./protocol.ts";
+import {
+  sameChannelIdentity,
+  validSlackInstallationMetadata,
+  type ChannelIdentity,
+  type SlackInstallationMetadata,
+} from "./protocol.ts";
 import type { Env } from "./worker.ts";
 
 type ExpiringValue = Readonly<{ expiresAt: number | null; value: unknown }>;
@@ -15,10 +20,34 @@ type ExpiringValue = Readonly<{ expiresAt: number | null; value: unknown }>;
 export class ChiefOfStaffState extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-    if (url.pathname === "/chat-sdk") return this.chatState(request);
-    if (url.pathname === "/conversation/turn") return this.conversationTurn(request);
+    if (url.pathname === "/chat-sdk" && request.method === "POST") return this.chatState(request);
+    if (url.pathname === "/conversation/turn" && request.method === "POST") return this.conversationTurn(request);
+    if (url.pathname === "/slack/installations") return this.slackInstallations(request);
     return json({ error: "not_found" }, 404);
+  }
+
+  private async slackInstallations(request: Request): Promise<Response> {
+    if (request.method === "GET") {
+      const retained = await this.ctx.storage.list<SlackInstallationMetadata>({ prefix: "slack:metadata:" });
+      const installations = [...retained.values()]
+        .filter(validSlackInstallationMetadata)
+        .sort((left, right) => right.installedAt - left.installedAt);
+      return json({ installations }, 200);
+    }
+    let body: unknown;
+    try { body = await request.json(); }
+    catch { return json({ error: "invalid_request" }, 400); }
+    if (!validSlackInstallationMetadata(body)) return json({ error: "invalid_request" }, 400);
+    const key = `slack:metadata:${body.teamId}`;
+    if (request.method === "PUT") {
+      await this.ctx.storage.put(key, body);
+      return new Response(null, { status: 204 });
+    }
+    if (request.method === "DELETE") {
+      await this.ctx.storage.delete(key);
+      return new Response(null, { status: 204 });
+    }
+    return json({ error: "method_not_allowed" }, 405);
   }
 
   private async conversationTurn(request: Request): Promise<Response> {

@@ -1,0 +1,44 @@
+display_information:
+  name: Nanocodex Chief of Staff
+  description: A durable AI teammate for your Slack workspace
+  background_color: "#111111"
+
+features:
+  bot_user:
+    display_name: Chief of Staff
+    always_online: true
+
+oauth_config:
+  redirect_urls:
+    - https://nanocodex-chief-of-staff.gakonst.workers.dev/v1/slack/callback
+  scopes:
+    bot:
+      - assistant:write
+      - app_mentions:read
+      - channels:history
+      - chat:write
+      - groups:history
+      - im:history
+      - mpim:history
+      - users:read
+
+settings:
+  event_subscriptions:
+    request_url: https://nanocodex-chief-of-staff.gakonst.workers.dev/webhooks/slack
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+      - app_home_opened
+      - app_context_changed
+      - app_uninstalled
+      - agent_session_stopped
+      - agent_session_title_changed
+  interactivity:
+    is_enabled: true
+    request_url: https://nanocodex-chief-of-staff.gakonst.workers.dev/webhooks/slack
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

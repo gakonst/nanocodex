@@ -1,4 +1,4 @@
-import { createSlackAdapter } from "@chat-adapter/slack";
+import { createSlackAdapter, type SlackAdapter } from "@chat-adapter/slack";
 import {
   readSlackWebhook,
   type SlackWebhookPayload,
@@ -9,27 +9,37 @@ import {
   configurationReadiness,
   digest,
   slackMessageIdentity,
-  slackPayloadIsFenced,
+  slackTeamId,
+  validSlackInstallationMetadata,
   type Readiness,
+  type SlackInstallationMetadata,
 } from "./protocol.ts";
+import { slackAuthorizationUrl, verifySlackInstallState } from "./slack-oauth.ts";
 import { DurableChatStateAdapter } from "./state-adapter.ts";
 
 type Fetcher = Readonly<{ fetch(request: Request): Promise<Response> }>;
 type StateNamespace = Readonly<{ getByName(name: string): Fetcher }>;
 
 export interface Env {
+  CHIEF_OF_STAFF_ACCOUNT_ORIGIN?: string;
   CHIEF_OF_STAFF_PUBLIC_ORIGIN?: string;
   CHIEF_OF_STAFF_STATE: StateNamespace;
   NANOCODEX_API_KEY?: string;
   NANOCODEX_BACKEND?: Fetcher;
-  SLACK_BOT_TOKEN?: string;
-  SLACK_BOT_USER_ID?: string;
+  SLACK_API_URL?: string;
+  SLACK_CLIENT_ID?: string;
+  SLACK_CLIENT_SECRET?: string;
+  SLACK_ENCRYPTION_KEY?: string;
+  SLACK_OAUTH_STATE_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
-  SLACK_TEAM_ID?: string;
 }
 
-const chats = new WeakMap<object, Chat>();
+type ChiefRuntime = Readonly<{ chat: Chat<{ slack: SlackAdapter }>; slack: SlackAdapter }>;
+
+const runtimes = new WeakMap<object, ChiefRuntime>();
 const ownerIds = new WeakMap<object, Promise<string | undefined>>();
+const INSTALLATIONS_OBJECT = "chat-sdk:slack";
+const SLACK_TEAM_ID = /^T[A-Z0-9]+$/;
 
 export default {
   async fetch(request: Request, env: Env, context?: ExecutionContext): Promise<Response> {
@@ -40,6 +50,19 @@ export default {
     if (url.pathname === "/v1/readiness" && request.method === "GET") {
       return readiness(request, env);
     }
+    if (url.pathname === "/v1/slack/install") {
+      if (request.method !== "GET") return methodNotAllowed(["GET"]);
+      return beginSlackInstall(request, env);
+    }
+    if (url.pathname === "/v1/slack/callback") {
+      if (request.method !== "GET") return methodNotAllowed(["GET"]);
+      return finishSlackInstall(request, env);
+    }
+    const slackInstallation = url.pathname.match(/^\/v1\/slack\/installations\/(T[A-Z0-9]+)$/);
+    if (slackInstallation) {
+      if (request.method !== "DELETE") return methodNotAllowed(["DELETE"]);
+      return removeSlackInstallation(request, env, slackInstallation[1]!);
+    }
     if (url.pathname === "/webhooks/slack") {
       if (request.method !== "POST") return methodNotAllowed(["POST"]);
       return slackWebhook(request, env, context);
@@ -48,13 +71,119 @@ export default {
   },
 };
 
+async function beginSlackInstall(request: Request, env: Env): Promise<Response> {
+  const config = configurationReadiness(env);
+  if (!config.configured || !env.NANOCODEX_BACKEND || !env.SLACK_CLIENT_ID
+    || !env.SLACK_OAUTH_STATE_SECRET || !env.CHIEF_OF_STAFF_PUBLIC_ORIGIN) {
+    return json({ error: "slack_app_not_configured" }, { status: 503 });
+  }
+  const requester = await requestingAccountId(env.NANOCODEX_BACKEND, request);
+  if (!requester) return json({ error: "unauthorized" }, { status: 401 });
+  if (await configuredOwnerId(env) !== requester) {
+    return json({ error: "account_forbidden" }, { status: 403 });
+  }
+  const redirectUri = new URL("/v1/slack/callback", env.CHIEF_OF_STAFF_PUBLIC_ORIGIN).href;
+  const authorization = await slackAuthorizationUrl({
+    accountId: requester,
+    clientId: env.SLACK_CLIENT_ID,
+    redirectUri,
+    stateSecret: env.SLACK_OAUTH_STATE_SECRET,
+  });
+  return new Response(null, {
+    status: 302,
+    headers: {
+      "cache-control": "no-store",
+      location: authorization.href,
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
+
+async function finishSlackInstall(request: Request, env: Env): Promise<Response> {
+  const config = configurationReadiness(env);
+  if (!config.configured || !env.SLACK_OAUTH_STATE_SECRET || !env.CHIEF_OF_STAFF_PUBLIC_ORIGIN) {
+    return json({ error: "slack_app_not_configured" }, { status: 503 });
+  }
+  const url = new URL(request.url);
+  if (url.searchParams.has("error")) return installationReturn(env, "cancelled");
+  const state = await verifySlackInstallState(
+    url.searchParams.get("state") ?? "",
+    env.SLACK_OAUTH_STATE_SECRET,
+  );
+  if (!state || await configuredOwnerId(env) !== state.accountId) {
+    return json({ error: "invalid_oauth_state" }, { status: 400 });
+  }
+  try {
+    const runtime = chiefRuntime(env);
+    await runtime.chat.initialize();
+    const result = await runtime.slack.handleOAuthCallback(request, {
+      redirectUri: new URL("/v1/slack/callback", env.CHIEF_OF_STAFF_PUBLIC_ORIGIN).href,
+    });
+    if (result.isEnterpriseInstall || !SLACK_TEAM_ID.test(result.teamId)) {
+      await runtime.slack.deleteInstallation(result.teamId);
+      return installationReturn(env, "workspace_required");
+    }
+    const metadata = {
+      accountId: state.accountId,
+      botUserId: result.installation.botUserId ?? null,
+      installedAt: Date.now(),
+      teamId: result.teamId,
+      teamName: result.installation.teamName?.trim() || result.teamId,
+    } satisfies SlackInstallationMetadata;
+    await writeInstallationMetadata(env, metadata, "PUT");
+    return installationReturn(env, "installed");
+  } catch (error) {
+    console.warn({
+      type: "chief_of_staff.slack_install_failed",
+      error_kind: error instanceof Error ? error.name : typeof error,
+    });
+    return installationReturn(env, "failed");
+  }
+}
+
+async function removeSlackInstallation(
+  request: Request,
+  env: Env,
+  teamId: string,
+): Promise<Response> {
+  if (!env.NANOCODEX_BACKEND) {
+    return json({ error: "managed_service_unavailable" }, { status: 503 });
+  }
+  const requester = await requestingAccountId(env.NANOCODEX_BACKEND, request);
+  if (!requester) return json({ error: "unauthorized" }, { status: 401 });
+  const metadata = await installationMetadata(env, teamId);
+  if (!metadata) return json({ error: "not_found" }, { status: 404 });
+  if (metadata.accountId !== requester || await configuredOwnerId(env) !== requester) {
+    return json({ error: "account_forbidden" }, { status: 403 });
+  }
+  const runtime = chiefRuntime(env);
+  await runtime.chat.initialize();
+  const installation = await runtime.slack.getInstallation(teamId);
+  if (installation && env.SLACK_CLIENT_ID && env.SLACK_CLIENT_SECRET) {
+    await runtime.slack.withBotToken(
+      installation.botToken,
+      () => runtime.slack.webClient.apps.uninstall({
+        client_id: env.SLACK_CLIENT_ID!,
+        client_secret: env.SLACK_CLIENT_SECRET!,
+      }),
+      { installationId: teamId },
+    );
+  }
+  await runtime.slack.deleteInstallation(teamId);
+  await writeInstallationMetadata(env, metadata, "DELETE");
+  return new Response(null, {
+    status: 204,
+    headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  });
+}
+
 async function slackWebhook(
   request: Request,
   env: Env,
   context?: ExecutionContext,
 ): Promise<Response> {
   const config = configurationReadiness(env);
-  if (!config.configured || !env.SLACK_SIGNING_SECRET || !env.SLACK_TEAM_ID) {
+  if (!config.configured || !env.SLACK_SIGNING_SECRET) {
     return json({ error: "channel_not_configured" }, { status: 503 });
   }
   let payload: SlackWebhookPayload;
@@ -68,22 +197,36 @@ async function slackWebhook(
       headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
     });
   }
-  if (!slackPayloadIsFenced(payload, env.SLACK_TEAM_ID)) {
+  if (payload.kind === "url_verification") {
+    return json({ challenge: payload.challenge });
+  }
+  const teamId = slackTeamId(payload);
+  const metadata = teamId ? await installationMetadata(env, teamId) : undefined;
+  if (!metadata || metadata.accountId !== await configuredOwnerId(env)) {
     return json({ error: "workspace_forbidden" }, { status: 403 });
   }
+  if (slackEventType(payload) === "app_uninstalled") {
+    const runtime = chiefRuntime(env);
+    await runtime.chat.initialize();
+    await runtime.slack.deleteInstallation(teamId!);
+    await writeInstallationMetadata(env, metadata, "DELETE");
+    return json({ ok: true });
+  }
   try {
-    const webhookRequest = request as unknown as Parameters<Chat["webhooks"]["slack"]>[0];
-    return await chiefChat(env).webhooks.slack(webhookRequest, {
-      waitUntil(task) {
-        const handled = task.catch((error) => {
-          console.warn({
-            type: "chief_of_staff.slack_delivery_failed",
-            error_kind: error instanceof Error ? error.name : typeof error,
+    return await chiefRuntime(env).chat.webhooks.slack(
+      request as unknown as Parameters<Chat["webhooks"]["slack"]>[0],
+      {
+        waitUntil(task) {
+          const handled = task.catch((error) => {
+            console.warn({
+              type: "chief_of_staff.slack_delivery_failed",
+              error_kind: error instanceof Error ? error.name : typeof error,
+            });
           });
-        });
-        if (context) context.waitUntil(handled);
+          if (context) context.waitUntil(handled);
+        },
       },
-    });
+    );
   } catch (error) {
     console.warn({
       type: "chief_of_staff.slack_webhook_failed",
@@ -93,19 +236,21 @@ async function slackWebhook(
   }
 }
 
-function chiefChat(env: Env): Chat {
-  const retained = chats.get(env as object);
+function chiefRuntime(env: Env): ChiefRuntime {
+  const retained = runtimes.get(env as object);
   if (retained) return retained;
-  const stateObject = env.CHIEF_OF_STAFF_STATE.getByName("chat-sdk:slack");
+  const stateObject = env.CHIEF_OF_STAFF_STATE.getByName(INSTALLATIONS_OBJECT);
   const slack = createSlackAdapter({
     agentView: true,
-    botToken: env.SLACK_BOT_TOKEN!,
-    botUserId: env.SLACK_BOT_USER_ID!,
+    apiUrl: env.SLACK_API_URL,
+    clientId: env.SLACK_CLIENT_ID,
+    clientSecret: env.SLACK_CLIENT_SECRET,
+    encryptionKey: env.SLACK_ENCRYPTION_KEY,
     logger: undefined,
     signingSecret: undefined,
     webhookVerifier: () => true,
   });
-  const bot = new Chat({
+  const chat = new Chat({
     adapters: { slack },
     concurrency: "concurrent",
     dedupeTtlMs: 24 * 60 * 60 * 1_000,
@@ -115,9 +260,12 @@ function chiefChat(env: Env): Chat {
   });
   const handle = async (thread: Thread, message: Message) => {
     await thread.subscribe();
-    const ownerId = await configuredOwnerId(env);
-    if (!ownerId) throw new Error("Configured Nanocodex account is unavailable");
-    const identity = slackMessageIdentity(message.raw, thread.id, thread.isDM, ownerId);
+    const teamId = messageTeamId(message.raw);
+    const metadata = teamId ? await installationMetadata(env, teamId) : undefined;
+    if (!metadata || metadata.accountId !== await configuredOwnerId(env)) {
+      throw new Error("Slack installation owner is unavailable");
+    }
+    const identity = slackMessageIdentity(message.raw, thread.id, thread.isDM, metadata.accountId);
     const routeDigest = await digest(identity.channel);
     const session = env.CHIEF_OF_STAFF_STATE.getByName(`conversation:${routeDigest}`);
     try {
@@ -138,11 +286,12 @@ function chiefChat(env: Env): Chat {
     if (typeof result.finalMessage !== "string") throw new Error("Chief of Staff turn was malformed");
     await thread.post(result.finalMessage);
   };
-  bot.onDirectMessage(handle);
-  bot.onNewMention(handle);
-  bot.onSubscribedMessage(handle);
-  chats.set(env as object, bot);
-  return bot;
+  chat.onDirectMessage(handle);
+  chat.onNewMention(handle);
+  chat.onSubscribedMessage(handle);
+  const runtime = { chat, slack };
+  runtimes.set(env as object, runtime);
+  return runtime;
 }
 
 async function readiness(request: Request, env: Env): Promise<Response> {
@@ -154,26 +303,36 @@ async function readiness(request: Request, env: Env): Promise<Response> {
   const config = configurationReadiness(env);
   const owner = config.configured ? await configuredOwnerId(env) : undefined;
   const accountMatch = owner === requester;
+  const installations = accountMatch
+    ? (await installationMetadataList(env))
+      .filter((installation) => installation.accountId === requester)
+      .map(({ accountId: _, ...installation }) => installation)
+    : [];
+  const ready = config.configured && accountMatch && installations.length > 0;
   const body: Readiness = {
     accountMatch,
-    configured: config.configured && accountMatch,
+    configured: ready,
+    installations,
+    installUrl: config.configured && accountMatch ? "/api/chief-of-staff/slack/install" : null,
     webhookUrl: config.webhookUrl,
     channels: [
       {
         id: "slack",
-        availability: config.configured && accountMatch ? "ready" : "setup_required",
+        availability: ready ? "ready" : "setup_required",
         contract: "first_party",
-        detail: config.configured
-          ? accountMatch
-            ? "Signed Slack events route to account-owned durable agents."
-            : "This deployment is bound to a different Nanocodex account."
-          : "Worker secrets, workspace identity, or public origin are incomplete.",
+        detail: ready
+          ? `${installations.length} Slack workspace${installations.length === 1 ? "" : "s"} route bot events to account-owned durable agents.`
+          : config.configured
+            ? accountMatch
+              ? "Install the Chief of Staff bot into a Slack workspace."
+              : "This deployment is bound to a different Nanocodex account."
+            : "The shared Slack app is not configured by the deployment operator.",
       },
       {
         id: "whatsapp",
         availability: "not_enabled",
         contract: "first_party",
-        detail: "The current SDK adapter is supported, but this first deployment does not claim a configured Meta webhook.",
+        detail: "The current SDK adapter is supported, but this deployment does not claim a configured Meta webhook.",
       },
       {
         id: "imessage",
@@ -186,6 +345,46 @@ async function readiness(request: Request, env: Env): Promise<Response> {
   return json(body);
 }
 
+async function installationMetadataList(env: Env): Promise<SlackInstallationMetadata[]> {
+  const response = await installationsObject(env).fetch(
+    new Request("https://state.internal/slack/installations"),
+  );
+  if (!response.ok) throw new Error("Slack installation metadata is unavailable");
+  const body: unknown = await response.json();
+  if (!isRecord(body) || !Array.isArray(body.installations)) {
+    throw new Error("Slack installation metadata is malformed");
+  }
+  return body.installations.filter(validSlackInstallationMetadata);
+}
+
+async function installationMetadata(
+  env: Env,
+  teamId: string,
+): Promise<SlackInstallationMetadata | undefined> {
+  return (await installationMetadataList(env)).find((installation) => installation.teamId === teamId);
+}
+
+async function writeInstallationMetadata(
+  env: Env,
+  metadata: SlackInstallationMetadata,
+  method: "DELETE" | "PUT",
+): Promise<void> {
+  const response = await installationsObject(env).fetch(new Request(
+    "https://state.internal/slack/installations",
+    {
+      body: JSON.stringify(metadata),
+      headers: { "content-type": "application/json" },
+      method,
+    },
+  ));
+  if (!response.ok) throw new Error("Slack installation metadata update failed");
+  await response.body?.cancel();
+}
+
+function installationsObject(env: Env): Fetcher {
+  return env.CHIEF_OF_STAFF_STATE.getByName(INSTALLATIONS_OBJECT);
+}
+
 function configuredOwnerId(env: Env): Promise<string | undefined> {
   const retained = ownerIds.get(env as object);
   if (retained) return retained;
@@ -194,6 +393,32 @@ function configuredOwnerId(env: Env): Promise<string | undefined> {
     : Promise.resolve(undefined);
   ownerIds.set(env as object, loading);
   return loading;
+}
+
+function installationReturn(env: Env, result: string): Response {
+  let origin: URL;
+  try { origin = new URL(env.CHIEF_OF_STAFF_ACCOUNT_ORIGIN ?? ""); }
+  catch { return json({ error: `slack_install_${result}` }, { status: result === "installed" ? 200 : 400 }); }
+  if (origin.protocol !== "https:" || origin.pathname !== "/" || origin.search || origin.hash) {
+    return json({ error: `slack_install_${result}` }, { status: result === "installed" ? 200 : 400 });
+  }
+  const target = new URL("/demos/chief-of-staff", origin);
+  target.searchParams.set("slack", result);
+  return new Response(null, {
+    status: 303,
+    headers: { "cache-control": "no-store", location: target.href },
+  });
+}
+
+function messageTeamId(raw: unknown): string | undefined {
+  if (!isRecord(raw)) return undefined;
+  const value = raw.team_id ?? raw.team;
+  return typeof value === "string" && SLACK_TEAM_ID.test(value) ? value : undefined;
+}
+
+function slackEventType(payload: SlackWebhookPayload): string | undefined {
+  if (!isRecord(payload.raw) || !isRecord(payload.raw.event)) return undefined;
+  return typeof payload.raw.event.type === "string" ? payload.raw.event.type : undefined;
 }
 
 function methodNotAllowed(methods: readonly string[]): Response {
@@ -212,4 +437,8 @@ function json(body: unknown, init: ResponseInit = {}): Response {
       ...init.headers,
     },
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
