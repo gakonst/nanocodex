@@ -64,10 +64,10 @@ jobs:
         run: |
           pnpm exec turbo run build \
             --filter nanocodex-terminal \
+            --filter @nanocodex/connect-api \
             --filter @nanocodex/connect-dialog \
             --filter @nanocodex/connect-playground \
             --filter nanocodex-web
-          pnpm --filter @nanocodex/connect-api run typecheck
       # Cloudflare does not issue preview URLs for Durable Object or container
       # Workers. Dry-run those and publish previews only for asset Workers.
       - name: Validate egress Worker
@@ -136,10 +136,10 @@ jobs:
         run: |
           pnpm exec turbo run build \
             --filter nanocodex-terminal \
+            --filter @nanocodex/connect-api \
             --filter @nanocodex/connect-dialog \
             --filter @nanocodex/connect-playground \
             --filter nanocodex-web
-          pnpm --filter @nanocodex/connect-api run typecheck
       - name: Deploy egress broker
         working-directory: js/egress
         run: npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"

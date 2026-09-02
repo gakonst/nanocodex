@@ -10,6 +10,10 @@
       "cache": false,
       "outputs": []
     },
+    "@nanocodex/connect-api#build": {
+      "dependsOn": ["nanocodex-connect-protocol#build"],
+      "outputs": []
+    },
     "nanocodex-web#build": {
       "cache": false,
       "dependsOn": ["^build"],
