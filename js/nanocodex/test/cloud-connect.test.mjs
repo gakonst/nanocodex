@@ -689,6 +689,9 @@ test("Connect binds normalized cloud accounts into auth resources and the connec
   const walletRequests = [];
   const expiry = Math.floor(Date.now() / 1_000) + 3_600;
   const keyId = "0x1111111111111111111111111111111111111111";
+  const githubConnection = "a".repeat(43);
+  const googleConnection = "b".repeat(43);
+  const slackConnection = "c".repeat(43);
   const client = Client.create({
     appId: "connector-workspace",
     appOrigin: "https://consumer.example",
@@ -741,8 +744,17 @@ test("Connect binds normalized cloud accounts into auth resources and the connec
               "agent.trace.read",
               "github",
               "gdrive",
+              "gcalendar",
+              "slack",
               "x",
               ],
+              connectorConnections: {
+                github: [githubConnection],
+                gdrive: [googleConnection],
+                gcalendar: [googleConnection],
+                slack: [slackConnection],
+                x: ["d".repeat(43)],
+              },
             });
           },
         };
@@ -767,6 +779,8 @@ test("Connect binds normalized cloud accounts into auth resources and the connec
         github: true,
         gmail: false,
         gdrive: true,
+        gcalendar: true,
+        slack: true,
         x: true,
         chatgpt: "true",
         unknown: true,
@@ -792,7 +806,7 @@ test("Connect binds normalized cloud accounts into auth resources and the connec
             "urn:example:configured",
             "urn:nanocodex:app:connector-workspace",
             "urn:nanocodex:origin:https%3A%2F%2Fconsumer.example",
-            "urn:nanocodex:connectors:github,gdrive,x",
+            "urn:nanocodex:connectors:github,gdrive,gcalendar,slack,x",
             "urn:nanocodex:agent:visibility:reply,actions,history,traces",
             "urn:nanocodex:agent:conversation:0f5f2ab8-2585-4d7c-9403-0de76f55ad18",
           ],
@@ -800,12 +814,19 @@ test("Connect binds normalized cloud accounts into auth resources and the connec
       },
     }],
   }]);
-  assert.deepEqual(requests[0].body.requested_connectors, ["github", "gdrive", "x"]);
+  assert.deepEqual(requests[0].body.requested_connectors, ["github", "gdrive", "gcalendar", "slack", "x"]);
   assert.equal("agent" in requests[0].body, false);
   assert.equal("visibility" in requests[0].body, false);
   assert.equal(requests[0].body.approval_id, "approval-test");
   assert.equal(requests[0].headers, undefined);
-  assert.deepEqual(connection.grant.connectors, ["github", "gdrive", "x"]);
+  assert.deepEqual(connection.grant.connectors, ["github", "gdrive", "gcalendar", "slack", "x"]);
+  assert.deepEqual(connection.grant.connectorConnections, {
+    github: [githubConnection],
+    gdrive: [googleConnection],
+    gcalendar: [googleConnection],
+    slack: [slackConnection],
+    x: ["d".repeat(43)],
+  });
   assert.deepEqual(connection.grant.visibility, {
     finalMessages: true,
     actionSummaries: true,
@@ -1120,6 +1141,37 @@ test("Connect rejects contradictory MCP capability and metadata projections", ()
     capabilities: ["nanocodex.agent", `mcp:${mcpId}`],
     mcpConnections: [{ id: substitutedMcpId, name: "Substituted metadata" }],
   })), /MCP capabilities and metadata must match exactly/);
+});
+
+test("Connect reads exact connector connection selections and rejects widening metadata", () => {
+  const expiry = Math.floor(Date.now() / 1_000) + 3_600;
+  const keyId = "0x1111111111111111111111111111111111111111";
+  const connectionId = "a".repeat(43);
+  const legacy = connectionFromWire(testConnectionWire({
+    expiry,
+    keyId,
+    capabilities: ["nanocodex.agent", "slack"],
+  }));
+  assert.equal(legacy.grant.connectorConnections, undefined);
+
+  assert.throws(() => connectionFromWire(testConnectionWire({
+    expiry,
+    keyId,
+    capabilities: ["nanocodex.agent", "slack"],
+    connectorConnections: { github: [connectionId] },
+  })), /ungranted connector capability/);
+  assert.throws(() => connectionFromWire(testConnectionWire({
+    expiry,
+    keyId,
+    capabilities: ["nanocodex.agent", "slack"],
+    connectorConnections: { slack: ["not-an-id"] },
+  })), /opaque connection ID/);
+  assert.throws(() => connectionFromWire(testConnectionWire({
+    expiry,
+    keyId,
+    capabilities: ["nanocodex.agent", "slack"],
+    connectorConnections: { slack: [connectionId, connectionId] },
+  })), /duplicate connections/);
 });
 
 test("Connect keeps the hosted dialog open until the grant session is committed", async () => {
@@ -1663,6 +1715,7 @@ test("Nanocodex Connect signs one witness-bound access key and enforces its MPP 
           "repositories",
           "model-entitlement",
           "urn:nanocodex:app:test-workspace",
+          "urn:nanocodex:connectors:x",
           "urn:nanocodex:agent:visibility:reply,actions",
         ]);
         return {
@@ -1694,9 +1747,11 @@ test("Nanocodex Connect signs one witness-bound access key and enforces its MPP 
         "model-entitlement",
         "urn:nanocodex:agent:trace:read",
       ] },
+      cloudAccounts: { x: true },
     },
   });
   assert.equal(connection.grant.status, "active");
+  assert.match(connection.grant.connectorConnections.x[0], /^[A-Za-z0-9_-]{43}$/);
   assert.deepEqual(connection.grant.visibility, {
     finalMessages: true,
     actionSummaries: true,
@@ -1742,6 +1797,7 @@ test("Nanocodex Connect signs one witness-bound access key and enforces its MPP 
 
   const revoked = await client.grant.revoke({ grantId: connection.grant.id });
   assert.equal(revoked.status, "revoked");
+  assert.deepEqual(revoked.connectorConnections, connection.grant.connectorConnections);
 });
 
 test("recognized visibility capabilities do not receive the legacy output fallback", () => {
@@ -1799,6 +1855,7 @@ function testConnectionWire({
   agentId = "agent_connectors",
   conversationId,
   mcpConnections = [],
+  connectorConnections,
   appToolCatalogDigest,
   authorizationMode = "access_key",
 }) {
@@ -1814,6 +1871,9 @@ function testConnectionWire({
       capabilities,
       ...(conversationId === undefined ? {} : { conversation_id: conversationId }),
       mcp_connections: mcpConnections,
+      ...(connectorConnections === undefined ? {} : {
+        connector_connections: connectorConnections,
+      }),
       ...(appToolCatalogDigest === undefined ? {} : {
         app_tool_catalog_digest: appToolCatalogDigest,
       }),

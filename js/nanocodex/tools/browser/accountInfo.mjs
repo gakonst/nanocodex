@@ -1,6 +1,32 @@
 import { namedTool } from "../namedTool.mjs";
 
-const CONNECTOR_IDS = ["github", "gmail", "gdrive", "x", "chatgpt"];
+const CONNECTOR_IDS = [
+  "github",
+  "gmail",
+  "gdrive",
+  "gcalendar",
+  "gtasks",
+  "gdocs",
+  "gsheets",
+  "gslides",
+  "gcontacts",
+  "slack",
+  "x",
+  "chatgpt",
+];
+const CONNECTOR_CONNECTION_IDS = CONNECTOR_IDS.filter((id) => id !== "chatgpt");
+const CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
+const CONNECTOR_CONNECTION_SCHEMA = {
+  type: "object",
+  properties: {
+    id: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+    label: { type: "string" },
+    accountId: { type: "string" },
+    capabilities: { type: "array", items: { type: "string", enum: CONNECTOR_IDS } },
+  },
+  required: ["id", "label"],
+  additionalProperties: false,
+};
 const LIMIT_SCHEMA = {
   type: "object",
   properties: {
@@ -26,6 +52,14 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
     accounts: {
       type: "object",
       properties: Object.fromEntries(CONNECTOR_IDS.map((id) => [id, { type: "string" }])),
+      additionalProperties: false,
+    },
+    connectorAccounts: {
+      type: "object",
+      properties: Object.fromEntries(CONNECTOR_IDS.map((id) => [id, {
+        type: "array",
+        items: CONNECTOR_CONNECTION_SCHEMA,
+      }])),
       additionalProperties: false,
     },
     identity: {
@@ -58,6 +92,16 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
           expiresAt: { type: "integer" },
           capabilities: { type: "array", items: { type: "string" } },
           connectors: { type: "array", items: { type: "string", enum: CONNECTOR_IDS } },
+          connectorConnections: {
+            type: "object",
+            properties: Object.fromEntries(CONNECTOR_CONNECTION_IDS.map((id) => [id, {
+              type: "array",
+              maxItems: 64,
+              uniqueItems: true,
+              items: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+            }])),
+            additionalProperties: false,
+          },
           accessKey: {
             type: "object",
             properties: {
@@ -109,7 +153,7 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
       },
     },
   },
-  required: ["status", "authenticated", "accounts", "identity", "stablecoins", "authorizations"],
+  required: ["status", "authenticated", "accounts", "connectorAccounts", "identity", "stablecoins", "authorizations"],
   additionalProperties: false,
 });
 
@@ -169,12 +213,23 @@ export async function browserAccountInfo(options, signal) {
     const value = await response.json();
     if (!record(value) || !record(value.connectors)) return emptyInfo("unavailable");
     const accounts = {};
+    const connectorAccounts = {};
     const authenticated = CONNECTOR_IDS.filter((id) => {
       const connector = value.connectors[id];
       if (!record(connector) || connector.connected !== true) return false;
-      if (typeof connector.label === "string" && connector.label.trim()) {
-        accounts[id] = connector.label.trim();
+      if (Array.isArray(connector.connections)) {
+        if (connector.connections.length > 64) throw new Error("too many connector accounts");
+        const connections = connector.connections.map(connectorAccount);
+        if (new Set(connections.map(({ id: connectionId }) => connectionId)).size
+          !== connections.length) throw new Error("duplicate connector accounts");
+        connectorAccounts[id] = connections;
+        if (connections.length === 1) accounts[id] = connections[0].label;
+        return connections.length > 0;
       }
+      // Backward-compatible legacy singleton status.
+      const legacyLabel = boundedString(connector.label, 256)
+        ?? boundedString(connector.account_id, 256);
+      if (legacyLabel) accounts[id] = legacyLabel;
       return true;
     });
     const accountIdentity = identity(value.identity);
@@ -195,6 +250,7 @@ export async function browserAccountInfo(options, signal) {
       status: "ready",
       authenticated,
       accounts,
+      connectorAccounts,
       identity: accountIdentity,
       stablecoins: accountStablecoins,
       authorizations: accountAuthorizations,
@@ -210,10 +266,48 @@ function emptyInfo(status) {
     status,
     authenticated: [],
     accounts: {},
+    connectorAccounts: {},
     identity: {},
     stablecoins: [],
     authorizations: [],
   };
+}
+
+function connectorAccount(value) {
+  if (!record(value) || typeof value.id !== "string" || !CONNECTION_ID.test(value.id)) {
+    throw new Error("invalid connector account");
+  }
+  const label = boundedString(value.label, 256);
+  const accountId = value.account_id === undefined
+    ? undefined
+    : boundedString(value.account_id, 256);
+  const capabilities = value.capabilities === undefined
+    ? undefined
+    : connectorCapabilities(value.capabilities);
+  if (!label || (value.account_id !== undefined && !accountId)) {
+    throw new Error("invalid connector account");
+  }
+  return {
+    id: value.id,
+    label,
+    ...(accountId === undefined ? {} : { accountId }),
+    ...(capabilities === undefined ? {} : { capabilities }),
+  };
+}
+
+function connectorCapabilities(value) {
+  if (!Array.isArray(value) || value.length > CONNECTOR_IDS.length
+    || value.some((capability) => !CONNECTOR_IDS.includes(capability))
+    || new Set(value).size !== value.length) {
+    throw new Error("invalid connector capabilities");
+  }
+  return [...value];
+}
+
+function boundedString(value, maxLength) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized && normalized.length <= maxLength ? normalized : undefined;
 }
 
 function identity(value) {
@@ -240,6 +334,11 @@ function authorizations(value) {
     expiresAt: authorization.expiresAt,
     capabilities: [...authorization.capabilities],
     connectors: [...authorization.connectors],
+    ...(authorization.connectorConnections === undefined ? {} : {
+      connectorConnections: Object.fromEntries(Object.entries(
+        authorization.connectorConnections,
+      ).map(([connector, ids]) => [connector, [...ids]])),
+    }),
     accessKey: {
       id: authorization.accessKey.id,
       expiry: authorization.accessKey.expiry,
@@ -275,8 +374,22 @@ function validAuthorization(value) {
     && stringArray(value.capabilities)
     && Array.isArray(value.connectors)
     && value.connectors.every((connector) => CONNECTOR_IDS.includes(connector))
+    && validConnectorConnections(value.connectorConnections, value.connectors)
     && validAccessKey(value.accessKey)
     && validSpend(value.spend);
+}
+
+function validConnectorConnections(value, granted) {
+  if (value === undefined) return true;
+  if (!record(value)) return false;
+  return Object.entries(value).every(([connector, ids]) => (
+    CONNECTOR_CONNECTION_IDS.includes(connector)
+    && granted.includes(connector)
+    && Array.isArray(ids)
+    && ids.length <= 64
+    && ids.every((id) => typeof id === "string" && CONNECTION_ID.test(id))
+    && new Set(ids).size === ids.length
+  ));
 }
 
 function validAccessKey(value) {

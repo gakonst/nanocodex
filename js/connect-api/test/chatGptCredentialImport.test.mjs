@@ -6,7 +6,7 @@ import {
   chatGptCredentialImportResource,
   credentialImportDigestFromResources,
   parseChatGptCredentialImport,
-} from "../src/chatGptCredentialImport.mjs";
+} from "../src/chatGptCredentialImport.mts";
 
 const vectors = [
   {

@@ -1409,6 +1409,7 @@ export async function prewarmWorkerRuntime(
 function assertNoFunctions(value, label, seen = new Set(), path = label) {
   if (typeof value === "function") throw new TypeError(`${path} cannot contain functions across the Worker boundary`);
   if (!value || typeof value !== "object" || seen.has(value)) return;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return;
   seen.add(value);
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key === "symbol") continue;

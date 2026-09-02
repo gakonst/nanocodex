@@ -38,7 +38,14 @@ import {
 import { fetchResponseWithDeadline, withHardDeadline } from "./deadline";
 import { drainRuntimeForDeletion } from "./deletion-runtime";
 import { createManagedComputerRuntime } from "./computer-runtime";
-import type { ManagedEgressConnectorId } from "./managed-egress";
+import {
+  exactConnectorAccess,
+  type ManagedEgressConnectorId,
+} from "./managed-egress";
+import {
+  CONNECTOR_CAPABILITY_IDS,
+  type ConnectorConnectionSelection,
+} from "./connector-status";
 import {
   DurableEventLog,
   EventLogCapacityError,
@@ -148,6 +155,9 @@ import { routeAccountLinkRequest } from "./account-links";
 import { routeManagedRealtimeTransport } from "./managed-realtime-transport";
 import {
   HistorySearchError,
+  MAX_HISTORY_SEARCH_LIMIT,
+  groupHistoryCitations,
+  mergeHistoryCitations,
   parseHistoryFindSessionsInput,
   parseHistoryReadSessionInput,
   type HistoryCitation,
@@ -159,10 +169,14 @@ import {
 } from "./history-search";
 import {
   DurableMemoryError,
+  MEMORY_TOOL_INSTRUCTIONS,
   parseMemoryKey,
   parseMemoryOperation,
+  parseMemoryResult,
   type MemoryOperation,
+  type MemoryResult,
 } from "./durable-memory";
+import { memorySessionTools } from "./memory-session-tools";
 import { MemoryScope } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
 export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account-auth";
@@ -212,6 +226,7 @@ const SESSION_AUTHORIZATION_EPOCH_ASSERTION = "x-nanocodex-authorization-epoch";
 const SESSION_CAPABILITIES_ASSERTION = "x-nanocodex-capabilities";
 const CONNECT_GRANT_ID_ASSERTION = "x-nanocodex-connect-grant-id";
 const CONNECT_CONNECTORS_ASSERTION = "x-nanocodex-connect-connectors";
+const CONNECT_CONNECTOR_CONNECTIONS_ASSERTION = "x-nanocodex-connect-connector-connections";
 const CONNECT_MCP_IDS_ASSERTION = "x-nanocodex-connect-mcp-ids";
 const CONNECT_APP_TOOL_CATALOG_DIGEST_ASSERTION = "x-nanocodex-connect-app-tool-catalog-digest";
 const MEMORY_ORGANIZATION_ASSERTION = "x-nanocodex-organization-id";
@@ -532,11 +547,13 @@ function forwardedPrincipal(headers: Headers): Readonly<{
   try {
     const grantId = headers.get(CONNECT_GRANT_ID_ASSERTION);
     const encodedConnectors = headers.get(CONNECT_CONNECTORS_ASSERTION);
+    const encodedConnectorConnections = headers.get(CONNECT_CONNECTOR_CONNECTIONS_ASSERTION);
     const encodedMcpIds = headers.get(CONNECT_MCP_IDS_ASSERTION);
     const appToolCatalogDigest = headers.get(CONNECT_APP_TOOL_CATALOG_DIGEST_ASSERTION);
     const connectAssertions = [grantId, encodedConnectors, encodedMcpIds];
     if (connectAssertions.some((value) => value !== null)
       && connectAssertions.some((value) => value === null)) return undefined;
+    if (encodedConnectorConnections !== null && grantId === null) return undefined;
     if (appToolCatalogDigest !== null && grantId === null) return undefined;
     authorization = parseTurnAuthorization(JSON.stringify({
       capabilities: JSON.parse(encodedCapabilities),
@@ -544,6 +561,9 @@ function forwardedPrincipal(headers: Headers): Readonly<{
         connectGrant: {
           grantId,
           connectors: JSON.parse(encodedConnectors!),
+          ...(encodedConnectorConnections === null ? {} : {
+            connectorConnections: JSON.parse(encodedConnectorConnections),
+          }),
           mcpIds: JSON.parse(encodedMcpIds!),
           ...(appToolCatalogDigest === null ? {} : { appToolCatalogDigest }),
         },
@@ -575,18 +595,34 @@ function isConnectGrantSlice(value: unknown): value is ConnectGrantSlice {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const grant = value as Partial<ConnectGrantSlice>;
   return Object.keys(value).every((key) => (
-    key === "grantId" || key === "connectors" || key === "mcpIds" || key === "appToolCatalogDigest"
+    key === "grantId" || key === "connectors" || key === "connectorConnections"
+    || key === "mcpIds" || key === "appToolCatalogDigest"
   ))
     && typeof grant.grantId === "string" && /^0x[0-9a-f]{64}$/.test(grant.grantId)
     && isUniqueStringArray(grant.connectors)
     && grant.connectors.every((connector) => (
-      connector === "github" || connector === "gmail" || connector === "gdrive"
-      || connector === "x" || connector === "chatgpt"
+      connector === "chatgpt" || CONNECTOR_CAPABILITY_IDS.includes(connector as ManagedEgressConnectorId)
     ))
+    && (grant.connectorConnections === undefined
+      || isConnectorConnectionSelection(grant.connectorConnections, grant.connectors))
     && isUniqueStringArray(grant.mcpIds) && grant.mcpIds.length <= 16
     && grant.mcpIds.every((id) => /^[A-Za-z0-9_-]{43}$/.test(id))
     && (grant.appToolCatalogDigest === undefined
       || isAppToolCatalogDigest(grant.appToolCatalogDigest));
+}
+
+function isConnectorConnectionSelection(
+  value: unknown,
+  connectors: readonly string[],
+): value is ConnectorConnectionSelection {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([capability, ids]) => (
+    CONNECTOR_CAPABILITY_IDS.includes(capability as ManagedEgressConnectorId)
+    && connectors.includes(capability)
+    && Array.isArray(ids) && ids.length <= 64
+    && ids.every((id) => typeof id === "string" && /^[A-Za-z0-9_-]{43}$/.test(id))
+    && new Set(ids).size === ids.length
+  ));
 }
 
 function isUniqueStringArray(value: unknown): value is string[] {
@@ -634,6 +670,12 @@ function accountConnectorProjection(
   return authorization.connectGrant.connectors.filter(
     (connector): connector is ManagedEgressConnectorId => connector !== "chatgpt",
   );
+}
+
+function accountConnectionProjection(
+  authorization: TurnAuthorization,
+): ConnectorConnectionSelection | undefined {
+  return authorization.connectGrant?.connectorConnections;
 }
 
 function observeManagedPrincipal(
@@ -4366,11 +4408,12 @@ export class DurableAgentSession extends DurableComputerSession {
        FROM managed_turns ORDER BY created_at, id LIMIT 1`,
     ).toArray()[0];
     if (!first) return undefined;
-    let allowedConnectors: readonly ManagedEgressConnectorId[] = [];
+    let allowedConnectors: readonly ManagedEgressConnectorId[] | undefined = [];
+    let allowedConnections: ConnectorConnectionSelection | undefined;
     try {
-      allowedConnectors = accountConnectorProjection(
-        parseTurnAuthorization(first.authorization_json),
-      ) ?? ["github", "gmail", "gdrive", "x"];
+      const authorization = parseTurnAuthorization(first.authorization_json);
+      allowedConnectors = accountConnectorProjection(authorization);
+      allowedConnections = accountConnectionProjection(authorization);
     } catch { /* Malformed authorization fails closed. */ }
     const retained = await this.ctx.storage.get<InitialAccountContext>(
       INITIAL_ACCOUNT_CONTEXT_KEY,
@@ -4378,7 +4421,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (retained) {
       return {
         ...retained,
-        account: projectAccountInfo(retained.account, allowedConnectors),
+        account: projectAccountInfo(retained.account, allowedConnectors, allowedConnections),
       };
     }
     const prepared = {
@@ -4388,6 +4431,7 @@ export class DurableAgentSession extends DurableComputerSession {
         session.owner_id,
         true,
         allowedConnectors,
+        allowedConnections,
       ),
     } satisfies InitialAccountContext;
     await this.ctx.storage.put(INITIAL_ACCOUNT_CONTEXT_KEY, prepared);
@@ -4452,7 +4496,9 @@ export class DurableAgentSession extends DurableComputerSession {
       computer: workspace,
       egress: this.env.NANOCODEX,
       ...(multiplayer ? {} : { subject: this.ctx.id.toString() }),
-      connectorAllowed: (connector) => this.#activeTurnConnectorAllowed(connector),
+      connectorAllowed: (connector, connectionId) => (
+        this.#activeTurnConnectorAllowed(connector, connectionId)
+      ),
       sshIdentityAllowed: (reference) => this.#activeTurnSshIdentityAllowed(reference),
     });
     const currentAccountInfo = () => {
@@ -4462,6 +4508,7 @@ export class DurableAgentSession extends DurableComputerSession {
         session.owner_id,
         !multiplayer,
         authorization === undefined ? [] : accountConnectorProjection(authorization),
+        authorization === undefined ? {} : accountConnectionProjection(authorization),
       );
     };
     const internalRuntime = Symbol.for("nanocodex.cloudflare.internalRuntime");
@@ -4510,6 +4557,10 @@ export class DurableAgentSession extends DurableComputerSession {
           const authorization = this.#activeTurnAuthorization();
           return authorization === undefined ? [] : accountConnectorProjection(authorization);
         },
+        allowedConnectorConnections: () => {
+          const authorization = this.#activeTurnAuthorization();
+          return authorization === undefined ? {} : accountConnectionProjection(authorization);
+        },
       })]),
       web({
         url: "https://managed-tools.internal/web-search",
@@ -4541,6 +4592,27 @@ export class DurableAgentSession extends DurableComputerSession {
           account: await currentAccountInfo(),
         }),
       },
+      ...(multiplayer ? [] : memorySessionTools({
+        findSessions: (input) => this.#findSessions(input),
+        readSession: (input) => this.#readHistorySession(input),
+        memory: (operation) => this.#memoryOperation(operation),
+        requireCapability: (capability) => this.#requireActiveTurnCapability(capability),
+        requireRootMemoryMutation: (context) => {
+          if (context.subagent !== undefined) {
+            throw new ManagedRequestError(
+              403,
+              "memory_root_only",
+              "memory put and delete are available only to the root agent",
+            );
+          }
+        },
+        recordCitations: (citations) => {
+          const turnId = this.#eventTurnId;
+          if (turnId !== undefined && citations.length > 0) {
+            this.#recordHistoryCitations(turnId, citations);
+          }
+        },
+      })),
     ];
     let preparedTools: Tools | undefined;
     let agent: CloudflareAgent.Agent;
@@ -4578,9 +4650,11 @@ export class DurableAgentSession extends DurableComputerSession {
             "The private and cloud workspaces are not synchronized. Never imply that a file created in one exists in the other.",
             "Your /workspace filesystem is durable Cloudflare Computer storage backed by this agent's Durable Object.",
             "Use accountInfo only when the user asks about account state or an operation fails because its authorization is unclear. Do not call accountInfo before an explicit gh, git, curl, or other shell command. Those commands use transparent authenticated egress when the current grant permits it. accountInfo is a tool, not a shell command.",
+            "When accountInfo lists multiple connectorAccounts for a service, choose the appropriate connection by label and pass its exact id as X-Nanocodex-Connector-Connection on that provider request. Never invent a connection id. The egress proxy validates it against the active grant.",
             "Use account_connectors when the user asks to connect, reconnect, inspect, or disconnect an account service. For connect results with authorization_required, return the exact authorization_url as a Markdown link. Never claim the account is connected until a later list reports connected=true.",
             computer.instructions,
             "No process sandbox is attached. Bounded Just Bash is the complete local execution boundary.",
+            MEMORY_TOOL_INSTRUCTIONS,
           ].join("\n\n"),
         tools: preparedTools ?? cloudTools,
       };
@@ -4642,6 +4716,113 @@ export class DurableAgentSession extends DurableComputerSession {
     };
   }
 
+  async #findSessions(input: HistoryFindSessionsInput): Promise<HistoryFindSessionsResponse> {
+    const session = this.#session();
+    if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const initialized = await initializeMemoryScope(memory, session.organization_id);
+    if (!initialized.ok) {
+      throw new HistorySearchError(
+        initialized.status,
+        "memory_scope_unavailable",
+        "memory scope is unavailable",
+      );
+    }
+    const response = await memory.fetch("https://memory.internal/search", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
+        [MEMORY_TEAM_ASSERTION]: session.team_id,
+        [MEMORY_SUBJECT_ASSERTION]: `agent:${session.session_id}`,
+      },
+      body: JSON.stringify({
+        ...input,
+        limit: Math.min(MAX_HISTORY_SEARCH_LIMIT, input.limit + 1),
+      }),
+    });
+    if (!response.ok) throw await historySearchResponseError(response);
+    const found = await response.json<HistoryFindSessionsResponse>();
+    const results = found.results
+      .filter((result) => result.thread_id !== session.session_id)
+      .slice(0, input.limit);
+    return {
+      query: found.query,
+      results,
+      citations: groupHistoryCitations(results),
+    };
+  }
+
+  async #readHistorySession(input: HistoryReadSessionInput): Promise<HistoryReadSessionResponse> {
+    const session = this.#session();
+    if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const initialized = await initializeMemoryScope(memory, session.organization_id);
+    if (!initialized.ok) {
+      throw new HistorySearchError(
+        initialized.status,
+        "memory_scope_unavailable",
+        "memory scope is unavailable",
+      );
+    }
+    const response = await memory.fetch("https://memory.internal/read", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
+        [MEMORY_TEAM_ASSERTION]: session.team_id,
+        [MEMORY_SUBJECT_ASSERTION]: `agent:${session.session_id}`,
+      },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) throw await historySearchResponseError(response);
+    return response.json<HistoryReadSessionResponse>();
+  }
+
+  async #memoryOperation(operation: MemoryOperation): Promise<MemoryResult> {
+    const session = this.#session();
+    if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const initialized = await initializeMemoryScope(memory, session.organization_id);
+    if (!initialized.ok) {
+      throw new HistorySearchError(
+        initialized.status,
+        "memory_scope_unavailable",
+        "memory scope is unavailable",
+      );
+    }
+    const mutating = operation.operation === "put" || operation.operation === "delete";
+    const response = await memory.fetch("https://memory.internal/memory", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
+        [MEMORY_TEAM_ASSERTION]: session.team_id,
+        [MEMORY_SUBJECT_ASSERTION]: `agent:${session.session_id}`,
+        ...(mutating ? { [MEMORY_MUTATION_ASSERTION]: "1" } : {}),
+      },
+      body: JSON.stringify(operation),
+    });
+    if (!response.ok) {
+      const value = await response.json<{ error?: unknown; message?: unknown }>()
+        .catch(() => undefined);
+      throw new DurableMemoryError(
+        typeof value?.error === "string" ? value.error : "memory_failed",
+        typeof value?.message === "string"
+          ? value.message
+          : `memory operation failed with HTTP ${response.status}`,
+      );
+    }
+    return parseMemoryResult(await response.json<unknown>(), operation.operation);
+  }
+
+  #requireActiveTurnCapability(capability: OrganizationCapability): void {
+    const authorization = this.#activeTurnAuthorization();
+    if (!authorization?.capabilities.includes(capability)) {
+      throw new ManagedRequestError(403, "forbidden", `turn lacks ${capability} capability`);
+    }
+  }
+
   #activeTurnAuthorization(): TurnAuthorization | undefined {
     // The driver requests tool definitions before emitting run.started. The
     // head of the owned admission queue is therefore the exact authorization
@@ -4652,11 +4833,18 @@ export class DurableAgentSession extends DurableComputerSession {
     catch { return undefined; }
   }
 
-  #activeTurnConnectorAllowed(connector: ManagedEgressConnectorId): boolean {
+  #activeTurnConnectorAllowed(
+    connector: ManagedEgressConnectorId,
+    connectionId?: string,
+  ): boolean | string {
     const authorization = this.#activeTurnAuthorization();
-    return authorization !== undefined
-      && (authorization.connectGrant === undefined
-        || authorization.connectGrant.connectors.includes(connector));
+    if (authorization === undefined) return false;
+    const grant = authorization.connectGrant;
+    if (grant === undefined) return true;
+    if (!grant.connectors.includes(connector)) return false;
+    if (grant.connectorConnections === undefined) return connectionId === undefined;
+    const approved = grant.connectorConnections[connector] ?? [];
+    return exactConnectorAccess(approved, connectionId);
   }
 
   #activeTurnMcpAllowed(connectionId: string): boolean {
@@ -4694,6 +4882,18 @@ export class DurableAgentSession extends DurableComputerSession {
       turnId,
     ).toArray()[0];
     return row === undefined ? [] : JSON.parse(row.citations_json) as HistoryCitation[];
+  }
+
+  #recordHistoryCitations(turnId: string, citations: readonly HistoryCitation[]): void {
+    this.ctx.storage.transactionSync(() => {
+      const merged = mergeHistoryCitations(this.#historyCitations(turnId), citations);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO turn_history_citations (turn_id, citations_json) VALUES (?, ?)
+         ON CONFLICT(turn_id) DO UPDATE SET citations_json = excluded.citations_json`,
+        turnId,
+        JSON.stringify(merged),
+      );
+    });
   }
 
   async #complete(id: string, turn: Turn): Promise<void> {

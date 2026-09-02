@@ -481,11 +481,20 @@ test("device callback continuation is short-lived, exact, account-bound, and sec
     apiUrl: "http://demo.nanocodex.localhost:20735",
     accountAddress: "0x1111111111111111111111111111111111111111",
     token: "connect-session-token",
-    requestedConnectors: ["github"],
+    requestedConnectors: ["github", "gmail", "gdocs"],
     requestedMcpConnections: [
       { id: LINEAR_MCP, name: "Linear", status: "authorization_required" },
     ],
-    connectorStatuses: { github: { connected: true, label: "octocat" } },
+    connectorStatuses: {
+      github: { connected: true, label: "octocat" },
+      gmail: { connected: true, connections: [{
+        id: "g".repeat(43),
+        label: "person@example.test",
+        account_id: "google-person",
+        capabilities: ["gmail"],
+      }] },
+      gdocs: { connected: false, connections: [] },
+    },
     result: {
       accounts: [{
         address: "0x1111111111111111111111111111111111111111",
@@ -504,6 +513,13 @@ test("device callback continuation is short-lived, exact, account-bound, and sec
     requestedMcpConnections: [
       { id: LINEAR_MCP, name: "Linear", status: "connected" },
     ],
+  }, now + 1_000), retained);
+  assert.deepEqual(restoreMcpCallbackContinuation(JSON.parse(JSON.stringify(retained)), {
+    requestId: input.requestId,
+    apiUrl: input.apiUrl,
+    returnedConnector: "google",
+    requestedConnectors: input.requestedConnectors,
+    requestedMcpConnections: input.requestedMcpConnections,
   }, now + 1_000), retained);
   assert.deepEqual(restoreMcpCallbackContinuation(JSON.parse(JSON.stringify(retained)), {
     requestId: input.requestId,

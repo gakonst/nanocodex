@@ -1,4 +1,13 @@
-import { Actions, Client, Dialog, Transport, type Connection } from "nanocodex/connect";
+import {
+  Actions,
+  Client,
+  Dialog,
+  Transport,
+  type Connection,
+  type ConnectorConnection,
+  type ConnectorConnectionSelection,
+  type ConnectorStatus,
+} from "nanocodex/connect";
 import { Voice } from "nanocodex/browser";
 
 const client = Client.create({
@@ -11,7 +20,20 @@ Dialog.popup({ target: "nanocodex-connect", features: "popup=yes" });
 const standalone: Promise<Connection> = Actions.connection.connect(client, {
   capabilities: {
     auth: { resources: ["urn:nanocodex:connector:github:repo-read"] },
-    cloudAccounts: { github: true, gmail: true, gdrive: true, x: true, chatgpt: true },
+    cloudAccounts: {
+      github: true,
+      gmail: true,
+      gdrive: true,
+      gcalendar: true,
+      gtasks: true,
+      gdocs: true,
+      gsheets: true,
+      gslides: true,
+      gcontacts: true,
+      slack: true,
+      x: true,
+      chatgpt: true,
+    },
   },
 });
 const decorated: Promise<Connection> = client.connection.connect({
@@ -32,7 +54,19 @@ void decorated;
 
 declare const connection: Connection;
 const connector = connection.grant.connectors[0];
-connector satisfies "github" | "gmail" | "gdrive" | "x" | "chatgpt" | undefined;
+connector satisfies "github" | "gmail" | "gdrive" | "gcalendar" | "gtasks" | "gdocs" | "gsheets" | "gslides" | "gcontacts" | "slack" | "x" | "chatgpt" | undefined;
+const connectorConnections: ConnectorConnectionSelection | undefined = connection.grant.connectorConnections;
+const connectorStatus: ConnectorStatus = {
+  connected: true,
+  connections: [{
+    id: "a".repeat(43),
+    label: "Work account",
+    accountId: "provider-account",
+    capabilities: ["gmail", "gdrive"],
+  } satisfies ConnectorConnection],
+};
+void connectorConnections;
+void connectorStatus;
 
 client.connection.connect({
   capabilities: {

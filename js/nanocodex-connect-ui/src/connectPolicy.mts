@@ -1,4 +1,95 @@
+import {
+  connectorProviderMatchesCapabilities,
+  connectorStatusesFromWire,
+  type ConnectorCapability,
+  type ConnectorProvider,
+  type ConnectorStatuses,
+} from "./connectorPolicy.mjs";
+
 export const productionConnectApiOrigin = "https://nanocodex-connect-api.gakonst.workers.dev";
+
+type UnknownRecord = Record<string, unknown>;
+
+export type RegisteredApp = Readonly<{
+  id: string;
+  name: string;
+  origin: string;
+}>;
+
+export type ConnectPolicy = Readonly<{ chatGptCredentialImport: boolean }>;
+
+export type McpConnectionStatus =
+  | "authorization_required"
+  | "reauthorization_required"
+  | "connected"
+  | "disabled"
+  | "revoked";
+
+export type McpConnection = Readonly<{
+  id: string;
+  name: string;
+  status: McpConnectionStatus;
+}>;
+
+type SanitizedWalletResult = Readonly<{
+  accounts: readonly Readonly<{
+    address?: unknown;
+    capabilities: Readonly<UnknownRecord & {
+      auth: Readonly<{ approval_id: string }>;
+    }>;
+  }>[];
+}> & UnknownRecord;
+
+type SanitizedCliWalletResult = Readonly<{
+  accounts: readonly Readonly<{
+    address: `0x${string}`;
+    capabilities: Readonly<{
+      keyAuthorization: Readonly<UnknownRecord>;
+      personalSign: Readonly<{ keyAuthorization: `0x${string}` }>;
+      auth: Readonly<{ approval_id: string }>;
+    }> | Readonly<{
+      auth: Readonly<{ approval_id: string; mode: "hosted" }>;
+    }>;
+  }>[];
+}>;
+
+export type McpCallbackContinuation = Readonly<{
+  version: 1;
+  expiresAt: number;
+  requestId: string;
+  apiUrl: string;
+  accountAddress: `0x${string}`;
+  token: string;
+  requestedConnectors: readonly ConnectorCapability[];
+  requestedMcpConnections: readonly McpConnection[];
+  connectorStatuses: ConnectorStatuses;
+  result: SanitizedCliWalletResult;
+}>;
+
+type ExpectedMcpCallback = Readonly<{
+  requestId: string;
+  apiUrl: string;
+  returnedConnector?: ConnectorProvider;
+  returnedMcpConnection?: string;
+  requestedConnectors: readonly string[];
+  requestedMcpConnections: readonly McpConnection[];
+}>;
+
+type VisibilityPermission = Readonly<{
+  resource: string;
+  label:
+    | "Reply"
+    | "Actions"
+    | "History"
+    | "Traces"
+    | "Thinking & traces"
+    | "Hosted history"
+    | "Memory read"
+    | "Memory write"
+    | "Conversation"
+    | "Browser tab tool";
+  detail: string;
+}>;
 
 const appResourcePrefix = "urn:nanocodex:app:";
 const appOriginResourcePrefix = "urn:nanocodex:origin:";
@@ -8,9 +99,12 @@ const agentConversationResourcePrefix = "urn:nanocodex:agent:conversation:";
 const appToolCatalogResource = /^urn:nanocodex:app-tool-catalog:sha256:[0-9a-f]{64}$/;
 const agentConversationId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const chatGptCredentialImportResource = /^urn:nanocodex:credential-import:chatgpt:codex-auth-v1:sha256:[A-Za-z0-9_-]{43}$/;
-const connectorIds = new Set(["chatgpt", "github", "gmail", "gdrive", "x"]);
+const connectorIds = new Set<ConnectorCapability>([
+  "chatgpt", "github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets",
+  "gslides", "gcontacts", "slack", "x",
+]);
 const mcpConnectionId = /^[A-Za-z0-9_-]{43}$/;
-const mcpConnectionStatuses = new Set([
+const mcpConnectionStatuses = new Set<McpConnectionStatus>([
   "authorization_required",
   "reauthorization_required",
   "connected",
@@ -63,9 +157,9 @@ const signedAppVisibility = Object.freeze([
     label: "Memory write",
     detail: "Save hosted team memory",
   }),
-]);
+] satisfies readonly Readonly<VisibilityPermission & { name: string }>[]);
 
-const productionApps = new Map([
+const productionApps = new Map<string, RegisteredApp>([
   ["https://nanocodex-connect-playground.gakonst.workers.dev", Object.freeze({
     id: "atlas-workspace",
     name: "Atlas Workspace",
@@ -83,7 +177,13 @@ const productionApps = new Map([
   })],
 ]);
 
-export function registeredApp(embeddingOrigin, appId, dialogUrl, isTopLevel, allowDynamicPopup = true) {
+export function registeredApp(
+  embeddingOrigin: string,
+  appId: string,
+  dialogUrl: string,
+  isTopLevel: boolean,
+  allowDynamicPopup = true,
+): RegisteredApp {
   if (!isAppId(appId)) throw new Error("Nanocodex Connect received an invalid app ID.");
   const dialogOrigin = originFromUrl(dialogUrl, "Nanocodex Connect received an invalid dialog URL.");
   const registered = productionApps.get(embeddingOrigin);
@@ -101,7 +201,7 @@ export function registeredApp(embeddingOrigin, appId, dialogUrl, isTopLevel, all
   throw new Error("This application is not registered with Nanocodex Connect.");
 }
 
-export function isPopupPresentation(dialogUrl, isTopLevel) {
+export function isPopupPresentation(dialogUrl: string, isTopLevel: boolean): boolean {
   try {
     const url = new URL(dialogUrl);
     return isTopLevel === true
@@ -112,7 +212,10 @@ export function isPopupPresentation(dialogUrl, isTopLevel) {
   }
 }
 
-export function signedAppResources(resources, app) {
+export function signedAppResources(
+  resources: unknown,
+  app: RegisteredApp,
+): readonly unknown[] {
   if (!Array.isArray(resources) || !app || typeof app !== "object") {
     throw new Error("Nanocodex Connect received invalid signed application resources.");
   }
@@ -136,7 +239,7 @@ export function signedAppResources(resources, app) {
   return resources;
 }
 
-export function parseConnectPolicy(resources) {
+export function parseConnectPolicy(resources: unknown): ConnectPolicy {
   if (!Array.isArray(resources)) {
     throw new Error("Nanocodex Connect received invalid signed resources.");
   }
@@ -165,7 +268,7 @@ export function parseConnectPolicy(resources) {
   return Object.freeze({ chatGptCredentialImport: true });
 }
 
-export function connectApiOrigin(auth, dialogOrigin) {
+export function connectApiOrigin(auth: unknown, dialogOrigin: string): string {
   const configured = authEndpoints(auth);
   if (configured.length === 0) {
     throw new Error("Nanocodex Connect has no account broker URL.");
@@ -184,7 +287,7 @@ export function connectApiOrigin(auth, dialogOrigin) {
   throw new Error("Nanocodex Connect auth endpoints must use the production Connect API.");
 }
 
-export function sanitizeWalletResult(result) {
+export function sanitizeWalletResult(result: unknown): SanitizedWalletResult {
   if (!isRecord(result) || !Array.isArray(result.accounts)) {
     throw new Error("Accounts did not return a connected account.");
   }
@@ -208,7 +311,7 @@ export function sanitizeWalletResult(result) {
   };
 }
 
-export function sanitizeCliWalletResult(result) {
+export function sanitizeCliWalletResult(result: unknown): SanitizedCliWalletResult {
   if (!isRecord(result) || !Array.isArray(result.accounts) || result.accounts.length !== 1) {
     throw new Error("Accounts did not return exactly one connected account.");
   }
@@ -227,7 +330,7 @@ export function sanitizeCliWalletResult(result) {
     }
     return {
       accounts: [{
-        address: account.address,
+        address: account.address as `0x${string}`,
         capabilities: { auth: { approval_id: auth.approval_id, mode: "hosted" } },
       }],
     };
@@ -241,23 +344,23 @@ export function sanitizeCliWalletResult(result) {
   }
   return {
     accounts: [{
-      address: account.address,
+      address: account.address as `0x${string}`,
       capabilities: {
         keyAuthorization: capabilities.keyAuthorization,
-        personalSign: { keyAuthorization: personalSign.keyAuthorization },
+        personalSign: { keyAuthorization: personalSign.keyAuthorization as `0x${string}` },
         auth: { approval_id: auth.approval_id },
       },
     }],
   };
 }
 
-export function appVisibilityPermissions(resources) {
+export function appVisibilityPermissions(resources: unknown): readonly VisibilityPermission[] {
   if (!Array.isArray(resources)) return [];
   const requested = new Set(resources.filter((resource) => typeof resource === "string"));
   const compact = new Set(resources
     .filter((resource) => typeof resource === "string" && resource.startsWith("urn:nanocodex:agent:visibility:"))
     .flatMap((resource) => resource.slice("urn:nanocodex:agent:visibility:".length).split(",")));
-  const visibility = signedAppVisibility
+  const visibility: VisibilityPermission[] = signedAppVisibility
     .filter(({ resource, name }) => requested.has(resource) || compact.has(name))
     .map(({ name: _name, ...permission }) => permission);
   const conversations = [...requested].filter((resource) => resource.startsWith(agentConversationResourcePrefix));
@@ -280,7 +383,10 @@ export function appVisibilityPermissions(resources) {
   return visibility;
 }
 
-export function accountLoginCapabilities(accounts) {
+export function accountLoginCapabilities(accounts: unknown): Readonly<
+  | { method: "login"; credentialId: readonly string[] }
+  | { method: "login" }
+> {
   const credentialIds = Array.isArray(accounts)
     ? [...new Set(accounts.flatMap((account) => {
       const id = isRecord(account) && isRecord(account.credential)
@@ -294,7 +400,10 @@ export function accountLoginCapabilities(accounts) {
     : Object.freeze({ method: "login" });
 }
 
-export function connectorApprovalDisposition(requestedConnectors, statuses) {
+export function connectorApprovalDisposition(
+  requestedConnectors: unknown,
+  statuses: unknown,
+): "wait" | "respond" {
   if (!Array.isArray(requestedConnectors) || !isRecord(statuses)) return "wait";
   const ready = requestedConnectors.every((connector) =>
     typeof connector === "string"
@@ -304,17 +413,20 @@ export function connectorApprovalDisposition(requestedConnectors, statuses) {
   return "respond";
 }
 
-export function chatGptConnectorDisposition(value) {
+export function chatGptConnectorDisposition(value: unknown): "connected" | "device" | "invalid" {
   if (!isRecord(value)) return "invalid";
   if (value.state === "authenticated" && value.connected === true) return "connected";
   if (value.state === "pending"
     && typeof value.verification_url === "string"
     && typeof value.user_code === "string"
-    && Number.isSafeInteger(value.expires_at)) return "device";
+    && isSafeInteger(value.expires_at)) return "device";
   return "invalid";
 }
 
-export function focusedConnectorFromResources(resources, requestedConnectors) {
+export function focusedConnectorFromResources(
+  resources: unknown,
+  requestedConnectors: unknown,
+): ConnectorCapability | undefined {
   if (!Array.isArray(resources) || !Array.isArray(requestedConnectors)) {
     throw new Error("The signed connector focus is invalid.");
   }
@@ -323,25 +435,25 @@ export function focusedConnectorFromResources(resources, requestedConnectors) {
     .map((resource) => resource.slice(connectorFocusResourcePrefix.length));
   if (focused.length === 0) return undefined;
   if (focused.length !== 1
-    || !connectorIds.has(focused[0])
+    || !isConnectorId(focused[0])
     || !requestedConnectors.includes(focused[0])) {
     throw new Error("The signed connector focus is invalid.");
   }
   return focused[0];
 }
 
-export function mcpConnectionsFromWire(value) {
+export function mcpConnectionsFromWire(value: unknown): readonly McpConnection[] {
   if (!Array.isArray(value) || value.length > 32) {
     throw new Error("Nanocodex Connect received invalid MCP connections.");
   }
-  const ids = new Set();
+  const ids = new Set<string>();
   return Object.freeze(value.map((candidate) => {
     if (!isRecord(candidate)
       || Object.keys(candidate).some((key) => key !== "id" && key !== "name" && key !== "status")
       || typeof candidate.id !== "string" || !mcpConnectionId.test(candidate.id)
       || typeof candidate.name !== "string" || candidate.name.length < 1 || candidate.name.length > 256
       || candidate.name.trim() !== candidate.name
-      || typeof candidate.status !== "string" || !mcpConnectionStatuses.has(candidate.status)
+      || !isMcpConnectionStatus(candidate.status)
       || ids.has(candidate.id)) {
       throw new Error("Nanocodex Connect received invalid MCP connections.");
     }
@@ -354,7 +466,7 @@ export function mcpConnectionsFromWire(value) {
   }));
 }
 
-export function focusedMcpConnection(value, connections) {
+export function focusedMcpConnection(value: unknown, connections: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !mcpConnectionId.test(value)
     || !Array.isArray(connections)
@@ -364,7 +476,10 @@ export function focusedMcpConnection(value, connections) {
   return value;
 }
 
-export function mcpConnectionApprovalDisposition(requestedConnections, connections) {
+export function mcpConnectionApprovalDisposition(
+  requestedConnections: unknown,
+  connections: unknown,
+): "wait" | "respond" {
   if (!Array.isArray(requestedConnections) || !Array.isArray(connections)) return "wait";
   const statuses = new Map(connections.flatMap((connection) => isRecord(connection)
     && typeof connection.id === "string" && typeof connection.status === "string"
@@ -377,7 +492,10 @@ export function mcpConnectionApprovalDisposition(requestedConnections, connectio
     : "wait";
 }
 
-export function createMcpCallbackContinuation(value, now = Date.now()) {
+export function createMcpCallbackContinuation(
+  value: unknown,
+  now = Date.now(),
+): McpCallbackContinuation {
   if (!isRecord(value)
     || typeof value.requestId !== "string" || value.requestId.length < 1 || value.requestId.length > 512
     || typeof value.apiUrl !== "string"
@@ -385,7 +503,7 @@ export function createMcpCallbackContinuation(value, now = Date.now()) {
     || typeof value.accountAddress !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(value.accountAddress)
     || typeof value.token !== "string" || value.token.length < 1 || value.token.length > 4096
     || !Array.isArray(value.requestedConnectors)
-    || value.requestedConnectors.some((id) => typeof id !== "string" || !connectorIds.has(id))
+    || value.requestedConnectors.some((id) => !isConnectorId(id))
     || new Set(value.requestedConnectors).size !== value.requestedConnectors.length
     || !isRecord(value.connectorStatuses)
     || !Number.isSafeInteger(now) || now < 0) {
@@ -394,21 +512,26 @@ export function createMcpCallbackContinuation(value, now = Date.now()) {
   const requestedMcpConnections = mcpConnectionsFromWire(value.requestedMcpConnections);
   const connectorStatuses = sanitizeConnectorStatuses(value.connectorStatuses);
   const result = sanitizeCliWalletResult(value.result);
+  const requestedConnectors = value.requestedConnectors as ConnectorCapability[];
   return Object.freeze({
     version: mcpCallbackContinuationVersion,
     expiresAt: now + mcpCallbackContinuationLifetimeMs,
     requestId: value.requestId,
     apiUrl: value.apiUrl,
-    accountAddress: value.accountAddress,
+    accountAddress: value.accountAddress as `0x${string}`,
     token: value.token,
-    requestedConnectors: Object.freeze([...value.requestedConnectors]),
+    requestedConnectors: Object.freeze([...requestedConnectors]),
     requestedMcpConnections,
     connectorStatuses,
     result,
   });
 }
 
-export function restoreMcpCallbackContinuation(value, expected, now = Date.now()) {
+export function restoreMcpCallbackContinuation(
+  value: unknown,
+  expected: ExpectedMcpCallback,
+  now = Date.now(),
+): McpCallbackContinuation {
   const returnedConnector = isRecord(expected) && typeof expected.returnedConnector === "string"
     ? expected.returnedConnector
     : undefined;
@@ -416,7 +539,7 @@ export function restoreMcpCallbackContinuation(value, expected, now = Date.now()
     ? expected.returnedMcpConnection
     : undefined;
   if (!isRecord(value) || value.version !== mcpCallbackContinuationVersion
-    || !Number.isSafeInteger(value.expiresAt) || value.expiresAt < now
+    || !isSafeInteger(value.expiresAt) || value.expiresAt < now
     || value.expiresAt > now + mcpCallbackContinuationLifetimeMs
     || !isRecord(expected)
     || value.requestId !== expected.requestId
@@ -440,7 +563,8 @@ export function restoreMcpCallbackContinuation(value, expected, now = Date.now()
   const expectedMcpConnections = mcpConnectionsFromWire(expected.requestedMcpConnections);
   if (!sameStrings(restored.requestedConnectors, expectedConnectors)
     || !sameMcpConnections(restored.requestedMcpConnections, expectedMcpConnections)
-    || (returnedConnector !== undefined && !expectedConnectors.includes(returnedConnector))
+    || (returnedConnector !== undefined
+      && !connectorProviderMatchesCapabilities(returnedConnector, expectedConnectors))
     || (returnedMcpConnection !== undefined
       && !expectedMcpConnections.some(({ id }) => id === returnedMcpConnection))
     || restored.result.accounts[0]?.address.toLowerCase() !== restored.accountAddress.toLowerCase()) {
@@ -449,7 +573,7 @@ export function restoreMcpCallbackContinuation(value, expected, now = Date.now()
   return restored;
 }
 
-export function isLocalDevelopmentOrigin(value) {
+export function isLocalDevelopmentOrigin(value: string): boolean {
   try {
     const url = new URL(value);
     const hostname = url.hostname.toLowerCase();
@@ -472,7 +596,7 @@ export function isLocalDevelopmentOrigin(value) {
   }
 }
 
-export function usesBrowserLocalWebAuthn(value) {
+export function usesBrowserLocalWebAuthn(value: string): boolean {
   try {
     const url = new URL(value);
     const hostname = url.hostname.toLowerCase();
@@ -488,7 +612,7 @@ export function usesBrowserLocalWebAuthn(value) {
   }
 }
 
-export function deviceMcpReturnPath(value) {
+export function deviceMcpReturnPath(value: string): string {
   const url = new URL(value);
   const result = new URL("/connect", url.origin);
   for (const parameter of ["user_code", "api_origin"]) {
@@ -498,40 +622,32 @@ export function deviceMcpReturnPath(value) {
   return `${result.pathname}${result.search}`;
 }
 
-function sanitizeConnectorStatuses(value) {
-  const result = {};
-  for (const [id, status] of Object.entries(value)) {
-    if (!connectorIds.has(id) || !isRecord(status)
-      || Object.keys(status).some((key) => key !== "connected" && key !== "account_id" && key !== "label")
-      || typeof status.connected !== "boolean"
-      || (status.account_id !== undefined && typeof status.account_id !== "string")
-      || (status.label !== undefined && typeof status.label !== "string")) {
-      throw new Error("Nanocodex Connect received invalid connector statuses.");
-    }
-    result[id] = Object.freeze({
-      connected: status.connected,
-      ...(status.account_id === undefined ? {} : { account_id: status.account_id }),
-      ...(status.label === undefined ? {} : { label: status.label }),
-    });
+function sanitizeConnectorStatuses(value: unknown): ConnectorStatuses {
+  try {
+    return connectorStatusesFromWire(value);
+  } catch {
+    throw new Error("Nanocodex Connect received invalid connector statuses.");
   }
-  return Object.freeze(result);
 }
 
-function sameStrings(left, right) {
+function sameStrings(left: readonly string[], right: unknown): boolean {
   return Array.isArray(right)
     && left.length === right.length
     && left.every((value, index) => value === right[index]);
 }
 
-function sameMcpConnections(left, right) {
+function sameMcpConnections(
+  left: readonly McpConnection[],
+  right: readonly McpConnection[],
+): boolean {
   return left.length === right.length
     && left.every((value, index) => value.id === right[index].id && value.name === right[index].name);
 }
 
-function authEndpoints(auth) {
+function authEndpoints(auth: unknown): string[] {
   if (typeof auth === "string") return [auth];
   if (!isRecord(auth)) return [];
-  const endpoints = [];
+  const endpoints: string[] = [];
   for (const name of ["challenge", "url", "verify", "logout"]) {
     if (!(name in auth)) continue;
     if (typeof auth[name] !== "string") {
@@ -542,8 +658,8 @@ function authEndpoints(auth) {
   return endpoints;
 }
 
-function endpointOrigin(value) {
-  let url;
+function endpointOrigin(value: string): string {
+  let url: URL;
   try {
     url = new URL(value);
   } catch {
@@ -555,11 +671,11 @@ function endpointOrigin(value) {
   return url.origin;
 }
 
-function isAppId(value) {
+function isAppId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 }
 
-function isSecurePopupOrigin(value) {
+function isSecurePopupOrigin(value: string): boolean {
   try {
     const url = new URL(value);
     if (url.protocol === "chrome-extension:") {
@@ -571,7 +687,7 @@ function isSecurePopupOrigin(value) {
   }
 }
 
-function originFromUrl(value, error) {
+function originFromUrl(value: string, error: string): string {
   try {
     const url = new URL(value);
     return url.origin;
@@ -580,6 +696,19 @@ function originFromUrl(value, error) {
   }
 }
 
-function isRecord(value) {
+function isConnectorId(value: unknown): value is ConnectorCapability {
+  return typeof value === "string" && connectorIds.has(value as ConnectorCapability);
+}
+
+function isMcpConnectionStatus(value: unknown): value is McpConnectionStatus {
+  return typeof value === "string"
+    && mcpConnectionStatuses.has(value as McpConnectionStatus);
+}
+
+function isSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value);
+}
+
+function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

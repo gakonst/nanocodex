@@ -93,6 +93,7 @@ export function mock(options = {}) {
             const connectors = requestedConnectors(request.body?.requested_connectors);
             const mcpConnections = requestedMcpConnections(request.body?.requested_mcp_connections);
             const grantId = mockHex(`${appId}:${accountAddress}:${keyId}`, 32);
+            const connectorConnections = mockConnectorConnections(connectors, grantId);
             const wire = {
               grant_token: `mock-grant-${grantId.slice(2)}`,
               account_address: accountAddress,
@@ -109,6 +110,7 @@ export function mock(options = {}) {
                   ...connectors,
                   ...mcpConnections.map(({ id }) => `mcp:${id}`),
                 ],
+                connector_connections: connectorConnections,
                 mcp_connections: mcpConnections,
               },
               access_key: {
@@ -362,7 +364,20 @@ function requiredGrant(grants, grantId) {
 function requestedConnectors(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new TypeError("requested_connectors must be an array");
-  const supported = ["github", "gmail", "gdrive", "x", "chatgpt"];
+  const supported = [
+    "github",
+    "gmail",
+    "gdrive",
+    "gcalendar",
+    "gtasks",
+    "gdocs",
+    "gsheets",
+    "gslides",
+    "gcontacts",
+    "slack",
+    "x",
+    "chatgpt",
+  ];
   if (value.some((provider) => !supported.includes(provider))) {
     throw new TypeError("requested_connectors contains an unsupported provider");
   }
@@ -386,7 +401,29 @@ function connectorResources(resources) {
 }
 
 function connectorName(provider) {
-  return ({ github: "GitHub", gmail: "Gmail", gdrive: "Google Drive", x: "X", chatgpt: "ChatGPT" })[provider];
+  return ({
+    github: "GitHub",
+    gmail: "Gmail",
+    gdrive: "Google Drive",
+    gcalendar: "Google Calendar",
+    gtasks: "Google Tasks",
+    gdocs: "Google Docs",
+    gsheets: "Google Sheets",
+    gslides: "Google Slides",
+    gcontacts: "Google Contacts",
+    slack: "Slack",
+    x: "X",
+    chatgpt: "ChatGPT",
+  })[provider];
+}
+
+function mockConnectorConnections(connectors, grantId) {
+  return Object.fromEntries(connectors
+    .filter((connector) => connector !== "chatgpt")
+    .map((connector) => [
+      connector,
+      [mockHex(`${grantId}:${connector}:connection`, 32).slice(2, 45)],
+    ]));
 }
 
 function requiredActiveGrant(grants, grantId) {

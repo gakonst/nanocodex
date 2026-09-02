@@ -3,8 +3,35 @@ import test from "node:test";
 
 import {
   managedAgentExistenceStatus,
+  managedGrantHeaders,
   managedGrantUpstreamMethod,
-} from "../src/managedGrant.mjs";
+} from "../src/managedGrant.mts";
+
+test("managed grant headers carry the exact connection snapshot without credentials", () => {
+  const connectionId = "a".repeat(43);
+  const headers = managedGrantHeaders({
+    brokerUserId: "user-1",
+    capabilities: ["gmail"],
+    connectors: ["gmail"],
+    connectorConnections: { gmail: [connectionId] },
+    grantId: `0x${"b".repeat(64)}`,
+    mcpIds: [],
+  });
+  assert.deepEqual(
+    JSON.parse(headers["x-nanocodex-connect-connector-connections"]),
+    { gmail: [connectionId] },
+  );
+  assert.equal(JSON.stringify(headers).includes("token"), false);
+
+  const legacy = managedGrantHeaders({
+    brokerUserId: "user-1",
+    capabilities: ["gmail"],
+    connectors: ["gmail"],
+    grantId: `0x${"c".repeat(64)}`,
+    mcpIds: [],
+  });
+  assert.equal(legacy["x-nanocodex-connect-connector-connections"], undefined);
+});
 
 test("managed reads use the internal GET boundary while mutations remain POST", () => {
   assert.equal(managedGrantUpstreamMethod("POST", ""), "GET");

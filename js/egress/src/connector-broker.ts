@@ -13,19 +13,14 @@ import {
   decodeGitHubTokenResponse,
 } from "./connectors/github";
 import {
-  buildGmailAuthorizationUrl,
-  buildGmailIdentityRequest,
-  buildGmailTokenRequest,
-  decodeGmailIdentity,
-  decodeGmailTokenResponse,
-} from "./connectors/gmail";
-import {
-  buildGDriveAuthorizationUrl,
-  buildGDriveIdentityRequest,
-  buildGDriveTokenRequest,
-  decodeGDriveIdentity,
-  decodeGDriveTokenResponse,
-} from "./connectors/gdrive";
+  buildGoogleAuthorizationUrl,
+  buildGoogleIdentityRequest,
+  buildGoogleTokenRequest,
+  decodeGoogleIdentity,
+  decodeGoogleTokenResponse,
+  googleCapabilities,
+  type GoogleCapabilityId,
+} from "./connectors/google";
 import { canonicalConnectorPath } from "./connector-path";
 import {
   McpConnectionOwner,
@@ -40,6 +35,15 @@ import {
   decodeXIdentity,
   decodeXTokenResponse,
 } from "./connectors/x";
+import {
+  buildSlackAuthorizationUrl,
+  buildSlackRevocationRequest,
+  buildSlackTokenRefreshRequest,
+  buildSlackTokenRequest,
+  decodeSlackRefreshResponse,
+  decodeSlackTokenResponse,
+  slackConnectionLabel,
+} from "./connectors/slack";
 
 const STATE_KEY = "connector-state";
 const PENDING_TTL_MS = 10 * 60_000;
@@ -47,16 +51,19 @@ const MAX_BODY_BYTES = 8 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES = 64 * 1024;
 const MAX_CONNECTOR_URL_BYTES = 8 * 1024;
 const MAX_CONNECTOR_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_SLACK_REQUEST_BYTES = 1024 * 1024;
 const CONNECTOR_TIMEOUT_MS = 20_000;
 const EXPIRY_SKEW_MS = 30_000;
 const REVOCATION_RETRY_BASE_MS = 30_000;
 const REVOCATION_RETRY_MAX_MS = 60 * 60_000;
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
-const CONNECTOR = /^(github|gmail|gdrive|x)$/;
+const CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
+const PROVIDER = /^(github|google|slack|x)$/;
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 
 type ProviderRule = Readonly<{
   id: ConnectorId;
+  provider: OAuthProviderId;
   origin: `https://${string}`;
   paths: readonly RegExp[];
 }>;
@@ -64,21 +71,67 @@ type ProviderRule = Readonly<{
 const PROVIDER_RULES: readonly ProviderRule[] = [
   {
     id: "github",
+    provider: "github",
     origin: "https://api.github.com",
     paths: [/^\//],
   },
   {
     id: "gmail",
+    provider: "google",
     origin: "https://gmail.googleapis.com",
     paths: [/^\/gmail\/v1\/users\/me(?:\/|$)/],
   },
   {
     id: "gdrive",
+    provider: "google",
     origin: "https://www.googleapis.com",
     paths: [/^\/drive\/v3(?:\/|$)/, /^\/upload\/drive\/v3(?:\/|$)/],
   },
   {
+    id: "gcalendar",
+    provider: "google",
+    origin: "https://www.googleapis.com",
+    paths: [/^\/calendar\/v3(?:\/|$)/],
+  },
+  {
+    id: "gcalendar",
+    provider: "google",
+    origin: "https://calendar.googleapis.com",
+    paths: [/^\/calendar\/v3(?:\/|$)/],
+  },
+  {
+    id: "gtasks",
+    provider: "google",
+    origin: "https://tasks.googleapis.com",
+    paths: [/^\/tasks\/v1(?:\/|$)/],
+  },
+  {
+    id: "gdocs",
+    provider: "google",
+    origin: "https://docs.googleapis.com",
+    paths: [/^\/v1\/documents(?:\/|$)/],
+  },
+  {
+    id: "gsheets",
+    provider: "google",
+    origin: "https://sheets.googleapis.com",
+    paths: [/^\/v4\/spreadsheets(?:\/|$)/],
+  },
+  {
+    id: "gslides",
+    provider: "google",
+    origin: "https://slides.googleapis.com",
+    paths: [/^\/v1\/presentations(?:\/|$)/],
+  },
+  {
+    id: "gcontacts",
+    provider: "google",
+    origin: "https://people.googleapis.com",
+    paths: [/^\/v1\/(?:people|contactGroups|otherContacts)(?:\/|:|$)/],
+  },
+  {
     id: "x",
+    provider: "x",
     origin: "https://api.x.com",
     paths: [
       /^\/2\/tweets(?:\/|$)/,
@@ -88,9 +141,16 @@ const PROVIDER_RULES: readonly ProviderRule[] = [
       /^\/2\/media(?:\/|$)/,
     ],
   },
+  {
+    id: "slack",
+    provider: "slack",
+    origin: "https://slack.com",
+    paths: [/^\/api\/(?!auth\.revoke$)[A-Za-z0-9._-]+$/],
+  },
 ];
 
-export type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+export type ConnectorId = "github" | GoogleCapabilityId | "slack" | "x";
+export type OAuthProviderId = "github" | "google" | "slack" | "x";
 
 export interface ConnectorBrokerEnv extends McpConnectionBrokerEnv {
   GITHUB_OAUTH_CLIENT_ID?: string;
@@ -99,6 +159,8 @@ export interface ConnectorBrokerEnv extends McpConnectionBrokerEnv {
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
   X_OAUTH_CLIENT_ID?: string;
   X_OAUTH_CLIENT_SECRET?: string;
+  SLACK_OAUTH_CLIENT_ID?: string;
+  SLACK_OAUTH_CLIENT_SECRET?: string;
 }
 
 type StoredConnector = {
@@ -110,6 +172,9 @@ type StoredConnector = {
   accountId: string;
   label: string;
   connectedAt: number;
+  teamId?: string;
+  teamName?: string;
+  userId?: string;
 };
 
 type PendingAuthorization = {
@@ -122,14 +187,28 @@ type PendingAuthorization = {
 };
 
 type ConnectorState = {
-  version: 1;
-  connectors: Partial<Record<ConnectorId, StoredConnector>>;
-  pending: Partial<Record<ConnectorId, PendingAuthorization>>;
+  version: 2;
+  connections: Partial<Record<OAuthProviderId, Record<string, StoredConnector>>>;
+  pending: Partial<Record<OAuthProviderId, PendingAuthorization>>;
   revocations?: PendingRevocation[];
 };
 
+type LegacyConnectorState = {
+  version: 1;
+  connectors: Partial<Record<"github" | "gmail" | "gdrive" | "x", StoredConnector>>;
+  slack?: Record<string, StoredConnector>;
+  pending: Partial<Record<"github" | "gmail" | "gdrive" | "slack" | "x", PendingAuthorization>>;
+  revocations?: LegacyPendingRevocation[];
+};
+
 type PendingRevocation = {
-  id: ConnectorId;
+  provider: OAuthProviderId;
+  connector: StoredConnector;
+  attempts: number;
+};
+
+type LegacyPendingRevocation = {
+  id: "github" | "gmail" | "gdrive" | "x";
   connector: StoredConnector;
   attempts: number;
 };
@@ -142,7 +221,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   readonly #vault: CredentialVault;
   readonly #mcpConnections: McpConnectionOwner;
   readonly #ready: Promise<void>;
-  #connectors: ConnectorState = { version: 1, connectors: {}, pending: {} };
+  #connectors: ConnectorState = { version: 2, connections: {}, pending: {} };
   #tail: Promise<void> = Promise.resolve();
 
   constructor(state: DurableObjectState, env: ConnectorBrokerEnv) {
@@ -182,9 +261,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       this.#mcpConnections.initialize(),
     ]);
     if (row) {
-      const opened = await this.#vault.open<ConnectorState>(row.envelope);
-      this.#connectors = opened.value;
-      if (opened.reseal) await this.#persist();
+      const opened = await this.#vault.open<ConnectorState | LegacyConnectorState>(row.envelope);
+      this.#connectors = migrateConnectorState(opened.value);
+      if (opened.reseal || opened.value.version === 1) await this.#persist();
     }
     if (this.#pendingRevocations().length > 0) {
       await this.#schedulePendingRevocations();
@@ -194,7 +273,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   async #dispatch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     let auditAction: ConnectorAuditAction | undefined;
-    let auditConnector: ConnectorId | undefined;
+    let auditConnector: ConnectorId | OAuthProviderId | undefined;
     try {
       if (url.origin === "https://mcp-connections.internal") {
         return this.#mcpConnections.fetch(request);
@@ -215,10 +294,14 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       if (request.method === "GET" && url.pathname === "/v1/status") {
         return json({ connectors: this.#publicStatus() }, 200);
       }
-      const match = url.pathname.match(/^\/v1\/(github|gmail|gdrive|x)(?:\/(start|callback))?$/);
-      const id = connectorId(match?.[1]);
+      const match = url.pathname.match(
+        /^\/v1\/(github|google|gmail|gdrive|slack|x)(?:\/(start|callback)|\/connections\/([A-Za-z0-9_-]{43}))?$/,
+      );
+      const controlId = match?.[1];
+      const id = oauthProviderId(controlId);
       if (!id) return jsonError(404, "not_found");
       const operation = match?.[2];
+      const connectionId = match?.[3];
       if (request.method === "POST" && operation === "start") {
         auditAction = "authorize_start";
         auditConnector = id;
@@ -236,18 +319,41 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         });
         return json(callback, 200);
       }
+      if (request.method === "DELETE" && connectionId) {
+        auditAction = "disconnect";
+        auditConnector = id;
+        const connector = this.#connections(id)[connectionId];
+        if (!connector) return jsonError(404, "connector_connection_not_found");
+        const providerRevoked = await this.#revoke(id, connector);
+        delete this.#connections(id)[connectionId];
+        await this.#persist();
+        connectorAudit("disconnect", "allow", id, {
+          status: 204,
+          provider_revoked: providerRevoked,
+          disconnected_connectors: 1,
+          connection_id: connectionId,
+        });
+        return new Response(null, { status: 204, headers: noStoreHeaders() });
+      }
       if (request.method === "DELETE" && operation === undefined) {
         auditAction = "disconnect";
         auditConnector = id;
-        const connector = this.#connectors.connectors[id];
-        const providerRevoked = connector ? await this.#revoke(id, connector) : false;
-        const disconnected = this.#deleteConnectorGrant(id, connector);
+        const selected = Object.entries(this.#connections(id)).filter(([, connector]) => (
+          controlId !== "gmail" && controlId !== "gdrive"
+            ? true
+            : capabilitiesFor(id, connector.scopes).includes(controlId)
+        ));
+        let providerRevoked = false;
+        for (const [selectedId, connector] of selected) {
+          providerRevoked = await this.#revoke(id, connector) || providerRevoked;
+          delete this.#connections(id)[selectedId];
+        }
         delete this.#connectors.pending[id];
         await this.#persist();
         connectorAudit("disconnect", "allow", id, {
           status: 204,
           provider_revoked: providerRevoked,
-          disconnected_connectors: disconnected.length,
+          disconnected_connectors: selected.length,
         });
         return new Response(null, { status: 204, headers: noStoreHeaders() });
       }
@@ -275,16 +381,27 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       throw new ConnectorFailure(403, "destination_denied");
     }
     if (!safeQuery(url.searchParams)) throw new ConnectorFailure(403, "destination_denied");
-    const connector = await this.#usableConnector(provider.id);
+    const selectedConnectionId = request.headers.get("x-nanocodex-connector-connection");
+    if (selectedConnectionId !== null && !CONNECTION_ID.test(selectedConnectionId)) {
+      throw new ConnectorFailure(400, "connector_connection_invalid");
+    }
+    const selected = await this.#usableConnector(
+      provider,
+      selectedConnectionId ?? undefined,
+    );
+    const connector = selected.connector;
     const headers = connectorRequestHeaders(request.headers, provider.id, connector.accessToken);
+    const requestBody = provider.provider === "slack"
+      ? await slackRequestBody(request)
+      : request.body;
     let upstream: Response;
     try {
       upstream = await fetch(new Request(url, {
         method: request.method,
         headers,
-        ...(request.method === "GET" || request.method === "HEAD" || !request.body
+        ...(request.method === "GET" || request.method === "HEAD" || !requestBody
           ? {}
-          : { body: request.body }),
+          : { body: requestBody }),
         redirect: "manual",
       }), {
         redirect: "manual",
@@ -295,7 +412,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     }
     if (upstream.status === 401) {
       await upstream.body?.cancel();
-      this.#deleteConnectorGrant(provider.id, connector);
+      delete this.#connections(provider.provider)[selected.connectionId];
       await this.#persist();
       throw new ConnectorFailure(409, "connector_reauthentication_required");
     }
@@ -320,27 +437,54 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     });
   }
 
-  async #usableConnector(id: ConnectorId): Promise<StoredConnector> {
-    const connector = this.#connectors.connectors[id];
-    if (!connector) throw new ConnectorFailure(409, "connector_not_connected");
+  async #usableConnector(
+    rule: ProviderRule,
+    connectionId?: string,
+  ): Promise<{ connectionId: string; connector: StoredConnector }> {
+    const connections = this.#connections(rule.provider);
+    let selected: [string, StoredConnector] | undefined;
+    if (connectionId) {
+      const connector = connections[connectionId];
+      if (!connector || !capabilitiesFor(rule.provider, connector.scopes).includes(rule.id)) {
+        throw new ConnectorFailure(404, "connector_connection_not_found");
+      }
+      selected = [connectionId, connector];
+    } else {
+      const candidates = Object.entries(connections).filter(([id, connector]) => (
+        CONNECTION_ID.test(id) && this.#isUsable(connector)
+          && capabilitiesFor(rule.provider, connector.scopes).includes(rule.id)
+      ));
+      if (candidates.length > 1) throw new ConnectorFailure(409, "connector_connection_required");
+      selected = candidates[0];
+    }
+    if (!selected) throw new ConnectorFailure(409, "connector_not_connected");
+    const [selectedId, connector] = selected;
     if (connector.expiresAt === undefined || connector.expiresAt > Date.now() + EXPIRY_SKEW_MS) {
-      return connector;
+      return { connectionId: selectedId, connector };
     }
     if (!connector.refreshToken) {
-      return this.#rejectRefresh(id, connector);
+      return this.#rejectRefresh(rule.provider, selectedId, connector);
     }
     if (connector.refreshExpiresAt !== undefined
       && connector.refreshExpiresAt <= Date.now() + EXPIRY_SKEW_MS) {
-      this.#deleteConnectorGrant(id, connector);
+      delete connections[selectedId];
       await this.#persist();
       throw new ConnectorFailure(409, "connector_reauthentication_required");
     }
-    if (id === "github") return this.#refreshGitHubConnector(connector);
-    if (id === "x") return this.#refreshXConnector(connector);
-    return this.#refreshGoogleConnector(id, connector);
+    const refreshed = rule.provider === "github"
+      ? await this.#refreshGitHubConnector(selectedId, connector)
+      : rule.provider === "x"
+        ? await this.#refreshXConnector(selectedId, connector)
+        : rule.provider === "slack"
+          ? await this.#refreshSlackConnector(selectedId, connector)
+          : await this.#refreshGoogleConnector(selectedId, connector);
+    if (!capabilitiesFor(rule.provider, refreshed.scopes).includes(rule.id)) {
+      throw new ConnectorFailure(409, "connector_capability_not_granted");
+    }
+    return { connectionId: selectedId, connector: refreshed };
   }
 
-  async #refreshGitHubConnector(connector: StoredConnector): Promise<StoredConnector> {
+  async #refreshGitHubConnector(connectionId: string, connector: StoredConnector): Promise<StoredConnector> {
     const credentials = providerCredentials("github", this.#env);
     const response = await providerFetch(buildGitHubTokenRefreshRequest({
       clientId: credentials.clientId,
@@ -350,7 +494,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     if (REDIRECT_STATUS.has(response.status) || !response.ok) {
       await response.body?.cancel();
       if (response.status === 400 || response.status === 401) {
-        return this.#rejectRefresh("github", connector);
+        return this.#rejectRefresh("github", connectionId, connector);
       }
       connectorAudit("refresh", "error", "github", {
         status: 503,
@@ -362,10 +506,10 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     try {
       refreshed = decodeGitHubTokenResponse(await providerJson(response));
     } catch {
-      return this.#rejectRefresh("github", connector);
+      return this.#rejectRefresh("github", connectionId, connector);
     }
     if (refreshed.expiresIn === undefined || refreshed.refreshToken === undefined) {
-      return this.#rejectRefresh("github", connector);
+      return this.#rejectRefresh("github", connectionId, connector);
     }
     const { refreshExpiresAt: _previousRefreshExpiry, ...retained } = connector;
     const next: StoredConnector = {
@@ -378,23 +522,27 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       }),
       scopes: [...refreshed.scopes],
     };
-    this.#connectors.connectors.github = next;
+    this.#connections("github")[connectionId] = next;
     await this.#persist();
     connectorAudit("refresh", "allow", "github", { status: 200 });
     return next;
   }
 
-  async #rejectRefresh(id: ConnectorId, connector: StoredConnector): Promise<never> {
-    this.#deleteConnectorGrant(id, connector);
+  async #rejectRefresh(
+    provider: OAuthProviderId,
+    connectionId: string,
+    _connector: StoredConnector,
+  ): Promise<never> {
+    delete this.#connections(provider)[connectionId];
     await this.#persist();
-    connectorAudit("refresh", "deny", id, {
+    connectorAudit("refresh", "deny", provider, {
       status: 409,
       code: "connector_reauthentication_required",
     });
     throw new ConnectorFailure(409, "connector_reauthentication_required");
   }
 
-  async #refreshXConnector(connector: StoredConnector): Promise<StoredConnector> {
+  async #refreshXConnector(connectionId: string, connector: StoredConnector): Promise<StoredConnector> {
     const credentials = providerCredentials("x", this.#env);
     const response = await providerFetch(buildXRefreshRequest(
       credentials.clientId,
@@ -404,7 +552,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     if (REDIRECT_STATUS.has(response.status) || !response.ok) {
       await response.body?.cancel();
       if (response.status === 400 || response.status === 401) {
-        return this.#rejectRefresh("x", connector);
+        return this.#rejectRefresh("x", connectionId, connector);
       }
       connectorAudit("refresh", "error", "x", {
         status: 503,
@@ -416,7 +564,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     try {
       refreshed = decodeXTokenResponse(await providerJson(response));
     } catch {
-      return this.#rejectRefresh("x", connector);
+      return this.#rejectRefresh("x", connectionId, connector);
     }
     const next: StoredConnector = {
       ...connector,
@@ -425,17 +573,17 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       expiresAt: Date.now() + refreshed.expiresIn * 1_000,
       scopes: [...refreshed.scopes],
     };
-    this.#connectors.connectors.x = next;
+    this.#connections("x")[connectionId] = next;
     await this.#persist();
     connectorAudit("refresh", "allow", "x", { status: 200 });
     return next;
   }
 
   async #refreshGoogleConnector(
-    id: "gmail" | "gdrive",
+    connectionId: string,
     connector: StoredConnector,
   ): Promise<StoredConnector> {
-    const credentials = providerCredentials(id, this.#env);
+    const credentials = providerCredentials("google", this.#env);
     const response = await providerFetch(new Request("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: {
@@ -452,9 +600,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     if (REDIRECT_STATUS.has(response.status) || !response.ok) {
       await response.body?.cancel();
       if (response.status === 400 || response.status === 401) {
-        return this.#rejectRefresh(id, connector);
+        return this.#rejectRefresh("google", connectionId, connector);
       }
-      connectorAudit("refresh", "error", id, {
+      connectorAudit("refresh", "error", "google", {
         status: 503,
         code: "connector_provider_unavailable",
       });
@@ -467,13 +615,50 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       expiresAt: Date.now() + refreshed.expiresIn * 1_000,
       ...(refreshed.scopes ? { scopes: refreshed.scopes } : {}),
     };
-    this.#connectors.connectors[id] = next;
+    this.#connections("google")[connectionId] = next;
     await this.#persist();
-    connectorAudit("refresh", "allow", id, { status: 200 });
+    connectorAudit("refresh", "allow", "google", { status: 200, connection_id: connectionId });
     return next;
   }
 
-  async #revoke(id: ConnectorId, connector: StoredConnector): Promise<boolean> {
+  async #refreshSlackConnector(
+    connectionId: string,
+    connector: StoredConnector,
+  ): Promise<StoredConnector> {
+    const credentials = providerCredentials("slack", this.#env);
+    const response = await providerFetch(buildSlackTokenRefreshRequest({
+      ...credentials,
+      refreshToken: connector.refreshToken!,
+    }));
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (response.status === 400 || response.status === 401) {
+        return this.#rejectRefresh("slack", connectionId, connector);
+      }
+      throw new ConnectorFailure(503, "connector_provider_unavailable");
+    }
+    let refreshed;
+    try {
+      refreshed = decodeSlackRefreshResponse(await providerJson(response), {
+        teamId: connector.teamId!, teamName: connector.teamName!, userId: connector.userId!,
+      });
+    } catch {
+      return this.#rejectRefresh("slack", connectionId, connector);
+    }
+    const next: StoredConnector = {
+      ...connector,
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken!,
+      expiresAt: Date.now() + refreshed.expiresIn! * 1_000,
+      scopes: [...refreshed.scopes],
+    };
+    this.#connections("slack")[connectionId] = next;
+    await this.#persist();
+    connectorAudit("refresh", "allow", "slack", { status: 200, connection_id: connectionId });
+    return next;
+  }
+
+  async #revoke(id: OAuthProviderId, connector: StoredConnector): Promise<boolean> {
     if (id === "x") {
       const credentials = providerCredentials(id, this.#env);
       const tokens = [...new Set([connector.refreshToken, connector.accessToken]
@@ -496,6 +681,18 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       }
       return false;
     }
+    if (id === "slack") {
+      const response = await providerFetch(buildSlackRevocationRequest(connector.accessToken));
+      let revoked = false;
+      if (response.ok) {
+        try { revoked = (await providerJson(response)).ok === true; } catch { revoked = false; }
+      } else {
+        await response.body?.cancel();
+      }
+      connectorAudit("revoke", revoked ? "allow" : "error", id, { status: response.status });
+      if (!revoked) throw new ConnectorFailure(503, "connector_revocation_failed");
+      return true;
+    }
     const response = await providerFetch(revocationRequest(id, connector, this.#env));
     await response.body?.cancel();
     const revoked = id === "github" ? response.status === 204 : response.status === 200;
@@ -506,47 +703,51 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     return true;
   }
 
-  #disconnectIds(id: ConnectorId, connector: StoredConnector): ConnectorId[] {
-    if (id === "github" || id === "x") return [id];
-    return (["gmail", "gdrive"] as const).filter((candidate) => (
-      candidate === id
-      || this.#connectors.connectors[candidate]?.accountId === connector.accountId
-    ));
+  #connections(provider: OAuthProviderId): Record<string, StoredConnector> {
+    return this.#connectors.connections[provider] ??= {};
   }
 
-  #deleteConnectorGrant(id: ConnectorId, connector?: StoredConnector): ConnectorId[] {
-    const connectorIds = connector ? this.#disconnectIds(id, connector) : [id];
-    for (const connectorId of connectorIds) {
-      delete this.#connectors.connectors[connectorId];
-    }
-    return connectorIds;
+  #isUsable(connector: StoredConnector): boolean {
+    const refreshable = connector.refreshToken
+      && (connector.refreshExpiresAt === undefined
+        || connector.refreshExpiresAt > Date.now() + EXPIRY_SKEW_MS);
+    return connector.expiresAt === undefined
+      || connector.expiresAt > Date.now() + EXPIRY_SKEW_MS
+      || Boolean(refreshable);
   }
 
   #publicStatus(): Record<ConnectorId, Record<string, unknown>> {
     const status = (id: ConnectorId): Record<string, unknown> => {
-      const connector = this.#connectors.connectors[id];
-      const refreshable = connector?.refreshToken
-        && (connector.refreshExpiresAt === undefined
-          || connector.refreshExpiresAt > Date.now() + EXPIRY_SKEW_MS);
-      const usable = connector
-        && (connector.expiresAt === undefined
-          || connector.expiresAt > Date.now() + EXPIRY_SKEW_MS
-          || refreshable);
-      return usable ? {
-        connected: true,
-        account_id: connector.accountId,
-        label: connector.label,
-      } : { connected: false };
+      const provider = providerForCapability(id);
+      const connections = Object.entries(this.#connections(provider))
+        .filter(([connectionId, connector]) => CONNECTION_ID.test(connectionId)
+          && this.#isUsable(connector)
+          && capabilitiesFor(provider, connector.scopes).includes(id))
+        .sort(([, left], [, right]) => left.connectedAt - right.connectedAt)
+        .map(([connectionId, connector]) => ({
+          id: connectionId,
+          label: connector.label,
+          account_id: connector.accountId,
+          capabilities: capabilitiesFor(provider, connector.scopes),
+        }));
+      return { connected: connections.length > 0, connections };
     };
     return {
       github: status("github"),
       gmail: status("gmail"),
       gdrive: status("gdrive"),
+      gcalendar: status("gcalendar"),
+      gtasks: status("gtasks"),
+      gdocs: status("gdocs"),
+      gsheets: status("gsheets"),
+      gslides: status("gslides"),
+      gcontacts: status("gcontacts"),
+      slack: status("slack"),
       x: status("x"),
     };
   }
 
-  async #start(id: ConnectorId, request: Request): Promise<Record<string, unknown>> {
+  async #start(id: OAuthProviderId, request: Request): Promise<Record<string, unknown>> {
     const body = await readJson(request, MAX_BODY_BYTES);
     const redirectUri = stringField(body, "redirect_uri");
     const returnTo = stringField(body, "return_to");
@@ -580,7 +781,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     };
   }
 
-  async #callback(id: ConnectorId, request: Request): Promise<Record<string, unknown>> {
+  async #callback(id: OAuthProviderId, request: Request): Promise<Record<string, unknown>> {
     const body = await readJson(request, MAX_BODY_BYTES);
     const state = stringField(body, "state");
     const pending = this.#connectors.pending[id];
@@ -604,6 +805,33 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       });
       const tokenResponse = await providerFetch(tokenRequest);
       if (!tokenResponse.ok) throw new ConnectorFailure(502, "connector_token_exchange_failed");
+      if (id === "slack") {
+        let token;
+        try { token = decodeSlackTokenResponse(await providerJson(tokenResponse)); } catch {
+          throw new ConnectorFailure(502, "connector_token_response_invalid");
+        }
+        const accountId = `${token.teamId}:${token.userId}`;
+        const connectionId = this.#connectionIdForIdentity(id, accountId);
+        const previous = this.#connections(id)[connectionId];
+        const stored: StoredConnector = {
+          accessToken: token.accessToken,
+          ...(token.refreshToken ?? previous?.refreshToken
+            ? { refreshToken: token.refreshToken ?? previous!.refreshToken }
+            : {}),
+          ...(token.expiresIn ? { expiresAt: Date.now() + token.expiresIn * 1_000 } : {}),
+          scopes: [...token.scopes],
+          accountId,
+          label: boundedLabel(slackConnectionLabel(token.teamName, token.userId)),
+          connectedAt: previous?.connectedAt ?? Date.now(),
+          teamId: token.teamId,
+          teamName: token.teamName,
+          userId: token.userId,
+        };
+        this.#connections(id)[connectionId] = stored;
+        await this.#persist();
+        return { connected: true, connection_id: connectionId,
+          capabilities: ["slack"], return_to: pending.returnTo };
+      }
       let token: DecodedToken;
       try {
         token = decodeToken(id, await providerJson(tokenResponse));
@@ -620,21 +848,25 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         if (error instanceof ConnectorFailure) throw error;
         throw new ConnectorFailure(502, "connector_identity_response_invalid");
       }
+      const connectionId = this.#connectionIdForIdentity(id, identity.accountId);
+      const previous = this.#connections(id)[connectionId];
       const connected: StoredConnector = {
         accessToken: token.accessToken,
-        ...(token.refreshToken ? { refreshToken: token.refreshToken } : {}),
+        ...(token.refreshToken ?? previous?.refreshToken
+          ? { refreshToken: token.refreshToken ?? previous!.refreshToken }
+          : {}),
         ...(token.expiresIn ? { expiresAt: Date.now() + token.expiresIn * 1_000 } : {}),
         ...(token.refreshExpiresIn
           ? { refreshExpiresAt: Date.now() + token.refreshExpiresIn * 1_000 }
           : {}),
         scopes: [...token.scopes],
         accountId: identity.accountId,
-        label: identity.displayLabel,
-        connectedAt: Date.now(),
+        label: boundedLabel(identity.displayLabel),
+        connectedAt: previous?.connectedAt ?? Date.now(),
       };
       if (pending.accountHint !== undefined
         && identity.displayLabel.toLowerCase() !== pending.accountHint.toLowerCase()) {
-        this.#pendingRevocations().push({ id, connector: connected, attempts: 0 });
+        this.#pendingRevocations().push({ provider: id, connector: connected, attempts: 0 });
         await this.#persist();
         await this.#schedulePendingRevocations();
         try {
@@ -654,13 +886,24 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         }
         throw new ConnectorFailure(409, "connector_account_mismatch");
       }
-      this.#connectors.connectors[id] = connected;
+      this.#connections(id)[connectionId] = connected;
       await this.#persist();
-      return { connected: true, return_to: pending.returnTo };
+      return {
+        connected: true,
+        connection_id: connectionId,
+        capabilities: capabilitiesFor(id, connected.scopes),
+        return_to: pending.returnTo,
+      };
     } catch (error) {
       const problem = connectorFailure(error);
       throw new ConnectorFailure(problem.status, problem.code, pending.returnTo);
     }
+  }
+
+  #connectionIdForIdentity(provider: OAuthProviderId, accountId: string): string {
+    return Object.entries(this.#connections(provider))
+      .find(([id, connector]) => CONNECTION_ID.test(id) && connector.accountId === accountId)?.[0]
+      ?? randomBase64Url(32);
   }
 
   async #persist(): Promise<void> {
@@ -677,7 +920,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     const retained: PendingRevocation[] = [];
     for (const revocation of this.#pendingRevocations()) {
       try {
-        if (!await this.#revoke(revocation.id, revocation.connector)) {
+        if (!await this.#revoke(revocation.provider, revocation.connector)) {
           throw new ConnectorFailure(503, "connector_revocation_failed");
         }
       } catch {
@@ -703,11 +946,15 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   async #restoreDurableState(): Promise<void> {
     try {
       const row = await this.#state.storage.get<StoredRow>(STATE_KEY);
-      this.#connectors = row
-        ? (await this.#vault.open<ConnectorState>(row.envelope)).value
-        : { version: 1, connectors: {}, pending: {} };
+      if (!row) {
+        this.#connectors = { version: 2, connections: {}, pending: {} };
+        return;
+      }
+      const opened = await this.#vault.open<ConnectorState | LegacyConnectorState>(row.envelope);
+      this.#connectors = migrateConnectorState(opened.value);
+      if (opened.reseal || opened.value.version === 1) await this.#persist();
     } catch {
-      this.#connectors = { version: 1, connectors: {}, pending: {} };
+      this.#connectors = { version: 2, connections: {}, pending: {} };
     }
   }
 }
@@ -728,40 +975,40 @@ type DecodedToken = {
 };
 
 function authorizationUrl(
-  id: ConnectorId,
+  id: OAuthProviderId,
   env: ConnectorBrokerEnv,
   fields: AuthorizationFields,
 ): URL {
   const clientId = providerCredentials(id, env).clientId;
+  if (id === "slack") return buildSlackAuthorizationUrl({
+    clientId, redirectUri: fields.redirectUri, state: fields.state,
+  });
   if (id === "github") return buildGitHubAuthorizationUrl({ clientId, ...fields });
-  if (id === "gmail") return buildGmailAuthorizationUrl({ clientId, ...fields });
   if (id === "x") return buildXAuthorizationUrl({ clientId, ...fields });
-  return buildGDriveAuthorizationUrl({ clientId, ...fields });
+  return buildGoogleAuthorizationUrl({ clientId, ...fields });
 }
 
 function optionalAccountHint(
   value: unknown,
-  id: ConnectorId,
+  id: OAuthProviderId,
 ): string | null | undefined {
   if (!isRecord(value) || value.account_hint === undefined) return undefined;
-  if ((id !== "gmail" && id !== "gdrive")
+  if (id !== "google"
     || typeof value.account_hint !== "string") return null;
   const hint = value.account_hint.trim().toLowerCase();
   return hint.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hint) ? hint : null;
 }
 
 function tokenExchangeRequest(
-  id: ConnectorId,
+  id: OAuthProviderId,
   env: ConnectorBrokerEnv,
   fields: ExchangeFields,
 ): Request {
   const credentials = providerCredentials(id, env);
-  if (id === "github") return buildGitHubTokenRequest({
-    clientId: credentials.clientId,
-    clientSecret: credentials.clientSecret,
-    ...fields,
+  if (id === "slack") return buildSlackTokenRequest({
+    ...credentials, code: fields.code, redirectUri: fields.redirectUri,
   });
-  if (id === "gmail") return buildGmailTokenRequest({
+  if (id === "github") return buildGitHubTokenRequest({
     clientId: credentials.clientId,
     clientSecret: credentials.clientSecret,
     ...fields,
@@ -771,16 +1018,10 @@ function tokenExchangeRequest(
     clientSecret: credentials.clientSecret,
     ...fields,
   });
-  return buildGDriveTokenRequest({
-    clientId: credentials.clientId,
-    clientSecret: credentials.clientSecret,
-    authorizationCode: fields.code,
-    redirectUri: fields.redirectUri,
-    codeVerifier: fields.codeVerifier,
-  });
+  return buildGoogleTokenRequest({ ...credentials, ...fields });
 }
 
-function decodeToken(id: ConnectorId, value: unknown): DecodedToken {
+function decodeToken(id: Exclude<OAuthProviderId, "slack">, value: unknown): DecodedToken {
   if (id === "github") {
     const token = decodeGitHubTokenResponse(value);
     return {
@@ -790,15 +1031,6 @@ function decodeToken(id: ConnectorId, value: unknown): DecodedToken {
       ...(token.refreshTokenExpiresIn
         ? { refreshExpiresIn: token.refreshTokenExpiresIn }
         : {}),
-      scopes: token.scopes,
-    };
-  }
-  if (id === "gmail") {
-    const token = decodeGmailTokenResponse(value);
-    return {
-      accessToken: token.accessToken,
-      ...(token.refreshToken ? { refreshToken: token.refreshToken } : {}),
-      expiresIn: token.expiresIn,
       scopes: token.scopes,
     };
   }
@@ -814,24 +1046,23 @@ function decodeToken(id: ConnectorId, value: unknown): DecodedToken {
       scopes: token.scopes,
     };
   }
-  const token = decodeGDriveTokenResponse(value);
+  const token = decodeGoogleTokenResponse(value);
   return {
     accessToken: token.accessToken,
     ...(token.refreshToken ? { refreshToken: token.refreshToken } : {}),
-    expiresIn: token.expiresInSeconds,
-    scopes: token.grantedScopes,
+    expiresIn: token.expiresIn,
+    scopes: token.scopes,
   };
 }
 
-function identityRequest(id: ConnectorId, accessToken: string): Request {
+function identityRequest(id: Exclude<OAuthProviderId, "slack">, accessToken: string): Request {
   if (id === "github") return buildGitHubIdentityRequest(accessToken);
-  if (id === "gmail") return buildGmailIdentityRequest(accessToken);
   if (id === "x") return buildXIdentityRequest(accessToken);
-  return buildGDriveIdentityRequest(accessToken);
+  return buildGoogleIdentityRequest(accessToken);
 }
 
 function revocationRequest(
-  id: ConnectorId,
+  id: Exclude<OAuthProviderId, "slack" | "x">,
   connector: StoredConnector,
   env: ConnectorBrokerEnv,
 ): Request {
@@ -866,23 +1097,27 @@ function terminalRevocationStatus(status: number): boolean {
     && status !== 429;
 }
 
-function decodeIdentity(id: ConnectorId, value: unknown): { accountId: string; displayLabel: string } {
+function decodeIdentity(
+  id: Exclude<OAuthProviderId, "slack">,
+  value: unknown,
+): { accountId: string; displayLabel: string } {
   if (id === "github") return decodeGitHubIdentity(value);
-  if (id === "gmail") return decodeGmailIdentity(value);
   if (id === "x") return decodeXIdentity(value);
-  return decodeGDriveIdentity(value);
+  return decodeGoogleIdentity(value);
 }
 
 function providerCredentials(
-  id: ConnectorId,
+  id: OAuthProviderId,
   env: ConnectorBrokerEnv,
 ): { clientId: string; clientSecret: string } {
   const clientId = (id === "github" ? env.GITHUB_OAUTH_CLIENT_ID
     : id === "x" ? env.X_OAUTH_CLIENT_ID
+    : id === "slack" ? env.SLACK_OAUTH_CLIENT_ID
     : env.GOOGLE_OAUTH_CLIENT_ID)?.trim();
   const clientSecret = (id === "github"
     ? env.GITHUB_OAUTH_CLIENT_SECRET
     : id === "x" ? env.X_OAUTH_CLIENT_SECRET
+    : id === "slack" ? env.SLACK_OAUTH_CLIENT_SECRET
     : env.GOOGLE_OAUTH_CLIENT_SECRET)?.trim();
   if (!clientId || !clientSecret) throw new ConnectorFailure(503, "connector_not_configured");
   return { clientId, clientSecret };
@@ -923,6 +1158,76 @@ function decodeGoogleRefresh(value: unknown): {
   };
 }
 
+function capabilitiesFor(provider: OAuthProviderId, scopes: readonly string[]): ConnectorId[] {
+  if (provider === "google") return googleCapabilities(scopes);
+  return [provider];
+}
+
+function providerForCapability(id: ConnectorId): OAuthProviderId {
+  return id.startsWith("g") && id !== "github" ? "google" : id as OAuthProviderId;
+}
+
+function oauthProviderId(value: string | undefined): OAuthProviderId | undefined {
+  const normalized = value === "gmail" || value === "gdrive" ? "google" : value;
+  return normalized && PROVIDER.test(normalized) ? normalized as OAuthProviderId : undefined;
+}
+
+function migrateConnectorState(value: ConnectorState | LegacyConnectorState): ConnectorState {
+  if (value.version === 2) return value;
+  const migrated: ConnectorState = { version: 2, connections: {}, pending: {} };
+  for (const [legacyId, connector] of Object.entries(value.connectors)) {
+    if (!connector) continue;
+    const provider = oauthProviderId(legacyId)!;
+    const connections = migrated.connections[provider] ??= {};
+    const normalized = normalizeStoredConnector(connector);
+    if (provider !== "google") {
+      connections[randomBase64Url(32)] = normalized;
+      continue;
+    }
+    const existing = Object.entries(connections)
+      .find(([, candidate]) => candidate.accountId === normalized.accountId);
+    if (!existing) {
+      connections[randomBase64Url(32)] = normalized;
+      continue;
+    }
+    connections[existing[0]] = mergeLegacyGoogleConnectors(existing[1], normalized);
+  }
+  for (const connector of Object.values(value.slack ?? {})) {
+    (migrated.connections.slack ??= {})[randomBase64Url(32)] = normalizeStoredConnector(connector);
+  }
+  for (const [legacyId, pending] of Object.entries(value.pending)) {
+    if (!pending) continue;
+    migrated.pending[oauthProviderId(legacyId)!] = pending;
+  }
+  migrated.revocations = (value.revocations ?? []).map((revocation) => ({
+    provider: oauthProviderId(revocation.id)!,
+    connector: normalizeStoredConnector(revocation.connector),
+    attempts: revocation.attempts,
+  }));
+  return migrated;
+}
+
+function mergeLegacyGoogleConnectors(
+  left: StoredConnector,
+  right: StoredConnector,
+): StoredConnector {
+  // Both legacy records represent one Google OAuth grant. The newest
+  // incremental authorization is the only credential whose returned scope
+  // list can authoritatively describe what its token may access; never infer a
+  // wider token by unioning scopes from an older credential.
+  return right.connectedAt >= left.connectedAt ? right : left;
+}
+
+function normalizeStoredConnector(connector: StoredConnector): StoredConnector {
+  return { ...connector, label: boundedLabel(connector.label) };
+}
+
+function boundedLabel(value: string): string {
+  const label = value.trim();
+  if (!label) throw new ConnectorFailure(502, "connector_identity_response_invalid");
+  return [...label].slice(0, 256).join("");
+}
+
 function providerRule(url: URL): ProviderRule | undefined {
   return PROVIDER_RULES.find((candidate) => candidate.origin === url.origin
     && canonicalConnectorPath(candidate.id, url.pathname)
@@ -930,7 +1235,7 @@ function providerRule(url: URL): ProviderRule | undefined {
 }
 
 function safeQuery(parameters: URLSearchParams): boolean {
-  const forbidden = new Set(["access_token", "api_key", "authorization", "key", "oauth_token"]);
+  const forbidden = new Set(["access_token", "api_key", "authorization", "key", "oauth_token", "token"]);
   let count = 0;
   for (const [name, value] of parameters) {
     count += 1;
@@ -938,6 +1243,35 @@ function safeQuery(parameters: URLSearchParams): boolean {
       || forbidden.has(name.toLowerCase())) return false;
   }
   return true;
+}
+
+async function slackRequestBody(request: Request): Promise<string | null> {
+  if (request.body === null) return null;
+  const contentType = (request.headers.get("content-type") ?? "")
+    .split(";", 1)[0]!.trim().toLowerCase();
+  const body = await readBoundedText(request, MAX_SLACK_REQUEST_BYTES);
+  const forbidden = new Set(["access_token", "api_key", "authorization", "oauth_token", "token"]);
+  if (contentType === "application/json") {
+    let value: unknown;
+    try { value = JSON.parse(body); } catch {
+      throw new ConnectorFailure(400, "invalid_request_body");
+    }
+    if (!isRecord(value)) throw new ConnectorFailure(400, "invalid_request_body");
+    if (Object.keys(value).some((name) => forbidden.has(name.toLowerCase()))) {
+      throw new ConnectorFailure(403, "credential_input_denied");
+    }
+    return body;
+  }
+  if (contentType === "application/x-www-form-urlencoded") {
+    const parameters = new URLSearchParams(body);
+    for (const name of parameters.keys()) {
+      if (forbidden.has(name.toLowerCase())) {
+        throw new ConnectorFailure(403, "credential_input_denied");
+      }
+    }
+    return body;
+  }
+  throw new ConnectorFailure(415, "unsupported_media_type");
 }
 
 function connectorRequestHeaders(
@@ -1092,10 +1426,6 @@ function stringField(value: unknown, key: string): string | undefined {
     ? value[key] as string : undefined;
 }
 
-function connectorId(value: string | undefined): ConnectorId | undefined {
-  return value && CONNECTOR.test(value) ? value as ConnectorId : undefined;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -1111,7 +1441,7 @@ type ConnectorAuditAction =
 function connectorAudit(
   action: ConnectorAuditAction,
   outcome: "allow" | "deny" | "error",
-  connector: ConnectorId,
+  connector: ConnectorId | OAuthProviderId,
   detail: Readonly<Record<string, boolean | number | string>>,
 ): void {
   const log = outcome === "error" ? console.error : outcome === "deny" ? console.warn : console.info;

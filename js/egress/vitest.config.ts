@@ -44,6 +44,8 @@ export default defineConfig({
           GOOGLE_OAUTH_CLIENT_SECRET: "google-client-secret",
           X_OAUTH_CLIENT_ID: "x-client-id",
           X_OAUTH_CLIENT_SECRET: "x-client-secret",
+          SLACK_OAUTH_CLIENT_ID: "slack-client-id",
+          SLACK_OAUTH_CLIENT_SECRET: "slack-client-secret",
         },
         workers: [{
           name: "nanocodex",
@@ -53,6 +55,35 @@ export default defineConfig({
         }],
         outboundService: async (request) => {
           const url = new URL(request.url);
+          if (request.method === "POST" && url.hostname === "slack.com"
+            && url.pathname === "/api/oauth.v2.access") {
+            const body = await request.clone().formData();
+            if (body.get("grant_type") === "refresh_token") {
+              return Response.json({
+                ok: true,
+                access_token: "slack-refreshed-access",
+                refresh_token: "slack-refreshed-refresh",
+                expires_in: 43_200,
+                token_type: "user",
+                scope: "channels:history,channels:read,chat:write,groups:history,groups:read,im:history,im:read,im:write,mpim:history,mpim:read,mpim:write,reactions:read,reactions:write,search:read,users:read",
+              });
+            }
+            const workspace = body.get("code") === "slack-b-code" ? "B" : "A";
+            return Response.json({
+              ok: true,
+              team: { id: "TSHARED", name: "Shared Workspace" },
+              authed_user: {
+                id: `U${workspace}`,
+                access_token: `slack-${workspace.toLowerCase()}-access`,
+                token_type: "user",
+                scope: "channels:history,channels:read,chat:write,groups:history,groups:read,im:history,im:read,im:write,mpim:history,mpim:read,mpim:write,reactions:read,reactions:write,search:read,users:read",
+              },
+            });
+          }
+          if (request.method === "POST" && url.hostname === "slack.com"
+            && url.pathname === "/api/auth.revoke") {
+            return Response.json({ ok: request.headers.get("authorization")?.startsWith("Bearer slack-") });
+          }
           if (request.method === "POST" && url.hostname === "github.com"
             && url.pathname === "/login/oauth/access_token") {
             const body = await request.clone().formData();
@@ -179,6 +210,21 @@ export default defineConfig({
               });
             }
             const code = String(body.get("code") ?? "");
+            if (code.startsWith("google-")) {
+              const account = code.includes("routes") ? "routes"
+                : code.includes("beta") ? "beta" : "alpha";
+              return Response.json({
+                access_token: `google-${account}-access`,
+                refresh_token: `google-${account}-refresh`,
+                expires_in: 3_600,
+                token_type: "Bearer",
+                scope: account === "routes"
+                  ? "openid email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/contacts.readonly"
+                  : account === "alpha"
+                  ? "openid email https://mail.google.com/ https://www.googleapis.com/auth/drive"
+                  : "openid email https://mail.google.com/ https://www.googleapis.com/auth/calendar",
+              });
+            }
             const sharedAccount = code.endsWith("-shared-account-code");
             const drive = code === "gdrive-code" || code === "gdrive-shared-account-code";
             const expiring = body.get("code") === "gmail-expiring-code";
@@ -224,6 +270,18 @@ export default defineConfig({
           if (request.method === "GET" && url.hostname === "openidconnect.googleapis.com"
             && url.pathname === "/v1/userinfo") {
             const authorization = request.headers.get("authorization");
+            if (authorization === "Bearer google-alpha-access"
+              || authorization === "Bearer google-beta-access"
+              || authorization === "Bearer google-routes-access") {
+              const account = authorization.includes("routes") ? "routes"
+                : authorization.includes("beta") ? "beta" : "alpha";
+              return Response.json({
+                sub: `google-${account}-account`,
+                email: `${account}@example.test`,
+                email_verified: true,
+                name: `${account} user`,
+              });
+            }
             const sharedAccount = authorization?.endsWith("shared-account-access") === true;
             const drive = authorization === "Bearer gdrive-connector-access"
               || authorization === "Bearer gdrive-shared-account-access";
@@ -241,7 +299,14 @@ export default defineConfig({
           if ((url.hostname === "api.github.com"
               || url.hostname === "gmail.googleapis.com"
               || url.hostname === "www.googleapis.com"
-              || url.hostname === "api.x.com")) {
+              || url.hostname === "calendar.googleapis.com"
+              || url.hostname === "tasks.googleapis.com"
+              || url.hostname === "docs.googleapis.com"
+              || url.hostname === "sheets.googleapis.com"
+              || url.hostname === "slides.googleapis.com"
+              || url.hostname === "people.googleapis.com"
+              || url.hostname === "api.x.com"
+              || url.hostname === "slack.com")) {
             const authorization = request.headers.get("authorization") ?? "";
             if (url.searchParams.has("redirect")) {
               return new Response(null, {
@@ -263,6 +328,10 @@ export default defineConfig({
               : authorization === "Bearer github-refreshed-access" ? "github-refreshed"
               : authorization === "Bearer gmail-refreshed-access" ? "gmail-refreshed"
               : authorization === "Bearer x-refreshed-access" ? "x-refreshed"
+              : authorization === "Bearer google-alpha-access" ? "google-alpha"
+              : authorization === "Bearer google-beta-access" ? "google-beta"
+              : authorization === "Bearer slack-a-access" ? "slack-a"
+              : authorization === "Bearer slack-b-access" ? "slack-b"
               : authorization.startsWith("Bearer ") ? "connected" : "missing";
             return Response.json({
               account,

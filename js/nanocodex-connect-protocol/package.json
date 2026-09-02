@@ -6,13 +6,12 @@
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./index.d.mts",
-      "import": "./index.mjs"
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
     }
   },
   "files": [
-    "index.d.mts",
-    "index.mjs",
+    "dist",
     "README.md"
   ],
   "publishConfig": {
@@ -20,7 +19,9 @@
     "provenance": true
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs && npm run test:typecheck",
+    "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs && npm run test:typecheck",
     "test:typecheck": "tsc -p test/tsconfig.json"
   },
   "devDependencies": {

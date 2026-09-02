@@ -6,7 +6,7 @@ import {
   appToolCatalogDigestFromResources,
   isAllowedAppToolCatalogResource,
   isChromeExtensionGrantResources,
-} from "../src/appToolPolicy.mjs";
+} from "../src/appToolPolicy.mts";
 
 test("signed app tool catalogs contain one exact lowercase SHA-256 digest", () => {
   const digest = "a".repeat(64);

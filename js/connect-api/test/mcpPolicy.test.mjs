@@ -5,7 +5,7 @@ import {
   canonicalRemoteMcpTarget,
   isAllowedMcpResource,
   validateMcpResources,
-} from "../src/mcpPolicy.mjs";
+} from "../src/mcpPolicy.mts";
 
 const id = "a".repeat(43);
 const other = "b".repeat(43);

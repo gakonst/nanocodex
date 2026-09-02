@@ -215,11 +215,15 @@ fn managed_url_from_environment() -> Result<String, ManagedError> {
 }
 
 async fn run_turn(client: &ManagedClient, command: Run) -> Result<(), ManagedError> {
-    let created_agent = command.agent.is_none();
-    let (agent, mut events, agent_id, _) = open_workspace_agent(client, command.agent).await?;
-    if created_agent {
-        eprintln!("Managed agent: {agent_id}");
-    }
+    let agent_id = match command.agent {
+        Some(agent_id) => agent_id,
+        None => {
+            let agent_id = client.create().await?.agent_id;
+            eprintln!("Managed agent: {agent_id}");
+            agent_id
+        }
+    };
+    let (agent, mut events, _, _) = open_workspace_agent(client, Some(agent_id)).await?;
     let mut request = PromptRequest::new(command.prompt);
     if let Some(request_id) = command.idempotency_key {
         request = request.request_id(request_id);

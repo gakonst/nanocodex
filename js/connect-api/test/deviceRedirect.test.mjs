@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { connectAuthOrigin, deviceVerificationUrl } from "../src/deviceRedirect.mjs";
+import { connectAuthOrigin, deviceVerificationUrl } from "../src/deviceRedirect.mts";
 
 test("production device verification opens the first-class main-site route", () => {
   assert.equal(

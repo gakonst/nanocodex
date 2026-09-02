@@ -6,12 +6,22 @@ const managedPortabilityGrantCapabilities = [
   "agent.trace.read",
 ];
 
-export function managedAgentPortabilityGranted(capabilities) {
+export type ManagedGrantAssertion = Readonly<{
+  appToolCatalogDigest?: `0x${string}`;
+  brokerUserId: string;
+  capabilities: readonly string[];
+  connectors: readonly string[];
+  connectorConnections?: Readonly<Record<string, readonly string[]>>;
+  grantId: `0x${string}`;
+  mcpIds: readonly string[];
+}>;
+
+export function managedAgentPortabilityGranted(capabilities: readonly string[]): boolean {
   const granted = new Set(capabilities);
   return managedPortabilityGrantCapabilities.every((capability) => granted.has(capability));
 }
 
-export function managedGrantHeaders(assertion) {
+export function managedGrantHeaders(assertion: ManagedGrantAssertion): Record<string, string> {
   const granted = new Set(assertion.capabilities);
   const portability = managedAgentPortabilityGranted(assertion.capabilities);
   return {
@@ -23,6 +33,9 @@ export function managedGrantHeaders(assertion) {
       ...(portability ? ["agents:portability"] : []),
     ]),
     "x-nanocodex-connect-connectors": JSON.stringify(assertion.connectors),
+    ...(assertion.connectorConnections === undefined ? {} : {
+      "x-nanocodex-connect-connector-connections": JSON.stringify(assertion.connectorConnections),
+    }),
     "x-nanocodex-connect-mcp-ids": JSON.stringify(assertion.mcpIds),
     ...(assertion.appToolCatalogDigest === undefined
       ? {}
@@ -30,7 +43,10 @@ export function managedGrantHeaders(assertion) {
   };
 }
 
-export function managedGrantWebSocketHeaders(assertion, origin) {
+export function managedGrantWebSocketHeaders(
+  assertion: ManagedGrantAssertion,
+  origin: string,
+): Record<string, string> {
   return {
     ...managedGrantHeaders(assertion),
     origin,
@@ -38,7 +54,7 @@ export function managedGrantWebSocketHeaders(assertion, origin) {
   };
 }
 
-export function managedGrantUpstreamMethod(method, resource) {
+export function managedGrantUpstreamMethod(method: string, resource: string): string {
   if (method !== "POST") return method;
   return resource === ""
     || resource === "/events"
@@ -48,7 +64,9 @@ export function managedGrantUpstreamMethod(method, resource) {
     : method;
 }
 
-export function managedAgentExistenceStatus(response) {
+export function managedAgentExistenceStatus(
+  response: Response,
+): "available" | "missing" | "unavailable" {
   if (response.status === 204) return "available";
   if (response.status === 404) return "missing";
   return "unavailable";

@@ -39,9 +39,33 @@ test("the default browser harness exposes one exact model-visible tool set", asy
       requests.push(String(input));
       return Response.json({
         connectors: {
-          github: { connected: true, label: "Nano Cat (nanocat)", account_id: "hidden" },
+          github: { connected: true, connections: [{
+            id: "a".repeat(43),
+            label: "Nano Cat (nanocat)",
+            account_id: "github-account",
+            capabilities: ["github"],
+            access_token: "hidden",
+          }] },
           gmail: { connected: false },
-          gdrive: { connected: true, label: "Drive User", access_token: "hidden" },
+          gdrive: { connected: true, connections: [{
+            id: "b".repeat(43),
+            label: "Drive User",
+            account_id: "google-account",
+            capabilities: ["gmail", "gdrive", "gcalendar"],
+            access_token: "hidden",
+          }] },
+          gcalendar: { connected: true, connections: [{
+            id: "b".repeat(43),
+            label: "Drive User",
+            account_id: "google-account",
+            capabilities: ["gmail", "gdrive", "gcalendar"],
+          }] },
+          slack: { connected: true, connections: [{
+            id: "c".repeat(43),
+            label: "Acme (U123)",
+            account_id: "T123:U123",
+            capabilities: ["slack"],
+          }] },
           x: { connected: true, label: "Nano Cat (@nanocat)", account_id: "hidden" },
         },
       });
@@ -105,8 +129,20 @@ test("the default browser harness exposes one exact model-visible tool set", asy
   const accountInfo = await byName.accountInfo.handler({}, context);
   assert.deepEqual(accountInfo, {
     status: "ready",
-    authenticated: ["github", "gdrive", "x"],
-    accounts: { github: "Nano Cat (nanocat)", gdrive: "Drive User", x: "Nano Cat (@nanocat)" },
+    authenticated: ["github", "gdrive", "gcalendar", "slack", "x"],
+    accounts: {
+      github: "Nano Cat (nanocat)",
+      gdrive: "Drive User",
+      gcalendar: "Drive User",
+      slack: "Acme (U123)",
+      x: "Nano Cat (@nanocat)",
+    },
+    connectorAccounts: {
+      github: [{ id: "a".repeat(43), label: "Nano Cat (nanocat)", accountId: "github-account", capabilities: ["github"] }],
+      gdrive: [{ id: "b".repeat(43), label: "Drive User", accountId: "google-account", capabilities: ["gmail", "gdrive", "gcalendar"] }],
+      gcalendar: [{ id: "b".repeat(43), label: "Drive User", accountId: "google-account", capabilities: ["gmail", "gdrive", "gcalendar"] }],
+      slack: [{ id: "c".repeat(43), label: "Acme (U123)", accountId: "T123:U123", capabilities: ["slack"] }],
+    },
     identity: {},
     stablecoins: [],
     authorizations: [],
@@ -196,6 +232,7 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
         expiresAt: 2_000_000_000,
         capabilities: ["nanocodex.agent", "x", "chatgpt"],
         connectors: ["x", "chatgpt"],
+        connectorConnections: { x: ["x".repeat(43)] },
         accessKey: {
           id: "0x02",
           expiry: 2_000_000_000,
@@ -222,6 +259,7 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
     status: "ready",
     authenticated: ["chatgpt"],
     accounts: { chatgpt: "Subscription" },
+    connectorAccounts: {},
     identity: { tempoAddress: "0xabc" },
     stablecoins: [{ token: "0x01", symbol: "MACH", balance: "5000000", decimals: 6 }],
     authorizations: [{
@@ -231,6 +269,7 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
       expiresAt: 2_000_000_000,
       capabilities: ["nanocodex.agent", "x", "chatgpt"],
       connectors: ["x", "chatgpt"],
+      connectorConnections: { x: ["x".repeat(43)] },
       accessKey: {
         id: "0x02",
         expiry: 2_000_000_000,

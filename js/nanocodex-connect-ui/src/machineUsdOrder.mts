@@ -1,4 +1,11 @@
-export function classifyMachineUsdOrder(order) {
+export type MachineUsdOrder = Readonly<{
+  status?: unknown;
+  issuance_transaction_hash?: unknown;
+}> | undefined;
+
+export function classifyMachineUsdOrder(
+  order: MachineUsdOrder,
+): "complete" | "failed" | "pending" {
   if (order?.status === "complete" && typeof order.issuance_transaction_hash === "string") {
     return "complete";
   }

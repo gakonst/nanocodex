@@ -94,6 +94,8 @@ if [[ -f "$stamp_path" ]] \
   && [[ -f js/nanocodex/pkg-web/nanocodex_bg.js ]] \
   && [[ -f js/nanocodex/pkg-web/nanocodex_worker.js ]] \
   && [[ -f js/nanocodex/pkg-node/nanocodex.js ]] \
+  && [[ -f js/nanocodex/pkg-node/nanocodex.d.ts ]] \
+  && [[ -f js/nanocodex/pkg-node/package.json ]] \
   && [[ "$(<"$stamp_path")" == "$fingerprint" ]] \
   && node js/nanocodex/scripts/write-wasm-attestation.mjs --check-cache "$wasm_artifact" 2>/dev/null; then
   node js/nanocodex/scripts/write-wasm-attestation.mjs "$wasm_artifact"

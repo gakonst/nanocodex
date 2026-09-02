@@ -31,23 +31,21 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22.13.0
-          cache: npm
-          cache-dependency-path: |
-            js/nanocodex/package-lock.json
-            js/nanocodex-vite/package-lock.json
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
         with:
           tool: wasm-bindgen-cli@0.2.126
       - name: Build package
         run: |
-          npm ci --prefix js/nanocodex
-          npm ci --prefix js/nanocodex-vite
-          ./js/nanocodex-vite/scripts/build-js-package.sh
+          pnpm install --frozen-lockfile
+          ./js/nanocodex-vite/scripts/build-js-package.sh --release
       - name: Publish immutable commit previews
         working-directory: js/nanocodex
         run: >-
-          npm exec -- pkg-pr-new publish --previewVersion --compact
+          pnpm exec pkg-pr-new publish --previewVersion --compact
           --commentWithSha . ../nanocodex-vite

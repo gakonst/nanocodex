@@ -7,6 +7,7 @@ import {
   managedAccountMcpServerName,
   managedAccountMcpServers,
 } from "../src/default-mcp";
+import { memorySessionTools } from "../src/memory-session-tools";
 
 describe("durable managed default MCP catalog", () => {
   it("matches the canonical five public MCP servers", () => {
@@ -145,12 +146,22 @@ describe("durable managed default MCP catalog", () => {
         },
       ]),
     );
-    const tools = await createDefaultManagedTools([{
-      name: "accountInfo",
-      description: "Account information.",
-      parameters: { type: "object", additionalProperties: false },
-      handler: () => ({ ready: true }),
-    }], mcp);
+    const tools = await createDefaultManagedTools([
+      {
+        name: "accountInfo",
+        description: "Account information.",
+        parameters: { type: "object", additionalProperties: false },
+        handler: () => ({ ready: true }),
+      },
+      ...memorySessionTools({
+        findSessions: async () => ({ query: "", results: [], citations: [] }),
+        readSession: async () => ({ turns: [], citations: [] }),
+        memory: async () => ({ operation: "scan", abstained: true, candidates: [] }),
+        requireCapability() {},
+        requireRootMemoryMutation() {},
+        recordCitations() {},
+      }),
+    ], mcp);
     const socket = new CatalogSocket();
     const connector = tools.attach({
       endpoint: "wss://managed.test/tools",
@@ -163,11 +174,14 @@ describe("durable managed default MCP catalog", () => {
       const catalog = socket.frames.find((frame) => frame.type === "catalog");
       expect(catalog?.tools?.map((entry) => entry.definition.name).sort()).toEqual([
         "accountInfo",
+        "find_sessions",
+        "memory",
         "mcp__cloudflare__search",
         "mcp__openaiDeveloperDocs__search",
         "mcp__tempo__search",
         "mcp__viem__search",
         "mcp__vocs__search",
+        "read_session",
       ].sort());
       socket.receive({ type: "ready" });
       const client = await connecting;
@@ -178,7 +192,7 @@ describe("durable managed default MCP catalog", () => {
     } finally {
       await tools.close();
     }
-  });
+  }, 10_000);
 });
 
 type AttachmentFrame = {

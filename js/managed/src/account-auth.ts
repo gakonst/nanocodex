@@ -5,6 +5,11 @@ import { Address, PublicKey } from "ox";
 import {
   isAppToolCatalogDigest,
 } from "./app-tool-catalog";
+import {
+  CONNECTOR_CAPABILITY_IDS,
+  type ConnectorCapabilityId,
+  type ConnectorConnectionSelection,
+} from "./connector-status";
 
 const ACCOUNT_COOKIE = "nanocodex_account";
 const LOCAL_PORTABLE_CREDENTIAL_COOKIE = "nanocodex_local_passkey";
@@ -27,6 +32,7 @@ const CONNECT_USER_HEADER = "x-nanocodex-connect-user";
 const CONNECT_GRANT_ID_HEADER = "x-nanocodex-connect-grant-id";
 const CONNECT_CAPABILITIES_HEADER = "x-nanocodex-connect-capabilities";
 const CONNECT_CONNECTORS_HEADER = "x-nanocodex-connect-connectors";
+const CONNECT_CONNECTOR_CONNECTIONS_HEADER = "x-nanocodex-connect-connector-connections";
 const CONNECT_MCP_IDS_HEADER = "x-nanocodex-connect-mcp-ids";
 const CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER = "x-nanocodex-connect-app-tool-catalog-digest";
 const SESSION_OWNER_ASSERTION = "x-nanocodex-owner-id";
@@ -65,11 +71,13 @@ export type OrganizationCapability =
   | "organization:read"
   | "organization:write";
 
-export type ConnectConnectorId = "github" | "gmail" | "gdrive" | "x" | "chatgpt";
+export type ConnectConnectorId = ConnectorCapabilityId | "chatgpt";
 
 export type ConnectGrantSlice = Readonly<{
   grantId: string;
   connectors: readonly ConnectConnectorId[];
+  /** Exact approved account connections. Absent only on legacy capability-level grants. */
+  connectorConnections?: ConnectorConnectionSelection;
   mcpIds: readonly string[];
   appToolCatalogDigest?: `0x${string}`;
 }>;
@@ -112,6 +120,7 @@ export function forwardPrincipalAssertions(headers: Headers, principal: Principa
     CONNECT_GRANT_ID_HEADER,
     CONNECT_CAPABILITIES_HEADER,
     CONNECT_CONNECTORS_HEADER,
+    CONNECT_CONNECTOR_CONNECTIONS_HEADER,
     CONNECT_MCP_IDS_HEADER,
     CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER,
   ]) {
@@ -120,6 +129,12 @@ export function forwardPrincipalAssertions(headers: Headers, principal: Principa
   if (principal.connectGrant) {
     headers.set(CONNECT_GRANT_ID_HEADER, principal.connectGrant.grantId);
     headers.set(CONNECT_CONNECTORS_HEADER, JSON.stringify(principal.connectGrant.connectors));
+    if (principal.connectGrant.connectorConnections !== undefined) {
+      headers.set(
+        CONNECT_CONNECTOR_CONNECTIONS_HEADER,
+        JSON.stringify(principal.connectGrant.connectorConnections),
+      );
+    }
     headers.set(CONNECT_MCP_IDS_HEADER, JSON.stringify(principal.connectGrant.mcpIds));
     if (principal.connectGrant.appToolCatalogDigest !== undefined) {
       headers.set(CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER, principal.connectGrant.appToolCatalogDigest);
@@ -1697,10 +1712,7 @@ const CONNECT_CAPABILITIES = new Set<OrganizationCapability>([
   "tools:use",
 ]);
 const CONNECT_CONNECTORS = new Set<ConnectConnectorId>([
-  "github",
-  "gmail",
-  "gdrive",
-  "x",
+  ...CONNECTOR_CAPABILITY_IDS,
   "chatgpt",
 ]);
 const CONNECT_GRANT_ID = /^0x[0-9a-fA-F]{64}$/;
@@ -1713,6 +1725,10 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
   const grantId = headers.get(CONNECT_GRANT_ID_HEADER);
   const capabilities = parseUniqueJsonArray(headers.get(CONNECT_CAPABILITIES_HEADER));
   const connectors = parseUniqueJsonArray(headers.get(CONNECT_CONNECTORS_HEADER));
+  const encodedConnectorConnections = headers.get(CONNECT_CONNECTOR_CONNECTIONS_HEADER);
+  const connectorConnections = encodedConnectorConnections === null
+    ? undefined
+    : parseConnectorConnectionSelection(encodedConnectorConnections);
   const mcpIds = parseUniqueJsonArray(headers.get(CONNECT_MCP_IDS_HEADER));
   const appToolCatalogDigest = headers.get(CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER);
   if (!grantId || !CONNECT_GRANT_ID.test(grantId)
@@ -1722,6 +1738,11 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
     || !connectors || !connectors.every((value): value is ConnectConnectorId => (
       CONNECT_CONNECTORS.has(value as ConnectConnectorId)
     ))
+    || (encodedConnectorConnections !== null && connectorConnections === undefined)
+    || (connectorConnections !== undefined
+      && Object.keys(connectorConnections).some((capability) => (
+        !connectors.includes(capability as ConnectConnectorId)
+      )))
     || !mcpIds || mcpIds.length > 16 || !mcpIds.every((value) => CONNECT_MCP_ID.test(value))
     || (appToolCatalogDigest !== null && !isAppToolCatalogDigest(appToolCatalogDigest))) {
     return undefined;
@@ -1731,10 +1752,30 @@ function parseConnectGrantAssertions(headers: Headers): Readonly<{
     slice: {
       grantId: grantId.toLowerCase(),
       connectors,
+      ...(connectorConnections === undefined ? {} : { connectorConnections }),
       mcpIds,
-      ...(appToolCatalogDigest === null ? {} : { appToolCatalogDigest }),
+      ...(appToolCatalogDigest === null ? {} : {
+        appToolCatalogDigest: appToolCatalogDigest as `0x${string}`,
+      }),
     },
   };
+}
+
+function parseConnectorConnectionSelection(
+  encoded: string,
+): ConnectorConnectionSelection | undefined {
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch { return undefined; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result: Partial<Record<ConnectorCapabilityId, readonly string[]>> = {};
+  for (const [key, ids] of Object.entries(value)) {
+    const capability = CONNECTOR_CAPABILITY_IDS.find((candidate) => candidate === key);
+    if (!capability || !Array.isArray(ids) || ids.length > 64
+      || ids.some((id) => typeof id !== "string" || !CONNECT_MCP_ID.test(id))
+      || new Set(ids).size !== ids.length) return undefined;
+    result[capability] = ids as string[];
+  }
+  return result;
 }
 
 function parseUniqueJsonArray(encoded: string | null): string[] | undefined {

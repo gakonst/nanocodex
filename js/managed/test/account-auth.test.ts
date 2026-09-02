@@ -6,6 +6,7 @@ import {
   routeAccountRequest,
   type AccountAuthEnv,
 } from "../src/account-auth";
+import { routeConnectorRequest } from "../src/connectors";
 
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const ORGANIZATION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -19,6 +20,7 @@ const SECOND_PUBLIC_KEY = "0x05060708";
 const LOCAL_PASSKEY_COOKIE = "nanocodex_local_passkey";
 const CONNECT_GRANT_ID = `0x${"a".repeat(64)}`;
 const CONNECT_MCP_ID = "m".repeat(43);
+const CONNECTOR_CONNECTION_ID = "n".repeat(43);
 const APP_TOOL_CATALOG_DIGEST = `0x${"c".repeat(64)}`;
 
 describe("Connect grant assertions", () => {
@@ -27,7 +29,12 @@ describe("Connect grant assertions", () => {
     const principal = await authenticate(new Request("https://nanocodex.internal/v1/agents", {
       headers: connectHeaders({
         capabilities: ["agents:read", "agents:write", "tools:use", "memory:read"],
-        connectors: ["github", "chatgpt"],
+        connectors: ["github", "gcalendar", "slack", "chatgpt"],
+        connectorConnections: {
+          github: [CONNECTOR_CONNECTION_ID],
+          gcalendar: [CONNECTOR_CONNECTION_ID],
+          slack: [CONNECTOR_CONNECTION_ID],
+        },
         mcpIds: [CONNECT_MCP_ID],
         appToolCatalogDigest: APP_TOOL_CATALOG_DIGEST,
       }),
@@ -39,7 +46,12 @@ describe("Connect grant assertions", () => {
       capabilities: ["agents:read", "agents:write", "tools:use", "memory:read"],
       connectGrant: {
         grantId: CONNECT_GRANT_ID,
-        connectors: ["github", "chatgpt"],
+        connectors: ["github", "gcalendar", "slack", "chatgpt"],
+        connectorConnections: {
+          github: [CONNECTOR_CONNECTION_ID],
+          gcalendar: [CONNECTOR_CONNECTION_ID],
+          slack: [CONNECTOR_CONNECTION_ID],
+        },
         mcpIds: [CONNECT_MCP_ID],
         appToolCatalogDigest: APP_TOOL_CATALOG_DIGEST,
       },
@@ -60,6 +72,14 @@ describe("Connect grant assertions", () => {
       .resolves.toBeUndefined();
     await expect(request(connectHeaders({ mcpIds: ["short"] })))
       .resolves.toBeUndefined();
+    await expect(request(connectHeaders({
+      connectors: ["github"],
+      connectorConnections: { github: ["short"] },
+    }))).resolves.toBeUndefined();
+    await expect(request(connectHeaders({
+      connectors: ["github"],
+      connectorConnections: { slack: [CONNECTOR_CONNECTION_ID] },
+    }))).resolves.toBeUndefined();
     await expect(request(connectHeaders({ appToolCatalogDigest: "not-a-digest" })))
       .resolves.toBeUndefined();
     const duplicateCatalogDigest = connectHeaders({ appToolCatalogDigest: APP_TOOL_CATALOG_DIGEST });
@@ -68,6 +88,45 @@ describe("Connect grant assertions", () => {
       APP_TOOL_CATALOG_DIGEST,
     );
     await expect(request(duplicateCatalogDigest)).resolves.toBeUndefined();
+  });
+});
+
+describe("connector route compatibility", () => {
+  it("forwards legacy provider-level DELETE to unified broker bulk revoke", async () => {
+    const local = portableEnv();
+    const sessionToken = "d".repeat(64);
+    local.set("webauthn", `session:${sessionToken}`, {
+      credentialId: CREDENTIAL_ID,
+      publicKey: PUBLIC_KEY,
+      userId: encodeUserId(USER_ID),
+      issuedAt: 1,
+      expiresAt: Math.floor(Date.now() / 1_000) + 60,
+    });
+    const requests: Request[] = [];
+    const env = {
+      ...local.env,
+      NANOCODEX: {
+        async fetch(input: RequestInfo | URL, init?: RequestInit) {
+          requests.push(new Request(input, init));
+          return new Response(null, { status: 204 });
+        },
+      } as Fetcher,
+    };
+    const url = new URL("https://nanocodex.example/v1/connectors/gmail");
+    const response = await routeConnectorRequest(new Request(url, {
+      method: "DELETE",
+      headers: {
+        cookie: `nanocodex_account=${sessionToken}`,
+        origin: url.origin,
+      },
+    }), env, url);
+
+    expect(response?.status).toBe(204);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.method).toBe("DELETE");
+    expect(requests[0]!.url).toBe(
+      `https://broker.internal/users/${USER_ID}/connectors/google`,
+    );
   });
 });
 
@@ -470,6 +529,7 @@ function connectHeaders(overrides: Readonly<{
   appToolCatalogDigest?: string;
   capabilities?: readonly string[];
   connectors?: readonly string[];
+  connectorConnections?: Readonly<Record<string, readonly string[]>>;
   mcpIds?: readonly string[];
 }> = {}): Headers {
   return new Headers({
@@ -484,6 +544,13 @@ function connectHeaders(overrides: Readonly<{
       ? {}
       : {
         "x-nanocodex-connect-app-tool-catalog-digest": overrides.appToolCatalogDigest,
+      }),
+    ...(overrides.connectorConnections === undefined
+      ? {}
+      : {
+        "x-nanocodex-connect-connector-connections": JSON.stringify(
+          overrides.connectorConnections,
+        ),
       }),
   });
 }

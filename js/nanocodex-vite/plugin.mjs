@@ -321,6 +321,10 @@ function devApplicationMiddleware(applications) {
 
 async function localOAuthBindings() {
   const environment = { ...await mainCheckoutEnvironment(), ...process.env };
+  return oauthBindingsFromEnvironment(environment);
+}
+
+export function oauthBindingsFromEnvironment(environment) {
   return {
     ...oauthCredentialPair(environment, {
       label: "GitHub",
@@ -335,6 +339,13 @@ async function localOAuthBindings() {
       secrets: ["NANOCODEX_GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"],
       targetId: "GOOGLE_OAUTH_CLIENT_ID",
       targetSecret: "GOOGLE_OAUTH_CLIENT_SECRET",
+    }),
+    ...oauthCredentialPair(environment, {
+      label: "Slack",
+      ids: ["NANOCODEX_SLACK_OAUTH_CLIENT_ID", "SLACK_OAUTH_CLIENT_ID", "SLACK_CLIENT_ID"],
+      secrets: ["NANOCODEX_SLACK_OAUTH_CLIENT_SECRET", "SLACK_OAUTH_CLIENT_SECRET", "SLACK_CLIENT_SECRET"],
+      targetId: "SLACK_OAUTH_CLIENT_ID",
+      targetSecret: "SLACK_OAUTH_CLIENT_SECRET",
     }),
     ...oauthCredentialPair(environment, {
       label: "X",

@@ -18,6 +18,7 @@ js/nanocodex/node_modules/
 js/nanocodex-tools/node_modules/
 js/nanocodex-tools/dist/
 js/nanocodex-connect-protocol/node_modules/
+js/nanocodex-connect-protocol/dist/
 js/nanocodex-connect-ui/node_modules/
 js/nanocodex-connect-ui/dist/
 js/nanocodex-vite/node_modules/

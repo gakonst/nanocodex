@@ -1,6 +1,19 @@
 import { InvalidResponseError } from "./Errors.mjs";
 
-const CLOUD_ACCOUNT_PROVIDERS = Object.freeze(["github", "gmail", "gdrive", "x", "chatgpt"]);
+const CLOUD_ACCOUNT_PROVIDERS = Object.freeze([
+  "github",
+  "gmail",
+  "gdrive",
+  "gcalendar",
+  "gtasks",
+  "gdocs",
+  "gsheets",
+  "gslides",
+  "gcontacts",
+  "slack",
+  "x",
+  "chatgpt",
+]);
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const AGENT_CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CATALOG_DIGEST = /^0x[0-9a-f]{64}$/;
@@ -29,6 +42,12 @@ export function connectionFromWire(value) {
     grantMcpConnections,
     "connection.grant",
   );
+  const grantConnectors = connectors(capabilities, "connection.grant.capabilities");
+  const grantConnectorConnections = connectorConnections(
+    grant.connector_connections,
+    grantConnectors,
+    "connection.grant.connector_connections",
+  );
   return Object.freeze({
     accountAddress: hex(wire.account_address, "connection.account_address"),
     agentId: string(wire.agent_id, "connection.agent_id"),
@@ -41,7 +60,10 @@ export function connectionFromWire(value) {
         conversationId: agentConversationId(grant.conversation_id, "connection.grant.conversation_id"),
       }),
       capabilities,
-      connectors: connectors(capabilities, "connection.grant.capabilities"),
+      connectors: grantConnectors,
+      ...(grantConnectorConnections === undefined ? {} : {
+        connectorConnections: grantConnectorConnections,
+      }),
       mcpConnections: grantMcpConnections,
       visibility: agentVisibility(capabilities),
       ...(grant.app_tool_catalog_digest === undefined ? {} : {
@@ -96,6 +118,11 @@ export function connectionMatchesRequest(connection, options = {}) {
       return false;
     }
   }
+  if (Object.hasOwn(options, "connectorConnections")
+    && !sameConnectorConnections(
+      options.connectorConnections,
+      connection.grant.connectorConnections,
+    )) return false;
   const requestedAgent = options.capabilities?.agent;
   if (requestedAgent !== undefined) {
     const rawTraces = requestedAgent?.rawTraces === true;
@@ -142,6 +169,9 @@ export function connectionRequestFromGrant(grant) {
       )),
     }),
     mcpConnectionIds: Object.freeze(grant.mcpConnections.map(({ id }) => id)),
+    ...(grant.connectorConnections === undefined ? {} : {
+      connectorConnections: grant.connectorConnections,
+    }),
     authorization: grant.authorization ?? "access_key",
     appToolCatalogDigest: grant.appToolCatalogDigest,
     permission: grant.permission,
@@ -226,6 +256,12 @@ export function grantFromWire(value) {
   const capabilities = strings(grant.capabilities, "grant.capabilities");
   const grantMcpConnections = mcpConnections(grant.mcp_connections, "grant.mcp_connections");
   requireExactMcpProjection(capabilities, grantMcpConnections, "grant");
+  const grantConnectors = connectors(capabilities, "grant.capabilities");
+  const grantConnectorConnections = connectorConnections(
+    grant.connector_connections,
+    grantConnectors,
+    "grant.connector_connections",
+  );
   return Object.freeze({
     id: hex(grant.id, "grant.id"),
     permission: string(grant.permission, "grant.permission"),
@@ -235,7 +271,10 @@ export function grantFromWire(value) {
       conversationId: agentConversationId(grant.conversation_id, "grant.conversation_id"),
     }),
     capabilities,
-    connectors: connectors(capabilities, "grant.capabilities"),
+    connectors: grantConnectors,
+    ...(grantConnectorConnections === undefined ? {} : {
+      connectorConnections: grantConnectorConnections,
+    }),
     mcpConnections: grantMcpConnections,
     visibility: agentVisibility(capabilities),
     ...(grant.app_tool_catalog_digest === undefined ? {} : {
@@ -351,11 +390,50 @@ function strings(value, label) {
 }
 
 function connectors(capabilities, label) {
-  const providers = ["github", "gmail", "gdrive", "x", "chatgpt"];
   const items = strings(capabilities, label);
-  return Object.freeze(providers.filter((provider) =>
+  return Object.freeze(CLOUD_ACCOUNT_PROVIDERS.filter((provider) =>
     items.includes(provider) || items.includes(`urn:nanocodex:connector:${provider}`)
   ));
+}
+
+function connectorConnections(value, grantConnectors, label) {
+  if (value === undefined) return undefined;
+  const selection = object(value, label);
+  const projected = {};
+  for (const [capability, rawIds] of Object.entries(selection)) {
+    if (capability === "chatgpt" || !grantConnectors.includes(capability)) {
+      throw new InvalidResponseError(`${label} contains an ungranted connector capability`);
+    }
+    const ids = array(rawIds, `${label}.${capability}`);
+    if (ids.length > 64) {
+      throw new InvalidResponseError(`${label}.${capability} contains too many connections`);
+    }
+    const normalized = ids.map((id, index) => {
+      const connectionId = string(id, `${label}.${capability}[${index}]`);
+      if (!MCP_CONNECTION_ID.test(connectionId)) {
+        throw new InvalidResponseError(`${label}.${capability}[${index}] is not an opaque connection ID`);
+      }
+      return connectionId;
+    });
+    if (new Set(normalized).size !== normalized.length) {
+      throw new InvalidResponseError(`${label}.${capability} contains duplicate connections`);
+    }
+    projected[capability] = Object.freeze(normalized);
+  }
+  return Object.freeze(projected);
+}
+
+function sameConnectorConnections(left, right) {
+  if (left === undefined || right === undefined) return left === right;
+  if (!left || typeof left !== "object" || Array.isArray(left)
+    || !right || typeof right !== "object" || Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length
+    || leftKeys.some((key, index) => key !== rightKeys[index])) return false;
+  return leftKeys.every((key) => Array.isArray(left[key]) && Array.isArray(right[key])
+    && left[key].length === right[key].length
+    && left[key].every((id, index) => id === right[key][index]));
 }
 
 function mcpConnections(value, label) {

@@ -133,17 +133,12 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22.15.0
-          cache: npm
-          cache-dependency-path: |
-            js/nanocodex/package-lock.json
-            js/nanocodex-react/package-lock.json
-            js/nanocodex-vite/package-lock.json
-            js/nanocodex-terminal/package-lock.json
-            examples/node/package-lock.json
-            examples/react-vite/package-lock.json
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
         with:
           tool: wasm-bindgen-cli@0.2.126
@@ -156,11 +151,8 @@ jobs:
             --package nanocodex \
             --package nanocodex-wasm \
             -- -D warnings -A clippy::missing_const_for_fn
-          npm ci --prefix js/nanocodex
-          npm ci --prefix js/nanocodex-react
-          npm ci --prefix js/nanocodex-vite
-          npm ci --prefix js/nanocodex-terminal
-          ./js/nanocodex-vite/scripts/build-js-package.sh
+          pnpm install --frozen-lockfile
+          ./js/nanocodex-vite/scripts/build-js-package.sh --release
           npm ci --prefix examples/node
           npm ci --prefix examples/react-vite
       - name: Test JS runtime
@@ -258,39 +250,29 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22.15.0
-          cache: npm
-          cache-dependency-path: |
-            js/nanocodex/package-lock.json
-            js/nanocodex-react/package-lock.json
-            js/nanocodex-vite/package-lock.json
-            js/nanocodex-terminal/package-lock.json
-            js/account/package-lock.json
-            js/connect-dialog/package-lock.json
-            js/connect-playground/package-lock.json
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: nanocodex-web-wasm
           path: js/nanocodex/pkg-web
-      - name: Build local website packages
-        run: |
-          npm ci --prefix js/nanocodex
-          npm ci --prefix js/nanocodex-react
-          npm ci --prefix js/nanocodex-vite
-          npm ci --prefix js/nanocodex-terminal
-          npm run build --prefix js/nanocodex-terminal
-          npm ci --prefix js/account
-          npm ci --prefix js/connect-dialog
-          npm ci --prefix js/connect-playground
-      - name: Type-check and build the account app
-        working-directory: js/account
-        run: npm run test:web && npm run build
-      - name: Type-check and build the Connect dialog
-        run: npm run build --prefix js/connect-dialog
-      - name: Type-check and build the Connect playground
-        run: npm run build --prefix js/connect-playground
+      - name: Install JavaScript workspace
+        run: pnpm install --frozen-lockfile
+      - name: Test the account Worker
+        run: pnpm --filter nanocodex-web run test:web
+      - name: Build JavaScript apps
+        run: >-
+          pnpm exec turbo run build --only
+          --filter nanocodex-tools
+          --filter nanocodex-connect-ui
+          --filter nanocodex-terminal
+          --filter @nanocodex/connect-dialog
+          --filter @nanocodex/connect-playground
+          --filter nanocodex-web
   codeql:
     name: CodeQL actions
     runs-on: ubuntu-latest

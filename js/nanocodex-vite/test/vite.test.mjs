@@ -10,7 +10,7 @@ import WebSocket, { WebSocketServer } from "ws";
 
 import { readCodexSubscription } from "../codex-auth-file.mjs";
 import { createNanocodexCloudflarePlugins } from "../cloudflare-plugin.mjs";
-import { createNanocodexVitePlugin } from "../plugin.mjs";
+import { createNanocodexVitePlugin, oauthBindingsFromEnvironment } from "../plugin.mjs";
 import { startChatGptWorkerEgress } from "../chatgpt-egress.mjs";
 import { isLocalNanocodexOrigin } from "../oauth-relay.mjs";
 
@@ -132,6 +132,8 @@ test("one Vite plugin gives only the selected broker exact development bindings"
     loadOAuthBindings: async () => ({
       GITHUB_OAUTH_CLIENT_ID: "github-id",
       GITHUB_OAUTH_CLIENT_SECRET: "github-secret",
+      SLACK_OAUTH_CLIENT_ID: "slack-id",
+      SLACK_OAUTH_CLIENT_SECRET: "slack-secret",
     }),
   });
   const plugin = plugins[0];
@@ -152,6 +154,8 @@ test("one Vite plugin gives only the selected broker exact development bindings"
     assert.equal(broker.vars.NANOCODEX_LOCAL_CHATGPT_AUTO_CLAIM, "true");
     assert.equal(broker.vars.GITHUB_OAUTH_CLIENT_ID, "github-id");
     assert.equal(broker.vars.GITHUB_OAUTH_CLIENT_SECRET, "github-secret");
+    assert.equal(broker.vars.SLACK_OAUTH_CLIENT_ID, "slack-id");
+    assert.equal(broker.vars.SLACK_OAUTH_CLIENT_SECRET, "slack-secret");
     assert.match(
       broker.vars.CODEX_RELAY_URL,
       /^http:\/\/127\.0\.0\.1:\d+\/v1\/[A-Za-z0-9_-]{43}$/,
@@ -178,6 +182,26 @@ test("one Vite plugin gives only the selected broker exact development bindings"
     if (previousSentinel === undefined) delete process.env[sentinelName];
     else process.env[sentinelName] = previousSentinel;
   }
+});
+
+test("Slack OAuth credentials are paired and normalized only into broker bindings", () => {
+  assert.deepEqual(oauthBindingsFromEnvironment({
+    NANOCODEX_SLACK_OAUTH_CLIENT_ID: " slack-id ",
+    NANOCODEX_SLACK_OAUTH_CLIENT_SECRET: " slack-secret ",
+  }), {
+    SLACK_OAUTH_CLIENT_ID: "slack-id",
+    SLACK_OAUTH_CLIENT_SECRET: "slack-secret",
+  });
+  assert.deepEqual(oauthBindingsFromEnvironment({
+    SLACK_CLIENT_ID: "fallback-id",
+    SLACK_CLIENT_SECRET: "fallback-secret",
+  }), {
+    SLACK_OAUTH_CLIENT_ID: "fallback-id",
+    SLACK_OAUTH_CLIENT_SECRET: "fallback-secret",
+  });
+  assert.throws(() => oauthBindingsFromEnvironment({
+    SLACK_CLIENT_ID: "orphan-id",
+  }), /Slack OAuth client ID and secret must be configured together/);
 });
 
 test("production builds neither read local auth nor start development egress", async () => {

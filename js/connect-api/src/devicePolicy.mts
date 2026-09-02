@@ -2,9 +2,40 @@ import { Address, PublicKey } from "ox";
 import {
   credentialImportDigestFromResources,
   isAllowedChatGptCredentialImportResource,
-} from "./chatGptCredentialImport.mjs";
-import { isAllowedMcpResource, validateMcpResources } from "./mcpPolicy.mjs";
-import { isAllowedAppToolCatalogResource } from "./appToolPolicy.mjs";
+} from "./chatGptCredentialImport.mts";
+import { isAllowedMcpResource, validateMcpResources } from "./mcpPolicy.mts";
+import { isAllowedAppToolCatalogResource } from "./appToolPolicy.mts";
+
+type UnknownRecord = Record<string, unknown>;
+type ParsedCliWalletRequest = Readonly<{
+  id: string | number;
+  method: "wallet_connect";
+  params: readonly unknown[];
+  resources: readonly string[];
+}>;
+type InstallationAccessKey = UnknownRecord & {
+  address: string;
+  publicKey: string;
+  keyType: "secp256k1";
+  chainId: string;
+  expiry: number;
+  limits: NormalizedLimit[];
+  scopes: NormalizedScope[];
+};
+type NormalizedLimit = { token: string; limit: string; period: number };
+type NormalizedScope = { address: string; selector: string; recipients?: string[] };
+type SanitizedCliWalletResult = Readonly<{
+  accounts: readonly Readonly<{
+    address: `0x${string}`;
+    capabilities: Readonly<{
+      keyAuthorization: Readonly<UnknownRecord>;
+      personalSign: Readonly<{ keyAuthorization: `0x${string}` }>;
+      auth: Readonly<{ approval_id: string }>;
+    }> | Readonly<{
+      auth: Readonly<{ approval_id: string; mode: "hosted" }>;
+    }>;
+  }>[];
+}>;
 
 export const cliApp = Object.freeze({
   id: "nanocodex-cli",
@@ -34,7 +65,10 @@ const optionalResources = new Set([
   "urn:nanocodex:mpp:machusd:spend",
   "urn:nanocodex:authorization:hosted",
 ]);
-const connectors = new Set(["github", "gmail", "gdrive", "x", "chatgpt"]);
+const connectors = new Set([
+  "github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs",
+  "gsheets", "gslides", "gcontacts", "slack", "x", "chatgpt",
+]);
 const connectorFocusPrefix = "urn:nanocodex:connector-focus:";
 const visibility = new Set(["reply", "actions", "history", "traces"]);
 const chainId = "0x1079";
@@ -47,7 +81,7 @@ const mercatorSettlement = "0xa295c42fbcc026a62304a7701f25b4c91799b0da";
 const mppLimit = "0x989680";
 const mppPeriod = 86_400;
 
-export function parseCliWalletRequest(value) {
+export function parseCliWalletRequest(value: unknown): ParsedCliWalletRequest {
   if (!isRecord(value) || value.jsonrpc !== "2.0"
     || (typeof value.id !== "string" && typeof value.id !== "number")
     || value.method !== "wallet_connect"
@@ -67,34 +101,35 @@ export function parseCliWalletRequest(value) {
     || resources.some((resource) => !isAllowedResource(resource))) {
     throw new Error("The CLI wallet_connect resources are invalid.");
   }
-  const requestedConnectors = connectorResources(resources);
-  const credentialImport = credentialImportDigestFromResources(resources);
+  const signedResources = resources as string[];
+  const requestedConnectors = connectorResources(signedResources);
+  const credentialImport = credentialImportDigestFromResources(signedResources);
   if (credentialImport !== undefined && !requestedConnectors.has("chatgpt")) {
     throw new Error("A ChatGPT credential import requires the signed ChatGPT connector.");
   }
-  const focused = resources
+  const focused = signedResources
     .filter((resource) => resource.startsWith(connectorFocusPrefix))
     .map((resource) => resource.slice(connectorFocusPrefix.length));
   if (focused.length > 1
     || (focused[0] !== undefined && !requestedConnectors.has(focused[0]))) {
     throw new Error("The CLI connector focus must name one requested connector.");
   }
-  validateMcpResources(resources);
+  validateMcpResources(signedResources);
   if (!isRecord(capabilities.authorizeAccessKey)) {
     throw new Error("CLI requests must include one prepared installation access-key policy.");
   }
   const accessKey = capabilities.authorizeAccessKey;
-  const mpp = resources.includes("urn:nanocodex:mpp:machusd:spend");
+  const mpp = signedResources.includes("urn:nanocodex:mpp:machusd:spend");
   validateInstallationAccessKey(accessKey, mpp);
   return Object.freeze({
     id: value.id,
     method: value.method,
     params: value.params,
-    resources: Object.freeze([...resources]),
+    resources: Object.freeze([...signedResources]),
   });
 }
 
-export function approvedCliAccessKeyMatches(pending, approved) {
+export function approvedCliAccessKeyMatches(pending: unknown, approved: unknown): boolean {
   if (!isRecord(pending) || !Array.isArray(pending.params) || pending.params.length !== 1
     || !isRecord(pending.params[0]) || !isRecord(pending.params[0].capabilities)
     || !isRecord(pending.params[0].capabilities.authorizeAccessKey)
@@ -122,7 +157,7 @@ export function approvedCliAccessKeyMatches(pending, approved) {
     }) : undefined)
     : [];
   const expectedScopes = requested.scopes.map(normalizeScope).map(scopeKey).sort();
-  let actualScopes;
+  let actualScopes: string[];
   try {
     actualScopes = Array.isArray(approved.scopes)
       ? approved.scopes.map(normalizeScope).map(scopeKey).sort()
@@ -139,7 +174,10 @@ export function approvedCliAccessKeyMatches(pending, approved) {
     && JSON.stringify(actualScopes) === JSON.stringify(expectedScopes);
 }
 
-function validateInstallationAccessKey(value, mpp) {
+function validateInstallationAccessKey(
+  value: UnknownRecord,
+  mpp: boolean,
+): asserts value is InstallationAccessKey {
   const allowed = new Set([
     "address", "publicKey", "keyType", "chainId", "expiry", "limits", "scopes",
   ]);
@@ -149,7 +187,7 @@ function validateInstallationAccessKey(value, mpp) {
     || typeof value.publicKey !== "string" || !/^0x04[0-9a-fA-F]{128}$/.test(value.publicKey)
     || value.keyType !== "secp256k1"
     || value.chainId !== chainId
-    || !Number.isSafeInteger(value.expiry)
+    || !isSafeInteger(value.expiry)
     || value.expiry <= now - accessKeyClockSkew
     || value.expiry > now + accessKeyLifetime + accessKeyClockSkew
     || !Array.isArray(value.limits)
@@ -158,7 +196,9 @@ function validateInstallationAccessKey(value, mpp) {
   }
   let derivedAddress;
   try {
-    derivedAddress = Address.fromPublicKey(PublicKey.from(value.publicKey));
+    derivedAddress = Address.fromPublicKey(
+      PublicKey.fromHex(value.publicKey as `0x${string}`),
+    );
   } catch {
     throw new Error("The CLI installation public key is invalid.");
   }
@@ -197,12 +237,12 @@ function validateInstallationAccessKey(value, mpp) {
   }
 }
 
-function normalizeLimit(value) {
+function normalizeLimit(value: unknown): NormalizedLimit {
   if (!isRecord(value)
     || Object.keys(value).some((key) => !["token", "limit", "period"].includes(key))
     || typeof value.token !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(value.token)
     || typeof value.limit !== "string" || !/^0x[0-9a-fA-F]+$/.test(value.limit)
-    || !Number.isSafeInteger(value.period) || value.period < 0) {
+    || !isSafeInteger(value.period) || value.period < 0) {
     throw new Error("The CLI token limit is invalid.");
   }
   return {
@@ -212,7 +252,7 @@ function normalizeLimit(value) {
   };
 }
 
-function normalizeScope(value) {
+function normalizeScope(value: unknown): NormalizedScope {
   if (!isRecord(value)
     || Object.keys(value).some((key) => !["address", "selector", "recipients"].includes(key))
     || typeof value.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(value.address)
@@ -228,15 +268,15 @@ function normalizeScope(value) {
     selector: value.selector.toLowerCase(),
     ...(value.recipients === undefined
       ? {}
-      : { recipients: value.recipients.map((item) => item.toLowerCase()) }),
+      : { recipients: (value.recipients as string[]).map((item) => item.toLowerCase()) }),
   };
 }
 
-function scopeKey(value) {
+function scopeKey(value: NormalizedScope): string {
   return `${value.address}:${value.selector}:${value.recipients?.join(",") ?? ""}`;
 }
 
-export function parseCliRegisterBody(value) {
+export function parseCliRegisterBody(value: unknown): ParsedCliWalletRequest {
   if (!isRecord(value) || !isRecord(value.message)
     || value.message.type !== "rpc-requests"
     || !Array.isArray(value.message.payload)
@@ -246,7 +286,7 @@ export function parseCliRegisterBody(value) {
   return parseCliWalletRequest(value.message.payload[0]);
 }
 
-export function sanitizeCliWalletResult(value) {
+export function sanitizeCliWalletResult(value: unknown): SanitizedCliWalletResult {
   if (!isRecord(value) || Object.keys(value).some((key) => key !== "accounts")
     || !Array.isArray(value.accounts) || value.accounts.length !== 1) {
     throw new Error("Accounts did not return exactly one connected account.");
@@ -269,7 +309,7 @@ export function sanitizeCliWalletResult(value) {
     }
     return {
       accounts: [{
-        address: account.address,
+        address: account.address as `0x${string}`,
         capabilities: { auth: { approval_id: auth.approval_id, mode: "hosted" } },
       }],
     };
@@ -290,17 +330,22 @@ export function sanitizeCliWalletResult(value) {
   }
   return {
     accounts: [{
-      address: account.address,
+      address: account.address as `0x${string}`,
       capabilities: {
         keyAuthorization: capabilities.keyAuthorization,
-        personalSign: { keyAuthorization: capabilities.personalSign.keyAuthorization },
+        personalSign: {
+          keyAuthorization: capabilities.personalSign.keyAuthorization as `0x${string}`,
+        },
         auth: { approval_id: auth.approval_id },
       },
     }],
   };
 }
 
-export function managedMemoryCapability(path, operation) {
+export function managedMemoryCapability(
+  path: string,
+  operation?: unknown,
+): "history:read" | "memory:read" | "memory:write" | undefined {
   if (path === "/v1/history/sessions/search"
     || /^\/v1\/history\/sessions\/[^/]+\/read$/.test(path)) return "history:read";
   if (/^\/v1\/memory\/[^/]+$/.test(path) && operation === "delete") return "memory:write";
@@ -311,13 +356,16 @@ export function managedMemoryCapability(path, operation) {
   return undefined;
 }
 
-export function requestedConnectorsSatisfied(connected, requested) {
+export function requestedConnectorsSatisfied(
+  connected: readonly string[],
+  requested: readonly string[],
+): boolean {
   if (!Array.isArray(connected) || !Array.isArray(requested)) return false;
   const actual = new Set(connected);
   return actual.size === requested.length && requested.every((connector) => actual.has(connector));
 }
 
-function isAllowedResource(resource) {
+function isAllowedResource(resource: string): boolean {
   if (requiredResources.has(resource) || optionalResources.has(resource)) return true;
   if (isAllowedMcpResource(resource)) return true;
   if (isAllowedAppToolCatalogResource(resource)) return true;
@@ -341,7 +389,7 @@ function isAllowedResource(resource) {
   return false;
 }
 
-function connectorResources(resources) {
+function connectorResources(resources: readonly string[]): Set<string> {
   return new Set(resources.flatMap((resource) => {
     if (resource.startsWith("urn:nanocodex:connector:")) {
       return [resource.slice("urn:nanocodex:connector:".length)];
@@ -353,11 +401,15 @@ function connectorResources(resources) {
   }).filter((connector) => connectors.has(connector)));
 }
 
-function isRecord(value) {
+function isSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value);
+}
+
+function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isIpAddress(value) {
+function isIpAddress(value: string): boolean {
   if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(value)) {
     return value.split(".").every((part) => Number(part) <= 255);
   }

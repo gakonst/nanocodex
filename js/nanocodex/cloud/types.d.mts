@@ -1,6 +1,37 @@
 export type Hex = `0x${string}`;
 
-export type CloudAccount = "github" | "gmail" | "gdrive" | "x" | "chatgpt";
+export type CloudAccount =
+  | "github"
+  | "gmail"
+  | "gdrive"
+  | "gcalendar"
+  | "gtasks"
+  | "gdocs"
+  | "gsheets"
+  | "gslides"
+  | "gcontacts"
+  | "slack"
+  | "x"
+  | "chatgpt";
+
+/** Secret-free account identity returned by a connector status reader. */
+export type ConnectorConnection = Readonly<{
+  id: string;
+  label: string;
+  accountId?: string | undefined;
+  capabilities?: readonly CloudAccount[] | undefined;
+}>;
+
+/** Provider-neutral status for a connector service capability. */
+export type ConnectorStatus = Readonly<{
+  connected: boolean;
+  connections?: readonly ConnectorConnection[] | undefined;
+}>;
+
+/** Exact approved connector connection IDs keyed by service capability. */
+export type ConnectorConnectionSelection = Readonly<
+  Partial<Record<Exclude<CloudAccount, "chatgpt">, readonly string[]>>
+>;
 
 export type AccessKey = Readonly<{
   address: Hex;
@@ -95,6 +126,8 @@ export type Grant = Readonly<{
   visibility: AgentVisibility;
   /** Secret-free cloud account providers bound to this grant. */
   connectors: readonly CloudAccount[];
+  /** Exact account connection subset. Absent only when reading a legacy grant. */
+  connectorConnections?: ConnectorConnectionSelection | undefined;
   /** Exact secret-free hosted MCP connections bound to this grant. */
   mcpConnections: readonly McpConnection[];
   /** Exact signed app-local reverse-tool catalog, when present. */
