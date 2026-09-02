@@ -95,7 +95,7 @@ export function connectorRequestTarget(capability, value) {
     || (capability === "gdocs" && /^\/v1\/documents(?:\/|$)/.test(target.pathname))
     || (capability === "gsheets" && /^\/v4\/spreadsheets(?:\/|$)/.test(target.pathname))
     || (capability === "gslides" && /^\/v1\/presentations(?:\/|$)/.test(target.pathname))
-    || (capability === "gcontacts" && /^\/v1\/(?:people|contactGroups)(?:\/|$)/.test(target.pathname))
+    || (capability === "gcontacts" && /^\/v1\/(?:people|contactGroups|otherContacts)(?:\/|:|$)/.test(target.pathname))
     || (capability === "slack" && /^\/api\/[A-Za-z0-9._-]+$/.test(target.pathname))
     || (capability === "x" && /^\/2\/(?:tweets|users|lists|dm_(?:conversations|events)|media)(?:\/|$)/.test(target.pathname));
   if (target.origin !== origin || target.username || target.password || target.hash
@@ -186,6 +186,80 @@ export function intersectConnectorConnectionSnapshot(approved, statuses, request
     selected[capability] = Object.freeze(approvedIds.filter((id) => liveIds.has(id)));
   }
   return Object.freeze(selected);
+}
+
+export function completeConnectorConnectionSnapshot(
+  approved,
+  connectedAtApproval,
+  statuses,
+  requested,
+) {
+  if (approved === undefined) {
+    throw new ConnectorPolicyFailure(
+      409,
+      "connector_approval_snapshot_required",
+      "This pending approval predates exact connector identities and must be retried.",
+    );
+  }
+  const selected = {};
+  const legacy = [];
+  const previouslyConnected = connectedAtApproval === undefined
+    ? undefined
+    : new Set(connectedAtApproval);
+  for (const capability of requested) {
+    if (capability === "chatgpt") continue;
+    const status = statuses[capability];
+    const liveIds = (status?.connections ?? []).map(({ id }) => id);
+    if (Object.hasOwn(approved, capability)) {
+      const live = new Set(liveIds);
+      selected[capability] = Object.freeze(
+        (approved[capability] ?? []).filter((id) => live.has(id)),
+      );
+      continue;
+    }
+
+    // A missing entry is eligible for late binding only when the current
+    // approval explicitly recorded that the connector was disconnected. This
+    // is the fresh-account flow where OAuth happens inside the dialog after
+    // signing. Missing rollout metadata or a connected-but-unidentified
+    // account cannot be widened into whichever identity happens to be live.
+    if (previouslyConnected === undefined) {
+      if (status?.connected) {
+        throw new ConnectorPolicyFailure(
+          409,
+          "connector_approval_snapshot_incomplete",
+          "The approval did not bind this connected account to a stable identity.",
+        );
+      }
+      continue;
+    }
+    if (status?.connected && liveIds.length === 0) {
+      legacy.push(capability);
+      continue;
+    }
+    if (previouslyConnected.has(capability)) {
+      if (status?.connected) {
+        throw new ConnectorPolicyFailure(
+          409,
+          "connector_approval_snapshot_incomplete",
+          "The approval did not bind this connected account to a stable identity.",
+        );
+      }
+      continue;
+    }
+    if (liveIds.length > 0) selected[capability] = Object.freeze(liveIds);
+  }
+  if (legacy.length > 0 && Object.keys(selected).length > 0) {
+    throw new ConnectorPolicyFailure(
+      409,
+      "connector_identity_modes_mixed",
+      "Exact and legacy connector identities cannot be combined in one new grant.",
+    );
+  }
+  return Object.freeze({
+    connectorConnections: legacy.length > 0 ? undefined : Object.freeze(selected),
+    legacyConnectorCapabilities: Object.freeze(legacy),
+  });
 }
 
 export function resolveConnectorConnection(snapshot, capability, bodySelector, headerSelector) {

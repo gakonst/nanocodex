@@ -52,13 +52,13 @@ import {
 } from "./appToolPolicy.mjs";
 import {
   applyConnectorConnectionSelector,
+  completeConnectorConnectionSnapshot,
   ConnectorPolicyFailure,
   connectorCapabilities,
   connectorCapabilityForUrl,
   connectorConnectionSnapshot,
   connectorProvider,
   connectorRequestTarget,
-  intersectConnectorConnectionSnapshot,
   isConnectorCapability,
   isConnectorConnectionSnapshot,
   oauthConnectorProviders,
@@ -358,6 +358,7 @@ type GrantRecord = Readonly<{
   appToolCatalogDigest?: `0x${string}`;
   mcpConnections?: readonly Readonly<{ id: string; name: string }>[];
   connectorConnections?: ConnectorConnectionSnapshot;
+  legacyConnectorCapabilities?: readonly ConnectorCapability[];
   accessKey?: Record<string, unknown>;
   balanceAtomics?: string;
   spentAtomics: string;
@@ -1356,15 +1357,22 @@ async function createConnection(
   // connector and MCP immediately after broker success, then consume the
   // approval before creating any grant state.
   const liveConnectorStatuses = (await connectorStatuses(env, identity.userId)).connectors;
-  const connectorConnections = intersectConnectorConnectionSnapshot(
-    approval.connectorConnections,
-    liveConnectorStatuses,
-    requested,
-  );
+  let connectorConnections: ConnectorConnectionSnapshot | undefined;
+  let legacyConnectorCapabilities: readonly ConnectorCapability[];
+  try {
+    ({ connectorConnections, legacyConnectorCapabilities } = completeConnectorConnectionSnapshot(
+      approval.connectorConnections,
+      approval.connectedConnectors,
+      liveConnectorStatuses,
+      requested,
+    ));
+  } catch (cause) {
+    throw connectorPolicyApiFailure(cause);
+  }
   const connectors = requested.filter((connector) => {
     if (!liveConnectorStatuses[connector].connected) return false;
-    if (connector === "chatgpt" || connectorConnections === undefined) return true;
-    return (connectorConnections[connector]?.length ?? 0) > 0;
+    if (connector === "chatgpt" || legacyConnectorCapabilities.includes(connector)) return true;
+    return (connectorConnections?.[connector]?.length ?? 0) > 0;
   });
   requireRequestedConnectors(connectors, requested);
   if (credentialImport
@@ -1427,6 +1435,7 @@ async function createConnection(
     expiresAt,
     capabilities: grantCapabilities,
     ...(connectorConnections === undefined ? {} : { connectorConnections }),
+    ...(legacyConnectorCapabilities.length === 0 ? {} : { legacyConnectorCapabilities }),
     ...(conversationId ? { conversationId } : {}),
     ...(approvedAppToolCatalogDigest ? { appToolCatalogDigest: approvedAppToolCatalogDigest } : {}),
     mcpConnections: mcpConnections.map(({ id, name }) => ({ id, name })),
@@ -2415,7 +2424,9 @@ function projectGrantConnectorStatuses(
       return [capability, { connected: false, connections: [] }];
     }
     const status = info.connectors[capability];
-    if (capability === "chatgpt" || grant.connectorConnections === undefined) {
+    if (capability === "chatgpt"
+      || grant.connectorConnections === undefined
+      || grant.legacyConnectorCapabilities?.includes(capability)) {
       return [capability, status];
     }
     const granted = new Set(grant.connectorConnections[capability] ?? []);
@@ -3376,6 +3387,16 @@ function isGrantRecord(value: unknown): value is GrantRecord {
     && value.capabilities.every((capability) => typeof capability === "string")
     && (value.connectorConnections === undefined
       || isConnectorConnectionSnapshot(value.connectorConnections))
+    && (value.legacyConnectorCapabilities === undefined
+      || (Array.isArray(value.legacyConnectorCapabilities)
+        && value.legacyConnectorCapabilities.length <= CONNECTOR_IDS.length
+        && value.legacyConnectorCapabilities.every((capability) => (
+          capability !== "chatgpt"
+          && isConnectorCapability(capability)
+          && (value.capabilities as unknown[]).includes(capability)
+        ))
+        && new Set(value.legacyConnectorCapabilities).size === value.legacyConnectorCapabilities.length
+        && value.connectorConnections === undefined))
     && (value.appToolCatalogDigest === undefined
       || /^0x[0-9a-f]{64}$/.test(String(value.appToolCatalogDigest)))
     && (value.mcpConnections === undefined
@@ -4269,7 +4290,9 @@ async function grantConnectorRequest(
   try {
     applyConnectorConnectionSelector(
       headers,
-      grant.connectorConnections,
+      grant.legacyConnectorCapabilities?.includes(connector)
+        ? undefined
+        : grant.connectorConnections,
       connector,
       value.connection_id,
     );

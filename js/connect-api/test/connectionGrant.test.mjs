@@ -11,14 +11,16 @@ test("signed and hosted approvals persist exact connection snapshots", () => {
   assert.match(source, /connectedConnectors,\s*connectorConnections,\s*mcpConnections,/);
 });
 
-test("grant exchange intersects the approval snapshot with live identities", () => {
-  assert.match(source, /intersectConnectorConnectionSnapshot\(\s*approval\.connectorConnections,\s*liveConnectorStatuses,\s*requested,/);
+test("grant exchange completes the approval snapshot with exact live identities", () => {
+  assert.match(source, /completeConnectorConnectionSnapshot\(\s*approval\.connectorConnections,\s*approval\.connectedConnectors,\s*liveConnectorStatuses,\s*requested,/);
+  assert.match(source, /legacyConnectorCapabilities\.includes\(connector\)/);
+  assert.match(source, /legacyConnectorCapabilities\.length === 0/);
   assert.match(source, /connector_connections: grant\.connectorConnections/);
   assert.match(managedGrant, /x-nanocodex-connect-connector-connections/);
 });
 
 test("connector execution uses only the provider-neutral selector header", () => {
-  assert.match(source, /applyConnectorConnectionSelector\(\s*headers,\s*grant\.connectorConnections,\s*connector,/);
+  assert.match(source, /applyConnectorConnectionSelector\(\s*headers,\s*grant\.legacyConnectorCapabilities\?\.includes\(connector\)[\s\S]*?: grant\.connectorConnections,\s*connector,/);
   assert.match(source, /"x-nanocodex-connector-connection"/);
   assert.doesNotMatch(`${source}\n${managedGrant}`, /x-nanocodex-connector-instance/i);
 });

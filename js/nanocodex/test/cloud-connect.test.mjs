@@ -1715,6 +1715,7 @@ test("Nanocodex Connect signs one witness-bound access key and enforces its MPP 
           "repositories",
           "model-entitlement",
           "urn:nanocodex:app:test-workspace",
+          "urn:nanocodex:connectors:x",
           "urn:nanocodex:agent:visibility:reply,actions",
         ]);
         return {
@@ -1746,9 +1747,11 @@ test("Nanocodex Connect signs one witness-bound access key and enforces its MPP 
         "model-entitlement",
         "urn:nanocodex:agent:trace:read",
       ] },
+      cloudAccounts: { x: true },
     },
   });
   assert.equal(connection.grant.status, "active");
+  assert.match(connection.grant.connectorConnections.x[0], /^[A-Za-z0-9_-]{43}$/);
   assert.deepEqual(connection.grant.visibility, {
     finalMessages: true,
     actionSummaries: true,
@@ -1794,6 +1797,7 @@ test("Nanocodex Connect signs one witness-bound access key and enforces its MPP 
 
   const revoked = await client.grant.revoke({ grantId: connection.grant.id });
   assert.equal(revoked.status, "revoked");
+  assert.deepEqual(revoked.connectorConnections, connection.grant.connectorConnections);
 });
 
 test("recognized visibility capabilities do not receive the legacy output fallback", () => {

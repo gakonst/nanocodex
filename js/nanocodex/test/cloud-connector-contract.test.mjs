@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   connectionFromWire,
   connectionMatchesRequest,
+  grantFromWire,
   reconnectRequestFromConnection,
 } from "../cloud/internal.mjs";
 
@@ -86,6 +87,23 @@ test("cloud connection readers accept legacy grants and reject widened selection
     capabilities: ["nanocodex.agent", "slack"],
     connectorConnections: { slack: [A, A] },
   })), /duplicate connections/);
+});
+
+test("standalone grant readers retain exact connector selections", () => {
+  const source = wire({
+    capabilities: ["nanocodex.agent", "gmail", "slack"],
+    connectorConnections: { gmail: [A], slack: [B] },
+  }).grant;
+  const grant = grantFromWire(source);
+
+  assert.deepEqual(grant.connectorConnections, { gmail: [A], slack: [B] });
+  assert.equal(Object.isFrozen(grant.connectorConnections), true);
+  assert.equal(Object.isFrozen(grant.connectorConnections.gmail), true);
+  assert.equal(grantFromWire({ ...source, connector_connections: undefined }).connectorConnections, undefined);
+  assert.throws(() => grantFromWire({
+    ...source,
+    connector_connections: { github: [A] },
+  }), /ungranted connector capability/);
 });
 
 function wire({ capabilities, connectorConnections }) {

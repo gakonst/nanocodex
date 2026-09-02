@@ -58,6 +58,15 @@ export function intersectConnectorConnectionSnapshot(
   statuses: Readonly<Record<ConnectorCapability, ConnectorStatus>>,
   requested: readonly ConnectorCapability[],
 ): ConnectorConnectionSnapshot | undefined;
+export function completeConnectorConnectionSnapshot(
+  approved: ConnectorConnectionSnapshot | undefined,
+  connectedAtApproval: readonly ConnectorCapability[] | undefined,
+  statuses: Readonly<Record<ConnectorCapability, ConnectorStatus>>,
+  requested: readonly ConnectorCapability[],
+): Readonly<{
+  connectorConnections: ConnectorConnectionSnapshot | undefined;
+  legacyConnectorCapabilities: readonly ConnectorCapability[];
+}>;
 export function resolveConnectorConnection(
   snapshot: ConnectorConnectionSnapshot | undefined,
   capability: ConnectorCapability,

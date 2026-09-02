@@ -220,7 +220,8 @@ export async function routeConnectorRequest(
   if ((match[3] !== undefined && !connectionId)
     || (callback && request.method !== "GET")
     || (connectionId && request.method !== "DELETE")
-    || (!callback && !connectionId && request.method !== "POST")) {
+    || (!callback && !connectionId
+      && request.method !== "POST" && request.method !== "DELETE")) {
     return json({ error: "method_not_allowed" }, 405);
   }
 
@@ -245,6 +246,11 @@ export async function routeConnectorRequest(
 
   if (url.search) return json({ error: "invalid_request" }, 400);
   if (connectionId) return env.NANOCODEX.fetch(target, { method: "DELETE" });
+  // Backward-compatible singleton control: old clients revoke the provider
+  // without first resolving a connection id. The broker owns bulk semantics.
+  if (request.method === "DELETE") {
+    return env.NANOCODEX.fetch(target, { method: "DELETE" });
+  }
 
   const returnTo = await decodeReturnTo(request, url);
   if (!returnTo) return json({ error: "invalid_return_to" }, 400);

@@ -256,6 +256,12 @@ export function grantFromWire(value) {
   const capabilities = strings(grant.capabilities, "grant.capabilities");
   const grantMcpConnections = mcpConnections(grant.mcp_connections, "grant.mcp_connections");
   requireExactMcpProjection(capabilities, grantMcpConnections, "grant");
+  const grantConnectors = connectors(capabilities, "grant.capabilities");
+  const grantConnectorConnections = connectorConnections(
+    grant.connector_connections,
+    grantConnectors,
+    "grant.connector_connections",
+  );
   return Object.freeze({
     id: hex(grant.id, "grant.id"),
     permission: string(grant.permission, "grant.permission"),
@@ -265,7 +271,10 @@ export function grantFromWire(value) {
       conversationId: agentConversationId(grant.conversation_id, "grant.conversation_id"),
     }),
     capabilities,
-    connectors: connectors(capabilities, "grant.capabilities"),
+    connectors: grantConnectors,
+    ...(grantConnectorConnections === undefined ? {} : {
+      connectorConnections: grantConnectorConnections,
+    }),
     mcpConnections: grantMcpConnections,
     visibility: agentVisibility(capabilities),
     ...(grant.app_tool_catalog_digest === undefined ? {} : {

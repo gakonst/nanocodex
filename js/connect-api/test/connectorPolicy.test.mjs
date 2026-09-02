@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   applyConnectorConnectionSelector,
+  completeConnectorConnectionSnapshot,
   ConnectorPolicyFailure,
   connectorCapabilities,
   connectorCapabilityForUrl,
@@ -121,6 +122,118 @@ test("approval snapshots are immutable and grant intersection cannot broaden the
   assert.equal(isConnectorConnectionSnapshot({ gmail: [alpha], google: [bravo] }), false);
 });
 
+test("fresh-account exchange binds only requested post-approval identities", () => {
+  const statuses = Object.fromEntries(connectorCapabilities.map((capability) => [
+    capability,
+    { connected: false, connections: [] },
+  ]));
+  statuses.gmail = publicConnectorStatus({
+    connected: true,
+    connections: [{ id: alpha, label: "Approved Gmail" }],
+  });
+  statuses.slack = publicConnectorStatus({
+    connected: true,
+    connections: [{ id: bravo, label: "Unrequested Slack" }],
+  });
+
+  const completed = completeConnectorConnectionSnapshot({}, [], statuses, ["gmail"]);
+  assert.deepEqual(completed, {
+    connectorConnections: { gmail: [alpha] },
+    legacyConnectorCapabilities: [],
+  });
+  assert.equal(resolveConnectorConnection(completed.connectorConnections, "gmail"), alpha);
+  assert.equal(Object.hasOwn(completed.connectorConnections, "slack"), false);
+});
+
+test("exchange keeps pre-approved identities exact and rejects pre-rollout approvals", () => {
+  const statuses = Object.fromEntries(connectorCapabilities.map((capability) => [
+    capability,
+    { connected: false, connections: [] },
+  ]));
+  statuses.gmail = publicConnectorStatus({
+    connected: true,
+    connections: [
+      { id: alpha, label: "Approved" },
+      { id: bravo, label: "Connected later" },
+    ],
+  });
+
+  assert.deepEqual(
+    completeConnectorConnectionSnapshot({ gmail: [alpha] }, ["gmail"], statuses, ["gmail"]),
+    { connectorConnections: { gmail: [alpha] }, legacyConnectorCapabilities: [] },
+  );
+  assert.throws(
+    () => completeConnectorConnectionSnapshot(undefined, undefined, statuses, ["gmail"]),
+    (error) => error.code === "connector_approval_snapshot_required" && error.status === 409,
+  );
+});
+
+test("legacy singleton status gets an explicit selector-less grant mode", () => {
+  const statuses = Object.fromEntries(connectorCapabilities.map((capability) => [
+    capability,
+    { connected: false, connections: [] },
+  ]));
+  statuses.gmail = publicConnectorStatus({
+    connected: true,
+    label: "legacy@example.com",
+    account_id: "legacy-subject",
+  });
+
+  assert.deepEqual(
+    completeConnectorConnectionSnapshot({}, ["gmail"], statuses, ["gmail"]),
+    { connectorConnections: undefined, legacyConnectorCapabilities: ["gmail"] },
+  );
+  assert.throws(
+    () => completeConnectorConnectionSnapshot(undefined, undefined, statuses, ["gmail"]),
+    (error) => error.code === "connector_approval_snapshot_required",
+  );
+  assert.equal(resolveConnectorConnection(undefined, "gmail"), undefined);
+  assert.throws(
+    () => resolveConnectorConnection(undefined, "gmail", alpha),
+    (error) => error.code === "connector_connection_not_granted",
+  );
+});
+
+test("new grants reject mixed exact and legacy identity modes", () => {
+  const statuses = Object.fromEntries(connectorCapabilities.map((capability) => [
+    capability,
+    { connected: false, connections: [] },
+  ]));
+  statuses.gmail = publicConnectorStatus({
+    connected: true,
+    connections: [{ id: alpha, label: "Exact" }],
+  });
+  statuses.slack = publicConnectorStatus({
+    connected: true,
+    label: "Legacy",
+    account_id: "legacy-team",
+  });
+  assert.throws(
+    () => completeConnectorConnectionSnapshot(
+      { gmail: [alpha] },
+      ["gmail", "slack"],
+      statuses,
+      ["gmail", "slack"],
+    ),
+    (error) => error.code === "connector_identity_modes_mixed",
+  );
+});
+
+test("late binding requires an explicit disconnected-at-approval record", () => {
+  const statuses = Object.fromEntries(connectorCapabilities.map((capability) => [
+    capability,
+    { connected: false, connections: [] },
+  ]));
+  statuses.gmail = publicConnectorStatus({
+    connected: true,
+    connections: [{ id: alpha, label: "Live" }],
+  });
+  assert.throws(
+    () => completeConnectorConnectionSnapshot({}, undefined, statuses, ["gmail"]),
+    (error) => error.code === "connector_approval_snapshot_incomplete",
+  );
+});
+
 test("selector routing auto-selects one and requires an explicit granted identity for many", () => {
   assert.equal(resolveConnectorConnection({ gmail: [alpha] }, "gmail"), alpha);
   assert.equal(resolveConnectorConnection({ gmail: [alpha, bravo] }, "gmail", bravo), bravo);
@@ -170,6 +283,9 @@ test("provider URL routing covers unified Google capabilities and Slack narrowly
     ["gsheets", "https://sheets.googleapis.com/v4/spreadsheets/sheet-1"],
     ["gslides", "https://slides.googleapis.com/v1/presentations/deck-1"],
     ["gcontacts", "https://people.googleapis.com/v1/people/me/connections"],
+    ["gcontacts", "https://people.googleapis.com/v1/people:searchContacts"],
+    ["gcontacts", "https://people.googleapis.com/v1/contactGroups:batchGet"],
+    ["gcontacts", "https://people.googleapis.com/v1/otherContacts:search"],
     ["slack", "https://slack.com/api/conversations.list"],
   ];
   for (const [capability, href] of routes) {
@@ -187,6 +303,10 @@ test("provider URL routing covers unified Google capabilities and Slack narrowly
   );
   assert.throws(
     () => connectorRequestTarget("gdocs", "/v1/documents/doc-1?access_token=secret"),
+    (error) => error.code === "connector_destination_denied",
+  );
+  assert.throws(
+    () => connectorRequestTarget("gcontacts", "/v1/peopleAdmin:searchContacts"),
     (error) => error.code === "connector_destination_denied",
   );
 });

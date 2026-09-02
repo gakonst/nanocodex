@@ -14,6 +14,7 @@ const CONNECTOR_IDS = [
   "x",
   "chatgpt",
 ];
+const CONNECTOR_CONNECTION_IDS = CONNECTOR_IDS.filter((id) => id !== "chatgpt");
 const CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const CONNECTOR_CONNECTION_SCHEMA = {
   type: "object",
@@ -91,6 +92,16 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
           expiresAt: { type: "integer" },
           capabilities: { type: "array", items: { type: "string" } },
           connectors: { type: "array", items: { type: "string", enum: CONNECTOR_IDS } },
+          connectorConnections: {
+            type: "object",
+            properties: Object.fromEntries(CONNECTOR_CONNECTION_IDS.map((id) => [id, {
+              type: "array",
+              maxItems: 64,
+              uniqueItems: true,
+              items: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+            }])),
+            additionalProperties: false,
+          },
           accessKey: {
             type: "object",
             properties: {
@@ -323,6 +334,11 @@ function authorizations(value) {
     expiresAt: authorization.expiresAt,
     capabilities: [...authorization.capabilities],
     connectors: [...authorization.connectors],
+    ...(authorization.connectorConnections === undefined ? {} : {
+      connectorConnections: Object.fromEntries(Object.entries(
+        authorization.connectorConnections,
+      ).map(([connector, ids]) => [connector, [...ids]])),
+    }),
     accessKey: {
       id: authorization.accessKey.id,
       expiry: authorization.accessKey.expiry,
@@ -358,8 +374,22 @@ function validAuthorization(value) {
     && stringArray(value.capabilities)
     && Array.isArray(value.connectors)
     && value.connectors.every((connector) => CONNECTOR_IDS.includes(connector))
+    && validConnectorConnections(value.connectorConnections, value.connectors)
     && validAccessKey(value.accessKey)
     && validSpend(value.spend);
+}
+
+function validConnectorConnections(value, granted) {
+  if (value === undefined) return true;
+  if (!record(value)) return false;
+  return Object.entries(value).every(([connector, ids]) => (
+    CONNECTOR_CONNECTION_IDS.includes(connector)
+    && granted.includes(connector)
+    && Array.isArray(ids)
+    && ids.length <= 64
+    && ids.every((id) => typeof id === "string" && CONNECTION_ID.test(id))
+    && new Set(ids).size === ids.length
+  ));
 }
 
 function validAccessKey(value) {

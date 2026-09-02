@@ -232,6 +232,7 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
         expiresAt: 2_000_000_000,
         capabilities: ["nanocodex.agent", "x", "chatgpt"],
         connectors: ["x", "chatgpt"],
+        connectorConnections: { x: ["x".repeat(43)] },
         accessKey: {
           id: "0x02",
           expiry: 2_000_000_000,
@@ -268,6 +269,7 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
       expiresAt: 2_000_000_000,
       capabilities: ["nanocodex.agent", "x", "chatgpt"],
       connectors: ["x", "chatgpt"],
+      connectorConnections: { x: ["x".repeat(43)] },
       accessKey: {
         id: "0x02",
         expiry: 2_000_000_000,
