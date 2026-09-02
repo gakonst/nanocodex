@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  callbackCompletion,
+  callbackCompletionChannelName,
+  callbackCompletionFor,
+  callbackCompletionStorageKey,
+  isCallbackCompletion,
+  isCallbackCompletionState,
   isScopedConnectConnectorState,
   scopedConnectConnectorState,
   unscopedConnectConnectorState,
@@ -51,4 +57,35 @@ test("recognizes only exactly framed connector callback states", () => {
     assert.equal(isScopedConnectConnectorState(value), false);
     assert.equal(unscopedConnectConnectorState(value), undefined);
   }
+});
+
+test("frames secret-free callback completion with exact connector and state matching", () => {
+  const state = "s".repeat(43);
+  const completion = callbackCompletion({
+    connector: `mcp:${"m".repeat(43)}`,
+    state,
+    result: "success",
+  });
+  assert.deepEqual(callbackCompletionFor(completion, {
+    connector: `mcp:${"m".repeat(43)}`,
+    state,
+  }), completion);
+  assert.equal(callbackCompletionFor(completion, {
+    connector: `mcp:${"m".repeat(43)}`,
+    state: "x".repeat(43),
+  }), undefined);
+  assert.equal(callbackCompletionFor({ ...completion, token: "secret" }, {
+    connector: completion.connector,
+    state,
+  }), undefined);
+  assert.equal(isCallbackCompletion({ ...completion, state: "short" }), false);
+  assert.equal(JSON.stringify(completion).includes("secret"), false);
+});
+
+test("creates canonical states and derives state-bounded same-origin transport names", () => {
+  const state = "s".repeat(43);
+  assert.equal(isCallbackCompletionState(state), true);
+  assert.equal(callbackCompletionStorageKey(state), `nanocodex:oauth-completion:${state}`);
+  assert.equal(callbackCompletionChannelName(state), `nanocodex-oauth-completion-${state}`);
+  assert.throws(() => callbackCompletionStorageKey("short"), /completion state is invalid/);
 });

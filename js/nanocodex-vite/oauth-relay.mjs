@@ -197,7 +197,7 @@ export async function localOAuthRelayCallbackRedirect(url, secret, options) {
         : `/v1/connectors/${provider}/callback`
       : envelope.f === "connect"
         ? `/v1/connect/auth/mcp-connection-callback/${connectionId}`
-        : `/v1/mcp-connections/${connectionId}/callback`,
+        : `/v1/connectors/mcp-connections/${connectionId}/callback`,
     envelope.o,
   );
   for (const name of SAFE_QUERY) {

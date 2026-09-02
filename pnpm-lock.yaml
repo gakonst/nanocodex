@@ -295,6 +295,9 @@ importers:
       nanocodex:
         specifier: workspace:*
         version: link:../nanocodex
+      nanocodex-connect-protocol:
+        specifier: workspace:*
+        version: link:../nanocodex-connect-protocol
       nanocodex-tools:
         specifier: workspace:*
         version: link:../nanocodex-tools
@@ -417,6 +420,9 @@ importers:
       accounts:
         specifier: 0.17.0
         version: 0.17.0(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.5.4))(@types/react@19.2.14)(express@5.2.1(supports-color@10.2.2))(immer@11.1.18)(react@19.2.8)(typescript@5.9.3)(use-sync-external-store@1.6.0(react@19.2.8))(viem@2.55.19(typescript@5.9.3)(zod@4.5.4))
+      nanocodex-connect-protocol:
+        specifier: workspace:*
+        version: link:../nanocodex-connect-protocol
     devDependencies:
       '@types/react':
         specifier: 19.2.14

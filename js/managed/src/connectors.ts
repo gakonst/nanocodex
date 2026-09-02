@@ -7,8 +7,16 @@ import { browserEgressSubject } from "./browser-egress";
 import { bindAgentCredential } from "./credentials";
 import {
   localConnectorAuthorization,
+  localMcpAuthorization,
   wrapLocalConnectorAuthorizationState,
+  wrapLocalMcpAuthorizationState,
 } from "nanocodex-vite/oauth-relay";
+import {
+  callbackCompletion,
+  callbackCompletionChannelName,
+  callbackCompletionStorageKey,
+  isCallbackCompletionState,
+} from "nanocodex-connect-protocol";
 import { canonicalRemoteMcpTarget } from "../../mcp-target.mjs";
 import {
   connectorConnectionId,
@@ -181,10 +189,16 @@ export async function routeConnectorRequest(
     if (operation !== "callback" && url.search) return json({ error: "invalid_request" }, 400);
     const target = `https://broker.internal/users/${encodeURIComponent(principal.userId)}/mcp-connections/${connectionId}${operation ? `/${operation}` : ""}`;
     if (operation === "start") {
-      const start = await mcpStartRequest(request, url, connectionId);
+      const local = localMcpAuthorization(url.origin, connectionId, "managed");
+      const start = await mcpStartRequest(request, url, connectionId, local?.redirectUri);
       if (!start) return json({ error: "invalid_return_to" }, 400);
       const response = await env.NANOCODEX.fetch(target, start);
-      return publicMcpStartResponse(response, connectionId);
+      return publicMcpStartResponse(
+        response,
+        connectionId,
+        local,
+        env.NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY ?? "",
+      );
     }
     const response = await env.NANOCODEX.fetch(
       target,
@@ -420,6 +434,7 @@ async function mcpStartRequest(
   request: Request,
   url: URL,
   connectionId: string,
+  redirectUri = `${url.origin}/v1/connectors/mcp-connections/${connectionId}/callback`,
 ): Promise<RequestInit | undefined> {
   const returnTo = await decodeReturnTo(request, url);
   if (!returnTo) return undefined;
@@ -427,7 +442,7 @@ async function mcpStartRequest(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      redirect_uri: `${url.origin}/v1/connectors/mcp-connections/${connectionId}/callback`,
+      redirect_uri: redirectUri,
       return_to: returnTo,
     }),
   };
@@ -446,19 +461,37 @@ function mcpCallbackRequest(url: URL): RequestInit {
   };
 }
 
-async function publicMcpStartResponse(response: Response, id: string): Promise<Response> {
+export async function publicMcpStartResponse(
+  response: Response,
+  id: string,
+  local: ReturnType<typeof localMcpAuthorization>,
+  relayKey: string,
+): Promise<Response> {
   if (!response.ok) {
     await response.body?.cancel();
     return json({ error: "mcp_broker_failed" }, 502);
   }
   const value: unknown = await response.json().catch(() => undefined);
   const connection = publicMcpConnections(value)?.find((candidate) => candidate.id === id);
-  const authorizationUrl = isRecord(value) && typeof value.authorization_url === "string"
+  const authorizationUrlValue = isRecord(value) && typeof value.authorization_url === "string"
     ? safeAuthorizationUrl(value.authorization_url)
     : undefined;
-  return connection && authorizationUrl
-    ? json({ mcp_connection: connection, authorization_url: authorizationUrl }, 200)
-    : json({ error: "mcp_broker_invalid" }, 502);
+  if (!connection || !authorizationUrlValue) return json({ error: "mcp_broker_invalid" }, 502);
+  const authorizationUrl = new URL(authorizationUrlValue);
+  const callbackState = authorizationUrl.searchParams.get("state");
+  if (!isCallbackCompletionState(callbackState)) return json({ error: "mcp_broker_invalid" }, 502);
+  if (local) {
+    try {
+      await wrapLocalMcpAuthorizationState(authorizationUrl, local, relayKey);
+    } catch {
+      return json({ error: "mcp_broker_invalid" }, 502);
+    }
+  }
+  return json({
+    mcp_connection: connection,
+    authorization_url: authorizationUrl.href,
+    callback_state: callbackState,
+  }, 200);
 }
 
 async function finishMcpCallback(response: Response, url: URL, id: string): Promise<Response> {
@@ -470,7 +503,11 @@ async function finishMcpCallback(response: Response, url: URL, id: string): Prom
   const result = response.ok && connection?.status === "connected"
     ? "connected"
     : url.searchParams.has("error") ? "cancelled" : "failed";
-  return redirectMcpResult(url, returnTo ?? "/", id, result);
+  const completionState = url.searchParams.get("state");
+  return completionState
+    && isCallbackCompletionState(completionState)
+    ? mcpCallbackCompletionPage(url, returnTo ?? "/", id, completionState, result)
+    : redirectMcpResult(url, returnTo ?? "/", id, result);
 }
 
 function safeAuthorizationUrl(value: string): string | undefined {
@@ -496,6 +533,48 @@ function redirectMcpResult(
       "cache-control": "no-store",
       location: destination.href,
       "referrer-policy": "no-referrer",
+    },
+  });
+}
+
+export function mcpCallbackCompletionPage(
+  requestUrl: URL,
+  returnTo: string,
+  id: string,
+  state: string,
+  result: "connected" | "cancelled" | "failed",
+): Response {
+  const success = result === "connected";
+  const completion = callbackCompletion({
+    connector: `mcp:${id}`,
+    state,
+    result: success ? "success" : "error",
+    ...(success ? {} : {
+      error: result === "cancelled" ? "mcp_authorization_cancelled" : "mcp_authorization_failed",
+      message: result === "cancelled"
+        ? "The MCP authorization was cancelled. Connect again when you are ready."
+        : "The MCP provider could not complete authorization. Try connecting again.",
+    }),
+  });
+  const destination = new URL(returnTo, requestUrl.origin);
+  const serialized = JSON.stringify(completion);
+  const storageKey = callbackCompletionStorageKey(state);
+  const channelName = callbackCompletionChannelName(state);
+  const heading = success ? "MCP connection complete" : "MCP connection not completed";
+  const detail = success
+    ? "This window should close automatically."
+    : completion.message!;
+  const script = `const completion=${serialized};try{localStorage.setItem(${JSON.stringify(storageKey)},JSON.stringify(completion))}catch{}try{const channel=new BroadcastChannel(${JSON.stringify(channelName)});channel.postMessage(completion);channel.close()}catch{}try{window.opener?.postMessage(completion,${JSON.stringify(requestUrl.origin)})}catch{}${success ? "window.close();" : ""}`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${heading}</title></head><body><h1>${heading}</h1><p>${detail}</p><p><a href=${JSON.stringify(destination.href)}>Return to Nanocodex</a></p><script>${script}</script></body></html>`;
+  return new Response(html, {
+    status: result === "failed" ? 502 : 200,
+    headers: {
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "content-type": "text/html; charset=utf-8",
+      "cross-origin-opener-policy": "unsafe-none",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
     },
   });
 }

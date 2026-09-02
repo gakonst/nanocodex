@@ -22,6 +22,7 @@
     "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
     "accounts": "0.16.2",
     "nanocodex": "workspace:*",
+    "nanocodex-connect-protocol": "workspace:*",
     "nanocodex-tools": "workspace:*",
     "nanocodex-vite": "workspace:*",
     "quickjs-emscripten-core": "0.32.0",

@@ -43,6 +43,10 @@
       "types": "./dist/connectorPolicy.d.mts",
       "import": "./dist/connectorPolicy.mjs"
     },
+    "./popupCallback": {
+      "types": "./dist/popupCallback.d.ts",
+      "import": "./dist/popupCallback.js"
+    },
     "./connectPolicy.mjs": {
       "types": "./dist/connectPolicy.d.mts",
       "import": "./dist/connectPolicy.mjs"
@@ -69,7 +73,8 @@
     "test:typecheck": "tsc -p test/tsconfig.json"
   },
   "dependencies": {
-    "accounts": "0.17.0"
+    "accounts": "0.17.0",
+    "nanocodex-connect-protocol": "workspace:*"
   },
   "peerDependencies": {
     "nanocodex": "^0.5.0",

@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   LOCAL_OAUTH_RELAY_ORIGIN,
+  localOAuthRelayCallbackRedirect,
   localConnectorAuthorization,
   localMcpAuthorization,
   verifyLocalMcpOAuthRelayState,
@@ -79,6 +80,29 @@ test("local MCP authorization state is wrapped for the relay", async () => {
   assert.equal(envelope?.o, TARGET_ORIGIN);
   assert.equal(envelope?.f, "connect");
   assert.equal(envelope?.s, "mcp-state");
+});
+
+test("local MCP callbacks return to the owning Connect or managed route", async () => {
+  for (const [flow, pathname] of [
+    ["connect", `/v1/connect/auth/mcp-connection-callback/${CONNECTION_ID}`],
+    ["managed", `/v1/connectors/mcp-connections/${CONNECTION_ID}/callback`],
+  ]) {
+    const local = localMcpAuthorization(TARGET_ORIGIN, CONNECTION_ID, flow);
+    assert(local);
+    const authorizationUrl = await wrapLocalMcpAuthorizationState(
+      new URL("https://provider.example/authorize?state=mcp-state"),
+      local,
+      RELAY_KEY,
+    );
+    const callbackUrl = new URL(local.redirectUri);
+    callbackUrl.searchParams.set("code", "provider-code");
+    callbackUrl.searchParams.set("state", authorizationUrl.searchParams.get("state"));
+    const destination = await localOAuthRelayCallbackRedirect(callbackUrl, RELAY_KEY);
+    assert.equal(destination?.origin, TARGET_ORIGIN);
+    assert.equal(destination?.pathname, pathname);
+    assert.equal(destination?.searchParams.get("code"), "provider-code");
+    assert.equal(destination?.searchParams.get("state"), "mcp-state");
+  }
 });
 
 test("authorization state wrappers reject missing and oversized provider state", async () => {
