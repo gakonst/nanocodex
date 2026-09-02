@@ -81,6 +81,27 @@ describe("provider-neutral connector identities", () => {
     expect(after.gdrive).toEqual({ connected: false, connections: [] });
   });
 
+  it("allows the managed Google Calendar and People route matrix", async () => {
+    const user = "google-route-matrix";
+    const subject = "R".repeat(43);
+    const connection = await connect(user, "google", "google-routes-code");
+    await bindSubject(subject, user);
+
+    for (const url of [
+      "https://calendar.googleapis.com/calendar/v3/calendars/primary/events",
+      "https://people.googleapis.com/v1/people:searchContacts",
+      "https://people.googleapis.com/v1/otherContacts:search",
+    ]) {
+      const response = await SELF.fetch(url, { headers: {
+        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL",
+        "x-nanocodex-subject": subject,
+        "x-nanocodex-connector-connection": connection,
+      } });
+      expect(response.status, url).toBe(200);
+      expect(await response.json()).toMatchObject({ host: new URL(url).hostname });
+    }
+  });
+
   it("stores and independently selects two Slack users in one workspace", async () => {
     const user = "multi-slack-identities";
     const first = await connect(user, "slack", "slack-a-code");
@@ -122,6 +143,26 @@ describe("provider-neutral connector identities", () => {
     });
     expect(await selectedSecond.json()).toMatchObject({ account: "slack-b" });
 
+    const modelRevocation = await broker.fetch("https://slack.com/api/auth.revoke", {
+      method: "POST",
+      headers: { "x-nanocodex-connector-connection": first },
+    });
+    expect(modelRevocation.status).toBe(403);
+    expect(await modelRevocation.json()).toEqual({ error: "destination_denied" });
+    const subject = "S".repeat(43);
+    await bindSubject(subject, user);
+    const outerRevocation = await SELF.fetch("https://slack.com/api/auth.revoke", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL",
+        "x-nanocodex-subject": subject,
+        "x-nanocodex-connector-connection": first,
+      },
+    });
+    expect(outerRevocation.status).toBe(403);
+    expect(await outerRevocation.json()).toEqual({ error: "destination_denied" });
+    expect((await connectorStatus(user)).slack.connections).toHaveLength(2);
+
     await runInDurableObject(broker, async (_instance: UserConnectorBroker, state) => {
       const raw = JSON.stringify(await state.storage.get("connector-state"));
       expect(raw).toContain("ciphertext");
@@ -130,7 +171,7 @@ describe("provider-neutral connector identities", () => {
     });
   });
 
-  it("reads encrypted v1 singleton grants and projects them through the v2 contract", async () => {
+  it("coalesces encrypted same-account Gmail and Drive grants into one revocable identity", async () => {
     const user = "legacy-connector-state";
     const stub = workerEnv.USER_CONNECTORS.getByName(user);
     await stub.fetch("https://connectors.internal/v1/status");
@@ -146,6 +187,22 @@ describe("provider-neutral connector identities", () => {
             scopes: ["openid", "email", GOOGLE_CAPABILITIES.gmail],
             accountId: "legacy-google-account",
             label: "legacy@example.test",
+            connectedAt: Date.now() - 1_000,
+          },
+          gdrive: {
+            accessToken: "legacy-drive-access-secret",
+            refreshToken: "legacy-drive-refresh-secret",
+            expiresAt: Date.now() + 60_000,
+            // Google incremental consent returns the complete granted scope set
+            // on the newest token; migration must project exactly this list.
+            scopes: [
+              "openid",
+              "email",
+              GOOGLE_CAPABILITIES.gmail,
+              GOOGLE_CAPABILITIES.gdrive,
+            ],
+            accountId: "legacy-google-account",
+            label: "legacy@example.test",
             connectedAt: Date.now(),
           },
         },
@@ -158,6 +215,8 @@ describe("provider-neutral connector identities", () => {
       expect(raw).toContain("ciphertext");
       expect(raw).not.toContain("legacy-access-secret");
       expect(raw).not.toContain("legacy-refresh-secret");
+      expect(raw).not.toContain("legacy-drive-access-secret");
+      expect(raw).not.toContain("legacy-drive-refresh-secret");
     });
 
     // An ordinary rejected request exercises the durable-state recovery reader.
@@ -169,9 +228,10 @@ describe("provider-neutral connector identities", () => {
         id: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
         label: "legacy@example.test",
         account_id: "legacy-google-account",
-        capabilities: ["gmail"],
+        capabilities: ["gmail", "gdrive"],
       }),
     ]);
+    expect(connectors.gdrive.connections).toEqual(connectors.gmail.connections);
     await runInDurableObject(stub, async (_instance: UserConnectorBroker, state) => {
       const row = await state.storage.get<{ envelope: EncryptedEnvelope }>("connector-state");
       const raw = JSON.stringify(row);
@@ -186,6 +246,15 @@ describe("provider-neutral connector identities", () => {
         connectors.gmail.connections[0]!.id,
       ]);
     });
+
+    const removed = await SELF.fetch(
+      `https://broker.test/users/${user}/connectors/google/connections/${connectors.gmail.connections[0]!.id}`,
+      { method: "DELETE" },
+    );
+    expect(removed.status).toBe(204);
+    const after = await connectorStatus(user);
+    expect(after.gmail).toEqual({ connected: false, connections: [] });
+    expect(after.gdrive).toEqual({ connected: false, connections: [] });
   });
 
   it("builds and validates Slack user OAuth responses", () => {
@@ -240,4 +309,9 @@ function control(path: string, method: string, body: unknown): Promise<Response>
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+async function bindSubject(subject: string, user: string): Promise<void> {
+  const response = await control(`/subjects/${subject}`, "PUT", { user_id: user });
+  expect(response.status).toBe(200);
 }

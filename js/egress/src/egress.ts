@@ -82,6 +82,11 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
     paths: [/^\/calendar\/v3(?:\/|$)/],
   },
   {
+    id: "gcalendar",
+    origin: "https://calendar.googleapis.com",
+    paths: [/^\/calendar\/v3(?:\/|$)/],
+  },
+  {
     id: "gtasks",
     origin: "https://tasks.googleapis.com",
     paths: [/^\/tasks\/v1(?:\/|$)/],
@@ -104,7 +109,7 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
   {
     id: "gcontacts",
     origin: "https://people.googleapis.com",
-    paths: [/^\/v1\/people(?:\/|:|$)/, /^\/v1\/contactGroups(?:\/|$)/],
+    paths: [/^\/v1\/(?:people|contactGroups|otherContacts)(?:\/|:|$)/],
   },
   {
     id: "x",
@@ -120,7 +125,7 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
   {
     id: "slack",
     origin: "https://slack.com",
-    paths: [/^\/api\/[A-Za-z0-9._-]+$/],
+    paths: [/^\/api\/(?!auth\.revoke$)[A-Za-z0-9._-]+$/],
   },
 ];
 

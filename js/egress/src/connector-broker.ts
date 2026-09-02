@@ -94,6 +94,12 @@ const PROVIDER_RULES: readonly ProviderRule[] = [
     paths: [/^\/calendar\/v3(?:\/|$)/],
   },
   {
+    id: "gcalendar",
+    provider: "google",
+    origin: "https://calendar.googleapis.com",
+    paths: [/^\/calendar\/v3(?:\/|$)/],
+  },
+  {
     id: "gtasks",
     provider: "google",
     origin: "https://tasks.googleapis.com",
@@ -121,10 +127,7 @@ const PROVIDER_RULES: readonly ProviderRule[] = [
     id: "gcontacts",
     provider: "google",
     origin: "https://people.googleapis.com",
-    paths: [
-      /^\/v1\/people(?:\/|:|$)/,
-      /^\/v1\/contactGroups(?:\/|$)/,
-    ],
+    paths: [/^\/v1\/(?:people|contactGroups|otherContacts)(?:\/|:|$)/],
   },
   {
     id: "x",
@@ -142,7 +145,7 @@ const PROVIDER_RULES: readonly ProviderRule[] = [
     id: "slack",
     provider: "slack",
     origin: "https://slack.com",
-    paths: [/^\/api\/[A-Za-z0-9._-]+$/],
+    paths: [/^\/api\/(?!auth\.revoke$)[A-Za-z0-9._-]+$/],
   },
 ];
 
@@ -1175,7 +1178,19 @@ function migrateConnectorState(value: ConnectorState | LegacyConnectorState): Co
   for (const [legacyId, connector] of Object.entries(value.connectors)) {
     if (!connector) continue;
     const provider = oauthProviderId(legacyId)!;
-    (migrated.connections[provider] ??= {})[randomBase64Url(32)] = normalizeStoredConnector(connector);
+    const connections = migrated.connections[provider] ??= {};
+    const normalized = normalizeStoredConnector(connector);
+    if (provider !== "google") {
+      connections[randomBase64Url(32)] = normalized;
+      continue;
+    }
+    const existing = Object.entries(connections)
+      .find(([, candidate]) => candidate.accountId === normalized.accountId);
+    if (!existing) {
+      connections[randomBase64Url(32)] = normalized;
+      continue;
+    }
+    connections[existing[0]] = mergeLegacyGoogleConnectors(existing[1], normalized);
   }
   for (const connector of Object.values(value.slack ?? {})) {
     (migrated.connections.slack ??= {})[randomBase64Url(32)] = normalizeStoredConnector(connector);
@@ -1190,6 +1205,17 @@ function migrateConnectorState(value: ConnectorState | LegacyConnectorState): Co
     attempts: revocation.attempts,
   }));
   return migrated;
+}
+
+function mergeLegacyGoogleConnectors(
+  left: StoredConnector,
+  right: StoredConnector,
+): StoredConnector {
+  // Both legacy records represent one Google OAuth grant. The newest
+  // incremental authorization is the only credential whose returned scope
+  // list can authoritatively describe what its token may access; never infer a
+  // wider token by unioning scopes from an older credential.
+  return right.connectedAt >= left.connectedAt ? right : left;
 }
 
 function normalizeStoredConnector(connector: StoredConnector): StoredConnector {

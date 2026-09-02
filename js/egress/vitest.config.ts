@@ -211,13 +211,16 @@ export default defineConfig({
             }
             const code = String(body.get("code") ?? "");
             if (code.startsWith("google-")) {
-              const account = code.includes("beta") ? "beta" : "alpha";
+              const account = code.includes("routes") ? "routes"
+                : code.includes("beta") ? "beta" : "alpha";
               return Response.json({
                 access_token: `google-${account}-access`,
                 refresh_token: `google-${account}-refresh`,
                 expires_in: 3_600,
                 token_type: "Bearer",
-                scope: account === "alpha"
+                scope: account === "routes"
+                  ? "openid email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/contacts.readonly"
+                  : account === "alpha"
                   ? "openid email https://mail.google.com/ https://www.googleapis.com/auth/drive"
                   : "openid email https://mail.google.com/ https://www.googleapis.com/auth/calendar",
               });
@@ -268,8 +271,10 @@ export default defineConfig({
             && url.pathname === "/v1/userinfo") {
             const authorization = request.headers.get("authorization");
             if (authorization === "Bearer google-alpha-access"
-              || authorization === "Bearer google-beta-access") {
-              const account = authorization.includes("beta") ? "beta" : "alpha";
+              || authorization === "Bearer google-beta-access"
+              || authorization === "Bearer google-routes-access") {
+              const account = authorization.includes("routes") ? "routes"
+                : authorization.includes("beta") ? "beta" : "alpha";
               return Response.json({
                 sub: `google-${account}-account`,
                 email: `${account}@example.test`,
@@ -294,6 +299,7 @@ export default defineConfig({
           if ((url.hostname === "api.github.com"
               || url.hostname === "gmail.googleapis.com"
               || url.hostname === "www.googleapis.com"
+              || url.hostname === "calendar.googleapis.com"
               || url.hostname === "tasks.googleapis.com"
               || url.hostname === "docs.googleapis.com"
               || url.hostname === "sheets.googleapis.com"

@@ -68,6 +68,13 @@ scope actually granted: `gmail`, `gdrive`, `gcalendar`, `gtasks`, `gdocs`,
 all access/refresh tokens remain encrypted in the per-user credential vault;
 status exposes only connection ID, label, account ID, and capability names.
 
+Before enabling Slack in production, configure `SLACK_OAUTH_CLIENT_ID` and
+`SLACK_OAUTH_CLIENT_SECRET` as secrets on the `nanocodex-egress` broker (never
+on an application or managed Worker). The Slack app must register the canonical
+`/v1/connectors/slack/callback` URL for the deployed Nanocodex origin and allow
+the user scopes requested in `src/connectors/slack.ts`. Local development uses
+the Vite-owned loopback relay instead of the production callback.
+
 ## Checks
 
 `typecheck` and `test` cover this package. For a changed Worker boundary,
