@@ -46,3 +46,4 @@ export type {
   AttachmentTransport,
   Tools,
 } from "./Tools.mjs";
+export type { HostedMachine } from "./hostedCatalog.mjs";

@@ -82,6 +82,31 @@ export async function destroyCloudflareSandbox(
   await sandboxHandle(namespace, sessionId).destroy();
 }
 
+export async function deleteCloudflareSandbox(
+  namespace: DurableObjectNamespace<Sandbox>,
+  bucket: R2Bucket,
+  sessionId: string,
+): Promise<void> {
+  await Promise.all([
+    destroyCloudflareSandbox(namespace, sessionId),
+    deleteCloudflareSandboxWorkspace(bucket, sessionId),
+  ]);
+}
+
+/** Deletes the persisted filesystem owned by one deleted agent sandbox. */
+export async function deleteCloudflareSandboxWorkspace(
+  bucket: R2Bucket,
+  sessionId: string,
+): Promise<void> {
+  const prefix = `/sessions/${sessionId}/`;
+  while (true) {
+    const page = await bucket.list({ prefix, limit: 1_000 });
+    const keys = page.objects.map(({ key }) => key);
+    if (keys.length === 0) return;
+    await bucket.delete(keys);
+  }
+}
+
 export function createCloudflareSandboxTools(
   createSandbox: () => Promise<SandboxToolClient>,
   createPreview?: (port: number) => Promise<{ port: number; url: string; persistent: boolean }>,

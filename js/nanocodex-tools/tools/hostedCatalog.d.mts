@@ -9,6 +9,8 @@ export type HostedToolCatalogEntry = Readonly<{
   timeout_ms: number;
 }>;
 
+export type { HostedMachine } from "./hostedMachine.mjs";
+
 export function hostedAppToolCatalog(
   tools: readonly NamedTool[] | Readonly<Record<string, unknown>>,
   provider?: string,

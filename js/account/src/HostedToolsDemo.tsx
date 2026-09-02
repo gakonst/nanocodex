@@ -87,6 +87,12 @@ export function HostedToolsDemo() {
       ?? await Agent.create();
     const tools = await createTools({
       mcp: false,
+      machines: [{
+        id: "browser",
+        name: "This browser",
+        workspace: "browser://current-tab",
+        capabilities: ["browser-echo"],
+      }],
       tools: {
         [HOSTED_ECHO_TOOL]: {
           description: "Echo a message in the caller's currently attached browser host.",
@@ -240,7 +246,7 @@ export function HostedToolsDemo() {
           This page publishes a caller-defined echo catalog through the managed broker. Provider
           credentials stay server-side; the browser receives only its account-scoped tool-host route.
         </p>
-        <pre><code>{`const tools = await createTools({ tools: { ${HOSTED_ECHO_TOOL} } });\nawait tools.attach(agent.toolsTarget()).connect();`}</code></pre>
+        <pre><code>{`const tools = await createTools({\n  machines: [{ id: "browser", name: "This browser", workspace: "browser://current-tab", capabilities: ["browser-echo"] }],\n  tools: { ${HOSTED_ECHO_TOOL} },\n});\nawait tools.attach(agent.toolsTarget()).connect();`}</code></pre>
       </header>
 
       <dl className="hosted-tools-facts" aria-label="Hosted tool connection">

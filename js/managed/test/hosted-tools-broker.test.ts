@@ -50,6 +50,100 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(host.sent).not.toContainEqual(expect.objectContaining({ type: "fenced" }));
   });
 
+  it("projects account machines only while their host is routing-ready", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    const machines = [{
+      id: "desktop",
+      name: "Build desktop",
+      workspace: "/home/george/repo",
+      capabilities: ["filesystem", "native-shell"],
+    }];
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog",
+      tools: [entry()],
+      machines,
+    }));
+
+    expect(fixture.broker.machines()).toEqual(machines);
+    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "drain" }));
+    expect(fixture.broker.machines()).toEqual([]);
+  });
+
+  it("replaces the live machine snapshot without rebuilding its broker", async () => {
+    const fixture = createFixture();
+    const first = fixture.socket();
+    await fixture.broker.message(first.webSocket, JSON.stringify({
+      type: "catalog",
+      tools: [entry()],
+      machines: [{
+        id: "laptop",
+        name: "Laptop",
+        workspace: "/Users/george/repo",
+        capabilities: ["filesystem"],
+      }],
+    }));
+    const replacement = fixture.socket();
+    await fixture.broker.message(replacement.webSocket, JSON.stringify({
+      type: "catalog",
+      tools: [entry()],
+      machines: [{
+        id: "desktop",
+        name: "Desktop",
+        workspace: "/home/george/repo",
+        capabilities: ["filesystem", "native-shell"],
+      }],
+    }));
+
+    expect(first.closed).toMatchObject({ code: 1008 });
+    expect(fixture.broker.machines()).toEqual([{
+      id: "desktop",
+      name: "Desktop",
+      workspace: "/home/george/repo",
+      capabilities: ["filesystem", "native-shell"],
+    }]);
+  });
+
+  it("removes machines when an open host lease expires", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog",
+      tools: [entry()],
+      machines: [{
+        id: "laptop",
+        name: "Laptop",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+    fixture.persistence.current.lease_expires_at = NOW;
+
+    expect(fixture.broker.machines()).toEqual([]);
+    expect(host.closed).toMatchObject({ code: 1008 });
+  });
+
+  it("rejects machine metadata from Connect-grant hosts", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket([], CLEANUP_DIGEST, GRANT_A);
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog",
+      tools: [cleanupEntry()],
+      machines: [{
+        id: "desktop",
+        name: "Build desktop",
+        workspace: "/home/george/repo",
+        capabilities: ["filesystem"],
+      }],
+    }));
+
+    expect(host.closed).toMatchObject({
+      code: 1008,
+      reason: expect.stringContaining("catalog_contract_mismatch"),
+    });
+    expect(fixture.broker.machines()).toEqual([]);
+  });
+
   it("durably dispatches an exact call and ACKs both the result and duplicate receipt", async () => {
     const fixture = createFixture();
     const host = fixture.socket();

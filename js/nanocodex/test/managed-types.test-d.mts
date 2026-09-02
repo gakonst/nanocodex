@@ -7,8 +7,20 @@ import type {
   ManagedOrganization,
   ManagedTurnResult,
 } from "nanocodex/managed";
+import type { Capabilities } from "../managed/Agent.mjs";
 
 declare const apiKey: string;
+
+const capabilities: Capabilities = {
+  durable_turns: true,
+  resumable_events: true,
+  live_steer: true,
+  live_cancel: true,
+  workspace: "cloudflare-computer",
+  sandbox_tools: true,
+  sandbox_escalation: false,
+};
+void capabilities;
 
 async function checkManaged() {
   // @ts-expect-error the combined history search operation was removed.

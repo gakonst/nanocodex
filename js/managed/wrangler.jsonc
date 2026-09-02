@@ -32,6 +32,10 @@
     {
       "binding": "NANOCODEX_HISTORY",
       "bucket_name": "nanocodex-managed-history"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES",
+      "bucket_name": "nanocodex-sandbox-workspaces"
     }
   ],
   "ai_search": [
@@ -69,6 +73,10 @@
       {
         "name": "NANOCODEX_MEMORY",
         "class_name": "MemoryScope"
+      },
+      {
+        "name": "NANOCODEX_SANDBOXES",
+        "class_name": "Sandbox"
       },
       {
         "name": "NANOCODEX_ORGANIZATIONS",
@@ -113,7 +121,8 @@
         { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false }
       ],
       "r2_buckets": [
-        { "binding": "NANOCODEX_HISTORY", "bucket_name": "nanocodex-managed-history" }
+        { "binding": "NANOCODEX_HISTORY", "bucket_name": "nanocodex-managed-history" },
+        { "binding": "NANOCODEX_WORKSPACES", "bucket_name": "nanocodex-sandbox-workspaces" }
       ],
       "ai_search": [],
       "durable_objects": {
@@ -125,6 +134,7 @@
           { "name": "NANOCODEX_USERS", "class_name": "UserAccount" },
           { "name": "NANOCODEX_API_KEYS", "class_name": "ApiKeyRecord" },
           { "name": "NANOCODEX_MEMORY", "class_name": "MemoryScope" },
+          { "name": "NANOCODEX_SANDBOXES", "class_name": "Sandbox" },
           { "name": "NANOCODEX_ORGANIZATIONS", "class_name": "Organization" }
         ]
       },
@@ -132,8 +142,16 @@
         "AGENT_IDLE_TIMEOUT_MS": "1000",
         "NANOCODEX_ADMIN_TOKEN": "nanocodex-local-room-signing-key",
         "NANOCODEX_LOCAL_WEBAUTHN_HMAC_KEY": "nanocodex-local-passkey-portability-v1",
-        "NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY": "nanocodex-local-oauth-relay-hmac-v1-only"
-      }
+        "NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY": "nanocodex-local-oauth-relay-hmac-v1-only",
+        "NANOCODEX_SANDBOX_LOCAL": "true"
+      },
+      "containers": [
+        {
+          "class_name": "Sandbox",
+          "image": "./Dockerfile",
+          "instance_type": "lite"
+        }
+      ]
     }
   },
   "containers": [

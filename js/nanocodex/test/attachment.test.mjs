@@ -90,6 +90,52 @@ test("catalog preserves provider, remote name, summary, and timeout metadata", a
   await tools.close();
 });
 
+test("Tools publishes its non-secret user-machine snapshot with each attachment", async () => {
+  const tools = await createTools({
+    machines: [{
+      id: "laptop",
+      name: "George's laptop",
+      workspace: "/Users/george/project",
+      capabilities: ["filesystem", "native-shell"],
+    }],
+  });
+  const socket = new FakeSocket();
+  const connector = tools.attach(reverseTarget(async () => socket));
+  const connecting = connector.connect();
+  await waitFor(() => socket.frames().length === 1);
+  assert.deepEqual(socket.frames()[0], {
+    type: "catalog",
+    tools: [],
+    machines: [{
+      id: "laptop",
+      name: "George's laptop",
+      workspace: "/Users/george/project",
+      capabilities: ["filesystem", "native-shell"],
+    }],
+  });
+  socket.receive({ type: "ready" });
+  await drain(await connecting, socket);
+  await tools.close();
+});
+
+test("machine metadata is bounded and cannot carry arbitrary fields", async () => {
+  const machine = {
+    id: "laptop",
+    name: "Laptop",
+    workspace: "/workspace",
+    capabilities: [],
+  };
+  for (const [machines, message] of [
+    [[{ ...machine, token: "secret" }], /unsupported field token/],
+    [[machine, machine], /duplicate machine id/],
+    [[{ ...machine, capabilities: ["filesystem", "filesystem"] }], /must be unique/],
+    [Array.from({ length: 33 }, (_, index) => ({ ...machine, id: `machine:${index}` })), /at most 32/],
+    [[{ ...machine, capabilities: Array.from({ length: 65 }, (_, index) => `capability:${index}`) }], /safe identifiers/],
+  ]) {
+    await assert.rejects(createTools({ machines }), message);
+  }
+});
+
 test("in-flight cancellation uses an ordinary ambiguous result and receipt ack path", async () => {
   let admitted;
   const fixture = await readyAttachment({

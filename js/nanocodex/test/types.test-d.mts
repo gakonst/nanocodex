@@ -36,11 +36,22 @@ import type * as RootPublicTypes from "../index.mjs";
 import type * as BrowserPublicTypes from "../browser/index.mjs";
 import type * as HostPublicTypes from "../host/index.mjs";
 import type * as NodePublicTypes from "../node/index.mjs";
-import { createTools, type Tools as ToolsCapability } from "../index.mjs";
+import {
+  createTools,
+  type HostedMachine,
+  type Tools as ToolsCapability,
+} from "../index.mjs";
 import type { WorkspaceEntry as BrowserWorkspaceEntry } from "../browser/workspace.mjs";
 import type { WorkspaceEntry as NodeWorkspaceEntry } from "../node/workspace.mjs";
 
 const toolsCapability: ToolsCapability = await createTools();
+const hostedMachine: HostedMachine = {
+  id: "laptop",
+  name: "Laptop",
+  workspace: "/workspace",
+  capabilities: ["filesystem"],
+};
+await createTools({ machines: [hostedMachine] });
 void toolsCapability;
 toolsCapability.attach("wss://managed.example/tools");
 const attachmentClient = await toolsCapability.attach("wss://managed.example/tools").connect();
@@ -59,10 +70,13 @@ import {
 import {
   dataset,
   imageGeneration,
+  type HostedMachine as ToolsHostedMachine,
   updatePlan,
   viewImage,
   web,
 } from "../tools/index.mjs";
+const toolsHostedMachine: ToolsHostedMachine = hostedMachine;
+void toolsHostedMachine;
 import {
   dataset as leafDataset,
   type DatasetOptions,

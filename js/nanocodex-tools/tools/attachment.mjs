@@ -1,6 +1,7 @@
 import { toolRouterRuntime } from "../runtime/tool-router.mjs";
 import { utf8ByteLength } from "../runtime/utf8.mjs";
 import { hostedCatalog } from "./hostedCatalog.mjs";
+import { normalizeHostedMachines } from "./hostedMachine.mjs";
 
 const DEFAULT_HEARTBEAT_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -29,6 +30,7 @@ export function createAttachment(owner, target, options = {}) {
     throw new TypeError("attach requires a Tools runtime");
   }
   validateAttachmentOptions(target, options);
+  const machines = normalizeHostedMachines(options.machines);
   const endpoint = attachmentEndpoint(target);
   const transport = attachmentTransport(target);
   let client;
@@ -47,7 +49,7 @@ export function createAttachment(owner, target, options = {}) {
           admission.release();
           throw new Error("tool attachment connector is closed");
         }
-        const created = createClient(endpoint, transport, options, admission);
+        const created = createClient(endpoint, transport, options, admission, machines);
         void created.public.closed().then(resolveClosed);
         return created;
       })();
@@ -73,10 +75,11 @@ export function createAttachment(owner, target, options = {}) {
   });
 }
 
-function createClient(endpoint, transport, options, admission) {
+function createClient(endpoint, transport, options, admission, machines) {
   const state = {
     socket: undefined,
     catalog: hostedCatalog(admission.catalog(options.provider ?? "javascript")),
+    machines,
     calls: new Map(),
     receipts: new Map(),
     heartbeat: undefined,
@@ -207,7 +210,11 @@ function createClient(endpoint, transport, options, admission) {
   function publishCatalog(socket) {
     if (state.catalogSent) return;
     state.catalogSent = true;
-    send(socket, { type: "catalog", tools: state.catalog });
+    send(socket, {
+      type: "catalog",
+      tools: state.catalog,
+      ...(state.machines.length === 0 ? {} : { machines: state.machines }),
+    });
   }
 
   async function handleFrame(encoded, socket) {
@@ -467,7 +474,7 @@ async function openSocket(endpoint, transport) {
 
 function validateAttachmentOptions(target, options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) throw new TypeError("tool attachment options must be an object");
-  const allowed = new Set(["provider", "reconnect", "reconnectDelayMs", "heartbeatMs", "handshakeTimeoutMs", "drainTimeoutMs"]);
+  const allowed = new Set(["provider", "reconnect", "reconnectDelayMs", "heartbeatMs", "handshakeTimeoutMs", "drainTimeoutMs", "machines"]);
   for (const name of Object.keys(options)) if (!allowed.has(name)) throw new TypeError(`unsupported tool attachment option: ${name}`);
   if (options.provider !== undefined && (typeof options.provider !== "string" || !options.provider.trim())) throw new TypeError("tool attachment provider must be a non-empty string");
   if (options.reconnect !== undefined && typeof options.reconnect !== "boolean") throw new TypeError("tool attachment reconnect must be boolean");

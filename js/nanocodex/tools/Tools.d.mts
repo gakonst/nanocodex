@@ -1,5 +1,6 @@
 import type { McpServers, NamedTool, ToolMap } from "../types.mjs";
 import type { Workspace } from "../runtime/workspace.mjs";
+import type { HostedMachine } from "./hostedCatalog.mjs";
 
 declare const toolsBrand: unique symbol;
 
@@ -43,6 +44,8 @@ export type Tools = Readonly<{
  */
 export function createTools(options?: {
   tools?: ToolMap | readonly NamedTool[];
+  /** Complete non-secret machine snapshot published by this host; reattach to replace it. */
+  machines?: readonly HostedMachine[];
   /** Portable workspace handle; React Native supplies one via createWorkspace({ backend }). */
   workspace?: Workspace;
   workspaceOptions?: { maxEntries?: number; maxReadBytes?: number; maxWriteBytes?: number };

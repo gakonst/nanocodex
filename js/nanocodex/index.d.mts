@@ -6,6 +6,7 @@ export {
 export { createQuickJsEvaluator } from "./runtime/quickjs-evaluator.mjs";
 export { createTools } from "./tools/Tools.mjs";
 export type { Tools, AttachmentClient, AttachmentTarget, AttachmentTransport } from "./tools/Tools.mjs";
+export type { HostedMachine } from "./tools/hostedCatalog.mjs";
 export type { AsyncQuickJsModule, QuickJsEvaluatorOptions } from "./runtime/quickjs-evaluator.mjs";
 export {
   createTempoProvider,

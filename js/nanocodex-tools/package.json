@@ -42,6 +42,10 @@
       "types": "./tools/hostedCatalog.d.mts",
       "import": "./tools/hostedCatalog.mjs"
     },
+    "./internal/hosted-machine": {
+      "types": "./tools/hostedMachine.d.mts",
+      "import": "./tools/hostedMachine.mjs"
+    },
     "./hosted": {
       "types": "./dist/hosted/index.d.ts",
       "import": "./dist/hosted/index.js"

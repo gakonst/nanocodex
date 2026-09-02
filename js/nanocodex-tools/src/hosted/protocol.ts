@@ -1,3 +1,8 @@
+import {
+  normalizeHostedMachines,
+  type HostedMachine,
+} from "../../tools/hostedMachine.mjs";
+
 export const HOSTED_TOOLS_LEASE_MS = 60_000;
 export const HOSTED_TOOL_CALL_TIMEOUT_MS = 120_000;
 export const MAX_HOSTED_TOOLS_FRAME_BYTES = 256 * 1024;
@@ -46,6 +51,8 @@ export type HostedToolCatalogEntry = {
   timeout_ms: number;
 };
 
+export type { HostedMachine } from "../../tools/hostedMachine.mjs";
+
 export type HostedToolOutputContent =
   | { type: "input_text"; text: string }
   | { type: "input_image"; image_url: string; detail: "auto" | "low" | "high" | "original" }
@@ -77,6 +84,7 @@ export type HostedToolsHostFrame =
   | {
       type: "catalog";
       tools: HostedToolCatalogEntry[];
+      machines?: HostedMachine[];
     }
   | {
       type: "result";
@@ -189,7 +197,7 @@ export function parseHostedToolsFrame(encoded: string): HostedToolsFrame {
 function parseCatalog(
   frame: Record<string, unknown>,
 ): Extract<HostedToolsHostFrame, { type: "catalog" }> {
-  exactKeys(frame, ["type", "tools"]);
+  exactKeys(frame, ["type", "tools", "machines"]);
   if (!Array.isArray(frame.tools) || frame.tools.length > MAX_HOSTED_TOOL_CATALOG_ENTRIES) {
     throw new HostedToolsProtocolError(
       "invalid_catalog",
@@ -197,6 +205,7 @@ function parseCatalog(
     );
   }
   const tools = frame.tools.map((entry, index) => catalogEntry(entry, index));
+  const machines = machineCatalog(frame.machines);
   const names = new Set<string>();
   const identities = new Set<string>();
   for (const tool of tools) {
@@ -216,7 +225,20 @@ function parseCatalog(
   return {
     type: "catalog",
     tools,
+    ...(machines === undefined ? {} : { machines }),
   };
+}
+
+function machineCatalog(value: unknown): HostedMachine[] | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return [...normalizeHostedMachines(value as readonly HostedMachine[])];
+  } catch (error) {
+    throw new HostedToolsProtocolError(
+      "invalid_catalog",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 function parseResult(frame: Record<string, unknown>): Extract<HostedToolsHostFrame, { type: "result" }> {

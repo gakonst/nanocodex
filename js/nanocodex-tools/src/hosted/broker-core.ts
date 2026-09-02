@@ -7,6 +7,7 @@ import {
   parseHostedToolsManagedFrame,
   type HostedToolCallOutcome,
   type HostedToolCatalogEntry,
+  type HostedMachine,
   type HostedToolsHostFrame,
   type HostedToolsManagedFrame,
 } from "./protocol.js";
@@ -77,6 +78,7 @@ type HostedToolsSocketAttachment = {
   generation?: number;
   active?: true;
   draining?: true;
+  machines?: readonly HostedMachine[];
 };
 
 type PendingCall = {
@@ -339,6 +341,16 @@ export class HostedToolsBrokerCore {
 
   provider(): HostedToolsDynamicProvider { return this.#provider; }
 
+  /** Returns the live, non-secret user-machine snapshot for the account-owned host. */
+  machines(): readonly HostedMachine[] {
+    const state = this.#persistence.state();
+    const socket = this.#liveRoutingSocketForState(state);
+    if (socket === undefined) return [];
+    const attachment = this.#attachment(socket);
+    if (attachment?.connectGrantId !== undefined) return [];
+    return attachment?.machines ?? [];
+  }
+
   accept(
     socket: HostedToolsSocket,
     sessionId: string,
@@ -505,6 +517,9 @@ export class HostedToolsBrokerCore {
       }),
     }));
     try {
+      if (initial.connectGrantId !== undefined && (frame.machines?.length ?? 0) > 0) {
+        throw new Error("Connect tool hosts cannot publish account machine metadata");
+      }
       if (initial.allowedMcpIds !== undefined) {
         if (!isConnectGrantId(initial.connectGrantId)) {
           throw new Error("Connect tool host is missing its exact grant binding");
@@ -571,7 +586,11 @@ export class HostedToolsBrokerCore {
     }
     this.context.writeAttachment(
       socket,
-      { ...candidate, active: true } satisfies HostedToolsSocketAttachment,
+      {
+        ...candidate,
+        active: true,
+        ...(frame.machines === undefined ? {} : { machines: frame.machines }),
+      } satisfies HostedToolsSocketAttachment,
     );
     this.#notifyCatalogChanged();
   }
@@ -668,13 +687,7 @@ export class HostedToolsBrokerCore {
   #definitions(): readonly HostedToolsProviderDefinition[] {
     const state = this.#persistence.state();
     if (!state.host_id || !state.lease_id || !state.catalog_json) return [];
-    if (state.lease_expires_at <= this.#now()) {
-      const socket = this.#socketForState(state);
-      if (socket) this.#fence(socket, "Hosted Tools lease expired");
-      else this.#retireState(state, "Hosted Tools lease expired");
-      return [];
-    }
-    if (!this.#socketForState(state)) return [];
+    if (!this.#liveRoutingSocketForState(state)) return [];
     return JSON.parse(state.catalog_json) as HostedToolCatalogEntry[];
   }
 
@@ -991,6 +1004,16 @@ export class HostedToolsBrokerCore {
     if (!state.catalog_json) return undefined;
     const socket = this.#socketForState(state);
     return socket && this.#attachment(socket)?.draining !== true ? socket : undefined;
+  }
+
+  #liveRoutingSocketForState(state: HostedToolsStateRow): HostedToolsSocket | undefined {
+    if (state.lease_id && state.lease_expires_at <= this.#now()) {
+      const socket = this.#socketForState(state);
+      if (socket) this.#fence(socket, "Hosted Tools lease expired");
+      else this.#retireState(state, "Hosted Tools lease expired");
+      return undefined;
+    }
+    return this.#routingSocketForState(state);
   }
 
   #activeConnectGrantId(state = this.#persistence.state()): string | undefined {
