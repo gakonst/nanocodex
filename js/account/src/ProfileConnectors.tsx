@@ -30,6 +30,7 @@ import {
   isCallbackCompletionState,
   type CallbackCompletion,
 } from "nanocodex-connect-protocol";
+import { mcpOauthAttemptMode } from "./mcpOauthAttempt";
 
 type AccountConnectorCapability = Exclude<ConnectorCapability, "chatgpt">;
 type AccountConnectorProvider = Exclude<ConnectorProvider, "chatgpt">;
@@ -149,7 +150,7 @@ export function ProfileConnectors({
     if (attempt.popupClosed !== undefined) window.clearTimeout(attempt.popupClosed);
     if (closePopup && attempt.popup && !attempt.popup.closed) attempt.popup.close();
     if (attempt.state) clearPendingMcpAttempt(accountId, attempt.state);
-    setOperation(null);
+    if (mcpOauthAttemptMode(attempt) === "blocking") setOperation(null);
     return true;
   }, [accountId]);
 
@@ -316,7 +317,9 @@ export function ProfileConnectors({
       state: pending.state,
     };
     activeMcp.current = attempt;
-    setOperation(connection.id);
+    // Keep consuming this exact callback state after reload without claiming
+    // the page-wide fence: no popup handle survived to prove work is active.
+    if (mcpOauthAttemptMode(attempt) === "blocking") setOperation(connection.id);
     attempt.disposeCompletion = observePopupCallback({
       connector: mcpCompletionIdentifier(connection.id),
       origin: window.location.origin,
@@ -513,7 +516,9 @@ export function ProfileConnectors({
   };
 
   const connectMcp = async (connection: McpConnection) => {
-    if (operation || activeMcp.current || !mcpConnectionCanAuthorize(connection.status)) return;
+    if (operation
+      || mcpOauthAttemptMode(activeMcp.current) === "blocking"
+      || !mcpConnectionCanAuthorize(connection.status)) return;
     const popup = window.open(
       "about:blank",
       "nanocodex-account-mcp",
@@ -524,6 +529,11 @@ export function ProfileConnectors({
         id: connection.id,
         message: "The MCP authorization popup was blocked. Allow popups and try again.",
       });
+      return;
+    }
+    const recoverable = activeMcp.current;
+    if (recoverable && !finishMcpAttempt(recoverable, false)) {
+      popup.close();
       return;
     }
     const attempt: McpAttempt = {

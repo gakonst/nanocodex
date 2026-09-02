@@ -152,27 +152,28 @@ jobs:
             --package nanocodex-wasm \
             -- -D warnings -A clippy::missing_const_for_fn
           pnpm install --frozen-lockfile
+          pnpm exec turbo run build --only --filter nanocodex-tools
           ./js/nanocodex-vite/scripts/build-js-package.sh --release
-          npm ci --prefix examples/node
-          npm ci --prefix examples/react-vite
           npm ci --prefix examples/privy
           npm ci --prefix examples/better-auth
       - name: Test JS runtime
         working-directory: js/nanocodex
         run: |
           node --test --test-timeout=15000 test/*.test.mjs
-          npm run test:performance
+          pnpm run test:performance
       - name: Check JS consumers
         run: |
-          npm run test:typecheck --prefix js/nanocodex
-          npm run check:package --prefix js/nanocodex
-          npm test --prefix js/nanocodex-react
-          npm test --prefix js/nanocodex-vite
-          npm test --prefix js/nanocodex-terminal
+          pnpm --filter nanocodex run test:typecheck
+          pnpm --filter nanocodex run check:package
+          pnpm exec turbo run test --only \
+            --filter nanocodex-react \
+            --filter nanocodex-vite \
+            --filter nanocodex-terminal \
+            --filter nanocodex-node-example \
+            --filter nanocodex-react-vite-example
           node --test examples/browser-cdn/*.test.mjs
-          npm test --prefix examples/node
-          npm test --prefix examples/react-vite
-          npm run build --prefix examples/react-vite
+          pnpm exec turbo run build --only \
+            --filter nanocodex-react-vite-example
           npm test --prefix examples/privy
           npm run build --prefix examples/privy
           npm test --prefix examples/better-auth

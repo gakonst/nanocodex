@@ -13,7 +13,7 @@
     "sync": "node scripts/sync-nanocodex.mjs",
     "publish:repository": "node scripts/publish-repository.mjs",
     "test": "npm run test:web",
-    "test:web": "node --experimental-strip-types --test worker/*.test.ts",
+    "test:web": "node --experimental-strip-types --test src/*.test.ts worker/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check:docs": "node scripts/check-docs.mjs",
     "gen:types": "wrangler types",
