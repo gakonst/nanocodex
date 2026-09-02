@@ -98,6 +98,7 @@ export function App({ configuration }: Readonly<{ configuration: PublicConfigura
 
       if (!nextUserId) {
         activeUserId.current = undefined;
+        await revokeHostPrincipal();
         await client.account.logout().catch(() => undefined);
         clearLocalSession();
         setStatus("Sign in with Privy");

@@ -168,6 +168,56 @@ test("DELETE revokes the sealed old session after Privy auth disappears", async 
   assert.match(response?.headers.get("set-cookie") ?? "", /Max-Age=0/);
 });
 
+test("a cold-start account switch revokes sealed old claims before replacing them", async () => {
+  const first = await routeHostPrincipal(request(), env, {
+    createPrivy: () => privy(),
+    createIssuer() {
+      return {
+        handler() { return async () => Response.json({ token: exchangeToken, expires_at: 1 }); },
+        async revoke() {},
+      };
+    },
+  });
+  const sealedCookie = first?.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.ok(sealedCookie);
+
+  const events: string[] = [];
+  const switched = await routeHostPrincipal(request("POST", {
+    cookie: `${sealedCookie}; privy-token=provider-access-token`,
+  }), env, {
+    createPrivy: () => privy({ user_id: "did:privy:user-2", session_id: "privy-session-2" }),
+    createIssuer() {
+      return {
+        handler({ authenticate }) {
+          return async (incoming) => {
+            events.push(`mint:${(await authenticate(incoming))?.subject}`);
+            return Response.json({ token: exchangeToken, expires_at: 1 });
+          };
+        },
+        async revoke(claims) { events.push(`revoke:${claims.subject}`); },
+      };
+    },
+  });
+
+  assert.equal(switched?.status, 200);
+  assert.deepEqual(events, ["revoke:did:privy:user-1", "mint:did:privy:user-2"]);
+  assert.notEqual(switched?.headers.get("set-cookie")?.split(";", 1)[0], sealedCookie);
+});
+
+test("cold-start provider loss clears a sealed-cookie slot idempotently", async () => {
+  let issuerUsed = false;
+  const response = await routeHostPrincipal(request("DELETE", { cookie: "other=value" }), env, {
+    createPrivy: () => privy({}),
+    createIssuer() {
+      issuerUsed = true;
+      return { handler() { throw new Error("unused"); }, async revoke() {} };
+    },
+  });
+  assert.equal(response?.status, 204);
+  assert.equal(issuerUsed, true);
+  assert.match(response?.headers.get("set-cookie") ?? "", /Max-Age=0/);
+});
+
 test("origin, method, cookie, and bounded claims fail closed", async () => {
   let dependenciesUsed = false;
   const forbidden = await routeHostPrincipal(request("POST", {

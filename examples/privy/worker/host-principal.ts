@@ -100,6 +100,10 @@ export async function routeHostPrincipal(
   if (request.method === "POST") {
     const claims = await authenticate(request);
     if (!claims) return json({ error: "unauthorized" }, { status: 401 });
+    const previousClaims = await readSealedClaims(request, configuration);
+    if (previousClaims && !equalClaims(previousClaims, claims)) {
+      await issuer.revoke({ ...previousClaims, signal: request.signal });
+    }
     const response = await issuer.handler({ authenticate: async () => claims })(request);
     if (!response.ok) return response;
     const sealed = await sealClaims(claims, configuration);
@@ -108,12 +112,16 @@ export async function routeHostPrincipal(
     return forwarded;
   }
   const claims = await readSealedClaims(request, configuration) ?? await authenticate(request);
-  if (!claims) return json({ error: "unauthorized" }, { status: 401 });
-  await issuer.revoke({ ...claims, signal: request.signal });
+  if (claims) await issuer.revoke({ ...claims, signal: request.signal });
   return new Response(null, {
     status: 204,
     headers: { ...securityHeaders(), "set-cookie": hostSessionCookie("", 0) },
   });
+}
+
+function equalClaims(left: HostClaims, right: HostClaims): boolean {
+  return left.issuer === right.issuer && left.tenant === right.tenant
+    && left.subject === right.subject && left.sessionId === right.sessionId;
 }
 
 export async function authenticatePrivy(
