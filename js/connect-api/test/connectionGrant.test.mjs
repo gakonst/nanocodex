@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
-const managedGrant = await readFile(new URL("../src/managedGrant.mjs", import.meta.url), "utf8");
+const managedGrant = await readFile(new URL("../src/managedGrant.mts", import.meta.url), "utf8");
 
 test("signed and hosted approvals persist exact connection snapshots", () => {
   const captures = source.match(/connectorConnectionSnapshot\(status\.connectors,/g) ?? [];

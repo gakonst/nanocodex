@@ -15,8 +15,8 @@ test("exposes one typed ESM protocol entry point", async () => {
   assert.equal(packageJson.type, "module");
   assert.deepEqual(packageJson.exports, {
     ".": {
-      types: "./index.d.mts",
-      import: "./index.mjs",
+      types: "./dist/index.d.mts",
+      import: "./dist/index.mjs",
     },
   });
 
@@ -40,8 +40,8 @@ test("the packed package contains its public runtime and types but no tests", as
     const packedFiles = new Set(packed.files.map(({ path }) => path));
 
     assert.equal(packed.name, packageJson.name);
-    assert.equal(packedFiles.has("index.mjs"), true);
-    assert.equal(packedFiles.has("index.d.mts"), true);
+    assert.equal(packedFiles.has("dist/index.mjs"), true);
+    assert.equal(packedFiles.has("dist/index.d.mts"), true);
     assert.equal([...packedFiles].some((path) => path.startsWith("test/")), false);
   } finally {
     await rm(temporary, { recursive: true, force: true });

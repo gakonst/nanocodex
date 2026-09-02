@@ -20,7 +20,7 @@
 - [`account`](account), [`connect-dialog`](connect-dialog), and
   [`connect-playground`](connect-playground) are product applications.
 - [`managed`](managed), [`egress`](egress), and [`connect-api`](connect-api) are
-  independently deployable Cloudflare Workers. `mcp-target.mjs` owns their small
+  independently deployable Cloudflare Workers. `mcp-target.mts` owns their small
   shared remote-target security boundary.
 
 The registry packages include the low-level `nanocodex-tools`, the headless

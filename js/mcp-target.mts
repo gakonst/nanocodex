@@ -5,11 +5,14 @@ const PRIVATE_SUFFIXES = [".internal", ".invalid", ".local", ".localhost", ".tes
  * Turns the one supported bare MCP host into its endpoint and verifies HTTPS
  * URLs before either Account or the broker persists them.
  */
-export function canonicalRemoteMcpTarget(value) {
+export function canonicalRemoteMcpTarget(value: unknown): Readonly<{
+  endpoint: string;
+  name: string;
+}> {
   if (typeof value !== "string" || value.length < 1 || value.length > 2_048) {
     throw new Error("Remote MCP target must be a bounded public host or HTTPS URL.");
   }
-  let endpoint;
+  let endpoint: URL;
   if (value === "mcp.linear.app") {
     endpoint = new URL("https://mcp.linear.app/mcp");
   } else {

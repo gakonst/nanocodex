@@ -1,4 +1,4 @@
-export function presentGrantCapabilities(capabilities) {
+export function presentGrantCapabilities(capabilities: readonly string[]): string[] {
   const visible = [];
   let remoteMcpCount = 0;
   for (const capability of capabilities) {

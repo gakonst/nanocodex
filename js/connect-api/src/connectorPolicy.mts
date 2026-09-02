@@ -11,32 +11,55 @@ export const connectorCapabilities = Object.freeze([
   "slack",
   "x",
   "chatgpt",
-]);
+] as const);
 
-export const oauthConnectorProviders = Object.freeze(["github", "google", "slack", "x"]);
+export const oauthConnectorProviders = Object.freeze(["github", "google", "slack", "x"] as const);
+
+export type ConnectorCapability = typeof connectorCapabilities[number];
+export type OAuthConnectorProvider = typeof oauthConnectorProviders[number];
+export type RoutableConnectorCapability = Exclude<ConnectorCapability, "chatgpt">;
+export type ConnectorConnection = Readonly<{
+  id: string;
+  label: string;
+  account_id?: string;
+  capabilities?: readonly ConnectorCapability[];
+}>;
+export type ConnectorStatus = Readonly<{
+  connected: boolean;
+  connections: readonly ConnectorConnection[];
+  label?: string;
+  account_id?: string;
+}>;
+export type ConnectorConnectionSnapshot = Readonly<
+  Partial<Record<ConnectorCapability, readonly string[]>>
+>;
 
 const connectorCapabilitySet = new Set(connectorCapabilities);
 const connectionIdPattern = /^[A-Za-z0-9_-]{43}$/;
 
 export class ConnectorPolicyFailure extends Error {
-  constructor(status, code, message) {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
     super(message);
     this.status = status;
     this.code = code;
   }
 }
 
-export function isConnectorCapability(value) {
-  return typeof value === "string" && connectorCapabilitySet.has(value);
+export function isConnectorCapability(value: unknown): value is ConnectorCapability {
+  return typeof value === "string"
+    && connectorCapabilitySet.has(value as ConnectorCapability);
 }
 
-export function isConnectorConnectionId(value) {
+export function isConnectorConnectionId(value: unknown): value is string {
   return typeof value === "string" && connectionIdPattern.test(value);
 }
 
-export function connectorProvider(value) {
+export function connectorProvider(value: unknown): OAuthConnectorProvider | undefined {
   if (value === "github" || value === "slack" || value === "x") return value;
-  if ([
+  if (typeof value === "string" && [
     "gmail",
     "gdrive",
     "gcalendar",
@@ -49,7 +72,7 @@ export function connectorProvider(value) {
   return undefined;
 }
 
-export function connectorCapabilityForUrl(url) {
+export function connectorCapabilityForUrl(url: URL): RoutableConnectorCapability | undefined {
   if (url.origin === "https://api.github.com") return "github";
   if (url.origin === "https://gmail.googleapis.com") return "gmail";
   if (url.origin === "https://www.googleapis.com"
@@ -66,7 +89,10 @@ export function connectorCapabilityForUrl(url) {
   return undefined;
 }
 
-export function connectorRequestTarget(capability, value) {
+export function connectorRequestTarget(
+  capability: RoutableConnectorCapability,
+  value: unknown,
+): URL {
   if (typeof value !== "string" || value.length === 0 || value.length > 8_192
     || !value.startsWith("/") || value.startsWith("//")) {
     throw new ConnectorPolicyFailure(400, "invalid_connector_path", "The connector request path is invalid.");
@@ -113,14 +139,14 @@ export function connectorRequestTarget(capability, value) {
   return target;
 }
 
-export function publicConnectorStatus(value) {
+export function publicConnectorStatus(value: unknown): ConnectorStatus {
   if (!record(value) || value.connected !== true) {
     return Object.freeze({ connected: false, connections: Object.freeze([]) });
   }
 
   const legacyLabel = optionalDisplayString(value.label);
   const legacyAccountId = optionalDisplayString(value.account_id);
-  let connections = [];
+  let connections: ConnectorConnection[] = [];
   if (value.connections !== undefined) {
     if (!Array.isArray(value.connections) || value.connections.length > 64) {
       invalidBrokerMetadata();
@@ -145,18 +171,21 @@ export function publicConnectorStatus(value) {
     return Object.freeze({ connected: false, connections: frozenConnections });
   }
   const sole = frozenConnections.length === 1 ? frozenConnections[0] : undefined;
+  const label = legacyLabel ?? sole?.label;
+  const accountId = legacyAccountId ?? sole?.account_id;
   return Object.freeze({
     connected: true,
     connections: frozenConnections,
-    ...((legacyLabel ?? sole?.label) ? { label: legacyLabel ?? sole.label } : {}),
-    ...((legacyAccountId ?? sole?.account_id)
-      ? { account_id: legacyAccountId ?? sole.account_id }
-      : {}),
+    ...(label ? { label } : {}),
+    ...(accountId ? { account_id: accountId } : {}),
   });
 }
 
-export function connectorConnectionSnapshot(statuses, capabilities = connectorCapabilities) {
-  const snapshot = {};
+export function connectorConnectionSnapshot(
+  statuses: Readonly<Record<ConnectorCapability, ConnectorStatus>>,
+  capabilities: readonly ConnectorCapability[] = connectorCapabilities,
+): ConnectorConnectionSnapshot {
+  const snapshot: Partial<Record<ConnectorCapability, readonly string[]>> = {};
   for (const capability of capabilities) {
     const status = statuses[capability];
     if (!status?.connected || !Array.isArray(status.connections) || status.connections.length === 0) continue;
@@ -165,7 +194,9 @@ export function connectorConnectionSnapshot(statuses, capabilities = connectorCa
   return Object.freeze(snapshot);
 }
 
-export function isConnectorConnectionSnapshot(value) {
+export function isConnectorConnectionSnapshot(
+  value: unknown,
+): value is ConnectorConnectionSnapshot {
   if (!record(value)) return false;
   return Object.entries(value).every(([capability, ids]) => (
     isConnectorCapability(capability)
@@ -176,9 +207,13 @@ export function isConnectorConnectionSnapshot(value) {
   ));
 }
 
-export function intersectConnectorConnectionSnapshot(approved, statuses, requested) {
+export function intersectConnectorConnectionSnapshot(
+  approved: ConnectorConnectionSnapshot | undefined,
+  statuses: Readonly<Record<ConnectorCapability, ConnectorStatus>>,
+  requested: readonly ConnectorCapability[],
+): ConnectorConnectionSnapshot | undefined {
   if (approved === undefined) return undefined;
-  const selected = {};
+  const selected: Partial<Record<ConnectorCapability, readonly string[]>> = {};
   for (const capability of requested) {
     if (!Object.hasOwn(approved, capability)) continue;
     const approvedIds = approved[capability] ?? [];
@@ -189,11 +224,14 @@ export function intersectConnectorConnectionSnapshot(approved, statuses, request
 }
 
 export function completeConnectorConnectionSnapshot(
-  approved,
-  connectedAtApproval,
-  statuses,
-  requested,
-) {
+  approved: ConnectorConnectionSnapshot | undefined,
+  connectedAtApproval: readonly ConnectorCapability[] | undefined,
+  statuses: Readonly<Record<ConnectorCapability, ConnectorStatus>>,
+  requested: readonly ConnectorCapability[],
+): Readonly<{
+  connectorConnections: ConnectorConnectionSnapshot | undefined;
+  legacyConnectorCapabilities: readonly ConnectorCapability[];
+}> {
   if (approved === undefined) {
     throw new ConnectorPolicyFailure(
       409,
@@ -201,8 +239,8 @@ export function completeConnectorConnectionSnapshot(
       "This pending approval predates exact connector identities and must be retried.",
     );
   }
-  const selected = {};
-  const legacy = [];
+  const selected: Partial<Record<ConnectorCapability, readonly string[]>> = {};
+  const legacy: ConnectorCapability[] = [];
   const previouslyConnected = connectedAtApproval === undefined
     ? undefined
     : new Set(connectedAtApproval);
@@ -262,7 +300,12 @@ export function completeConnectorConnectionSnapshot(
   });
 }
 
-export function resolveConnectorConnection(snapshot, capability, bodySelector, headerSelector) {
+export function resolveConnectorConnection(
+  snapshot: ConnectorConnectionSnapshot | undefined,
+  capability: ConnectorCapability,
+  bodySelector: unknown,
+  headerSelector: unknown,
+): string | undefined {
   const body = optionalSelector(bodySelector);
   const header = optionalSelector(headerSelector);
   if (body !== undefined && header !== undefined && body !== header) {
@@ -321,7 +364,12 @@ export function resolveConnectorConnection(snapshot, capability, bodySelector, h
   return selected;
 }
 
-export function applyConnectorConnectionSelector(headers, snapshot, capability, bodySelector) {
+export function applyConnectorConnectionSelector(
+  headers: Headers,
+  snapshot: ConnectorConnectionSnapshot | undefined,
+  capability: ConnectorCapability,
+  bodySelector: unknown,
+): string | undefined {
   const connectionId = resolveConnectorConnection(
     snapshot,
     capability,
@@ -333,7 +381,7 @@ export function applyConnectorConnectionSelector(headers, snapshot, capability, 
   return connectionId;
 }
 
-function publicConnectorConnection(value) {
+function publicConnectorConnection(value: unknown): ConnectorConnection {
   if (!record(value) || !isConnectorConnectionId(value.id)) invalidBrokerMetadata();
   const label = optionalDisplayString(value.label);
   const accountId = optionalDisplayString(value.account_id);
@@ -356,7 +404,7 @@ function publicConnectorConnection(value) {
   });
 }
 
-function optionalSelector(value) {
+function optionalSelector(value: unknown): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") {
     throw new ConnectorPolicyFailure(
@@ -368,16 +416,18 @@ function optionalSelector(value) {
   return value;
 }
 
-function optionalDisplayString(value) {
+function optionalDisplayString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 && trimmed.length <= 256 ? trimmed : undefined;
 }
 
-function invalidBrokerMetadata(message = "The connector broker returned invalid connection metadata.") {
+function invalidBrokerMetadata(
+  message = "The connector broker returned invalid connection metadata.",
+): never {
   throw new ConnectorPolicyFailure(502, "connector_broker_invalid", message);
 }
 
-function record(value) {
+function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

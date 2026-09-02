@@ -1,7 +1,7 @@
 const productionApiOrigin = "https://nanocodex-connect-api.gakonst.workers.dev";
 const productionSiteOrigin = "https://nanocodex.gakonst.workers.dev";
 
-export function deviceVerificationUrl(apiOrigin, userCode) {
+export function deviceVerificationUrl(apiOrigin: string, userCode?: string): URL {
   const siteOrigin = apiOrigin === productionApiOrigin
     ? productionSiteOrigin
     : isLocalDevelopmentOrigin(apiOrigin)
@@ -14,7 +14,7 @@ export function deviceVerificationUrl(apiOrigin, userCode) {
   return url;
 }
 
-export function connectAuthOrigin(apiOrigin) {
+export function connectAuthOrigin(apiOrigin: string): string {
   if (
     apiOrigin === productionApiOrigin
     || isLocalDevelopmentOrigin(apiOrigin)
@@ -22,7 +22,7 @@ export function connectAuthOrigin(apiOrigin) {
   throw new Error("The Connect API origin is not allowed.");
 }
 
-export function isLocalDevelopmentOrigin(value) {
+export function isLocalDevelopmentOrigin(value: string): boolean {
   try {
     const url = new URL(value);
     const hostname = url.hostname.toLowerCase();

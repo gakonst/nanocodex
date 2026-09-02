@@ -14,7 +14,7 @@ import {
   isConnectorConnectionSnapshot,
   publicConnectorStatus,
   resolveConnectorConnection,
-} from "../src/connectorPolicy.mjs";
+} from "../src/connectorPolicy.mts";
 
 const alpha = "a".repeat(43);
 const bravo = "b".repeat(43);

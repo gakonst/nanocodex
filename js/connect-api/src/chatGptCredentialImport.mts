@@ -5,10 +5,20 @@ const credentialImportResourcePrefix = "urn:nanocodex:credential-import:";
 const commitmentDomain = "nanocodex/chatgpt-credential-import/v1\0";
 const encoder = new TextEncoder();
 
+type UnknownRecord = Record<string, unknown>;
+
+export type ChatGptCredentialImport = Readonly<{
+  access_token: string;
+  refresh_token: string;
+  account_id: string;
+  expires_at: number;
+  fedramp: boolean;
+}>;
+
 export const maxChatGptCredentialTokenBytes = 32 * 1024;
 export const maxChatGptCredentialAccountBytes = 256;
 
-export function parseChatGptCredentialImport(value) {
+export function parseChatGptCredentialImport(value: unknown): ChatGptCredentialImport {
   if (!isRecord(value)
     || !sameKeys(value, [
       "access_token", "refresh_token", "account_id", "expires_at", "fedramp",
@@ -30,22 +40,23 @@ export function parseChatGptCredentialImport(value) {
     "chatgpt_credential_import.account_id",
     maxChatGptCredentialAccountBytes,
   );
-  if (!Number.isSafeInteger(value.expires_at) || value.expires_at < 0) {
+  if (!isSafeInteger(value.expires_at) || value.expires_at < 0) {
     throw new Error("chatgpt_credential_import.expires_at must be a non-negative safe integer.");
   }
   if (typeof value.fedramp !== "boolean") {
     throw new Error("chatgpt_credential_import.fedramp must be a boolean.");
   }
+  const expiresAt = value.expires_at as number;
   return Object.freeze({
     access_token: accessToken,
     refresh_token: refreshToken,
     account_id: accountId,
-    expires_at: value.expires_at,
+    expires_at: expiresAt,
     fedramp: value.fedramp,
   });
 }
 
-export async function chatGptCredentialImportDigest(value) {
+export async function chatGptCredentialImportDigest(value: unknown): Promise<string> {
   const credential = parseChatGptCredentialImport(value);
   const fields = [
     encoder.encode(credential.access_token),
@@ -75,11 +86,11 @@ export async function chatGptCredentialImportDigest(value) {
   return base64Url(digest);
 }
 
-export async function chatGptCredentialImportResource(value) {
+export async function chatGptCredentialImportResource(value: unknown): Promise<string> {
   return `${chatGptCredentialImportResourcePrefix}${await chatGptCredentialImportDigest(value)}`;
 }
 
-export function credentialImportDigestFromResources(resources) {
+export function credentialImportDigestFromResources(resources: unknown): string | undefined {
   if (!Array.isArray(resources)) throw new Error("Credential import resources must be an array.");
   const imports = [];
   for (const resource of resources) {
@@ -95,7 +106,7 @@ export function credentialImportDigestFromResources(resources) {
   return imports[0];
 }
 
-export function isAllowedChatGptCredentialImportResource(resource) {
+export function isAllowedChatGptCredentialImportResource(resource: unknown): boolean {
   return typeof resource === "string"
     && resource.startsWith(chatGptCredentialImportResourcePrefix)
     && /^[A-Za-z0-9_-]{43}$/.test(
@@ -103,7 +114,7 @@ export function isAllowedChatGptCredentialImportResource(resource) {
     );
 }
 
-function boundedUtf8(value, label, maximum) {
+function boundedUtf8(value: unknown, label: string, maximum: number): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`${label} must be a non-empty string.`);
   }
@@ -115,18 +126,22 @@ function boundedUtf8(value, label, maximum) {
   return value;
 }
 
-function sameKeys(value, expected) {
+function sameKeys(value: UnknownRecord, expected: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   return actual.length === expected.length
     && [...expected].sort().every((key, index) => actual[index] === key);
 }
 
-function base64Url(bytes) {
+function base64Url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-function isRecord(value) {
+function isSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value);
+}
+
+function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

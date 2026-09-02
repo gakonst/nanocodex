@@ -6,8 +6,8 @@ import {
   chatGptCredentialImportDigest,
   credentialImportDigestFromResources,
   parseChatGptCredentialImport,
-} from "./chatGptCredentialImport.mjs";
-import type { ChatGptCredentialImport } from "./chatGptCredentialImport.mjs";
+} from "./chatGptCredentialImport.mts";
+import type { ChatGptCredentialImport } from "./chatGptCredentialImport.mts";
 import {
   agentPortabilityResource,
   cliApp,
@@ -16,12 +16,12 @@ import {
   parseCliWalletRequest,
   sanitizeCliWalletResult,
   managedMemoryCapability,
-} from "./devicePolicy.mjs";
+} from "./devicePolicy.mts";
 import {
   connectAuthOrigin,
   deviceVerificationUrl,
   isLocalDevelopmentOrigin as isLocalDeviceOrigin,
-} from "./deviceRedirect.mjs";
+} from "./deviceRedirect.mts";
 import {
   localConnectorAuthorization,
   localMcpAuthorization,
@@ -36,7 +36,7 @@ import {
   canonicalRemoteMcpTarget,
   isMcpConnectionId,
   validateMcpResources,
-} from "./mcpPolicy.mjs";
+} from "./mcpPolicy.mts";
 import {
   managedAgentPortabilityGranted,
   managedAgentExistenceStatus,
@@ -44,12 +44,12 @@ import {
   managedGrantUpstreamMethod,
   managedGrantWebSocketHeaders,
   type ManagedGrantAssertion,
-} from "./managedGrant.mjs";
+} from "./managedGrant.mts";
 import {
   appToolCatalogDigestFromResources,
   CHROME_EXTENSION_APP_ID,
   isChromeExtensionGrantResources,
-} from "./appToolPolicy.mjs";
+} from "./appToolPolicy.mts";
 import {
   applyConnectorConnectionSelector,
   completeConnectorConnectionSnapshot,
@@ -63,14 +63,14 @@ import {
   isConnectorConnectionSnapshot,
   oauthConnectorProviders,
   publicConnectorStatus,
-} from "./connectorPolicy.mjs";
+} from "./connectorPolicy.mts";
 import type {
   ConnectorCapability,
   ConnectorConnectionSnapshot,
   ConnectorStatus,
   OAuthConnectorProvider,
   RoutableConnectorCapability,
-} from "./connectorPolicy.mjs";
+} from "./connectorPolicy.mts";
 
 type WorkerWebSocket = WebSocket & { accept(): void };
 declare const WebSocketPair: {

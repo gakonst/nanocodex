@@ -1,14 +1,14 @@
 const OPAQUE_ID = /^[A-Za-z0-9_-]{43}$/;
-export { canonicalRemoteMcpTarget } from "../../mcp-target.mjs";
+export { canonicalRemoteMcpTarget } from "../../mcp-target.mts";
 
 export const mcpResourcePrefix = "urn:nanocodex:mcp:";
 export const mcpFocusResourcePrefix = "urn:nanocodex:mcp-focus:";
 
-export function isMcpConnectionId(value) {
+export function isMcpConnectionId(value: unknown): value is string {
   return typeof value === "string" && OPAQUE_ID.test(value);
 }
 
-export function mcpConnectionIds(resources) {
+export function mcpConnectionIds(resources: unknown): readonly string[] {
   if (!Array.isArray(resources)) return [];
   return resources.flatMap((resource) => (
     typeof resource === "string" && resource.startsWith(mcpResourcePrefix)
@@ -17,7 +17,7 @@ export function mcpConnectionIds(resources) {
   )).filter(isMcpConnectionId);
 }
 
-export function focusedMcpConnectionIds(resources) {
+export function focusedMcpConnectionIds(resources: unknown): readonly string[] {
   if (!Array.isArray(resources)) return [];
   return resources.flatMap((resource) => (
     typeof resource === "string" && resource.startsWith(mcpFocusResourcePrefix)
@@ -26,7 +26,7 @@ export function focusedMcpConnectionIds(resources) {
   )).filter(isMcpConnectionId);
 }
 
-export function isAllowedMcpResource(resource) {
+export function isAllowedMcpResource(resource: unknown): boolean {
   if (typeof resource !== "string") return false;
   if (resource.startsWith(mcpResourcePrefix)) {
     return isMcpConnectionId(resource.slice(mcpResourcePrefix.length));
@@ -37,7 +37,10 @@ export function isAllowedMcpResource(resource) {
   return false;
 }
 
-export function validateMcpResources(resources) {
+export function validateMcpResources(resources: unknown): Readonly<{
+  requested: readonly string[];
+  focus?: string;
+}> {
   const requested = mcpConnectionIds(resources);
   const focused = focusedMcpConnectionIds(resources);
   if (new Set(requested).size !== requested.length

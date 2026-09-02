@@ -15,7 +15,7 @@ import {
 
 import { config } from "./config";
 import { ConnectAgentExperience, type AppObservation } from "./ConnectAgentExperience";
-import { presentGrantCapabilities } from "./grantPresentation.mjs";
+import { presentGrantCapabilities } from "./grantPresentation.ts";
 
 type AuditEvent = Readonly<{
   id: number;

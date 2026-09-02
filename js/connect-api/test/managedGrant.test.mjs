@@ -5,7 +5,7 @@ import {
   managedAgentExistenceStatus,
   managedGrantHeaders,
   managedGrantUpstreamMethod,
-} from "../src/managedGrant.mjs";
+} from "../src/managedGrant.mts";
 
 test("managed grant headers carry the exact connection snapshot without credentials", () => {
   const connectionId = "a".repeat(43);
