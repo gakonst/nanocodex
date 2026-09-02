@@ -1,20 +1,20 @@
-1. refactor + fix CI / get preview environments in PRs - move back to CI driven deployment where the deployment is teed up in parallel wiht the tests
+1. refactor + fix CI / get preview environments in PRs - move back to CI driven deployment where the deployment is teed up in parallel with the tests
 2. sync with codex latest
 
 - Anything new re: compaction or other tools?
 - the /btw bug needs to be fixed
-- need to get in another aroudn of evals
+- need to get in another round of evals
 
 1. redo the account connection UX a la OAuth in new tab
    "App is requesting access to this stuff"
    Click "sign" -> passkey -> OK done end of flow
-   If you click sign and you dont have hte pemrs then you get CTA'd
+   If you click sign and you dont have the permissions then you get CTA'd
 2. Get this working inside the paradigm website
 
 - Connect your accounts
 - WebMCP / NanocodexProvider
 - ChatGPT-esque app built in
-- Slack button 1-click install to your <..> - make it work with other platforms as well. Telegram, iMesssage, WhatsApp, Slack. Single PLayer & Multiplayer.
+- Slack button 1-click install to your <..> - make it work with other platforms as well. Telegram, iMessage, WhatsApp, Slack. Single PLayer & Multiplayer.
 
 Make scrolling change the demo you are seeing
 Hook with agent swarms the pokemon thing
@@ -22,7 +22,7 @@ Hook with agent swarms the pokemon thing
 cloud infra for personal agents that you can take anywhere and connect to everything
 
 okay so we finish the deployment productivity stuff,
-deslop, refactor and shit - get us to stable core again but hte core is not just
+deslop, refactor and shit - get us to stable core again but the core is not just
 rust it's also the stuff we've come up with on top
 
 rust + wasm
