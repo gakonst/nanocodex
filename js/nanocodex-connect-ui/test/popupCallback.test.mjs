@@ -65,6 +65,38 @@ test("consumes a persisted same-origin completion after listener reload", () => 
   assert.equal(runtime.localStorage.getItem(key), null);
 });
 
+test("a replacement observer cannot be settled by the abandoned attempt state", () => {
+  const runtime = new FakeRuntime();
+  const connector = `mcp:${"m".repeat(43)}`;
+  const abandoned = {
+    connector,
+    origin: runtime.location.origin,
+    state: "a".repeat(43),
+  };
+  const replacement = {
+    ...abandoned,
+    state: "r".repeat(43),
+  };
+  const received = [];
+  const disposeAbandoned = observePopupCallback(
+    abandoned,
+    (value) => received.push(value),
+    runtime,
+  );
+  const abandonedChannel = FakeBroadcastChannel.channels.get(
+    `nanocodex-oauth-completion-${abandoned.state}`,
+  );
+  disposeAbandoned();
+  observePopupCallback(replacement, (value) => received.push(value), runtime);
+  abandonedChannel.emit(callbackCompletion({ ...abandoned, result: "success" }));
+  FakeBroadcastChannel.channels.get(
+    `nanocodex-oauth-completion-${replacement.state}`,
+  ).emit(callbackCompletion({ ...replacement, result: "success" }));
+  assert.deepEqual(received, [
+    callbackCompletion({ ...replacement, result: "success" }),
+  ]);
+});
+
 test("rejects a subscriber origin outside the current same-origin transport", () => {
   assert.throws(() => observePopupCallback({
     connector: "github",
