@@ -19,6 +19,7 @@ import {
 import { ConnectionLogo } from "./ConnectionLogo.js";
 import { connectorCompletionFor } from "./connectorCompletion.js";
 import {
+  connectorAttemptedCapabilitiesConnected,
   connectorCapabilityLabel,
   connectorControlsForCapabilities,
   connectorProviderFor,
@@ -111,6 +112,7 @@ type ConnectorAttempt = {
   abort: AbortController;
   provider: ConnectorProvider;
   capabilities: readonly ConnectorId[];
+  missingCapabilities: readonly ConnectorId[];
   expiryTimer?: number | undefined;
   popup?: Window | undefined;
   popupCheck?: number | undefined;
@@ -317,7 +319,10 @@ export function ConnectOnboarding({
       void (async () => {
         try {
           const state = await refreshConnectors(pendingApproval);
-          if (!attempt.capabilities.some((capability) => state.connectors[capability]?.connected)) {
+          if (!connectorAttemptedCapabilitiesConnected(
+            attempt.missingCapabilities,
+            state.connectors,
+          )) {
             throw new Error("The account provider completed without connecting the requested account.");
           }
         } catch (error) {
@@ -956,6 +961,7 @@ export function ConnectOnboarding({
       abort: new AbortController(),
       provider,
       capabilities,
+      missingCapabilities: capabilities.filter((capability) => !statuses[capability]?.connected),
       popup,
       requestId: approval.requestId,
       token: crypto.randomUUID(),

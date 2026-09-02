@@ -101,6 +101,16 @@ export function connectorProviderMatchesCapabilities(provider, capabilities) {
   return capabilities.some((capability) => connectorProviderFor(capability) === provider);
 }
 
+export function connectorAttemptedCapabilitiesConnected(capabilities, statuses) {
+  if (!Array.isArray(capabilities)
+    || capabilities.length === 0
+    || capabilities.some((capability) => !capabilityIds.has(capability))) {
+    throw new Error("Nanocodex received invalid connector capabilities.");
+  }
+  const decoded = connectorStatusesFromWire(statuses);
+  return capabilities.some((capability) => decoded[capability]?.connected === true);
+}
+
 export function connectorControlsForCapabilities(capabilities, statuses) {
   if (!Array.isArray(capabilities)
     || capabilities.some((capability) => !capabilityIds.has(capability))) {
@@ -169,6 +179,7 @@ function decodeConnection(value, capability) {
     || (value.capabilities !== undefined && (!Array.isArray(value.capabilities)
       || value.capabilities.length > connectorCapabilityIds.length
       || value.capabilities.some((item) => typeof item !== "string" || !capabilityIds.has(item))
+      || value.capabilities.some((item) => connectorProviderFor(item) !== connectorProviderFor(capability))
       || new Set(value.capabilities).size !== value.capabilities.length))) {
     throw new Error("Nanocodex received invalid connector statuses.");
   }

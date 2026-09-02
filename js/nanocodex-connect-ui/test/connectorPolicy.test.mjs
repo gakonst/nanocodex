@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  connectorAttemptedCapabilitiesConnected,
   connectorCapabilityIds,
   connectorConnectionHeader,
   connectorControlsForCapabilities,
@@ -82,6 +83,19 @@ test("provider-neutral statuses merge one identity across partial Google consent
   });
 });
 
+test("OAuth completion counts attempted missing capabilities, not pre-existing grants", () => {
+  const statuses = {
+    gmail: { connected: true, connections: [] },
+    gdrive: { connected: false, connections: [] },
+  };
+  assert.equal(connectorAttemptedCapabilitiesConnected(["gdrive"], statuses), false);
+  assert.equal(connectorAttemptedCapabilitiesConnected(["gmail"], statuses), true);
+  assert.equal(connectorAttemptedCapabilitiesConnected(["gdrive"], {
+    ...statuses,
+    gdrive: { connected: true, connections: [] },
+  }), true);
+});
+
 test("legacy singleton labels remain displayable without inventing opaque IDs", () => {
   const statuses = connectorStatusesFromWire({
     github: { connected: true, account_id: "octocat", label: "octocat" },
@@ -133,6 +147,16 @@ test("status projection rejects secrets, malformed identities, duplicates, and u
       id: GOOGLE_ID,
       label: "one@example.test",
       capabilities: ["google"],
+    }] } },
+    { slack: { connected: true, connections: [{
+      id: SLACK_ID,
+      label: "Acme Workspace · Ada",
+      capabilities: ["gmail"],
+    }] } },
+    { gmail: { connected: true, connections: [{
+      id: GOOGLE_ID,
+      label: "one@example.test",
+      capabilities: ["slack"],
     }] } },
   ]) assert.throws(() => connectorStatusesFromWire(value), /invalid connector statuses/);
 });

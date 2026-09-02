@@ -58,6 +58,10 @@ export function connectorProviderMatchesCapabilities(
   provider: unknown,
   capabilities: readonly string[],
 ): boolean;
+export function connectorAttemptedCapabilitiesConnected(
+  capabilities: readonly ConnectorCapability[],
+  statuses: unknown,
+): boolean;
 export function connectorControlsForCapabilities(
   capabilities: readonly ConnectorCapability[],
   statuses?: unknown,

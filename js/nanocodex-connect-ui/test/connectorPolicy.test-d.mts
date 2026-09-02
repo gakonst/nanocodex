@@ -1,4 +1,5 @@
 import {
+  connectorAttemptedCapabilitiesConnected,
   connectorConnectionHeader,
   connectorControlsForCapabilities,
   connectorConnectionsForCapabilities,
@@ -21,11 +22,13 @@ const connections: readonly ConnectorConnection[] = connectorConnectionsForCapab
 );
 const controls: readonly ConnectorControl[] = connectorControlsForCapabilities(capabilities, statuses);
 const header: "X-Nanocodex-Connector-Connection" = connectorConnectionHeader;
+const progressed: boolean = connectorAttemptedCapabilitiesConnected(["gdrive"], statuses);
 
 void provider;
 void connections;
 void controls;
 void header;
+void progressed;
 
 // @ts-expect-error `google` controls OAuth but is never a grant capability.
 const invalidCapability: ConnectorCapability = "google";

@@ -14,6 +14,7 @@ import {
   connectorCompletionFor,
 } from "nanocodex-connect-ui/connectorCompletion";
 import {
+  connectorAttemptedCapabilitiesConnected,
   connectorCapabilityLabel,
   connectorConnectionsForCapabilities,
   connectorStatusesFromWire,
@@ -43,6 +44,8 @@ type ConnectorAttempt = {
   abort: AbortController;
   provider: AccountConnectorProvider;
   capabilities: readonly AccountConnectorCapability[];
+  connectionIds: ReadonlySet<string>;
+  missingCapabilities: readonly AccountConnectorCapability[];
   popup: Window;
   popupCheck: number;
   popupClosed?: number | undefined;
@@ -251,7 +254,11 @@ export function ProfileConnectors({
           if (!statuses) {
             throw new Error("Your account session expired. Sign in again and retry the connection.");
           }
-          if (!attempt.capabilities.some((capability) => statuses[capability].connected)) {
+          const connections = connectorConnectionsForCapabilities(statuses, attempt.capabilities);
+          const addedIdentity = connections.some(({ id }) => !attempt.connectionIds.has(id));
+          const connectedMissingCapability = attempt.missingCapabilities.length > 0
+            && connectorAttemptedCapabilitiesConnected(attempt.missingCapabilities, statuses);
+          if (!addedIdentity && !connectedMissingCapability) {
             throw new Error("The account provider completed without connecting the requested account.");
           }
           finishConnectorAttempt(attempt);
@@ -311,7 +318,7 @@ export function ProfileConnectors({
     provider: AccountConnectorProvider,
     capabilities: readonly AccountConnectorCapability[],
   ) => {
-    if (operation || activeConnector.current) return;
+    if (operation || activeConnector.current || !connectors) return;
     const popup = window.open(
       "about:blank",
       "nanocodex-account-connector",
@@ -325,6 +332,10 @@ export function ProfileConnectors({
       abort: new AbortController(),
       provider,
       capabilities,
+      connectionIds: new Set(
+        connectorConnectionsForCapabilities(connectors, capabilities).map(({ id }) => id),
+      ),
+      missingCapabilities: capabilities.filter((capability) => !connectors[capability].connected),
       popup,
       popupCheck: window.setInterval(() => {
         if (activeConnector.current !== attempt || !popup.closed) return;
