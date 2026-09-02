@@ -71,6 +71,13 @@ import type {
   OAuthConnectorProvider,
   RoutableConnectorCapability,
 } from "./connectorPolicy.mts";
+import {
+  hostPrincipalExchangeFromResources,
+  isHostPrincipal,
+  sameHostPrincipal,
+  sameOrderedResources,
+  type HostPrincipal,
+} from "./hostPrincipal.mts";
 
 type WorkerWebSocket = WebSocket & { accept(): void };
 declare const WebSocketPair: {
@@ -225,6 +232,7 @@ const MAX_ACCOUNT_AUTHORIZATIONS = 64;
 const MAX_DEVICE_REGISTER_BYTES = 64 * 1024;
 const MAX_CONNECTION_REQUEST_BYTES = 128 * 1024;
 const MAX_CHATGPT_IMPORT_BODY_BYTES = 64 * 1024;
+const MAX_HOST_PRINCIPAL_BODY_BYTES = 16 * 1024;
 const EGRESS_SUBJECT = /^[A-Za-z0-9_-]{43,128}$/;
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 const CONNECTOR_REQUEST_HEADERS = new Set([
@@ -266,7 +274,8 @@ const PRIVATE_HOST_SUFFIXES = [
 const PUBLIC_REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
 type ConnectorState = Readonly<{
-  accountAddress: `0x${string}`;
+  accountAddress?: `0x${string}`;
+  hostPrincipal?: HostPrincipal;
   brokerUserId: string;
   dialogOrigin: string;
   provider: OAuthConnectorProvider;
@@ -288,7 +297,8 @@ type McpIntent = Readonly<{
   name: string;
 }>;
 type McpConnectionState = Readonly<{
-  accountAddress: `0x${string}`;
+  accountAddress?: `0x${string}`;
+  hostPrincipal?: HostPrincipal;
   brokerUserId: string;
   connectionId: string;
   dialogOrigin: string;
@@ -307,7 +317,7 @@ type AuthRequestContext = Readonly<{
   message: string;
 }>;
 type ConnectApproval = Readonly<{
-  accountAddress: `0x${string}`;
+  accountAddress?: `0x${string}`;
   appId: string;
   appOrigin: string;
   brokerUserId?: string;
@@ -319,6 +329,7 @@ type ConnectApproval = Readonly<{
   profileLinked?: boolean;
   resources: readonly string[];
   authorization: "signed" | "hosted";
+  hostPrincipal?: HostPrincipal;
 }>;
 type Fetcher = Readonly<{
   fetch(request: Request): Promise<Response>;
@@ -347,7 +358,7 @@ type GrantRecord = Readonly<{
   id: `0x${string}`;
   appId: string;
   appOrigin: string;
-  accountAddress: `0x${string}`;
+  accountAddress?: `0x${string}`;
   brokerUserId: string;
   agentId: string;
   permission: string;
@@ -365,16 +376,31 @@ type GrantRecord = Readonly<{
   egressSubject: string;
   settlementBalanceAtomics?: string;
   sharedEgressSubject?: boolean;
+  hostPrincipal?: HostPrincipal;
+  resources?: readonly string[];
 }>;
-type HostedBrowserSession = Readonly<{
+type HostedAccountBrowserSession = Readonly<{
+  kind?: "account";
   accountAddress: `0x${string}`;
   expiresAt: number;
 }>;
+type HostedPrincipalBrowserSession = Readonly<{
+  kind: "host";
+  appId: string;
+  appOrigin: string;
+  brokerUserId: string;
+  connectors: readonly ConnectorCapability[];
+  expiresAt: number;
+  mcpIds: readonly string[];
+  principal: HostPrincipal;
+}>;
+type HostedBrowserSession = HostedAccountBrowserSession | HostedPrincipalBrowserSession;
 type GrantPrincipal = Readonly<{
-  accountAddress: `0x${string}`;
+  accountAddress?: `0x${string}`;
   appId: string;
   appOrigin: string;
   grantId: `0x${string}`;
+  hostPrincipal?: HostPrincipal;
 }>;
 type ConnectAgentRecord = Readonly<{ agentId: string }>;
 type ConnectIdentityRecord = Readonly<{
@@ -423,6 +449,11 @@ export default {
     try {
       const url = new URL(request.url);
       const store = Kv.durableObject(env.CONNECT_STATE);
+
+      if ((request.method === "POST" && url.pathname === "/v1/host-principal/exchanges")
+        || (request.method === "DELETE" && url.pathname === "/v1/host-principal/sessions")) {
+        return await proxyHostPrincipalControlPlane(request, env, url);
+      }
 
       if (url.pathname.startsWith("/v1/device/")) {
         if (request.method === "POST" && url.pathname === "/v1/device/register") {
@@ -628,8 +659,12 @@ export default {
 
       requireDialogOrigin(request);
       const hostedSession = await readHostedBrowserSession(store, request);
-      let accountAddress: `0x${string}`;
-      if (hostedSession) {
+      const hostSession = hostedSession?.kind === "host" ? hostedSession : undefined;
+      let accountAddress: `0x${string}` | undefined;
+      let authenticatedBrokerUserId: string | undefined;
+      if (hostSession) {
+        authenticatedBrokerUserId = hostSession.brokerUserId;
+      } else if (hostedSession && hostedSession.kind !== "host") {
         accountAddress = hostedSession.accountAddress;
       } else {
         const session = await createAuth(env, store, request).getSession(request);
@@ -637,7 +672,14 @@ export default {
         accountAddress = address(session.address);
       }
 
+      if (hostSession) {
+        await validateHostPrincipal(env, hostSession.principal, hostSession.brokerUserId);
+      }
+
       if (url.pathname === "/v1/account-link") {
+        if (!accountAddress) {
+          return error(request, 403, "account_link_unavailable", "Host principals do not use Tempo account links.");
+        }
         if (request.method === "GET") {
           const identity = await brokerIdentity(env, accountAddress);
           return cors(Response.json({ linked: identity.linked }), request);
@@ -652,22 +694,37 @@ export default {
       }
 
       if (request.method === "GET" && url.pathname === "/v1/connectors") {
-        const identity = await brokerIdentity(env, accountAddress);
+        const identity = authenticatedBrokerUserId
+          ? { linked: true, userId: authenticatedBrokerUserId }
+          : await brokerIdentity(env, accountAddress!);
+        const statuses = (await connectorStatuses(env, identity.userId)).connectors;
         return cors(Response.json({
-          ...(await connectorStatuses(env, identity.userId)),
+          connectors: hostSession ? projectConnectorStatuses(statuses, hostSession.connectors) : statuses,
           profile: { linked: identity.linked },
         }), request);
       }
 
       if (request.method === "GET" && url.pathname === "/v1/mcp-connections") {
-        const identity = await brokerIdentity(env, accountAddress);
-        return cors(Response.json({ mcp_connections: await mcpConnectionStatuses(env, identity.userId) }), request);
+        const identity = authenticatedBrokerUserId
+          ? { linked: true, userId: authenticatedBrokerUserId }
+          : await brokerIdentity(env, accountAddress!);
+        const connections = await mcpConnectionStatuses(env, identity.userId);
+        return cors(Response.json({
+          mcp_connections: hostSession
+            ? connections.filter(({ id }) => hostSession.mcpIds.includes(id))
+            : connections,
+        }), request);
       }
 
       const mcpConnectionRoute = url.pathname.match(/^\/v1\/mcp-connections\/([A-Za-z0-9_-]{43})$/);
       if (mcpConnectionRoute) {
-        const identity = await brokerIdentity(env, accountAddress);
+        const identity = authenticatedBrokerUserId
+          ? { linked: true, userId: authenticatedBrokerUserId }
+          : await brokerIdentity(env, accountAddress!);
         const connectionId = mcpConnectionRoute[1]!;
+        if (hostSession && !hostSession.mcpIds.includes(connectionId)) {
+          return error(request, 403, "mcp_not_approved", "This MCP connection is outside the host consent.");
+        }
         logContext = {
           ...logContext,
           authenticated: true,
@@ -678,6 +735,7 @@ export default {
             store,
             request,
             accountAddress,
+            hostSession?.principal,
             identity.userId,
             connectionId,
           );
@@ -711,7 +769,15 @@ export default {
         const provider = connector === "chatgpt"
           ? undefined
           : connector === "google" ? "google" : connectorProvider(connector);
-        const identity = await brokerIdentity(env, accountAddress);
+        const identity = authenticatedBrokerUserId
+          ? { linked: true, userId: authenticatedBrokerUserId }
+          : await brokerIdentity(env, accountAddress!);
+        const approvedByHost = connector === "google"
+          ? hostSession?.connectors.some((capability) => connectorProvider(capability) === "google")
+          : hostSession?.connectors.includes(connector as ConnectorCapability);
+        if (hostSession && !approvedByHost) {
+          return error(request, 403, "connector_not_approved", "This connector is outside the host consent.");
+        }
         logContext = {
           ...logContext,
           authenticated: true,
@@ -721,7 +787,15 @@ export default {
           if (connectionId) return error(request, 405, "method_not_allowed", "Unsupported connector operation.");
           const response = connector === "chatgpt"
             ? await startChatGptConnector(env, identity.userId)
-            : await startConnector(env, store, request, accountAddress, identity.userId, provider!);
+            : await startConnector(
+              env,
+              store,
+              request,
+              accountAddress,
+              hostSession?.principal,
+              identity.userId,
+              provider!,
+            );
           console.info({
             type: "connect.connector.start",
             outcome: "success",
@@ -797,7 +871,7 @@ async function handleManagedMemoryRoute(
   if (app.appId !== CLI_APP_ID || app.origin !== CLI_APP_ORIGIN) {
     throw new ApiFailure(403, "app_identity_mismatch", "Hosted history and memory are available only to the Nanocodex CLI.");
   }
-  const { grant } = await authenticatedGrant(request, env.CONNECT_STATE);
+  const { grant } = await authenticatedGrant(request, env);
   if (grant.appId !== CLI_APP_ID || grant.appOrigin !== CLI_APP_ORIGIN) {
     throw new ApiFailure(403, "app_identity_mismatch", "The Connect grant is not bound to the Nanocodex CLI.");
   }
@@ -884,6 +958,51 @@ function connectorPolicyApiFailure(cause: unknown): ApiFailure {
   }
   if (cause instanceof ApiFailure) return cause;
   throw cause;
+}
+
+async function proxyHostPrincipalControlPlane(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  if (request.headers.has("origin")) {
+    throw new ApiFailure(
+      403,
+      "host_principal_server_required",
+      "Host principal exchanges must be managed by the application server.",
+    );
+  }
+  const authorization = request.headers.get("authorization");
+  const appId = request.headers.get("x-nanocodex-app-id");
+  if (!authorization || !appId) {
+    throw new ApiFailure(401, "host_principal_project_required", "Host principal project authentication is required.");
+  }
+  const body = await boundedRequestText(request, MAX_HOST_PRINCIPAL_BODY_BYTES, "host principal");
+  const upstreamPath = url.pathname.endsWith("/exchanges")
+    ? "/connect/host-principals/exchanges"
+    : "/connect/host-principals/sessions";
+  let upstream: Response;
+  try {
+    upstream = await env.ACCOUNTS.fetch(new Request(`https://nanocodex.internal${upstreamPath}`, {
+      method: request.method,
+      headers: {
+        accept: "application/json",
+        authorization,
+        "content-type": request.headers.get("content-type") ?? "application/json",
+        "x-nanocodex-app-id": appId,
+      },
+      body,
+    }));
+  } catch {
+    throw new ApiFailure(502, "host_principal_unavailable", "The host principal service is unavailable.");
+  }
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      "cache-control": "no-store",
+      "content-type": upstream.headers.get("content-type") ?? "application/json",
+    },
+  });
 }
 
 function failureStatus(cause: unknown): string {
@@ -999,11 +1118,21 @@ async function createHostedAuthorization(
   store: Kv.Kv,
 ): Promise<Response> {
   const body = await boundedJson(request, 16 * 1024, "hosted authorization");
+  const encodedResources = stringResources(body.resources);
+  let hostExchange: ReturnType<typeof hostPrincipalExchangeFromResources>;
+  try {
+    hostExchange = hostPrincipalExchangeFromResources(encodedResources);
+  } catch (cause) {
+    throw new ApiFailure(400, "invalid_host_principal_exchange", errorText(cause));
+  }
+  if (hostExchange) {
+    return createHostPrincipalAuthorization(request, env, store, body, hostExchange);
+  }
   const code = opaqueToken(body.code, "code");
   const accountAddress = address(body.account_address);
   const appId = requiredString(body.app_id, "app_id");
   const appOrigin = requiredString(body.app_origin, "app_origin");
-  const resources = stringResources(body.resources);
+  const resources = encodedResources;
   const app = approvedAppContext(resources);
   if (app.appId !== CLI_APP_ID || app.origin !== CLI_APP_ORIGIN
     || appId !== app.appId || appOrigin !== app.origin) {
@@ -1089,6 +1218,183 @@ async function createHostedAuthorization(
   });
 }
 
+async function createHostPrincipalAuthorization(
+  request: Request,
+  env: Env,
+  store: Kv.Kv,
+  body: Record<string, unknown>,
+  hostExchange: Readonly<{ exchange: string; resources: readonly string[] }>,
+): Promise<Response> {
+  if (Object.keys(body).some((key) => key !== "app_id" && key !== "app_origin" && key !== "resources")) {
+    throw new ApiFailure(400, "invalid_host_principal_exchange", "The host principal authorization contains an unknown field.");
+  }
+  const appId = requiredString(body.app_id, "app_id");
+  const appOrigin = requiredString(body.app_origin, "app_origin");
+  const resources = [...hostExchange.resources];
+  if (!sameOrderedResources(resources, resources)) {
+    throw new ApiFailure(400, "invalid_host_principal_resources", "Host principal resources must be ordered and unique.");
+  }
+  const app = approvedAppContext(resources);
+  if (appId !== app.appId || appOrigin !== app.origin) {
+    throw new ApiFailure(403, "app_identity_mismatch", "The host principal is not bound to this Connect app.");
+  }
+  if (!resources.includes(HOSTED_AUTHORIZATION_RESOURCE)
+    || resources.includes("urn:nanocodex:mpp:machusd:spend")) {
+    throw new ApiFailure(403, "host_principal_authorization_denied", "Host principals require hosted authorization without spending authority.");
+  }
+  const approvedConnectorSet = approvedConnectors(resources);
+  const connectors = CONNECTOR_IDS.filter((connector) => approvedConnectorSet.has(connector));
+  const approvedMcpIds = approvedMcpConnectionIds(resources);
+  requireApprovedCapabilities(resources, app.appId, connectors, approvedMcpIds, true);
+
+  const exchanged = await exchangeHostPrincipal(env, {
+    exchange: hostExchange.exchange,
+    app_id: app.appId,
+    app_origin: app.origin,
+    resources,
+  });
+  if (exchanged.principal.app_id !== app.appId
+    || exchanged.principal.app_origin !== app.origin
+    || !sameOrderedResources(exchanged.resources, resources)) {
+    throw new ApiFailure(502, "host_principal_invalid", "The host principal service returned another app or capability set.");
+  }
+  const [status, mcpConnections] = await Promise.all([
+    connectorStatuses(env, exchanged.user_id),
+    materializeApprovedMcpConnections(env, store, app, exchanged.user_id, resources),
+  ]);
+  if (!store.create) {
+    throw new ApiFailure(503, "host_principal_unavailable", "Atomic host principal authorization is unavailable.");
+  }
+  const approvalId = randomSubject();
+  const token = randomSubject();
+  const expiresAt = Math.floor(Date.now() / 1_000) + CONNECT_APPROVAL_TTL;
+  const connectedConnectors = connectors.filter((connector) => status.connectors[connector].connected);
+  const connectorConnections = connectorConnectionSnapshot(status.connectors, connectors);
+  await store.set(`connect-approval:${approvalId}`, {
+    appId: app.appId,
+    appOrigin: app.origin,
+    authorization: "hosted",
+    brokerUserId: exchanged.user_id,
+    connectedConnectors,
+    connectorConnections,
+    hostPrincipal: exchanged.principal,
+    mcpConnections,
+    profileLinked: true,
+    resources,
+  } satisfies ConnectApproval, { ttl: CONNECT_APPROVAL_TTL });
+  if (!await store.create(`hosted-browser-session:${token}`, {
+    kind: "host",
+    appId: app.appId,
+    appOrigin: app.origin,
+    brokerUserId: exchanged.user_id,
+    connectors,
+    expiresAt,
+    mcpIds: approvedMcpIds,
+    principal: exchanged.principal,
+  } satisfies HostedPrincipalBrowserSession, { ttl: CONNECT_APPROVAL_TTL })) {
+    await store.delete(`connect-approval:${approvalId}`);
+    throw new ApiFailure(503, "host_principal_unavailable", "The host principal browser session could not be reserved.");
+  }
+  return Response.json({
+    approval_id: approvalId,
+    connectors: projectConnectorStatuses(status.connectors, connectors),
+    mcp_connections: mcpConnections,
+    principal: { kind: "host", id: exchanged.principal.id },
+    profile: { linked: true },
+    token,
+  });
+}
+
+async function exchangeHostPrincipal(
+  env: Env,
+  body: Readonly<{ exchange: string; app_id: string; app_origin: string; resources: readonly string[] }>,
+): Promise<Readonly<{
+  principal: HostPrincipal;
+  user_id: string;
+  resources: readonly string[];
+  expires_at: number;
+}>> {
+  let response: Response;
+  try {
+    response = await env.ACCOUNTS.fetch(new Request(
+      "https://nanocodex.internal/connect/host-principals/exchange",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ));
+  } catch {
+    throw new ApiFailure(502, "host_principal_unavailable", "The host principal service is unavailable.");
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new ApiFailure(403, "host_principal_rejected", "The host principal exchange was rejected.");
+  }
+  const value = await response.json().catch(() => undefined);
+  if (!isRecord(value)
+    || !isHostPrincipal(value.principal)
+    || !isBrokerUserId(value.user_id)
+    || !Array.isArray(value.resources)
+    || value.resources.some((resource) => typeof resource !== "string")
+    || !Number.isSafeInteger(value.expires_at)
+    || Number(value.expires_at) <= Math.floor(Date.now() / 1_000)) {
+    throw new ApiFailure(502, "host_principal_invalid", "The host principal service returned an invalid exchange.");
+  }
+  return value as {
+    principal: HostPrincipal;
+    user_id: string;
+    resources: readonly string[];
+    expires_at: number;
+  };
+}
+
+function publicHostPrincipal(value: unknown): Readonly<{ kind: "host"; id: string }> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)
+    || Object.keys(value).length !== 2
+    || value.kind !== "host"
+    || typeof value.id !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/.test(value.id)) {
+    throw new ApiFailure(400, "invalid_host_principal", "The public host principal is invalid.");
+  }
+  return { kind: "host", id: value.id };
+}
+
+async function validateHostPrincipal(
+  env: Env,
+  principal: HostPrincipal,
+  expectedUserId: string,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await env.ACCOUNTS.fetch(new Request(
+      "https://nanocodex.internal/connect/host-principals/validate",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ principal }),
+      },
+    ));
+  } catch {
+    throw new ApiFailure(502, "host_principal_unavailable", "The host principal service is unavailable.");
+  }
+  const body = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    throw new ApiFailure(403, "host_principal_inactive", "The host principal session is no longer active.");
+  }
+  if (!isRecord(body) || body.active !== true || body.user_id !== expectedUserId) {
+    throw new ApiFailure(502, "host_principal_invalid", "The host principal service returned an invalid validation.");
+  }
+}
+
+function projectConnectorStatuses(
+  statuses: Readonly<Record<ConnectorCapability, ConnectorStatus>>,
+  connectors: readonly ConnectorCapability[],
+): Partial<Record<ConnectorCapability, ConnectorStatus>> {
+  return Object.fromEntries(connectors.map((connector) => [connector, statuses[connector]]));
+}
+
 async function readHostedBrowserSession(
   store: Kv.Kv,
   request: Request,
@@ -1102,9 +1408,23 @@ async function readHostedBrowserSession(
 }
 
 function isHostedBrowserSession(value: unknown): value is HostedBrowserSession {
-  return isRecord(value)
-    && /^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress))
-    && Number.isSafeInteger(value.expiresAt);
+  if (!isRecord(value) || !Number.isSafeInteger(value.expiresAt)) return false;
+  if (value.kind === "host") {
+    return validAppId(value.appId)
+      && isPublicAppOrigin(value.appOrigin)
+      && isBrokerUserId(value.brokerUserId)
+      && Array.isArray(value.connectors)
+      && value.connectors.every((connector) => CONNECTOR_IDS.includes(connector as ConnectorCapability))
+      && new Set(value.connectors).size === value.connectors.length
+      && Array.isArray(value.mcpIds)
+      && value.mcpIds.every(isMcpConnectionId)
+      && new Set(value.mcpIds).size === value.mcpIds.length
+      && isHostPrincipal(value.principal)
+      && value.principal.app_id === value.appId
+      && value.principal.app_origin === value.appOrigin;
+  }
+  return (value.kind === undefined || value.kind === "account")
+    && /^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress));
 }
 
 function isHostedAuthorizationIdentity(value: unknown): value is {
@@ -1284,7 +1604,6 @@ async function createConnection(
   const body = await connectionRequestBody(request);
   const appId = requiredString(body.app_id, "app_id");
   const app = requireCallerApp(request, appId);
-  const accountAddress = address(body.account_address);
   const approvalId = requiredString(body.approval_id, "approval_id");
   const permission = requiredString(body.permission, "permission");
   if (permission !== "agent.run") {
@@ -1296,12 +1615,31 @@ async function createConnection(
     body.requested_app_tool_catalog_digest,
     "requested_app_tool_catalog_digest",
   );
-  const approval = await readConnectApproval(store, approvalId, accountAddress);
+  const approval = await readConnectApproval(store, approvalId);
+  const hostPrincipal = publicHostPrincipal(body.principal);
+  const accountAddress = approval.hostPrincipal
+    ? undefined
+    : address(body.account_address);
+  if (approval.hostPrincipal) {
+    if (body.account_address !== undefined
+      || !hostPrincipal
+      || hostPrincipal.id !== approval.hostPrincipal.id) {
+      throw new ApiFailure(403, "host_principal_mismatch", "The connection does not match the approved host principal.");
+    }
+  } else if (hostPrincipal !== undefined) {
+    throw new ApiFailure(403, "host_principal_mismatch", "A passkey approval cannot become a host principal grant.");
+  }
   mark("approval");
   if (approval.appId !== app.appId || approval.appOrigin !== app.origin) {
     throw new ApiFailure(403, "app_not_approved", "The signed approval is not bound to this app origin.");
   }
-  requireApprovedCapabilities(approval.resources, appId, requested, requestedMcpIds);
+  requireApprovedCapabilities(
+    approval.resources,
+    appId,
+    requested,
+    requestedMcpIds,
+    approval.hostPrincipal !== undefined,
+  );
   let approvedAppToolCatalogDigest: `0x${string}` | undefined;
   try {
     approvedAppToolCatalogDigest = appToolCatalogDigestFromResources(approval.resources);
@@ -1330,10 +1668,14 @@ async function createConnection(
   const retainedIdentity = approval.profileLinked === true && isBrokerUserId(approval.brokerUserId)
     ? { linked: true, userId: approval.brokerUserId }
     : undefined;
-  const identity = retainedIdentity ?? await brokerIdentity(env, accountAddress);
+  const identity = retainedIdentity ?? await brokerIdentity(env, accountAddress!);
   mark("identity");
   if (!identity.linked) {
     throw new ApiFailure(403, "account_link_required", "Link this Tempo account to your Nanocodex profile before authorizing a durable agent.");
+  }
+  if (approval.hostPrincipal) {
+    await validateHostPrincipal(env, approval.hostPrincipal, identity.userId);
+    mark("host-principal");
   }
   const credential = await connectionCredential(
     store,
@@ -1385,7 +1727,9 @@ async function createConnection(
   }
   const mcpConnections = await connectedRequestedMcpConnections(env, identity.userId, requestedMcpIds);
   mark("live-capabilities");
-  const consumedApproval = await takeConnectApproval(store, approvalId, accountAddress);
+  const consumedApproval = await takeConnectApproval(store, approvalId, {
+    ...(accountAddress ? { accountAddress } : { hostPrincipalId: approval.hostPrincipal!.id }),
+  });
   if (JSON.stringify(consumedApproval) !== JSON.stringify(approval)) {
     throw new ApiFailure(403, "approval_unavailable", "The signed Connect approval changed before it was consumed.");
   }
@@ -1406,6 +1750,7 @@ async function createConnection(
     ...(connectorConnections === undefined ? {} : { connectorConnections }),
     grantId,
     mcpIds: mcpConnections.map(({ id }) => id),
+    ...(approval.hostPrincipal ? { hostPrincipal: approval.hostPrincipal } : {}),
     ...(approvedAppToolCatalogDigest ? { appToolCatalogDigest: approvedAppToolCatalogDigest } : {}),
   };
   if (conversationId && isConnectAgentId(approval.durableAgentId)) {
@@ -1427,7 +1772,7 @@ async function createConnection(
     id: grantId,
     appId,
     appOrigin: app.origin,
-    accountAddress,
+    ...(accountAddress ? { accountAddress } : {}),
     brokerUserId: identity.userId,
     agentId: durableAgentId,
     permission,
@@ -1443,6 +1788,10 @@ async function createConnection(
     spentAtomics: "0",
     egressSubject,
     sharedEgressSubject: true,
+    ...(approval.hostPrincipal ? {
+      hostPrincipal: approval.hostPrincipal,
+      resources: approval.resources,
+    } : {}),
   };
 
   try {
@@ -1455,12 +1804,12 @@ async function createConnection(
     const writes = await Promise.allSettled([
       store.set(`grant:${grant.id}`, grant, { ttl: grantTtl }),
       store.create(`grant-token:${grantToken}`, {
-        accountAddress,
+        ...(accountAddress ? { accountAddress } : { hostPrincipal: approval.hostPrincipal }),
         appId,
         appOrigin: app.origin,
         grantId: grant.id,
       } satisfies GrantPrincipal, { ttl: grantTtl }),
-      ...(persist && accessKey ? [store.set(accessKeyStorageKey(accountAddress, accessKey.key_id), {
+      ...(persist && accessKey && accountAddress ? [store.set(accessKeyStorageKey(accountAddress, accessKey.key_id), {
         accountAddress,
         appId,
         appOrigin: app.origin,
@@ -1480,7 +1829,7 @@ async function createConnection(
       ...(env.DEPLOYMENT_SHA === undefined ? {} : { deployment_sha: env.DEPLOYMENT_SHA }),
       status: grant.status,
     });
-    context.waitUntil(appendGrantIndex(store, grant.accountAddress, grant.id).catch(() => {
+    if (grant.accountAddress) context.waitUntil(appendGrantIndex(store, grant.accountAddress, grant.id).catch(() => {
       console.error({
         type: "connect.grant.index",
         outcome: "failure",
@@ -1510,7 +1859,9 @@ async function createConnection(
     if (grant.sharedEgressSubject !== true) {
       cleanup.push(unbindSubject(env, grant.egressSubject, grant.brokerUserId));
     }
-    if (persist && accessKey) cleanup.push(store.delete(accessKeyStorageKey(accountAddress, accessKey.key_id)));
+    if (persist && accessKey && accountAddress) {
+      cleanup.push(store.delete(accessKeyStorageKey(accountAddress, accessKey.key_id)));
+    }
     await Promise.allSettled(cleanup);
     throw cause;
   }
@@ -1526,6 +1877,7 @@ async function connectionRequestBody(request: Request): Promise<Record<string, u
     "chatgpt_credential_import",
     "key_authorization",
     "permission",
+    "principal",
     "requested_connectors",
     "requested_mcp_connections",
     "requested_app_tool_catalog_digest",
@@ -1628,7 +1980,7 @@ async function connectionCredential(
   body: Record<string, unknown>,
   approval: ConnectApproval,
   app: CallerApp,
-  accountAddress: `0x${string}`,
+  accountAddress: `0x${string}` | undefined,
 ): Promise<{ accessKey?: Record<string, unknown>; expiresAt: number; persist: boolean }> {
   if (approval.authorization === "hosted") {
     if (body.authorization_mode !== "hosted"
@@ -1644,6 +1996,9 @@ async function connectionCredential(
       expiresAt: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
       persist: false,
     };
+  }
+  if (!accountAddress) {
+    throw new ApiFailure(403, "account_address_required", "Passkey authorization requires a Tempo account.");
   }
   if (body.authorization_mode !== undefined && body.authorization_mode !== "access_key") {
     throw new ApiFailure(400, "invalid_authorization_mode", "The connection authorization mode is invalid.");
@@ -1818,9 +2173,9 @@ async function handleGrantRoute(
   url: URL,
 ): Promise<Response | undefined> {
   if (request.method === "POST" && url.pathname === "/v1/connections/disconnect") {
-    const authenticated = await authenticatedGrant(request, env.CONNECT_STATE);
+    const authenticated = await authenticatedGrant(request, env);
     await withGrantMutationLock(store, authenticated.grant.id, async () => {
-      const current = await authenticatedGrant(request, env.CONNECT_STATE, authenticated.grant.id);
+      const current = await authenticatedGrant(request, env, authenticated.grant.id);
       await revokeGrant(env, store, current.grant, current.token);
     });
     return new Response(null, { status: 204 });
@@ -1830,12 +2185,33 @@ async function handleGrantRoute(
   if (!grantRoute) return undefined;
   const grantId = grantRoute[1] as `0x${string}`;
   const action = grantRoute[2];
-  const { grant, token } = await authenticatedGrant(request, env.CONNECT_STATE, grantId);
+  const { grant, token } = await authenticatedGrant(request, env, grantId);
 
   if (action === undefined && request.method === "GET") {
     return Response.json(connectionWire(grant, token));
   }
   if (action === "reconnect" && request.method === "POST") {
+    if (grant.hostPrincipal) {
+      const body = await boundedJson(request, 4 * 1024, "host principal reconnect");
+      if (Object.keys(body).length !== 1 || !("host_principal_exchange" in body)) {
+        throw new ApiFailure(400, "invalid_host_principal_exchange", "Host principal reconnect requires one fresh exchange.");
+      }
+      const exchange = opaqueToken(body.host_principal_exchange, "host_principal_exchange");
+      if (!grant.resources) {
+        throw new ApiFailure(403, "host_principal_invalid", "The host principal grant has no retained capability binding.");
+      }
+      const refreshed = await exchangeHostPrincipal(env, {
+        exchange,
+        app_id: grant.appId,
+        app_origin: grant.appOrigin,
+        resources: grant.resources,
+      });
+      if (!sameHostPrincipal(refreshed.principal, grant.hostPrincipal)
+        || refreshed.user_id !== grant.brokerUserId
+        || !sameOrderedResources(refreshed.resources, grant.resources)) {
+        throw new ApiFailure(403, "host_principal_mismatch", "The fresh exchange does not match this retained grant.");
+      }
+    }
     return Response.json(connectionWire(grant, token));
   }
   const mcpAction = action?.match(/^mcp\/([A-Za-z0-9_-]{43})$/);
@@ -1843,11 +2219,14 @@ async function handleGrantRoute(
     return grantMcpRequest(request, env, grant, mcpAction[1]!);
   }
   if (action === "mpp/balance" && request.method === "GET") {
-    if (!grant.capabilities.includes("mpp.mach") || !grant.accessKey) {
+    if (!grant.capabilities.includes("mpp.mach") || !grant.accessKey || !grant.accountAddress) {
       throw new ApiFailure(403, "mpp_not_granted", "This connection has no MPP authority.");
     }
     const refreshed = await withGrantMutationLock(store, grant.id, async () => {
-      const current = await authenticatedGrant(request, env.CONNECT_STATE, grantId);
+      const current = await authenticatedGrant(request, env, grantId);
+      if (!current.grant.accountAddress) {
+        throw new ApiFailure(403, "mpp_not_granted", "This connection has no MPP authority.");
+      }
       const [balance, settlementBalance] = await connectionBalances(current.grant.accountAddress);
       const updated = {
         ...current.grant,
@@ -1861,7 +2240,7 @@ async function handleGrantRoute(
   }
   if (action === "revoke" && request.method === "POST") {
     const revoked = await withGrantMutationLock(store, grant.id, async () => {
-      const current = await authenticatedGrant(request, env.CONNECT_STATE, grantId);
+      const current = await authenticatedGrant(request, env, grantId);
       return revokeGrant(env, store, current.grant, current.token);
     });
     return Response.json(grantWire(revoked));
@@ -1893,7 +2272,7 @@ async function handleGrantRoute(
   if (action === "mpp/charge" && request.method === "POST") {
     const body = await json(request);
     return Response.json(await withGrantMutationLock(store, grant.id, async () => {
-      const current = await authenticatedGrant(request, env.CONNECT_STATE, grantId);
+      const current = await authenticatedGrant(request, env, grantId);
       return chargeGrant(store, current.grant, current.token, body);
     }));
   }
@@ -2035,6 +2414,7 @@ function managedGrantAssertion(grant: GrantRecord): ManagedGrantAssertion {
       : { connectorConnections: grant.connectorConnections }),
     grantId: grant.id,
     mcpIds: (grant.mcpConnections ?? []).map(({ id }) => id),
+    ...(grant.hostPrincipal ? { hostPrincipal: grant.hostPrincipal } : {}),
     ...(grant.appToolCatalogDigest === undefined
       ? {}
       : { appToolCatalogDigest: grant.appToolCatalogDigest }),
@@ -2389,7 +2769,7 @@ async function handleAgentToolRoute(
   const isWeb = request.method === "POST" && url.pathname === "/api/tools/web-search";
   const isImage = request.method === "POST" && url.pathname === "/api/tools/image-generation";
   if (!isAccountInfo && !isEgress && !isWeb && !isImage) return undefined;
-  const { grant } = await authenticatedGrant(request, env.CONNECT_STATE);
+  const { grant } = await authenticatedGrant(request, env);
   requireGrantAppOrigin(request, grant);
   if (isAccountInfo) return Response.json(await connectAccountInfo(env, store, grant));
   if (isEgress) return grantBrowserEgress(request, env, grant);
@@ -2398,6 +2778,18 @@ async function handleAgentToolRoute(
 }
 
 async function connectAccountInfo(env: Env, store: Kv.Kv, current: GrantRecord) {
+  if (current.hostPrincipal) {
+    const connectorInfo = await connectorStatuses(env, current.brokerUserId);
+    return {
+      ...projectGrantConnectorStatuses(connectorInfo, current),
+      identity: { hostPrincipal: { kind: "host", id: current.hostPrincipal.id } },
+      stablecoins: [],
+      authorizations: [grantAuthorization(current)],
+    };
+  }
+  if (!current.accountAddress) {
+    throw new ApiFailure(500, "invalid_grant_binding", "The grant has no account or host principal.");
+  }
   const [connectorInfo, machineUsd, settlement, authorizations] = await Promise.all([
     connectorStatuses(env, current.brokerUserId),
     tokenBalance(MACHINE_USD, current.accountAddress),
@@ -2443,6 +2835,7 @@ function projectGrantConnectorStatuses(
 }
 
 async function accountAuthorizations(store: Kv.Kv, current: GrantRecord) {
+  if (!current.accountAddress) return [grantAuthorization(current)];
   const key = grantIndexKey(current.accountAddress);
   const retained = await store.get<unknown>(key);
   const ids = new Set<string>([
@@ -2455,7 +2848,7 @@ async function accountAuthorizations(store: Kv.Kv, current: GrantRecord) {
     ...await Promise.all([...ids].map((id) => store.get<GrantRecord>(`grant:${id}`))),
   ];
   const grants = records.filter((grant): grant is GrantRecord => isGrantRecord(grant)
-    && grant.accountAddress.toLowerCase() === current.accountAddress.toLowerCase());
+    && grant.accountAddress?.toLowerCase() === current.accountAddress!.toLowerCase());
   const seen = new Set<string>();
   return grants
     .sort((left, right) => right.expiresAt - left.expiresAt)
@@ -2941,6 +3334,9 @@ async function openGrantToolHostWebSocket(
     throw new ApiFailure(403, "agent_not_granted", "The active grant does not include this durable agent.");
   }
   remainingGrantTtl(grant);
+  if (grant.hostPrincipal) {
+    await validateHostPrincipal(env, grant.hostPrincipal, grant.brokerUserId);
+  }
   requireGrantAppOrigin(request, grant, ticket);
   const fingerprint = await grantToolHostFingerprint(grant);
   if (ticket.grantId.toLowerCase() !== grantId.toLowerCase()
@@ -2963,7 +3359,7 @@ async function openGrantToolHostWebSocket(
   const [downstream, server] = Object.values(pair);
   upstream.accept();
   server.accept();
-  superviseGrantSocket(store, grant, server, upstream, async (current) => (
+  superviseGrantSocket(env, store, grant, server, upstream, async (current) => (
     current.id.toLowerCase() === grantId.toLowerCase()
     && current.agentId === agentId
     && current.appId === grant.appId
@@ -3012,6 +3408,9 @@ async function openGrantRealtimeWebSocket(
     throw new ApiFailure(403, "chatgpt_not_granted", "The active grant does not include ChatGPT.");
   }
   remainingGrantTtl(grant);
+  if (grant.hostPrincipal) {
+    await validateHostPrincipal(env, grant.hostPrincipal, grant.brokerUserId);
+  }
   requireGrantAppOrigin(request, grant);
   if (!store.take) throw new ApiFailure(500, "realtime_ticket_unavailable", "One-time voice tickets are unavailable.");
   const ticket = await store.take<RealtimeTicket>(`realtime-ticket:${ticketValue}`);
@@ -3039,7 +3438,7 @@ async function openGrantRealtimeWebSocket(
   const [downstream, server] = Object.values(pair);
   upstream.accept();
   server.accept();
-  superviseGrantSocket(store, grant, server, upstream);
+  superviseGrantSocket(env, store, grant, server, upstream);
   return new Response(null, { status: 101, webSocket: downstream } as ResponseInit);
 }
 
@@ -3078,6 +3477,9 @@ async function openGrantModelWebSocket(
     throw new ApiFailure(403, "chatgpt_not_granted", "The active grant does not include ChatGPT.");
   }
   remainingGrantTtl(grant);
+  if (grant.hostPrincipal) {
+    await validateHostPrincipal(env, grant.hostPrincipal, grant.brokerUserId);
+  }
   const headers = new Headers({
     authorization: PROVIDER_CREDENTIAL_PLACEHOLDER,
     upgrade: "websocket",
@@ -3102,7 +3504,7 @@ async function openGrantModelWebSocket(
   const [downstream, server] = Object.values(pair);
   upstream.accept();
   server.accept();
-  superviseGrantSocket(store, grant, server, upstream);
+  superviseGrantSocket(env, store, grant, server, upstream);
   return new Response(null, {
     headers: { "sec-websocket-protocol": MODEL_PROTOCOL },
     status: 101,
@@ -3127,6 +3529,7 @@ function modelTicketProtocol(request: Request): string {
 }
 
 function superviseGrantSocket(
+  env: Env,
   store: Kv.Kv,
   grant: GrantRecord,
   downstream: WebSocket,
@@ -3170,7 +3573,8 @@ function superviseGrantSocket(
       const active = isGrantRecord(current)
         && current.status === "active"
         && current.expiresAt > Math.floor(Date.now() / 1000)
-        && await authorized(current);
+        && await authorized(current)
+        && await activeHostPrincipalGrant(env, current);
       if (!active) {
         close(1008, "Nanocodex Connect grant inactive");
         return;
@@ -3185,6 +3589,16 @@ function superviseGrantSocket(
     }
   };
   void reauthorize();
+}
+
+async function activeHostPrincipalGrant(env: Env, grant: GrantRecord): Promise<boolean> {
+  if (!grant.hostPrincipal) return true;
+  try {
+    await validateHostPrincipal(env, grant.hostPrincipal, grant.brokerUserId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function closeSocket(socket: WebSocket, code: number, reason: string): void {
@@ -3325,10 +3739,11 @@ async function withGrantIndexLock<value>(
 
 async function authenticatedGrant(
   request: Request,
-  namespace: Kv.durableObject.Namespace,
+  env: Env,
   requestedGrantId?: `0x${string}`,
 ): Promise<{ grant: GrantRecord; principal: GrantPrincipal; token: string }> {
   const token = grantBearerToken(request);
+  const namespace = env.CONNECT_STATE;
   const stub = namespace.get(namespace.idFromName("default"));
   const resolved = await stub.fetch(
     `https://do.invalid/resolve-grant?token=${encodeURIComponent(token)}`,
@@ -3351,8 +3766,11 @@ async function authenticatedGrant(
     || grant.id.toLowerCase() !== principal.grantId.toLowerCase()
     || grant.appId !== principal.appId
     || grant.appOrigin !== principal.appOrigin
-    || grant.accountAddress.toLowerCase() !== principal.accountAddress.toLowerCase()) {
+    || !grantPrincipalOwnerMatches(grant, principal)) {
     throw new ApiFailure(401, "invalid_grant_token", "The grant session is not bound to this grant, app, and account.");
+  }
+  if (grant.hostPrincipal) {
+    await validateHostPrincipal(env, grant.hostPrincipal, grant.brokerUserId);
   }
   return { grant, principal, token };
 }
@@ -3368,7 +3786,8 @@ function isGrantPrincipal(value: unknown): value is GrantPrincipal {
   return isRecord(value)
     && validAppId(value.appId)
     && isPublicAppOrigin(value.appOrigin)
-    && /^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress))
+    && ((/^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress)) && value.hostPrincipal === undefined)
+      || (value.accountAddress === undefined && isHostPrincipal(value.hostPrincipal)))
     && /^0x[0-9a-fA-F]{64}$/.test(String(value.grantId));
 }
 
@@ -3377,7 +3796,8 @@ function isGrantRecord(value: unknown): value is GrantRecord {
     && validAppId(value.appId)
     && isPublicAppOrigin(value.appOrigin)
     && /^0x[0-9a-fA-F]{64}$/.test(String(value.id))
-    && /^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress))
+    && ((/^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress)) && value.hostPrincipal === undefined)
+      || (value.accountAddress === undefined && isHostPrincipal(value.hostPrincipal)))
     && isBrokerUserId(value.brokerUserId)
     && typeof value.agentId === "string"
     && typeof value.permission === "string"
@@ -3411,8 +3831,26 @@ function isGrantRecord(value: unknown): value is GrantRecord {
     && (value.balanceAtomics === undefined || /^\d+$/.test(String(value.balanceAtomics)))
     && typeof value.spentAtomics === "string"
     && typeof value.egressSubject === "string"
+    && (value.hostPrincipal === undefined
+      ? value.resources === undefined
+      : (value.accessKey === undefined
+        && Array.isArray(value.resources)
+        && value.resources.length > 0
+        && value.resources.every((resource) => typeof resource === "string")
+        && new Set(value.resources).size === value.resources.length))
     && (value.settlementBalanceAtomics === undefined || /^\d+$/.test(String(value.settlementBalanceAtomics)))
     && (value.sharedEgressSubject === undefined || typeof value.sharedEgressSubject === "boolean");
+}
+
+function grantPrincipalOwnerMatches(grant: GrantRecord, principal: GrantPrincipal): boolean {
+  if (grant.hostPrincipal) {
+    return principal.accountAddress === undefined
+      && principal.hostPrincipal !== undefined
+      && sameHostPrincipal(grant.hostPrincipal, principal.hostPrincipal);
+  }
+  return principal.hostPrincipal === undefined
+    && grant.accountAddress !== undefined
+    && principal.accountAddress?.toLowerCase() === grant.accountAddress.toLowerCase();
 }
 
 function isBrokerUserId(value: unknown): value is string {
@@ -3461,7 +3899,7 @@ async function chargeGrant(
   body: Record<string, unknown>,
 ) {
   if (grant.status !== "active") throw new ApiFailure(409, "grant_inactive", "The grant is not active.");
-  if (!grant.capabilities.includes("mpp.mach") || !grant.accessKey) {
+  if (!grant.capabilities.includes("mpp.mach") || !grant.accessKey || !grant.accountAddress) {
     throw new ApiFailure(403, "mpp_not_granted", "This connection has no MPP authority.");
   }
   const ttl = remainingGrantTtl(grant);
@@ -3575,7 +4013,8 @@ async function startConnector(
   env: Env,
   store: Kv.Kv,
   request: Request,
-  accountAddress: `0x${string}`,
+  accountAddress: `0x${string}` | undefined,
+  hostPrincipal: HostPrincipal | undefined,
   brokerUserId: string,
   provider: OAuthConnectorProvider,
 ): Promise<Response> {
@@ -3618,7 +4057,7 @@ async function startConnector(
     throw new ApiFailure(500, "connector_state_unavailable", "Atomic connector state storage is unavailable.");
   }
   const created = await store.create(`connector-state:${callbackState}`, {
-    accountAddress,
+    ...(accountAddress ? { accountAddress } : { hostPrincipal }),
     brokerUserId,
     dialogOrigin,
     provider,
@@ -3634,7 +4073,8 @@ async function startMcpConnection(
   env: Env,
   store: Kv.Kv,
   request: Request,
-  accountAddress: `0x${string}`,
+  accountAddress: `0x${string}` | undefined,
+  hostPrincipal: HostPrincipal | undefined,
   brokerUserId: string,
   connectionId: string,
 ): Promise<Response> {
@@ -3682,7 +4122,7 @@ async function startMcpConnection(
     }
   }
   if (!await store.create(`mcp-connection-state:${state}`, {
-    accountAddress,
+    ...(accountAddress ? { accountAddress } : { hostPrincipal }),
     brokerUserId,
     connectionId,
     dialogOrigin,
@@ -3848,6 +4288,18 @@ async function completeConnectorCallback(
   if (!isConnectorState(correlation) || correlation.provider !== provider) {
     return connectorCompletionPage(provider, 400, fallbackOrigin, "invalid_state");
   }
+  if (correlation.hostPrincipal) {
+    try {
+      await validateHostPrincipal(env, correlation.hostPrincipal, correlation.brokerUserId);
+    } catch (cause) {
+      const failure = cause instanceof ApiFailure ? cause : undefined;
+      const code = failure?.code ?? "host_principal_unavailable";
+      logConnectorCallback(correlation, provider, "failure", code, env.DEPLOYMENT_SHA);
+      return correlation.returnTo
+        ? connectorCompletionRedirect(provider, correlation.returnTo, "failed", code)
+        : connectorCompletionPage(provider, failure?.status ?? 502, correlation.dialogOrigin, code);
+    }
+  }
 
   const callback: Record<string, string | null> = {};
   for (const name of ["code", "state", "error", "error_description"] as const) {
@@ -3935,6 +4387,16 @@ async function completeMcpConnectionCallback(
   const correlation = await store.take<McpConnectionState>(`mcp-connection-state:${state}`);
   if (!isMcpConnectionState(correlation) || correlation.connectionId !== connectionId) {
     return mcpCompletionPage(connectionId, 400, fallbackOrigin, "invalid_state");
+  }
+  if (correlation.hostPrincipal) {
+    try {
+      await validateHostPrincipal(env, correlation.hostPrincipal, correlation.brokerUserId);
+    } catch (cause) {
+      const failure = cause instanceof ApiFailure ? cause : undefined;
+      const code = failure?.code ?? "host_principal_unavailable";
+      logMcpCallback(correlation, "failure", code, env.DEPLOYMENT_SHA);
+      return mcpCompletionResult(correlation, "failed", code, failure?.status ?? 502);
+    }
   }
   const callback: Record<string, string | null> = {};
   for (const name of ["code", "state", "error", "error_description"] as const) {
@@ -4024,6 +4486,7 @@ function mcpCompletionResult(
   correlation: McpConnectionState,
   result: "connected" | "cancelled" | "failed",
   failure?: string,
+  failureStatus = 502,
 ): Response {
   if (correlation.returnTo) {
     const destination = new URL(correlation.returnTo);
@@ -4042,7 +4505,7 @@ function mcpCompletionResult(
   }
   return mcpCompletionPage(
     correlation.connectionId,
-    result === "failed" ? 502 : 200,
+    result === "failed" ? failureStatus : 200,
     correlation.dialogOrigin,
     result === "connected" ? undefined : failure ?? "mcp_authorization_cancelled",
   );
@@ -4114,7 +4577,11 @@ function connectorCompletionPage(
 
 function isConnectorState(value: unknown): value is ConnectorState {
   return isRecord(value)
-    && /^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress))
+    && Object.keys(value).every((key) => (
+      ["accountAddress", "hostPrincipal", "brokerUserId", "dialogOrigin", "provider", "returnTo"].includes(key)
+    ))
+    && ((/^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress)) && value.hostPrincipal === undefined)
+      || (value.accountAddress === undefined && isHostPrincipal(value.hostPrincipal)))
     && isBrokerUserId(value.brokerUserId)
     && typeof value.dialogOrigin === "string"
     && isAllowedDialogOrigin(value.dialogOrigin)
@@ -4126,7 +4593,11 @@ function isConnectorState(value: unknown): value is ConnectorState {
 
 function isMcpConnectionState(value: unknown): value is McpConnectionState {
   return isRecord(value)
-    && /^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress))
+    && Object.keys(value).every((key) => (
+      ["accountAddress", "hostPrincipal", "brokerUserId", "connectionId", "dialogOrigin", "returnTo"].includes(key)
+    ))
+    && ((/^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress)) && value.hostPrincipal === undefined)
+      || (value.accountAddress === undefined && isHostPrincipal(value.hostPrincipal)))
     && isBrokerUserId(value.brokerUserId)
     && isMcpConnectionId(value.connectionId)
     && typeof value.dialogOrigin === "string"
@@ -4535,6 +5006,7 @@ function createDeviceCode(env: Env, store: Kv.Kv) {
         const approvalId = account.capabilities.auth.approval_id;
         const approval = await store.get<ConnectApproval>(`connect-approval:${approvalId}`);
         if (!isConnectApproval(approval)
+          || !approval.accountAddress
           || approval.accountAddress.toLowerCase() !== account.address.toLowerCase()
           || approval.appId !== CLI_APP_ID
           || approval.appOrigin !== CLI_APP_ORIGIN
@@ -4749,14 +5221,14 @@ async function authRequestContext(request: Request, url: URL): Promise<AuthReque
 async function takeConnectApproval(
   store: Kv.Kv,
   approvalId: string,
-  accountAddress: `0x${string}`,
+  owner: Readonly<{ accountAddress?: `0x${string}`; hostPrincipalId?: string }>,
 ): Promise<ConnectApproval> {
   if (!/^[A-Za-z0-9_-]{43}$/.test(approvalId) || !store.take) {
     throw new ApiFailure(403, "approval_unavailable", "The signed Connect approval is unavailable.");
   }
   const approval = await store.take<ConnectApproval>(`connect-approval:${approvalId}`);
   if (!isConnectApproval(approval)
-    || approval.accountAddress.toLowerCase() !== accountAddress.toLowerCase()) {
+    || !approvalOwnerMatches(approval, owner)) {
     throw new ApiFailure(403, "approval_unavailable", "The signed Connect approval is unavailable.");
   }
   return approval;
@@ -4765,14 +5237,12 @@ async function takeConnectApproval(
 async function readConnectApproval(
   store: Kv.Kv,
   approvalId: string,
-  accountAddress: `0x${string}`,
 ): Promise<ConnectApproval> {
   if (!/^[A-Za-z0-9_-]{43}$/.test(approvalId)) {
     throw new ApiFailure(403, "approval_unavailable", "The signed Connect approval is unavailable.");
   }
   const approval = await store.get<ConnectApproval>(`connect-approval:${approvalId}`);
-  if (!isConnectApproval(approval)
-    || approval.accountAddress.toLowerCase() !== accountAddress.toLowerCase()) {
+  if (!isConnectApproval(approval)) {
     throw new ApiFailure(403, "approval_unavailable", "The signed Connect approval is unavailable.");
   }
   return approval;
@@ -4780,7 +5250,8 @@ async function readConnectApproval(
 
 function isConnectApproval(value: unknown): value is ConnectApproval {
   return isRecord(value)
-    && /^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress))
+    && ((/^0x[0-9a-fA-F]{40}$/.test(String(value.accountAddress)) && value.hostPrincipal === undefined)
+      || (value.accountAddress === undefined && isHostPrincipal(value.hostPrincipal)))
     && validAppId(value.appId)
     && isPublicAppOrigin(value.appOrigin)
     && (value.brokerUserId === undefined || isBrokerUserId(value.brokerUserId))
@@ -4796,10 +5267,24 @@ function isConnectApproval(value: unknown): value is ConnectApproval {
     && (value.durableAgentId === undefined || isConnectAgentId(value.durableAgentId))
     && Array.isArray(value.resources)
     && value.resources.every((resource) => typeof resource === "string")
+    && new Set(value.resources).size === value.resources.length
     && (value.authorization === "signed" || value.authorization === "hosted")
     && (value.profileLinked === undefined || typeof value.profileLinked === "boolean")
     && (value.keyAuthorization === undefined
       || (typeof value.keyAuthorization === "string" && /^0x[0-9a-fA-F]+$/.test(value.keyAuthorization)));
+}
+
+function approvalOwnerMatches(
+  approval: ConnectApproval,
+  owner: Readonly<{ accountAddress?: `0x${string}`; hostPrincipalId?: string }>,
+): boolean {
+  if (approval.hostPrincipal) {
+    return owner.accountAddress === undefined
+      && owner.hostPrincipalId === approval.hostPrincipal.id;
+  }
+  return owner.hostPrincipalId === undefined
+    && owner.accountAddress !== undefined
+    && approval.accountAddress?.toLowerCase() === owner.accountAddress.toLowerCase();
 }
 
 function requireApprovedCapabilities(
@@ -4807,10 +5292,11 @@ function requireApprovedCapabilities(
   appId: string,
   requested: readonly ConnectorCapability[],
   requestedMcpIds: readonly string[],
+  exact = false,
 ) {
   const approvedResources = new Set(resources);
   const required = [
-    ...(appId === CHROME_EXTENSION_APP_ID || appId === CLI_APP_ID
+    ...(exact || appId === CHROME_EXTENSION_APP_ID || appId === CLI_APP_ID
       ? ["urn:nanocodex:agent:run"]
       : BASE_APPROVAL_RESOURCES),
     `urn:nanocodex:app:${encodeURIComponent(appId)}`,
@@ -4822,7 +5308,7 @@ function requireApprovedCapabilities(
   if (requested.some((connector) => !approved.has(connector))) {
     throw new ApiFailure(403, "connector_not_approved", "A requested connector was not present in the signed SIWE approval.");
   }
-  if ((appId === CHROME_EXTENSION_APP_ID || appId === CLI_APP_ID)
+  if ((exact || appId === CHROME_EXTENSION_APP_ID || appId === CLI_APP_ID)
     && (approved.size !== requested.length || requested.some((connector) => !approved.has(connector)))) {
     throw new ApiFailure(403, "connector_mismatch", "The app grant must exchange exactly its signed connector set.");
   }
@@ -4830,7 +5316,7 @@ function requireApprovedCapabilities(
   if (requestedMcpIds.some((id) => !approvedMcpIds.includes(id))) {
     throw new ApiFailure(403, "mcp_not_approved", "A requested remote MCP was not present in the signed approval.");
   }
-  if ((appId === CHROME_EXTENSION_APP_ID || appId === CLI_APP_ID)
+  if ((exact || appId === CHROME_EXTENSION_APP_ID || appId === CLI_APP_ID)
     && (approvedMcpIds.length !== requestedMcpIds.length
       || requestedMcpIds.some((id) => !approvedMcpIds.includes(id)))) {
     throw new ApiFailure(403, "mcp_mismatch", "The app grant must exchange exactly its signed remote MCP set.");
@@ -4954,7 +5440,10 @@ function connectionWire(grant: GrantRecord, grantToken: string) {
   return {
     grant_token: grantToken,
     account_id: grant.brokerUserId,
-    account_address: grant.accountAddress,
+    ...(grant.accountAddress ? { account_address: grant.accountAddress } : {}),
+    ...(grant.hostPrincipal ? {
+      principal: { kind: "host" as const, id: grant.hostPrincipal.id },
+    } : {}),
     agent_id: grant.agentId,
     grant: grantWire(grant),
     mcp_connections: grant.mcpConnections ?? [],

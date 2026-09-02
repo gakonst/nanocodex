@@ -58,6 +58,39 @@ protocol. `/health` is the service health endpoint.
 uses the same Worker role with local Durable Objects, local egress binding, R2,
 and shorter idle timing; AI Search is a production binding.
 
+### Host-principal project registry
+
+Applications that exchange an existing Privy, Better Auth, Auth0, or other
+verified host login must be registered in the Worker-only
+`NANOCODEX_HOST_PROJECTS` value. Each entry binds one exact app, HTTPS origin,
+identity issuer, and tenant to the SHA-256 digest of that application's project
+secret:
+
+```json
+[{"app_id":"app-id","app_origin":"https://app.example","issuer":"identity-provider","tenant":"tenant-id","secret_sha256":"<43-character-base64url-SHA-256-without-padding>"}]
+```
+
+Produce the required digest from the exact secret bytes with no newline:
+
+```bash
+printf %s "$NANOCODEX_HOST_PROJECT_SECRET" | openssl dgst -sha256 -binary |
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
+```
+
+For local Wrangler development, put the one-line JSON value in the ignored
+`js/managed/.dev.vars` file. For a deployment, set it before deploying this
+Worker:
+
+```bash
+pnpm exec wrangler secret put NANOCODEX_HOST_PROJECTS --config wrangler.jsonc
+```
+
+Register every issuer/tenant pair an application can emit. The raw project
+secret belongs only in that application's Worker; this registry contains its
+digest, and the browser receives neither value. Deploy this managed Worker
+before the Connect API and the host application so exchanges do not fail with
+`invalid_project`.
+
 ## Development and operation
 
 This package participates in the checkout-isolated local platform rather than

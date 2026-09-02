@@ -6,14 +6,15 @@ import type { fund, getConfig } from "./actions/machineUsd.mjs";
 import type { transport as modelTransport } from "./actions/model.mjs";
 import type { charge, getBalance } from "./actions/mpp.mjs";
 import type { Client } from "./Client.mjs";
+import type { Connection, HostConnection } from "./types.mjs";
 
-export type ConnectActions = {
+export type ConnectActions<connection extends Connection | HostConnection = Connection> = {
   account: { logout(): logout.ReturnType };
   agent: { create(options: createAgent.Options): Promise<createAgent.ReturnType> };
   connection: {
-    connect(options: connect.Options): connect.ReturnType;
+    connect(options: connect.Options): Promise<connection>;
     disconnect(options?: disconnect.Options | undefined): disconnect.ReturnType;
-    reconnect(options?: reconnect.Options | undefined): reconnect.ReturnType;
+    reconnect(options?: reconnect.Options | undefined): Promise<connection | undefined>;
   };
   grant: { revoke(options: revoke.Options): revoke.ReturnType };
   machineUsd: {

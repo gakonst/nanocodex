@@ -1,3 +1,5 @@
+import type { HostPrincipal } from "./hostPrincipal.mts";
+
 const managedBaseCapabilities = ["agents:read", "agents:write", "tools:use"];
 const managedOptionalCapabilities = ["history:read", "memory:read", "memory:write"];
 const managedPortabilityGrantCapabilities = [
@@ -14,6 +16,7 @@ export type ManagedGrantAssertion = Readonly<{
   connectorConnections?: Readonly<Record<string, readonly string[]>>;
   grantId: `0x${string}`;
   mcpIds: readonly string[];
+  hostPrincipal?: HostPrincipal;
 }>;
 
 export function managedAgentPortabilityGranted(capabilities: readonly string[]): boolean {
@@ -37,6 +40,9 @@ export function managedGrantHeaders(assertion: ManagedGrantAssertion): Record<st
       "x-nanocodex-connect-connector-connections": JSON.stringify(assertion.connectorConnections),
     }),
     "x-nanocodex-connect-mcp-ids": JSON.stringify(assertion.mcpIds),
+    ...(assertion.hostPrincipal === undefined
+      ? {}
+      : { "x-nanocodex-connect-host-principal": JSON.stringify(assertion.hostPrincipal) }),
     ...(assertion.appToolCatalogDigest === undefined
       ? {}
       : { "x-nanocodex-connect-app-tool-catalog-digest": assertion.appToolCatalogDigest }),

@@ -1,7 +1,9 @@
 import type { ConnectActions } from "./Decorator.mjs";
 import type { Instance as DialogInstance, Dialog } from "./Dialog.mjs";
+import type { Instance as PrincipalInstance, Principal } from "./Principal.mjs";
 import type { Request, Transport } from "./Transport.mjs";
 import type { Auth, AuthorizeAccessKey } from "./actions/connection.mjs";
+import type { HostConnection } from "./types.mjs";
 
 export type Provider = Readonly<{
   request(request: Readonly<{
@@ -25,7 +27,7 @@ export type Provider = Readonly<{
   }> | undefined;
 }>;
 
-export type Base = Readonly<{
+export type Base<principal extends PrincipalInstance | undefined = PrincipalInstance | undefined> = Readonly<{
   appId: string;
   appOrigin: string | undefined;
   accessKey: Readonly<{ authorize?: AuthorizeAccessKey | undefined }> | undefined;
@@ -33,6 +35,7 @@ export type Base = Readonly<{
   dialog: DialogInstance;
   key: string;
   name: string;
+  principal: principal;
   provider: Provider;
   type: "connect";
   uid: string;
@@ -41,11 +44,14 @@ export type Base = Readonly<{
   request(request: Request): Promise<unknown>;
 }>;
 
-export type Client<extension extends object = ConnectActions> = Base & extension & {
-  extend<next extends object>(decorator: (client: Client<extension>) => next): Client<extension & next>;
+export type Client<
+  extension extends object = ConnectActions,
+  principal extends PrincipalInstance | undefined = undefined,
+> = Base<principal> & extension & {
+  extend<next extends object>(decorator: (client: Client<extension, principal>) => next): Client<extension & next, principal>;
 };
 
-export type Parameters = Readonly<{
+type BaseParameters = Readonly<{
   appId: string;
   /** Exact browser origin bound into approvals and grants. Defaults to location.origin. */
   appOrigin?: string | undefined;
@@ -63,4 +69,15 @@ export type Parameters = Readonly<{
   transport?: Transport | undefined;
 }>;
 
+export type Parameters<principal extends Principal | undefined = undefined> = BaseParameters & (
+  principal extends Principal
+    ? Readonly<{
+      /** Existing host login used only for hosted, principal-scoped authorization. */
+      principal: principal;
+    }>
+    : Readonly<{ principal?: undefined }>
+);
+
+export function create(parameters: Parameters<Principal<"host">>): Client<ConnectActions<HostConnection>, PrincipalInstance>;
 export function create(parameters: Parameters): Client;
+export function create(parameters: Parameters<Principal>): Client<ConnectActions<HostConnection>, PrincipalInstance>;

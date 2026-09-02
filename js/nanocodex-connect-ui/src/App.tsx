@@ -50,6 +50,7 @@ import {
   deviceMcpReturnPath,
   focusedConnectorFromResources,
   focusedMcpConnection,
+  hostPrincipalExchangeFromResources,
   isLocalDevelopmentOrigin,
   mcpConnectionApprovalDisposition,
   mcpConnectionsFromWire,
@@ -57,6 +58,7 @@ import {
   registeredApp,
   restoreMcpCallbackContinuation,
   sanitizeCliWalletResult,
+  sanitizeHostPrincipalWalletResult,
   sanitizeWalletResult,
   signedAppResources,
   usesBrowserLocalWebAuthn,
@@ -99,13 +101,14 @@ const productionNanocodexOrigin = "https://nanocodex.gakonst.workers.dev";
 const mcpCallbackContinuationPrefix = "nanocodex:mcp-callback:";
 type ConnectorId = typeof connectorIds[number];
 type PendingApproval = Readonly<{
-  accountAddress: `0x${string}`;
+  accountAddress?: `0x${string}`;
   apiUrl: string;
   deferredChatGptImport: boolean;
   result: unknown;
   requestId: string;
   requestedConnectors: readonly ConnectorId[];
   requestedMcpConnections: readonly McpConnection[];
+  principal?: Readonly<{ kind: "host"; id: string }>;
   token: string;
 }>;
 type ConnectorAttempt = {
@@ -217,7 +220,7 @@ export function ConnectOnboarding({
   }, [request?.id, finishConnectorAttempt]);
 
   useEffect(() => {
-    if (!request || request.type !== "walletConnect") return;
+    if (!request || request.type !== "walletConnect" || request.hostPrincipalExchange) return;
     const requestId = request.id;
     void ensureBrowserSession().then((session) => {
       if (currentRequestId.current === requestId) setBrowserAccountState(session);
@@ -358,6 +361,7 @@ export function ConnectOnboarding({
     if (
       !request
       || request.type !== "walletConnect"
+      || request.hostPrincipalExchange
       || accountMode !== "register"
       || browserLocalWebAuthn
     ) return;
@@ -464,6 +468,35 @@ export function ConnectOnboarding({
     activeCeremony.current = attempt;
     setCeremonyRequestId(activeRequest.id);
     try {
+      if (activeRequest.type === "walletConnect" && activeRequest.hostPrincipalExchange) {
+        const hosted = await authorizeHostPrincipal(activeRequest);
+        const result = sanitizeHostPrincipalWalletResult({
+          accounts: [{
+            principal: hosted.principal,
+            capabilities: { auth: { approval_id: hosted.approvalId, mode: "hosted" } },
+          }],
+        });
+        const next: PendingApproval = {
+          apiUrl: connectApiUrl(activeRequest),
+          deferredChatGptImport: false,
+          principal: hosted.principal,
+          result,
+          requestId: activeRequest.id,
+          requestedConnectors: requestedConnectorIdsFromResources(walletConnectContext(activeRequest).resources),
+          requestedMcpConnections: walletView(activeRequest).mcpConnections,
+          token: hosted.token,
+        };
+        setConnectorStatuses(hosted.connectors);
+        setMcpConnections(hosted.mcpConnections);
+        if (approvalReady(next, hosted.connectors, hosted.mcpConnections)) {
+          await completeRequest(next.result, next.requestId);
+          return;
+        }
+        setPendingApproval(next);
+        if (focusedConnector) void connectDeviceConnector(next, hosted.connectors, focusedConnector);
+        else if (focusedMcp) void connectMcpConnection(next, hosted.mcpConnections, focusedMcp, true);
+        return;
+      }
       const selectedMode = selectedAccount?.mode ?? accountMode;
       const hostedAuthorization = activeRequest.type === "walletConnect"
         && (selectedMode === "register" || authenticatedSavedAccount)
@@ -774,6 +807,40 @@ export function ConnectOnboarding({
         exchanged.mcp_connections,
       ),
       token: exchanged.token,
+    };
+  }
+
+  async function authorizeHostPrincipal(activeRequest: WalletRequest): Promise<{
+    approvalId: string;
+    connectors: ConnectorStatuses;
+    mcpConnections: readonly McpConnection[];
+    principal: Readonly<{ kind: "host"; id: string }>;
+    token: string;
+  }> {
+    const { app, resources } = walletConnectContext(activeRequest);
+    if (hostPrincipalExchangeFromResources(resources) !== activeRequest.hostPrincipalExchange) {
+      throw new Error("The host principal exchange does not match this request.");
+    }
+    const response = await fetch(`${connectApiUrl(activeRequest)}/v1/hosted-authorizations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...connectRoutingHeaders },
+      body: JSON.stringify({ app_id: app.id, app_origin: app.origin, resources }),
+    });
+    const body = await response.json() as Record<string, any>;
+    const principal = body.principal;
+    if (!response.ok
+      || !principal || principal.kind !== "host" || !/^[A-Za-z0-9_-]{43}$/.test(principal.id)
+      || !/^[A-Za-z0-9_-]{43}$/.test(String(body.approval_id))
+      || !/^[A-Za-z0-9_-]{43}$/.test(String(body.token))
+      || !body.connectors || body.profile?.linked !== true) {
+      throw new Error(apiError(body, "Unable to create the host principal authorization."));
+    }
+    return {
+      approvalId: body.approval_id,
+      connectors: decodeConnectorStatuses(body.connectors),
+      mcpConnections: requestedMcpConnections(walletView(activeRequest).mcpConnections, body.mcp_connections),
+      principal: { kind: "host", id: principal.id },
+      token: body.token,
     };
   }
 
@@ -1120,6 +1187,7 @@ export function ConnectOnboarding({
     && mcpConnections !== undefined
     && approvalReady(pendingApproval, connectorStatuses, mcpConnections);
   const connectionRequest = request.type === "walletConnect" ? walletView(request) : undefined;
+  const hostPrincipalRequest = request.type === "walletConnect" && request.hostPrincipalExchange !== undefined;
 
   return (
     <section
@@ -1130,7 +1198,7 @@ export function ConnectOnboarding({
     >
       {!wizard ? <header className="dialog-header">
         <span className="wordmark">nanocodex/connect</span>
-        <span className="secure-label"><span aria-hidden="true" /> passkey</span>
+          <span className="secure-label"><span aria-hidden="true" /> {hostPrincipalRequest ? "host identity" : "passkey"}</span>
       </header> : null}
 
       {request.type === "walletConnect" ? (
@@ -1169,7 +1237,7 @@ export function ConnectOnboarding({
               <p className="dialog-error" role="alert">{failure.message}</p>
             ) : null}
           </div>
-          {requestCompleted || !pendingApproval ? null : <div className={wizard ? "wizard-actions" : "dialog-actions"}>
+          {requestCompleted || (!pendingApproval && !hostPrincipalRequest) ? null : <div className={wizard ? "wizard-actions" : "dialog-actions"}>
             <button
               type="button"
               disabled={approvalDisabled}
@@ -1183,10 +1251,10 @@ export function ConnectOnboarding({
                 disabled={approvalDisabled
                   || connectorAction !== undefined
                   || mcpConnectionAction !== undefined
-                  || !connectedAccessReady}
-                onClick={approveConnectedAccess}
+                  || (pendingApproval !== undefined && !connectedAccessReady)}
+                onClick={pendingApproval ? approveConnectedAccess : () => void approve()}
               >
-                {connectedAccessReady ? "Approve access" : "Connect requested accounts"}
+                {!pendingApproval || connectedAccessReady ? "Approve access" : "Connect requested accounts"}
               </button>
             ) : null}
           </div>}
@@ -1238,6 +1306,7 @@ type ConnectionView = Omit<Dialog.ConnectionRequest, "auth" | "accessKey"> & Rea
   connectPolicy: ReturnType<typeof parseConnectPolicy>;
   focusConnector?: ConnectorId | undefined;
   focusMcpConnection?: string | undefined;
+  hostPrincipalExchange?: string | undefined;
   mcpConnections: readonly McpConnection[];
 }>;
 
@@ -1358,7 +1427,7 @@ function ConnectionWizard({
   const deferredChatGptImport = request.connectPolicy.chatGptCredentialImport;
   const requester = presentation === "wizard" ? "Nanocodex CLI" : request.app.name;
   const hostedAuthorization = request.auth.resources.includes(hostedAuthorizationResource);
-  if (!connectorStatuses && !accountAddress) {
+  if (!request.hostPrincipalExchange && !connectorStatuses && !accountAddress) {
     return (
       <AccountChooser
         confirmationCode={confirmationCode}
@@ -1395,13 +1464,13 @@ function ConnectionWizard({
                   ? `${connectorProviderLabel(focusedControl.provider)} is connected. You can return to ${requester}.`
                   : connectorAction === focusedProvider
                   ? `Continue in ${connectorProviderLabel(requiredConnectorProvider(focused.id))}. You’ll return here when the requested access is connected.`
-                  : "Continue with your passkey."
+                  : request.hostPrincipalExchange ? "Approve with your host identity." : "Continue with your passkey."
                 : focusedMcp
                   ? mcpConnections?.find(({ id }) => id === focusedMcp.id)?.status === "connected"
                     ? `${focusedMcp.name} is connected. You can return to ${requester}.`
                     : mcpConnectionAction === focusedMcp.id
                       ? `Continue in ${focusedMcp.name}. You’ll return here when it is connected.`
-                      : "Continue with your passkey."
+                      : request.hostPrincipalExchange ? "Approve with your host identity." : "Continue with your passkey."
                 : presentation === "dialog"
                   ? `Connect any missing accounts, then approve ${requester}’s requested access.`
                   : `Review ${requester}’s hosted access.`}</>}
@@ -1619,7 +1688,9 @@ function WizardRequestSummary({ appVisibility, request }: Readonly<{
           ) : <Detail label="Key" value="Reuse the app's active delegated signer" />}
         </dl>
         <ul className="resource-list" aria-label="Connect capability resources">
-          {request.auth.resources.map((resource) => <li key={resource}>{resource}</li>)}
+          {request.auth.resources
+            .filter((resource) => !resource.startsWith("urn:nanocodex:host-principal:exchange:"))
+            .map((resource) => <li key={resource}>{resource}</li>)}
         </ul>
       </details>
     </section>
@@ -2054,6 +2125,7 @@ function walletView(request: WalletRequest): ConnectionView {
       connectors: requestedConnectors.map(connectorDefinition),
     },
     mcpConnections: mcpRequest.connections,
+    ...(request.hostPrincipalExchange ? { hostPrincipalExchange: request.hostPrincipalExchange } : {}),
     ...(focusConnector ? { focusConnector } : {}),
     ...(mcpRequest.focus ? { focusMcpConnection: mcpRequest.focus } : {}),
     ...(preparedAccessKey ? { accessKey: preparedAccessKey } : {}),
@@ -2270,6 +2342,9 @@ function walletConnectContext(request: WalletRequest) {
     window.parent === window,
   );
   signedAppResources(resources, app);
+  if (hostPrincipalExchangeFromResources(resources) !== request.hostPrincipalExchange) {
+    throw new Error("The host principal exchange does not match this Connect request.");
+  }
   const connectPolicy = parseConnectPolicy(resources);
   focusedConnectorFromResources(resources, requestedConnectorIdsFromResources(resources));
   requestedMcpConnectionsFromRequest(request, resources);

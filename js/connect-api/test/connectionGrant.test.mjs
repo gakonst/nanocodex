@@ -5,9 +5,9 @@ import test from "node:test";
 const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
 const managedGrant = await readFile(new URL("../src/managedGrant.mts", import.meta.url), "utf8");
 
-test("signed and hosted approvals persist exact connection snapshots", () => {
+test("signed, hosted, and host-principal approvals persist exact connection snapshots", () => {
   const captures = source.match(/connectorConnectionSnapshot\(status\.connectors,/g) ?? [];
-  assert.equal(captures.length, 2);
+  assert.equal(captures.length, 3);
   assert.match(source, /connectedConnectors,\s*connectorConnections,\s*mcpConnections,/);
 });
 

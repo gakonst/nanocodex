@@ -27,6 +27,7 @@ const CONNECTOR_CONNECTION_SCHEMA = {
   required: ["id", "label"],
   additionalProperties: false,
 };
+const HOST_PRINCIPAL_ID = /^[A-Za-z0-9_-]{43}$/;
 const LIMIT_SCHEMA = {
   type: "object",
   properties: {
@@ -64,7 +65,18 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
     },
     identity: {
       type: "object",
-      properties: { tempoAddress: { type: "string" } },
+      properties: {
+        tempoAddress: { type: "string" },
+        hostPrincipal: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["host"] },
+            id: { type: "string" },
+          },
+          required: ["kind", "id"],
+          additionalProperties: false,
+        },
+      },
       additionalProperties: false,
     },
     stablecoins: {
@@ -102,6 +114,7 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
             }])),
             additionalProperties: false,
           },
+          authority: { type: "string", enum: ["hosted"] },
           accessKey: {
             type: "object",
             properties: {
@@ -146,8 +159,10 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
           "expiresAt",
           "capabilities",
           "connectors",
-          "accessKey",
-          "spend",
+        ],
+        oneOf: [
+          { required: ["authority"] },
+          { required: ["accessKey", "spend"] },
         ],
         additionalProperties: false,
       },
@@ -236,10 +251,10 @@ export async function browserAccountInfo(options, signal) {
     const accountStablecoins = stablecoins(value.stablecoins);
     const accountAuthorizations = authorizations(value.authorizations);
     if (options.requireAuthorization && (
-      !accountIdentity.tempoAddress
+      (!accountIdentity.tempoAddress && !accountIdentity.hostPrincipal)
       || !Array.isArray(value.stablecoins)
       || accountStablecoins.length !== value.stablecoins.length
-      || accountStablecoins.length === 0
+      || (accountIdentity.tempoAddress && accountStablecoins.length === 0)
       || !Array.isArray(value.authorizations)
       || accountAuthorizations.length !== value.authorizations.length
       || accountAuthorizations.length === 0
@@ -311,8 +326,15 @@ function boundedString(value, maxLength) {
 }
 
 function identity(value) {
-  if (!record(value) || typeof value.tempoAddress !== "string") return {};
-  return { tempoAddress: value.tempoAddress };
+  if (!record(value)) return {};
+  const hasTempoAddress = typeof value.tempoAddress === "string";
+  const hasHostPrincipal = validHostPrincipal(value.hostPrincipal);
+  if (hasTempoAddress === hasHostPrincipal) return {};
+  if (hasTempoAddress) return { tempoAddress: value.tempoAddress };
+  if (hasHostPrincipal) {
+    return { hostPrincipal: { kind: "host", id: value.hostPrincipal.id } };
+  }
+  return {};
 }
 
 function stablecoins(value) {
@@ -339,29 +361,31 @@ function authorizations(value) {
         authorization.connectorConnections,
       ).map(([connector, ids]) => [connector, [...ids]])),
     }),
-    accessKey: {
-      id: authorization.accessKey.id,
-      expiry: authorization.accessKey.expiry,
-      limits: authorization.accessKey.limits.map((limit) => ({
-        token: limit.token,
-        symbol: limit.symbol,
-        limit: limit.limit,
-        ...(limit.period === undefined ? {} : { period: limit.period }),
-      })),
-      scopes: authorization.accessKey.scopes.map((scope) => ({
-        address: scope.address,
-        ...(scope.selector === undefined ? {} : { selector: scope.selector }),
-        ...(scope.recipients === undefined ? {} : { recipients: [...scope.recipients] }),
-      })),
-    },
-    spend: {
-      token: authorization.spend.token,
-      symbol: authorization.spend.symbol,
-      spent: authorization.spend.spent,
-      limit: authorization.spend.limit,
-      period: authorization.spend.period,
-      maxPerRequest: authorization.spend.maxPerRequest,
-    },
+    ...(authorization.authority === "hosted" ? { authority: "hosted" } : {
+      accessKey: {
+        id: authorization.accessKey.id,
+        expiry: authorization.accessKey.expiry,
+        limits: authorization.accessKey.limits.map((limit) => ({
+          token: limit.token,
+          symbol: limit.symbol,
+          limit: limit.limit,
+          ...(limit.period === undefined ? {} : { period: limit.period }),
+        })),
+        scopes: authorization.accessKey.scopes.map((scope) => ({
+          address: scope.address,
+          ...(scope.selector === undefined ? {} : { selector: scope.selector }),
+          ...(scope.recipients === undefined ? {} : { recipients: [...scope.recipients] }),
+        })),
+      },
+      spend: {
+        token: authorization.spend.token,
+        symbol: authorization.spend.symbol,
+        spent: authorization.spend.spent,
+        limit: authorization.spend.limit,
+        period: authorization.spend.period,
+        maxPerRequest: authorization.spend.maxPerRequest,
+      },
+    }),
   }));
 }
 
@@ -375,8 +399,20 @@ function validAuthorization(value) {
     && Array.isArray(value.connectors)
     && value.connectors.every((connector) => CONNECTOR_IDS.includes(connector))
     && validConnectorConnections(value.connectorConnections, value.connectors)
-    && validAccessKey(value.accessKey)
-    && validSpend(value.spend);
+    && ((value.authority === "hosted"
+      && value.accessKey === undefined
+      && value.spend === undefined)
+      || (value.authority === undefined
+        && validAccessKey(value.accessKey)
+        && validSpend(value.spend)));
+}
+
+function validHostPrincipal(value) {
+  return record(value)
+    && value.kind === "host"
+    && typeof value.id === "string"
+    && HOST_PRINCIPAL_ID.test(value.id)
+    && Object.keys(value).every((key) => key === "kind" || key === "id");
 }
 
 function validConnectorConnections(value, granted) {

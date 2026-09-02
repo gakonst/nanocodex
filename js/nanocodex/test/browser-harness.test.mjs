@@ -288,6 +288,50 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
   });
 });
 
+test("accountInfo projects a bounded host identity and hosted authorization", async () => {
+  const hostPrincipalId = "p".repeat(43);
+  const runtime = bindBrowser({
+    ...preparedBrowser(),
+    fetch: async () => Response.json({
+      connectors: { github: { connected: true, label: "Host GitHub" } },
+      identity: {
+        hostPrincipal: { kind: "host", id: hostPrincipalId },
+        issuer: "private-host-claim",
+      },
+      stablecoins: [],
+      authorizations: [{
+        appId: "host-workspace",
+        permission: "agent.run",
+        status: "active",
+        expiresAt: 2_000_000_000,
+        capabilities: ["nanocodex.agent", "github"],
+        connectors: ["github"],
+        authority: "hosted",
+        grantToken: "secret",
+      }],
+    }),
+  }, { accountInfo: { requireAuthorization: true } });
+  const accountInfo = runtime.tools.find(({ name }) => name === "accountInfo");
+
+  assert.deepEqual(await accountInfo.handler({}, context), {
+    status: "ready",
+    authenticated: ["github"],
+    accounts: { github: "Host GitHub" },
+    connectorAccounts: {},
+    identity: { hostPrincipal: { kind: "host", id: hostPrincipalId } },
+    stablecoins: [],
+    authorizations: [{
+      appId: "host-workspace",
+      permission: "agent.run",
+      status: "active",
+      expiresAt: 2_000_000_000,
+      capabilities: ["nanocodex.agent", "github"],
+      connectors: ["github"],
+      authority: "hosted",
+    }],
+  });
+});
+
 function preparedBrowser() {
   const workspace = { async readFile() { return new Uint8Array(); } };
   return {

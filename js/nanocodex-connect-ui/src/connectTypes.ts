@@ -21,6 +21,7 @@ type WalletRequestBase = Readonly<{
   confirmationCode?: string | undefined;
   requestedMcpConnections?: readonly McpConnection[] | undefined;
   focusMcpConnection?: string | undefined;
+  hostPrincipalExchange?: string | undefined;
   returnedConnector?: "github" | "google" | "slack" | "x" | undefined;
   returnedConnectorResult?: "connected" | "cancelled" | "failed" | undefined;
   returnedMcpConnection?: string | undefined;

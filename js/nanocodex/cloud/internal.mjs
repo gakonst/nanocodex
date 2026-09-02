@@ -17,6 +17,7 @@ const CLOUD_ACCOUNT_PROVIDERS = Object.freeze([
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const AGENT_CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CATALOG_DIGEST = /^0x[0-9a-f]{64}$/;
+const HOST_PRINCIPAL_ID = /^[A-Za-z0-9_-]{43}$/;
 
 export function connectionFromWire(value) {
   const wire = object(value, "connection");
@@ -26,6 +27,17 @@ export function connectionFromWire(value) {
     : object(wire.access_key, "connection.access_key");
   const authorization = authorizationMode(wire.authorization_mode ?? (accessKey ? "access_key" : "hosted"));
   const mpp = wire.mpp === undefined ? undefined : object(wire.mpp, "connection.mpp");
+  const hasAccount = wire.account_address !== undefined;
+  const hasPrincipal = wire.principal !== undefined;
+  if (hasAccount === hasPrincipal) {
+    throw new InvalidResponseError("connection must contain exactly one wallet or host principal owner");
+  }
+  const owner = hasPrincipal
+    ? { principal: hostPrincipal(wire.principal, "connection.principal") }
+    : { accountAddress: hex(wire.account_address, "connection.account_address") };
+  if (hasPrincipal && authorization !== "hosted") {
+    throw new InvalidResponseError("host principal connections require hosted authorization");
+  }
   if (authorization === "hosted" && (accessKey !== undefined || mpp !== undefined)) {
     throw new InvalidResponseError("hosted connections cannot contain access-key or MPP authority");
   }
@@ -49,7 +61,7 @@ export function connectionFromWire(value) {
     "connection.grant.connector_connections",
   );
   return Object.freeze({
-    accountAddress: hex(wire.account_address, "connection.account_address"),
+    ...owner,
     agentId: string(wire.agent_id, "connection.agent_id"),
     grant: Object.freeze({
       id: hex(grant.id, "connection.grant.id"),
@@ -89,6 +101,16 @@ export function connectionFromWire(value) {
       maxPerRequest: bigint(mpp.max_per_request_atomics, "connection.mpp.max_per_request_atomics"),
     }) }),
   });
+}
+
+function hostPrincipal(value, label) {
+  const principal = object(value, label);
+  if (principal.kind !== "host" || typeof principal.id !== "string"
+    || !HOST_PRINCIPAL_ID.test(principal.id)
+    || Object.keys(principal).some((key) => key !== "kind" && key !== "id")) {
+    throw new InvalidResponseError(`${label} must contain an exact host principal`);
+  }
+  return Object.freeze({ kind: "host", id: principal.id });
 }
 
 export function connectionMatchesRequest(connection, options = {}) {

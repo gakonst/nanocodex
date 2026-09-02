@@ -30,6 +30,9 @@ const APP_RESOURCE_PREFIX = "urn:nanocodex:app:";
 const APP_ORIGIN_RESOURCE_PREFIX = "urn:nanocodex:origin:";
 const APP_TOOL_CATALOG_RESOURCE_PREFIX = "urn:nanocodex:app-tool-catalog:sha256:";
 const HOSTED_AUTHORIZATION_RESOURCE = "urn:nanocodex:authorization:hosted";
+const HOST_PRINCIPAL_EXCHANGE_RESOURCE_PREFIX = "urn:nanocodex:host-principal:exchange:";
+const HOST_PRINCIPAL_ID = /^[A-Za-z0-9_-]{43}$/;
+const MPP_RESOURCE_PREFIX = "urn:nanocodex:mpp:";
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const MCP_CONNECTION_RESOURCE_PREFIX = "urn:nanocodex:mcp:";
 const MCP_FOCUS_RESOURCE_PREFIX = "urn:nanocodex:mcp-focus:";
@@ -55,9 +58,15 @@ export async function connect(client, options) {
   if (typeof permission !== "string" || permission.length === 0) throw new TypeError("connect permission must be a non-empty string");
   const requestedConnectors = normalizeCloudAccounts(options.capabilities?.cloudAccounts);
   const agentVisibility = normalizeAgentVisibility(options.capabilities?.agent);
-  const authorization = options.authorization ?? "access_key";
+  const authorization = options.authorization ?? (client.principal ? "hosted" : "access_key");
   if (authorization !== "access_key" && authorization !== "hosted") {
     throw new TypeError("connect authorization must be access_key or hosted");
+  }
+  if (client.principal && authorization !== "hosted") {
+    throw new TypeError("host principal connections require hosted authorization");
+  }
+  if (client.principal && options.capabilities?.authorizeAccessKey !== undefined) {
+    throw new TypeError("host principal connections cannot request access-key or MPP authority");
   }
   const appToolCatalog = hostedAppToolCatalog(options.tools ?? []);
   const appToolCatalogDigest = appToolCatalog.length === 0
@@ -75,7 +84,7 @@ export async function connect(client, options) {
     ...(appToolCatalogDigest ? { appToolCatalogDigest } : {}),
     ...(conversationId ? { conversationId } : {}),
   });
-  const auth = withConnectionResources(
+  const baseAuth = withConnectionResources(
     options.capabilities?.auth ?? client.auth,
     client.appId,
     client.appOrigin,
@@ -87,12 +96,22 @@ export async function connect(client, options) {
     authorization,
     appToolCatalogDigest,
   );
+  if (client.principal
+    && baseAuth.resources.some((resource) => resource.startsWith(MPP_RESOURCE_PREFIX))) {
+    throw new TypeError("host principal connections cannot request access-key or MPP authority");
+  }
+  const principalExchange = client.principal
+    ? await client.principal.create({ resources: baseAuth.resources, signal: options.signal })
+    : undefined;
+  const auth = principalExchange
+    ? withHostPrincipalExchange(baseAuth, principalExchange.token)
+    : baseAuth;
   const walletAuth = delegateAuthVerification(auth);
-  client.dialog.showWallet?.();
+  if (!principalExchange) client.dialog.showWallet?.();
   let connected = false;
   try {
-    await client.dialog.waitForWallet?.();
-    const activeAccount = authorization === "access_key"
+    if (!principalExchange) await client.dialog.waitForWallet?.();
+    const activeAccount = authorization === "access_key" && !client.principal
       ? activeAccountAddress(client.provider)
       : undefined;
     const reusable = activeAccount
@@ -116,19 +135,33 @@ export async function connect(client, options) {
           ...(authorizeAccessKey ? { authorizeAccessKey: serializeAuthorizeAccessKey(authorizeAccessKey) } : {}),
         },
       }],
-      ...(mcpConnections.length === 0 ? {} : {
+      ...(!principalExchange && mcpConnections.length === 0 ? {} : {
         context: {
-          requestedMcpConnections: mcpConnections.map(({ id, name }) => ({
-            id,
-            name,
-            status: "authorization_required",
-          })),
+          ...(principalExchange ? { hostPrincipal: principalExchange } : {}),
+          ...(mcpConnections.length === 0 ? {} : {
+            requestedMcpConnections: mcpConnections.map(({ id, name }) => ({
+              id,
+              name,
+              status: "authorization_required",
+            })),
+          }),
           ...(focusMcpConnectionId ? { focusMcpConnection: focusMcpConnectionId } : {}),
         },
       }),
     });
     const account = result.accounts?.[0];
     if (!account) throw new Error("Nanocodex Connect returned no account");
+    const hostPrincipalId = principalExchange
+      ? account.principal?.kind === "host" && HOST_PRINCIPAL_ID.test(account.principal?.id)
+        ? account.principal.id
+        : undefined
+      : undefined;
+    if (principalExchange && !hostPrincipalId) {
+      throw new Error("Nanocodex Connect returned no host principal");
+    }
+    if (!principalExchange && typeof account.address !== "string") {
+      throw new Error("Nanocodex Connect returned no wallet account");
+    }
     const approvalId = account.capabilities?.auth?.approval_id;
     if (typeof approvalId !== "string" || approvalId.length === 0) {
       throw new Error("Nanocodex Connect returned no signed approval identifier");
@@ -152,7 +185,9 @@ export async function connect(client, options) {
       path: "/v1/connections",
       body: {
         app_id: client.appId,
-        account_address: account.address,
+        ...(hostPrincipalId
+          ? { principal: { kind: "host", id: hostPrincipalId } }
+          : { account_address: account.address }),
         approval_id: approvalId,
         authorization_mode: authorization,
         ...(authorization === "hosted" ? {} : keyAuthorization ? {
@@ -178,10 +213,17 @@ export async function connect(client, options) {
     if (!connectionMatchesRequest(connection, exactRequest)) {
       throw new InvalidResponseError("Nanocodex Connect returned a grant outside the exact approved request");
     }
+    if (hostPrincipalId && connection.principal?.id !== hostPrincipalId) {
+      throw new InvalidResponseError("Nanocodex Connect returned a different host principal");
+    }
+    if (!hostPrincipalId && connection.principal) {
+      throw new InvalidResponseError("Nanocodex Connect replaced the wallet account with a host principal");
+    }
     client._setSession({
       grantId: connection.grant.id,
       token: grantToken,
       connection: sessionConnectionWire(wire),
+      ...(principalExchange ? { resources: baseAuth.resources } : {}),
     });
     connected = true;
     return connection;
@@ -279,6 +321,7 @@ function withConnectionResources(
       && !resource.startsWith(APP_RESOURCE_PREFIX)
       && !resource.startsWith(APP_ORIGIN_RESOURCE_PREFIX)
       && !resource.startsWith(APP_TOOL_CATALOG_RESOURCE_PREFIX)
+      && !resource.startsWith(HOST_PRINCIPAL_EXCHANGE_RESOURCE_PREFIX)
       && resource !== HOSTED_AUTHORIZATION_RESOURCE)
     : [];
   const visibility = Object.entries(AGENT_VISIBILITY_NAMES)
@@ -304,6 +347,19 @@ function withConnectionResources(
   ])];
   if (typeof auth === "string") return { url: auth, resources };
   return { ...auth, resources };
+}
+
+function withHostPrincipalExchange(auth, token) {
+  if (!HOST_PRINCIPAL_ID.test(token)) {
+    throw new TypeError("host principal returned an invalid exchange token");
+  }
+  return {
+    ...auth,
+    resources: [
+      ...auth.resources.filter((resource) => !resource.startsWith(HOST_PRINCIPAL_EXCHANGE_RESOURCE_PREFIX)),
+      `${HOST_PRINCIPAL_EXCHANGE_RESOURCE_PREFIX}${token}`,
+    ],
+  };
 }
 
 function reusableAccessKeys(provider, accountAddress) {
@@ -422,18 +478,24 @@ export async function disconnect(client, options = {}) {
 export async function reconnect(client, options = {}) {
   const session = client._getSession();
   if (!session) return undefined;
+  const authorization = options.authorization ?? (client.principal ? "hosted" : "access_key");
+  if (client.principal && authorization !== "hosted") {
+    client._clearSession();
+    throw new TypeError("host principal connections require hosted authorization");
+  }
   const appToolCatalog = hostedAppToolCatalog(options.tools ?? []);
   const requestOptions = {
     ...options,
-    authorization: options.authorization ?? "access_key",
+    authorization,
     appToolCatalogDigest: appToolCatalog.length === 0
       ? undefined
       : await hostedToolCatalogDigest(appToolCatalog),
   };
   let retainedRequest;
+  let retained;
   if (session.connection) {
     try {
-      const retained = connectionFromWire(session.connection);
+      retained = connectionFromWire(session.connection);
       if (retained.grant.id.toLowerCase() !== session.grantId.toLowerCase()
         || !connectionMatchesRequest(retained, requestOptions)) {
         client._clearSession();
@@ -445,6 +507,27 @@ export async function reconnect(client, options = {}) {
       // grant. Current sessions always retain a complete exact projection.
     }
   }
+  if (client.principal) {
+    if (!retained?.principal || !Array.isArray(session.resources) || session.resources.length === 0) {
+      client._clearSession();
+      return undefined;
+    }
+  } else if (retained?.principal) {
+    client._clearSession();
+    return undefined;
+  }
+  let principalExchange;
+  if (client.principal) {
+    try {
+      principalExchange = await client.principal.create({
+        resources: session.resources,
+        signal: options.signal,
+      });
+    } catch (error) {
+      client._clearSession();
+      throw error;
+    }
+  }
   client._setSessionToken(session.token);
   try {
     const wire = await client.request({
@@ -452,11 +535,16 @@ export async function reconnect(client, options = {}) {
       // GET from an extension can omit Origin even when the app ID header is set.
       method: "POST",
       path: `/v1/grants/${session.grantId}/reconnect`,
+      ...(principalExchange ? { body: { host_principal_exchange: principalExchange.token } } : {}),
       signal: options.signal,
     });
     const connection = connectionFromWire(wire);
     if (connection.grant.status !== "active"
       || connection.grant.expiresAt <= Math.floor(Date.now() / 1_000)) {
+      client._clearSession();
+      return undefined;
+    }
+    if (retained?.principal && connection.principal?.id !== retained.principal.id) {
       client._clearSession();
       return undefined;
     }
@@ -467,8 +555,11 @@ export async function reconnect(client, options = {}) {
     }
     client._setSession({
       grantId: session.grantId,
-      token: session.token,
+      token: typeof wire?.grant_token === "string" && wire.grant_token
+        ? wire.grant_token
+        : session.token,
       connection: sessionConnectionWire(wire),
+      ...(principalExchange ? { resources: session.resources } : {}),
     });
     return connection;
   } catch (error) {

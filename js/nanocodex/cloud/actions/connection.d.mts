@@ -1,5 +1,12 @@
-import type { Client } from "../Client.mjs";
-import type { CloudAccount, Connection, McpConnection } from "../types.mjs";
+import type { Base, Client } from "../Client.mjs";
+import type { Instance as PrincipalInstance } from "../Principal.mjs";
+import type {
+  CloudAccount,
+  Connection,
+  HostConnection,
+  McpConnection,
+  WalletConnection,
+} from "../types.mjs";
 import type { NamedTool } from "../../host/index.mjs";
 
 export type Auth = string | Readonly<{
@@ -89,6 +96,8 @@ export declare namespace connect {
   type ErrorType = Error;
 }
 
+export function connect(client: Base<PrincipalInstance>, options: connect.Options): Promise<HostConnection>;
+export function connect(client: Base<undefined>, options: connect.Options): Promise<WalletConnection>;
 export function connect(client: Client, options: connect.Options): connect.ReturnType;
 
 export declare namespace disconnect {
@@ -118,4 +127,6 @@ export declare namespace reconnect {
 }
 
 /** Restores and validates this app's persisted grant session, if one exists. */
+export function reconnect(client: Base<PrincipalInstance>, options?: reconnect.Options | undefined): Promise<HostConnection | undefined>;
+export function reconnect(client: Base<undefined>, options?: reconnect.Options | undefined): Promise<WalletConnection | undefined>;
 export function reconnect(client: Client, options?: reconnect.Options | undefined): reconnect.ReturnType;

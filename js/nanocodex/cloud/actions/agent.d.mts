@@ -1,15 +1,15 @@
 import type { NamedTool, ToolMap, TurnUsage } from "../../types.mjs";
-import type { Client } from "../Client.mjs";
-import type { Connection, ConnectAgent } from "../types.mjs";
+import type { Base } from "../Client.mjs";
+import type { Connection, ConnectAgent, HostConnection } from "../types.mjs";
 
 export function create(
-  client: Client,
+  client: Base,
   options: create.Options,
 ): Promise<ConnectAgent>;
 
 export declare namespace create {
   type Options = Readonly<{
-    connection: Connection;
+    connection: Connection | HostConnection;
     signal?: AbortSignal | undefined;
     tools?: ToolMap | readonly NamedTool[] | undefined;
   }>;

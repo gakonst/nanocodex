@@ -149,12 +149,14 @@ export type MppPermission = Readonly<{
 }>;
 
 type ConnectionBase = Readonly<{
-  accountAddress: Hex;
   agentId: string;
   grant: Grant;
 }>;
 
-export type Connection = ConnectionBase & (
+export type WalletConnection = ConnectionBase & Readonly<{
+  accountAddress: Hex;
+  principal?: undefined;
+}> & (
   | Readonly<{
     authorization: "access_key";
     accessKey: AccessKey;
@@ -166,6 +168,17 @@ export type Connection = ConnectionBase & (
     mpp?: undefined;
   }>
 );
+
+export type HostConnection = ConnectionBase & Readonly<{
+  accountAddress?: undefined;
+  principal: Readonly<{ kind: "host"; id: string }>;
+  authorization: "hosted";
+  accessKey?: undefined;
+  mpp?: undefined;
+}>;
+
+/** The stable passkey/wallet connection contract. */
+export type Connection = WalletConnection;
 
 export type MachineUsdConfig = Readonly<{
   chainId: number;

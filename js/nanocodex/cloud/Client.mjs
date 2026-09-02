@@ -15,14 +15,18 @@ export function create(parameters) {
   const dialog = parameters.dialog ?? iframe();
   const transportInstance = transport.setup({ appId: parameters.appId });
   const dialogInstance = dialog.setup({ appId: parameters.appId });
+  const principalInstance = parameters.principal?.setup({
+    appId: parameters.appId,
+    appOrigin,
+  });
   const provider = parameters.provider ?? createRemoteProvider({
     host: dialogInstance.host,
     async target(options) {
-      await dialogInstance.waitForWallet?.();
+      if (!principalInstance) await dialogInstance.waitForWallet?.();
       return dialogInstance.walletTarget(options);
     },
   });
-  if (!parameters.provider) void provider.prepare().catch(() => undefined);
+  if (!parameters.provider && !principalInstance) void provider.prepare().catch(() => undefined);
   const uid = `${transport.key}:${parameters.appId}:${++sequence}`;
   const sessionStorage = parameters.session === false
     ? undefined
@@ -65,6 +69,7 @@ export function create(parameters) {
     dialog: dialogInstance,
     key: parameters.key ?? "connect",
     name: parameters.name ?? "Nanocodex Connect",
+    principal: principalInstance,
     provider,
     fetch: fetchControlPlane,
     request: requestControlPlane,
@@ -110,6 +115,7 @@ export function create(parameters) {
       if (!session?.connection) return undefined;
       try {
         const connection = connectionFromWire(session.connection);
+        if (connection.principal) return undefined;
         if (connection.grant.id.toLowerCase() !== session.grantId.toLowerCase()
           || connection.grant.status !== "active"
           || connection.grant.expiresAt <= Math.floor(Date.now() / 1_000)
@@ -190,6 +196,11 @@ function readSession(storage, key) {
     return Object.freeze({
       grantId: value.grantId,
       token: value.token,
+      ...(Array.isArray(value.resources)
+        && value.resources.length > 0
+        && value.resources.every((resource) => typeof resource === "string")
+        ? { resources: Object.freeze([...value.resources]) }
+        : {}),
       ...(value.connection && typeof value.connection === "object"
         ? { connection: value.connection }
         : {}),

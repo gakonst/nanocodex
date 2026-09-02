@@ -13,6 +13,7 @@ import {
   isLocalDevelopmentOrigin,
   isPopupPresentation,
   focusedMcpConnection,
+  hostPrincipalExchangeFromResources,
   mcpConnectionApprovalDisposition,
   mcpConnectionsFromWire,
   parseConnectPolicy,
@@ -20,10 +21,32 @@ import {
   registeredApp,
   restoreMcpCallbackContinuation,
   sanitizeCliWalletResult,
+  sanitizeHostPrincipalWalletResult,
   sanitizeWalletResult,
   signedAppResources,
   usesBrowserLocalWebAuthn,
 } from "nanocodex-connect-ui/connectPolicy.mjs";
+
+const hostExchange = "h".repeat(43);
+
+test("host principal policy accepts one opaque exchange and emits no wallet address", () => {
+  assert.equal(hostPrincipalExchangeFromResources([
+    "urn:nanocodex:agent:run",
+    `urn:nanocodex:host-principal:exchange:${hostExchange}`,
+  ]), hostExchange);
+  assert.throws(() => hostPrincipalExchangeFromResources([
+    `urn:nanocodex:host-principal:exchange:${hostExchange}`,
+    `urn:nanocodex:host-principal:exchange:${"x".repeat(43)}`,
+  ]), /exactly one/);
+  const result = sanitizeHostPrincipalWalletResult({
+    accounts: [{
+      principal: { kind: "host", id: "p".repeat(43) },
+      capabilities: { auth: { approval_id: "a".repeat(43), mode: "hosted" } },
+    }],
+  });
+  assert.equal("address" in result.accounts[0], false);
+  assert.deepEqual(result.accounts[0].principal, { kind: "host", id: "p".repeat(43) });
+});
 
 const LINEAR_MCP = "linear_abcdefghijklmnopqrstuvwxyz0123456789";
 const CLOUDFLARE_MCP = "cloudf_abcdefghijklmnopqrstuvwxyz0123456789";

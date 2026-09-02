@@ -152,6 +152,10 @@ import {
 } from "./account-auth";
 import { routeBrowserModel } from "./browser-model";
 import { routeAccountLinkRequest } from "./account-links";
+import {
+  routeHostPrincipalRequest,
+  type HostPrincipalEnv,
+} from "./host-principals";
 import { routeManagedRealtimeTransport } from "./managed-realtime-transport";
 import {
   HistorySearchError,
@@ -234,7 +238,7 @@ const MEMORY_TEAM_ASSERTION = "x-nanocodex-team-id";
 const MEMORY_SUBJECT_ASSERTION = "x-nanocodex-subject-id";
 const MEMORY_MUTATION_ASSERTION = "x-nanocodex-memory-mutation";
 
-export interface Env extends AccountAuthEnv {
+export interface Env extends AccountAuthEnv, HostPrincipalEnv {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
   NANOCODEX_ROOMS: DurableObjectNamespace<MultiplayerRoom>;
   NANOCODEX_MULTIPLAYER_QUOTA: DurableObjectNamespace<MultiplayerQuota>;
@@ -704,6 +708,8 @@ export default {
       managedOwnershipTimeoutMs(env),
     );
     if (realtimeTransport) return realtimeTransport;
+    const hostPrincipal = await routeHostPrincipalRequest(request, env, url);
+    if (hostPrincipal) return hostPrincipal;
     const accountLink = await routeAccountLinkRequest(request, env, url);
     if (accountLink) return accountLink;
     const account = await routeAccountRequest(request, env, url);

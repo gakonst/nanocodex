@@ -2,10 +2,12 @@
 export async function logout(client) {
   client._clearSession();
   let failure;
-  try {
-    await client.provider.request({ method: "wallet_disconnect" });
-  } catch (error) {
-    failure = error;
+  if (!client.principal) {
+    try {
+      await client.provider.request({ method: "wallet_disconnect" });
+    } catch (error) {
+      failure = error;
+    }
   }
   const cleanup = await Promise.allSettled([
     client.provider.reset?.(),

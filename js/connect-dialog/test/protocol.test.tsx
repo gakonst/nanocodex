@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 const MCP_ID = "abcdefghijklmnopqrstuvwxyz0123456789_-ABCDE";
 const OTHER_MCP_ID = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-abcde";
+const HOST_EXCHANGE = "h".repeat(43);
 
 let projectWalletRequest: typeof import("../src/protocol").projectWalletRequest;
 
@@ -94,5 +95,57 @@ describe("Wata wallet request projection", () => {
       method: "wallet_connect",
       params: [{ capabilities: { auth: { resources: [`urn:nanocodex:mcp:${MCP_ID}`] } } }],
     });
+  });
+
+  it("projects one resource-bound host exchange without retaining wallet context", () => {
+    const expiresAt = Math.floor(Date.now() / 1_000) + 120;
+    const projected = projectWalletRequest({
+      appId: "atlas-workspace",
+      id: "host-request",
+      origin: "https://consumer.example",
+      rpc: {
+        method: "wallet_connect",
+        params: [{ capabilities: { auth: { resources: [
+          `urn:nanocodex:host-principal:exchange:${HOST_EXCHANGE}`,
+        ] } } }],
+        context: { hostPrincipal: { token: HOST_EXCHANGE, expiresAt } },
+      },
+      type: "walletConnect",
+    });
+
+    expect(projected.hostPrincipalExchange).toBe(HOST_EXCHANGE);
+    expect("context" in projected.rpc).toBe(false);
+  });
+
+  it("rejects missing, duplicate, malformed, and mismatched host exchanges", () => {
+    const expiresAt = Math.floor(Date.now() / 1_000) + 120;
+    expect(() => walletRequest({ hostPrincipal: { token: HOST_EXCHANGE, expiresAt } })).toThrow(/host principal/);
+    expect(() => projectWalletRequest({
+      appId: "atlas-workspace",
+      id: "host-request",
+      origin: "https://consumer.example",
+      rpc: {
+        method: "wallet_connect",
+        params: [{ capabilities: { auth: { resources: [
+          `urn:nanocodex:host-principal:exchange:${HOST_EXCHANGE}`,
+        ] } } }],
+      },
+      type: "walletConnect",
+    })).toThrow(/host principal/);
+    for (const resources of [
+      [`urn:nanocodex:host-principal:exchange:short`],
+      [
+        `urn:nanocodex:host-principal:exchange:${HOST_EXCHANGE}`,
+        `urn:nanocodex:host-principal:exchange:${"x".repeat(43)}`,
+      ],
+    ]) {
+      expect(() => projectWalletRequest({
+        appId: "atlas-workspace",
+        id: "host-request",
+        origin: "https://consumer.example",
+        rpc: { method: "wallet_connect", params: [{ capabilities: { auth: { resources } } }] },
+        type: "walletConnect",
+      })).toThrow(/host principal/);
+    }
   });
 });

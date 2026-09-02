@@ -95,6 +95,8 @@ test("the packed package ships and resolves every public entry point", async () 
       import { Agent as HostAgent, Transport as HostTransport } from "nanocodex/host";
       import * as hostExports from "nanocodex/host";
       import { Agent as ManagedAgent } from "nanocodex/managed";
+      import { Principal } from "nanocodex/connect";
+      import { HostPrincipal } from "nanocodex/connect/server";
       import { dataset as aggregateDataset, web } from "nanocodex/tools";
       import { dataset } from "nanocodex/tools/dataset";
       import { Agent as NodeAgent, Subagents as NodeSubagents, Transport as NodeTransport, Workspace as NodeWorkspace } from "nanocodex/node";
@@ -105,6 +107,8 @@ test("the packed package ships and resolves every public entry point", async () 
       assert.equal(typeof Actions.turn.prompt, "function");
       assert.equal(typeof ManagedAgent.create, "function");
       assert.equal(typeof ManagedAgent.list, "function");
+      assert.equal(typeof Principal.host, "function");
+      assert.equal(typeof HostPrincipal.create, "function");
       const durabilityValueNames = [
         "createMemoryDurabilityStore",
         "createSqliteDurabilityStore",

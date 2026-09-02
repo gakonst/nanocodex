@@ -1,6 +1,10 @@
 import type { Dialog } from "nanocodex/connect";
 import { Wata, postMessage } from "wata/host";
-import { mcpConnectionsFromWire, registeredApp } from "nanocodex-connect-ui/connectPolicy.mjs";
+import {
+  hostPrincipalExchangeFromResources,
+  mcpConnectionsFromWire,
+  registeredApp,
+} from "nanocodex-connect-ui/connectPolicy.mjs";
 import type { ConnectRequest, WalletRequest } from "nanocodex-connect-ui/connectTypes";
 
 export type Request = Exclude<ConnectRequest, { type: "deviceError" | "deviceComplete" }>;
@@ -153,7 +157,7 @@ export function projectWalletRequest(value: Readonly<{
   rpc: WalletRpc;
   type: WalletRequest["type"];
 }>): WalletRequest {
-  const metadata = walletRequestMetadata(value.rpc.context);
+  const metadata = walletRequestMetadata(value.rpc.context, value.rpc.params);
   if (value.type !== "walletConnect" && Object.keys(metadata).length > 0) {
     throw new Error("Nanocodex Connect received unexpected MCP request metadata.");
   }
@@ -170,20 +174,42 @@ export function projectWalletRequest(value: Readonly<{
   });
 }
 
-function walletRequestMetadata(value: unknown): Readonly<{
+function walletRequestMetadata(value: unknown, params: unknown): Readonly<{
   requestedMcpConnections?: WalletRequest["requestedMcpConnections"];
   focusMcpConnection?: string;
+  hostPrincipalExchange?: string;
 }> {
-  if (value === undefined) return Object.freeze({});
-  if (!isRecord(value)
-    || Object.keys(value).some((key) => key !== "requestedMcpConnections" && key !== "focusMcpConnection")) {
+  const resources = walletResources(params);
+  const hostPrincipalExchange = hostPrincipalExchangeFromResources(resources);
+  if (value === undefined) {
+    if (hostPrincipalExchange) {
+      throw new Error("Nanocodex Connect received invalid host principal metadata.");
+    }
+    return Object.freeze({});
+  }
+  if (!isRecord(value) || Object.keys(value).some((key) =>
+    key !== "requestedMcpConnections" && key !== "focusMcpConnection" && key !== "hostPrincipal")) {
     throw new Error("Nanocodex Connect received invalid MCP request metadata.");
+  }
+  if (value.hostPrincipal !== undefined) {
+    const principal = value.hostPrincipal;
+    const now = Math.floor(Date.now() / 1_000);
+    if (!isRecord(principal)
+      || Object.keys(principal).some((key) => key !== "token" && key !== "expiresAt")
+      || principal.token !== hostPrincipalExchange
+      || !Number.isSafeInteger(principal.expiresAt)
+      || principal.expiresAt <= now
+      || principal.expiresAt > now + 300) {
+      throw new Error("Nanocodex Connect received invalid host principal metadata.");
+    }
+  } else if (hostPrincipalExchange !== undefined) {
+    throw new Error("Nanocodex Connect received invalid host principal metadata.");
   }
   if (value.requestedMcpConnections === undefined) {
     if (value.focusMcpConnection !== undefined) {
       throw new Error("The focused MCP connection is invalid.");
     }
-    return Object.freeze({});
+    return Object.freeze(hostPrincipalExchange ? { hostPrincipalExchange } : {});
   }
   const connections = mcpConnectionsFromWire(value.requestedMcpConnections);
   if (connections.length > 16
@@ -196,9 +222,17 @@ function walletRequestMetadata(value: unknown): Readonly<{
     throw new Error("The focused MCP connection is invalid.");
   }
   return Object.freeze({
+    ...(hostPrincipalExchange ? { hostPrincipalExchange } : {}),
     requestedMcpConnections: connections,
     ...(focus === undefined ? {} : { focusMcpConnection: focus }),
   });
+}
+
+function walletResources(params: unknown): unknown[] {
+  if (!Array.isArray(params) || !isRecord(params[0])) return [];
+  const capabilities = params[0].capabilities;
+  if (!isRecord(capabilities) || !isRecord(capabilities.auth)) return [];
+  return Array.isArray(capabilities.auth.resources) ? capabilities.auth.resources : [];
 }
 
 

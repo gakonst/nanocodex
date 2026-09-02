@@ -53,6 +53,15 @@ type SanitizedCliWalletResult = Readonly<{
   }>[];
 }>;
 
+type SanitizedHostPrincipalWalletResult = Readonly<{
+  accounts: readonly Readonly<{
+    principal: Readonly<{ kind: "host"; id: string }>;
+    capabilities: Readonly<{
+      auth: Readonly<{ approval_id: string; mode: "hosted" }>;
+    }>;
+  }>[];
+}>;
+
 export type McpCallbackContinuation = Readonly<{
   version: 1;
   expiresAt: number;
@@ -97,6 +106,8 @@ const connectorFocusResourcePrefix = "urn:nanocodex:connector-focus:";
 const credentialImportResourcePrefix = "urn:nanocodex:credential-import:";
 const agentConversationResourcePrefix = "urn:nanocodex:agent:conversation:";
 const appToolCatalogResource = /^urn:nanocodex:app-tool-catalog:sha256:[0-9a-f]{64}$/;
+const hostPrincipalExchangeResourcePrefix = "urn:nanocodex:host-principal:exchange:";
+const hostPrincipalExchangeToken = /^[A-Za-z0-9_-]{43}$/;
 const agentConversationId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const chatGptCredentialImportResource = /^urn:nanocodex:credential-import:chatgpt:codex-auth-v1:sha256:[A-Za-z0-9_-]{43}$/;
 const connectorIds = new Set<ConnectorCapability>([
@@ -266,6 +277,50 @@ export function parseConnectPolicy(resources: unknown): ConnectPolicy {
     throw new Error("The signed ChatGPT credential import has no ChatGPT connector request.");
   }
   return Object.freeze({ chatGptCredentialImport: true });
+}
+
+export function hostPrincipalExchangeFromResources(resources: unknown): string | undefined {
+  if (!Array.isArray(resources)) {
+    throw new Error("Nanocodex Connect received invalid host principal resources.");
+  }
+  const matches = resources.filter((resource) =>
+    typeof resource === "string" && resource.startsWith(hostPrincipalExchangeResourcePrefix));
+  if (matches.length === 0) return undefined;
+  if (matches.length !== 1) {
+    throw new Error("Nanocodex Connect requires exactly one host principal exchange.");
+  }
+  const token = matches[0].slice(hostPrincipalExchangeResourcePrefix.length);
+  if (!hostPrincipalExchangeToken.test(token)) {
+    throw new Error("Nanocodex Connect received an invalid host principal exchange.");
+  }
+  return token;
+}
+
+export function sanitizeHostPrincipalWalletResult(
+  result: unknown,
+): SanitizedHostPrincipalWalletResult {
+  if (!isRecord(result) || !Array.isArray(result.accounts) || result.accounts.length !== 1) {
+    throw new Error("Nanocodex Connect did not return exactly one host principal.");
+  }
+  const account = result.accounts[0];
+  const principal = isRecord(account?.principal) ? account.principal : {};
+  const capabilities = isRecord(account?.capabilities) ? account.capabilities : {};
+  const auth = isRecord(capabilities.auth) ? capabilities.auth : {};
+  if (Object.keys(account ?? {}).some((key) => key !== "principal" && key !== "capabilities")
+    || Object.keys(principal).some((key) => key !== "kind" && key !== "id")
+    || principal.kind !== "host" || !hostPrincipalExchangeToken.test(principal.id)
+    || Object.keys(capabilities).some((key) => key !== "auth")
+    || Object.keys(auth).some((key) => key !== "approval_id" && key !== "mode")
+    || !hostPrincipalExchangeToken.test(auth.approval_id)
+    || auth.mode !== "hosted") {
+    throw new Error("Nanocodex Connect returned an invalid host principal approval.");
+  }
+  return {
+    accounts: [{
+      principal: { kind: "host", id: principal.id },
+      capabilities: { auth: { approval_id: auth.approval_id, mode: "hosted" } },
+    }],
+  };
 }
 
 export function connectApiOrigin(auth: unknown, dialogOrigin: string): string {
