@@ -2,6 +2,7 @@ import { digest, sameChannelIdentity, type ChannelIdentity } from "./protocol.ts
 
 const MAX_INPUT_CHARS = 120_000;
 const MAX_SLACK_REPLY_CHARS = 35_000;
+const MAX_VIBER_REPLY_CHARS = 7_000;
 
 export interface ConversationStore {
   bindIdentity(identity: ChannelIdentity): Promise<boolean>;
@@ -77,14 +78,14 @@ export class ConversationEngine {
     }
 
     const agentId = retained?.agentId ?? await this.agent(channelDigest);
-    const turnId = retained?.turnId ?? `slack-${messageDigest.slice(0, 48)}`;
+    const turnId = retained?.turnId ?? `${request.channel.platform}-${messageDigest.slice(0, 48)}`;
     const record = { agentId, inputDigest, turnId } satisfies TurnRecord;
     if (!retained) await this.store.put(turnKey, record);
     const result = normalizeReply(await this.managed.runTurn(agentId, {
       id: turnId,
       idempotencyKey: `chief-turn:${channelDigest}:${messageDigest}`,
       input,
-    }));
+    }), request.channel.platform);
     await this.store.put(turnKey, { ...record, finalMessage: result });
     return { agentId, finalMessage: result, replayed: false, turnId };
   }
@@ -133,27 +134,39 @@ function validateTurn(request: ConversationTurnRequest): void {
   if (request.text.length > MAX_INPUT_CHARS) {
     throw new ConversationError(413, "message_too_large");
   }
-  if (!/^[UW][A-Z0-9]+$/.test(request.actorId)) {
-    throw new ConversationError(400, "invalid_actor");
-  }
-  if (!/^[0-9]+\.[0-9]+$/.test(request.messageId)) {
-    throw new ConversationError(400, "invalid_message");
+  if (request.channel.platform === "slack") {
+    if (!/^[UW][A-Z0-9]+$/.test(request.actorId)) {
+      throw new ConversationError(400, "invalid_actor");
+    }
+    if (!/^[0-9]+\.[0-9]+$/.test(request.messageId)) {
+      throw new ConversationError(400, "invalid_message");
+    }
+  } else {
+    if (request.actorId !== request.channel.userId) {
+      throw new ConversationError(400, "invalid_actor");
+    }
+    if (!/^[0-9]+$/.test(request.messageId)) {
+      throw new ConversationError(400, "invalid_message");
+    }
   }
 }
 
 function chiefOfStaffPrompt(request: ConversationTurnRequest): string {
+  const platform = request.channel.platform === "slack" ? "Slack" : "Viber";
   return [
-    "You are the user's Chief of Staff in Slack.",
+    `You are the user's Chief of Staff in ${platform}.`,
     "Be concise, action-oriented, and explicit about uncertainty.",
     "Never claim to have contacted people or changed external state unless tool evidence proves it.",
-    `Slack actor: ${request.actorId}`,
+    `${platform} actor: ${request.actorId}`,
     "User message:",
     request.text.trim(),
   ].join("\n");
 }
 
-function normalizeReply(value: string): string {
+function normalizeReply(value: string, platform: ChannelIdentity["platform"]): string {
   const reply = value.trim() || "I completed the turn, but it did not produce a text response.";
-  if (reply.length <= MAX_SLACK_REPLY_CHARS) return reply;
-  return `${reply.slice(0, MAX_SLACK_REPLY_CHARS - 31)}\n\n[Response truncated for Slack]`;
+  const maxChars = platform === "slack" ? MAX_SLACK_REPLY_CHARS : MAX_VIBER_REPLY_CHARS;
+  if (reply.length <= maxChars) return reply;
+  const suffix = `\n\n[Response truncated for ${platform === "slack" ? "Slack" : "Viber"}]`;
+  return `${reply.slice(0, maxChars - suffix.length)}${suffix}`;
 }

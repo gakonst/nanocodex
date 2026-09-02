@@ -14,6 +14,12 @@ export type ChannelIdentity = Readonly<{
   conversationId: string;
   platform: "slack";
   teamId: string;
+}> | Readonly<{
+  accountId: string;
+  botUri: string;
+  conversationId: string;
+  platform: "viber";
+  userId: string;
 }>;
 
 export type SlackMessageIdentity = Readonly<{
@@ -25,10 +31,11 @@ export type SlackMessageIdentity = Readonly<{
 export type Readiness = Readonly<{
   accountMatch: boolean;
   channels: readonly Readonly<{
-    id: "slack" | "whatsapp" | "imessage";
+    id: "slack" | "whatsapp" | "imessage" | "viber";
     availability: "ready" | "setup_required" | "not_enabled";
     contract: "first_party" | "vendor_official";
     detail: string;
+    webhookUrl?: string | null;
   }>[];
   configured: boolean;
   installations: readonly SlackInstallationSummary[];
@@ -100,7 +107,16 @@ export function configurationReadiness(env: {
   SLACK_ENCRYPTION_KEY?: string;
   SLACK_OAUTH_STATE_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
-}): Readonly<{ configured: boolean; webhookUrl: string | null }> {
+  VIBER_AUTH_TOKEN?: string;
+  VIBER_BOT_AVATAR?: string;
+  VIBER_BOT_NAME?: string;
+  VIBER_BOT_URI?: string;
+}): Readonly<{
+  configured: boolean;
+  slack: Readonly<{ configured: boolean; webhookUrl: string | null }>;
+  viber: Readonly<{ configured: boolean; webhookUrl: string | null }>;
+  webhookUrl: string | null;
+}> {
   let origin: URL | undefined;
   try {
     origin = env.CHIEF_OF_STAFF_PUBLIC_ORIGIN
@@ -109,21 +125,37 @@ export function configurationReadiness(env: {
   } catch {
     origin = undefined;
   }
-  const configured = Boolean(
-    origin?.protocol === "https:"
+  const validOrigin = Boolean(origin?.protocol === "https:"
     && origin.pathname === "/"
     && !origin.search
-    && !origin.hash
-    && API_KEY.test(env.NANOCODEX_API_KEY ?? "")
+    && !origin.hash);
+  const validAccount = API_KEY.test(env.NANOCODEX_API_KEY ?? "");
+  const slackConfigured = Boolean(
+    validOrigin
+    && validAccount
     && SLACK_CLIENT_ID.test(env.SLACK_CLIENT_ID ?? "")
     && (env.SLACK_CLIENT_SECRET?.length ?? 0) >= 16
     && validBase64Key(env.SLACK_ENCRYPTION_KEY)
     && validBase64Key(env.SLACK_OAUTH_STATE_SECRET)
     && (env.SLACK_SIGNING_SECRET?.length ?? 0) >= 16
   );
+  const viberConfigured = Boolean(
+    validOrigin
+    && validAccount
+    && validViberToken(env.VIBER_AUTH_TOKEN)
+    && validOptionalHttpsUrl(env.VIBER_BOT_AVATAR)
+    && validViberBotName(env.VIBER_BOT_NAME)
+    && validViberBotUri(env.VIBER_BOT_URI),
+  );
+  const slackWebhookUrl = origin ? new URL("/webhooks/slack", origin).href : null;
   return {
-    configured,
-    webhookUrl: origin ? new URL("/webhooks/slack", origin).href : null,
+    configured: slackConfigured,
+    slack: { configured: slackConfigured, webhookUrl: slackWebhookUrl },
+    viber: {
+      configured: viberConfigured,
+      webhookUrl: origin ? new URL("/webhooks/viber", origin).href : null,
+    },
+    webhookUrl: slackWebhookUrl,
   };
 }
 
@@ -149,11 +181,40 @@ export async function digest(value: unknown): Promise<string> {
 }
 
 export function sameChannelIdentity(left: ChannelIdentity, right: ChannelIdentity): boolean {
-  return left.accountId === right.accountId
-    && left.channelId === right.channelId
-    && left.conversationId === right.conversationId
-    && left.platform === right.platform
-    && left.teamId === right.teamId;
+  if (left.platform !== right.platform || left.accountId !== right.accountId
+    || left.conversationId !== right.conversationId) return false;
+  return left.platform === "slack"
+    ? right.platform === "slack"
+      && left.channelId === right.channelId
+      && left.teamId === right.teamId
+    : right.platform === "viber"
+      && left.botUri === right.botUri
+      && left.userId === right.userId;
+}
+
+function validViberToken(value: string | undefined): boolean {
+  return typeof value === "string"
+    && value.length >= 32
+    && value.length <= 256
+    && !/[\s\u0000-\u001f\u007f]/.test(value);
+}
+
+function validViberBotName(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim() === value && value.length >= 1 && value.length <= 28;
+}
+
+function validViberBotUri(value: string | undefined): boolean {
+  return typeof value === "string" && /^[A-Za-z0-9_.-]{1,255}$/.test(value);
+}
+
+function validOptionalHttpsUrl(value: string | undefined): boolean {
+  if (value === undefined) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 function canonicalJson(value: unknown): string {

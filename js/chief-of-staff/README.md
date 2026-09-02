@@ -16,6 +16,10 @@ Each account/workspace/conversation maps to a retained managed Nanocodex agent.
 The account app receives only non-secret installation and readiness metadata
 through a service binding.
 
+The same Worker also exposes an official Viber Bot REST API channel. It verifies
+the raw callback HMAC, maps each bot/subscriber pair to a durable conversation,
+and returns the retained managed agent's reply through the configured Viber bot.
+
 ## Configure the shared Slack app
 
 Create one distributable Slack app from `slack-app-manifest.yaml`, following the
@@ -45,6 +49,33 @@ pnpm exec wrangler secret put SLACK_ENCRYPTION_KEY --config js/chief-of-staff/wr
 pnpm exec wrangler secret put SLACK_OAUTH_STATE_SECRET --config js/chief-of-staff/wrangler.jsonc
 ```
 
+## Configure Viber
+
+Provision a commercial chatbot directly with Rakuten Viber or an official messaging
+partner. Copy the bot token, display name, and stable bot URI into Worker secrets:
+
+```sh
+pnpm exec wrangler secret put VIBER_AUTH_TOKEN --config js/chief-of-staff/wrangler.jsonc
+pnpm exec wrangler secret put VIBER_BOT_NAME --config js/chief-of-staff/wrangler.jsonc
+pnpm exec wrangler secret put VIBER_BOT_URI --config js/chief-of-staff/wrangler.jsonc
+# Optional
+pnpm exec wrangler secret put VIBER_BOT_AVATAR --config js/chief-of-staff/wrangler.jsonc
+```
+
+`VIBER_BOT_NAME` must be at most 28 characters. `VIBER_BOT_URI` is the stable URI
+returned by Viber's `get_account_info` API; it keeps durable conversations attached
+to the same bot if its authentication token rotates. `VIBER_BOT_AVATAR` is an
+optional HTTPS avatar URL.
+
+Register `https://<chief-of-staff-origin>/webhooks/viber` with Viber's
+`set_webhook` endpoint. The Worker accepts only callbacks carrying a valid
+`X-Viber-Content-Signature`. Opening the bot produces a short welcome message;
+the first user message subscribes the user and creates their durable agent session.
+Text, image, video, file, URL, sticker, location, and contact inputs are normalized
+into turns. Replies respect Viber's 7,000-character text limit. A durable delivery
+claim suppresses duplicate outbound messages when Viber retries an already handled
+callback; expired claims are recoverable after an interrupted send.
+
 `NANOCODEX_API_KEY` binds this deployment to its owning Nanocodex account. Slack
 OAuth installations are accepted only when initiated by that signed-in owner.
 Set both public origins in Wrangler when deploying under other names or domains.
@@ -63,11 +94,13 @@ pnpm deploy:account
   to bot DMs, mentions, and subscribed threads.
 - Slack connector: separately authorized user token; acts on behalf of the human
   in only the exact workspaces granted through Connect.
+- Viber: official Bot REST API; branded bot identity; each subscriber receives an
+  isolated durable conversation.
 - WhatsApp has a first-party Chat SDK adapter, but this deployment does not expose
   or claim a Meta webhook yet.
 - iMessage is listed by Chat SDK through vendor adapters, not a first-party adapter;
   this deployment does not configure one.
 
-Run `pnpm --filter @nanocodex/chief-of-staff check` for OAuth state, signature,
-workspace fencing, idempotency, cross-account/channel isolation, durable two-turn,
-type, and dry-run deployment coverage.
+Run `pnpm --filter @nanocodex/chief-of-staff check` for OAuth state, Slack and Viber
+signatures, workspace fencing, idempotency, cross-account/channel isolation,
+durable two-turn, type, and dry-run deployment coverage.

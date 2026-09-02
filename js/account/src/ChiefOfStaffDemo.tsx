@@ -1,4 +1,4 @@
-import { Bot, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Bot, Check, Copy, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useAccountSession } from "./AccountSession";
 import "./ChiefOfStaffDemo.css";
@@ -7,7 +7,8 @@ type Channel = Readonly<{
   availability: "ready" | "setup_required" | "not_enabled";
   contract: "first_party" | "vendor_official";
   detail: string;
-  id: "slack" | "whatsapp" | "imessage";
+  id: "slack" | "whatsapp" | "imessage" | "viber";
+  webhookUrl?: string | null;
 }>;
 
 type Readiness = Readonly<{
@@ -24,11 +25,12 @@ type Readiness = Readonly<{
   webhookUrl: string | null;
 }>;
 
-const labels = { slack: "Slack", whatsapp: "WhatsApp", imessage: "iMessage" } as const;
+const labels = { slack: "Slack", whatsapp: "WhatsApp", imessage: "iMessage", viber: "Viber" } as const;
 const docs = {
   slack: "https://chat-sdk.dev/adapters/slack",
   whatsapp: "https://chat-sdk.dev/adapters/whatsapp",
   imessage: "https://chat-sdk.dev/adapters/photon",
+  viber: "https://developers.viber.com/docs/api/rest-bot-api/",
 } as const;
 
 export function ChiefOfStaffDemo() {
@@ -37,6 +39,7 @@ export function ChiefOfStaffDemo() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [operation, setOperation] = useState<string | null>(null);
+  const [copiedViber, setCopiedViber] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -81,21 +84,30 @@ export function ChiefOfStaffDemo() {
     }
   }, [operation, refresh]);
 
+  const copyViberWebhook = useCallback(async (webhookUrl: string) => {
+    await navigator.clipboard.writeText(webhookUrl);
+    setCopiedViber(true);
+    window.setTimeout(() => setCopiedViber(false), 1_500);
+  }, []);
+
+  const viber = readiness?.channels.find((channel) => channel.id === "viber");
+  const readyChannels = readiness?.channels.filter((channel) => channel.availability === "ready") ?? [];
+
   return (
     <article className="chief-demo page-grid">
       <header className="chief-hero">
         <p className="eyebrow">Demos · Chat SDK integration</p>
         <h1>Chief of Staff</h1>
         <p>
-          Install a durable Nanocodex agent into Slack as its own AI teammate. It has a bot
-          identity, receives mentions and DMs, and keeps every workspace and conversation on
-          its own route.
+          Install a durable Nanocodex agent as its own messaging identity. Slack provides a
+          workspace AI teammate; Viber provides a branded chatbot. Every workspace, subscriber,
+          and conversation stays on its own route.
         </p>
         <div className="chief-hero-status" aria-live="polite">
           <span className={`chief-status-dot${readiness?.configured ? " is-ready" : ""}`} />
-          <span>{loading ? "Checking deployment" : readiness?.configured
-            ? "Slack is ready"
-            : "Slack setup required"}</span>
+          <span>{loading ? "Checking deployment" : readyChannels.length > 0
+            ? `${readyChannels.map((channel) => labels[channel.id]).join(" + ")} ready`
+            : "Messaging setup required"}</span>
           <button type="button" onClick={() => void refresh()} disabled={loading}>
             <RefreshCw aria-hidden="true" /> Refresh
           </button>
@@ -120,7 +132,7 @@ export function ChiefOfStaffDemo() {
             </header>
             <p>{channel.detail}</p>
             <a href={docs[channel.id]} target="_blank" rel="noreferrer">
-              Official Chat SDK contract <ExternalLink aria-hidden="true" />
+              {channel.id === "viber" ? "Official Viber API" : "Official Chat SDK contract"} <ExternalLink aria-hidden="true" />
             </a>
           </article>
         ))}
@@ -164,6 +176,34 @@ export function ChiefOfStaffDemo() {
           has its own authorization, tokens, and workspace grants.
         </p>
       </section>
+
+      <section className="chief-setup" aria-labelledby="chief-viber-title">
+        <header>
+          <div>
+            <p className="eyebrow">Viber chatbot</p>
+            <h2 id="chief-viber-title">Connect the Viber bot</h2>
+          </div>
+          <Bot aria-hidden="true" />
+        </header>
+        <div className="chief-install-action">
+          <div>
+            <strong>Commercial bot webhook</strong>
+            <p>Configure the bot token, name, and URI once, then register this signed callback URL with Viber.</p>
+          </div>
+          {viber?.webhookUrl ? <button
+            className="chief-copy-viber"
+            type="button"
+            onClick={() => void copyViberWebhook(viber.webhookUrl!)}
+          >
+            {copiedViber ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+            {copiedViber ? "Copied" : "Copy webhook"}
+          </button> : <span className="chief-install-unavailable">Deployment setup required</span>}
+        </div>
+        <p className="chief-secret-note">
+          Callback signatures are verified before routing. Each Viber subscriber receives an
+          isolated durable agent session, with replay-safe outbound delivery.
+        </p>
+      </section>
     </article>
   );
 }
@@ -172,4 +212,5 @@ const fallbackChannels: readonly Channel[] = [
   { id: "slack", availability: "setup_required", contract: "first_party", detail: "Readiness has not been confirmed by the integration Worker." },
   { id: "whatsapp", availability: "not_enabled", contract: "first_party", detail: "The SDK contract exists, but this deployment does not claim a configured Meta webhook." },
   { id: "imessage", availability: "not_enabled", contract: "vendor_official", detail: "Chat SDK catalogs vendor adapters; no iMessage provider is connected here." },
+  { id: "viber", availability: "setup_required", contract: "first_party", detail: "Connect a commercial Viber chatbot to enable signed inbound messages and durable replies." },
 ];

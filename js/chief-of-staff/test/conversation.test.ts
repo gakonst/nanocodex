@@ -43,6 +43,14 @@ const channel: ChannelIdentity = {
   teamId: "T123ABC",
 };
 
+const viberChannel: ChannelIdentity = {
+  accountId: "account-a",
+  botUri: "nanocodex-chief",
+  conversationId: "dm:01234567890A=",
+  platform: "viber",
+  userId: "01234567890A=",
+};
+
 test("a durable conversation reuses one managed agent across two turns", async () => {
   const store = new MemoryConversationStore();
   const gateway = new RememberingGateway();
@@ -137,4 +145,58 @@ test("durable state cannot be rebound across accounts or Slack channels", async 
   }
   assert.notEqual(await digest(channel), await digest({ ...channel, accountId: "account-b" }));
   assert.notEqual(await digest(channel), await digest({ ...channel, channelId: "D999XYZ" }));
+});
+
+test("a Viber subscriber receives one durable agent across multiple messages", async () => {
+  const store = new MemoryConversationStore();
+  const gateway = new RememberingGateway();
+  const engine = new ConversationEngine(store, gateway);
+  await engine.turn({
+    actorId: "01234567890A=",
+    channel: viberChannel,
+    messageId: "5741311803571721087",
+    text: "Remember kiwi",
+  });
+  const second = await engine.turn({
+    actorId: "01234567890A=",
+    channel: viberChannel,
+    messageId: "5741311803571721088",
+    text: "What should you remember?",
+  });
+
+  assert.equal(second.finalMessage, "You asked me to remember kiwi.");
+  assert.equal(second.turnId.startsWith("viber-"), true);
+  assert.equal(gateway.created.length, 1);
+  assert.equal(gateway.turns[0]?.input.includes("Chief of Staff in Viber"), true);
+});
+
+test("Viber actors cannot cross another subscriber's durable route", async () => {
+  const engine = new ConversationEngine(new MemoryConversationStore(), new RememberingGateway());
+  await assert.rejects(
+    engine.turn({
+      actorId: "another-user=",
+      channel: viberChannel,
+      messageId: "5741311803571721087",
+      text: "Hello",
+    }),
+    (error: unknown) => error instanceof ConversationError
+      && error.status === 400
+      && error.code === "invalid_actor",
+  );
+});
+
+test("Viber replies are truncated to the provider text limit", async () => {
+  const gateway: ManagedAgentGateway = {
+    async createAgent() { return "agent-chief"; },
+    async runTurn() { return "x".repeat(8_000); },
+  };
+  const result = await new ConversationEngine(new MemoryConversationStore(), gateway).turn({
+    actorId: "01234567890A=",
+    channel: viberChannel,
+    messageId: "5741311803571721087",
+    text: "Write a long answer",
+  });
+
+  assert.equal(result.finalMessage.length, 7_000);
+  assert.equal(result.finalMessage.endsWith("[Response truncated for Viber]"), true);
 });

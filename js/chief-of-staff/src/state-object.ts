@@ -6,6 +6,12 @@ import {
   type ConversationStore,
   type ConversationTurnRequest,
 } from "./conversation.ts";
+import {
+  claimDelivery,
+  completeDelivery,
+  type DeliveryRecord,
+  releaseDelivery,
+} from "./delivery.ts";
 import { NanocodexManagedGateway } from "./managed.ts";
 import {
   sameChannelIdentity,
@@ -22,8 +28,52 @@ export class ChiefOfStaffState extends DurableObject<Env> {
     const url = new URL(request.url);
     if (url.pathname === "/chat-sdk" && request.method === "POST") return this.chatState(request);
     if (url.pathname === "/conversation/turn" && request.method === "POST") return this.conversationTurn(request);
+    if (url.pathname === "/conversation/delivery" && request.method === "POST") {
+      return this.conversationDelivery(request);
+    }
     if (url.pathname === "/slack/installations") return this.slackInstallations(request);
     return json({ error: "not_found" }, 404);
+  }
+
+  private async conversationDelivery(request: Request): Promise<Response> {
+    let body: Record<string, unknown>;
+    try { body = await request.json<Record<string, unknown>>(); }
+    catch { return json({ error: "invalid_request" }, 400); }
+    const deliveryId = typeof body.deliveryId === "string" ? body.deliveryId : "";
+    if (!/^viber:(?:reply|welcome):[0-9]+$/.test(deliveryId)) {
+      return json({ error: "invalid_request" }, 400);
+    }
+    const key = `delivery:${deliveryId}`;
+    switch (body.operation) {
+      case "claim": return this.ctx.storage.transaction(async (transaction) => {
+        const retained = await transaction.get<DeliveryRecord>(key);
+        const now = Date.now();
+        const claim = claimDelivery(retained, now, now + 45_000, crypto.randomUUID());
+        if (claim.status === "claimed") await transaction.put(key, claim.record);
+        return json({ status: claim.status, token: claim.token }, 200);
+      });
+      case "complete": {
+        if (typeof body.token !== "string") return json({ error: "invalid_request" }, 400);
+        const token = body.token;
+        const completed = await this.ctx.storage.transaction(async (transaction) => {
+          const record = completeDelivery(await transaction.get<DeliveryRecord>(key), token);
+          if (!record) return false;
+          await transaction.put(key, record);
+          return true;
+        });
+        return completed ? json({ status: "completed" }, 200) : json({ error: "claim_conflict" }, 409);
+      }
+      case "release": {
+        if (typeof body.token !== "string") return json({ error: "invalid_request" }, 400);
+        const token = body.token;
+        await this.ctx.storage.transaction(async (transaction) => {
+          const retained = await transaction.get<DeliveryRecord>(key);
+          if (releaseDelivery(retained, token)) await transaction.delete(key);
+        });
+        return json({ status: "released" }, 200);
+      }
+      default: return json({ error: "invalid_request" }, 400);
+    }
   }
 
   private async slackInstallations(request: Request): Promise<Response> {

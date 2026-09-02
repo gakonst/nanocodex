@@ -176,6 +176,7 @@ test("readiness reports bot installations without returning provider credentials
   assert.equal(serialized.includes(configured.SLACK_CLIENT_SECRET!), false);
   assert.equal(serialized.includes(configured.SLACK_ENCRYPTION_KEY!), false);
   assert.equal(serialized.includes(configured.SLACK_SIGNING_SECRET!), false);
+  assert.equal(serialized.includes(configured.VIBER_AUTH_TOKEN!), false);
   const readiness = JSON.parse(serialized) as {
     channels: { id: string; availability: string }[];
     installations: { teamId: string; teamName: string }[];
@@ -190,7 +191,104 @@ test("readiness reports bot installations without returning provider credentials
     { id: "slack", availability: "ready" },
     { id: "whatsapp", availability: "not_enabled" },
     { id: "imessage", availability: "not_enabled" },
+    { id: "viber", availability: "ready" },
   ]);
+});
+
+test("signed Viber messages preserve the exact token and route one replay-safe reply", async () => {
+  const configured = env();
+  const calls: { stateBody?: unknown; stateName?: string; viberBody?: unknown } = {};
+  let delivered = false;
+  let outboundCalls = 0;
+  configured.CHIEF_OF_STAFF_STATE = {
+    getByName(name) {
+      calls.stateName = name;
+      return {
+        async fetch(request) {
+          const url = new URL(request.url);
+          const body = await request.json<Record<string, unknown>>();
+          if (url.pathname === "/conversation/turn") {
+            calls.stateBody = body;
+            return Response.json({ finalMessage: "Your durable reply" });
+          }
+          if (body.operation === "claim") {
+            return Response.json(delivered
+              ? { status: "completed" }
+              : { status: "claimed", token: "delivery-claim" });
+          }
+          if (body.operation === "complete") delivered = true;
+          return Response.json({ status: body.operation });
+        },
+      };
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    outboundCalls += 1;
+    assert.equal(input, "https://chatapi.viber.com/pa/send_message");
+    assert.equal(new Headers(init?.headers).get("x-viber-auth-token"), configured.VIBER_AUTH_TOKEN);
+    calls.viberBody = JSON.parse(String(init?.body));
+    return Response.json({ message_token: 1, status: 0, status_message: "ok" });
+  };
+  try {
+    const body = JSON.stringify({
+      event: "message",
+      message_token: 5741311803571721087,
+      sender: { id: "01234567890A=", name: "Ada" },
+      message: { type: "text", text: "Remember kiwi" },
+      timestamp: 1457764197627,
+    }).replace("5741311803571721000", "5741311803571721087");
+    const signedRequest = async () => new Request("https://chief.example/webhooks/viber", {
+      body,
+      headers: {
+        "content-type": "application/json",
+        "x-viber-content-signature": await viberSignature(body, configured.VIBER_AUTH_TOKEN!),
+      },
+      method: "POST",
+    });
+    const response = await worker.fetch(await signedRequest(), configured);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status: 0 });
+    assert.deepEqual(calls.stateBody, {
+      actorId: "01234567890A=",
+      channel: {
+        accountId,
+        botUri: "nanocodex-chief",
+        conversationId: "dm:01234567890A=",
+        platform: "viber",
+        userId: "01234567890A=",
+      },
+      messageId: "5741311803571721087",
+      text: "Remember kiwi",
+    });
+    assert.match(calls.stateName ?? "", /^conversation:[0-9a-f]{64}$/);
+    assert.deepEqual(calls.viberBody, {
+      receiver: "01234567890A=",
+      min_api_version: 1,
+      sender: { name: "Nanocodex" },
+      tracking_data: "reply-to:5741311803571721087",
+      type: "text",
+      text: "Your durable reply",
+    });
+
+    const replay = await worker.fetch(await signedRequest(), configured);
+    assert.equal(replay.status, 200);
+    assert.equal(outboundCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Viber rejects callbacks before routing when the signature is invalid", async () => {
+  const response = await worker.fetch(new Request("https://chief.example/webhooks/viber", {
+    body: JSON.stringify({ event: "message" }),
+    headers: { "x-viber-content-signature": "0".repeat(64) },
+    method: "POST",
+  }), env());
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "invalid_signature" });
 });
 
 function env(installations: readonly unknown[] = [{
@@ -223,6 +321,9 @@ function env(installations: readonly unknown[] = [{
     SLACK_ENCRYPTION_KEY: key,
     SLACK_OAUTH_STATE_SECRET: key,
     SLACK_SIGNING_SECRET: signingSecret,
+    VIBER_AUTH_TOKEN: "viber-test-token-that-is-long-enough-and-not-real",
+    VIBER_BOT_NAME: "Nanocodex",
+    VIBER_BOT_URI: "nanocodex-chief",
   };
 }
 
@@ -301,4 +402,16 @@ async function signature(timestamp: string, body: string): Promise<string> {
     new TextEncoder().encode(`v0:${timestamp}:${body}`),
   );
   return `v0=${Buffer.from(result).toString("hex")}`;
+}
+
+async function viberSignature(body: string, token: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(token),
+    { hash: "SHA-256", name: "HMAC" },
+    false,
+    ["sign"],
+  );
+  const result = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  return Buffer.from(result).toString("hex");
 }

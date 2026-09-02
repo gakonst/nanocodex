@@ -16,6 +16,12 @@ import {
 } from "./protocol.ts";
 import { slackAuthorizationUrl, verifySlackInstallState } from "./slack-oauth.ts";
 import { DurableChatStateAdapter } from "./state-adapter.ts";
+import {
+  readViberWebhook,
+  sendViberText,
+  ViberWebhookError,
+  viberChannelIdentity,
+} from "./viber.ts";
 
 type Fetcher = Readonly<{ fetch(request: Request): Promise<Response> }>;
 type StateNamespace = Readonly<{ getByName(name: string): Fetcher }>;
@@ -32,6 +38,10 @@ export interface Env {
   SLACK_ENCRYPTION_KEY?: string;
   SLACK_OAUTH_STATE_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
+  VIBER_AUTH_TOKEN?: string;
+  VIBER_BOT_AVATAR?: string;
+  VIBER_BOT_NAME?: string;
+  VIBER_BOT_URI?: string;
 }
 
 type ChiefRuntime = Readonly<{ chat: Chat<{ slack: SlackAdapter }>; slack: SlackAdapter }>;
@@ -66,6 +76,10 @@ export default {
     if (url.pathname === "/webhooks/slack") {
       if (request.method !== "POST") return methodNotAllowed(["POST"]);
       return slackWebhook(request, env, context);
+    }
+    if (url.pathname === "/webhooks/viber") {
+      if (request.method !== "POST") return methodNotAllowed(["POST"]);
+      return viberWebhook(request, env);
     }
     return json({ error: "not_found" }, { status: 404 });
   },
@@ -183,7 +197,7 @@ async function slackWebhook(
   context?: ExecutionContext,
 ): Promise<Response> {
   const config = configurationReadiness(env);
-  if (!config.configured || !env.SLACK_SIGNING_SECRET) {
+  if (!config.slack.configured || !env.SLACK_SIGNING_SECRET) {
     return json({ error: "channel_not_configured" }, { status: 503 });
   }
   let payload: SlackWebhookPayload;
@@ -234,6 +248,119 @@ async function slackWebhook(
     });
     return json({ error: "channel_unavailable" }, { status: 503 });
   }
+}
+
+async function viberWebhook(request: Request, env: Env): Promise<Response> {
+  const config = configurationReadiness(env);
+  if (!config.viber.configured || !env.VIBER_AUTH_TOKEN || !env.VIBER_BOT_NAME
+    || !env.VIBER_BOT_URI) {
+    return json({ error: "channel_not_configured" }, { status: 503 });
+  }
+  let callback;
+  try {
+    callback = await readViberWebhook(request, env.VIBER_AUTH_TOKEN);
+  } catch (error) {
+    if (error instanceof ViberWebhookError) {
+      return json({ error: error.code }, { status: error.code === "invalid_signature" ? 401 : 400 });
+    }
+    return json({ error: "invalid_payload" }, { status: 400 });
+  }
+  if (callback.kind === "ignored") return json({ status: 0 });
+  const ownerId = await configuredOwnerId(env);
+  if (!ownerId) return json({ error: "channel_unavailable" }, { status: 503 });
+  const receiver = callback.kind === "message" ? callback.actorId : callback.userId;
+  const identity = viberChannelIdentity(ownerId, env.VIBER_BOT_URI, receiver);
+  const routeDigest = await digest(identity);
+  const session = env.CHIEF_OF_STAFF_STATE.getByName(`conversation:${routeDigest}`);
+  if (callback.kind === "conversation_started") {
+    try {
+      await deliverViberOnce(session, `viber:welcome:${callback.messageId}`, async () => {
+        await sendViberText({
+          authToken: env.VIBER_AUTH_TOKEN!,
+          avatar: env.VIBER_BOT_AVATAR,
+          botName: env.VIBER_BOT_NAME!,
+          receiver: callback.userId,
+          text: "Hi — I’m your Nanocodex Chief of Staff. Send me a message to get started.",
+          trackingData: `welcome:${callback.messageId}`,
+        });
+      });
+      return json({ status: 0 });
+    } catch (error) {
+      logViberFailure("welcome_failed", error);
+      return json({ error: "channel_unavailable" }, { status: 503 });
+    }
+  }
+  try {
+    const response = await session.fetch(new Request("https://state.internal/conversation/turn", {
+      body: JSON.stringify({
+        actorId: callback.actorId,
+        channel: identity,
+        messageId: callback.messageId,
+        text: callback.text,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }));
+    if (!response.ok) throw new Error(`Chief of Staff turn failed (${response.status})`);
+    const result = await response.json<{ finalMessage?: unknown }>();
+    if (typeof result.finalMessage !== "string") throw new Error("Chief of Staff turn was malformed");
+    const finalMessage = result.finalMessage;
+    await deliverViberOnce(session, `viber:reply:${callback.messageId}`, async () => {
+      await sendViberText({
+        authToken: env.VIBER_AUTH_TOKEN!,
+        avatar: env.VIBER_BOT_AVATAR,
+        botName: env.VIBER_BOT_NAME!,
+        receiver: callback.actorId,
+        text: finalMessage,
+        trackingData: `reply-to:${callback.messageId}`,
+      });
+    });
+    return json({ status: 0 });
+  } catch (error) {
+    logViberFailure("message_failed", error);
+    return json({ error: "channel_unavailable" }, { status: 503 });
+  }
+}
+
+async function deliverViberOnce(
+  session: Fetcher,
+  deliveryId: string,
+  send: () => Promise<void>,
+): Promise<void> {
+  const claimResponse = await deliveryRequest(session, { deliveryId, operation: "claim" });
+  if (!claimResponse.ok) throw new Error(`Viber delivery claim failed (${claimResponse.status})`);
+  const claim = await claimResponse.json<{ status?: unknown; token?: unknown }>();
+  if (claim.status === "completed") return;
+  if (claim.status !== "claimed" || typeof claim.token !== "string") {
+    throw new Error("Viber delivery is already in progress");
+  }
+  try {
+    await send();
+  } catch (error) {
+    try {
+      await deliveryRequest(session, { deliveryId, operation: "release", token: claim.token });
+    } catch { /* The expiring claim permits a later provider retry. */ }
+    throw error;
+  }
+  const completed = await deliveryRequest(session, {
+    deliveryId,
+    operation: "complete",
+    token: claim.token,
+  });
+  if (!completed.ok) {
+    console.warn({ type: "chief_of_staff.viber_delivery_checkpoint_failed" });
+  }
+}
+
+function deliveryRequest(
+  session: Fetcher,
+  body: Readonly<{ deliveryId: string; operation: "claim" | "complete" | "release"; token?: string }>,
+): Promise<Response> {
+  return session.fetch(new Request("https://state.internal/conversation/delivery", {
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  }));
 }
 
 function chiefRuntime(env: Env): ChiefRuntime {
@@ -301,7 +428,9 @@ async function readiness(request: Request, env: Env): Promise<Response> {
   const requester = await requestingAccountId(env.NANOCODEX_BACKEND, request);
   if (!requester) return json({ error: "unauthorized" }, { status: 401 });
   const config = configurationReadiness(env);
-  const owner = config.configured ? await configuredOwnerId(env) : undefined;
+  const owner = config.slack.configured || config.viber.configured
+    ? await configuredOwnerId(env)
+    : undefined;
   const accountMatch = owner === requester;
   const installations = accountMatch
     ? (await installationMetadataList(env))
@@ -309,9 +438,10 @@ async function readiness(request: Request, env: Env): Promise<Response> {
       .map(({ accountId: _, ...installation }) => installation)
     : [];
   const ready = config.configured && accountMatch && installations.length > 0;
+  const viberReady = config.viber.configured && accountMatch;
   const body: Readiness = {
     accountMatch,
-    configured: ready,
+    configured: ready || viberReady,
     installations,
     installUrl: config.configured && accountMatch ? "/api/chief-of-staff/slack/install" : null,
     webhookUrl: config.webhookUrl,
@@ -339,6 +469,17 @@ async function readiness(request: Request, env: Env): Promise<Response> {
         availability: "not_enabled",
         contract: "vendor_official",
         detail: "Chat SDK catalogs iMessage through vendor adapters; no first-party iMessage channel is enabled here.",
+      },
+      {
+        id: "viber",
+        availability: viberReady ? "ready" : "setup_required",
+        contract: "first_party",
+        detail: config.viber.configured
+          ? accountMatch
+            ? "Signed Viber callbacks route each subscriber to an account-owned durable agent."
+            : "This deployment is bound to a different Nanocodex account."
+          : "Viber bot token, bot identity, or public origin is incomplete.",
+        webhookUrl: config.viber.webhookUrl,
       },
     ],
   };
@@ -383,6 +524,13 @@ async function writeInstallationMetadata(
 
 function installationsObject(env: Env): Fetcher {
   return env.CHIEF_OF_STAFF_STATE.getByName(INSTALLATIONS_OBJECT);
+}
+
+function logViberFailure(operation: string, error: unknown): void {
+  console.warn({
+    type: `chief_of_staff.viber_${operation}`,
+    error_kind: error instanceof Error ? error.name : typeof error,
+  });
 }
 
 function configuredOwnerId(env: Env): Promise<string | undefined> {
