@@ -14,7 +14,8 @@ just dev-react-example
 path selected by default. That path uses the Cloudflare Worker upgrade proxy;
 the key never enters the page or browser Worker.
 
-`npm run build` also checks the generated chunk graph. The default OpenAI entry
+`pnpm --filter nanocodex-react-vite-example build` also checks the generated
+chunk graph. The default OpenAI entry
 must remain below 220 KiB, must not preload the Tempo wallet integration, and
 the explicit MPP UI and Worker paths must remain lazy entries.
 

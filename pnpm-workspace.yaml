@@ -1,5 +1,7 @@
 packages:
   - "js/*"
+  - "examples/node"
+  - "examples/react-vite"
 
 overrides:
   "@microsoft/dev-tunnels-ssh": "3.12.40"

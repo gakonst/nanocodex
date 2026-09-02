@@ -8,14 +8,14 @@ Each accepted Turn resolves to a typed result containing `finalMessage`,
 `usage`, and a reusable session `snapshot`; this example prints only the final
 message.
 
-From this directory:
+From the repository root:
 
 ```sh
-npm install
-OPENAI_API_KEY=... npm start
+pnpm install --frozen-lockfile
+OPENAI_API_KEY=... pnpm --filter nanocodex-node-example start
 ```
 
-`npm start` also reads the repository's ignored `.env` file when present. The
+The start command also reads the repository's ignored `.env` file when present. The
 key remains in the Node process and is used by the Node WebSocket host; it is
 not compiled into the WASM artifact or the npm package.
 
@@ -25,15 +25,15 @@ package's WASM. JavaScript spreads `Subagents.create()` into `tools`; Rust insta
 `wait_agent`, `interrupt_agent`, and `close_agent` for every child:
 
 ```sh
-npm run subagents -- "Review the JS API with whatever workers you need"
+pnpm --filter nanocodex-node-example subagents -- "Review the JS API with whatever workers you need"
 ```
 
 To run the keyless MPP path with a Tempo account managed by the Tempo Accounts
 SDK:
 
 ```sh
-npm run smoke:mpp
-npm run smoke:mpp -- "Explain MPP in one sentence."
+pnpm --filter nanocodex-node-example smoke:mpp
+pnpm --filter nanocodex-node-example smoke:mpp -- "Explain MPP in one sentence."
 ```
 
 The first run prints a Tempo Wallet device-code URL to authorize a locally
@@ -46,7 +46,7 @@ diagnostics, and settlement details go to stderr so redirecting stdout produces
 a directly parseable trace:
 
 ```sh
-npm run smoke:mpp -- "Explain MPP in one sentence." > events.jsonl
+pnpm --filter nanocodex-node-example smoke:mpp -- "Explain MPP in one sentence." > events.jsonl
 jq -c . events.jsonl >/dev/null
 ```
 
@@ -57,5 +57,5 @@ under `~/.tempo/wallet/nanocodex-mpp-channels.json` and reused by default. Pass
 `--close` when you explicitly want to cooperatively settle instead:
 
 ```sh
-npm run smoke:mpp -- --close "Finish this turn and close the payment channel."
+pnpm --filter nanocodex-node-example smoke:mpp -- --close "Finish this turn and close the payment channel."
 ```
