@@ -223,6 +223,9 @@ importers:
       '@chat-adapter/slack':
         specifier: 4.39.0
         version: 4.39.0(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2)(zod@4.5.4)
+      '@chat-adapter/whatsapp':
+        specifier: 4.39.0
+        version: 4.39.0(supports-color@10.2.2)(zod@4.5.4)
       chat:
         specifier: 4.39.0
         version: 4.39.0(supports-color@10.2.2)(zod@4.5.4)
@@ -663,6 +666,10 @@ packages:
 
   '@chat-adapter/slack@4.39.0':
     resolution: {integrity: sha512-nDBYFEmD9MUobUH+HJbOYwKYcaeoCFJDXVvd41flh5sslpixSUG2SFcz7F3py62jJ9c0YYNEdwprIExO20IyZQ==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/whatsapp@4.39.0':
+    resolution: {integrity: sha512-rI35+Iixl/S7J4UYDJEJJ4GhRtjaCDV2JLelMhRV6KJ2h5tQ07OMsTRtwT9PBv91C2bhMaGYOQ2alNkhzcdvVw==}
     engines: {node: '>=20'}
 
   '@chevrotain/types@11.1.2':
@@ -4848,6 +4855,16 @@ snapshots:
       - debug
       - supports-color
       - utf-8-validate
+      - workflow
+      - zod
+
+  '@chat-adapter/whatsapp@4.39.0(supports-color@10.2.2)(zod@4.5.4)':
+    dependencies:
+      '@chat-adapter/shared': 4.39.0(supports-color@10.2.2)(zod@4.5.4)
+      chat: 4.39.0(supports-color@10.2.2)(zod@4.5.4)
+    transitivePeerDependencies:
+      - ai
+      - supports-color
       - workflow
       - zod
 

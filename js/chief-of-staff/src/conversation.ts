@@ -3,6 +3,9 @@ import { digest, sameChannelIdentity, type ChannelIdentity } from "./protocol.ts
 const MAX_INPUT_CHARS = 120_000;
 const MAX_SLACK_REPLY_CHARS = 35_000;
 const MAX_VIBER_REPLY_CHARS = 7_000;
+const MAX_WHATSAPP_REPLY_CHARS = 35_000;
+const WHATSAPP_USER_ID = /^(?:[0-9]{5,32}|[A-Z]{2}\.(?:ENT\.)?[A-Za-z0-9]{1,128})$/;
+const WHATSAPP_MESSAGE_ID = /^[A-Za-z0-9._=-]{1,512}$/;
 
 export interface ConversationStore {
   bindIdentity(identity: ChannelIdentity): Promise<boolean>;
@@ -141,18 +144,32 @@ function validateTurn(request: ConversationTurnRequest): void {
     if (!/^[0-9]+\.[0-9]+$/.test(request.messageId)) {
       throw new ConversationError(400, "invalid_message");
     }
-  } else {
+    return;
+  }
+  if (request.channel.platform === "viber") {
     if (request.actorId !== request.channel.userId) {
       throw new ConversationError(400, "invalid_actor");
     }
     if (!/^[0-9]+$/.test(request.messageId)) {
       throw new ConversationError(400, "invalid_message");
     }
+    return;
+  }
+  if (!WHATSAPP_USER_ID.test(request.actorId)
+    || request.actorId !== request.channel.userId) {
+    throw new ConversationError(400, "invalid_actor");
+  }
+  if (!WHATSAPP_MESSAGE_ID.test(request.messageId)) {
+    throw new ConversationError(400, "invalid_message");
   }
 }
 
 function chiefOfStaffPrompt(request: ConversationTurnRequest): string {
-  const platform = request.channel.platform === "slack" ? "Slack" : "Viber";
+  const platform = request.channel.platform === "slack"
+    ? "Slack"
+    : request.channel.platform === "viber"
+      ? "Viber"
+      : "WhatsApp";
   return [
     `You are the user's Chief of Staff in ${platform}.`,
     "Be concise, action-oriented, and explicit about uncertainty.",
@@ -165,8 +182,13 @@ function chiefOfStaffPrompt(request: ConversationTurnRequest): string {
 
 function normalizeReply(value: string, platform: ChannelIdentity["platform"]): string {
   const reply = value.trim() || "I completed the turn, but it did not produce a text response.";
-  const maxChars = platform === "slack" ? MAX_SLACK_REPLY_CHARS : MAX_VIBER_REPLY_CHARS;
+  const maxChars = platform === "viber"
+    ? MAX_VIBER_REPLY_CHARS
+    : platform === "whatsapp"
+      ? MAX_WHATSAPP_REPLY_CHARS
+      : MAX_SLACK_REPLY_CHARS;
   if (reply.length <= maxChars) return reply;
-  const suffix = `\n\n[Response truncated for ${platform === "slack" ? "Slack" : "Viber"}]`;
+  const platformName = platform === "slack" ? "Slack" : platform === "viber" ? "Viber" : "WhatsApp";
+  const suffix = `\n\n[Response truncated for ${platformName}]`;
   return `${reply.slice(0, maxChars - suffix.length)}${suffix}`;
 }

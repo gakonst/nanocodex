@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@chat-adapter/slack": "4.39.0",
+    "@chat-adapter/whatsapp": "4.39.0",
     "chat": "4.39.0",
     "nanocodex": "workspace:*",
     "nanocodex-tools": "workspace:*"

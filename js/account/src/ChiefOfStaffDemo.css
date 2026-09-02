@@ -25,7 +25,7 @@
 .chief-channel header span { font-size: 15px; }
 .chief-channel header small { color: var(--text-muted); font-size: 8px; text-transform: uppercase; }
 .chief-channel header strong { padding: 4px 6px; color: var(--text-muted); border: 1px solid var(--border-soft); font-size: 8px; font-weight: 400; text-transform: uppercase; white-space: nowrap; }
-.chief-channel.is-ready header strong { color: var(--positive); border-color: color-mix(in srgb, var(--positive) 40%, var(--border-soft)); }
+.chief-channel.is-ready header strong, .chief-channel.is-configured header strong { color: var(--positive); border-color: color-mix(in srgb, var(--positive) 40%, var(--border-soft)); }
 .chief-channel p { min-height: 52px; color: var(--text-muted); font-size: 10px; line-height: 1.65; }
 .chief-channel a { display: inline-flex; gap: 6px; align-items: center; width: fit-content; color: var(--text); font-size: 9px; text-decoration: none; }
 .chief-channel a:hover { text-decoration: underline; }

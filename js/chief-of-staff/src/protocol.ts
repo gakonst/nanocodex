@@ -7,14 +7,20 @@ const SLACK_THREAD_ID = /^slack:[CDG][A-Z0-9]+:(?:[0-9]+\.[0-9]+)?$/;
 const API_KEY = /^ncx_live_[A-Za-z0-9_-]{12}_[A-Za-z0-9_-]{43}$/;
 const SLACK_CLIENT_ID = /^[0-9]+\.[0-9]+$/;
 const BASE64_URL = /^[A-Za-z0-9_-]+$/;
+const WHATSAPP_PHONE_NUMBER_ID = /^[0-9]{5,32}$/;
+const WHATSAPP_PHONE_USER_ID = /^[0-9]{5,32}$/;
+const WHATSAPP_BUSINESS_USER_ID = /^[A-Z]{2}\.(?:ENT\.)?[A-Za-z0-9]{1,128}$/;
+const WHATSAPP_MESSAGE_ID = /^[A-Za-z0-9._=-]{1,512}$/;
 
-export type ChannelIdentity = Readonly<{
+export type SlackChannelIdentity = Readonly<{
   accountId: string;
   channelId: string;
   conversationId: string;
   platform: "slack";
   teamId: string;
-}> | Readonly<{
+}>;
+
+export type ViberChannelIdentity = Readonly<{
   accountId: string;
   botUri: string;
   conversationId: string;
@@ -22,9 +28,25 @@ export type ChannelIdentity = Readonly<{
   userId: string;
 }>;
 
+export type WhatsAppChannelIdentity = Readonly<{
+  accountId: string;
+  businessPhoneNumberId: string;
+  conversationId: string;
+  platform: "whatsapp";
+  userId: string;
+}>;
+
+export type ChannelIdentity = SlackChannelIdentity | ViberChannelIdentity | WhatsAppChannelIdentity;
+
 export type SlackMessageIdentity = Readonly<{
   actorId: string;
-  channel: ChannelIdentity;
+  channel: SlackChannelIdentity;
+  messageId: string;
+}>;
+
+export type WhatsAppMessageIdentity = Readonly<{
+  actorId: string;
+  channel: WhatsAppChannelIdentity;
   messageId: string;
 }>;
 
@@ -32,7 +54,7 @@ export type Readiness = Readonly<{
   accountMatch: boolean;
   channels: readonly Readonly<{
     id: "slack" | "whatsapp" | "imessage" | "viber";
-    availability: "ready" | "setup_required" | "not_enabled";
+    availability: "ready" | "configured" | "setup_required" | "not_enabled";
     contract: "first_party" | "vendor_official";
     detail: string;
     webhookUrl?: string | null;
@@ -99,6 +121,44 @@ export function slackMessageIdentity(
   };
 }
 
+export function whatsAppMessageIdentity(
+  raw: unknown,
+  threadId: string,
+  accountId: string,
+  expectedPhoneNumberId: string,
+): WhatsAppMessageIdentity {
+  if (!isRecord(raw) || !isRecord(raw.message)) {
+    throw new Error("WhatsApp message payload is missing");
+  }
+  const phoneNumberId = stringValue(raw.phoneNumberId);
+  const actorId = stringValue(raw.userId);
+  const messageId = stringValue(raw.message.id);
+  if (!phoneNumberId || !WHATSAPP_PHONE_NUMBER_ID.test(phoneNumberId)
+    || phoneNumberId !== expectedPhoneNumberId) {
+    throw new Error("WhatsApp business phone identity is invalid");
+  }
+  if (!actorId || !validWhatsAppUserId(actorId)) {
+    throw new Error("WhatsApp user identity is invalid");
+  }
+  if (!messageId || !WHATSAPP_MESSAGE_ID.test(messageId)) {
+    throw new Error("WhatsApp message identity is invalid");
+  }
+  if (threadId !== `whatsapp:${phoneNumberId}:${actorId}`) {
+    throw new Error("WhatsApp thread is not bound to its participants");
+  }
+  return {
+    actorId,
+    messageId,
+    channel: {
+      accountId,
+      businessPhoneNumberId: phoneNumberId,
+      conversationId: threadId,
+      platform: "whatsapp",
+      userId: actorId,
+    },
+  };
+}
+
 export function configurationReadiness(env: {
   CHIEF_OF_STAFF_PUBLIC_ORIGIN?: string;
   NANOCODEX_API_KEY?: string;
@@ -111,11 +171,16 @@ export function configurationReadiness(env: {
   VIBER_BOT_AVATAR?: string;
   VIBER_BOT_NAME?: string;
   VIBER_BOT_URI?: string;
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_APP_SECRET?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+  WHATSAPP_VERIFY_TOKEN?: string;
 }): Readonly<{
   configured: boolean;
   slack: Readonly<{ configured: boolean; webhookUrl: string | null }>;
   viber: Readonly<{ configured: boolean; webhookUrl: string | null }>;
   webhookUrl: string | null;
+  whatsapp: Readonly<{ configured: boolean; webhookUrl: string | null }>;
 }> {
   let origin: URL | undefined;
   try {
@@ -147,6 +212,15 @@ export function configurationReadiness(env: {
     && validViberBotName(env.VIBER_BOT_NAME)
     && validViberBotUri(env.VIBER_BOT_URI),
   );
+  const whatsappConfigured = Boolean(
+    validOrigin
+    && validAccount
+    && (env.WHATSAPP_ACCESS_TOKEN?.length ?? 0) >= 32
+    && (env.WHATSAPP_APP_SECRET?.length ?? 0) >= 16
+    && WHATSAPP_PHONE_NUMBER_ID.test(env.WHATSAPP_PHONE_NUMBER_ID ?? "")
+    && (env.WHATSAPP_VERIFY_TOKEN?.length ?? 0) >= 16
+    && (env.WHATSAPP_VERIFY_TOKEN?.length ?? 0) <= 200
+  );
   const slackWebhookUrl = origin ? new URL("/webhooks/slack", origin).href : null;
   return {
     configured: slackConfigured,
@@ -156,6 +230,10 @@ export function configurationReadiness(env: {
       webhookUrl: origin ? new URL("/webhooks/viber", origin).href : null,
     },
     webhookUrl: slackWebhookUrl,
+    whatsapp: {
+      configured: whatsappConfigured,
+      webhookUrl: origin ? new URL("/webhooks/whatsapp", origin).href : null,
+    },
   };
 }
 
@@ -183,13 +261,15 @@ export async function digest(value: unknown): Promise<string> {
 export function sameChannelIdentity(left: ChannelIdentity, right: ChannelIdentity): boolean {
   if (left.platform !== right.platform || left.accountId !== right.accountId
     || left.conversationId !== right.conversationId) return false;
-  return left.platform === "slack"
-    ? right.platform === "slack"
-      && left.channelId === right.channelId
-      && left.teamId === right.teamId
-    : right.platform === "viber"
-      && left.botUri === right.botUri
-      && left.userId === right.userId;
+  if (left.platform === "slack" && right.platform === "slack") {
+    return left.channelId === right.channelId && left.teamId === right.teamId;
+  }
+  if (left.platform === "viber" && right.platform === "viber") {
+    return left.botUri === right.botUri && left.userId === right.userId;
+  }
+  return left.platform === "whatsapp" && right.platform === "whatsapp"
+    && left.businessPhoneNumberId === right.businessPhoneNumberId
+    && left.userId === right.userId;
 }
 
 function validViberToken(value: string | undefined): boolean {
@@ -242,4 +322,8 @@ function validBase64Key(value: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+function validWhatsAppUserId(value: string): boolean {
+  return WHATSAPP_PHONE_USER_ID.test(value) || WHATSAPP_BUSINESS_USER_ID.test(value);
 }

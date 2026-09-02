@@ -51,6 +51,14 @@ const viberChannel: ChannelIdentity = {
   userId: "01234567890A=",
 };
 
+const whatsappChannel: ChannelIdentity = {
+  accountId: "account-a",
+  businessPhoneNumberId: "123456789012345",
+  conversationId: "whatsapp:123456789012345:15551234567",
+  platform: "whatsapp",
+  userId: "15551234567",
+};
+
 test("a durable conversation reuses one managed agent across two turns", async () => {
   const store = new MemoryConversationStore();
   const gateway = new RememberingGateway();
@@ -199,4 +207,48 @@ test("Viber replies are truncated to the provider text limit", async () => {
 
   assert.equal(result.finalMessage.length, 7_000);
   assert.equal(result.finalMessage.endsWith("[Response truncated for Viber]"), true);
+});
+
+test("a WhatsApp conversation keeps its own durable agent and channel-aware prompt", async () => {
+  const store = new MemoryConversationStore();
+  const gateway = new RememberingGateway();
+  const engine = new ConversationEngine(store, gateway);
+  await engine.turn({
+    actorId: "15551234567",
+    channel: whatsappChannel,
+    messageId: "wamid.first",
+    text: "Remember kiwi",
+  });
+  const second = await engine.turn({
+    actorId: "15551234567",
+    channel: whatsappChannel,
+    messageId: "wamid.second",
+    text: "What should you remember?",
+  });
+
+  assert.equal(second.finalMessage, "You asked me to remember kiwi.");
+  assert.match(second.turnId, /^whatsapp-/);
+  assert.match(gateway.turns[0]!.input, /Chief of Staff in WhatsApp/);
+  assert.equal(gateway.created.length, 1);
+});
+
+test("Slack and WhatsApp identities cannot share durable conversation state", async () => {
+  const engine = new ConversationEngine(new MemoryConversationStore(), new RememberingGateway());
+  await engine.turn({
+    actorId: "U123ABC",
+    channel,
+    messageId: "1700000000.000001",
+    text: "Remember kiwi",
+  });
+
+  await assert.rejects(
+    engine.turn({
+      actorId: "15551234567",
+      channel: whatsappChannel,
+      messageId: "wamid.second",
+      text: "What should you remember?",
+    }),
+    (error: unknown) => error instanceof ConversationError
+      && error.code === "channel_identity_conflict",
+  );
 });
