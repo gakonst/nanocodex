@@ -269,6 +269,8 @@ jobs:
           path: js/nanocodex/pkg-web
       - name: Install JavaScript workspace
         run: pnpm install --frozen-lockfile
+      - name: Build account Worker dependencies
+        run: pnpm exec turbo run build --filter nanocodex-connect-protocol
       - name: Test the account Worker
         run: pnpm --filter nanocodex-web run test:web
       - name: Build JavaScript apps
