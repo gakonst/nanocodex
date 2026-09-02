@@ -9,6 +9,7 @@ import {
 import { createCloudflareSshCommand } from "./cloudflare-ssh";
 import {
   handleManagedEgress,
+  type ManagedEgressConnectorAccess,
   type ManagedEgressConnectorId,
 } from "./managed-egress";
 
@@ -23,7 +24,10 @@ export type ManagedComputerRuntime = ComputerRuntime & Readonly<{
 /** Wires managed persistence, egress, and SSH policy into the generic JS tools. */
 export async function createManagedComputerRuntime(options: Readonly<{
   computer: DisposableComputerWorkspace;
-  connectorAllowed?: (connector: ManagedEgressConnectorId) => boolean;
+  connectorAllowed?: (
+    connector: ManagedEgressConnectorId,
+    connectionId?: string,
+  ) => ManagedEgressConnectorAccess;
   egress: Fetcher;
   sshIdentityAllowed?: (reference: string) => boolean;
   subject?: string;
@@ -76,7 +80,10 @@ export async function createManagedComputerRuntime(options: Readonly<{
 function createManagedShellFetch(
   binding: Fetcher,
   subject?: string,
-  connectorAllowed?: (connector: ManagedEgressConnectorId) => boolean,
+  connectorAllowed?: (
+    connector: ManagedEgressConnectorId,
+    connectionId?: string,
+  ) => ManagedEgressConnectorAccess,
 ): ShellFetch {
   return async (url, options = {}) => {
     const method = (options.method ?? "GET").toUpperCase();

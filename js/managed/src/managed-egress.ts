@@ -1,4 +1,6 @@
 const PROVIDER_PLACEHOLDER = "Bearer NANOCODEX_PROVIDER_CREDENTIAL";
+const CONNECTOR_CONNECTION_HEADER = "x-nanocodex-connector-connection";
+const CONNECTOR_CONNECTION = /^[A-Za-z0-9_-]{43}$/;
 const SUBJECT = /^[A-Za-z0-9_-]{43,128}$/;
 const MAX_REDIRECTS = 5;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
@@ -17,39 +19,94 @@ const BLOCKED_RESPONSE_HEADERS = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
+  "x-nanocodex-connector-connection",
   "x-nanocodex-subject",
 ]);
 
-export type ManagedEgressConnectorId = "github" | "gmail" | "gdrive" | "x";
+export type ManagedEgressConnectorId =
+  | "github"
+  | "gmail"
+  | "gdrive"
+  | "gcalendar"
+  | "gtasks"
+  | "gdocs"
+  | "gsheets"
+  | "gslides"
+  | "gcontacts"
+  | "slack"
+  | "x";
+
+/** True preserves the caller's selector; a connection id injects an authorized default. */
+export type ManagedEgressConnectorAccess = boolean | string;
+
+/** Resolves an exact-grant selector without allowing ambient provider defaults. */
+export function exactConnectorAccess(
+  approved: readonly string[],
+  selected?: string,
+): ManagedEgressConnectorAccess {
+  if (selected !== undefined) return approved.includes(selected) ? selected : false;
+  return approved.length === 1 ? approved[0]! : false;
+}
 
 type ProviderPolicy = Readonly<{
   connector: ManagedEgressConnectorId;
   path: (pathname: string) => boolean;
 }>;
 
-const PROVIDERS = new Map<string, ProviderPolicy>([
-  ["api.github.com", {
+const PROVIDERS = new Map<string, readonly ProviderPolicy[]>([
+  ["api.github.com", [{
     connector: "github",
     path: (path) => path.startsWith("/"),
-  }],
-  ["gmail.googleapis.com", {
+  }]],
+  ["gmail.googleapis.com", [{
     connector: "gmail",
     path: (path) => path.startsWith("/gmail/v1/users/me/"),
-  }],
-  ["www.googleapis.com", {
-    connector: "gdrive",
-    path: (path) => path.startsWith("/drive/v3/") || path.startsWith("/upload/drive/v3/"),
-  }],
-  ["api.x.com", {
+  }]],
+  ["www.googleapis.com", [
+    {
+      connector: "gdrive",
+      path: (path) => path.startsWith("/drive/v3/") || path.startsWith("/upload/drive/v3/"),
+    },
+    { connector: "gcalendar", path: (path) => path.startsWith("/calendar/v3/") },
+  ]],
+  ["calendar.googleapis.com", [{
+    connector: "gcalendar",
+    path: (path) => path.startsWith("/calendar/v3/"),
+  }]],
+  ["tasks.googleapis.com", [{
+    connector: "gtasks",
+    path: (path) => path.startsWith("/tasks/v1/"),
+  }]],
+  ["docs.googleapis.com", [{
+    connector: "gdocs",
+    path: (path) => path.startsWith("/v1/documents/"),
+  }]],
+  ["sheets.googleapis.com", [{
+    connector: "gsheets",
+    path: (path) => path.startsWith("/v4/spreadsheets/"),
+  }]],
+  ["slides.googleapis.com", [{
+    connector: "gslides",
+    path: (path) => path.startsWith("/v1/presentations/"),
+  }]],
+  ["people.googleapis.com", [{
+    connector: "gcontacts",
+    path: (path) => /^\/v1\/(?:people|contactGroups|otherContacts)(?:\/|:|$)/.test(path),
+  }]],
+  ["slack.com", [{
+    connector: "slack",
+    path: (path) => /^\/api\/[A-Za-z0-9._-]+$/.test(path),
+  }]],
+  ["api.x.com", [{
     connector: "x",
     path: (path) => /^\/2\/(?:tweets|users|lists|dm_(?:conversations|events)|media)(?:\/|$)/.test(path),
-  }],
+  }]],
 ]);
 
 const PRIVATE_HEADER = /(?:^|[-_])(?:auth(?:orization)?|cookie|credential|password|proxy|secret|token|api[-_]?key)(?:$|[-_]|\d)/i;
 const FORBIDDEN_HEADERS = new Set([
   "connection", "host", "origin", "proxy-connection", "referer", "te", "trailer",
-  "transfer-encoding", "upgrade", "x-nanocodex-subject",
+  "transfer-encoding", "upgrade", CONNECTOR_CONNECTION_HEADER, "x-nanocodex-subject",
 ]);
 const PRIVATE_HOST_SUFFIXES = [
   ".internal",
@@ -64,19 +121,31 @@ export async function handleManagedEgress(
   request: Request,
   binding: Fetcher,
   subject?: string,
-  connectorAllowed: (connector: ManagedEgressConnectorId) => boolean = () => true,
+  connectorAllowed: (
+    connector: ManagedEgressConnectorId,
+    connectionId?: string,
+  ) => ManagedEgressConnectorAccess = () => true,
 ): Promise<Response> {
   const method = request.method.toUpperCase();
   if (!ORDINARY_METHODS.has(method)) return failure(403, "method_denied");
-  const headerFailure = forbiddenHeader(request.headers);
-  if (headerFailure) return failure(403, "credential_header_denied");
 
   let url: URL;
   try { url = validateUrl(new URL(request.url)); } catch { return failure(403, "destination_denied"); }
   const provider = providerFor(url);
+  const headerFailure = forbiddenHeader(request.headers, provider !== undefined);
+  if (headerFailure) return failure(403, "credential_header_denied");
   if (!provider && PROVIDERS.has(url.hostname)) return failure(403, "destination_denied");
   if (provider) {
-    if (!connectorAllowed(provider.connector)) return failure(403, "connector_forbidden");
+    const selected = request.headers.get(CONNECTOR_CONNECTION_HEADER) ?? undefined;
+    if (selected !== undefined && !CONNECTOR_CONNECTION.test(selected)) {
+      return failure(403, "connector_connection_invalid");
+    }
+    const access = connectorAllowed(provider.connector, selected);
+    if (!access) return failure(403, "connector_forbidden");
+    const resolved = typeof access === "string" ? access : selected;
+    if (resolved !== undefined && !CONNECTOR_CONNECTION.test(resolved)) {
+      return failure(403, "connector_connection_invalid");
+    }
     if (!subject || !SUBJECT.test(subject)) return failure(403, "requires_login");
     if (!canonicalProviderPath(provider, url.pathname) || !provider.path(url.pathname)) {
       return failure(403, "connector_path_denied");
@@ -84,6 +153,7 @@ export async function handleManagedEgress(
     const headers = new Headers(request.headers);
     headers.set("authorization", PROVIDER_PLACEHOLDER);
     headers.set("x-nanocodex-subject", subject);
+    if (resolved !== undefined) headers.set(CONNECTOR_CONNECTION_HEADER, resolved);
     return projectResponse(await binding.fetch(new Request(request.url, {
       method,
       headers,
@@ -95,13 +165,13 @@ export async function handleManagedEgress(
 
   const body = method === "GET" || method === "HEAD" || !request.body
     ? undefined
-    : new Uint8Array(await request.arrayBuffer());
+    : await request.arrayBuffer();
   return fetchPublic(url, request, body);
 }
 
 function providerFor(url: URL): ProviderPolicy | undefined {
   if (url.protocol !== "https:" || url.port) return undefined;
-  return PROVIDERS.get(url.hostname);
+  return PROVIDERS.get(url.hostname)?.find((provider) => provider.path(url.pathname));
 }
 
 function canonicalProviderPath(provider: ProviderPolicy, pathname: string): boolean {
@@ -112,7 +182,7 @@ function canonicalProviderPath(provider: ProviderPolicy, pathname: string): bool
 async function fetchPublic(
   initialUrl: URL,
   request: Request,
-  originalBody: Uint8Array | undefined,
+  originalBody: ArrayBuffer | undefined,
 ): Promise<Response> {
   let url = initialUrl;
   let method = request.method.toUpperCase();
@@ -187,9 +257,10 @@ function isDeniedIpLiteral(hostname: string): boolean {
     || normalized.startsWith("::ffff:");
 }
 
-function forbiddenHeader(headers: Headers): string | undefined {
+function forbiddenHeader(headers: Headers, allowConnectorConnection = false): string | undefined {
   for (const [name] of headers) {
     const lower = name.toLowerCase();
+    if (allowConnectorConnection && lower === CONNECTOR_CONNECTION_HEADER) continue;
     if (PRIVATE_HEADER.test(name) || FORBIDDEN_HEADERS.has(lower)
       || lower.startsWith("cf-") || lower.startsWith("forwarded")
       || lower.startsWith("sec-") || lower.startsWith("x-forwarded-")) return name;

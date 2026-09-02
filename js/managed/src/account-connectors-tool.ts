@@ -1,26 +1,56 @@
 import type { NamedTool } from "nanocodex";
 
-const CONNECTOR_IDS = ["github", "gmail", "gdrive", "x"] as const;
-const CONNECTOR_NAMES = Object.freeze({
+import {
+  CONNECTOR_CAPABILITY_IDS,
+  CONNECTOR_PROVIDER_IDS,
+  connectorConnectionId,
+  connectorProviderId,
+  connectorStatuses,
+  projectConnectorStatus,
+  type ConnectorCapabilityId,
+  type ConnectorConnectionSelection,
+  type ConnectorProviderId,
+  type ConnectorStatus,
+} from "./connector-status";
+
+const GOOGLE_CAPABILITIES = [
+  "gmail",
+  "gdrive",
+  "gcalendar",
+  "gtasks",
+  "gdocs",
+  "gsheets",
+  "gslides",
+  "gcontacts",
+] as const satisfies readonly ConnectorCapabilityId[];
+const PROVIDER_CAPABILITIES: Readonly<Record<ConnectorProviderId, readonly ConnectorCapabilityId[]>> = {
+  github: ["github"],
+  google: GOOGLE_CAPABILITIES,
+  slack: ["slack"],
+  x: ["x"],
+};
+const CONNECTOR_NAMES: Readonly<Record<ConnectorProviderId, string>> = Object.freeze({
   github: "GitHub",
-  gmail: "Gmail",
-  gdrive: "Google Drive",
+  google: "Google Workspace",
+  slack: "Slack",
   x: "X",
 });
-const AUTHORIZATION_ENDPOINTS: Readonly<Record<AccountConnectorId, {
+const AUTHORIZATION_ENDPOINTS: Readonly<Record<ConnectorProviderId, {
   origin: string;
   pathname: string;
+  pkce: boolean;
 }>> = {
-  github: { origin: "https://github.com", pathname: "/login/oauth/authorize" },
-  gmail: { origin: "https://accounts.google.com", pathname: "/o/oauth2/v2/auth" },
-  gdrive: { origin: "https://accounts.google.com", pathname: "/o/oauth2/v2/auth" },
-  x: { origin: "https://x.com", pathname: "/i/oauth2/authorize" },
+  github: { origin: "https://github.com", pathname: "/login/oauth/authorize", pkce: true },
+  google: { origin: "https://accounts.google.com", pathname: "/o/oauth2/v2/auth", pkce: true },
+  slack: { origin: "https://slack.com", pathname: "/oauth/v2/authorize", pkce: false },
+  x: { origin: "https://x.com", pathname: "/i/oauth2/authorize", pkce: true },
 };
 const AUTHORIZATION_QUERY_KEYS = new Set([
   "access_type",
   "client_id",
   "code_challenge",
   "code_challenge_method",
+  "enable_granular_consent",
   "include_granted_scopes",
   "login_hint",
   "prompt",
@@ -28,15 +58,13 @@ const AUTHORIZATION_QUERY_KEYS = new Set([
   "response_type",
   "scope",
   "state",
+  "team",
+  "user_scope",
 ]);
 const BROKER_TIMEOUT_MS = 10_000;
 
-export type AccountConnectorId = typeof CONNECTOR_IDS[number];
-
-type ConnectorStatus = Readonly<{
-  connected: boolean;
-  account?: string;
-}>;
+/** @deprecated Account connector controls now use provider IDs. */
+export type AccountConnectorId = ConnectorProviderId | "gmail" | "gdrive";
 
 type AccountConnectorsToolOptions = Readonly<{
   broker: Fetcher;
@@ -44,7 +72,8 @@ type AccountConnectorsToolOptions = Readonly<{
   sessionId: string;
   publicOrigin: string;
   canManage(): boolean;
-  allowedConnectors(): readonly AccountConnectorId[] | undefined;
+  allowedConnectors(): readonly ConnectorCapabilityId[] | undefined;
+  allowedConnectorConnections?(): ConnectorConnectionSelection | undefined;
 }>;
 
 /** Creates the account-owned connector control tool exposed to a managed agent. */
@@ -53,19 +82,28 @@ export function accountConnectorsTool(options: AccountConnectorsToolOptions): Na
     name: "account_connectors",
     description: [
       "List, connect, reconnect, or disconnect account connectors without exposing credentials.",
-      "Use connector=gmail when the user asks to connect an email address, and pass that address as account_hint.",
+      "Google Workspace is one authorization identity whose connections list the exact Gmail, Drive, Calendar, Tasks, Docs, Sheets, Slides, and Contacts capabilities granted.",
       "Connect returns a provider authorization URL. Give that exact URL to the user as a link; the provider may still require consent.",
-      "Only disconnect when the user explicitly asks to remove or replace a connection.",
+      "Disconnect revokes one exact listed connection_id and is allowed only when the user explicitly asks to remove or replace it.",
     ].join(" "),
     supportsParallelToolCalls: false,
     parameters: {
       type: "object",
       properties: {
         operation: { type: "string", enum: ["list", "connect", "disconnect"] },
-        connector: { type: "string", enum: [...CONNECTOR_IDS] },
+        connector: {
+          type: "string",
+          enum: [...CONNECTOR_PROVIDER_IDS, "gmail", "gdrive"],
+          description: "OAuth provider. gmail and gdrive are accepted as legacy aliases for google.",
+        },
+        connection_id: {
+          type: "string",
+          pattern: "^[A-Za-z0-9_-]{43}$",
+          description: "Exact opaque connection id returned by list; required when more than one is present.",
+        },
         account_hint: {
           type: "string",
-          description: "Exact email address to select for Gmail or Google Drive.",
+          description: "Exact email address to select for Google Workspace.",
           maxLength: 320,
         },
       },
@@ -84,8 +122,12 @@ export async function manageAccountConnectors(
   const operation = connectorOperation(input);
   if (operation.operation === "list") {
     return {
-      connectors: await connectorStatuses(options),
-      supported: CONNECTOR_IDS.map((id) => ({ id, name: CONNECTOR_NAMES[id] })),
+      connectors: await visibleConnectorStatuses(options),
+      supported: CONNECTOR_PROVIDER_IDS.map((id) => ({
+        id,
+        name: CONNECTOR_NAMES[id],
+        capabilities: PROVIDER_CAPABILITIES[id],
+      })),
     };
   }
   if (!options.canManage()) {
@@ -96,9 +138,19 @@ export async function manageAccountConnectors(
     };
   }
   if (operation.operation === "disconnect") {
+    const connectionId = operation.connectionId
+      ?? await soleProviderConnectionId(options, operation.provider);
+    if (!connectionId) {
+      return {
+        ok: false,
+        status: "conflict",
+        connector: operation.provider,
+        message: "Choose the exact connection_id to disconnect.",
+      };
+    }
     const response = await brokerFetch(
       options.broker,
-      connectorBrokerUrl(options.userId, operation.connector),
+      `${connectorBrokerUrl(options.userId, operation.provider)}/connections/${connectionId}`,
       { method: "DELETE" },
     );
     if (!response.ok) return connectorFailure(response);
@@ -106,18 +158,19 @@ export async function manageAccountConnectors(
     return {
       ok: true,
       status: "disconnected",
-      connector: operation.connector,
+      connector: operation.provider,
+      connection_id: connectionId,
     };
   }
 
   const callback = new URL(
-    `/v1/connectors/${operation.connector}/callback`,
+    `/v1/connectors/${operation.provider}/callback`,
     options.publicOrigin,
   );
   const returnTo = `/agent?${new URLSearchParams({ thread: options.sessionId })}`;
   const response = await brokerFetch(
     options.broker,
-    connectorBrokerUrl(options.userId, operation.connector),
+    connectorBrokerUrl(options.userId, operation.provider),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -137,37 +190,43 @@ export async function manageAccountConnectors(
   try { authorization = new URL(value.authorization_url); } catch {
     return { ok: false, status: "unavailable", message: "The connector broker returned an invalid authorization URL." };
   }
-  if (!safeAuthorizationUrl(authorization, callback.href, operation.connector)) {
+  if (!safeAuthorizationUrl(authorization, callback.href, operation.provider)) {
     return { ok: false, status: "unavailable", message: "The connector broker returned an unsafe authorization URL." };
   }
   return {
     ok: true,
     status: "authorization_required",
-    connector: operation.connector,
-    name: CONNECTOR_NAMES[operation.connector],
+    connector: operation.provider,
+    name: CONNECTOR_NAMES[operation.provider],
     ...(operation.accountHint === undefined ? {} : { account: operation.accountHint }),
     authorization_url: authorization.href,
     expires_in_seconds: 600,
-    message: `Authorize ${CONNECTOR_NAMES[operation.connector]} to finish connecting it.`,
+    message: `Authorize ${CONNECTOR_NAMES[operation.provider]} to finish connecting it.`,
   };
 }
 
 function safeAuthorizationUrl(
   authorization: URL,
   callback: string,
-  connector: AccountConnectorId,
+  provider: ConnectorProviderId,
 ): boolean {
-  const endpoint = AUTHORIZATION_ENDPOINTS[connector];
+  const endpoint = AUTHORIZATION_ENDPOINTS[provider];
   if (authorization.origin !== endpoint.origin || authorization.pathname !== endpoint.pathname
     || authorization.username || authorization.password || authorization.hash
     || authorization.searchParams.get("redirect_uri") !== callback
-    || authorization.searchParams.get("code_challenge_method") !== "S256"
-    || !/^[A-Za-z0-9_-]{43}$/.test(authorization.searchParams.get("code_challenge") ?? "")
     || !(authorization.searchParams.get("client_id") ?? "")
-    || !(authorization.searchParams.get("scope") ?? "")
-    || !(authorization.searchParams.get("state") ?? "")) return false;
+    || !(authorization.searchParams.get("state") ?? "")
+    || !(authorization.searchParams.get(provider === "slack" ? "user_scope" : "scope") ?? "")) {
+    return false;
+  }
+  if (endpoint.pkce && (
+    authorization.searchParams.get("code_challenge_method") !== "S256"
+    || !/^[A-Za-z0-9_-]{43}$/.test(authorization.searchParams.get("code_challenge") ?? "")
+  )) return false;
   const responseType = authorization.searchParams.get("response_type");
   if (responseType !== null && responseType !== "code") return false;
+  const granularConsent = authorization.searchParams.get("enable_granular_consent");
+  if (granularConsent !== null && (provider !== "google" || granularConsent !== "true")) return false;
   const seen = new Set<string>();
   for (const key of authorization.searchParams.keys()) {
     if (!AUTHORIZATION_QUERY_KEYS.has(key) || seen.has(key)) return false;
@@ -176,66 +235,79 @@ function safeAuthorizationUrl(
   return true;
 }
 
-async function connectorStatuses(
+async function visibleConnectorStatuses(
   options: AccountConnectorsToolOptions,
-): Promise<Record<AccountConnectorId, ConnectorStatus>> {
+): Promise<Record<ConnectorCapabilityId, ConnectorStatus>> {
   const response = await brokerFetch(
     options.broker,
     `https://broker.internal/users/${encodeURIComponent(options.userId)}/connectors`,
   );
   if (!response.ok) throw new Error(`connector listing failed with HTTP ${response.status}`);
-  const value: unknown = await response.json();
-  if (!isRecord(value) || !isRecord(value.connectors)) {
-    throw new Error("connector listing returned an invalid response");
-  }
-  const connectorValues = value.connectors;
-  const allowed = options.allowedConnectors();
-  const visible = allowed === undefined ? new Set(CONNECTOR_IDS) : new Set(allowed);
-  return Object.fromEntries(CONNECTOR_IDS.map((id) => {
-    const status = connectorValues[id];
-    const connected = visible.has(id) && isRecord(status) && status.connected === true;
-    const account = connected && typeof status.label === "string" && status.label.trim()
-      ? status.label.trim()
-      : undefined;
-    return [id, {
-      connected,
-      ...(account === undefined ? {} : { account }),
-    }];
-  })) as Record<AccountConnectorId, ConnectorStatus>;
+  const statuses = connectorStatuses(await response.json());
+  const allowedConnectors = options.allowedConnectors();
+  const allowed = allowedConnectors === undefined ? undefined : new Set(allowedConnectors);
+  const allowedConnections = options.allowedConnectorConnections?.();
+  return Object.fromEntries(CONNECTOR_CAPABILITY_IDS.map((id) => {
+    if (allowed && !allowed.has(id)) return [id, { connected: false, connections: [] }];
+    const projected = projectConnectorStatus(statuses[id], allowedConnections?.[id]);
+    if (allowedConnectors !== undefined && allowedConnections === undefined
+      && projected.connections !== undefined) {
+      return [id, {
+        connected: projected.connected,
+        ...(projected.account === undefined ? {} : { account: projected.account }),
+      }];
+    }
+    return [id, projected];
+  })) as Record<ConnectorCapabilityId, ConnectorStatus>;
+}
+
+async function soleProviderConnectionId(
+  options: AccountConnectorsToolOptions,
+  provider: ConnectorProviderId,
+): Promise<string | undefined> {
+  const statuses = await visibleConnectorStatuses(options);
+  const ids = new Set(PROVIDER_CAPABILITIES[provider].flatMap(
+    (capability) => statuses[capability].connections?.map(({ id }) => id) ?? [],
+  ));
+  return ids.size === 1 ? [...ids][0] : undefined;
 }
 
 function connectorOperation(input: unknown):
   | { operation: "list" }
-  | { operation: "connect"; connector: AccountConnectorId; accountHint?: string }
-  | { operation: "disconnect"; connector: AccountConnectorId } {
+  | { operation: "connect"; provider: ConnectorProviderId; accountHint?: string }
+  | { operation: "disconnect"; provider: ConnectorProviderId; connectionId?: string } {
   if (!isRecord(input) || typeof input.operation !== "string") {
     throw new TypeError("operation must be list, connect, or disconnect");
   }
   if (input.operation === "list") {
-    if (input.connector !== undefined || input.account_hint !== undefined) {
-      throw new TypeError("list does not accept connector or account_hint");
+    if (input.connector !== undefined || input.account_hint !== undefined
+      || input.connection_id !== undefined) {
+      throw new TypeError("list does not accept connector, connection_id, or account_hint");
     }
     return { operation: "list" };
   }
-  const connector = CONNECTOR_IDS.find((id) => id === input.connector);
-  if (!connector) throw new TypeError("connector must name a supported account connector");
+  const provider = connectorProviderId(input.connector);
+  if (!provider) throw new TypeError("connector must name a supported account connector provider");
   if (input.operation === "disconnect") {
     if (input.account_hint !== undefined) throw new TypeError("disconnect does not accept account_hint");
-    return { operation: "disconnect", connector };
+    if (input.connection_id === undefined) return { operation: "disconnect", provider };
+    const connectionId = connectorConnectionId(input.connection_id);
+    if (!connectionId) throw new TypeError("connection_id must be an exact opaque connector connection id");
+    return { operation: "disconnect", provider, connectionId };
   }
   if (input.operation !== "connect") {
     throw new TypeError("operation must be list, connect, or disconnect");
   }
-  if (input.account_hint === undefined) return { operation: "connect", connector };
-  if ((connector !== "gmail" && connector !== "gdrive")
-    || typeof input.account_hint !== "string") {
-    throw new TypeError("account_hint is supported only for Gmail and Google Drive");
+  if (input.connection_id !== undefined) throw new TypeError("connect does not accept connection_id");
+  if (input.account_hint === undefined) return { operation: "connect", provider };
+  if (provider !== "google" || typeof input.account_hint !== "string") {
+    throw new TypeError("account_hint is supported only for Google Workspace");
   }
   const accountHint = input.account_hint.trim().toLowerCase();
   if (accountHint.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(accountHint)) {
     throw new TypeError("account_hint must be an email address");
   }
-  return { operation: "connect", connector, accountHint };
+  return { operation: "connect", provider, accountHint };
 }
 
 async function connectorFailure(response: Response): Promise<unknown> {
@@ -253,8 +325,8 @@ async function connectorFailure(response: Response): Promise<unknown> {
   };
 }
 
-function connectorBrokerUrl(userId: string, connector: AccountConnectorId): string {
-  return `https://broker.internal/users/${encodeURIComponent(userId)}/connectors/${connector}`;
+function connectorBrokerUrl(userId: string, provider: ConnectorProviderId): string {
+  return `https://broker.internal/users/${encodeURIComponent(userId)}/connectors/${provider}`;
 }
 
 function brokerFetch(

@@ -10,12 +10,17 @@ import {
   wrapLocalConnectorAuthorizationState,
 } from "nanocodex-vite/oauth-relay";
 import { canonicalRemoteMcpTarget } from "../../mcp-target.mjs";
+import {
+  connectorConnectionId,
+  connectorProviderId,
+  type ConnectorProviderId,
+} from "./connector-status";
 
 type ConnectorEnv = AccountAuthEnv & {
   NANOCODEX: Fetcher;
   NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY?: string;
 };
-type ConnectorId = "github" | "gmail" | "gdrive" | "x";
+type ConnectorRouteId = ConnectorProviderId | "gmail" | "gdrive";
 type McpConnectionStatus =
   | "authorization_required"
   | "connected"
@@ -28,7 +33,6 @@ type McpConnection = Readonly<{
   status: McpConnectionStatus;
 }>;
 
-const CONNECTOR = /^(github|gmail|gdrive|x)$/;
 const MCP_CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const MCP_CONNECTION_NAME = /^[^\u0000-\u001f\u007f]{1,256}$/u;
 const MCP_CONNECTION_STATUSES = new Set<McpConnectionStatus>([
@@ -53,7 +57,6 @@ const MCP_PROXY_RESPONSE_HEADERS = [
   "mcp-session-id",
   "retry-after",
 ] as const;
-const CALLBACK_SUFFIX = "/callback";
 const CONNECTOR_ERROR_CODES = new Set([
   "authorization_code_missing",
   "connector_broker_failed",
@@ -205,13 +208,19 @@ export async function routeConnectorRequest(
     );
   }
 
-  const match = url.pathname.match(/^\/v1\/connectors\/([^/]+)(\/callback)?$/);
+  const match = url.pathname.match(
+    /^\/v1\/connectors\/([^/]+)(?:\/(callback)|\/connections\/([^/]+))?$/,
+  );
   if (!match) return undefined;
-  const connector = connectorId(match[1]);
-  if (!connector) return json({ error: "not_found" }, 404);
-  const callback = match[2] === CALLBACK_SUFFIX;
-  if ((!callback && request.method !== "POST" && request.method !== "DELETE")
-    || (callback && request.method !== "GET")) {
+  const routeConnector = connectorRouteId(match[1]);
+  const provider = connectorProviderId(routeConnector);
+  if (!routeConnector || !provider) return json({ error: "not_found" }, 404);
+  const callback = match[2] === "callback";
+  const connectionId = match[3] === undefined ? undefined : connectorConnectionId(match[3]);
+  if ((match[3] !== undefined && !connectionId)
+    || (callback && request.method !== "GET")
+    || (connectionId && request.method !== "DELETE")
+    || (!callback && !connectionId && request.method !== "POST")) {
     return json({ error: "method_not_allowed" }, 405);
   }
 
@@ -222,7 +231,7 @@ export async function routeConnectorRequest(
     if (originFailure) return originFailure;
   }
 
-  const target = `https://broker.internal/users/${encodeURIComponent(principal.userId)}/connectors/${connector}${callback ? "/callback" : ""}`;
+  const target = `https://broker.internal/users/${encodeURIComponent(principal.userId)}/connectors/${provider}${callback ? "/callback" : connectionId ? `/connections/${connectionId}` : ""}`;
   if (callback) return finishCallback(await env.NANOCODEX.fetch(target, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -232,19 +241,19 @@ export async function routeConnectorRequest(
       error: url.searchParams.get("error"),
       error_description: url.searchParams.get("error_description"),
     }),
-  }), url, connector);
+  }), url, routeConnector);
 
   if (url.search) return json({ error: "invalid_request" }, 400);
-  if (request.method === "DELETE") return env.NANOCODEX.fetch(target, { method: "DELETE" });
+  if (connectionId) return env.NANOCODEX.fetch(target, { method: "DELETE" });
 
   const returnTo = await decodeReturnTo(request, url);
   if (!returnTo) return json({ error: "invalid_return_to" }, 400);
-  const local = localConnectorAuthorization(url.origin, connector, "managed");
+  const local = localConnectorAuthorization(url.origin, routeConnector, "managed");
   const response = await env.NANOCODEX.fetch(target, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      redirect_uri: local?.redirectUri ?? `${url.origin}/v1/connectors/${connector}/callback`,
+      redirect_uri: local?.redirectUri ?? `${url.origin}/v1/connectors/${routeConnector}/callback`,
       return_to: returnTo,
     }),
   });
@@ -272,7 +281,7 @@ export async function routeConnectorRequest(
 async function finishCallback(
   response: Response,
   requestUrl: URL,
-  connector: ConnectorId,
+  connector: ConnectorRouteId,
 ): Promise<Response> {
   const value: unknown = await response.json().catch(() => undefined);
   if (!response.ok) {
@@ -315,7 +324,7 @@ function safeReturnTo(value: string, requestUrl: URL): string | undefined {
 
 function connectorCompletionPage(
   requestUrl: URL,
-  connector: ConnectorId,
+  connector: ConnectorRouteId,
   result: "connected" | "cancelled" | "failed",
   returnTo?: string,
 ): Response {
@@ -350,8 +359,10 @@ function connectorCompletionPage(
   });
 }
 
-function connectorId(value: string | undefined): ConnectorId | undefined {
-  return value && CONNECTOR.test(value) ? value as ConnectorId : undefined;
+function connectorRouteId(value: string | undefined): ConnectorRouteId | undefined {
+  return value === "gmail" || value === "gdrive"
+    ? value
+    : connectorProviderId(value);
 }
 
 function mcpConnectionId(value: string | undefined): string | undefined {

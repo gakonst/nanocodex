@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  exactConnectorAccess,
   handleManagedEgress,
 } from "../src/managed-egress";
 
@@ -63,6 +64,79 @@ describe("Computer egress gateway", () => {
     expect(await seen[4]!.text()).toBe(writeBody);
     expect(await seen[5]!.text()).toBe(xWriteBody);
     expect(seen[5]!.headers.get("content-type")).toBe("application/json");
+  });
+
+  it("routes every service capability with one validated connection selector", async () => {
+    const seen: Request[] = [];
+    const allowed = vi.fn(() => true);
+    const binding = {
+      async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+        seen.push(new Request(input, init));
+        return Response.json({ ok: true });
+      },
+    } as Fetcher;
+    const connectionId = "c".repeat(43);
+    const routes = [
+      ["github", "https://api.github.com/user"],
+      ["gmail", "https://gmail.googleapis.com/gmail/v1/users/me/messages"],
+      ["gdrive", "https://www.googleapis.com/drive/v3/files"],
+      ["gcalendar", "https://calendar.googleapis.com/calendar/v3/calendars/primary/events"],
+      ["gtasks", "https://tasks.googleapis.com/tasks/v1/users/@me/lists"],
+      ["gdocs", "https://docs.googleapis.com/v1/documents/document-id"],
+      ["gsheets", "https://sheets.googleapis.com/v4/spreadsheets/sheet-id"],
+      ["gslides", "https://slides.googleapis.com/v1/presentations/deck-id"],
+      ["gcontacts", "https://people.googleapis.com/v1/people/me/connections"],
+      ["slack", "https://slack.com/api/conversations.list"],
+      ["x", "https://api.x.com/2/users/me"],
+    ] as const;
+
+    for (const [capability, url] of routes) {
+      const response = await handleManagedEgress(new Request(url, {
+        headers: { "X-Nanocodex-Connector-Connection": connectionId },
+      }), binding, SUBJECT, allowed);
+      expect(response.status, capability).toBe(200);
+    }
+    expect(allowed.mock.calls).toEqual(routes.map(([capability]) => [capability, connectionId]));
+    expect(seen.every((request) => (
+      request.headers.get("x-nanocodex-connector-connection") === connectionId
+    ))).toBe(true);
+
+    expect((await handleManagedEgress(new Request(routes[0][1], {
+      headers: { "X-Nanocodex-Connector-Connection": "not-an-id" },
+    }), binding, SUBJECT, allowed)).status).toBe(403);
+    expect((await handleManagedEgress(new Request("https://public.example/", {
+      headers: { "X-Nanocodex-Connector-Connection": connectionId },
+    }), binding, SUBJECT, allowed)).status).toBe(403);
+  });
+
+  it("injects a sole approved connection and rejects identities outside the grant", async () => {
+    const approved = "a".repeat(43);
+    const addedLater = "b".repeat(43);
+    const seen: Request[] = [];
+    const binding = {
+      async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+        seen.push(new Request(input, init));
+        return Response.json({ ok: true });
+      },
+    } as Fetcher;
+    const authorize = (_connector: string, selected?: string): boolean | string => (
+      exactConnectorAccess([approved], selected)
+    );
+
+    expect((await handleManagedEgress(
+      new Request("https://api.github.com/user"),
+      binding,
+      SUBJECT,
+      authorize,
+    )).status).toBe(200);
+    expect(seen[0]!.headers.get("x-nanocodex-connector-connection")).toBe(approved);
+
+    expect((await handleManagedEgress(new Request("https://api.github.com/user", {
+      headers: { "X-Nanocodex-Connector-Connection": addedLater },
+    }), binding, SUBJECT, authorize)).status).toBe(403);
+    expect(seen).toHaveLength(1);
+    expect(exactConnectorAccess([approved, addedLater])).toBe(false);
+    expect(exactConnectorAccess([approved, addedLater], approved)).toBe(approved);
   });
 
   it("rejects credentials, lookalikes, userinfo, and private destinations", async () => {

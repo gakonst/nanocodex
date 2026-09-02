@@ -19,6 +19,7 @@ const SECOND_PUBLIC_KEY = "0x05060708";
 const LOCAL_PASSKEY_COOKIE = "nanocodex_local_passkey";
 const CONNECT_GRANT_ID = `0x${"a".repeat(64)}`;
 const CONNECT_MCP_ID = "m".repeat(43);
+const CONNECTOR_CONNECTION_ID = "n".repeat(43);
 const APP_TOOL_CATALOG_DIGEST = `0x${"c".repeat(64)}`;
 
 describe("Connect grant assertions", () => {
@@ -27,7 +28,12 @@ describe("Connect grant assertions", () => {
     const principal = await authenticate(new Request("https://nanocodex.internal/v1/agents", {
       headers: connectHeaders({
         capabilities: ["agents:read", "agents:write", "tools:use", "memory:read"],
-        connectors: ["github", "chatgpt"],
+        connectors: ["github", "gcalendar", "slack", "chatgpt"],
+        connectorConnections: {
+          github: [CONNECTOR_CONNECTION_ID],
+          gcalendar: [CONNECTOR_CONNECTION_ID],
+          slack: [CONNECTOR_CONNECTION_ID],
+        },
         mcpIds: [CONNECT_MCP_ID],
         appToolCatalogDigest: APP_TOOL_CATALOG_DIGEST,
       }),
@@ -39,7 +45,12 @@ describe("Connect grant assertions", () => {
       capabilities: ["agents:read", "agents:write", "tools:use", "memory:read"],
       connectGrant: {
         grantId: CONNECT_GRANT_ID,
-        connectors: ["github", "chatgpt"],
+        connectors: ["github", "gcalendar", "slack", "chatgpt"],
+        connectorConnections: {
+          github: [CONNECTOR_CONNECTION_ID],
+          gcalendar: [CONNECTOR_CONNECTION_ID],
+          slack: [CONNECTOR_CONNECTION_ID],
+        },
         mcpIds: [CONNECT_MCP_ID],
         appToolCatalogDigest: APP_TOOL_CATALOG_DIGEST,
       },
@@ -60,6 +71,14 @@ describe("Connect grant assertions", () => {
       .resolves.toBeUndefined();
     await expect(request(connectHeaders({ mcpIds: ["short"] })))
       .resolves.toBeUndefined();
+    await expect(request(connectHeaders({
+      connectors: ["github"],
+      connectorConnections: { github: ["short"] },
+    }))).resolves.toBeUndefined();
+    await expect(request(connectHeaders({
+      connectors: ["github"],
+      connectorConnections: { slack: [CONNECTOR_CONNECTION_ID] },
+    }))).resolves.toBeUndefined();
     await expect(request(connectHeaders({ appToolCatalogDigest: "not-a-digest" })))
       .resolves.toBeUndefined();
     const duplicateCatalogDigest = connectHeaders({ appToolCatalogDigest: APP_TOOL_CATALOG_DIGEST });
@@ -470,6 +489,7 @@ function connectHeaders(overrides: Readonly<{
   appToolCatalogDigest?: string;
   capabilities?: readonly string[];
   connectors?: readonly string[];
+  connectorConnections?: Readonly<Record<string, readonly string[]>>;
   mcpIds?: readonly string[];
 }> = {}): Headers {
   return new Headers({
@@ -484,6 +504,13 @@ function connectHeaders(overrides: Readonly<{
       ? {}
       : {
         "x-nanocodex-connect-app-tool-catalog-digest": overrides.appToolCatalogDigest,
+      }),
+    ...(overrides.connectorConnections === undefined
+      ? {}
+      : {
+        "x-nanocodex-connect-connector-connections": JSON.stringify(
+          overrides.connectorConnections,
+        ),
       }),
   });
 }
