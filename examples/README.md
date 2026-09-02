@@ -13,6 +13,11 @@ All language consumers live at this repository boundary:
   and demonstrates the Rust-owned task-tree extension compiled into WASM.
 - Browser: `react-vite/` runs that WASM agent in a module Worker and renders its
   ordered events in React.
+- Existing Privy auth: `privy/` is an independent Cloudflare/Vite application
+  that exchanges a server-verified Privy session for a hosted Connect principal.
+- Existing Better Auth: `better-auth/` is an independent Cloudflare/Vite
+  application with GitHub login, D1-backed sessions, and a hosted Connect
+  principal. Both host-auth examples prove two durable turns across reload.
 - Browser CDN: `browser-cdn/` is one static HTML file that imports the published
   package directly, with no install or build step.
 - Rivet Actors: `rivet-actors/` runs the same harness as a durable,
@@ -54,6 +59,12 @@ just smoke-python
 just smoke-wasm-node
 npm run subagents --prefix examples/node -- "Review the JS API"
 just build-react-example
+npm ci --prefix examples/privy
+npm test --prefix examples/privy
+npm run build --prefix examples/privy
+npm ci --prefix examples/better-auth
+npm test --prefix examples/better-auth
+npm run build --prefix examples/better-auth
 just build-rivet-example
 just build-cloudflare-example
 npm run check --prefix js/egress

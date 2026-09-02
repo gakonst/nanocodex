@@ -1,0 +1,6 @@
+# Copy to .dev.vars. Never commit .dev.vars.
+# Generate BETTER_AUTH_SECRET with the command documented in README.md.
+BETTER_AUTH_SECRET="v1.REPLACE_WITH_43_BASE64URL_CHARACTERS"
+BETTER_AUTH_GITHUB_CLIENT_ID="replace-with-github-oauth-client-id"
+BETTER_AUTH_GITHUB_CLIENT_SECRET="replace-with-github-oauth-client-secret"
+NANOCODEX_HOST_PROJECT_SECRET="replace-with-nanocodex-host-project-secret"

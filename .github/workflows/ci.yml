@@ -155,6 +155,8 @@ jobs:
           ./js/nanocodex-vite/scripts/build-js-package.sh --release
           npm ci --prefix examples/node
           npm ci --prefix examples/react-vite
+          npm ci --prefix examples/privy
+          npm ci --prefix examples/better-auth
       - name: Test JS runtime
         working-directory: js/nanocodex
         run: |
@@ -171,6 +173,10 @@ jobs:
           npm test --prefix examples/node
           npm test --prefix examples/react-vite
           npm run build --prefix examples/react-vite
+          npm test --prefix examples/privy
+          npm run build --prefix examples/privy
+          npm test --prefix examples/better-auth
+          npm run build --prefix examples/better-auth
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nanocodex-web-wasm
