@@ -31,6 +31,10 @@ import {
 import { routeLinkPreview } from "./linkPreview.ts";
 import { routeManaged } from "./managedProxy.ts";
 import {
+  routeChiefOfStaff,
+  type ChiefOfStaffProxyEnv,
+} from "./chiefOfStaffProxy.ts";
+import {
   routeConnectDialog,
   type ConnectDialogProxyEnv,
 } from "./connectDialogProxy.ts";
@@ -97,6 +101,7 @@ type WorkerEnv = GitStorageEnv & ThreadGitStorageEnv & EvalStorageEnv & ChatGptE
   & LocalConnectApiEnv
   & ConnectApiProxyEnv
   & LocalConnectorCallbackRelayEnv
+  & ChiefOfStaffProxyEnv
   & PublicSecurityEnv & CredentialVaultEnv & {
   ASSETS?: Fetcher;
   ENVIRONMENT: string;
@@ -141,6 +146,8 @@ export default {
     if (connectApi != null) return connectApi;
     const connectDialog = await routeConnectDialog(request, env, url);
     if (connectDialog != null) return connectDialog;
+    const chiefOfStaff = await routeChiefOfStaff(request, env, url);
+    if (chiefOfStaff != null) return chiefOfStaff;
     const managed = await routeManaged(request, env, url);
     if (managed != null) return managed;
     const evalMutation = await routeEvalMutation(request, env, url);

@@ -136,6 +136,7 @@ export function documentStatusForPath(pathname: string): 200 | 404 | null {
   pathname = normalizePath(pathname);
   if (pathname === "/" || pathname === "/agent" || pathname === "/multiplayer"
     || pathname === "/world" || pathname === "/artifact-runtime"
+    || pathname === "/demos/chief-of-staff"
     || pathname === "/changelog" || pathname === "/code" || pathname === "/commits"
     || pathname === "/requests" || pathname === "/connect"
     || pathname === "/connect/device") return 200;
@@ -219,6 +220,7 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
     };
   }
   if (pathname === "/agent") return fixed(pathname, "Browser agent", "Run the Rust-owned Codex lifecycle locally in a browser Worker.");
+  if (pathname === "/demos/chief-of-staff") return fixed(pathname, "Chief of Staff", "Connect a signed Slack ingress to account-owned durable Nanocodex agents.", "CHAT SDK INTEGRATION");
   if (pathname === "/multiplayer") return fixed(pathname, "Multiplayer", "Join a durable room with many humans and one secretless managed Nanocodex agent.", "DURABLE MULTIPLAYER");
   if (pathname === "/world") return fixed(pathname, "Springleaf Town", "Watch Nanocodex inhabitants act inside a living pixel world.", "MONSTER WORLD");
   if (pathname === "/changelog") return fixed(pathname, "Changelog", "Follow focused Nanocodex SDK, runtime, tooling, and evaluation changes.");

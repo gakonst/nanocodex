@@ -29,6 +29,8 @@ js/tui-react/node_modules/
 js/tui-react/dist/
 js/nanocodex-terminal/node_modules/
 js/nanocodex-terminal/dist/
+js/chief-of-staff/node_modules/
+js/chief-of-staff/dist/
 js/nanocodex/pkg-node/
 js/nanocodex/pkg-web/
 examples/node/node_modules/

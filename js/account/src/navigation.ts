@@ -2,6 +2,7 @@ export type Surface =
   | "home"
   | "agent"
   | "tools"
+  | "chief-of-staff"
   | "multiplayer"
   | "world"
   | "changelog"
@@ -43,6 +44,7 @@ export const accountNavigation = {
 
 export const demoNavigation = [
   { surface: "agent", label: "Durable Agent", description: "Managed durable agent" },
+  { surface: "chief-of-staff", label: "Chief of Staff", description: "Chat SDK channels" },
   { surface: "tools", label: "Attached Tools", description: "Browser tool host" },
   { surface: "multiplayer", label: "Multiplayer", description: "Shared room" },
   { surface: "world", label: "World", description: "Agent world" },
@@ -63,6 +65,7 @@ const surfacePaths: Record<Surface, string> = {
   home: "/",
   agent: "/agent",
   tools: "/agent?demo=attached-tools",
+  "chief-of-staff": "/demos/chief-of-staff",
   multiplayer: "/multiplayer",
   world: "/world",
   changelog: "/changelog",

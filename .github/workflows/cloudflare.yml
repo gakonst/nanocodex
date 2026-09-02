@@ -81,6 +81,9 @@ jobs:
       - name: Validate Connect API Worker
         working-directory: js/connect-api
         run: npx wrangler deploy --dry-run --config wrangler.jsonc
+      - name: Validate Chief of Staff Worker
+        working-directory: js/chief-of-staff
+        run: npm run check
       - name: Validate account Worker
         working-directory: js/account
         run: npx wrangler deploy --dry-run --config dist/nanocodex/wrangler.json
@@ -149,6 +152,9 @@ jobs:
         run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy Connect API
         working-directory: js/connect-api
+        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+      - name: Deploy Chief of Staff integration
+        working-directory: js/chief-of-staff
         run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy Connect playground
         working-directory: js/connect-playground

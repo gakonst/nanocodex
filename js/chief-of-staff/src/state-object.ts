@@ -1,0 +1,284 @@
+import { DurableObject } from "cloudflare:workers";
+import type { Lock, QueueEntry } from "chat";
+import {
+  ConversationEngine,
+  ConversationError,
+  type ConversationStore,
+  type ConversationTurnRequest,
+} from "./conversation.ts";
+import { NanocodexManagedGateway } from "./managed.ts";
+import { sameChannelIdentity, type ChannelIdentity } from "./protocol.ts";
+import type { Env } from "./worker.ts";
+
+type ExpiringValue = Readonly<{ expiresAt: number | null; value: unknown }>;
+
+export class ChiefOfStaffState extends DurableObject<Env> {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+    if (url.pathname === "/chat-sdk") return this.chatState(request);
+    if (url.pathname === "/conversation/turn") return this.conversationTurn(request);
+    return json({ error: "not_found" }, 404);
+  }
+
+  private async conversationTurn(request: Request): Promise<Response> {
+    if (!this.env.NANOCODEX_BACKEND || !this.env.NANOCODEX_API_KEY) {
+      return json({ error: "managed_service_unavailable" }, 503);
+    }
+    let body: ConversationTurnRequest;
+    try { body = await request.json<ConversationTurnRequest>(); }
+    catch { return json({ error: "invalid_request" }, 400); }
+    try {
+      const engine = new ConversationEngine(
+        new DurableConversationStore(this.ctx.storage),
+        new NanocodexManagedGateway(this.env.NANOCODEX_BACKEND, this.env.NANOCODEX_API_KEY),
+      );
+      return json(await engine.turn(body), 200);
+    } catch (error) {
+      if (error instanceof ConversationError) return json({ error: error.code }, error.status);
+      console.warn({
+        type: "chief_of_staff.turn_failed",
+        error_kind: error instanceof Error ? error.name : typeof error,
+      });
+      return json({ error: "turn_unavailable" }, 503);
+    }
+  }
+
+  private async chatState(request: Request): Promise<Response> {
+    let body: Record<string, unknown>;
+    try { body = await request.json<Record<string, unknown>>(); }
+    catch { return json({ error: "invalid_request" }, 400); }
+    const operation = body.operation;
+    if (typeof operation !== "string") return json({ error: "invalid_request" }, 400);
+    try {
+      return json({ value: await this.runStateOperation(operation, body) }, 200);
+    } catch {
+      return json({ error: "invalid_state_operation" }, 400);
+    }
+  }
+
+  private async runStateOperation(operation: string, body: Record<string, unknown>): Promise<unknown> {
+    const key = typeof body.key === "string" ? `value:${body.key}` : undefined;
+    const threadId = typeof body.threadId === "string" ? body.threadId : undefined;
+    switch (operation) {
+      case "get": return key ? this.getValue(key) : null;
+      case "set": {
+        if (!key) throw new Error("key required");
+        await this.putValue(key, body.value, optionalNumber(body.ttlMs));
+        return null;
+      }
+      case "setIfNotExists": {
+        if (!key) throw new Error("key required");
+        return this.setIfMissing(key, body.value, optionalNumber(body.ttlMs));
+      }
+      case "delete": {
+        if (!key) throw new Error("key required");
+        await this.ctx.storage.delete(key);
+        return null;
+      }
+      case "appendToList": {
+        if (!key) throw new Error("key required");
+        const options = isRecord(body.options) ? body.options : {};
+        await this.appendList(
+          key,
+          body.value,
+          optionalNumber(options.maxLength),
+          optionalNumber(options.ttlMs),
+        );
+        return null;
+      }
+      case "getList": return key ? (await this.getValue(key) ?? []) : [];
+      case "subscribe": {
+        if (!threadId) throw new Error("thread required");
+        await this.ctx.storage.put(`subscription:${threadId}`, true);
+        return null;
+      }
+      case "unsubscribe": {
+        if (!threadId) throw new Error("thread required");
+        await this.ctx.storage.delete(`subscription:${threadId}`);
+        return null;
+      }
+      case "isSubscribed": return threadId
+        ? (await this.ctx.storage.get(`subscription:${threadId}`)) === true
+        : false;
+      case "acquireLock": return threadId
+        ? this.acquireLock(threadId, requiredNumber(body.ttlMs))
+        : null;
+      case "extendLock": return this.extendLock(body.lock, requiredNumber(body.ttlMs));
+      case "releaseLock": await this.releaseLock(body.lock); return null;
+      case "forceReleaseLock": {
+        if (!threadId) throw new Error("thread required");
+        await this.ctx.storage.delete(`lock:${threadId}`);
+        return null;
+      }
+      case "enqueue": {
+        if (!threadId) throw new Error("thread required");
+        return this.enqueue(threadId, body.entry, requiredNumber(body.maxSize));
+      }
+      case "dequeue": return threadId ? this.dequeue(threadId) : null;
+      case "queueDepth": return threadId
+        ? (await this.ctx.storage.get<QueueEntry[]>(`queue:${threadId}`) ?? []).length
+        : 0;
+      default: throw new Error("unsupported operation");
+    }
+  }
+
+  private async getValue(key: string): Promise<unknown | null> {
+    const retained = await this.ctx.storage.get<ExpiringValue>(key);
+    if (!retained) return null;
+    if (retained.expiresAt !== null && retained.expiresAt <= Date.now()) {
+      await this.ctx.storage.delete(key);
+      return null;
+    }
+    return retained.value;
+  }
+
+  private async putValue(key: string, value: unknown, ttlMs?: number): Promise<void> {
+    await this.ctx.storage.put(key, {
+      expiresAt: ttlMs === undefined ? null : Date.now() + ttlMs,
+      value,
+    } satisfies ExpiringValue);
+  }
+
+  private async setIfMissing(key: string, value: unknown, ttlMs?: number): Promise<boolean> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const retained = await transaction.get<ExpiringValue>(key);
+      if (retained && (retained.expiresAt === null || retained.expiresAt > Date.now())) return false;
+      await transaction.put(key, {
+        expiresAt: ttlMs === undefined ? null : Date.now() + ttlMs,
+        value,
+      } satisfies ExpiringValue);
+      return true;
+    });
+  }
+
+  private async appendList(
+    key: string,
+    value: unknown,
+    maxLength?: number,
+    ttlMs?: number,
+  ): Promise<void> {
+    await this.ctx.storage.transaction(async (transaction) => {
+      const retained = await transaction.get<ExpiringValue>(key);
+      const active = retained && (retained.expiresAt === null || retained.expiresAt > Date.now());
+      const list = active && Array.isArray(retained.value) ? [...retained.value, value] : [value];
+      const trimmed = maxLength === undefined ? list : list.slice(-maxLength);
+      await transaction.put(key, {
+        expiresAt: ttlMs === undefined ? null : Date.now() + ttlMs,
+        value: trimmed,
+      } satisfies ExpiringValue);
+    });
+  }
+
+  private async acquireLock(threadId: string, ttlMs: number): Promise<Lock | null> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const key = `lock:${threadId}`;
+      const retained = await transaction.get<Lock>(key);
+      if (retained && retained.expiresAt > Date.now()) return null;
+      const lock = { expiresAt: Date.now() + ttlMs, threadId, token: crypto.randomUUID() };
+      await transaction.put(key, lock);
+      return lock;
+    });
+  }
+
+  private async extendLock(value: unknown, ttlMs: number): Promise<boolean> {
+    const lock = decodeLock(value);
+    return this.ctx.storage.transaction(async (transaction) => {
+      const key = `lock:${lock.threadId}`;
+      const retained = await transaction.get<Lock>(key);
+      if (!retained || retained.token !== lock.token || retained.expiresAt <= Date.now()) return false;
+      await transaction.put(key, { ...retained, expiresAt: Date.now() + ttlMs });
+      return true;
+    });
+  }
+
+  private async releaseLock(value: unknown): Promise<void> {
+    const lock = decodeLock(value);
+    await this.ctx.storage.transaction(async (transaction) => {
+      const key = `lock:${lock.threadId}`;
+      const retained = await transaction.get<Lock>(key);
+      if (retained?.token === lock.token) await transaction.delete(key);
+    });
+  }
+
+  private async enqueue(threadId: string, entry: unknown, maxSize: number): Promise<number> {
+    if (!isRecord(entry)) throw new Error("entry required");
+    return this.ctx.storage.transaction(async (transaction) => {
+      const key = `queue:${threadId}`;
+      const queue = await transaction.get<QueueEntry[]>(key) ?? [];
+      queue.push(entry as unknown as QueueEntry);
+      const retained = queue.slice(-maxSize);
+      await transaction.put(key, retained);
+      return retained.length;
+    });
+  }
+
+  private async dequeue(threadId: string): Promise<QueueEntry | null> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const key = `queue:${threadId}`;
+      const queue = await transaction.get<QueueEntry[]>(key) ?? [];
+      while (queue.length > 0) {
+        const entry = queue.shift()!;
+        if (entry.expiresAt > Date.now()) {
+          await transaction.put(key, queue);
+          return entry;
+        }
+      }
+      await transaction.delete(key);
+      return null;
+    });
+  }
+}
+
+class DurableConversationStore implements ConversationStore {
+  private readonly storage: DurableObjectStorage;
+
+  constructor(storage: DurableObjectStorage) {
+    this.storage = storage;
+  }
+
+  async bindIdentity(identity: ChannelIdentity): Promise<boolean> {
+    return this.storage.transaction(async (transaction) => {
+      const retained = await transaction.get<ChannelIdentity>("conversation:identity");
+      if (retained && !sameChannelIdentity(retained, identity)) return false;
+      if (!retained) await transaction.put("conversation:identity", identity);
+      return true;
+    });
+  }
+
+  get<T>(key: string): Promise<T | undefined> {
+    return this.storage.get<T>(`conversation:${key}`);
+  }
+
+  async put<T>(key: string, value: T): Promise<void> {
+    await this.storage.put(`conversation:${key}`, value);
+  }
+}
+
+function decodeLock(value: unknown): Lock {
+  if (!isRecord(value)
+    || typeof value.threadId !== "string"
+    || typeof value.token !== "string"
+    || typeof value.expiresAt !== "number") throw new Error("lock required");
+  return value as unknown as Lock;
+}
+
+function requiredNumber(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) throw new Error("positive integer required");
+  return Number(value);
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return value === undefined ? undefined : requiredNumber(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function json(body: unknown, status: number): Response {
+  return Response.json(body, {
+    status,
+    headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  });
+}

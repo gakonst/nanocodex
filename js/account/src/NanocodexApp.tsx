@@ -27,6 +27,7 @@ import { useLocation, useNavigate } from "react-router";
 import { DeviceConnect } from "./DeviceConnect";
 import { AgentExperience } from "./AgentExperience";
 import { Changelog, preloadChangelog } from "./Changelog";
+import { ChiefOfStaffDemo } from "./ChiefOfStaffDemo";
 import { CodeBrowser } from "./CodeBrowser";
 import { CommitCodeStream } from "./CommitCodeStream";
 import { Docs, preloadDocsRoute } from "./Docs";
@@ -700,6 +701,8 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
           ? "Account"
           : surface === "tools"
             ? "Attached Tools"
+            : surface === "chief-of-staff"
+              ? "Chief of Staff"
             : `${surface[0].toUpperCase()}${surface.slice(1)}`} · Nanocodex`;
   }, [surface]);
 
@@ -1394,6 +1397,8 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
           >
           {surface === "connect" ? (
             <DeviceConnect />
+          ) : surface === "chief-of-staff" ? (
+            <ChiefOfStaffDemo />
           ) : surface === "tools" ? (
             <HostedToolsDemo />
           ) : surface === "multiplayer" ? (

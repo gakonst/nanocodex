@@ -15,6 +15,7 @@
     "deploy:managed": "pnpm --filter nanocodex-tools run build && pnpm --filter nanocodex-vite run build:wasm && pnpm --filter nanocodex-managed-service run deploy",
     "deploy:connect-dialog": "turbo run build --filter=@nanocodex/connect-dialog && pnpm --filter @nanocodex/connect-dialog run deploy",
     "deploy:connect-api": "pnpm --filter @nanocodex/connect-api run deploy",
+    "deploy:chief-of-staff": "pnpm --filter @nanocodex/chief-of-staff run deploy",
     "deploy:connect-playground": "turbo run build --filter=@nanocodex/connect-playground && pnpm --filter @nanocodex/connect-playground run deploy",
     "deploy:account": "turbo run build --filter=nanocodex-web && pnpm --filter nanocodex-web run deploy"
   },

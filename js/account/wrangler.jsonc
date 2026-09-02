@@ -26,6 +26,7 @@
     "run_worker_first": [
       "/",
       "/agent",
+      "/demos/chief-of-staff",
       "/multiplayer",
       "/world",
       "/artifact-runtime",
@@ -60,6 +61,10 @@
     {
       "binding": "NANOCODEX_CONNECT_API",
       "service": "nanocodex-connect-api"
+    },
+    {
+      "binding": "CHIEF_OF_STAFF",
+      "service": "nanocodex-chief-of-staff"
     }
   ],
   "durable_objects": {
@@ -196,6 +201,11 @@
         {
           "binding": "NANOCODEX_CONNECT_API",
           "service": "nanocodex-connect-api",
+          "remote": false
+        },
+        {
+          "binding": "CHIEF_OF_STAFF",
+          "service": "nanocodex-chief-of-staff",
           "remote": false
         }
       ],

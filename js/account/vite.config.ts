@@ -128,6 +128,7 @@ export default defineConfig({
         auxiliaryWorkers: [
           { configPath: "../egress/wrangler.broker.jsonc", devOnly: true },
           { configPath: "../managed/wrangler.jsonc", devOnly: true },
+          { configPath: "../chief-of-staff/wrangler.jsonc", devOnly: true },
           { configPath: "../connect-api/wrangler.jsonc", devOnly: true },
         ],
       },
