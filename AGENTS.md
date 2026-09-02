@@ -18,9 +18,13 @@
   `https://<branch>.nanocodex.localhost`. The paired playground is
   `https://playground.nanocodex.localhost` or
   `https://<branch>.playground.nanocodex.localhost`. With a high
-  `PORTLESS_PORT`, append that port to each URL. Deploy from
-  the root with `pnpm deploy:<component>`; deploy dependencies first and
-  `pnpm deploy:account` last.
+  `PORTLESS_PORT`, append that port to each URL. Deploy from the root, in order,
+  with `pnpm deploy:egress`, `pnpm deploy:managed`,
+  `pnpm deploy:connect-dialog`, `pnpm deploy:connect-api`,
+  `pnpm deploy:chief-of-staff`, `pnpm deploy:connect-playground`, and
+  `pnpm deploy:account`. Each component script must build its complete workspace
+  dependency graph from a clean checkout; do not manually prebuild omitted
+  packages.
 - pnpm owns the JavaScript workspace, Turbo owns task concurrency and build
   caching, Portless owns local names and ports, and Vite/Wrangler own runtime.
 - Do not add custom stack, deploy, test, rollout, probe, or verification wrappers.
