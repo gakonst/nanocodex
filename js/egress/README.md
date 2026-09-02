@@ -50,6 +50,24 @@ MCP requests are allowlisted and owner-checked. SSH accepts an opaque identity
 reference and exact target, keeps the private key in the broker, verifies the
 stored host fingerprint, and returns bounded command results.
 
+OAuth connections use opaque 43-character base64url IDs and bounded labels.
+Provider calls select an identity with
+`X-Nanocodex-Connector-Connection`; a selector is required when more than one
+eligible identity exists. The private control routes are:
+
+- `GET /users/:user/connectors` for capability-projected status.
+- `POST /users/:user/connectors/:provider` and the corresponding `/callback`
+  route, where provider is `github`, `google`, `slack`, or `x`.
+- `DELETE /users/:user/connectors/:provider/connections/:connectionId` for one
+  exact grant.
+
+Google is a control-only provider. One Google identity is projected under each
+scope actually granted: `gmail`, `gdrive`, `gcalendar`, `gtasks`, `gdocs`,
+`gsheets`, `gslides`, and read-only `gcontacts`. The legacy `gmail` and
+`gdrive` control aliases remain readable during migration. Connector state and
+all access/refresh tokens remain encrypted in the per-user credential vault;
+status exposes only connection ID, label, account ID, and capability names.
+
 ## Checks
 
 `typecheck` and `test` cover this package. For a changed Worker boundary,

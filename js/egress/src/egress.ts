@@ -54,7 +54,8 @@ const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefine
 };
 
 type ConnectorOperation = Readonly<{
-  id: "github" | "gmail" | "gdrive" | "x";
+  id: "github" | "gmail" | "gdrive" | "gcalendar" | "gtasks" | "gdocs"
+    | "gsheets" | "gslides" | "gcontacts" | "slack" | "x";
   origin: `https://${string}`;
   paths: readonly RegExp[];
 }>;
@@ -76,6 +77,36 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
     paths: [/^\/drive\/v3(?:\/|$)/, /^\/upload\/drive\/v3(?:\/|$)/],
   },
   {
+    id: "gcalendar",
+    origin: "https://www.googleapis.com",
+    paths: [/^\/calendar\/v3(?:\/|$)/],
+  },
+  {
+    id: "gtasks",
+    origin: "https://tasks.googleapis.com",
+    paths: [/^\/tasks\/v1(?:\/|$)/],
+  },
+  {
+    id: "gdocs",
+    origin: "https://docs.googleapis.com",
+    paths: [/^\/v1\/documents(?:\/|$)/],
+  },
+  {
+    id: "gsheets",
+    origin: "https://sheets.googleapis.com",
+    paths: [/^\/v4\/spreadsheets(?:\/|$)/],
+  },
+  {
+    id: "gslides",
+    origin: "https://slides.googleapis.com",
+    paths: [/^\/v1\/presentations(?:\/|$)/],
+  },
+  {
+    id: "gcontacts",
+    origin: "https://people.googleapis.com",
+    paths: [/^\/v1\/people(?:\/|:|$)/, /^\/v1\/contactGroups(?:\/|$)/],
+  },
+  {
     id: "x",
     origin: "https://api.x.com",
     paths: [
@@ -85,6 +116,11 @@ const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
       /^\/2\/dm_(?:conversations|events)(?:\/|$)/,
       /^\/2\/media(?:\/|$)/,
     ],
+  },
+  {
+    id: "slack",
+    origin: "https://slack.com",
+    paths: [/^\/api\/[A-Za-z0-9._-]+$/],
   },
 ];
 
@@ -558,18 +594,23 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const connectorMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|gmail|gdrive|x)(\/callback)?)?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|google|gmail|gdrive|slack|x)(?:\/(callback)|\/connections\/([A-Za-z0-9_-]{43}))?)?$/,
   );
   if (connectorMatch) {
     const userId = connectorMatch[1]!;
     const connector = connectorMatch[2];
-    const callback = connectorMatch[3] === "/callback";
+    const callback = connectorMatch[3] === "callback";
+    const connectionId = connectorMatch[4];
     const target = connector
-      ? `https://connectors.internal/v1/${connector}${callback ? "/callback" : request.method === "POST" ? "/start" : ""}`
+      ? `https://connectors.internal/v1/${connector}${callback
+        ? "/callback"
+        : connectionId ? `/connections/${connectionId}` : request.method === "POST" ? "/start" : ""}`
       : "https://connectors.internal/v1/status";
     if ((!connector && request.method !== "GET")
       || (connector && callback && request.method !== "POST")
-      || (connector && !callback && request.method !== "POST" && request.method !== "DELETE")) {
+      || (connectionId && request.method !== "DELETE")
+      || (connector && !callback && !connectionId
+        && request.method !== "POST" && request.method !== "DELETE")) {
       return jsonError(405, "method_not_allowed");
     }
     return connectorBroker(env, userId).fetch(target, {
@@ -1095,7 +1136,7 @@ function auditControl(
   const subject = url.pathname.startsWith("/subjects/");
   const tail = user?.[3];
   const connector = user?.[2] === "connectors"
-    ? tail?.match(/^(github|gmail|gdrive|x)/)?.[1]
+    ? tail?.match(/^(github|google|gmail|gdrive|slack|x)/)?.[1]
     : undefined;
   const log = status >= 500 ? console.error : status >= 400 ? console.warn : console.info;
   log({
@@ -1119,7 +1160,9 @@ function audit(
   detail: Record<string, unknown>,
 ): void {
   const connector = rule === "github" || rule === "gmail" || rule === "gdrive"
-    || rule === "x" || rule === "mcp";
+    || rule === "gcalendar" || rule === "gtasks" || rule === "gdocs"
+    || rule === "gsheets" || rule === "gslides" || rule === "gcontacts"
+    || rule === "slack" || rule === "x" || rule === "mcp";
   const log = action === "error" ? console.error : action === "deny" ? console.warn : console.info;
   const safeDetail = {
     ...(typeof detail.code === "string" ? { code: detail.code } : {}),

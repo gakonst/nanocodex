@@ -44,12 +44,15 @@ describe("Google connector account hints", () => {
       state: authorization.searchParams.get("state"),
     });
     expect(completed.status).toBe(200);
-    expect(await completed.json()).toEqual({
+    expect(await completed.json()).toMatchObject({
       connected: true,
       return_to: "/agent?thread=connector-agent-email",
     });
     expect(await (await SELF.fetch(`https://broker.test/users/${user}/connectors`)).json())
-      .toMatchObject({ connectors: { gmail: { connected: true, label: "mail@example.test" } } });
+      .toMatchObject({ connectors: { gmail: {
+        connected: true,
+        connections: [{ label: "mail@example.test", capabilities: ["gmail"] }],
+      } } });
   });
 
   it("rejects and revokes a Google grant for a different account", async () => {
