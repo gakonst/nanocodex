@@ -50,6 +50,10 @@ import {
 } from "./default-mcp";
 import { HostedToolsBroker } from "./hosted-tools-broker";
 import {
+  AccountHostedTools,
+  AccountHostedToolsProvider,
+} from "./account-hosted-tools";
+import {
   hostedToolCatalogEntryAllowed,
   isAppToolCatalogDigest,
 } from "./app-tool-catalog";
@@ -239,6 +243,7 @@ import {
 import { memorySessionTools } from "./memory-session-tools";
 import { MemoryScope } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
+export { AccountHostedTools } from "./account-hosted-tools";
 export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account-auth";
 
 const MAX_CLIENT_MESSAGE_BYTES = 1024 * 1024;
@@ -299,6 +304,7 @@ export interface Env extends
   ChiefOfStaffPrincipalEnv,
   HostPrincipalEnv {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
+  NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
   NANOCODEX_ROOMS: DurableObjectNamespace<MultiplayerRoom>;
   NANOCODEX_MULTIPLAYER_QUOTA: DurableObjectNamespace<MultiplayerQuota>;
   NANOCODEX_MEMORY: DurableObjectNamespace<MemoryScope>;
@@ -919,6 +925,28 @@ async function managedFetch(
     }
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ service: "nanocodex", runtime: "cloudflare-durable-objects", status: "ok" });
+    }
+    if (url.pathname === "/v1/account/tool-host") {
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        return new Response("Expected WebSocket upgrade", { status: 426 });
+      }
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
+      if (principal.connectGrant
+        || !principal.capabilities.includes("agents:write")
+        || !principal.capabilities.includes("tools:use")) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      if (principal.kind !== "api_key" && request.headers.get("origin") !== url.origin) {
+        return json({ error: "forbidden_origin" }, { status: 403 });
+      }
+      const headers = new Headers(request.headers);
+      forwardPrincipalAssertions(headers, principal);
+      return env.NANOCODEX_ACCOUNT_TOOLS.getByName(principal.userId).fetch(
+        "https://account-tools.internal/tool-host",
+        new Request(request, { headers }),
+      );
     }
     if (request.method === "GET" && url.pathname === "/v1/agents") {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
@@ -1796,6 +1824,7 @@ export class DurableAgentSession extends DurableComputerSession {
   #accountMcpRefreshTask?: Promise<void>;
   readonly #cancellationTasks = new Map<string, Promise<void>>();
   readonly #hostedTools: HostedToolsBroker;
+  #accountHostedTools?: AccountHostedToolsProvider;
   readonly #pendingDeviceToolCalls = new Map<string, PendingDeviceToolCall>();
   readonly #realtimeOperations = new Map<string, Promise<unknown>>();
   #realtimeOperationTail: Promise<void> = Promise.resolve();
@@ -5072,7 +5101,10 @@ export class DurableAgentSession extends DurableComputerSession {
     let accountMcpRefreshMs = 0;
     if (session?.runtime_profile === "managed") {
       const refreshStartedAt = performance.now();
-      await this.#refreshAccountMcpConnections(session);
+      await Promise.all([
+        this.#refreshAccountMcpConnections(session),
+        this.#refreshAccountHostedTools(session),
+      ]);
       accountMcpRefreshMs = roundMilliseconds(performance.now() - refreshStartedAt);
     }
     if (this.#durabilityExported) throw new Error("durability state was exported");
@@ -5303,6 +5335,15 @@ export class DurableAgentSession extends DurableComputerSession {
     }
   }
 
+  async #refreshAccountHostedTools(session: SessionRow): Promise<void> {
+    this.#accountHostedTools ??= new AccountHostedToolsProvider(
+      this.env.NANOCODEX_ACCOUNT_TOOLS,
+      session.owner_id,
+      () => this.#hasFullAccountAuthority(),
+    );
+    await this.#accountHostedTools.refresh();
+  }
+
   #managedBrowserRuntime(session: SessionRow): Promise<ManagedBrowserRuntime> {
     let runtime = this.#managedBrowserRuntimePromise;
     if (!runtime) {
@@ -5354,9 +5395,10 @@ export class DurableAgentSession extends DurableComputerSession {
       computer.filesystem,
     );
     const computerRuntimeMs = performance.now() - phaseStartedAt;
-    const currentAccountInfo = (signal?: AbortSignal) => {
+    const currentAccountInfo = async (signal?: AbortSignal) => {
+      await this.#accountHostedTools?.refresh();
       const authorization = this.#activeTurnAuthorization();
-      return accountInfo(
+      return await accountInfo(
         this.env.NANOCODEX,
         session.owner_id,
         {
@@ -5374,12 +5416,15 @@ export class DurableAgentSession extends DurableComputerSession {
     };
     const internalRuntime = Symbol.for("nanocodex.cloudflare.internalRuntime");
     const internalConfiguration = Symbol.for("nanocodex.cloudflare.internalConfiguration");
-    const hostedProvider = multiplayer ? undefined : this.#hostedTools.provider();
+    const hostedProviders = multiplayer ? [] : [
+      this.#hostedTools.provider(),
+      ...(this.#accountHostedTools === undefined ? [] : [this.#accountHostedTools]),
+    ];
     const codeEvaluatorStartedAt = performance.now();
-    const hostedRuntime = hostedProvider === undefined ? undefined : {
+    const hostedRuntime = hostedProviders.length === 0 ? undefined : {
       codeEvaluator: await managedCodeEvaluator(),
       toolMode: "code" as const,
-      toolProviders: [hostedProvider],
+      toolProviders: hostedProviders,
     };
     const codeEvaluatorMs = performance.now() - codeEvaluatorStartedAt;
     const accountMcpConnections = this.#accountMcpConnections ?? [];
@@ -5409,7 +5454,7 @@ export class DurableAgentSession extends DurableComputerSession {
           workspace: "/workspace",
         })),
         ...(this.#hasFullAccountAuthority(authorization)
-          ? this.#hostedTools.machines()
+          ? this.#userHandMachines()
           : []).map((machine) => ({
             id: `user:${machine.id}`,
             root: machineMountRoot(machine.id),
@@ -5443,7 +5488,10 @@ export class DurableAgentSession extends DurableComputerSession {
       if (!machineId.startsWith("user:") || !this.#hasFullAccountAuthority(authorization)) {
         return undefined;
       }
-      return this.#hostedTools.machineTool(machineId.slice("user:".length), name);
+      const id = machineId.slice("user:".length);
+      if (!this.#userHandMachines().some((machine) => machine.id === id)) return undefined;
+      return this.#hostedTools.machineTool(id, name)
+        ?? this.#accountHostedTools?.machineTool(id, name);
     };
     const namespaceRuntime = multiplayer ? undefined : createManagedNamespaceRuntime(
       () => this.#canUseExecutionNamespace(),
@@ -5838,7 +5886,7 @@ export class DurableAgentSession extends DurableComputerSession {
           `an agent may retain at most ${MAX_MANAGED_MOUNTS} mounts`,
         );
       }
-      if (count + this.#hostedTools.machines().length >= MAX_NAMESPACE_MOUNTS - 1) {
+      if (count + this.#userHandMachines().length >= MAX_NAMESPACE_MOUNTS - 1) {
         throw new ManagedRequestError(
           409,
           "namespace_mount_limit_reached",
@@ -6048,7 +6096,7 @@ export class DurableAgentSession extends DurableComputerSession {
         capabilities: SANDBOX_HAND_CAPABILITIES,
       })),
       ...(this.#hasFullAccountAuthority(authorization)
-        ? this.#hostedTools.machines()
+        ? this.#userHandMachines()
         : []).map((machine) => {
           const mount = machineMountRoot(machine.id);
           return Object.freeze({
@@ -6073,6 +6121,18 @@ export class DurableAgentSession extends DurableComputerSession {
     authorization: TurnAuthorization | undefined = this.#activeTurnAuthorization(),
   ): authorization is TurnAuthorization {
     return authorization !== undefined && authorization.connectGrant === undefined;
+  }
+
+  #userHandMachines(): readonly HostedMachine[] {
+    const machines = [
+      ...this.#hostedTools.machines(),
+      ...(this.#accountHostedTools?.machines() ?? []),
+    ];
+    const counts = new Map<string, number>();
+    for (const machine of machines) counts.set(machine.id, (counts.get(machine.id) ?? 0) + 1);
+    return machines
+      .filter((machine) => counts.get(machine.id) === 1)
+      .sort((left, right) => left.id.localeCompare(right.id));
   }
 
   #activeTurnConnectorAllowed(

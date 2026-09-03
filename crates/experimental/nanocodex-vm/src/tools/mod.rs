@@ -230,13 +230,30 @@ impl VmTools {
     /// including setting the guest-visible working directory and shell.
     #[must_use]
     pub fn tools_builder(&self) -> ToolsBuilder {
+        self.workspace_tools(Tools::builder().workspace(false))
+            .tool(UpdatePlanTool::new())
+    }
+
+    /// Starts an attachment-safe selection containing only VM-backed workspace
+    /// process tools routed by the managed cwd namespace.
+    ///
+    /// Host-owned tools such as web search, image generation, and
+    /// `update_plan` deliberately stay with the managed brain rather than
+    /// being advertised by a remote VM hand.
+    #[must_use]
+    pub fn attachment_tools_builder(&self) -> ToolsBuilder {
         Tools::builder()
-            .workspace(false)
+            .without_defaults()
+            .tool(self.exec_command_tool())
+            .tool(self.write_stdin_tool())
+    }
+
+    fn workspace_tools(&self, builder: ToolsBuilder) -> ToolsBuilder {
+        builder
             .tool(self.exec_command_tool())
             .tool(self.write_stdin_tool())
             .tool(self.apply_patch_tool())
             .tool(self.view_image_tool())
-            .tool(UpdatePlanTool::new())
     }
 
     fn tool(&self, standard: StandardTool) -> VmTool {
@@ -380,6 +397,18 @@ mod tests {
         assert!(!tools.workspace_enabled());
         assert!(tools.web_search_enabled());
         assert!(tools.image_generation_enabled());
+    }
+
+    #[test]
+    fn attachment_selection_excludes_host_owned_defaults() {
+        let tools = VmTools::new(RecordingClient::default())
+            .attachment_tools_builder()
+            .build()
+            .unwrap();
+
+        assert!(!tools.workspace_enabled());
+        assert!(!tools.web_search_enabled());
+        assert!(!tools.image_generation_enabled());
     }
 
     #[test]

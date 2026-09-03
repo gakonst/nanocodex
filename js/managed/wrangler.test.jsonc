@@ -20,6 +20,10 @@
         "class_name": "MemoryScope"
       },
       {
+        "name": "NANOCODEX_ACCOUNT_TOOLS",
+        "class_name": "AccountHostedTools"
+      },
+      {
         "name": "NANOCODEX_SESSIONS",
         "class_name": "DurableAgentSession"
       }
@@ -29,6 +33,10 @@
     {
       "tag": "memory-scope-v1",
       "new_sqlite_classes": ["MemoryScope"]
+    },
+    {
+      "tag": "account-hosted-tools-v1",
+      "new_sqlite_classes": ["AccountHostedTools"]
     },
     {
       "tag": "managed-session-v1",

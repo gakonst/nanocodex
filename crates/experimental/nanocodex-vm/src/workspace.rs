@@ -134,8 +134,17 @@ impl VmWorkspace {
     /// into this retained VM.
     #[must_use]
     pub fn tools_builder(&self) -> ToolsBuilder {
-        self.tools()
-            .tools_builder()
+        self.configure_tools(self.tools().tools_builder())
+    }
+
+    /// Returns an attachment-safe builder with only VM-backed workspace tools.
+    #[must_use]
+    pub fn attachment_tools_builder(&self) -> ToolsBuilder {
+        self.configure_tools(self.tools().attachment_tools_builder())
+    }
+
+    fn configure_tools(&self, builder: ToolsBuilder) -> ToolsBuilder {
+        builder
             .working_directory(self.workspace.clone())
             .default_shell(self.shell.clone())
     }
@@ -372,8 +381,7 @@ impl VmWorkspaceBuilder {
             guest = guest.env(name, value);
         }
 
-        let mut command = Command::new(&self.vmm_executable);
-        command.args(self.vmm_arguments);
+        let mut command = isolated_vmm_command(&self.vmm_executable, self.vmm_arguments);
         if let Some(firmware) = self.firmware_directory {
             let firmware = firmware.canonicalize()?;
             #[cfg(target_os = "linux")]
@@ -436,6 +444,18 @@ fn resolver_bootstrap(resolver: Option<&str>) -> String {
         let resolver = shell_word(resolver);
         format!("rm -f /etc/resolv.conf; printf '%b' {resolver} > /etc/resolv.conf; ")
     })
+}
+
+fn isolated_vmm_command(
+    executable: &Path,
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Command {
+    let mut command = Command::new(executable);
+    command.args(arguments);
+    // The owner handles terminal interrupts and asks the guest to sync before
+    // stopping the VMM. Keep Ctrl-C from reaching the VMM independently.
+    command.process_group(0);
+    command
 }
 
 fn shell_word(value: &str) -> String {
@@ -502,6 +522,34 @@ mod tests {
 
         assert_eq!(builder.environment["LANG"], "C.UTF-8");
         assert_eq!(builder.environment["APP_MODE"], "test");
+    }
+
+    #[tokio::test]
+    async fn vmm_runs_outside_the_owners_terminal_process_group() {
+        let directory = tempdir().unwrap();
+        let vmm = directory.path().join("vmm");
+        let record = directory.path().join("process-group");
+        fs::write(
+            &vmm,
+            "#!/bin/sh\n\
+             pid=$$\n\
+             pgid=$(ps -o pgid= -p \"$pid\" | tr -d ' ')\n\
+             printf '%s %s\\n' \"$pid\" \"$pgid\" > \"$RECORD\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&vmm, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let mut command = isolated_vmm_command(&vmm, []);
+        command.env("RECORD", &record);
+        assert!(command.status().await.unwrap().success());
+
+        let values = fs::read_to_string(record)
+            .unwrap()
+            .split_whitespace()
+            .map(|value| value.parse::<i32>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], values[1]);
     }
 
     #[tokio::test]

@@ -85,6 +85,10 @@
         "class_name": "DurableAgentSession"
       },
       {
+        "name": "NANOCODEX_ACCOUNT_TOOLS",
+        "class_name": "AccountHostedTools"
+      },
+      {
         "name": "NANOCODEX_ROOMS",
         "class_name": "MultiplayerRoom"
       },
@@ -143,6 +147,10 @@
     {
       "tag": "v6",
       "new_sqlite_classes": ["Sandbox"]
+    },
+    {
+      "tag": "v7",
+      "new_sqlite_classes": ["AccountHostedTools"]
     }
   ],
   "vars": {
@@ -193,6 +201,7 @@
       "durable_objects": {
         "bindings": [
           { "name": "NANOCODEX_SESSIONS", "class_name": "DurableAgentSession" },
+          { "name": "NANOCODEX_ACCOUNT_TOOLS", "class_name": "AccountHostedTools" },
           { "name": "NANOCODEX_ROOMS", "class_name": "MultiplayerRoom" },
           { "name": "NANOCODEX_MULTIPLAYER_QUOTA", "class_name": "MultiplayerQuota" },
           { "name": "NANOCODEX_AUTH", "class_name": "NonceStorage" },

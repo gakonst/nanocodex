@@ -134,6 +134,7 @@ export type HostedToolsInvokeRequest = Readonly<{
 }>;
 
 export type HostedToolsPreparedTool = Readonly<{
+  routeToken: string;
   connectGrantId?: string;
   appToolCatalogDigest?: string;
   canonicalName: string;
@@ -169,6 +170,8 @@ export type HostedToolsCatalogValidator = (
 export type HostedToolsCodeTool = Readonly<{
   name: string;
   parallelSafe: boolean;
+  /** Opaque immutable route identity for trusted broker-to-broker relays. */
+  routeToken?: string;
   handler(
     input: unknown,
     context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
@@ -756,6 +759,12 @@ export class HostedToolsBrokerCore {
 
   #preparedTool(binding: HostedToolsCatalogBinding): HostedToolsPreparedTool {
     return Object.freeze({
+      routeToken: JSON.stringify([
+        binding.routeId,
+        binding.generation,
+        binding.leaseId,
+        binding.wireName,
+      ]),
       ...(binding.connectGrantId === undefined ? {} : { connectGrantId: binding.connectGrantId }),
       ...(binding.appToolCatalogDigest === undefined
         ? {}
@@ -771,6 +780,7 @@ export class HostedToolsBrokerCore {
     return Object.freeze({
       name,
       parallelSafe: prepared.entry.parallel_safe,
+      routeToken: prepared.routeToken,
       provider: prepared.entry.provider,
       remoteName: prepared.entry.remote_name,
       summary: prepared.entry.summary,

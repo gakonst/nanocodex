@@ -619,6 +619,30 @@ impl ManagedClient {
         agent_id: &str,
     ) -> Result<nanocodex_tools::attachment::AttachmentTarget, ManagedError> {
         validate_id("agent", agent_id)?;
+        self.attachment_target_at(&format!("/v1/agents/{agent_id}/tool-host"))
+    }
+
+    #[cfg(feature = "tools")]
+    /// Resolves the authenticated reverse-tool endpoint for the account.
+    ///
+    /// The returned target redacts its bearer credential from debug output and
+    /// can be passed directly to [`nanocodex_tools::Tools::attach`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects an origin that cannot form a WebSocket endpoint.
+    #[cfg_attr(docsrs, doc(cfg(feature = "tools")))]
+    pub fn account_attachment_target(
+        &self,
+    ) -> Result<nanocodex_tools::attachment::AttachmentTarget, ManagedError> {
+        self.attachment_target_at("/v1/account/tool-host")
+    }
+
+    #[cfg(feature = "tools")]
+    fn attachment_target_at(
+        &self,
+        path: &str,
+    ) -> Result<nanocodex_tools::attachment::AttachmentTarget, ManagedError> {
         let mut endpoint = self.base_url.clone();
         endpoint
             .set_scheme(if endpoint.scheme() == "https" {
@@ -629,7 +653,7 @@ impl ManagedClient {
             .map_err(|_| {
                 ManagedError::Configuration("invalid managed attachment URL".to_owned())
             })?;
-        endpoint.set_path(&format!("/v1/agents/{agent_id}/tool-host"));
+        endpoint.set_path(path);
         nanocodex_tools::attachment::AttachmentTarget::new(
             endpoint.as_str(),
             self.bearer.to_string(),
@@ -853,6 +877,43 @@ mod tests {
         )
         .unwrap();
         assert!(!format!("{client:?}").contains(&secret));
+    }
+
+    #[cfg(feature = "tools")]
+    #[test]
+    fn attachment_targets_preserve_scope_scheme_and_bearer_safety() {
+        let secret = key();
+        let client = ManagedClient::new(
+            "https://example.com",
+            ManagedApiKey::parse(secret.clone()).unwrap(),
+        )
+        .unwrap();
+
+        let agent = client.attachment_target("agent-1").unwrap();
+        assert_eq!(
+            agent.endpoint().as_str(),
+            "wss://example.com/v1/agents/agent-1/tool-host"
+        );
+        let account = client.account_attachment_target().unwrap();
+        assert_eq!(
+            account.endpoint().as_str(),
+            "wss://example.com/v1/account/tool-host"
+        );
+        assert!(!format!("{agent:?}{account:?}").contains(&secret));
+
+        let loopback = ManagedClient::new(
+            "http://127.0.0.1:8787",
+            ManagedApiKey::parse(key()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            loopback
+                .account_attachment_target()
+                .unwrap()
+                .endpoint()
+                .as_str(),
+            "ws://127.0.0.1:8787/v1/account/tool-host"
+        );
     }
 
     #[tokio::test]

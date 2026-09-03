@@ -35,6 +35,11 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("Usage: nanocodex2 hand [OPTIONS] --vm <ROOTFS>"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("AGENT_ID"), "{stdout}");
     for expected in [
         "--vm <ROOTFS>",
         "--vm-guest-runtime <ELF>",

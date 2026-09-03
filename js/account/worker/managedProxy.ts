@@ -2,7 +2,7 @@ export type ManagedProxyEnv = {
   NANOCODEX_BACKEND?: Fetcher;
 };
 
-const MANAGED_ROUTE = /^(?:\/auth(?:\/.*)?|\/webauthn\/.*|\/sandbox-preview\/[^/]+(?:\/.*)?|\/v1\/(?:auth(?:\/.*)?|me|wallet(?:\/(?:balance|connect|revoke-access-key))?|egress|api-keys(?:\/.*)?|credentials(?:\/.*)?|connect(?:\/.*)?|connectors(?:\/.*)?|agents(?:\/.*)?|rooms(?:\/.*)?|history(?:\/.*)?|memory(?:\/.*)?|organization(?:\/.*)?))$/;
+const MANAGED_ROUTE = /^(?:\/auth(?:\/.*)?|\/webauthn\/.*|\/sandbox-preview\/[^/]+(?:\/.*)?|\/v1\/(?:auth(?:\/.*)?|me|account\/tool-host|wallet(?:\/(?:balance|connect|revoke-access-key))?|egress|api-keys(?:\/.*)?|credentials(?:\/.*)?|connect(?:\/.*)?|connectors(?:\/.*)?|agents(?:\/.*)?|rooms(?:\/.*)?|history(?:\/.*)?|memory(?:\/.*)?|organization(?:\/.*)?))$/;
 
 export function isManagedRoutePath(pathname: string): boolean {
   return MANAGED_ROUTE.test(pathname);

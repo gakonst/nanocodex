@@ -108,7 +108,7 @@ impl VmHand {
                 "failed to start VM hand and reach guest readiness: {error}"
             ))
         })?;
-        let tools = match workspace.tools_builder().build() {
+        let tools = match workspace.attachment_tools_builder().build() {
             Ok(tools) => tools,
             Err(error) => {
                 let message = format!("failed to prepare VM hand tools: {error}");
