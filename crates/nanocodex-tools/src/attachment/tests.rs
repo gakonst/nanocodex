@@ -110,6 +110,49 @@ async fn catalog_call_result_and_drain_use_exact_frames() {
 }
 
 #[tokio::test]
+async fn catalog_publishes_one_validated_machine_snapshot() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let mut socket = accept(&listener).await;
+        let catalog = recv_json(&mut socket).await;
+        assert_eq!(
+            catalog["machines"],
+            json!([{
+                "id": "vm",
+                "name": "Build VM",
+                "workspace": "/workspace",
+                "capabilities": ["cpu:4", "filesystem", "vm"]
+            }])
+        );
+        send_json(&mut socket, json!({"type":"ready"})).await;
+        assert_eq!(recv_json(&mut socket).await, json!({"type":"drain"}));
+        send_json(&mut socket, json!({"type":"draining"})).await;
+    });
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+    let machine = AttachmentMachine::new(
+        "vm",
+        " Build VM ",
+        "/workspace",
+        ["cpu:4", "filesystem", "vm"],
+    )
+    .unwrap();
+    let (attachment, _) = tools
+        .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+        .machines([machine])
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    attachment.detach().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn cancellation_is_only_an_ordinary_result() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());

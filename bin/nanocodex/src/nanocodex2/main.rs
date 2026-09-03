@@ -1,9 +1,21 @@
 //! Small managed-agent CLI with a local workspace tool host.
 mod host;
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+mod vm_hand;
+#[cfg(not(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
+#[path = "vm_hand_unsupported.rs"]
+mod vm_hand;
 
 use std::{
     env,
     io::{self, IsTerminal, Write},
+    path::PathBuf,
     process::ExitCode,
 };
 
@@ -20,8 +32,12 @@ use nanocodex_managed::{
     AgentList, EventCursor, Managed, ManagedApiKey, ManagedClient, ManagedError, PromptInput,
     ReadSessionRequest, ReadSessionResponse,
 };
-use nanocodex_tools::{Tools, WorkspaceTools};
+use nanocodex_tools::{
+    Tools, WorkspaceTools,
+    attachment::{Attachment, AttachmentError, AttachmentEvents, AttachmentTarget},
+};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::time::{Duration, sleep};
 use unicode_width::UnicodeWidthChar;
 
 const MANAGED_URL_ENV: &str = "NANOCODEX_MANAGED_URL";
@@ -43,6 +59,8 @@ struct Cli {
 enum Command {
     /// Attach local workspace tools to an existing managed agent.
     Attach(Attach),
+    /// Serve one retained libkrun VM as a compute hand for a managed agent.
+    Hand(Hand),
     /// Create a managed agent and print its receipt as JSON.
     New,
     /// List account-owned managed agents as JSON.
@@ -63,6 +81,9 @@ enum Command {
     Steer(Steer),
     /// Cancel an active managed turn.
     Cancel(TurnId),
+    /// Private synchronous entrypoint used by the VM hand's VMM child.
+    #[command(name = "__vm-run-config", hide = true)]
+    VmRunConfig(VmRunConfig),
 }
 
 #[derive(Args)]
@@ -70,6 +91,64 @@ struct Attach {
     /// Account-owned managed agent ID. Choose from a list when omitted.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     agent_id: Option<String>,
+}
+
+#[derive(Args)]
+struct Hand {
+    /// Account-owned managed agent ID. Choose from a list when omitted.
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
+    agent_id: Option<String>,
+
+    /// Writable raw ext4 image or development directory used as the retained VM root.
+    #[arg(long = "vm", visible_alias = "vm-rootfs", value_name = "ROOTFS")]
+    rootfs: PathBuf,
+
+    /// Statically linked Linux guest executable used with a raw ext4 root.
+    #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
+    vm_guest_runtime: Option<PathBuf>,
+
+    /// Cache for the prepared read-only guest runtime disk.
+    #[arg(long, value_name = "PATH", default_value = ".cache/vm")]
+    vm_cache: PathBuf,
+
+    /// Directory containing the platform libkrun firmware library.
+    #[arg(long, value_name = "PATH", env = "NANOCODEX_KRUNFW_DIR")]
+    vm_firmware: Option<PathBuf>,
+
+    /// Absolute working directory inside the VM.
+    #[arg(long, value_name = "PATH", default_value = "/app")]
+    vm_workspace: String,
+
+    /// Number of virtual CPUs assigned to the hand.
+    #[arg(long, value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..))]
+    vm_cpus: u8,
+
+    /// Guest memory in mebibytes.
+    #[arg(long, value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(1..))]
+    vm_memory_mib: u32,
+
+    /// Shell name described to the managed brain.
+    #[arg(long, value_name = "SHELL", default_value = "sh")]
+    vm_shell: String,
+
+    /// Disable guest internet socket proxying.
+    #[arg(long)]
+    vm_no_network: bool,
+
+    /// Stable attachment-local machine identifier.
+    #[arg(long, default_value = "vm")]
+    machine_id: String,
+
+    /// Human-readable name shown in accountInfo().machines.
+    #[arg(long, default_value = "Nanocodex VM")]
+    machine_name: String,
+}
+
+#[derive(Args)]
+struct VmRunConfig {
+    /// Mode-0600 launch record prepared by nanocodex-vm.
+    #[arg(long)]
+    config: PathBuf,
 }
 
 #[derive(Args)]
@@ -152,9 +231,13 @@ fn try_main() -> Result<(), ManagedError> {
 }
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
+    if let Some(Command::VmRunConfig(command)) = &cli.command {
+        return vm_hand::run_config(&command.config);
+    }
     let client = client_from_environment()?;
     match cli.command {
         Some(Command::Attach(command)) => attach_tui(&client, command.agent_id).await,
+        Some(Command::Hand(command)) => serve_vm_hand(&client, command).await,
         Some(Command::New) => write_json(&client.create().await?),
         Some(Command::List) => write_json(&client.list().await?),
         Some(Command::State(command)) => write_json(&client.state(&command.agent_id).await?),
@@ -183,7 +266,106 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Cancel(command)) => {
             write_json(&client.cancel(&command.agent_id, &command.turn_id).await?)
         }
+        Some(Command::VmRunConfig(_)) => unreachable!("handled before managed client setup"),
         None => new_tui(&client).await,
+    }
+}
+
+async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
+    let agent_id = match command.agent_id.as_deref() {
+        Some(agent_id) => agent_id.to_owned(),
+        None => match choose_agent(&client.list().await?)? {
+            Some(agent_id) => agent_id,
+            None => return Ok(()),
+        },
+    };
+    client.state(&agent_id).await?;
+    let target = client.attachment_target(&agent_id)?;
+    let hand = vm_hand::VmHand::start(&command).await?;
+    let connected = connect_vm_hand(&hand, target).await;
+    let (attachment, _events) = match connected {
+        Ok(Some(attachment)) => attachment,
+        Ok(None) => {
+            hand.shutdown().await?;
+            return Ok(());
+        }
+        Err(error) => {
+            return match hand.shutdown().await {
+                Ok(()) => Err(error),
+                Err(shutdown) => Err(ManagedError::Configuration(format!(
+                    "{error}; VM shutdown also failed: {shutdown}"
+                ))),
+            };
+        }
+    };
+
+    eprintln!(
+        "VM hand {} attached to {agent_id} at {} ({} vCPU, {} MiB); press Ctrl-C to detach",
+        hand.machine().name(),
+        hand.machine().workspace(),
+        command.vm_cpus,
+        command.vm_memory_mib,
+    );
+    let closed = attachment.clone();
+    let attachment_result = tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal.map_err(|error| ManagedError::Configuration(
+                format!("failed to listen for Ctrl-C: {error}")
+            ))?;
+            attachment.clone().detach().await
+        }
+        result = closed.closed() => result,
+    };
+    drop(attachment);
+    drop(closed);
+    let shutdown = hand.shutdown().await;
+    match (attachment_result, shutdown) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(ManagedError::Configuration(error.to_string())),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(shutdown)) => Err(ManagedError::Configuration(format!(
+            "{error}; VM shutdown also failed: {shutdown}"
+        ))),
+    }
+}
+
+async fn connect_vm_hand(
+    hand: &vm_hand::VmHand,
+    target: AttachmentTarget,
+) -> Result<Option<(Attachment, AttachmentEvents)>, ManagedError> {
+    let mut backoff = Duration::from_millis(100);
+    loop {
+        let connector = hand
+            .tools()
+            .attach(target.clone())
+            .machines([hand.machine().clone()])
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+        let connected = tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal.map_err(|error| ManagedError::Configuration(
+                    format!("failed to listen for Ctrl-C: {error}")
+                ))?;
+                return Ok(None);
+            }
+            connected = connector.connect() => connected,
+        };
+        match connected {
+            Ok(attachment) => return Ok(Some(attachment)),
+            Err(AttachmentError::Transport(_) | AttachmentError::Closed) => {
+                eprintln!("VM hand could not reach the managed cluster; retrying");
+                tokio::select! {
+                    signal = tokio::signal::ctrl_c() => {
+                        signal.map_err(|error| ManagedError::Configuration(
+                            format!("failed to listen for Ctrl-C: {error}")
+                        ))?;
+                        return Ok(None);
+                    }
+                    () = sleep(backoff) => {}
+                }
+                backoff = backoff.saturating_mul(2).min(Duration::from_secs(5));
+            }
+            Err(error) => return Err(ManagedError::Configuration(error.to_string())),
+        }
     }
 }
 

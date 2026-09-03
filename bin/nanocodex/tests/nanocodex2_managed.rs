@@ -26,6 +26,58 @@ const LOCAL_TURN_ID: &str = "019fc927-b282-7a11-8445-1b9996ad2fb0";
 const CLOUD_TURN_ID: &str = "019fc927-b283-7a11-8445-1b9996ad2fb0";
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+#[tokio::test]
+async fn hand_help_exposes_the_vm_and_machine_contract() {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .args(["hand", "--help"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    for expected in [
+        "--vm <ROOTFS>",
+        "--vm-guest-runtime <ELF>",
+        "--vm-workspace <PATH>",
+        "--vm-cpus <COUNT>",
+        "--vm-memory-mib <MIB>",
+        "--machine-id <MACHINE_ID>",
+        "--machine-name <MACHINE_NAME>",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "missing {expected:?} in:\n{stdout}"
+        );
+    }
+}
+
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+#[tokio::test]
+async fn vm_child_entrypoint_does_not_require_managed_credentials() {
+    let missing = tempfile::tempdir()
+        .unwrap()
+        .path()
+        .join("missing-launch-record");
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .args(["__vm-run-config", "--config"])
+        .arg(missing)
+        .env_remove("NANOCODEX_API_KEY")
+        .env_remove("NC_API_KEY")
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("failed to read VM launch record"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("must be set"), "{stderr}");
+}
+
 #[derive(Clone)]
 struct TestState {
     authorization: String,

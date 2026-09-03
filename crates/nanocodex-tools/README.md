@@ -167,12 +167,19 @@ discovery, validates the immutable catalog, connects, and waits for the remote
 catalog acknowledgement:
 
 ```rust,no_run
-use nanocodex_tools::{Tools, attachment::AttachmentTarget};
+use nanocodex_tools::{Tools, attachment::{AttachmentMachine, AttachmentTarget}};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let tools = Tools::builder().without_defaults().build()?;
 let target = AttachmentTarget::new("wss://tools.example.test/v1/attach", "bearer")?;
-let (attachment, mut events) = tools.attach(target).connect().await?;
+let machine = AttachmentMachine::new(
+    "vm", "Build VM", "/workspace", ["filesystem", "linux", "vm"],
+)?;
+let (attachment, mut events) = tools
+    .attach(target)
+    .machines([machine])?
+    .connect()
+    .await?;
 
 let observer = tokio::spawn(async move {
     while let Some(event) = events.recv().await {
@@ -195,6 +202,11 @@ is cloneable and its last drop detaches. `AttachmentEvents` is an independent,
 bounded, best-effort observer: lag may drop events but can never delay tool
 execution or protocol progress. `Attachment::status` and `closed` are the
 authoritative lifecycle APIs.
+
+An optional machine snapshot describes the non-secret environments behind the
+host so a managed brain can place work. It is immutable for one attachment
+generation and carries no credentials or authority. Reattach with a replacement
+snapshot when the host's machine topology changes.
 
 ### Deferred: workspace replication
 

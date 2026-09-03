@@ -6,7 +6,8 @@
 mod driver;
 mod protocol;
 
-use std::{fmt, sync::Arc};
+use serde::Serialize;
+use std::{collections::HashSet, fmt, sync::Arc};
 use tokio::sync::{mpsc, watch};
 use url::{Host, Url};
 
@@ -20,6 +21,106 @@ use crate::{
 pub struct AttachmentTarget {
     endpoint: Url,
     bearer: Arc<str>,
+}
+
+const MAX_MACHINES: usize = 32;
+const MAX_MACHINE_CAPABILITIES: usize = 64;
+
+/// Non-secret description of one machine served by an attached tool host.
+///
+/// The managed brain uses this immutable snapshot for placement only. The
+/// descriptor grants no authority and carries no endpoint or credential.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AttachmentMachine {
+    id: Box<str>,
+    name: Box<str>,
+    workspace: Box<str>,
+    capabilities: Box<[Box<str>]>,
+}
+
+impl AttachmentMachine {
+    /// Creates one validated machine descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe identifiers, empty or oversized display fields, more
+    /// than 64 capabilities, and duplicate or malformed capabilities.
+    pub fn new<I, C>(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        workspace: impl Into<String>,
+        capabilities: I,
+    ) -> Result<Self, AttachmentError>
+    where
+        I: IntoIterator<Item = C>,
+        C: Into<String>,
+    {
+        let id = id.into();
+        let name = name.into();
+        let workspace = workspace.into();
+        if !valid_identifier(&id) {
+            return Err(machine_error("machine id must be a safe identifier"));
+        }
+        let name = name.trim();
+        if name.is_empty() || name.len() > 128 {
+            return Err(machine_error("machine name must be 1-128 UTF-8 bytes"));
+        }
+        if workspace.trim().is_empty() || workspace.len() > 1_024 || workspace.contains('\0') {
+            return Err(machine_error(
+                "machine workspace must be 1-1024 UTF-8 bytes without NUL",
+            ));
+        }
+        let capabilities = capabilities.into_iter().map(Into::into).collect::<Vec<_>>();
+        if capabilities.len() > MAX_MACHINE_CAPABILITIES {
+            return Err(machine_error(
+                "a machine may publish at most 64 capabilities",
+            ));
+        }
+        let mut unique = HashSet::with_capacity(capabilities.len());
+        for capability in &capabilities {
+            if !valid_capability(capability) {
+                return Err(machine_error(
+                    "machine capabilities must be safe lowercase identifiers",
+                ));
+            }
+            if !unique.insert(capability.as_str()) {
+                return Err(machine_error("machine capabilities must be unique"));
+            }
+        }
+        Ok(Self {
+            id: id.into(),
+            name: name.into(),
+            workspace: workspace.into(),
+            capabilities: capabilities
+                .into_iter()
+                .map(String::into_boxed_str)
+                .collect(),
+        })
+    }
+
+    /// Returns the attachment-local stable machine identifier.
+    #[must_use]
+    pub const fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns the human-readable machine name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the independent workspace path visible inside the machine.
+    #[must_use]
+    pub const fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    /// Returns the placement capabilities advertised by the machine.
+    #[must_use]
+    pub const fn capabilities(&self) -> &[Box<str>] {
+        &self.capabilities
+    }
 }
 
 impl AttachmentTarget {
@@ -83,6 +184,7 @@ impl fmt::Debug for AttachmentTarget {
 pub struct AttachmentConnector {
     tools: Tools,
     target: AttachmentTarget,
+    machines: Vec<AttachmentMachine>,
 }
 
 impl Tools {
@@ -92,11 +194,37 @@ impl Tools {
         AttachmentConnector {
             tools: self,
             target,
+            machines: Vec::new(),
         }
     }
 }
 
 impl AttachmentConnector {
+    /// Publishes the complete immutable machine snapshot behind this host.
+    ///
+    /// # Errors
+    ///
+    /// Rejects snapshots with more than 32 machines or duplicate identifiers.
+    pub fn machines(
+        mut self,
+        machines: impl IntoIterator<Item = AttachmentMachine>,
+    ) -> Result<Self, AttachmentError> {
+        let machines = machines.into_iter().collect::<Vec<_>>();
+        if machines.len() > MAX_MACHINES {
+            return Err(machine_error(
+                "a tool attachment may publish at most 32 machines",
+            ));
+        }
+        let mut ids = HashSet::with_capacity(machines.len());
+        for machine in &machines {
+            if !ids.insert(machine.id()) {
+                return Err(machine_error("attached machine ids must be unique"));
+            }
+        }
+        self.machines = machines;
+        Ok(self)
+    }
+
     /// Prepares the exact catalog, connects, publishes it, and waits for its acknowledgement.
     ///
     /// # Errors
@@ -129,6 +257,7 @@ impl AttachmentConnector {
             endpoint: self.target.endpoint,
             authorization: format!("Bearer {}", self.target.bearer).into(),
             tools,
+            machines: self.machines.into_boxed_slice(),
         };
         let (command_tx, command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(128);
@@ -146,6 +275,35 @@ impl AttachmentConnector {
         attachment.wait_until_ready().await?;
         Ok((attachment, AttachmentEvents { events: event_rx }))
     }
+}
+
+fn machine_error(message: &'static str) -> AttachmentError {
+    AttachmentError::Catalog(message.into())
+}
+
+fn valid_identifier(value: &str) -> bool {
+    value.len() <= 128
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn valid_capability(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b':' | b'-')
+        })
 }
 
 fn is_literal_loopback(endpoint: &Url) -> bool {
@@ -362,7 +520,8 @@ mod tests;
 
 #[cfg(test)]
 mod target_tests {
-    use super::AttachmentTarget;
+    use super::{AttachmentMachine, AttachmentTarget};
+    use crate::Tools;
 
     #[test]
     fn plaintext_targets_require_literal_loopback_hosts() {
@@ -391,5 +550,34 @@ mod target_tests {
         }
 
         assert!(AttachmentTarget::new("wss://example.com/tools", "secret").is_ok());
+    }
+
+    #[test]
+    fn machine_descriptors_match_the_hosted_protocol_bounds() {
+        let machine = AttachmentMachine::new(
+            "vm-1",
+            "  Build VM  ",
+            "/workspace",
+            ["cpu:8", "filesystem", "memory-mib:16384", "vm"],
+        )
+        .unwrap();
+        assert_eq!(machine.id(), "vm-1");
+        assert_eq!(machine.name(), "Build VM");
+        assert_eq!(machine.workspace(), "/workspace");
+        assert_eq!(machine.capabilities().len(), 4);
+
+        assert!(AttachmentMachine::new("bad id", "VM", "/workspace", ["vm"]).is_err());
+        assert!(AttachmentMachine::new("vm", "VM", "", ["vm"]).is_err());
+        assert!(AttachmentMachine::new("vm", "VM", "/workspace", ["GPU"]).is_err());
+        assert!(AttachmentMachine::new("vm", "VM", "/workspace", ["vm", "vm"]).is_err());
+
+        let target = AttachmentTarget::new("ws://127.0.0.1/tools", "secret").unwrap();
+        let tools = Tools::builder().without_defaults().build().unwrap();
+        assert!(
+            tools
+                .attach(target)
+                .machines([machine.clone(), machine])
+                .is_err()
+        );
     }
 }

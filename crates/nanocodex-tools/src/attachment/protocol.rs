@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::AttachmentMachine;
+
 pub(crate) const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_OUTPUT_BYTES: u64 = 128 * 1024;
 pub(crate) const MAX_IN_FLIGHT: usize = 64;
@@ -15,6 +17,8 @@ pub(crate) const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::
 pub(crate) enum ExecutorFrame<'a> {
     Catalog {
         tools: &'a Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        machines: Option<&'a [AttachmentMachine]>,
     },
     Result {
         call_id: &'a str,

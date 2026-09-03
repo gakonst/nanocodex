@@ -26,6 +26,10 @@ tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi
 toml.workspace = true
 unicode-width.workspace = true
 
+[target.'cfg(any(all(target_os = "linux", not(target_env = "musl")), all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+fs2.workspace = true
+nanocodex-vm.workspace = true
+
 [dev-dependencies]
 axum = { workspace = true, features = ["ws"] }
 futures-util.workspace = true
