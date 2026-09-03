@@ -20,9 +20,11 @@ export {
   createWorkspaceFilesystem,
   type WorkspaceStorageClient,
 } from "./workspace.js";
+export * from "./namespace.js";
 export * from "./memory.js";
 export * from "./hosted/index.js";
 export { namedTool } from "../tools/namedTool.mjs";
+export * from "../tools/execution-contract.mjs";
 export * from "../tools/artifact.mjs";
 export { dataset } from "../tools/dataset.mjs";
 export type { DatasetOptions } from "../tools/dataset.mjs";

@@ -22,6 +22,10 @@
       "types": "./tools/dataset.d.mts",
       "import": "./tools/dataset.mjs"
     },
+    "./execution-contract": {
+      "types": "./tools/execution-contract.d.mts",
+      "import": "./tools/execution-contract.mjs"
+    },
     "./just-bash/browser": {
       "types": "./tools/just-bash-browser.d.mts",
       "import": "./tools/just-bash-browser.mjs"

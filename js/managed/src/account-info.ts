@@ -54,6 +54,8 @@ export type VaultEntry =
 
 export type AccountMachine = Readonly<HostedMachine & {
   kind: "sandbox" | "user";
+  /** Logical namespace root. Native host workspace paths are never projected. */
+  mount: string;
 }>;
 
 export type AccountInfo = Readonly<{

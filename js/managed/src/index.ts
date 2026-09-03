@@ -25,6 +25,11 @@ import {
   proxyCloudflareSandboxPreview,
 } from "./sandbox-tools";
 import {
+  createNamespaceExecutionTools,
+  machineMountRoot,
+  type MachineToolResolver,
+} from "./namespace-tools";
+import {
   ContainerProxy,
   Sandbox,
 } from "./sandbox-runtime";
@@ -41,7 +46,7 @@ import {
   hostedToolCatalogEntryAllowed,
   isAppToolCatalogDigest,
 } from "./app-tool-catalog";
-import type { HostedToolCatalogEntry } from "./hosted-tools-protocol";
+import type { HostedMachine, HostedToolCatalogEntry } from "./hosted-tools-protocol";
 import {
   managedCapacitySnapshot,
   type ManagedCapacitySnapshot,
@@ -587,15 +592,16 @@ const AGENT_CAPABILITIES = Object.freeze({
   live_steer: true,
   live_cancel: true,
   workspace: "cloudflare-computer",
-  sandbox_tools: true,
-  sandbox_escalation: false,
+  execution_namespace: "cwd-root-v1",
+  native_cross_mounts: false,
 }) satisfies AgentCapabilities;
 
 const AGENT_SANDBOX_MACHINE = Object.freeze({
   id: "sandbox",
   name: "Agent sandbox",
   kind: "sandbox",
-  workspace: "/workspace",
+  mount: "/sandbox",
+  workspace: "/sandbox",
   capabilities: Object.freeze([
     "filesystem",
     "native-linux",
@@ -1539,7 +1545,7 @@ export async function routeSandboxPreviewRequest(
   );
 }
 
-export function createManagedSandboxTools(
+export function createManagedNamespaceTools(
   env: Pick<
     Env,
     "NANOCODEX_ADMIN_TOKEN" | "NANOCODEX_SANDBOXES" | "NANOCODEX_SANDBOX_LOCAL"
@@ -1547,13 +1553,20 @@ export function createManagedSandboxTools(
   session: { session_id: string; public_origin: string },
   isAccountOwnedTurn: () => boolean,
   createTools: typeof cloudflareSandboxTools = cloudflareSandboxTools,
+  machines: () => readonly HostedMachine[] = () => [],
+  resolveMachineTool: MachineToolResolver = () => undefined,
 ): NamedTool[] {
-  return Object.entries(createTools(
+  const sandboxTools = createTools(
     env.NANOCODEX_SANDBOXES,
     session.session_id,
     env.NANOCODEX_SANDBOX_LOCAL === "true",
     session.public_origin,
     env.NANOCODEX_ADMIN_TOKEN,
+  );
+  return Object.entries(createNamespaceExecutionTools(
+    sandboxTools,
+    machines,
+    resolveMachineTool,
   )).map(([name, tool]) => ({
     name,
     ...tool,
@@ -1561,8 +1574,8 @@ export function createManagedSandboxTools(
       if (!isAccountOwnedTurn()) {
         throw new ManagedRequestError(
           403,
-          "sandbox_forbidden",
-          "sandbox tools are available only to account-owned turns",
+          "namespace_forbidden",
+          "execution namespace tools are available only to account-owned turns",
         );
       }
       return tool.handler(input, context);
@@ -5253,15 +5266,18 @@ export class DurableAgentSession extends DurableComputerSession {
             (connectionId) => this.#activeTurnMcpAllowed(connectionId),
           ),
     };
-    const sandboxTools = multiplayer ? [] : createManagedSandboxTools(
+    const namespaceTools = multiplayer ? [] : createManagedNamespaceTools(
       this.env,
       session,
       () => this.#isAccountOwnedTurn(),
+      cloudflareSandboxTools,
+      () => this.#hostedTools.machines(),
+      (machineId, name) => this.#hostedTools.machineTool(machineId, name),
     );
     const cloudTools: NamedTool[] = [
       ...(browserRuntime?.tools ?? []),
       ...(multiplayer ? [computer.tool] : []),
-      ...sandboxTools,
+      ...namespaceTools,
       ...(multiplayer ? [] : [{
         name: "accountInfo",
         description: "Report live machine hands, account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Vault references may show usernames, addresses, phone numbers, and card last four, but never passwords or complete card data.",
@@ -5307,7 +5323,15 @@ export class DurableAgentSession extends DurableComputerSession {
           runtime: "cloudflare-durable-object",
           shell: multiplayer ? computer.descriptor.shell : "unavailable",
           shell_network: multiplayer ? computer.descriptor.network.mode : "unavailable",
-          sandbox: multiplayer ? "disabled" : "cloudflare-sandbox-tools",
+          namespace: multiplayer ? { status: "disabled" } : {
+            status: "cwd-placement",
+            default_cwd: "/sandbox",
+            native_cross_mounts: false,
+            mounts: this.#accountMachines(this.#activeTurnAuthorization()).map(({ id, mount }) => ({
+              id,
+              mount,
+            })),
+          },
           workspace: computer.descriptor.cwd,
           commands: multiplayer ? computer.descriptor.commands : [],
           custom_commands: multiplayer ? computer.descriptor.customCommands : [],
@@ -5375,9 +5399,9 @@ export class DurableAgentSession extends DurableComputerSession {
           ].join("\n\n")
           : [
             "You are the durable Nanocodex brain running on Cloudflare Workers. The brain does not execute shell commands. Its own /workspace is scratch storage for brain-owned artifacts only.",
-            "Hands are separate execution environments listed in accountInfo().machines. The account-owned sandbox is one lazy, retained Linux hand reached only through explicit sandbox_* tools. Zero or more user machines may be connected through deferred private tools; use tool_search when their capabilities require discovery.",
-            "Machine topology changes live as user machines connect or disconnect; the agent itself is not restarted. Call accountInfo immediately before work whose placement depends on an available hand, and do not use a machine that is no longer listed.",
-            "The brain, sandbox, and user-machine workspaces are independent. Never imply that files are synchronized or silently move work between them. Use only the tools and capabilities advertised for the selected hand.",
+            "Hands appear as logical top-level paths listed in accountInfo().machines. exec_command has its standard shape: set workdir to /sandbox/... or an exact connected-hand mount such as /laptop/...; the root of that cwd selects where the process runs. write_stdin remains pinned to the hand that created its session. There is no environment or host argument.",
+            "A Code Mode cell captures its mount mapping. Commands in Promise.all may run concurrently on different cwd roots, and subagents use the same cwd rule independently. A disconnect or reconnect never retargets an admitted command or session.",
+            "The current cwd router is a placement milestone, not a native shared filesystem: native_cross_mounts is false, so a process cannot yet reach peer mounts through ordinary filesystem syscalls. Do not imply files are synchronized or use shell cd to select another hand; select placement with exec_command.workdir until a conforming native namespace adapter is advertised.",
             "The browser_execute tool is the managed remote browser. Reuse its retained session when continuity matters. Never inspect, return, or persist cookies, authorization material, CDP connection URLs, provider URLs, or Live View URLs. If a login, MFA, CAPTCHA, or other human-only gate appears, stop and ask the user to complete it outside the model-visible browser tool; do not bypass or evade the gate.",
             "For ordinary account operations, accountInfo is not a prerequisite to an explicit gh, git, curl, or other shell command. Those commands use transparent authenticated egress when the current grant permits it. accountInfo is a tool, not a shell command.",
             "When accountInfo lists multiple connectorAccounts for a service, choose the appropriate connection by label and pass its exact id as X-Nanocodex-Connector-Connection on that provider request. Never invent a connection id. The egress proxy validates it against the active grant.",
@@ -5579,13 +5603,17 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!this.#isAccountOwnedTurn(authorization)) return [];
     return Object.freeze([
       AGENT_SANDBOX_MACHINE,
-      ...this.#hostedTools.machines().map((machine) => Object.freeze({
-        id: `user:${machine.id}`,
-        name: machine.name,
-        kind: "user" as const,
-        workspace: machine.workspace,
-        capabilities: machine.capabilities,
-      })),
+      ...this.#hostedTools.machines().map((machine) => {
+        const mount = machineMountRoot(machine.id);
+        return Object.freeze({
+          id: `user:${machine.id}`,
+          name: machine.name,
+          kind: "user" as const,
+          mount,
+          workspace: mount,
+          capabilities: machine.capabilities,
+        });
+      }),
     ]);
   }
 

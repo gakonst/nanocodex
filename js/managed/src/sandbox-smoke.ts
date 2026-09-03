@@ -10,6 +10,7 @@ export async function cloudflareSandboxSmokeSetup(
   publicOrigin: string,
   previewSecret: string,
 ): Promise<Record<string, unknown>> {
+  requireProbeId(probeId);
   const started = Date.now();
   const marker = `CLOUDFLARE_SANDBOX_OK_${probeId}`;
   let tools = cloudflareSandboxTools(
@@ -23,103 +24,55 @@ export async function cloudflareSandboxSmokeSetup(
     // Wrangler's emulated R2 watcher takes its initial filesystem snapshot
     // asynchronously after mountBucket() returns. Let that baseline settle so
     // this write is observed as a change; production uses the direct R2 mount.
-    if (localBucket) await invoke(tools, "sandbox_exec", { command: "sleep 2" });
-    const write = record(await invoke(tools, "sandbox_write_file", {
-      path: "probe.txt",
-      content: marker,
-    }));
-    assert(write.bytes_written === marker.length, "write byte count mismatch");
+    if (localBucket) await exec(tools, "sleep 2");
+    const write = record(await exec(
+      tools,
+      `printf %s ${marker} > probe.txt && test "$(cat probe.txt)" = ${marker} && printf EXEC_OK`,
+    ));
+    assert(write.exit_code === 0 && write.output === "EXEC_OK", "shell write/read failed");
 
-    const exec = record(await invoke(tools, "sandbox_exec", {
-      command: `test "$(cat probe.txt)" = "${marker}" && printf EXEC_OK`,
-      timeout_ms: 10_000,
-    }));
-    assert(exec.success === true && exec.stdout === "EXEC_OK", "write was not visible to exec");
+    const list = record(await exec(tools, "find . -maxdepth 1 -name probe.txt -print"));
+    assert(list.output === "./probe.txt\n", "shell listing omitted probe.txt");
 
-    const read = record(await invoke(tools, "sandbox_read_file", { path: "probe.txt" }));
-    assert(read.content === marker, "read did not return written content");
-
-    const list = record(await invoke(tools, "sandbox_list_files", {}));
-    const entries = Array.isArray(list.entries) ? list.entries.map(record) : [];
-    assert(entries.some((entry) => entry.name === "probe.txt"), "list omitted probe.txt");
-
-    const nonzero = record(await invoke(tools, "sandbox_exec", {
-      command: "sh -c 'printf partial; printf failed >&2; exit 7'",
-    }));
+    const nonzero = record(await exec(tools, "sh -c 'printf partial; printf failed >&2; exit 7'"));
     assert(
-      nonzero.success === false
-        && nonzero.exit_code === 7
-        && nonzero.stdout === "partial"
-        && nonzero.stderr === "failed",
+      nonzero.exit_code === 7 && nonzero.output === "partialfailed",
       "non-zero command result was not preserved",
     );
 
-    const flood = record(await invoke(tools, "sandbox_exec", {
-      command: "node -e 'process.stdout.write(\"x\".repeat(140000)); process.stderr.write(\"y\".repeat(140000))'",
+    const yielded = record(await invoke(tools, "exec_command", {
+      cmd: "printf first; sleep 1; printf second",
+      yield_time_ms: 250,
     }));
     assert(
-      flood.stdout_truncated === true,
-      `stdout flood was not truncated: ${JSON.stringify({
-        success: flood.success,
-        exit_code: flood.exit_code,
-        stdout_bytes: new TextEncoder().encode(String(flood.stdout)).byteLength,
-        stderr_bytes: new TextEncoder().encode(String(flood.stderr)).byteLength,
-        stderr_truncated: flood.stderr_truncated,
-      })}`,
+      typeof yielded.session_id === "number" && yielded.output === "first",
+      "command did not yield a resumable session",
     );
-    assert(flood.stderr_truncated === true, "stderr flood was not truncated");
+    const resumed = record(await invoke(tools, "write_stdin", {
+      session_id: yielded.session_id,
+    }));
     assert(
-      new TextEncoder().encode(String(flood.stdout)).byteLength === 128 * 1024,
-      "stdout was not capped at 128 KiB",
+      resumed.exit_code === 0 && resumed.output === "second",
+      "session resume replayed or lost command output",
     );
 
-    const timeoutStarted = Date.now();
-    const timeoutError = await rejectedMessage(invoke(tools, "sandbox_exec", {
-      command: "sleep 5",
-      timeout_ms: 100,
-    }));
-    assert(/time|interrupt|abort/i.test(timeoutError), `unexpected timeout error: ${timeoutError}`);
-    assert(Date.now() - timeoutStarted < 4_000, "command timeout was not enforced promptly");
+    const flood = record(await exec(
+      tools,
+      "node -e 'process.stdout.write(\"x\".repeat(140000)); process.stderr.write(\"y\".repeat(140000))'",
+    ));
+    assert(
+      new TextEncoder().encode(String(flood.output)).byteLength === 40_000
+        && flood.original_token_count === 70_000,
+      "combined command output was not capped",
+    );
 
-    const traversalError = await rejectedMessage(invoke(tools, "sandbox_read_file", {
-      path: "../etc/passwd",
-    }));
-    assert(/must not contain/.test(traversalError), "path traversal was not rejected");
-
-    const oversizedError = await rejectedMessage(invoke(tools, "sandbox_write_file", {
-      path: "oversized.txt",
-      content: "😀".repeat(1024 * 1024 / 4 + 1),
-    }));
-    assert(/exceeds 1 MiB/.test(oversizedError), "oversized UTF-8 write was not rejected");
-
-    const background = record(await invoke(tools, "sandbox_start_process", {
-      command: "sh -c 'printf background-output; printf background-error >&2; exit 7'",
-    }));
-    const processId = String(background.process_id);
-    let backgroundResult: Record<string, unknown> | undefined;
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      backgroundResult = record(await invoke(tools, "sandbox_get_process", {
-        process_id: processId,
-      }));
-      if (backgroundResult.terminal === true) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    assert(backgroundResult?.status === "failed", "background process did not reach failed state");
-    assert(backgroundResult.exit_code === 7, "background process exit code was not retained");
-    assert(backgroundResult.stdout === "background-output", "background stdout was not retained");
-    assert(backgroundResult.stderr === "background-error", "background stderr was not retained");
-
-    const process = record(await invoke(tools, "sandbox_start_process", {
-      command: "node -e 'require(\"http\").createServer((q,s)=>require(\"fs\").createReadStream(\"/workspace/probe.txt\").pipe(s)).listen(8000)'",
-      ready_port: 8000,
-      ready_timeout_ms: 10_000,
-    }));
-    assert(process.ready_port === 8000, "managed process did not report port readiness");
-    const server = record(await invoke(tools, "sandbox_get_process", {
-      process_id: process.process_id,
-    }));
-    assert(server.found === true && server.terminal === false, "preview process was not observable");
-    const preview = record(await invoke(tools, "sandbox_preview", { port: 8000 }));
+    const server = record(await exec(tools, [
+      "nohup node -e 'require(\"http\").createServer((q,s)=>require(\"fs\").createReadStream(\"/workspace/probe.txt\").pipe(s)).listen(8000)'",
+      ">/tmp/nanocodex-sandbox-smoke.log 2>&1 &",
+      "for i in $(seq 1 100); do curl -fsS http://127.0.0.1:8000/probe.txt >/dev/null && exit 0; sleep .1; done; exit 1",
+    ].join(" ")));
+    assert(server.exit_code === 0, "background preview server did not become ready");
+    const preview = record(await invoke(tools, "preview", { port: 8000 }));
     const previewUrl = new URL("probe.txt", String(preview.url));
     assert(previewUrl.protocol === "https:", `preview returned an invalid URL: ${previewUrl.href}`);
 
@@ -132,12 +85,9 @@ export async function cloudflareSandboxSmokeSetup(
         "write_exec_read",
         "directory_list",
         "nonzero_exit",
+        "session_resume",
         "bounded_output",
-        "command_timeout",
-        "path_confinement",
-        "write_size_limit",
-        "background_process_result",
-        "managed_process_preview",
+        "shell_managed_preview",
       ],
       duration_ms: Date.now() - started,
     };
@@ -152,14 +102,15 @@ export async function cloudflareSandboxSmokeFinish(
   probeId: string,
   localBucket: boolean,
 ): Promise<Record<string, unknown>> {
+  requireProbeId(probeId);
   const started = Date.now();
   const marker = `CLOUDFLARE_SANDBOX_OK_${probeId}`;
   try {
     await destroyCloudflareSandbox(namespace, probeId);
     const tools = cloudflareSandboxTools(namespace, probeId, localBucket);
-    const persisted = record(await invoke(tools, "sandbox_read_file", { path: "probe.txt" }));
-    assert(persisted.content === marker, "R2 workspace did not survive container destruction");
-    await invoke(tools, "sandbox_exec", { command: "rm -f probe.txt" });
+    const persisted = record(await exec(tools, "cat probe.txt"));
+    assert(persisted.output === marker, "R2 workspace did not survive container destruction");
+    await exec(tools, "rm -f probe.txt");
     return {
       status: "ok",
       probe_id: probeId,
@@ -169,6 +120,10 @@ export async function cloudflareSandboxSmokeFinish(
   } finally {
     await destroyCloudflareSandbox(namespace, probeId).catch(() => {});
   }
+}
+
+function exec(tools: ToolMap, cmd: string): Promise<unknown> {
+  return invoke(tools, "exec_command", { cmd });
 }
 
 async function invoke(tools: ToolMap, name: string, input: unknown): Promise<unknown> {
@@ -183,20 +138,17 @@ async function invoke(tools: ToolMap, name: string, input: unknown): Promise<unk
   });
 }
 
-async function rejectedMessage(operation: Promise<unknown>): Promise<string> {
-  try {
-    await operation;
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error);
-  }
-  throw new Error("operation unexpectedly succeeded");
-}
-
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("tool returned a non-object result");
   }
   return value as Record<string, unknown>;
+}
+
+function requireProbeId(value: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)) {
+    throw new Error("sandbox smoke probe ID must be a safe identifier");
+  }
 }
 
 function assert(condition: boolean, message: string): asserts condition {

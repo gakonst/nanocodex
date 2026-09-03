@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { hostedToolCatalogDigest } from "nanocodex/tools/hosted-catalog";
+import {
+  EXEC_COMMAND_PARAMETERS,
+  EXECUTION_OUTPUT_SCHEMA,
+  MACHINE_PREVIEW_PARAMETERS,
+  PREVIEW_OUTPUT_SCHEMA,
+  WRITE_STDIN_PARAMETERS,
+} from "nanocodex-tools/execution-contract";
 
 import {
   HostedToolsBroker,
@@ -111,31 +118,32 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     }]);
   });
 
-  it("qualifies same-name machine tools, dispatches wire names, and disconnects independently", async () => {
+  it("reserves canonical machine tools, resolves exact machines, and disconnects independently", async () => {
     const fixture = createFixture();
     const routeB = fixture.socket();
     await fixture.broker.message(routeB.webSocket, JSON.stringify({
       type: "catalog",
       attachment_id: "machine-b",
-      tools: [entry("exec_command")],
+      tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-b", name: "Machine B", workspace: "/b", capabilities: ["shell"] }],
     }));
     const routeA = fixture.socket();
     await fixture.broker.message(routeA.webSocket, JSON.stringify({
       type: "catalog",
       attachment_id: "machine-a",
-      tools: [entry("exec_command")],
+      tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["filesystem"] }],
     }));
 
     expect(fixture.broker.provider().definitions().map((definition) => definition.name))
-      .toEqual(["user_machine-a_exec_command", "user_machine-b_exec_command"]);
+      .toEqual([]);
+    expect(fixture.broker.provider().resolve("user_machine-a_exec_command")).toBeUndefined();
     expect(fixture.broker.machines().map((machine) => machine.id)).toEqual(["machine-a", "machine-b"]);
 
-    const pendingA = fixture.broker.provider().resolve("user_machine-a_exec_command")!.handler({}, {
+    const pendingA = fixture.broker.machineTool("machine-a", "exec_command")!.handler({ cmd: "pwd" }, {
       sessionId: "session:1", callId: "source:a",
     });
-    const pendingB = fixture.broker.provider().resolve("user_machine-b_exec_command")!.handler({}, {
+    const pendingB = fixture.broker.machineTool("machine-b", "exec_command")!.handler({ cmd: "pwd" }, {
       sessionId: "session:1", callId: "source:b",
     });
     const callA = routeA.sent.find((frame) => frame.type === "call")!;
@@ -165,13 +173,13 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     await fixture.broker.message(replacementA.webSocket, JSON.stringify({
       type: "catalog",
       attachment_id: "machine-a",
-      tools: [entry("exec_command")],
+      tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-a", name: "Machine A2", workspace: "/a2", capabilities: ["filesystem"] }],
     }));
     expect(routeA.closed).toMatchObject({ code: 1008 });
     expect(routeB.closed).toBeUndefined();
     expect(fixture.broker.provider().definitions().map((definition) => definition.name))
-      .toEqual(["user_machine-a_exec_command", "user_machine-b_exec_command"]);
+      .toEqual([]);
 
     fixture.persistence.routes.get("user:machine-a")!.lease_expires_at = NOW + 1;
     const routeBExpiry = fixture.persistence.routes.get("user:machine-b")!.lease_expires_at;
@@ -181,14 +189,82 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.persistence.routes.get("user:machine-b")!.lease_expires_at).toBe(routeBExpiry);
 
     await fixture.broker.message(replacementA.webSocket, JSON.stringify({ type: "drain" }));
-    expect(fixture.broker.provider().definitions().map((definition) => definition.name)).toEqual(["user_machine-b_exec_command"]);
+    expect(fixture.broker.machineTool("machine-a", "exec_command")).toBeUndefined();
+    expect(fixture.broker.machineTool("machine-b", "exec_command")).toBeDefined();
     expect(fixture.broker.machines().map((machine) => machine.id)).toEqual(["machine-b"]);
     fixture.broker.webSocketClose(replacementA.webSocket, 1000, "done");
-    expect(fixture.broker.provider().definitions().map((definition) => definition.name)).toEqual(["user_machine-b_exec_command"]);
+    expect(fixture.broker.machineTool("machine-b", "exec_command")).toBeDefined();
 
     fixture.broker.webSocketClose(routeB.webSocket, 1000, "done");
     expect(fixture.broker.provider().definitions()).toEqual([]);
     expect(fixture.broker.machines()).toEqual([]);
+  });
+
+  it("keeps a resolved canonical machine tool pinned to its admitted generation", async () => {
+    const fixture = createFixture();
+    const first = fixture.socket();
+    await fixture.broker.message(first.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "machine-a",
+      tools: [machineEntry("exec_command")],
+      machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
+    }));
+    const selected = fixture.broker.machineTool("machine-a", "exec_command")!;
+
+    const replacement = fixture.socket();
+    await fixture.broker.message(replacement.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "machine-a",
+      tools: [machineEntry("exec_command")],
+      machines: [{ id: "machine-a", name: "Machine A2", workspace: "/a2", capabilities: ["shell"] }],
+    }));
+
+    const outcome = await selected.handler({ cmd: "pwd" }, {
+      sessionId: "session:1", callId: "source:stale",
+    });
+    expect((outcome as Record<PropertyKey, unknown>)[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]).toBe(true);
+    expect(replacement.sent.some((frame) => frame.type === "call")).toBe(false);
+    expect(fixture.persistence.callBySource("session:1", "source:stale")).toBeUndefined();
+  });
+
+  it("admits only canonical selector-free machine primitive schemas", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    const tools = [
+      machineEntry("exec_command"),
+      machineEntry("write_stdin"),
+      machineEntry("preview"),
+    ];
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "machine-a",
+      tools,
+      machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
+    }));
+
+    expect(host.closed).toBeUndefined();
+    expect(fixture.broker.provider().definitions()).toEqual([]);
+    for (const tool of tools) {
+      expect(tool.definition.parameters.properties).not.toHaveProperty("environment");
+      expect(tool.definition.parameters.properties).not.toHaveProperty("machine");
+      expect(tool.definition.parameters.properties).not.toHaveProperty("host");
+      expect(fixture.broker.machineTool("machine-a", tool.definition.name)).toBeDefined();
+    }
+
+    const invalid = createFixture();
+    const invalidHost = invalid.socket();
+    const invalidExec = machineEntry("exec_command");
+    (invalidExec.definition.parameters.properties as Record<string, unknown>).environment = { type: "string" };
+    await invalid.broker.message(invalidHost.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "machine-b",
+      tools: [invalidExec],
+      machines: [{ id: "machine-b", name: "Machine B", workspace: "/b", capabilities: ["shell"] }],
+    }));
+    expect(invalidHost.closed).toMatchObject({
+      code: 1008,
+      reason: expect.stringContaining("machine tool exec_command"),
+    });
   });
 
   it("expires only the named route whose lease elapsed", async () => {
@@ -830,6 +906,37 @@ function entry(name = "fixture__lookup") {
     },
     parallel_safe: true,
     summary: "Fixture lookup",
+    timeout_ms: 30_000,
+  };
+}
+
+function machineEntry(name: "exec_command" | "write_stdin" | "preview") {
+  const definitions = {
+    exec_command: {
+      parameters: EXEC_COMMAND_PARAMETERS,
+      output_schema: EXECUTION_OUTPUT_SCHEMA,
+    },
+    write_stdin: {
+      parameters: WRITE_STDIN_PARAMETERS,
+      output_schema: EXECUTION_OUTPUT_SCHEMA,
+    },
+    preview: {
+      parameters: MACHINE_PREVIEW_PARAMETERS,
+      output_schema: PREVIEW_OUTPUT_SCHEMA,
+    },
+  };
+  return {
+    provider: "machine",
+    remote_name: name,
+    definition: {
+      type: "function" as const,
+      name,
+      description: `Canonical machine ${name}`,
+      strict: false,
+      ...structuredClone(definitions[name]),
+    },
+    parallel_safe: name !== "write_stdin",
+    summary: `Machine ${name}`,
     timeout_ms: 30_000,
   };
 }

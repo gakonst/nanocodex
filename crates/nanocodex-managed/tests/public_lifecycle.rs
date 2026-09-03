@@ -680,7 +680,8 @@ fn agent_state_json(agent_id: &str, latest_event_cursor: &str) -> Value {
             "live_steer": true,
             "live_cancel": true,
             "workspace": "cloud",
-            "sandbox_escalation": false
+            "execution_namespace": "cwd-root-v1",
+            "native_cross_mounts": false
         },
         "settings": {
             "model": "gpt-5.6-sol",

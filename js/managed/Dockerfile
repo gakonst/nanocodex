@@ -16,6 +16,7 @@ RUN apt-get update \
         cmake \
         curl \
         fd-find \
+        gh \
         git \
         git-lfs \
         jq \

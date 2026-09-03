@@ -294,8 +294,10 @@ pub struct AgentCapabilities {
     pub live_cancel: bool,
     /// Server-advertised workspace mode.
     pub workspace: String,
-    /// Whether sandbox escalation is available.
-    pub sandbox_escalation: bool,
+    /// Server-advertised logical execution namespace contract.
+    pub execution_namespace: String,
+    /// Whether native processes can access peer mounts through filesystem syscalls.
+    pub native_cross_mounts: bool,
 }
 
 /// Model and reasoning policy owned by one managed agent.

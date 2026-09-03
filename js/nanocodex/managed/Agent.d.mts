@@ -130,10 +130,10 @@ export type Capabilities = Readonly<{
   live_steer: true;
   live_cancel: true;
   workspace: "cloudflare-computer";
-  /** Explicit sandbox_* tools expose one separate, agent-owned Linux hand. */
-  sandbox_tools: true;
-  /** Legacy compatibility field; the brain's shell does not fall through automatically. */
-  sandbox_escalation: boolean;
+  /** Canonical commands select an execution hand from the root of their logical cwd. */
+  execution_namespace: "cwd-root-v1";
+  /** Native processes cannot yet access peer mounts through filesystem syscalls. */
+  native_cross_mounts: false;
 }>;
 
 export type State = Readonly<{
