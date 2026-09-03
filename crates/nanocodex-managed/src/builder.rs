@@ -522,6 +522,7 @@ impl<S> ManagedBuilder<S> {
     {
         let (agent_id, expected_session_id, supplied_state) = match self.managed.operation {
             ManagedOperation::Create(settings) => {
+                let settings = settings.validate().map_err(backend_error)?;
                 match call(
                     &mut self.managed.service,
                     ManagedRequest::Create { settings },
@@ -571,6 +572,11 @@ impl<S> ManagedBuilder<S> {
             if state.stream_error.is_some() {
                 return Err(backend_error(ManagedError::InvalidResponse(
                     "agent state reports a durable stream failure",
+                )));
+            }
+            if !state.settings.is_valid() {
+                return Err(backend_error(ManagedError::InvalidResponse(
+                    "agent state contains incompatible model and reasoning settings",
                 )));
             }
             crate::sse::validate_numeric_cursor(&state.latest_event_cursor).map_err(|_| {

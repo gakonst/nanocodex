@@ -518,6 +518,11 @@ where
         )
         .await?
         {
+            ManagedResponse::Settings(settings) if !settings.is_valid() => {
+                Err(NanocodexError::BackendContract {
+                    detail: "managed thinking update acknowledged incompatible settings",
+                })
+            }
             ManagedResponse::Settings(settings) if settings.thinking == thinking => Ok(()),
             ManagedResponse::Settings(_) => Err(NanocodexError::BackendContract {
                 detail: "managed thinking update acknowledged a different setting",
@@ -536,6 +541,11 @@ where
         )
         .await?
         {
+            ManagedResponse::Settings(settings) if !settings.is_valid() => {
+                Err(NanocodexError::BackendContract {
+                    detail: "managed fast-mode update acknowledged incompatible settings",
+                })
+            }
             ManagedResponse::Settings(settings) if settings.fast_mode == enabled => Ok(()),
             ManagedResponse::Settings(_) => Err(NanocodexError::BackendContract {
                 detail: "managed fast-mode update acknowledged a different setting",

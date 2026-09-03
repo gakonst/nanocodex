@@ -175,11 +175,11 @@ forks.
 Every policy reported the same median model usage for the complete 14-request
 workload: 120,201 input tokens, including 111,363 cache reads and 8,796 cache
 writes, plus 104 output tokens. Cache reads were therefore 92.6% of input.
-At the published standard GPT-5.6 Sol rates of $5 per million uncached input
-tokens and $30 per million output tokens, with cache reads at a 90% discount
-and cache writes at 1.25 times uncached input, the estimated cost is $0.114 per
-variant workload. The 21 successful samples cost an estimated $2.39, excluding
-the rejected partial request. Priority processing uses the corresponding
+At the current standard GPT-5.6 Sol rates of $4 per million uncached input
+tokens and $20 per million output tokens, with $0.40 cache reads and $5 cache
+writes per million tokens, the estimated cost is $0.091 per variant workload.
+The 21 successful samples cost an estimated $1.91, excluding the rejected
+partial request. Fast processing uses the corresponding
 higher published rates. See
 [OpenAI's API pricing](https://developers.openai.com/api/docs/pricing).
 

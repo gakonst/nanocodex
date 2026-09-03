@@ -110,7 +110,7 @@ async fn response_stream_and_future_share_one_completed_operation() {
     let estimated_cost = completed
         .estimated_cost()
         .expect("provider usage should produce an estimate");
-    assert_eq!(estimated_cost.amount().decimal(), "0.00021");
+    assert_eq!(estimated_cost.amount().decimal(), "0.000148");
     assert_eq!(
         completed.cost_status(),
         crate::CostStatus::EstimatedFromUsage
@@ -137,7 +137,7 @@ fn luna_usage_receives_a_model_specific_estimate() {
     };
     let (estimate, status) = estimate_cost(Some(&usage), crate::Model::Luna, false);
 
-    assert_eq!(estimate.unwrap().amount().decimal(), "1.4");
+    assert_eq!(estimate.unwrap().amount().decimal(), "2.2");
     assert_eq!(status, crate::CostStatus::EstimatedFromUsage);
 }
 
@@ -195,6 +195,7 @@ impl Service<crate::ResponsesAttempt> for RecordingScripted {
                     name: "lookup".into(),
                     namespace: None,
                     arguments: r#"{"key":"region"}"#.into(),
+                    asynchronous: false,
                     encrypted_function_args: None,
                     call_id: "call_1".into(),
                     caller: None,

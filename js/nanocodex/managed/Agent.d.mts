@@ -1,4 +1,4 @@
-import type { PromptInput, TurnUsage } from "../types.mjs";
+import type { Model, PromptInput, ReasoningMode, Thinking, TurnUsage } from "../types.mjs";
 import type { AgentId } from "../runtime/subagents.mjs";
 
 export type HistorySource = Readonly<{ turn_id: string; cursor: string }>;
@@ -122,6 +122,18 @@ export type Options = Readonly<{
       credentials?: "include";
     }>): import("../tools/Tools.mjs").AttachmentSocket | Promise<import("../tools/Tools.mjs").AttachmentSocket>;
   }> | undefined;
+}>;
+
+export type CreateSettings = Readonly<{
+  model: Model;
+  thinking: Thinking;
+  reasoningMode: ReasoningMode;
+  fastMode: boolean;
+}>;
+
+export type CreateOptions = Options & Readonly<{
+  /** Complete immutable starting policy. GPT-6 Astra requires at least low reasoning. */
+  settings?: CreateSettings | undefined;
 }>;
 
 export type Capabilities = Readonly<{
@@ -294,7 +306,7 @@ export type Agent = Readonly<{
   delete(): Promise<void>;
 }>;
 
-export function create(options?: Options): Promise<Agent>;
+export function create(options?: CreateOptions): Promise<Agent>;
 export function list(options?: Options): Promise<readonly Agent[]>;
 export function get(id: string, options?: Options): Promise<Agent>;
 /** Open a handle immediately; each subsequent operation verifies ownership server-side. */

@@ -333,7 +333,7 @@ async function check() {
   const agent = await Agent.create({
     transport: Transport.openAi({ apiKey }),
     filesystem: nodeWorkspace,
-    model: "gpt-5.6-terra",
+    model: "gpt-6-astra",
     thinking: "high",
     fastMode: false,
     workspace: nodeWorkspace.root,
@@ -419,10 +419,13 @@ async function check() {
   const snapshot: Actions.turn.getSnapshot.ReturnType = await Actions.turn.getSnapshot(completed);
   const usage: Actions.turn.getUsage.ReturnType = await Actions.turn.getUsage(completed);
   usage.estimated_cost?.usd;
+  const serviceTier: "standard" | "priority" | "fast" | undefined =
+    usage.estimated_cost?.service_tier;
   const costStatus: CostStatus = usage.cost_status;
   void message;
   void acceptedId;
   void sameAcceptedId;
+  void serviceTier;
   void sameResult;
   void snapshotPromise;
   void usagePromise;

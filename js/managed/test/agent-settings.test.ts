@@ -22,16 +22,16 @@ describe("managed agent settings", () => {
 
   it("strictly parses and forwards every live creation setting", () => {
     const settings = parseAgentSettingsQuery(new URLSearchParams(
-      "model=gpt-5.6-luna&thinking=max&reasoning_mode=pro&fast_mode=true",
+      "model=gpt-6-astra&thinking=max&reasoning_mode=pro&fast_mode=true",
     ));
     expect(settings).toEqual({
-      model: "gpt-5.6-luna",
+      model: "gpt-6-astra",
       thinking: "max",
       reasoning_mode: "pro",
       fast_mode: true,
     });
     expect(Object.fromEntries(agentSettingsQuery(settings))).toEqual({
-      model: "gpt-5.6-luna",
+      model: "gpt-6-astra",
       thinking: "max",
       reasoning_mode: "pro",
       fast_mode: "true",
@@ -73,7 +73,7 @@ describe("managed agent settings", () => {
 
   it("requires an atomic complete settings object for HTTP creation", () => {
     const settings = {
-      model: "gpt-5.6-terra",
+      model: "gpt-6-astra",
       thinking: "medium",
       reasoning_mode: "pro",
       fast_mode: true,
@@ -95,6 +95,8 @@ describe("managed agent settings", () => {
     });
     expect(() => parseCompleteAgentSettings({ thinking: "medium", fast_mode: true }))
       .toThrow("must contain all four fields");
+    expect(() => parseCompleteAgentSettings({ ...settings, thinking: "none" }))
+      .toThrow("GPT-6 Astra requires low");
     for (const encoded of ["{}", "[]", JSON.stringify({ settings: { ...settings, extra: true } })]) {
       expect(() => parseAgentCreateBody(encoded)).toThrow();
     }

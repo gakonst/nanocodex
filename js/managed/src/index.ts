@@ -164,9 +164,11 @@ import {
   parseAgentSettingsPatch,
   parseAgentSettingsQuery,
   parseCompleteAgentSettings,
+  validateAgentSettings,
   type ManagedAgentSettings,
   type ManagedAgentSettingsPatch,
 } from "./agent-settings";
+import { initializeManagedAgentSettingsSchema } from "./agent-settings-schema";
 import {
   bindAgentCredential,
   routeCredentialRequest,
@@ -1873,16 +1875,6 @@ export class DurableAgentSession extends DurableComputerSession {
         runtime_profile TEXT CHECK (runtime_profile IN ('managed', 'multiplayer')),
         state TEXT NOT NULL CHECK (state IN ('active', 'deleted'))
       );
-      CREATE TABLE IF NOT EXISTS managed_agent_settings (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        model TEXT NOT NULL CHECK (model IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')),
-        thinking TEXT NOT NULL CHECK (thinking IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
-        reasoning_mode TEXT NOT NULL CHECK (reasoning_mode IN ('standard', 'pro')),
-        fast_mode INTEGER NOT NULL CHECK (fast_mode IN (0, 1))
-      );
-      INSERT OR IGNORE INTO managed_agent_settings
-        (singleton, model, thinking, reasoning_mode, fast_mode)
-      VALUES (1, 'gpt-5.6-sol', 'high', 'standard', 0);
       CREATE TABLE IF NOT EXISTS managed_mounts (
         id TEXT PRIMARY KEY,
         provider TEXT NOT NULL,
@@ -1999,6 +1991,7 @@ export class DurableAgentSession extends DurableComputerSession {
         citations_json TEXT NOT NULL
       );
     `);
+    initializeManagedAgentSettingsSchema(this.ctx.storage);
     // A pending realtime mutation belonged to the previous in-memory owner.
     // Its external outcome is unknown, so cold construction must not replay it.
     this.ctx.storage.sql.exec(
@@ -6981,7 +6974,12 @@ export class DurableAgentSession extends DurableComputerSession {
     const session = this.#session();
     if (!session) throw new ManagedRequestError(404, "not_found", "agent is not initialized");
     const current = this.#settings();
-    const settings = { ...current, ...patch };
+    let settings: ManagedAgentSettings;
+    try {
+      settings = validateAgentSettings({ ...current, ...patch });
+    } catch (error) {
+      throw new ManagedRequestError(400, "invalid_request", errorMessage(error));
+    }
     const immutableRequested = Object.hasOwn(patch, "model")
       || Object.hasOwn(patch, "reasoning_mode");
     if (immutableRequested && session.accepted_turns !== 0) {
@@ -7904,7 +7902,8 @@ function validAgentSettings(value: unknown): value is ManagedAgentSettings {
     "fast_mode", "model", "reasoning_mode", "thinking",
   ])) return false;
   try {
-    return Object.keys(parseAgentSettingsPatch(value)).length === 4;
+    parseCompleteAgentSettings(value);
+    return true;
   } catch {
     return false;
   }

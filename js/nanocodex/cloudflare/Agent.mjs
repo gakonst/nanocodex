@@ -554,10 +554,12 @@ function validateInternalConfiguration(configuration) {
       "reasoning_mode",
       "fast_mode",
     ].includes(key))
-    || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(configuration.model)
+    || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]
+      .includes(configuration.model)
     || !["none", "low", "medium", "high", "xhigh", "max"].includes(configuration.thinking)
     || !["standard", "pro"].includes(configuration.reasoning_mode)
-    || typeof configuration.fast_mode !== "boolean") {
+    || typeof configuration.fast_mode !== "boolean"
+    || (configuration.model === "gpt-6-astra" && configuration.thinking === "none")) {
     throw new TypeError("Cloudflare Agent internal configuration is invalid");
   }
 }

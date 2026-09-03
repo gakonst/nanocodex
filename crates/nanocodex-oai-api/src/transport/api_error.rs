@@ -5,7 +5,7 @@ use serde::Deserialize;
 pub(super) fn retryable_api_error(event: &str) -> Option<(&'static str, Option<Duration>)> {
     let event: ApiErrorEnvelope = serde_json::from_str(event).ok()?;
     let error = event.error();
-    let code = error.and_then(|error| error.code.as_deref());
+    let code = event.code();
     let discriminator = code.or_else(|| error.and_then(|error| error.kind.as_deref()));
 
     let class = match event.event_type.as_deref() {
@@ -40,7 +40,7 @@ pub(super) fn api_error_has_code(event: &str, expected: &str) -> bool {
     let Ok(event) = serde_json::from_str::<ApiErrorEnvelope>(event) else {
         return false;
     };
-    event.error().and_then(|error| error.code.as_deref()) == Some(expected)
+    event.code() == Some(expected)
 }
 
 pub(super) fn api_error_is_checkpoint_missing(event: &str) -> bool {
@@ -86,6 +86,8 @@ struct ApiErrorEnvelope {
     #[serde(default, rename = "type")]
     event_type: Option<Box<str>>,
     #[serde(default)]
+    code: Option<Box<str>>,
+    #[serde(default)]
     error: Option<ApiErrorDetail>,
     #[serde(default)]
     response: Option<ApiErrorResponse>,
@@ -98,6 +100,12 @@ impl ApiErrorEnvelope {
         self.error
             .as_ref()
             .or_else(|| self.response.as_ref()?.error.as_ref())
+    }
+
+    fn code(&self) -> Option<&str> {
+        self.code
+            .as_deref()
+            .or_else(|| self.error().and_then(|error| error.code.as_deref()))
     }
 }
 
@@ -139,7 +147,7 @@ impl RetryAfterValue {
 mod tests {
     use std::time::Duration;
 
-    use super::{api_error_is_checkpoint_missing, retryable_api_error};
+    use super::{api_error_has_code, api_error_is_checkpoint_missing, retryable_api_error};
 
     #[test]
     fn recognizes_both_checkpoint_missing_error_shapes() {
@@ -261,6 +269,18 @@ mod tests {
             );
             assert_eq!(retryable_api_error(&event), None, "{code}");
         }
+    }
+
+    #[test]
+    fn recognizes_top_level_error_codes() {
+        let event = r#"{
+            "type": "error",
+            "code": "misalignment_policy_violation",
+            "message": "stop this conversation"
+        }"#;
+
+        assert!(api_error_has_code(event, "misalignment_policy_violation"));
+        assert_eq!(retryable_api_error(event), None);
     }
 
     #[test]

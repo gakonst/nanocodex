@@ -1,6 +1,6 @@
 export type Thinking = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningMode = "standard" | "pro";
-export type Model = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna";
+export type Model = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-6-astra";
 
 export type PromptItem =
   | { type: "text"; text: string }
@@ -258,7 +258,7 @@ export type EstimatedUsdCost = Readonly<{
   cached_input_usd: string;
   cache_write_input_usd: string;
   output_usd: string;
-  service_tier: "standard" | "priority";
+  service_tier: "standard" | "priority" | "fast";
 }>;
 
 export type CostStatus =

@@ -6,15 +6,27 @@ use crate::{Model, responses::Usage};
 // OpenAI publishes rates per one million tokens. All supported rates convert
 // exactly to nano-USD per token, avoiding floating point and division.
 const SOL_STANDARD: TokenRates = TokenRates {
-    input: 5_000,
-    cached_input: 500,
-    cache_write_input: 6_250,
-    output: 30_000,
+    input: 4_000,
+    cached_input: 400,
+    cache_write_input: 5_000,
+    output: 20_000,
 };
 const SOL_PRIORITY: TokenRates = TokenRates {
-    input: 10_000,
-    cached_input: 1_000,
-    cache_write_input: 12_500,
+    input: 8_000,
+    cached_input: 800,
+    cache_write_input: 10_000,
+    output: 40_000,
+};
+const SOL_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+    input: 8_000,
+    cached_input: 800,
+    cache_write_input: 10_000,
+    output: 30_000,
+};
+const SOL_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
+    input: 16_000,
+    cached_input: 1_600,
+    cache_write_input: 20_000,
     output: 60_000,
 };
 const TERRA_STANDARD: TokenRates = TokenRates {
@@ -29,6 +41,18 @@ const TERRA_PRIORITY: TokenRates = TokenRates {
     cache_write_input: 5_000,
     output: 24_000,
 };
+const TERRA_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+    input: 4_000,
+    cached_input: 400,
+    cache_write_input: 5_000,
+    output: 18_000,
+};
+const TERRA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
+    input: 8_000,
+    cached_input: 800,
+    cache_write_input: 10_000,
+    output: 36_000,
+};
 const LUNA_STANDARD: TokenRates = TokenRates {
     input: 200,
     cached_input: 20,
@@ -41,6 +65,43 @@ const LUNA_PRIORITY: TokenRates = TokenRates {
     cache_write_input: 500,
     output: 2_400,
 };
+const LUNA_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+    input: 400,
+    cached_input: 40,
+    cache_write_input: 500,
+    output: 1_800,
+};
+const LUNA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
+    input: 800,
+    cached_input: 80,
+    cache_write_input: 1_000,
+    output: 3_600,
+};
+const ASTRA_STANDARD: TokenRates = TokenRates {
+    input: 10_000,
+    cached_input: 1_000,
+    cache_write_input: 12_500,
+    output: 50_000,
+};
+const ASTRA_PRIORITY: TokenRates = TokenRates {
+    input: 20_000,
+    cached_input: 2_000,
+    cache_write_input: 25_000,
+    output: 100_000,
+};
+const ASTRA_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+    input: 20_000,
+    cached_input: 2_000,
+    cache_write_input: 25_000,
+    output: 75_000,
+};
+const ASTRA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
+    input: 40_000,
+    cached_input: 4_000,
+    cache_write_input: 50_000,
+    output: 150_000,
+};
+const LONG_CONTEXT_THRESHOLD: u64 = 272_000;
 
 #[derive(Clone, Copy)]
 struct TokenRates {
@@ -51,14 +112,26 @@ struct TokenRates {
 }
 
 impl TokenRates {
-    const fn for_model(model: Model, service_tier: ServiceTier) -> Self {
-        match (model, service_tier) {
-            (Model::Sol, ServiceTier::Standard) => SOL_STANDARD,
-            (Model::Sol, ServiceTier::Priority) => SOL_PRIORITY,
-            (Model::Terra, ServiceTier::Standard) => TERRA_STANDARD,
-            (Model::Terra, ServiceTier::Priority) => TERRA_PRIORITY,
-            (Model::Luna, ServiceTier::Standard) => LUNA_STANDARD,
-            (Model::Luna, ServiceTier::Priority) => LUNA_PRIORITY,
+    const fn for_model(model: Model, service_tier: ServiceTier, input_tokens: u64) -> Self {
+        let fast = !matches!(service_tier, ServiceTier::Standard);
+        let long = input_tokens > LONG_CONTEXT_THRESHOLD;
+        match (model, fast, long) {
+            (Model::Sol, false, false) => SOL_STANDARD,
+            (Model::Sol, true, false) => SOL_PRIORITY,
+            (Model::Sol, false, true) => SOL_LONG_CONTEXT_STANDARD,
+            (Model::Sol, true, true) => SOL_LONG_CONTEXT_PRIORITY,
+            (Model::Terra, false, false) => TERRA_STANDARD,
+            (Model::Terra, true, false) => TERRA_PRIORITY,
+            (Model::Terra, false, true) => TERRA_LONG_CONTEXT_STANDARD,
+            (Model::Terra, true, true) => TERRA_LONG_CONTEXT_PRIORITY,
+            (Model::Luna, false, false) => LUNA_STANDARD,
+            (Model::Luna, true, false) => LUNA_PRIORITY,
+            (Model::Luna, false, true) => LUNA_LONG_CONTEXT_STANDARD,
+            (Model::Luna, true, true) => LUNA_LONG_CONTEXT_PRIORITY,
+            (Model::Astra, false, false) => ASTRA_STANDARD,
+            (Model::Astra, true, false) => ASTRA_PRIORITY,
+            (Model::Astra, false, true) => ASTRA_LONG_CONTEXT_STANDARD,
+            (Model::Astra, true, true) => ASTRA_LONG_CONTEXT_PRIORITY,
         }
     }
 }
@@ -72,6 +145,8 @@ pub enum ServiceTier {
     Standard,
     /// Priority processing selected by `fast_mode`.
     Priority,
+    /// Fast processing label used for models newer than GPT-5.6.
+    Fast,
 }
 
 impl ServiceTier {
@@ -81,6 +156,17 @@ impl ServiceTier {
         match self {
             Self::Standard => "standard",
             Self::Priority => "priority",
+            Self::Fast => "fast",
+        }
+    }
+
+    /// Resolves the tier label assumed for the selected model and mode.
+    #[must_use]
+    pub const fn for_model(model: Model, fast_mode: bool) -> Self {
+        match (model, fast_mode) {
+            (_, false) => Self::Standard,
+            (Model::Astra, true) => Self::Fast,
+            (_, true) => Self::Priority,
         }
     }
 }
@@ -88,8 +174,8 @@ impl ServiceTier {
 /// Exact estimated USD cost for provider-reported token usage.
 ///
 /// Nanocodex calculates this automatically using the selected model's built-in
-/// standard or priority rates. This is a local estimate, not a charge reported
-/// by the Responses API.
+/// rates for the requested processing mode. This is a local estimate, not a
+/// charge or observed service tier reported by the Responses API.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EstimatedUsdCost {
     #[serde(rename = "usd")]
@@ -142,6 +228,23 @@ impl EstimatedUsdCost {
     pub const fn service_tier(&self) -> ServiceTier {
         self.service_tier
     }
+
+    /// Adds estimates from separate provider operations without reapplying
+    /// per-request pricing thresholds to their aggregate token counts.
+    #[must_use]
+    pub fn saturating_add(self, other: Self) -> Self {
+        debug_assert_eq!(self.service_tier, other.service_tier);
+        Self {
+            amount: self.amount.saturating_add(other.amount),
+            input: self.input.saturating_add(other.input),
+            cached_input: self.cached_input.saturating_add(other.cached_input),
+            cache_write_input: self
+                .cache_write_input
+                .saturating_add(other.cache_write_input),
+            output: self.output.saturating_add(other.output),
+            service_tier: self.service_tier,
+        }
+    }
 }
 
 /// Estimates one provider operation from its authoritative usage record.
@@ -168,7 +271,7 @@ impl EstimatedUsdCost {
 /// };
 /// let cost = estimate(&usage, ServiceTier::Standard);
 ///
-/// assert_eq!(cost.amount().decimal(), "0.003025");
+/// assert_eq!(cost.amount().decimal(), "0.00222");
 /// ```
 #[must_use]
 pub fn estimate(usage: &Usage, service_tier: ServiceTier) -> EstimatedUsdCost {
@@ -178,7 +281,7 @@ pub fn estimate(usage: &Usage, service_tier: ServiceTier) -> EstimatedUsdCost {
 /// Estimates one provider operation using the selected model's built-in rates.
 ///
 /// This is the model-aware form of [`estimate`]. Managed sessions use it so
-/// every supported GPT-5.6 model receives an estimate from reported usage.
+/// every supported model receives an estimate from reported usage.
 #[must_use]
 pub fn estimate_for_model(
     usage: &Usage,
@@ -211,7 +314,7 @@ pub(crate) fn estimate_tokens(
     model: Model,
     service_tier: ServiceTier,
 ) -> EstimatedUsdCost {
-    let rates = TokenRates::for_model(model, service_tier);
+    let rates = TokenRates::for_model(model, service_tier, input_tokens);
     let cached_input_tokens = cached_input_tokens.min(input_tokens);
     let remaining_input = input_tokens.saturating_sub(cached_input_tokens);
     let cache_write_input_tokens = cache_write_input_tokens.min(remaining_input);
@@ -263,11 +366,11 @@ mod tests {
             ServiceTier::Standard,
         );
 
-        assert_eq!(estimate.input().decimal(), "3.25");
-        assert_eq!(estimate.cached_input().decimal(), "0.125");
-        assert_eq!(estimate.cache_write_input().decimal(), "0.625");
+        assert_eq!(estimate.input().decimal(), "5.2");
+        assert_eq!(estimate.cached_input().decimal(), "0.2");
+        assert_eq!(estimate.cache_write_input().decimal(), "1");
         assert_eq!(estimate.output().decimal(), "6");
-        assert_eq!(estimate.amount().decimal(), "10");
+        assert_eq!(estimate.amount().decimal(), "12.4");
     }
 
     #[test]
@@ -289,8 +392,8 @@ mod tests {
             ServiceTier::Priority,
         );
 
-        assert_eq!(standard.amount().decimal(), "35");
-        assert_eq!(priority.amount().decimal(), "70");
+        assert_eq!(standard.amount().decimal(), "38");
+        assert_eq!(priority.amount().decimal(), "76");
         assert_eq!(priority.service_tier(), ServiceTier::Priority);
         assert_eq!(priority.service_tier().as_str(), "priority");
     }
@@ -310,12 +413,12 @@ mod tests {
         let standard = estimate_for_model(&usage, Model::Luna, ServiceTier::Standard);
         let priority = estimate_for_model(&usage, Model::Luna, ServiceTier::Priority);
 
-        assert_eq!(standard.input().decimal(), "0.14");
-        assert_eq!(standard.cached_input().decimal(), "0.004");
-        assert_eq!(standard.cache_write_input().decimal(), "0.025");
-        assert_eq!(standard.output().decimal(), "1.2");
-        assert_eq!(standard.amount().decimal(), "1.369");
-        assert_eq!(priority.amount().decimal(), "2.738");
+        assert_eq!(standard.input().decimal(), "0.28");
+        assert_eq!(standard.cached_input().decimal(), "0.008");
+        assert_eq!(standard.cache_write_input().decimal(), "0.05");
+        assert_eq!(standard.output().decimal(), "1.8");
+        assert_eq!(standard.amount().decimal(), "2.138");
+        assert_eq!(priority.amount().decimal(), "4.276");
     }
 
     #[test]
@@ -333,12 +436,45 @@ mod tests {
         let standard = estimate_for_model(&usage, Model::Terra, ServiceTier::Standard);
         let priority = estimate_for_model(&usage, Model::Terra, ServiceTier::Priority);
 
-        assert_eq!(standard.input().decimal(), "1.4");
-        assert_eq!(standard.cached_input().decimal(), "0.04");
-        assert_eq!(standard.cache_write_input().decimal(), "0.25");
-        assert_eq!(standard.output().decimal(), "12");
-        assert_eq!(standard.amount().decimal(), "13.69");
-        assert_eq!(priority.amount().decimal(), "27.38");
+        assert_eq!(standard.input().decimal(), "2.8");
+        assert_eq!(standard.cached_input().decimal(), "0.08");
+        assert_eq!(standard.cache_write_input().decimal(), "0.5");
+        assert_eq!(standard.output().decimal(), "18");
+        assert_eq!(standard.amount().decimal(), "21.38");
+        assert_eq!(priority.amount().decimal(), "42.76");
+    }
+
+    #[test]
+    fn astra_rates_include_long_context_and_priority_multipliers() {
+        let standard = estimate_tokens(
+            272_000,
+            100_000,
+            50_000,
+            100_000,
+            Model::Astra,
+            ServiceTier::Standard,
+        );
+        let long_standard = estimate_tokens(
+            272_001,
+            100_000,
+            50_000,
+            100_000,
+            Model::Astra,
+            ServiceTier::Standard,
+        );
+        let long_fast = estimate_tokens(
+            272_001,
+            100_000,
+            50_000,
+            100_000,
+            Model::Astra,
+            ServiceTier::Fast,
+        );
+
+        assert_eq!(standard.amount().decimal(), "6.945");
+        assert_eq!(long_standard.amount().decimal(), "11.39002");
+        assert_eq!(long_fast.amount().decimal(), "22.78004");
+        assert_eq!(long_fast.service_tier(), ServiceTier::Fast);
     }
 
     #[test]
@@ -346,7 +482,7 @@ mod tests {
         let estimate = estimate_tokens(10, 8, 8, 0, Model::Sol, ServiceTier::Standard);
 
         assert_eq!(estimate.input().nano_usd(), 0);
-        assert_eq!(estimate.cached_input().nano_usd(), 4_000);
-        assert_eq!(estimate.cache_write_input().nano_usd(), 12_500);
+        assert_eq!(estimate.cached_input().nano_usd(), 3_200);
+        assert_eq!(estimate.cache_write_input().nano_usd(), 10_000);
     }
 }

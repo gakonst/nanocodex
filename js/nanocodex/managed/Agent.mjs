@@ -27,11 +27,16 @@ const TURN_STATE_POLL_INITIAL_MS = 1_000;
 const TURN_STATE_POLL_MAX_MS = 5_000;
 const TURN_STATE_READ_TIMEOUT_MS = 2_000;
 const ALLOWED_OPTIONS = new Set(["apiKey", "baseUrl", "fetch", "toolsTransport"]);
+const CREATE_SETTINGS = new Set(["model", "thinking", "reasoningMode", "fastMode"]);
+const MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]);
+const THINKING = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
+const REASONING_MODES = new Set(["standard", "pro"]);
 const eventEncoder = new TextEncoder();
 
 /** Create a new managed agent owned by the authenticated account. */
 export async function create(options = {}) {
-  const client = managedClient(options);
+  const { clientOptions, requestBody } = managedCreateOptions(options);
+  const client = managedClient(clientOptions);
   const idempotencyKey = `managed-create:${globalThis.crypto.randomUUID()}`;
   let receipt;
   let failure;
@@ -40,6 +45,7 @@ export async function create(options = {}) {
       receipt = await client.json("/v1/agents", {
         method: "POST",
         idempotencyKey,
+        ...(requestBody === undefined ? {} : { body: requestBody }),
       });
       break;
     } catch (error) {
@@ -60,6 +66,40 @@ export async function create(options = {}) {
   }
   if (!receipt) throw failure;
   return agentHandle(client, requiredString(receipt, "agent_id"));
+}
+
+function managedCreateOptions(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("managed agent options must be an object");
+  }
+  const { settings, ...clientOptions } = options;
+  if (settings === undefined) return { clientOptions, requestBody: undefined };
+  const keys = settings && typeof settings === "object" && !Array.isArray(settings)
+    ? Object.keys(settings)
+    : [];
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)
+      || keys.length !== 4
+      || keys.some((key) => !CREATE_SETTINGS.has(key))
+      || !MODELS.has(settings.model)
+      || !THINKING.has(settings.thinking)
+      || !REASONING_MODES.has(settings.reasoningMode)
+      || typeof settings.fastMode !== "boolean") {
+    throw new TypeError("managed agent creation settings are invalid");
+  }
+  if (settings.model === "gpt-6-astra" && settings.thinking === "none") {
+    throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
+  }
+  return {
+    clientOptions,
+    requestBody: JSON.stringify({
+      settings: {
+        model: settings.model,
+        thinking: settings.thinking,
+        reasoning_mode: settings.reasoningMode,
+        fast_mode: settings.fastMode,
+      },
+    }),
+  };
 }
 
 function createRetryDelayMs(attempt) {

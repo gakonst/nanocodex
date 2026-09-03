@@ -318,7 +318,7 @@ pub struct AgentSettings {
     /// Requested reasoning execution mode.
     #[serde(with = "reasoning_mode_serde")]
     pub reasoning_mode: ReasoningMode,
-    /// Whether subsequently accepted turns use priority processing.
+    /// Whether subsequently accepted turns use model-specific fast processing.
     pub fast_mode: bool,
 }
 
@@ -330,6 +330,22 @@ impl Default for AgentSettings {
             reasoning_mode: ReasoningMode::Standard,
             fast_mode: false,
         }
+    }
+}
+
+impl AgentSettings {
+    pub(crate) fn validate(self) -> Result<Self, ManagedError> {
+        if self.is_valid() {
+            Ok(self)
+        } else {
+            Err(ManagedError::Configuration(
+                "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort".to_owned(),
+            ))
+        }
+    }
+
+    pub(crate) const fn is_valid(&self) -> bool {
+        self.model.supports_thinking(self.thinking)
     }
 }
 
@@ -418,9 +434,15 @@ mod model_serde {
             "gpt-5.6-sol" => Ok(Model::Sol),
             "gpt-5.6-terra" => Ok(Model::Terra),
             "gpt-5.6-luna" => Ok(Model::Luna),
+            "gpt-6-astra" => Ok(Model::Astra),
             value => Err(de::Error::unknown_variant(
                 value,
-                &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+                &[
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                    "gpt-6-astra",
+                ],
             )),
         }
     }
@@ -623,14 +645,14 @@ mod settings_tests {
         );
         assert_eq!(
             serde_json::from_value::<AgentSettings>(json!({
-                "model": "gpt-5.6-terra",
+                "model": "gpt-6-astra",
                 "thinking": "xhigh",
                 "reasoning_mode": "pro",
                 "fast_mode": true
             }))
             .expect("canonical settings should deserialize"),
             AgentSettings {
-                model: Model::Terra,
+                model: Model::Astra,
                 thinking: Thinking::Xhigh,
                 reasoning_mode: ReasoningMode::Pro,
                 fast_mode: true,
@@ -651,12 +673,26 @@ mod settings_tests {
         );
         assert_eq!(
             serde_json::to_value(AgentSettingsPatch {
-                model: Some(Model::Luna),
+                model: Some(Model::Astra),
                 ..AgentSettingsPatch::default()
             })
             .expect("settings patch should serialize"),
-            json!({"model": "gpt-5.6-luna"})
+            json!({"model": "gpt-6-astra"})
         );
+    }
+
+    #[test]
+    fn astra_settings_reject_none_reasoning_before_transport() {
+        let error = AgentSettings {
+            model: Model::Astra,
+            thinking: Thinking::None,
+            reasoning_mode: ReasoningMode::Standard,
+            fast_mode: false,
+        }
+        .validate()
+        .expect_err("Astra must reject none reasoning");
+
+        assert!(error.to_string().contains("GPT-6 Astra requires"));
     }
 }
 

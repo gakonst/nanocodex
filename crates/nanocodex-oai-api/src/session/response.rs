@@ -889,11 +889,7 @@ pub(super) fn estimate_cost(
             Some(crate::pricing::estimate_for_model(
                 usage,
                 model,
-                if fast_mode {
-                    crate::pricing::ServiceTier::Priority
-                } else {
-                    crate::pricing::ServiceTier::Standard
-                },
+                crate::pricing::ServiceTier::for_model(model, fast_mode),
             )),
             crate::CostStatus::EstimatedFromUsage,
         ),

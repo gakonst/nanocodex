@@ -190,7 +190,9 @@ where
         let (response_id, source, attempt, connection_generation, usage, server_reasoning_included) =
             if let Some(execution) = execution {
                 if let Some(usage) = &execution.usage {
-                    self.stats.warmup_usage.add(usage);
+                    self.stats
+                        .warmup_usage
+                        .add(usage, self.model, self.fast_mode);
                 }
                 (
                     Some(execution.response_id),
@@ -458,7 +460,7 @@ where
         self.stats.compaction_duration_ns += duration_ns;
         if let Some(usage) = &usage {
             record_usage(&span, usage, self.model, self.fast_mode);
-            self.stats.usage.add(usage);
+            self.stats.usage.add(usage, self.model, self.fast_mode);
         }
         self.stats.last_response_id = Some(response_id.clone());
         self.events.emit(

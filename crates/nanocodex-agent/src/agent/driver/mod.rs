@@ -3,6 +3,7 @@ mod control;
 mod telemetry;
 
 use super::execution::{AdmittedExecution, ExecutionTurn, QueuedSteer};
+use super::spawn::validate_model_thinking;
 use super::*;
 pub(super) use branch::{AgentOrigin, BranchSpawner};
 pub(super) use control::DriverShutdown;
@@ -309,8 +310,10 @@ where
             } = command
             else {
                 if let Command::SetThinking { thinking, result } = command {
-                    default_thinking = thinking;
-                    drop(result.send(Ok(())));
+                    let outcome = validate_model_thinking(thread_model, thinking).map(|()| {
+                        default_thinking = thinking;
+                    });
+                    drop(result.send(outcome));
                     continue;
                 }
                 if let Command::SetFastMode { enabled, result } = command {
@@ -670,8 +673,14 @@ where
                                         );
                                     }
                                     Some(Command::SetThinking { thinking, result }) => {
-                                        default_thinking = thinking;
-                                        drop(result.send(Ok(())));
+                                        let outcome = validate_model_thinking(
+                                            thread_model,
+                                            thinking,
+                                        )
+                                        .map(|()| {
+                                            default_thinking = thinking;
+                                        });
+                                        drop(result.send(outcome));
                                     }
                                     Some(Command::SetFastMode { enabled, result }) => {
                                         default_fast_mode = enabled;
@@ -902,6 +911,10 @@ where
             let execution_operation = execution_operation.map(ExecutionOperation::into_id);
             let thinking = thinking.unwrap_or(default_thinking);
             let fast_mode = fast_mode.unwrap_or(default_fast_mode);
+            if let Err(error) = validate_model_thinking(thread_model, thinking) {
+                drop(result.send(Err(error)));
+                continue;
+            }
             if cancel_on_admission {
                 queued_turns.push_front(queued_prompt(
                     key,
@@ -1230,8 +1243,14 @@ where
                                 );
                             }
                             Some(Command::SetThinking { thinking, result }) => {
-                                default_thinking = thinking;
-                                drop(result.send(Ok(())));
+                                let outcome = validate_model_thinking(
+                                    thread_model,
+                                    thinking,
+                                )
+                                .map(|()| {
+                                    default_thinking = thinking;
+                                });
+                                drop(result.send(outcome));
                             }
                             Some(Command::SetFastMode { enabled, result }) => {
                                 default_fast_mode = enabled;
@@ -1291,6 +1310,7 @@ where
             };
             drop(execution);
             let mut terminal_failure_committed = false;
+            let mut provider_requires_stop = false;
             let (outcome, was_cancelled, cancellation_persisted): (
                 Result<TurnResult>,
                 bool,
@@ -1368,6 +1388,7 @@ where
                     )
                 }
                 Ok(ModelTurnOutcome::Failed { error, checkpoint }) => {
+                    provider_requires_stop = error_requires_stop(&error);
                     let checkpoint = Arc::new(CommittedSession::new(
                         Arc::clone(&self.spawner.lineage_id),
                         thread_model,
@@ -1404,23 +1425,26 @@ where
                         }
                     }
                 }
-                Err(error) => match error.execution_policy_disposition() {
-                    Some(crate::ExecutionPolicyDisposition::Reopen) => {
-                        (model.emit_terminal("failed").and(Err(error)), false, None)
+                Err(error) => {
+                    provider_requires_stop = error_requires_stop(&error);
+                    match error.execution_policy_disposition() {
+                        Some(crate::ExecutionPolicyDisposition::Reopen) => {
+                            (model.emit_terminal("failed").and(Err(error)), false, None)
+                        }
+                        _ => {
+                            let persisted = self
+                                .execution
+                                .fail_without_checkpoint(execution_turn)
+                                .instrument(turn_span.clone())
+                                .await;
+                            let persisted = match persisted {
+                                Ok(()) => model.emit_terminal("failed"),
+                                Err(error) => model.emit_terminal("failed").and(Err(error)),
+                            };
+                            (persisted.and(Err(error)), false, None)
+                        }
                     }
-                    _ => {
-                        let persisted = self
-                            .execution
-                            .fail_without_checkpoint(execution_turn)
-                            .instrument(turn_span.clone())
-                            .await;
-                        let persisted = match persisted {
-                            Ok(()) => model.emit_terminal("failed"),
-                            Err(error) => model.emit_terminal("failed").and(Err(error)),
-                        };
-                        (persisted.and(Err(error)), false, None)
-                    }
-                },
+                }
             };
             if !commands_open
                 && !terminal_failure_committed
@@ -1458,7 +1482,8 @@ where
                 "otel.status_code",
                 if outcome.is_ok() { "OK" } else { "ERROR" },
             );
-            let mut reopen_after_turn = outcome_requires_reopen(&outcome);
+            let mut reopen_after_turn =
+                requires_reopen_after_turn(provider_requires_stop, &outcome);
             if commands_open && reopen_after_turn {
                 begin_shutdown(
                     &mut self.commands,
@@ -1564,8 +1589,18 @@ fn outcome_requires_reopen<T>(outcome: &Result<T>) -> bool {
         matches!(
             error.execution_policy_disposition(),
             Some(crate::ExecutionPolicyDisposition::Reopen)
-        )
+        ) || error_requires_stop(error)
     })
+}
+
+fn requires_reopen_after_turn<T>(provider_requires_stop: bool, outcome: &Result<T>) -> bool {
+    provider_requires_stop || outcome_requires_reopen(outcome)
+}
+
+fn error_requires_stop(error: &NanocodexError) -> bool {
+    error
+        .responses_error()
+        .is_some_and(|source| source.is_misalignment_policy_violation())
 }
 
 async fn accept_turn_steer(
@@ -1921,4 +1956,33 @@ pub(super) fn agent_session_context(
         .or_else(|| configured_workspace.map(str::to_owned))
         .map_or_else(|| context_source.resolve_workspace(None), Ok)?;
     Ok(AgentSessionContext::new(checkpoint, workspace))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{outcome_requires_reopen, requires_reopen_after_turn};
+    use crate::{NanocodexError, error::ResponsesError};
+    use nanocodex_oai_api::{ResponseError, tower::ResponsesServiceError};
+
+    #[test]
+    fn misalignment_failure_stops_the_agent_session() {
+        let error = NanocodexError::Response(ResponseError::from(ResponsesServiceError::from(
+            ResponsesError::Api {
+                event: serde_json::json!({
+                    "type": "error",
+                    "code": "misalignment_policy_violation",
+                    "message": "stop this conversation"
+                })
+                .to_string(),
+            },
+        )));
+
+        let outcome: crate::Result<()> = Err(error);
+        assert!(outcome_requires_reopen(&outcome));
+
+        let masked: crate::Result<()> = Err(NanocodexError::InvalidExecutionPolicy(
+            "durable failure recording failed".to_owned(),
+        ));
+        assert!(requires_reopen_after_turn(true, &masked));
+    }
 }

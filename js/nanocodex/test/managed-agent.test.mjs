@@ -286,7 +286,16 @@ test("managed Agent covers account-scoped create, list, get, and delete", async 
     }
     return Response.json({ error: "not_found" }, { status: 404 });
   };
-  const options = { baseUrl: origin, fetch };
+  const clientOptions = { baseUrl: origin, fetch };
+  const options = {
+    ...clientOptions,
+    settings: {
+      model: "gpt-6-astra",
+      thinking: "max",
+      reasoningMode: "pro",
+      fastMode: false,
+    },
+  };
 
   const created = await Agent.create(options);
   assert.equal(created.type, "managed");
@@ -295,21 +304,29 @@ test("managed Agent covers account-scoped create, list, get, and delete", async 
   assert.equal(created.toolsTarget().endpoint.href, `wss://managed.example/v1/agents/${agentId}/tool-host`);
   assert.equal(Object.isFrozen(created), true);
   assert.match(calls[0].headers.get("idempotency-key"), /^managed-create:[0-9a-f-]{36}$/);
+  assert.deepEqual(await calls[0].json(), {
+    settings: {
+      model: "gpt-6-astra",
+      thinking: "max",
+      reasoning_mode: "pro",
+      fast_mode: false,
+    },
+  });
 
-  const listed = await Agent.list(options);
+  const listed = await Agent.list(clientOptions);
   assert.deepEqual(listed.map((agent) => agent.id), [agentId]);
   assert.deepEqual(listed[0].summary, {
     title: "First task", createdAt: 10, updatedAt: 20, turnCount: 3,
   });
-  assert.equal(Agent.open(agentId, options).id, agentId);
-  assert.equal((await Agent.get(agentId, options)).id, agentId);
+  assert.equal(Agent.open(agentId, clientOptions).id, agentId);
+  assert.equal((await Agent.get(agentId, clientOptions)).id, agentId);
   const state = await created.state();
   assert.equal(state.latest_event_cursor, "4");
   assert.equal(state.capabilities.execution_environments, true);
   assert.equal(state.capabilities.execution_namespace, "cwd-root-v1");
   assert.equal(state.capabilities.native_cross_mounts, false);
   await created.delete();
-  await Agent.delete(agentId, options);
+  await Agent.delete(agentId, clientOptions);
 
   for (const request of calls) {
     assert.equal(request.credentials, "include");
@@ -341,12 +358,14 @@ test("managed tools target retains bearer only in the injected handshake", async
 
 test("managed Agent retries creation with one stable identity", async () => {
   const keys = [];
+  const bodies = [];
   let attempt = 0;
   const created = await Agent.create({
     baseUrl: origin,
     fetch: async (input, init) => {
       const request = new Request(input, init);
       keys.push(request.headers.get("idempotency-key"));
+      bodies.push(await request.text());
       attempt += 1;
       if (attempt === 1) throw new Error("injected lost response");
       if (attempt === 2) {
@@ -357,12 +376,37 @@ test("managed Agent retries creation with one stable identity", async () => {
       }
       return Response.json({ agent_id: agentId }, { status: 201 });
     },
+    settings: {
+      model: "gpt-6-astra",
+      thinking: "low",
+      reasoningMode: "standard",
+      fastMode: false,
+    },
   });
 
   assert.equal(created.id, agentId);
   assert.equal(attempt, 3);
   assert.equal(new Set(keys).size, 1);
+  assert.equal(new Set(bodies).size, 1);
+  assert.equal(JSON.parse(bodies[0]).settings.model, "gpt-6-astra");
   assert.match(keys[0], /^managed-create:[0-9a-f-]{36}$/);
+});
+
+test("managed Agent rejects incomplete and unsupported Astra creation policy", async () => {
+  const options = { baseUrl: origin, fetch: async () => Response.json({ agent_id: agentId }) };
+  await assert.rejects(Agent.create({
+    ...options,
+    settings: { model: "gpt-6-astra", thinking: "high", reasoningMode: "standard" },
+  }), /creation settings are invalid/);
+  await assert.rejects(Agent.create({
+    ...options,
+    settings: {
+      model: "gpt-6-astra",
+      thinking: "none",
+      reasoningMode: "standard",
+      fastMode: false,
+    },
+  }), /GPT-6 Astra requires low/);
 });
 
 test("managed server authentication sends only an ncx_live bearer and omits cookies", async () => {

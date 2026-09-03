@@ -64,6 +64,7 @@ impl Service<ResponsesAttempt> for ScriptedResponses {
                 name: "lookup_region".into(),
                 namespace: None,
                 arguments: r#"{"region":"iad"}"#.into(),
+                asynchronous: false,
                 encrypted_function_args: None,
                 call_id: "call_region_01".into(),
                 caller: None,

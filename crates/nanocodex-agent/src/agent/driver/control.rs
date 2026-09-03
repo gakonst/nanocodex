@@ -343,8 +343,9 @@ pub(super) fn handle_idle_command<S>(
         Command::Spawn { options, result } => {
             let model = options.model.unwrap_or(defaults.model);
             let thinking = options.thinking.unwrap_or(defaults.thinking);
-            let outcome =
-                spawner.spawn_clean(workspace, session_id, model, thinking, defaults.fast_mode);
+            let outcome = validate_model_thinking(model, thinking).and_then(|()| {
+                spawner.spawn_clean(workspace, session_id, model, thinking, defaults.fast_mode)
+            });
             drop(result.send(outcome));
         }
         Command::SpawnBatch {

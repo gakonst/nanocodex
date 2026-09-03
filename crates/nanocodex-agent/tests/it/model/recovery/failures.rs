@@ -112,6 +112,74 @@ async fn warmup_failure_falls_back_to_a_full_first_request() -> Result<()> {
 }
 
 #[tokio::test]
+async fn warmup_misalignment_stops_the_session_and_queued_work() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_json(
+            &mut socket,
+            json!({
+                "type": "error",
+                "code": "misalignment_policy_violation",
+                "message": "stop this conversation"
+            }),
+        )
+        .await?;
+
+        let next = timeout(std::time::Duration::from_secs(1), socket.next()).await;
+        assert!(
+            !matches!(next, Ok(Some(Ok(Message::Text(_))))),
+            "misalignment warmup must not dispatch generation or queued work"
+        );
+        Result::<()>::Ok(())
+    });
+
+    let workspace = temporary_workspace("warmup-misalignment")?;
+    let openai = OpenAi::builder("test-key")
+        .websocket_url(endpoint)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .model(Model::Astra)
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .build()?;
+    drop(events);
+
+    let first = agent.prompt("trigger monitored warmup").await?;
+    let queued = agent.prompt("must never dispatch").await?;
+    let first_error = first
+        .await
+        .expect_err("misalignment must fail the first turn");
+    assert!(
+        first_error
+            .responses_error()
+            .is_some_and(|error| error.is_misalignment_policy_violation())
+    );
+    let queued_error = queued.await.expect_err("queued work must be fenced");
+    assert!(matches!(
+        queued_error,
+        NanocodexError::TurnCancelled | NanocodexError::AgentStopped
+    ));
+    let later = match agent.prompt("must remain stopped").await {
+        Ok(_) => panic!("misalignment must permanently close admission"),
+        Err(error) => error,
+    };
+    assert!(matches!(later, NanocodexError::AgentStopped));
+
+    agent.shutdown().await?;
+    drop(agent);
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_turn_forces_the_next_turn_to_replay_its_latest_safe_history() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);

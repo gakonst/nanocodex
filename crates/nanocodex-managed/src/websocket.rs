@@ -82,6 +82,7 @@ impl ManagedSocket {
         client: ManagedClient,
         settings: AgentSettings,
     ) -> Result<(AgentReceipt, Self, ManagedSocketEvents), ManagedError> {
+        let settings = settings.validate()?;
         let mut endpoint = client.url("v1/agents/live")?;
         set_websocket_scheme(&mut endpoint)?;
         append_create_settings(&mut endpoint, settings);
@@ -488,6 +489,11 @@ async fn connect_endpoint(
             if ready.kind != "ready" {
                 return Err(live_error("managed WebSocket did not begin with ready"));
             }
+            if !ready.settings.is_valid() {
+                return Err(live_error(
+                    "managed WebSocket ready settings are incompatible",
+                ));
+            }
             if expected_agent_id.is_some_and(|agent_id| ready.session_id != agent_id) {
                 return Err(live_error(
                     "managed WebSocket ready session does not match agent",
@@ -530,7 +536,7 @@ mod tests {
         append_create_settings(
             &mut endpoint,
             AgentSettings {
-                model: Model::Terra,
+                model: Model::Astra,
                 thinking: Thinking::Max,
                 reasoning_mode: ReasoningMode::Pro,
                 fast_mode: true,
@@ -538,7 +544,7 @@ mod tests {
         );
         assert_eq!(
             endpoint.query(),
-            Some("model=gpt-5.6-terra&thinking=max&reasoning_mode=pro&fast_mode=true")
+            Some("model=gpt-6-astra&thinking=max&reasoning_mode=pro&fast_mode=true")
         );
     }
 
@@ -565,14 +571,14 @@ mod tests {
         assert!(serde_json::from_value::<ReadyMessage>(ready.clone()).is_err());
 
         ready["settings"] = json!({
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-astra",
             "thinking": "low",
             "reasoning_mode": "standard",
             "fast_mode": true
         });
         let parsed: ReadyMessage =
             serde_json::from_value(ready).expect("ready settings should deserialize");
-        assert_eq!(parsed.settings.model, Model::Luna);
+        assert_eq!(parsed.settings.model, Model::Astra);
         assert_eq!(parsed.settings.thinking, Thinking::Low);
         assert!(parsed.settings.fast_mode);
         assert_eq!(parsed.capabilities.execution_namespace, "cwd-root-v1");

@@ -2,6 +2,8 @@ export * as Agent from "./Agent.mjs";
 export { ManagedError } from "./ManagedError.mjs";
 export type {
   Agent as ManagedAgent,
+  CreateOptions as ManagedCreateOptions,
+  CreateSettings as ManagedCreateSettings,
   Event as ManagedEvent,
   EventData as ManagedEventData,
   HistoryCitation as ManagedHistoryCitation,

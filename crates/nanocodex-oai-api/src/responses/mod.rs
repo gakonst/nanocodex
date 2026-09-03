@@ -17,7 +17,7 @@ pub use event::{
     CompletedResponse, InputTokenDetails, OutputTokenDetails, ResponseEvent, ServerEvent, Usage,
     WarmupResponse, WarmupServerEvent,
 };
-pub use item::{ResponseItem, ResponseItemId};
+pub use item::{ConfigurationUpdateReasoning, ResponseItem, ResponseItemId};
 #[cfg(feature = "client")]
 pub(crate) use request::{CreatePolicy, ResponseCreate};
 #[cfg(feature = "client")]

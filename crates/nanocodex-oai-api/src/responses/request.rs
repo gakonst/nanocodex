@@ -628,7 +628,15 @@ impl<'a> ResponseCreate<'a> {
             include: ["reasoning.encrypted_content"],
             prompt_cache_key: profile.prompt_cache_key(),
             text: TextControls { verbosity: "low" },
-            service_tier: policy.fast_mode.then_some("priority"),
+            // The API accepts both `fast` and `priority`. Codex currently uses
+            // `priority` as the compatibility request value for Fast mode.
+            // Astra standard mode is explicit so a project-level Fast default
+            // cannot silently change processing or the local cost estimate.
+            service_tier: match (policy.model, policy.fast_mode) {
+                (_, true) => Some("priority"),
+                (crate::Model::Astra, false) => Some("default"),
+                (_, false) => None,
+            },
             generate,
             client_metadata: ClientMetadata {
                 session_id: profile.session_id(),
@@ -890,6 +898,7 @@ mod tests {
             (Model::Sol, "gpt-5.6-sol"),
             (Model::Terra, "gpt-5.6-terra"),
             (Model::Luna, "gpt-5.6-luna"),
+            (Model::Astra, "gpt-6-astra"),
         ] {
             let config = ModelConfig::default();
             let profile = RequestProfile::new("model-agent", "model-lineage", Arc::from([]));
@@ -974,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_mode_selects_priority_service_tier() {
+    fn fast_mode_selects_the_codex_compatible_service_tier() {
         let config = ModelConfig::default();
         let profile = RequestProfile::new("fast-agent", "fast-lineage", Arc::from([]));
         let standard = serde_json::to_value(ResponseCreate::warmup(
@@ -995,9 +1004,19 @@ mod tests {
             None,
         ))
         .expect("fast request should serialize");
-
         assert!(standard.get("service_tier").is_none());
         assert_eq!(fast["service_tier"], json!("priority"));
+
+        let astra_standard = serde_json::to_value(ResponseCreate::warmup(
+            &config,
+            Model::Astra,
+            Thinking::Medium,
+            false,
+            &profile,
+            None,
+        ))
+        .expect("Astra standard request should serialize");
+        assert_eq!(astra_standard["service_tier"], json!("default"));
     }
 
     #[test]

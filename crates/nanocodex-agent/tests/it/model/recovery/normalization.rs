@@ -86,6 +86,7 @@ impl Service<ResponsesAttempt> for UnmatchedToolCallService {
                             name: "lookup".into(),
                             namespace: None,
                             arguments: r#"{"key":"region"}"#.into(),
+                            asynchronous: false,
                             encrypted_function_args: None,
                             call_id: "call-unmatched".into(),
                             caller: None,

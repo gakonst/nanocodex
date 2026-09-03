@@ -1,3 +1,4 @@
+use super::spawn::validate_model_thinking;
 use super::*;
 
 #[cfg(not(target_family = "wasm"))]
@@ -57,6 +58,9 @@ impl<F> NanocodexBuilder<F> {
     #[must_use]
     pub const fn model(mut self, model: Model) -> Self {
         self.config.model = model;
+        if self.config.context_window_tokens > model.max_context_window_tokens() {
+            self.config.context_window_tokens = model.max_context_window_tokens();
+        }
         self
     }
 
@@ -88,18 +92,14 @@ impl<F> NanocodexBuilder<F> {
         self
     }
 
-    /// Sets the GPT-5.6 context window used for accounting and compaction.
+    /// Sets the selected model's context window used for accounting and compaction.
     ///
-    /// Values above the supported family's current 872,000-token maximum are
-    /// clamped. The default remains 272,000 tokens.
+    /// Values above the selected model's advertised maximum are clamped. The
+    /// default remains 272,000 tokens to stay below long-context pricing.
     #[must_use]
     pub const fn context_window_tokens(mut self, tokens: u64) -> Self {
-        self.config.context_window_tokens = if tokens > nanocodex_oai_api::MAX_CONTEXT_WINDOW_TOKENS
-        {
-            nanocodex_oai_api::MAX_CONTEXT_WINDOW_TOKENS
-        } else {
-            tokens
-        };
+        let maximum = self.config.model.max_context_window_tokens();
+        self.config.context_window_tokens = if tokens > maximum { maximum } else { tokens };
         self
     }
 
@@ -344,6 +344,9 @@ where
     <F::Service as Service<ResponsesAttempt>>::Error: Into<ResponseError> + AgentSend + 'static,
     <F::Service as Service<ResponsesAttempt>>::Future: AgentSend,
 {
+    if builder.resume.is_none() {
+        validate_model_thinking(builder.config.model, builder.config.thinking)?;
+    }
     validate(&builder.config, builder.prompt_cache.key.as_deref())?;
     validate_execution_environment(builder.codex.context.execution_environment())?;
     let config = Arc::new(builder.config);
