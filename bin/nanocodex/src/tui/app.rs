@@ -28,7 +28,7 @@ use super::composer::ComposerLayout;
 use super::selection::{
     ScreenSelection, SelectionClick, SelectionScrollDirection, SelectionScrollRequest,
 };
-use super::transcript::{ToolStatus, Transcript, TranscriptItem};
+use super::transcript::{InlineEdit, ToolStatus, Transcript, TranscriptItem};
 
 const MAX_TOOL_ARGUMENT_CHARS: usize = 180;
 const MAX_MULTILINE_TOOL_ARGUMENT_CHARS: usize = 4_000;
@@ -1193,6 +1193,7 @@ pub(super) struct App {
     next_input_id: u64,
     cancel_confirmation: Option<CancelConfirmation>,
     screen_selection: ScreenSelection,
+    pending_link_destination: Option<String>,
     tool_details_expanded: bool,
     fast_mode: bool,
     model: Model,
@@ -1245,6 +1246,7 @@ impl App {
             next_input_id: 1,
             cancel_confirmation: None,
             screen_selection: ScreenSelection::default(),
+            pending_link_destination: None,
             tool_details_expanded: true,
             fast_mode: false,
             model: Model::default(),
@@ -2577,6 +2579,7 @@ impl App {
     }
 
     pub(super) fn begin_mouse_selection(&mut self, position: Position) -> bool {
+        self.pending_link_destination = None;
         let changed = self.screen_selection.begin(position);
         if self.screen_selection.is_active() {
             self.main.scroll_up(0);
@@ -2593,11 +2596,16 @@ impl App {
 
     pub(super) fn finish_mouse_selection(&mut self, position: Position) -> bool {
         let changed = self.screen_selection.finish(position);
-        let clicked = self
-            .screen_selection
-            .take_pending_click()
-            .is_some_and(|click| self.place_composer_cursor(click));
+        let click = self.screen_selection.take_pending_click();
+        self.pending_link_destination = click
+            .as_ref()
+            .and_then(|click| self.transcript_link_destination(*click));
+        let clicked = click.is_some_and(|click| self.place_composer_cursor(click));
         changed || clicked
+    }
+
+    pub(super) fn take_pending_link_destination(&mut self) -> Option<String> {
+        self.pending_link_destination.take()
     }
 
     pub(super) fn clear_mouse_selection(&mut self) -> bool {
@@ -2653,6 +2661,39 @@ impl App {
             conversation.selected_user = None;
         }
         changed
+    }
+
+    fn transcript_link_destination(&self, click: SelectionClick) -> Option<String> {
+        let inline_edit = self.historical_editor_index().map(|index| InlineEdit {
+            index,
+            input: self.input.as_str(),
+            cursor: self.cursor,
+        });
+        let conversation = if click.surface_index == 0 {
+            if let Some(selected) = self.branch_navigator {
+                if selected == self.main_branch_id {
+                    &self.main
+                } else {
+                    self.main_branches
+                        .iter()
+                        .find(|branch| branch.id == selected)
+                        .map_or(&self.main, |branch| &branch.conversation)
+                }
+            } else {
+                &self.main
+            }
+        } else if click.surface_index == 1 {
+            &self.btw.as_ref()?.conversation
+        } else {
+            return None;
+        };
+        conversation.transcript.link_destination_at(
+            click.surface,
+            conversation.display_scroll_from_bottom(),
+            conversation.selected_user,
+            inline_edit.filter(|_| click.surface_index == 0),
+            click.position,
+        )
     }
 
     fn auto_scroll_mouse_selection(&mut self, request: SelectionScrollRequest) {

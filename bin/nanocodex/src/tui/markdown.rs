@@ -21,8 +21,13 @@ use unicode_width::UnicodeWidthStr;
 
 const MAX_HIGHLIGHT_LINE_BYTES: usize = 4 * 1024;
 
+#[cfg(test)]
 pub(super) fn render_agent_markdown(source: &str, width: u16) -> Text<'static> {
-    render_agent_markdown_inner(source, width, None, &[], MathFallback::Source).text
+    render_agent_markdown_layout(source, width).text
+}
+
+pub(super) fn render_agent_markdown_layout(source: &str, width: u16) -> RenderedAgentMarkdown {
+    render_agent_markdown_inner(source, width, None, &[], MathFallback::Source)
 }
 
 #[cfg(test)]
@@ -105,9 +110,17 @@ impl MathFallback {
 
 pub(super) struct RenderedAgentMarkdown {
     pub(super) text: Text<'static>,
+    pub(super) links: Vec<Vec<LinkSpan>>,
     pub(super) formulas: Vec<MarkdownFormula>,
     pub(super) formula_sources: Vec<Arc<str>>,
     pub(super) math_generation: Option<u64>,
+}
+
+#[derive(Clone)]
+pub(super) struct LinkSpan {
+    pub(super) destination: Arc<str>,
+    pub(super) start: u16,
+    pub(super) end: u16,
 }
 
 #[derive(Clone, Default)]
@@ -883,7 +896,7 @@ fn marker_is_delimiter(bytes: &[u8], index: usize, run: usize) -> bool {
 struct MarkdownWriter<'a> {
     width: u16,
     lines: Vec<Line<'static>>,
-    current: Vec<Span<'static>>,
+    current: Vec<TaggedSpan>,
     styles: Vec<Style>,
     lists: Vec<ListState>,
     pending_item_prefix: Option<String>,
@@ -891,11 +904,18 @@ struct MarkdownWriter<'a> {
     code_block: Option<CodeBlock>,
     table: Option<TableState>,
     image: Option<MarkdownImage>,
+    links: Vec<Arc<str>>,
+    rendered_links: Vec<(usize, LinkSpan)>,
     formulas: &'a [MarkdownMath],
     renderer: Option<&'a Ratatex>,
     previous_formulas: &'a [StreamingFormulaFrame],
     math_fallback: MathFallback,
     rendered_formulas: Vec<MarkdownFormula>,
+}
+
+struct TaggedSpan {
+    span: Span<'static>,
+    link: Option<Arc<str>>,
 }
 
 struct ListState {
@@ -945,6 +965,8 @@ impl<'a> MarkdownWriter<'a> {
             code_block: None,
             table: None,
             image: None,
+            links: Vec::new(),
+            rendered_links: Vec::new(),
             formulas,
             renderer,
             previous_formulas,
@@ -1043,20 +1065,27 @@ impl<'a> MarkdownWriter<'a> {
             Event::Start(Tag::Emphasis) => {
                 self.push_style(Style::default().add_modifier(Modifier::ITALIC));
             }
-            Event::End(
-                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link,
-            ) => self.pop_style(),
+            Event::End(TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough) => {
+                self.pop_style();
+            }
+            Event::End(TagEnd::Link) => {
+                self.pop_style();
+                let _ = self.links.pop();
+            }
             Event::Start(Tag::Strong) => {
                 self.push_style(Style::default().add_modifier(Modifier::BOLD));
             }
             Event::Start(Tag::Strikethrough) => {
                 self.push_style(Style::default().add_modifier(Modifier::CROSSED_OUT));
             }
-            Event::Start(Tag::Link { .. }) => self.push_style(
-                Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::UNDERLINED),
-            ),
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                self.links.push(Arc::from(dest_url.into_string()));
+                self.push_style(
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::UNDERLINED),
+                );
+            }
             Event::Start(Tag::Image { title, .. }) => {
                 self.flush_current();
                 self.image = Some(MarkdownImage {
@@ -1072,7 +1101,7 @@ impl<'a> MarkdownWriter<'a> {
                         .add_modifier(Modifier::DIM),
                 );
                 self.ensure_prefix();
-                self.current.push(Span::styled(code.into_string(), style));
+                self.push_current(Span::styled(code.into_string(), style));
             }
             Event::Rule => {
                 self.flush_current();
@@ -1157,8 +1186,7 @@ impl<'a> MarkdownWriter<'a> {
         while let Some(part) = parts.next() {
             if !part.is_empty() {
                 self.ensure_prefix();
-                self.current
-                    .push(Span::styled(part.to_owned(), self.current_style()));
+                self.push_current(Span::styled(part.to_owned(), self.current_style()));
             }
             if parts.peek().is_some() {
                 self.flush_current();
@@ -1178,7 +1206,7 @@ impl<'a> MarkdownWriter<'a> {
         let column = self
             .current
             .iter()
-            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .map(|span| UnicodeWidthStr::width(span.span.content.as_ref()))
             .sum::<usize>()
             .min(usize::from(u16::MAX)) as u16;
         let max_columns = self.width.saturating_sub(column).max(1);
@@ -1238,8 +1266,7 @@ impl<'a> MarkdownWriter<'a> {
             if reserved <= self.width.saturating_sub(column) {
                 let formula_column =
                     column.saturating_add(reserved.saturating_sub(formula.columns()) / 2);
-                self.current
-                    .push(Span::raw(" ".repeat(usize::from(reserved))));
+                self.push_current(Span::raw(" ".repeat(usize::from(reserved))));
                 self.rendered_formulas.push(MarkdownFormula {
                     index,
                     formula,
@@ -1318,25 +1345,24 @@ impl<'a> MarkdownWriter<'a> {
         if !self.current.is_empty() {
             return;
         }
-        self.current.push(Span::raw("  "));
+        self.push_unlinked(Span::raw("  "));
         if self.quote_depth > 0 {
-            self.current.push(Span::styled(
+            self.push_unlinked(Span::styled(
                 "│ ".repeat(self.quote_depth),
                 Style::default().fg(Color::DarkGray),
             ));
         }
         if let Some(prefix) = self.pending_item_prefix.take() {
             let indent = "  ".repeat(self.lists.len().saturating_sub(1));
-            self.current.push(Span::raw(indent));
-            self.current
-                .push(Span::styled(prefix, Style::default().fg(Color::Green)));
+            self.push_unlinked(Span::raw(indent));
+            self.push_unlinked(Span::styled(prefix, Style::default().fg(Color::Green)));
         }
     }
 
     fn current_width(&self) -> u16 {
         self.current
             .iter()
-            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .map(|span| UnicodeWidthStr::width(span.span.content.as_ref()))
             .sum::<usize>()
             .min(usize::from(u16::MAX)) as u16
     }
@@ -1345,8 +1371,51 @@ impl<'a> MarkdownWriter<'a> {
         if self.current.is_empty() {
             return;
         }
-        self.lines
-            .push(Line::from(std::mem::take(&mut self.current)));
+        let line = self.lines.len();
+        let mut column = 0_u16;
+        for tagged in &self.current {
+            let width = u16::try_from(UnicodeWidthStr::width(tagged.span.content.as_ref()))
+                .unwrap_or(u16::MAX);
+            if let Some(destination) = &tagged.link
+                && width > 0
+            {
+                let end = column.saturating_add(width);
+                if let Some(last) = self.rendered_links.last_mut()
+                    && last.0 == line
+                    && last.1.destination == *destination
+                    && last.1.end == column
+                {
+                    last.1.end = end;
+                } else {
+                    self.rendered_links.push((
+                        line,
+                        LinkSpan {
+                            destination: Arc::clone(destination),
+                            start: column,
+                            end,
+                        },
+                    ));
+                }
+            }
+            column = column.saturating_add(width);
+        }
+        self.lines.push(Line::from(
+            std::mem::take(&mut self.current)
+                .into_iter()
+                .map(|tagged| tagged.span)
+                .collect::<Vec<_>>(),
+        ));
+    }
+
+    fn push_current(&mut self, span: Span<'static>) {
+        self.current.push(TaggedSpan {
+            span,
+            link: self.links.last().cloned(),
+        });
+    }
+
+    fn push_unlinked(&mut self, span: Span<'static>) {
+        self.current.push(TaggedSpan { span, link: None });
     }
 
     fn blank_line(&mut self) {
@@ -1521,8 +1590,15 @@ impl<'a> MarkdownWriter<'a> {
             let _ = self.lines.pop();
         }
         self.lines.push(Line::raw(""));
+        let mut links = vec![Vec::new(); self.lines.len()];
+        for (line, link) in self.rendered_links {
+            if let Some(line_links) = links.get_mut(line) {
+                line_links.push(link);
+            }
+        }
         RenderedAgentMarkdown {
             text: Text::from(self.lines),
+            links,
             formulas: self.rendered_formulas,
             formula_sources: self
                 .formulas

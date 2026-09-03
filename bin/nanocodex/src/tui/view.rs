@@ -1008,6 +1008,43 @@ mod tests {
     }
 
     #[test]
+    fn clicking_rendered_markdown_link_preserves_drag_selection() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.main.transcript.push(TranscriptItem::Assistant(
+            "[documentation](https://example.com/docs)".to_owned(),
+        ));
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let (column, row) = (0..buffer.area.height)
+            .find_map(|row| {
+                (0..buffer.area.width).find_map(|column| {
+                    let end = column.saturating_add(13);
+                    (end <= buffer.area.width
+                        && (column..end)
+                            .map(|x| buffer[(x, row)].symbol())
+                            .collect::<String>()
+                            == "documentation")
+                        .then_some((column, row))
+                })
+            })
+            .expect("rendered link should be visible");
+
+        assert!(app.begin_mouse_selection((column, row).into()));
+        assert!(app.finish_mouse_selection((column, row).into()));
+        assert_eq!(
+            app.take_pending_link_destination().as_deref(),
+            Some("https://example.com/docs")
+        );
+
+        assert!(app.begin_mouse_selection((column, row).into()));
+        assert!(app.drag_mouse_selection((column.saturating_add(3), row).into()));
+        assert!(app.finish_mouse_selection((column.saturating_add(3), row).into()));
+        assert!(app.take_pending_link_destination().is_none());
+    }
+
+    #[test]
     fn clicking_then_selecting_a_rendered_formula_copies_its_latex() {
         let (wake_tx, wake_rx) = mpsc::sync_channel(1);
         let cache = tempfile::tempdir().unwrap();

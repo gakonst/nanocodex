@@ -2580,6 +2580,10 @@ fn handle_terminal_event(
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 let changed = app.finish_mouse_selection((mouse.column, mouse.row).into());
+                if let Some(destination) = app.take_pending_link_destination() {
+                    open_link(&destination);
+                    return Ok(TerminalAction::Redraw);
+                }
                 Ok(if changed {
                     TerminalAction::Redraw
                 } else {
@@ -3349,6 +3353,12 @@ fn open_browser(url: &str) -> Result<()> {
         .spawn()
         .wrap_err("browser launcher failed")?;
     Ok(())
+}
+
+fn open_link(destination: &str) {
+    if let Err(error) = open_browser(destination) {
+        tracing::warn!(%error, %destination, "failed to open Markdown link");
+    }
 }
 
 #[cfg(target_os = "macos")]
