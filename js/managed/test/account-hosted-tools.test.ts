@@ -1,5 +1,9 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import {
+  EXEC_COMMAND_PARAMETERS,
+  EXECUTION_OUTPUT_SCHEMA,
+} from "nanocodex-tools/execution-contract";
 
 import {
   AccountHostedTools,
@@ -11,13 +15,13 @@ const ACCOUNT_B = "22222222-2222-4222-8222-222222222222";
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 
 const snapshot = {
-  route_token: "route-token-a",
   tools: [{
     provider: "fixture",
     remote_name: "lookup",
     parallel_safe: true,
     summary: "Fixture lookup",
     timeout_ms: 10_000,
+    route_token: "route-token-a",
     definition: {
       type: "function" as const,
       name: "fixture__lookup",
@@ -28,14 +32,87 @@ const snapshot = {
     },
   }],
   machines: [{
-    id: "laptop",
-    name: "Build laptop",
-    workspace: "/work/nanocodex",
-    capabilities: ["filesystem", "native-shell"],
+    machine: {
+      id: "laptop",
+      name: "Build laptop",
+      workspace: "/work/nanocodex",
+      capabilities: ["filesystem", "native-shell"],
+    },
+    tools: [{
+      name: "exec_command" as const,
+      parallel_safe: true,
+      route_token: "machine-route-token-a",
+    }],
   }],
 };
 
 describe("account Hosted Tools provider", () => {
+  it("routes ten simultaneous account hands by machine identity", async () => {
+    const namespace = (env as unknown as {
+      NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
+    }).NANOCODEX_ACCOUNT_TOOLS;
+    const stub = namespace.getByName(ACCOUNT_A);
+    const sockets = await Promise.all(Array.from({ length: 10 }, async (_, index) => {
+      const id = `hand-${index}`;
+      const upgraded = await stub.fetch("https://account-tools.internal/tool-host", {
+        headers: { upgrade: "websocket", "x-nanocodex-owner-id": ACCOUNT_A },
+      });
+      expect(upgraded.status).toBe(101);
+      const socket = upgraded.webSocket!;
+      socket.accept();
+      const ready = nextFrame(socket);
+      socket.send(JSON.stringify({
+        type: "catalog",
+        attachment_id: id,
+        tools: [machineEntry()],
+        machines: [{
+          id,
+          name: `Hand ${index}`,
+          workspace: `/workspace/${index}`,
+          capabilities: ["shell", "vm"],
+        }],
+      }));
+      await expect(ready).resolves.toEqual({ type: "ready" });
+      return socket;
+    }));
+
+    const provider = new AccountHostedToolsProvider(namespace, ACCOUNT_A, () => true);
+    await provider.refresh();
+    expect(provider.machines().map(({ id }) => id)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `hand-${index}`),
+    );
+
+    const outputs = await Promise.all(sockets.map(async (socket, index) => {
+      const id = `hand-${index}`;
+      const call = nextFrame(socket);
+      const result = provider.machineTool(id, "exec_command")!.handler(
+        { cmd: "pwd", workdir: `/workspace/${index}` },
+        { sessionId: `agent-${index % 2}`, callId: `call-${index}` },
+      );
+      const frame = await call;
+      expect(frame).toMatchObject({ type: "call", name: "exec_command" });
+      socket.send(JSON.stringify({
+        type: "result",
+        call_id: frame.call_id,
+        outcome: {
+          status: "completed",
+          output: {
+            output: `from ${id}`,
+            success: true,
+            structured_result: { exit_code: 0 },
+            metadata: null,
+            process_trace: null,
+          },
+        },
+      }));
+      return result;
+    }));
+    expect(outputs.map((output) => (output as { output: string }).output)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `from hand-${index}`),
+    );
+    for (const socket of sockets) socket.close(1000, "test complete");
+  });
+
   it("keeps one live durable socket routable for calls from two agents", async () => {
     const namespace = (env as unknown as {
       NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
@@ -53,11 +130,11 @@ describe("account Hosted Tools provider", () => {
     const ready = nextFrame(socket);
     socket.send(JSON.stringify({
       type: "catalog",
-      tools: snapshot.tools.map(({ definition, ...entry }) => ({
+      tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
       })),
-      machines: snapshot.machines,
+      attachment_id: "fixture",
     }));
     await expect(ready).resolves.toEqual({ type: "ready" });
 
@@ -69,9 +146,9 @@ describe("account Hosted Tools provider", () => {
     const durableBody = await durableSnapshot.json<typeof snapshot>();
     expect(durableBody).toMatchObject({
       tools: [{ definition: { name: "fixture__lookup" } }],
-      machines: snapshot.machines,
+      machines: [],
     });
-    expect(typeof durableBody.route_token).toBe("string");
+    expect(typeof durableBody.tools[0]!.route_token).toBe("string");
     const forbidden = await stub.fetch("https://account-tools.internal/snapshot", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -91,7 +168,7 @@ describe("account Hosted Tools provider", () => {
           session_id: sessionId,
           call_id: callId,
           model: "fixture-model",
-          route_token: durableBody.route_token,
+          route_token: durableBody.tools[0]!.route_token,
         }),
       });
       const frame = await call;
@@ -123,11 +200,11 @@ describe("account Hosted Tools provider", () => {
     const successorReady = nextFrame(successor);
     successor.send(JSON.stringify({
       type: "catalog",
-      tools: snapshot.tools.map(({ definition, ...entry }) => ({
+      tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
       })),
-      machines: snapshot.machines,
+      attachment_id: "fixture",
     }));
     await successorReady;
     const stale = await stub.fetch("https://account-tools.internal/invoke", {
@@ -140,7 +217,7 @@ describe("account Hosted Tools provider", () => {
         session_id: "agent-a",
         call_id: "stale-call",
         model: "fixture-model",
-        route_token: durableBody.route_token,
+        route_token: durableBody.tools[0]!.route_token,
       }),
     });
     expect(stale.status).toBe(409);
@@ -176,7 +253,7 @@ describe("account Hosted Tools provider", () => {
 
     expect(snapshotLoads).toBe(1);
     expect(provider.definitions()).toEqual([snapshot.tools[0]!.definition]);
-    expect(provider.machines()).toEqual(snapshot.machines);
+    expect(provider.machines()).toEqual(snapshot.machines.map(({ machine }) => machine));
     const tool = provider.resolve("fixture__lookup")!;
     const [left, right] = await Promise.all([
       tool.handler({}, {
@@ -213,6 +290,23 @@ describe("account Hosted Tools provider", () => {
     expect(owned.definitions()).toEqual([]);
     expect(owned.machines()).toEqual([]);
     expect(requested).toContain(ACCOUNT_B);
+  });
+
+  it("fails closed for malformed snapshots and duplicate public tool names", async () => {
+    const malformed = [
+      null,
+      {
+        tools: [snapshot.tools[0], snapshot.tools[0], snapshot.tools[0]],
+        machines: [],
+      },
+    ];
+    for (const body of malformed) {
+      const namespace = fakeNamespace(new Map([[ACCOUNT_A, async () => Response.json(body)]]));
+      const provider = new AccountHostedToolsProvider(namespace, ACCOUNT_A, () => true);
+      await expect(provider.refresh()).resolves.toBeUndefined();
+      expect(provider.definitions()).toEqual([]);
+      expect(provider.machines()).toEqual([]);
+    }
   });
 
   it("pins invocation to the discovered catalog and brands truncated results ambiguous", async () => {
@@ -272,4 +366,22 @@ function nextFrame(socket: WebSocket): Promise<Record<string, unknown>> {
     socket.addEventListener("message", onMessage);
     socket.addEventListener("error", onError);
   });
+}
+
+function machineEntry() {
+  return {
+    provider: "machine",
+    remote_name: "exec_command",
+    definition: {
+      type: "function" as const,
+      name: "exec_command",
+      description: "Canonical machine exec_command",
+      strict: false,
+      parameters: EXEC_COMMAND_PARAMETERS,
+      output_schema: EXECUTION_OUTPUT_SCHEMA,
+    },
+    parallel_safe: true,
+    summary: "Machine exec_command",
+    timeout_ms: 30_000,
+  };
 }

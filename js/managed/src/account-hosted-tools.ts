@@ -70,7 +70,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   constructor(ctx: DurableObjectState, env: AccountHostedToolsEnv) {
     super(ctx, env);
-    this.#broker = new HostedToolsBroker(ctx);
+    this.#broker = new HostedToolsBroker(ctx, { resumeRetainedSockets: true });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -197,7 +197,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   #candidates: readonly HostedToolsCatalogCandidate[] = [];
   #machines: readonly HostedMachine[] = [];
   #tools = new Map<string, RoutedHostedTool>();
-  #machineTools = new Map<string, RoutedHostedTool>();
+  #machineTools = new Map<string, HostedToolsCodeTool>();
   #validator: HostedToolsCatalogValidator | undefined;
   #refreshing?: Promise<void>;
   #loaded = false;
@@ -268,13 +268,13 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       this.#publish({ tools: [], machines: [] });
       return;
     }
-    let snapshot: AccountHostedToolsSnapshot;
-    try { snapshot = await response.json<AccountHostedToolsSnapshot>(); }
+    let snapshot: unknown;
+    try { snapshot = await response.json<unknown>(); }
     catch {
       this.#publish({ tools: [], machines: [] });
       return;
     }
-    if (!Array.isArray(snapshot.tools) || !Array.isArray(snapshot.machines)) {
+    if (!validSnapshot(snapshot)) {
       this.#publish({ tools: [], machines: [] });
       return;
     }
@@ -284,7 +284,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         return;
       }
     } catch {
-      this.#publish({ tools: [], machines: [], route_token: null });
+      this.#publish({ tools: [], machines: [] });
       return;
     }
     this.#publish(snapshot);
@@ -294,10 +294,6 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     const tools = new Map<string, RoutedHostedTool>();
     for (const entry of snapshot.tools) {
       const definition = entry.definition;
-      if (tools.has(definition.name)) {
-        tools.delete(definition.name);
-        continue;
-      }
       const tool: RoutedHostedTool = {
         name: definition.name,
         parallelSafe: entry.parallel_safe,
@@ -318,16 +314,13 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       .filter((definition) => tools.has(definition.name)));
     this.#candidates = Object.freeze(snapshot.tools
       .filter((entry) => tools.has(entry.definition.name)));
-    const machineTools = new Map<string, RoutedHostedTool>();
+    const machineTools = new Map<string, HostedToolsCodeTool>();
     for (const entry of snapshot.machines) {
       for (const route of entry.tools) {
         machineTools.set(machineToolKey(entry.machine.id, route.name), Object.freeze({
           name: route.name,
           parallelSafe: route.parallel_safe,
           routeToken: route.route_token,
-          provider: "account-hand",
-          remoteName: route.name,
-          timeoutMs: 10_000,
           handler: (
             input: unknown,
             context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
@@ -400,6 +393,35 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
 
 function machineToolKey(machineId: string, name: HostedMachineToolName): string {
   return `${machineId}\u0000${name}`;
+}
+
+function validSnapshot(snapshot: unknown): snapshot is AccountHostedToolsSnapshot {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const candidate = snapshot as Partial<AccountHostedToolsSnapshot>;
+  if (!Array.isArray(candidate.tools) || !Array.isArray(candidate.machines)) return false;
+  const toolNames = new Set<string>();
+  for (const entry of candidate.tools) {
+    if (!entry || typeof entry !== "object" || typeof entry.route_token !== "string"
+      || !entry.definition || typeof entry.definition.name !== "string"
+      || toolNames.has(entry.definition.name)) return false;
+    toolNames.add(entry.definition.name);
+  }
+  const machineIds = new Set<string>();
+  for (const entry of candidate.machines) {
+    if (!entry || typeof entry !== "object" || !entry.machine
+      || typeof entry.machine.id !== "string" || machineIds.has(entry.machine.id)
+      || !Array.isArray(entry.tools)) return false;
+    machineIds.add(entry.machine.id);
+    const names = new Set<HostedMachineToolName>();
+    for (const tool of entry.tools) {
+      if (!HOSTED_MACHINE_TOOL_NAMES.includes(tool?.name)
+        || names.has(tool.name)
+        || typeof tool.parallel_safe !== "boolean"
+        || typeof tool.route_token !== "string") return false;
+      names.add(tool.name);
+    }
+  }
+  return true;
 }
 
 async function ownerFromBody(request: Request): Promise<string | undefined> {

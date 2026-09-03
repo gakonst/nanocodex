@@ -9,6 +9,12 @@
 #[allow(dead_code)]
 mod config;
 mod host;
+#[allow(dead_code)]
+mod installation;
+#[allow(dead_code)]
+mod skill;
+#[allow(dead_code, unused_imports)]
+mod tui;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
     all(target_os = "macos", target_arch = "aarch64")
@@ -20,12 +26,6 @@ mod vm_hand;
 )))]
 #[path = "vm_hand_unsupported.rs"]
 mod vm_hand;
-#[allow(dead_code)]
-mod installation;
-#[allow(dead_code)]
-mod skill;
-#[allow(dead_code, unused_imports)]
-mod tui;
 
 use std::{
     env,
@@ -43,12 +43,9 @@ use nanocodex_managed::{
 };
 use nanocodex_tools::{
     Tools, WorkspaceTools,
-    attachment::{
-        Attachment, AttachmentError, AttachmentEvents, AttachmentMetadata, AttachmentTarget,
-    },
+    attachment::{Attachment, AttachmentMetadata, AttachmentTarget},
 };
 use percent_encoding::percent_decode_str;
-use tokio::time::{Duration, sleep};
 use url::Url;
 
 const MANAGED_URL_ENV: &str = "NANOCODEX_MANAGED_URL";
@@ -294,7 +291,7 @@ async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), Mana
     let target = client.account_attachment_target()?;
     let hand = vm_hand::VmHand::start(&command).await?;
     let connected = connect_vm_hand(&hand, target).await;
-    let (attachment, _events) = match connected {
+    let attachment = match connected {
         Ok(Some(attachment)) => attachment,
         Ok(None) => {
             hand.shutdown().await?;
@@ -343,39 +340,21 @@ async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), Mana
 async fn connect_vm_hand(
     hand: &vm_hand::VmHand,
     target: AttachmentTarget,
-) -> Result<Option<(Attachment, AttachmentEvents)>, ManagedError> {
-    let mut backoff = Duration::from_millis(100);
-    loop {
-        let connector = hand
-            .tools()
-            .attach(target.clone())
-            .metadata(AttachmentMetadata::machine(hand.machine().clone()));
-        let connected = tokio::select! {
-            signal = tokio::signal::ctrl_c() => {
-                signal.map_err(|error| ManagedError::Configuration(
-                    format!("failed to listen for Ctrl-C: {error}")
-                ))?;
-                return Ok(None);
-            }
-            connected = connector.connect() => connected,
-        };
-        match connected {
-            Ok(attachment) => return Ok(Some(attachment)),
-            Err(AttachmentError::Transport(_) | AttachmentError::Closed) => {
-                eprintln!("VM hand could not reach the managed cluster; retrying");
-                tokio::select! {
-                    signal = tokio::signal::ctrl_c() => {
-                        signal.map_err(|error| ManagedError::Configuration(
-                            format!("failed to listen for Ctrl-C: {error}")
-                        ))?;
-                        return Ok(None);
-                    }
-                    () = sleep(backoff) => {}
-                }
-                backoff = backoff.saturating_mul(2).min(Duration::from_secs(5));
-            }
-            Err(error) => return Err(ManagedError::Configuration(error.to_string())),
+) -> Result<Option<Attachment>, ManagedError> {
+    let connector = hand
+        .tools()
+        .attach(target)
+        .metadata(AttachmentMetadata::machine(hand.machine().clone()));
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal.map_err(|error| ManagedError::Configuration(
+                format!("failed to listen for Ctrl-C: {error}")
+            ))?;
+            Ok(None)
         }
+        connected = connector.connect() => connected
+            .map(|(attachment, _events)| Some(attachment))
+            .map_err(|error| ManagedError::Configuration(error.to_string())),
     }
 }
 

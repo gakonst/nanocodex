@@ -122,7 +122,6 @@ class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
         JSON.stringify(hostedToolsAmbiguous("Hosted Tools lifecycle restarted after dispatch")),
         now,
       );
-      for (const state of retired) this.clearHost(state.lease_id!, state.generation);
       return retired;
     });
   }

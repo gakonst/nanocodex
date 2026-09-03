@@ -2,8 +2,9 @@
 
 `nanocodex2 hand` registers one retained libkrun VM as an account-scoped
 execution hand. Any hosted agent in the account can use the VM through the
-standard `exec_command`, `write_stdin`, `apply_patch`, and `view_image`
-contracts over the existing outbound Hosted Tools WebSocket.
+standard `exec_command` and `write_stdin` process contracts over the existing
+outbound Hosted Tools WebSocket. The logical cwd selects the hand; inside the
+selected VM it is translated to that hand's native workspace.
 
 ```bash
 just build-vm-guest

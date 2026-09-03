@@ -717,6 +717,36 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(host.closed).toMatchObject({ code: 1008, reason: expect.stringContaining("unknown_message") });
     expect(host.sent).toEqual([]);
   });
+
+  it("resumes every exact live route after a hibernating owner wakes", async () => {
+    const fixture = createFixture();
+    const left = fixture.socket();
+    const right = fixture.socket();
+    await fixture.broker.message(left.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "machine-a",
+      tools: [machineEntry("exec_command")],
+      machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
+    }));
+    await fixture.broker.message(right.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "machine-b",
+      tools: [machineEntry("exec_command")],
+      machines: [{ id: "machine-b", name: "Machine B", workspace: "/b", capabilities: ["shell"] }],
+    }));
+
+    const resumed = new HostedToolsBroker(fixture.context, {
+      persistence: fixture.persistence,
+      now: () => NOW,
+      resumeRetainedSockets: true,
+    });
+
+    expect(resumed.machines().map(({ id }) => id)).toEqual(["machine-a", "machine-b"]);
+    expect(left.closed).toBeUndefined();
+    expect(right.closed).toBeUndefined();
+    expect(resumed.machineTool("machine-a", "exec_command")).toBeDefined();
+    expect(resumed.machineTool("machine-b", "exec_command")).toBeDefined();
+  });
 });
 
 function createFixture(
@@ -742,6 +772,7 @@ function createFixture(
   });
   return {
     broker,
+    context,
     persistence,
     socket(
       allowedMcpIds?: readonly string[],
@@ -801,7 +832,11 @@ class MemoryPersistence implements HostedToolsBrokerPersistence {
     return this.routes.get("user:$legacy")!;
   }
 
-  initialize(_now: number): readonly State[] { return []; }
+  initialize(_now: number): readonly State[] {
+    return [...this.routes.values()]
+      .filter((state) => state.lease_id !== null)
+      .map((state) => structuredClone(state));
+  }
   transaction<T>(callback: () => T): T { return callback(); }
   states(): readonly State[] { return [...this.routes.values()].map((row) => structuredClone(row)); }
   state(routeId: string): State | undefined {

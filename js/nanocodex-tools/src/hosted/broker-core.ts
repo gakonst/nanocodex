@@ -220,6 +220,8 @@ export type HostedToolsBrokerCoreOptions = Readonly<{
   maxInFlight?: number;
   maxCallsPerGeneration?: number;
   persistence: HostedToolsBrokerPersistence;
+  /** Resume exact live hibernated sockets instead of forcing every route to reconnect. */
+  resumeRetainedSockets?: boolean;
   onCatalogChanged?: (definitions: readonly HostedToolsProviderDefinition[]) => void;
   entryAllowed?: (
     entry: HostedToolCatalogEntry,
@@ -265,17 +267,26 @@ export class HostedToolsBrokerCore {
     this.#persistence = options.persistence;
     this.#onCatalogChanged = options.onCatalogChanged;
     this.#entryAllowed = options.entryAllowed ?? (() => true);
-    const retired = this.#persistence.initialize(this.#now());
+    const now = this.#now();
+    const sockets = this.context.sockets();
+    const retainHosts = options.resumeRetainedSockets === true && sockets.length > 0;
+    const retained = this.#persistence.initialize(now);
     this.#nextCandidateGeneration = Math.max(0, ...this.#persistence.states().map((state) => state.generation));
-    for (const socket of this.context.sockets()) {
+    for (const socket of sockets) {
       const generation = this.#attachment(socket)?.generation;
       if (generation !== undefined) this.#nextCandidateGeneration = Math.max(this.#nextCandidateGeneration, generation);
     }
-    for (const state of retired) {
+    for (const state of retained) {
       if (!state.lease_id) continue;
-      for (const socket of this.context.sockets()) {
+      const resumed = retainHosts
+        && state.lease_expires_at > now
+        && this.#routingSocketForState(state) !== undefined;
+      if (resumed) continue;
+      this.#persistence.clearHost(state.lease_id, state.generation);
+      for (const socket of sockets) {
         const attachment = this.#attachment(socket);
-        if (attachment?.leaseId !== state.lease_id
+        if (attachment?.routeId !== state.route_id
+          || attachment.leaseId !== state.lease_id
           || attachment.generation !== state.generation) continue;
         closeSocket(socket, 1012, "Hosted Tools owner restarted");
       }
