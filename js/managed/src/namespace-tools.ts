@@ -103,6 +103,7 @@ export function createNamespaceExecutionRuntime(
       description: "Run a command on the hand that owns the root of workdir. workdir is a logical namespace path returned by mount or listed by accountInfo, such as /repo-test/repo or /laptop/repo. No execution hand is attached by default.",
       parameters: EXEC_COMMAND_PARAMETERS,
       outputSchema: EXECUTION_OUTPUT_SCHEMA,
+      supportsParallelToolCalls: true,
       handler: async (input, context) => {
         const value = record(input);
         const workdir = optionalString(value.workdir, "workdir");

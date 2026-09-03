@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
+// @ts-expect-error The runtime subpath is intentionally JavaScript-only.
+import { ToolRouter, toolMapSource } from "nanocodex-tools/runtime/tool-router";
 
 import {
   createNamespaceExecutionRuntime,
@@ -79,6 +81,34 @@ describe("cwd-root namespace execution", () => {
       yield_time_ms: 30_000,
     }, expect.anything());
     expect(resolve).toHaveBeenCalledWith("laptop", "exec_command");
+  });
+
+  it("lets the real tool router dispatch separate hands concurrently", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const exec = vi.fn(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      active -= 1;
+      return { output: "ok", wall_time_seconds: 0.025, exit_code: 0 };
+    });
+    const tools = createRuntimeNamespaceExecutionTools(
+      () => [
+        { id: "hand-a", workspace: "/workspace" },
+        { id: "hand-b", workspace: "/workspace" },
+      ],
+      (_id, name) => name === "exec_command" ? { handler: exec } : undefined,
+    );
+    const router = new ToolRouter([toolMapSource("namespace", tools)]);
+
+    await Promise.all([
+      router.execute("exec_command", { cmd: "one", workdir: "/hand-a" }, context({ callId: "one" })),
+      router.execute("exec_command", { cmd: "two", workdir: "/hand-b" }, context({ callId: "two" })),
+    ]);
+
+    expect(tools.exec_command!.supportsParallelToolCalls).toBe(true);
+    expect(maxActive).toBe(2);
   });
 
   it("captures one immutable machine binding per Code Mode cell", async () => {
