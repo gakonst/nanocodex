@@ -1,4 +1,8 @@
 import { namedTool } from "./namedTool.mjs";
+import {
+  EXEC_COMMAND_PARAMETERS,
+  EXECUTION_OUTPUT_SCHEMA,
+} from "./execution-contract.mjs";
 
 const DEFAULT_EXECUTION_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_ENTRIES = 2_000;
@@ -9,38 +13,6 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const DEVICES = new Set(["/dev/full", "/dev/null", "/dev/stderr", "/dev/stdout"]);
-
-const EXEC_PARAMETERS = Object.freeze({
-  type: "object",
-  properties: {
-    cmd: { type: "string", description: "Shell command to execute." },
-    justification: { type: "string", description: "User-facing approval question for `require_escalated`; omit otherwise." },
-    workdir: { type: "string", description: "Working directory for the command. Defaults to the turn cwd." },
-    shell: { type: "string", description: "Shell binary to launch. Defaults to the user's default shell." },
-    login: { type: "boolean", description: "True runs the shell with -l/-i semantics; false disables them. Defaults to true." },
-    tty: { type: "boolean", description: "True allocates a PTY for the command; false or omitted uses plain pipes." },
-    yield_time_ms: { type: "number", description: "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms." },
-    max_output_tokens: { type: "number", description: "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy." },
-    prefix_rule: { type: "array", items: { type: "string" }, description: "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"]." },
-    sandbox_permissions: { type: "string", enum: ["use_default", "require_escalated"], description: "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution." },
-  },
-  required: ["cmd"],
-  additionalProperties: false,
-});
-
-const EXEC_OUTPUT = Object.freeze({
-  type: "object",
-  properties: {
-    chunk_id: { type: "string", description: "Chunk identifier included when the response reports one." },
-    wall_time_seconds: { type: "number", description: "Elapsed wall time spent waiting for output in seconds." },
-    exit_code: { type: "number", description: "Process exit code when the command finished during this call." },
-    session_id: { type: "number", description: "Session identifier to pass to write_stdin when the process is still running." },
-    original_token_count: { type: "number", description: "Approximate token count before output truncation." },
-    output: { type: "string", description: "Command output text, possibly truncated." },
-  },
-  required: ["wall_time_seconds", "output"],
-  additionalProperties: false,
-});
 
 export async function justBash(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
@@ -161,8 +133,8 @@ export async function createJustBashRuntime(options) {
       ? {}
       : { supportsParallelToolCalls: options.supportsParallelToolCalls }),
     description: "Runs a shell command, returning output or a session ID for ongoing interaction.",
-    parameters: EXEC_PARAMETERS,
-    outputSchema: EXEC_OUTPUT,
+    parameters: EXEC_COMMAND_PARAMETERS,
+    outputSchema: EXECUTION_OUTPUT_SCHEMA,
     handler(input, context) {
       const execute = () => executeCommand({
         bash,

@@ -12,6 +12,13 @@ import {
   type HostedToolsManagedFrame,
 } from "./protocol.js";
 import { hostedToolCatalogDigest } from "../../tools/hostedCatalog.mjs";
+import {
+  EXEC_COMMAND_PARAMETERS,
+  EXECUTION_OUTPUT_SCHEMA,
+  MACHINE_PREVIEW_PARAMETERS,
+  PREVIEW_OUTPUT_SCHEMA,
+  WRITE_STDIN_PARAMETERS,
+} from "../../tools/execution-contract.mjs";
 
 const SOCKET_TAG = "hosted-tools";
 const INVALID_CONNECT_GRANT_ID = "invalid-connect-grant";
@@ -21,6 +28,12 @@ const MAX_RETAINED_RECEIPTS = 512;
 const MAX_CALLS_PER_GENERATION = 512;
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const LEGACY_ROUTE_ID = "$legacy";
+export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
+  "exec_command",
+  "write_stdin",
+  "preview",
+] as const);
+const MACHINE_TOOL_NAMES: ReadonlySet<string> = new Set(HOSTED_MACHINE_TOOL_NAMES);
 const encoder = new TextEncoder();
 
 /**
@@ -162,6 +175,8 @@ export type HostedToolsCodeTool = Readonly<{
   ): Promise<unknown>;
 }>;
 
+export type HostedMachineToolName = (typeof HOSTED_MACHINE_TOOL_NAMES)[number];
+
 export interface HostedToolsDynamicProvider {
   definitions(): readonly HostedToolsCodeDefinition[];
   resolve(name: string): HostedToolsCodeTool | undefined;
@@ -267,7 +282,7 @@ export class HostedToolsBrokerCore {
       // only the current attached definitions, which stay deferred and can be
       // overlaid onto exact cloud contracts by that router.
       definitions: () => {
-        return this.#catalogBindings()
+        return this.#publicCatalogBindings()
           .filter((binding) => this.#entryAllowed(
             binding.entry,
             binding.connectGrantId,
@@ -285,51 +300,7 @@ export class HostedToolsBrokerCore {
           prepared.connectGrantId,
           prepared.appToolCatalogDigest,
         )) return undefined;
-        return Object.freeze({
-          name,
-          parallelSafe: prepared.entry.parallel_safe,
-          provider: prepared.entry.provider,
-          remoteName: prepared.entry.remote_name,
-          summary: prepared.entry.summary,
-          timeoutMs: prepared.entry.timeout_ms,
-          handler: async (
-            input: unknown,
-            context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
-          ) => {
-            if (!this.#entryAllowed(
-              prepared.entry,
-              prepared.connectGrantId,
-              prepared.appToolCatalogDigest,
-            )) {
-              return toolResult("Hosted tool is outside the active grant", {
-                status: "unavailable",
-                message: "Hosted tool is outside the active grant",
-              }, false, null);
-            }
-            const outcome = await prepared.invoke({
-              sessionId: context.sessionId,
-              callId: context.callId,
-              model: context.model ?? "unknown",
-              input: input as Record<string, unknown> | string,
-              outputTokenBudget: 10_000,
-              ...(context.signal === undefined ? {} : { signal: context.signal }),
-            });
-            if (outcome.status === "completed") {
-              return wireToolResult(
-                outcome.output,
-                prepared.canonicalName,
-                prepared.machine,
-              );
-            }
-            const result = toolResult(outcome.message, outcome, false, null);
-            return outcome[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE] === true
-              ? Object.freeze({
-                  ...(result as Record<PropertyKey, unknown>),
-                  [HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]: true,
-                })
-              : result;
-          },
-        });
+        return this.#codeTool(name, prepared);
       },
       setCatalogValidator: (validator: HostedToolsCatalogValidator | undefined) => {
         this.#catalogValidator = validator;
@@ -358,6 +329,22 @@ export class HostedToolsBrokerCore {
   hasPendingCalls(): boolean { return this.#pending.size > 0; }
 
   provider(): HostedToolsDynamicProvider { return this.#provider; }
+
+  /** Resolves one canonical machine primitive against its exact admitted attachment generation. */
+  machineTool(machineId: string, name: HostedMachineToolName): HostedToolsCodeTool | undefined {
+    if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
+    const binding = this.#catalogBindings().find((candidate) => (
+      candidate.machine?.id === machineId && candidate.wireName === name
+    ));
+    if (!binding) return undefined;
+    const prepared = this.#preparedTool(binding);
+    if (!this.#entryAllowed(
+      prepared.entry,
+      prepared.connectGrantId,
+      prepared.appToolCatalogDigest,
+    )) return undefined;
+    return this.#codeTool(name, prepared);
+  }
 
   /** Returns the live, non-secret user-machine snapshot for the account-owned host. */
   machines(): readonly HostedMachine[] {
@@ -548,7 +535,10 @@ export class HostedToolsBrokerCore {
     } satisfies HostedToolsSocketAttachment;
     this.context.writeAttachment(socket, candidate);
     const catalogJson = JSON.stringify(frame.tools);
-    const candidateEntries = frame.tools.map((entry) => exposedEntry(entry, frame.machines?.[0]));
+    const machine = frame.machines?.[0];
+    const candidateEntries = frame.tools
+      .filter((entry) => !reservedMachineEntry(entry, machine))
+      .map((entry) => exposedEntry(entry, machine));
     const candidateDefinitions = candidateEntries.map((entry) => Object.freeze({
       ...entry,
       definition: Object.freeze({
@@ -564,6 +554,7 @@ export class HostedToolsBrokerCore {
         && (frame.machines?.length !== 1 || frame.attachment_id !== frame.machines[0]?.id)) {
         throw new Error("an account machine route requires one machine whose id equals attachment_id");
       }
+      if (machine !== undefined) validateMachineToolContracts(frame.tools);
       if (initial.allowedMcpIds !== undefined) {
         if (!isConnectGrantId(initial.connectGrantId)) {
           throw new Error("Connect tool host is missing its exact grant binding");
@@ -587,7 +578,7 @@ export class HostedToolsBrokerCore {
           throw new Error("the app-local tool catalog does not match the signed Connect grant");
         }
       }
-      const otherBindings = this.#catalogBindings(routeId, true);
+      const otherBindings = this.#publicCatalogBindings(routeId, true);
       const exposedNames = new Set(otherBindings.map((binding) => binding.entry.definition.name));
       const duplicateTool = candidateEntries.find((entry) => exposedNames.has(entry.definition.name));
       if (duplicateTool) {
@@ -753,12 +744,17 @@ export class HostedToolsBrokerCore {
   }
 
   #definitions(): readonly HostedToolsProviderDefinition[] {
-    return this.#catalogBindings().map((binding) => binding.entry);
+    return this.#publicCatalogBindings().map((binding) => binding.entry);
   }
 
   #resolve(name: string): HostedToolsPreparedTool | undefined {
-    const binding = this.#catalogBindings().find((candidate) => candidate.entry.definition.name === name);
+    const binding = this.#publicCatalogBindings()
+      .find((candidate) => candidate.entry.definition.name === name);
     if (!binding) return undefined;
+    return this.#preparedTool(binding);
+  }
+
+  #preparedTool(binding: HostedToolsCatalogBinding): HostedToolsPreparedTool {
     return Object.freeze({
       ...(binding.connectGrantId === undefined ? {} : { connectGrantId: binding.connectGrantId }),
       ...(binding.appToolCatalogDigest === undefined
@@ -768,6 +764,54 @@ export class HostedToolsBrokerCore {
       ...(binding.machine === undefined ? {} : { machine: binding.machine }),
       entry: binding.entry,
       invoke: (request: HostedToolsInvokeRequest) => this.#invoke(binding, request),
+    });
+  }
+
+  #codeTool(name: string, prepared: HostedToolsPreparedTool): HostedToolsCodeTool {
+    return Object.freeze({
+      name,
+      parallelSafe: prepared.entry.parallel_safe,
+      provider: prepared.entry.provider,
+      remoteName: prepared.entry.remote_name,
+      summary: prepared.entry.summary,
+      timeoutMs: prepared.entry.timeout_ms,
+      handler: async (
+        input: unknown,
+        context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
+      ) => {
+        if (!this.#entryAllowed(
+          prepared.entry,
+          prepared.connectGrantId,
+          prepared.appToolCatalogDigest,
+        )) {
+          return toolResult("Hosted tool is outside the active grant", {
+            status: "unavailable",
+            message: "Hosted tool is outside the active grant",
+          }, false, null);
+        }
+        const outcome = await prepared.invoke({
+          sessionId: context.sessionId,
+          callId: context.callId,
+          model: context.model ?? "unknown",
+          input: input as Record<string, unknown> | string,
+          outputTokenBudget: 10_000,
+          ...(context.signal === undefined ? {} : { signal: context.signal }),
+        });
+        if (outcome.status === "completed") {
+          return wireToolResult(
+            outcome.output,
+            prepared.canonicalName,
+            prepared.machine,
+          );
+        }
+        const result = toolResult(outcome.message, outcome, false, null);
+        return outcome[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE] === true
+          ? Object.freeze({
+              ...(result as Record<PropertyKey, unknown>),
+              [HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]: true,
+            })
+          : result;
+      },
     });
   }
 
@@ -1149,6 +1193,14 @@ export class HostedToolsBrokerCore {
     return bindings.filter((binding) => counts.get(binding.entry.definition.name) === 1);
   }
 
+  #publicCatalogBindings(
+    excludeRouteId?: string,
+    includeAmbiguous = false,
+  ): HostedToolsCatalogBinding[] {
+    return this.#catalogBindings(excludeRouteId, includeAmbiguous)
+      .filter((binding) => !reservedMachineBinding(binding));
+  }
+
   #machineIds(excludeRouteId?: string): string[] {
     const ids: string[] = [];
     for (const state of this.#sortedStates()) {
@@ -1189,6 +1241,105 @@ function emptyState(routeId: string): HostedToolsStateRow {
 
 function scopedRouteId(connectGrantId: string | undefined, attachmentId: string | undefined): string {
   return `${connectGrantId === undefined ? "user" : "connect"}:${attachmentId ?? LEGACY_ROUTE_ID}`;
+}
+
+function reservedMachineEntry(
+  entry: HostedToolCatalogEntry,
+  machine: HostedMachine | undefined,
+): boolean {
+  return machine !== undefined && MACHINE_TOOL_NAMES.has(entry.definition.name);
+}
+
+function reservedMachineBinding(binding: HostedToolsCatalogBinding): boolean {
+  return binding.machine !== undefined && MACHINE_TOOL_NAMES.has(binding.wireName);
+}
+
+function validateMachineToolContracts(entries: readonly HostedToolCatalogEntry[]): void {
+  for (const entry of entries) {
+    const name = entry.definition.name;
+    if (!MACHINE_TOOL_NAMES.has(name)) continue;
+    if (entry.definition.type !== "function") {
+      throw new Error(`machine tool ${name} must use its canonical function schema`);
+    }
+    switch (name) {
+      case "exec_command":
+        validateCanonicalObjectSchema(name, entry.definition.parameters, EXEC_COMMAND_PARAMETERS);
+        validateCanonicalObjectSchema(
+          `${name} output`,
+          entry.definition.output_schema,
+          EXECUTION_OUTPUT_SCHEMA,
+        );
+        break;
+      case "write_stdin":
+        validateCanonicalObjectSchema(name, entry.definition.parameters, WRITE_STDIN_PARAMETERS);
+        validateCanonicalObjectSchema(
+          `${name} output`,
+          entry.definition.output_schema,
+          EXECUTION_OUTPUT_SCHEMA,
+        );
+        break;
+      case "preview":
+        validateCanonicalObjectSchema(name, entry.definition.parameters, MACHINE_PREVIEW_PARAMETERS);
+        validateCanonicalObjectSchema(
+          `${name} output`,
+          entry.definition.output_schema,
+          PREVIEW_OUTPUT_SCHEMA,
+        );
+        break;
+    }
+  }
+}
+
+function validateCanonicalObjectSchema(
+  label: string,
+  schema: Record<string, unknown> | undefined,
+  canonical: Readonly<Record<string, unknown>>,
+): void {
+  const properties = objectRecord(canonical.properties);
+  const required = canonical.required;
+  if (properties === undefined || !Array.isArray(required)) {
+    throw new Error(`invalid canonical machine tool schema for ${label}`);
+  }
+  const propertyTypes = Object.fromEntries(Object.entries(properties).map(([name, property]) => {
+    const type = objectRecord(property)?.type;
+    if (typeof type !== "string") throw new Error(`invalid canonical type for ${label}.${name}`);
+    return [name, type];
+  }));
+  validateObjectSchema(label, schema, required as string[], propertyTypes);
+}
+
+function validateObjectSchema(
+  label: string,
+  schema: Record<string, unknown> | undefined,
+  required: readonly string[],
+  propertyTypes: Readonly<Record<string, string>>,
+): void {
+  const properties = objectRecord(schema?.properties);
+  const actualRequired = schema?.required;
+  if (schema?.type !== "object"
+    || schema?.additionalProperties !== false
+    || properties === undefined
+    || !Array.isArray(actualRequired)
+    || actualRequired.some((value) => typeof value !== "string")
+    || !sameStrings(actualRequired as string[], required)
+    || !sameStrings(Object.keys(properties), Object.keys(propertyTypes))) {
+    throw new Error(`machine tool ${label} must use its canonical object schema`);
+  }
+  for (const [property, type] of Object.entries(propertyTypes)) {
+    if (objectRecord(properties[property])?.type !== type) {
+      throw new Error(`machine tool ${label}.${property} must use canonical type ${type}`);
+    }
+  }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value) => right.includes(value));
 }
 
 function exposedEntry(entry: HostedToolCatalogEntry, machine: HostedMachine | undefined): HostedToolCatalogEntry {

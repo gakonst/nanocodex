@@ -38,7 +38,8 @@ describe("managed account info", () => {
       id: "sandbox",
       name: "Agent sandbox",
       kind: "sandbox" as const,
-      workspace: "/workspace",
+      mount: "/sandbox",
+      workspace: "/sandbox",
       capabilities: ["filesystem", "native-linux"],
     }];
     const info = await accountInfo(
@@ -67,6 +68,7 @@ describe("managed account info", () => {
       authorizations: [],
       vault: [],
     });
+    expect(info.machines[0]).toMatchObject({ mount: "/sandbox", workspace: "/sandbox" });
     expect(JSON.stringify(info)).not.toMatch(/access_token|secret/);
     expect(fetch).toHaveBeenCalledWith(
       "https://broker.internal/users/user%2Fwith%20spaces/connectors",
@@ -133,7 +135,8 @@ describe("managed account info", () => {
       id: "sandbox",
       name: "Agent sandbox",
       kind: "sandbox" as const,
-      workspace: "/workspace",
+      mount: "/sandbox",
+      workspace: "/sandbox",
       capabilities: ["native-linux"],
     }];
     const info = await accountInfo(

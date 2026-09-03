@@ -132,6 +132,10 @@ export type Capabilities = Readonly<{
   workspace: "cloudflare-computer";
   /** Tools can target explicit sandbox and connected-user environments. */
   execution_environments: true;
+  /** Canonical commands select an execution hand from the root of their logical cwd. */
+  execution_namespace: "cwd-root-v1";
+  /** Native processes cannot yet access peer mounts through filesystem syscalls. */
+  native_cross_mounts: false;
 }>;
 
 export type State = Readonly<{

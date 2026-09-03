@@ -585,7 +585,9 @@ fn agent_state_value(latest_event_cursor: &str) -> serde_json::Value {
             "live_steer": true,
             "live_cancel": true,
             "workspace": "private-hosted-tools-v1",
-            "execution_environments": true
+            "execution_environments": true,
+            "execution_namespace": "cwd-root-v1",
+            "native_cross_mounts": false
         },
         "settings": agent_settings(),
         "latest_event_cursor": latest_event_cursor,
@@ -895,7 +897,9 @@ async fn agent_state(State(state): State<TestState>, headers: HeaderMap) -> impl
                 "live_steer": true,
                 "live_cancel": true,
                 "workspace": "private-hosted-tools-v1",
-                "execution_environments": true
+                "execution_environments": true,
+                "execution_namespace": "cwd-root-v1",
+                "native_cross_mounts": false
             },
             "settings": agent_settings(),
             "latest_event_cursor": "0",
@@ -1058,7 +1062,9 @@ fn agent_capabilities() -> serde_json::Value {
         "live_steer": true,
         "live_cancel": true,
         "workspace": "cloudflare-computer",
-        "execution_environments": true
+        "execution_environments": true,
+        "execution_namespace": "cwd-root-v1",
+        "native_cross_mounts": false
     })
 }
 

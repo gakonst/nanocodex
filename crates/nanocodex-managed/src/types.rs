@@ -296,6 +296,10 @@ pub struct AgentCapabilities {
     pub workspace: String,
     /// Whether tools can target explicit sandbox and connected-user environments.
     pub execution_environments: bool,
+    /// Server-advertised logical execution namespace contract.
+    pub execution_namespace: String,
+    /// Whether native processes can access peer mounts through filesystem syscalls.
+    pub native_cross_mounts: bool,
 }
 
 /// Model and reasoning policy owned by one managed agent.

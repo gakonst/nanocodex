@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sandboxSdk = vi.hoisted(() => ({ getSandbox: vi.fn() }));
-
 vi.mock("@cloudflare/sandbox", () => ({ getSandbox: sandboxSdk.getSandbox }));
 
 import {
@@ -26,526 +25,273 @@ describe("Cloudflare sandbox tools", () => {
   beforeEach(() => sandboxSdk.getSandbox.mockReset());
   afterEach(() => vi.restoreAllMocks());
 
-  it("asks the sandbox provider to prepare before every tool operation", async () => {
-    const sandbox = fakeSandbox();
-    const create = vi.fn(async () => sandbox);
-    const tools = createCloudflareSandboxTools(create);
+  it("exposes only the canonical shell and preview tools without a host selector", () => {
+    const tools = createCloudflareSandboxTools(async () => fakeSandbox());
 
-    await Promise.all([
-      tools.sandbox_exec!.handler({ command: "uname -a" }, context),
-      tools.sandbox_write_file!.handler({ path: "proof.txt", content: "ok" }, context),
-    ]);
-
-    expect(create).toHaveBeenCalledTimes(2);
-    await tools.sandbox_list_files!.handler({}, context);
-    expect(create).toHaveBeenCalledTimes(3);
-    expect(sandbox.exec).toHaveBeenCalledWith("uname -a", {
-      cwd: "/workspace",
+    expect(Object.keys(tools)).toEqual(["exec_command", "write_stdin", "preview"]);
+    expect(tools.exec_command!.parameters).toMatchObject({
+      required: ["cmd"],
     });
-    expect(sandbox.exec.mock.calls.filter(([command]) => isWorkspaceFlush(command))).toHaveLength(2);
+    const parameters = tools.exec_command!.parameters as {
+      properties: Record<string, Record<string, unknown>>;
+    };
+    expect(parameters.properties.yield_time_ms!.maximum).toBeUndefined();
+    expect(parameters.properties.max_output_tokens!.maximum).toBeUndefined();
+    expect(parameters.properties.environment).toBeUndefined();
+    expect(parameters.properties.host).toBeUndefined();
+    expect(tools.exec_command!.outputSchema).toMatchObject({
+      required: ["wall_time_seconds", "output"],
+    });
+    expect(tools.write_stdin!.parameters).toMatchObject({ required: ["session_id"] });
+    expect(tools.preview!.parameters).toMatchObject({ required: ["port"] });
   });
 
-  it("acknowledges workspace writes only after the retained mount flushes", async () => {
+  it("does not impose command, wait, or output ceilings below the platform", async () => {
     const sandbox = fakeSandbox();
-    const order: string[] = [];
-    sandbox.writeFile.mockImplementation(async () => { order.push("write"); });
-    sandbox.exec.mockImplementation(async (command: string) => {
-      expect(command).toBe("sync -f /workspace");
-      order.push("flush");
-      return executionResult("");
-    });
+    const process = fakeProcess({ status: "completed", exitCode: 0 });
+    const output = "x".repeat(160 * 1024);
+    const command = "x".repeat(33 * 1024);
+    process.getLogs.mockResolvedValue({ stdout: output, stderr: "" });
+    sandbox.startProcess.mockResolvedValue(process);
+    sandbox.getProcess.mockImplementation(async (id: string) => id === process.id ? process : null);
     const tools = createCloudflareSandboxTools(async () => sandbox);
 
-    await expect(tools.sandbox_write_file!.handler({
-      path: "proof.txt",
-      content: "retained",
-    }, context)).resolves.toEqual({ path: "/workspace/proof.txt", bytes_written: 8 });
-
-    expect(order).toEqual(["write", "flush"]);
-  });
-
-  it("fails a workspace mutation when its retained flush fails", async () => {
-    const sandbox = fakeSandbox();
-    sandbox.exec.mockResolvedValue({
-      success: false,
-      exitCode: 1,
-      stdout: "",
-      stderr: "transport failed",
-      duration: 1,
+    await expect(tools.exec_command!.handler({
+      cmd: command,
+      yield_time_ms: 120_001,
+      max_output_tokens: 100_001,
+    }, context)).resolves.toMatchObject({
+      output,
+      exit_code: 0,
     });
-    const tools = createCloudflareSandboxTools(async () => sandbox);
-
-    await expect(tools.sandbox_write_file!.handler({
-      path: "proof.txt",
-      content: "not-yet-durable",
-    }, context)).rejects.toThrow("failed to flush the retained workspace: transport failed");
   });
 
-  it("attempts to flush partial writes when foreground execution rejects", async () => {
+  it("runs canonical exec_command in the retained workspace and flushes mutations", async () => {
     const sandbox = fakeSandbox();
-    const executionError = new Error("command transport stopped");
-    sandbox.exec
-      .mockRejectedValueOnce(executionError)
-      .mockResolvedValueOnce(executionResult(""));
-    const tools = createCloudflareSandboxTools(async () => sandbox);
-
-    await expect(tools.sandbox_exec!.handler({ command: "generate files" }, context))
-      .rejects.toBe(executionError);
-    expect(sandbox.exec.mock.calls).toEqual([
-      ["generate files", { cwd: "/workspace" }],
-      ["sync -f /workspace", { cwd: "/" }],
-    ]);
-  });
-
-  it("prepares one shared sandbox once across concurrent parent and child tool sets", async () => {
-    const namespace = fakeNamespace();
-    const sandbox = preparingSandbox("empty");
-    sandboxSdk.getSandbox.mockReturnValue(sandbox);
-    const parent = cloudflareSandboxTools(namespace, "shared-session");
-    const child = cloudflareSandboxTools(namespace, "shared-session");
-
-    await Promise.all([
-      parent.sandbox_exec!.handler({ command: "printf parent" }, context),
-      child.sandbox_exec!.handler({ command: "printf child" }, {
-        ...context,
-        sessionId: "child-session",
-        subagent: {
-          agentId: "1",
-          parentAgentId: null,
-          sessionId: "child-session",
-          role: "worker",
-          task: "exercise the shared sandbox",
-        },
-      }),
-    ]);
-
-    expect(sandboxSdk.getSandbox).toHaveBeenCalledTimes(1);
-    expect(sandbox.mountBucket).toHaveBeenCalledTimes(1);
-    expect(sandbox.mountBucket).toHaveBeenCalledWith(
-      "NANOCODEX_WORKSPACES",
-      "/workspace",
-      { prefix: "/sessions/shared-session/" },
-    );
-  });
-
-  it("reuses a healthy retained workspace after the managed host reconnects", async () => {
-    const sandbox = preparingSandbox("empty");
-    sandboxSdk.getSandbox.mockReturnValue(sandbox);
-
-    await cloudflareSandboxTools(fakeNamespace(), "retained-session")
-      .sandbox_exec!.handler({ command: "printf first" }, context);
-    await cloudflareSandboxTools(fakeNamespace(), "retained-session")
-      .sandbox_exec!.handler({ command: "printf reconnected" }, context);
-
-    expect(sandbox.mountBucket).toHaveBeenCalledTimes(1);
-    expect(sandbox.exec.mock.calls.filter(([command]) => isMountProbe(command))).toHaveLength(3);
-  });
-
-  it("retries a transient retained mount health failure during background work", async () => {
-    const sandbox = preparingSandbox("empty");
-    const probeStates: MountState[] = [
-      "empty",
-      "mounted",
-      "mounted-unhealthy",
-      "mounted",
-    ];
-    sandbox.exec.mockImplementation(async (command: string) => executionResult(
-      isMountProbe(command) ? probeStates.shift()! : "clone-visible",
+    const process = fakeProcess({ status: "failed", exitCode: 7 });
+    process.getLogs.mockResolvedValue({ stdout: "hello", stderr: "warning" });
+    sandbox.startProcess.mockResolvedValue(process);
+    sandbox.getProcess.mockImplementation(async (id: string) => (
+      id === process.id ? process : null
     ));
-    sandboxSdk.getSandbox.mockReturnValue(sandbox);
-    const tools = cloudflareSandboxTools(fakeNamespace(), "clone-session");
+    const tools = createCloudflareSandboxTools(async () => sandbox);
 
-    const clone = "git clone https://example.invalid/repo.git repo";
-    const started = await tools.sandbox_start_process!.handler({ command: clone }, context);
-    const result = await tools.sandbox_exec!.handler({ command: "git -C repo status" }, context);
-
-    expect(started).toMatchObject({ command: clone });
-    expect(result).toMatchObject({ success: true, stdout: "clone-visible" });
-    expect(sandbox.startProcess).toHaveBeenCalledWith(clone, {
-      cwd: "/workspace",
+    await expect(tools.exec_command!.handler({
+      cmd: "task",
+      workdir: "repo",
+    }, context)).resolves.toEqual({
+      output: "hellowarning",
+      chunk_id: expect.stringMatching(/^[1-9][0-9]*:12$/),
+      exit_code: 7,
+      wall_time_seconds: expect.any(Number),
+    });
+    expect(sandbox.startProcess).toHaveBeenCalledWith("exec 2>&1\ntask", {
+      cwd: "/workspace/repo",
+      processId: expect.stringMatching(/^nanocodex-[1-9][0-9]*$/),
       autoCleanup: false,
     });
-    expect(sandbox.exec.mock.calls.filter(([command]) => isMountProbe(command))).toHaveLength(4);
-    expect(sandbox.mountBucket).toHaveBeenCalledTimes(1);
+    expect(sandbox.exec).toHaveBeenCalledWith("sync -f /workspace", { cwd: "/" });
   });
 
-  it("remounts retained storage after a container replacement before the next command", async () => {
-    const sandbox = preparingSandbox("empty");
-    const events: string[] = [];
-    let retainedMarker = "";
-    sandbox.mountBucket.mockImplementation(async () => {
-      events.push("mount");
-      sandbox.setMountState("mounted");
-    });
-    sandbox.exec.mockImplementation(async (command: string) => {
-      if (isMountProbe(command)) {
-        events.push("probe");
-        return executionResult(sandbox.getMountState());
-      }
-      if (command === "printf retained-marker > marker.txt") {
-        events.push("write-marker");
-        retainedMarker = "retained-marker";
-        return executionResult("");
-      }
-      if (command === "cat marker.txt") {
-        events.push("read-marker");
-        return executionResult(
-          sandbox.getMountState() === "mounted" ? retainedMarker : "ephemeral-marker",
-        );
-      }
-      if (isWorkspaceFlush(command)) {
-        events.push("flush");
-        return executionResult("");
-      }
-      throw new Error(`unexpected command: ${command}`);
-    });
-    sandboxSdk.getSandbox.mockReturnValue(sandbox);
-    const tools = cloudflareSandboxTools(fakeNamespace(), "replacement-session");
-
-    await tools.sandbox_exec!.handler({
-      command: "printf retained-marker > marker.txt",
-    }, context);
-    sandbox.setMountState("empty");
-    const second = await tools.sandbox_exec!.handler({ command: "cat marker.txt" }, context);
-
-    expect(second).toMatchObject({ stdout: "retained-marker" });
-    expect(events).toEqual([
-      "probe",
-      "mount",
-      "probe",
-      "write-marker",
-      "flush",
-      "probe",
-      "mount",
-      "probe",
-      "read-marker",
-      "flush",
-    ]);
-    expect(sandbox.mountBucket).toHaveBeenCalledTimes(2);
-  });
-
-  it("accepts a concurrent mount winner only after the retained mount probes healthy", async () => {
-    const namespace = fakeNamespace();
-    const sandbox = preparingSandbox("empty");
-    const mountError = new Error("S3FS mount failed: MOUNTPOINT directory /workspace is not empty");
-    sandbox.mountBucket.mockImplementationOnce(async () => {
-      sandbox.setMountState("mounted");
-      throw mountError;
-    });
-    sandboxSdk.getSandbox.mockReturnValue(sandbox);
-
-    await expect(cloudflareSandboxTools(namespace, "raced-session")
-      .sandbox_exec!.handler({ command: "printf reused" }, context)).resolves.toMatchObject({
-        success: true,
-      });
-
-    expect(sandbox.mountBucket).toHaveBeenCalledTimes(1);
-    expect(sandbox.exec.mock.calls.filter(([command]) => isMountProbe(command))).toHaveLength(2);
-  });
-
-  it("retries preparation after a real mount failure", async () => {
-    const namespace = fakeNamespace();
-    const sandbox = preparingSandbox("empty");
-    const mountError = new Error("R2 mount unavailable");
-    sandbox.mountBucket
-      .mockRejectedValueOnce(mountError)
-      .mockImplementationOnce(async () => sandbox.setMountState("mounted"));
-    sandboxSdk.getSandbox.mockReturnValue(sandbox);
-    const tools = cloudflareSandboxTools(namespace, "retry-session");
-
-    await expect(tools.sandbox_exec!.handler({ command: "printf first" }, context))
-      .rejects.toBe(mountError);
-    await expect(tools.sandbox_exec!.handler({ command: "printf retry" }, context))
-      .resolves.toMatchObject({ success: true });
-
-    expect(sandboxSdk.getSandbox).toHaveBeenCalledTimes(2);
-    expect(sandbox.mountBucket).toHaveBeenCalledTimes(2);
-  });
-
-  it.each([
-    ["occupied", "unmounted /workspace directory is not empty"],
-    ["mounted-unhealthy", "existing /workspace mount is unhealthy"],
-  ] as const)("refuses to remount a %s workspace", async (state, message) => {
-    const sandbox = preparingSandbox(state);
-    sandboxSdk.getSandbox.mockReturnValue(sandbox);
-
-    await expect(cloudflareSandboxTools(fakeNamespace(), `${state}-session`)
-      .sandbox_exec!.handler({ command: "printf unsafe" }, context)).rejects.toThrow(message);
-
-    expect(sandbox.mountBucket).not.toHaveBeenCalled();
-    expect(sandbox.exec.mock.calls.filter(([command]) => isMountProbe(command))).toHaveLength(
-      state === "mounted-unhealthy" ? 3 : 1,
-    );
-  });
-
-  it("preserves the local R2 mount contract", async () => {
-    const sandbox = preparingSandbox("empty");
-    sandboxSdk.getSandbox.mockReturnValue(sandbox);
-
-    await cloudflareSandboxTools(fakeNamespace(), "local-session", true)
-      .sandbox_exec!.handler({ command: "printf local" }, context);
-
-    expect(sandbox.mountBucket).toHaveBeenCalledWith(
-      "NANOCODEX_WORKSPACES",
-      "/workspace",
-      { prefix: "/sessions/local-session/", localBucket: true },
-    );
-  });
-
-  it("does not impose command or readiness timeout limits", async () => {
+  it("persists the output cursor across tool reconstruction and preserves a terminal tail", async () => {
     const sandbox = fakeSandbox();
+    const process = fakeProcess({ status: "running" });
+    let status: "running" | "completed" = "running";
+    let stdout = "first";
+    process.getStatus.mockImplementation(async () => status);
+    process.getLogs.mockImplementation(async () => ({ stdout, stderr: "" }));
+    sandbox.startProcess.mockImplementation(async (_command: string, options: { processId: string }) => {
+      process.id = options.processId;
+      return process;
+    });
+    sandbox.getProcess.mockImplementation(async (id: string) => id === process.id ? process : null);
+    const cursors = new Map<string, unknown>();
+    const cursorStorage = {
+      delete: (key: string) => { cursors.delete(key); },
+      get: (key: string) => cursors.get(key),
+      put: (key: string, value: unknown) => { cursors.set(key, value); },
+    };
+    let tools = createCloudflareSandboxTools(async () => sandbox, undefined, cursorStorage);
+
+    const started = await tools.exec_command!.handler({
+      cmd: "task",
+      yield_time_ms: 0,
+    }, context) as { session_id: number; output: string };
+    expect(started.output).toBe("first");
+    stdout = "firstsecond";
+    tools = createCloudflareSandboxTools(async () => sandbox, undefined, cursorStorage);
+    await expect(tools.write_stdin!.handler({
+      session_id: started.session_id,
+      yield_time_ms: 0,
+    }, context)).resolves.toMatchObject({
+      output: "second",
+      session_id: started.session_id,
+    });
+
+    stdout += `${"x".repeat(100)}TAIL`;
+    status = "completed";
+    tools = createCloudflareSandboxTools(async () => sandbox, undefined, cursorStorage);
+    await expect(tools.write_stdin!.handler({
+      session_id: started.session_id,
+      max_output_tokens: 9,
+    }, context)).resolves.toMatchObject({
+      output: expect.stringMatching(/^x+\n… output truncated …\n.*TAIL$/),
+      original_token_count: 26,
+      exit_code: 0,
+    });
+    expect(cursors.size).toBe(0);
+  });
+
+  it("uses Ctrl-C as the canonical termination path for a yielded session", async () => {
+    const sandbox = fakeSandbox();
+    const process = fakeProcess({ id: "nanocodex-7", status: "killed", exitCode: 137 });
+    sandbox.getProcess.mockResolvedValue(process);
     const tools = createCloudflareSandboxTools(async () => sandbox);
 
-    await tools.sandbox_exec!.handler({
-      command: "cargo test",
-      timeout_ms: Number.MAX_SAFE_INTEGER,
-    }, context);
-    await tools.sandbox_start_process!.handler({
-      command: "cargo watch",
-      ready_port: 3_000,
-    }, context);
-
-    expect(sandbox.exec).toHaveBeenCalledWith("cargo test", {
-      cwd: "/workspace",
-      timeout: Number.MAX_SAFE_INTEGER,
-    });
-    const process = await sandbox.startProcess.mock.results[0]!.value;
-    expect(process.waitForPort).toHaveBeenCalledWith(3_000, undefined);
+    await expect(tools.write_stdin!.handler({
+      session_id: 7,
+      chars: "\u0003",
+    }, context)).resolves.toMatchObject({ exit_code: 137 });
+    expect(process.kill).toHaveBeenCalledTimes(1);
   });
 
-  it("returns the process identity when port readiness fails", async () => {
+  it("uses the sandbox exit stream once for an unrestricted yield", async () => {
     const sandbox = fakeSandbox();
-    const process = fakeProcess();
-    process.waitForPort.mockRejectedValue(new Error("port never became ready"));
-    process.getStatus.mockResolvedValue("running");
+    const process = fakeProcess({ status: "running" });
+    const timeout = Object.assign(new Error("still running"), {
+      name: "ProcessReadyTimeoutError",
+    });
+    process.waitForExit.mockRejectedValue(timeout);
     sandbox.startProcess.mockResolvedValue(process);
     const tools = createCloudflareSandboxTools(async () => sandbox);
 
-    await expect(tools.sandbox_start_process!.handler({
-      command: "start server",
-      ready_port: 3_000,
-    }, context)).resolves.toMatchObject({
-      process_id: "process",
-      status: "running",
-      terminal: false,
-      ready: false,
-      ready_error: "port never became ready",
-    });
-    expect(process.kill).toHaveBeenCalledOnce();
+    await expect(tools.exec_command!.handler({
+      cmd: "long-job",
+      yield_time_ms: 120_001,
+    }, context)).resolves.toMatchObject({ session_id: expect.any(Number) });
+    expect(process.waitForExit).toHaveBeenCalledOnce();
+    expect(process.waitForExit).toHaveBeenCalledWith(120_001);
     expect(process.getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects escalation, PTYs, stdin, shell overrides, and escaped workdirs", async () => {
+    const tools = createCloudflareSandboxTools(async () => fakeSandbox());
+
+    await expect(tools.exec_command!.handler({
+      cmd: "pwd", sandbox_permissions: "require_escalated",
+    }, context)).rejects.toThrow("does not support privilege escalation");
+    await expect(tools.exec_command!.handler({ cmd: "pwd", tty: true }, context))
+      .rejects.toThrow("does not support TTY");
+    await expect(tools.exec_command!.handler({
+      cmd: "pwd", shell: "/bin/zsh",
+    }, context)).rejects.toThrow("does not support shell or login overrides");
+    await expect(tools.exec_command!.handler({
+      cmd: "pwd", workdir: "../outside",
+    }, context)).rejects.toThrow("must not contain '..'");
+    await expect(tools.write_stdin!.handler({
+      session_id: 7, chars: "input",
+    }, context)).rejects.toThrow("stdin is unavailable");
+  });
+
+  it("attempts a retained-workspace flush when command transport fails", async () => {
+    const sandbox = fakeSandbox();
+    const failure = new Error("transport stopped");
+    sandbox.startProcess.mockRejectedValueOnce(failure);
+    const tools = createCloudflareSandboxTools(async () => sandbox);
+
+    await expect(tools.exec_command!.handler({ cmd: "task" }, context))
+      .rejects.toBe(failure);
     expect(sandbox.exec).toHaveBeenLastCalledWith("sync -f /workspace", { cwd: "/" });
   });
 
-  it("runs the requested background command unchanged and flushes terminal observations", async () => {
-    const sandbox = fakeSandbox();
-    const tools = createCloudflareSandboxTools(async () => sandbox);
-    const command = "cargo test --workspace";
-
-    await expect(tools.sandbox_start_process!.handler({ command }, context))
-      .resolves.toMatchObject({ command });
-    expect(sandbox.startProcess.mock.calls[0]![0]).toBe(command);
-
-    sandbox.getProcess.mockResolvedValue(fakeProcess({
-      command,
-      status: "completed",
-      exitCode: 0,
-    }));
-    await expect(tools.sandbox_get_process!.handler({ process_id: "process" }, context))
-      .resolves.toMatchObject({ command, status: "completed", terminal: true });
-    expect(sandbox.exec).toHaveBeenLastCalledWith("sync -f /workspace", {
-      cwd: "/",
-    });
-  });
-
-  it("flushes a background process that finishes while it is starting", async () => {
+  it("kills and flushes a started process when observation fails", async () => {
     const sandbox = fakeSandbox();
     const process = fakeProcess({ status: "running" });
-    process.getStatus.mockResolvedValue("completed");
+    const failure = new Error("status transport stopped");
+    process.getStatus.mockRejectedValueOnce(failure);
     sandbox.startProcess.mockResolvedValue(process);
     const tools = createCloudflareSandboxTools(async () => sandbox);
 
-    await expect(tools.sandbox_start_process!.handler({ command: "quick task" }, context))
-      .resolves.toMatchObject({ command: "quick task", status: "completed" });
-    expect(sandbox.exec).toHaveBeenLastCalledWith("sync -f /workspace", {
-      cwd: "/",
-    });
+    await expect(tools.exec_command!.handler({ cmd: "task" }, context))
+      .rejects.toBe(failure);
+    expect(process.kill).toHaveBeenCalledTimes(1);
+    expect(sandbox.exec).toHaveBeenLastCalledWith("sync -f /workspace", { cwd: "/" });
   });
 
-  it("retrieves authoritative background process state and bounded logs", async () => {
-    const sandbox = fakeSandbox();
-    const process = fakeProcess({
-      id: "proc_123",
-      pid: 42,
-      command: "cargo test",
-      status: "failed" as const,
-      exitCode: 101,
-    });
-    process.getLogs.mockResolvedValue({
-      stdout: "compiled\n",
-      stderr: "test failed\n",
-    });
-    sandbox.getProcess.mockResolvedValue(process);
-    const tools = createCloudflareSandboxTools(async () => sandbox);
+  it("mounts one retained workspace and reuses it across tool reconstruction", async () => {
+    const sandbox = preparingSandbox("empty");
+    sandboxSdk.getSandbox.mockReturnValue(sandbox);
+    const namespace = fakeNamespace();
 
-    await expect(tools.sandbox_get_process!.handler({ process_id: "proc_123" }, context))
+    await cloudflareSandboxTools(namespace, "retained").exec_command!.handler(
+      { cmd: "printf first" }, context,
+    );
+    await cloudflareSandboxTools(namespace, "retained").exec_command!.handler(
+      { cmd: "printf second" }, context,
+    );
+
+    expect(sandboxSdk.getSandbox).toHaveBeenCalledTimes(2);
+    expect(sandbox.mountBucket).toHaveBeenCalledTimes(1);
+    expect(sandbox.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_WORKSPACES", "/workspace", { prefix: "/sessions/retained/" },
+    );
+  });
+
+  it("preserves local R2 mount options and refuses unsafe remote remounts", async () => {
+    const local = preparingSandbox("empty");
+    sandboxSdk.getSandbox.mockReturnValueOnce(local);
+    await cloudflareSandboxTools(fakeNamespace(), "local", true).exec_command!.handler(
+      { cmd: "printf local" }, context,
+    );
+    expect(local.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_WORKSPACES",
+      "/workspace",
+      { prefix: "/sessions/local/", localBucket: true },
+    );
+
+    const occupied = preparingSandbox("occupied");
+    sandboxSdk.getSandbox.mockReturnValueOnce(occupied);
+    await expect(cloudflareSandboxTools(fakeNamespace(), "occupied").exec_command!.handler(
+      { cmd: "printf unsafe" }, context,
+    )).rejects.toThrow("unmounted /workspace directory is not empty");
+    expect(occupied.mountBucket).not.toHaveBeenCalled();
+  });
+
+  it("creates a server-fronted preview without exposing its secret", async () => {
+    const tools = createCloudflareSandboxTools(
+      async () => fakeSandbox(),
+      async (port) => ({
+        port,
+        url: "https://nanocodex.example/sandbox-preview/sealed/",
+        persistent: false,
+      }),
+    );
+
+    await expect(tools.preview!.handler({ port: 8080 }, context))
       .resolves.toEqual({
-        found: true,
-        process_id: "proc_123",
-        pid: 42,
-        command: "cargo test",
-        status: "failed",
-        terminal: true,
-        exit_code: 101,
-        stdout: "compiled\n",
-        stderr: "test failed\n",
-        stdout_truncated: false,
-        stderr_truncated: false,
+        port: 8080,
+        url: "https://nanocodex.example/sandbox-preview/sealed/",
+        persistent: false,
       });
-    expect(sandbox.getProcess).toHaveBeenCalledWith("proc_123");
-    expect(process.getLogs).toHaveBeenCalledOnce();
   });
 
-  it("polls running and missing processes without repeatedly transferring logs", async () => {
-    const sandbox = fakeSandbox();
-    const running = fakeProcess({
-      id: "proc_running",
-      command: "cargo test",
-      status: "running" as const,
-    });
-    running.getLogs.mockResolvedValue({ stdout: "compiling", stderr: "" });
-    sandbox.getProcess
-      .mockResolvedValueOnce(running)
-      .mockResolvedValueOnce(null);
-    const tools = createCloudflareSandboxTools(async () => sandbox);
+  it("never exposes the sandbox control-plane port", async () => {
+    const tools = createCloudflareSandboxTools(async () => fakeSandbox());
 
-    await expect(tools.sandbox_get_process!.handler({ process_id: "proc_running" }, context))
-      .resolves.toEqual({
-        found: true,
-        process_id: "proc_running",
-        pid: 1,
-        command: "cargo test",
-        status: "running",
-        terminal: false,
-        exit_code: null,
-      });
-    expect(running.getLogs).not.toHaveBeenCalled();
-    await expect(tools.sandbox_get_process!.handler({ process_id: "proc_missing" }, context))
-      .resolves.toEqual({ found: false, process_id: "proc_missing" });
-    await expect(tools.sandbox_get_process!.handler({ process_id: "../other" }, context))
-      .rejects.toThrow("process_id must be a safe Sandbox process ID");
-  });
-
-  it("returns partial running output only when explicitly requested", async () => {
-    const sandbox = fakeSandbox();
-    const running = fakeProcess({ id: "proc_running", status: "running" });
-    running.getLogs.mockResolvedValue({ stdout: "compiling", stderr: "warning" });
-    sandbox.getProcess.mockResolvedValue(running);
-    const tools = createCloudflareSandboxTools(async () => sandbox);
-
-    await expect(tools.sandbox_get_process!.handler({
-      process_id: "proc_running",
-      include_output: true,
-    }, context)).resolves.toMatchObject({
-      terminal: false,
-      stdout: "compiling",
-      stderr: "warning",
-    });
-    expect(running.getLogs).toHaveBeenCalledOnce();
-  });
-
-  it("terminates a running background process and reports its refreshed status", async () => {
-    const sandbox = fakeSandbox();
-    const process = fakeProcess({ id: "proc_running", status: "running" });
-    process.getStatus.mockResolvedValue("killed");
-    sandbox.getProcess.mockResolvedValue(process);
-    const tools = createCloudflareSandboxTools(async () => sandbox);
-
-    await expect(tools.sandbox_kill_process!.handler(
-      { process_id: "proc_running" },
-      context,
-    )).resolves.toEqual({
-      found: true,
-      process_id: "proc_running",
-      status: "killed",
-      terminal: true,
-      kill_requested: true,
-    });
-    expect(process.kill).toHaveBeenCalledOnce();
-    expect(process.waitForExit).not.toHaveBeenCalled();
-    expect(process.getStatus).toHaveBeenCalledOnce();
-  });
-
-  it("reports an asynchronously stopping process without waiting indefinitely", async () => {
-    const sandbox = fakeSandbox();
-    const process = fakeProcess({ id: "proc_running", status: "running" });
-    process.getStatus.mockResolvedValue("running");
-    sandbox.getProcess.mockResolvedValue(process);
-    const tools = createCloudflareSandboxTools(async () => sandbox);
-
-    await expect(tools.sandbox_kill_process!.handler(
-      { process_id: "proc_running" },
-      context,
-    )).resolves.toMatchObject({
-      status: "running",
-      terminal: false,
-      kill_requested: true,
-    });
-    expect(process.waitForExit).not.toHaveBeenCalled();
-  });
-
-  it("does not kill missing or already-terminal background processes", async () => {
-    const sandbox = fakeSandbox();
-    const completed = fakeProcess({ id: "proc_completed", status: "completed" });
-    sandbox.getProcess
-      .mockResolvedValueOnce(completed)
-      .mockResolvedValueOnce(null);
-    const tools = createCloudflareSandboxTools(async () => sandbox);
-
-    await expect(tools.sandbox_kill_process!.handler(
-      { process_id: "proc_completed" },
-      context,
-    )).resolves.toEqual({
-      found: true,
-      process_id: "proc_completed",
-      status: "completed",
-      terminal: true,
-      kill_requested: false,
-    });
-    await expect(tools.sandbox_kill_process!.handler(
-      { process_id: "proc_missing" },
-      context,
-    )).resolves.toEqual({ found: false, process_id: "proc_missing" });
-    expect(completed.kill).not.toHaveBeenCalled();
-    expect(completed.getStatus).not.toHaveBeenCalled();
-  });
-
-  it("truncates background process stdout and stderr on UTF-8 boundaries", async () => {
-    const sandbox = fakeSandbox();
-    const process = fakeProcess({
-      id: "proc_flood",
-      command: "flood",
-      status: "completed" as const,
-      exitCode: 0,
-    });
-    process.getLogs.mockResolvedValue({
-      stdout: "🦀".repeat(40_000),
-      stderr: "λ".repeat(80_000),
-    });
-    sandbox.getProcess.mockResolvedValue(process);
-    const tools = createCloudflareSandboxTools(async () => sandbox);
-
-    const result = (await tools.sandbox_get_process!.handler(
-      { process_id: "proc_flood" },
-      context,
-    )) as Record<string, unknown>;
-    expect(result.stdout_truncated).toBe(true);
-    expect(result.stderr_truncated).toBe(true);
-    expect(new TextEncoder().encode(String(result.stdout)).byteLength).toBe(128 * 1024);
-    expect(new TextEncoder().encode(String(result.stderr)).byteLength).toBe(128 * 1024);
+    await expect(tools.preview!.handler({ port: 3_000 }, context))
+      .rejects.toThrow("reserved for the sandbox control plane");
+    await expect(cloudflareSandboxPreviewUrl(
+      "https://nanocodex.example", "secret", "preview-session", 3_000,
+    )).rejects.toThrow("reserved for the sandbox control plane");
+    await expect(proxyCloudflareSandboxPreview(
+      fakeNamespace(), "preview-session", 3_000,
+      new Request("https://nanocodex.example/sandbox-preview/capability/"),
+      "/api/execute",
+    )).rejects.toThrow("reserved for the sandbox control plane");
   });
 
   it("keeps account credentials and origin authority out of sandbox previews", async () => {
-    const containerFetch = vi.fn(async (_request: Request, _port: number) => new Response("preview", {
+    const containerFetch = vi.fn(async (_request: Request) => new Response("preview", {
       status: 201,
       headers: {
         "clear-site-data": '"cookies"',
@@ -554,10 +300,7 @@ describe("Cloudflare sandbox tools", () => {
         "set-cookie": "nanocodex=overwritten",
       },
     }));
-    sandboxSdk.getSandbox.mockReturnValue({
-      containerFetch,
-      wsConnect: vi.fn(),
-    });
+    sandboxSdk.getSandbox.mockReturnValue({ containerFetch, wsConnect: vi.fn() });
     const request = new Request("https://nanocodex.example/sandbox-preview/capability/app?q=kept", {
       method: "POST",
       headers: {
@@ -579,11 +322,7 @@ describe("Cloudflare sandbox tools", () => {
     });
 
     const response = await proxyCloudflareSandboxPreview(
-      fakeNamespace(),
-      "preview-session",
-      8_080,
-      request,
-      "/app",
+      fakeNamespace(), "preview-session", 8_080, request, "/app",
     );
 
     const forwarded = containerFetch.mock.calls[0]![0];
@@ -791,19 +530,25 @@ describe("Cloudflare sandbox tools", () => {
   it("rejects expired and malformed authenticated preview payloads", async () => {
     const secret = "preview-expiry-test-secret";
     const sessionId = "018f25e8-7b51-7a32-8c4d-abcdef012345";
-    const expired = await sealPreviewPayload(
-      secret,
-      `${sessionId}\n8080\n${Date.now() - 1}`,
-    );
-    const malformed = await sealPreviewPayload(
-      secret,
-      `${sessionId}\n8080\nnot-an-expiry`,
-    );
+    const expired = await sealPreviewPayload(secret, `${sessionId}\n8080\n${Date.now() - 1}`);
+    const malformed = await sealPreviewPayload(secret, `${sessionId}\n8080\nnot-an-expiry`);
 
     await expect(openSandboxPreviewCapability(secret, expired))
       .rejects.toThrow("invalid preview capability");
     await expect(openSandboxPreviewCapability(secret, malformed))
       .rejects.toThrow("invalid preview capability");
+  });
+
+  it("round-trips valid preview capabilities", async () => {
+    const secret = "preview-round-trip-secret";
+    const sessionId = "018f25e8-7b51-7a32-8c4d-fedcba987654";
+    const url = await cloudflareSandboxPreviewUrl(
+      "https://nanocodex.example", secret, sessionId, 8_080,
+    );
+    const capability = new URL(url).pathname.split("/")[2]!;
+
+    await expect(openSandboxPreviewCapability(secret, capability))
+      .resolves.toEqual({ sessionId, port: 8_080 });
   });
 
   it("caches one derived preview key and replaces it when the secret rotates", async () => {
@@ -845,103 +590,56 @@ describe("Cloudflare sandbox tools", () => {
     await deleteCloudflareSandboxWorkspace(bucket, "session");
 
     expect(bucket.list).toHaveBeenCalledTimes(3);
-    expect(bucket.list).toHaveBeenCalledWith({ prefix: "/sessions/session/", limit: 1_000 });
-    expect(bucket.delete).toHaveBeenCalledWith([
-      "/sessions/session/a",
-      "/sessions/session/b",
-    ]);
+    expect(bucket.delete).toHaveBeenCalledWith(["/sessions/session/a", "/sessions/session/b"]);
     expect(bucket.delete).toHaveBeenCalledWith(["/sessions/session/c"]);
   });
 });
 
-type FakeLookupProcess = {
-  id: string;
-  pid?: number;
-  command: string;
-  status: "starting" | "running" | "completed" | "failed" | "killed" | "error";
-  exitCode?: number;
-  kill(): Promise<void>;
-  getStatus(): Promise<"starting" | "running" | "completed" | "failed" | "killed" | "error">;
-  getLogs(): Promise<{ stdout: string; stderr: string }>;
-  waitForPort(port: number, options?: { timeout?: number }): Promise<void>;
-  waitForExit(timeout?: number): Promise<{ exitCode: number }>;
-};
-
 function fakeSandbox() {
   const process = fakeProcess();
   return {
-    exec: vi.fn(async (_command: string, _options?: { cwd: string; timeout?: number }) => ({
-      success: true,
-      exitCode: 0,
-      stdout: "",
-      stderr: "",
-      duration: 1,
+    exec: vi.fn(async (_command: string, _options?: { cwd: string }) => executionResult("")),
+    startProcess: vi.fn(async (_command: string, options: { processId: string }) => ({
+      ...process,
+      id: options.processId,
     })),
-    startProcess: vi.fn(async (command: string) => ({ ...process, command })),
-    getProcess: vi.fn(async (id: string): Promise<FakeLookupProcess | null> => (
-      id === process.id ? process : null
-    )),
-    readFile: vi.fn(async () => ({
-      size: 0,
-      content: new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } }),
-    })),
-    writeFile: vi.fn(async () => {}),
-    listFiles: vi.fn(async () => ({ files: [] })),
+    getProcess: vi.fn(async (_id: string) => null as ReturnType<typeof fakeProcess> | null),
     tunnels: { get: vi.fn(async () => ({ url: "https://preview.example" })) },
   };
 }
 
-function fakeProcess(overrides: Partial<Pick<
-  FakeLookupProcess,
-  "id" | "pid" | "command" | "status" | "exitCode"
->> = {}) {
+function fakeProcess(overrides: {
+  id?: string;
+  status?: "starting" | "running" | "completed" | "failed" | "killed" | "error";
+  exitCode?: number;
+} = {}) {
+  const status = overrides.status ?? "completed";
   return {
-    id: "process",
-    pid: 1,
-    command: "",
-    status: "running" as const,
+    id: overrides.id ?? "process",
+    status,
+    exitCode: overrides.exitCode ?? 0,
     kill: vi.fn(async () => {}),
-    getStatus: vi.fn(async (): Promise<FakeLookupProcess["status"]> => "running"),
+    getStatus: vi.fn(async () => status),
     getLogs: vi.fn(async () => ({ stdout: "", stderr: "" })),
-    waitForPort: vi.fn(async () => {}),
-    waitForExit: vi.fn(async () => ({ exitCode: 0 })),
-    ...overrides,
+    waitForExit: vi.fn(async () => ({ exitCode: overrides.exitCode ?? 0 })),
   };
 }
 
-function preparingSandbox(initialState: MountState) {
+function preparingSandbox(initialState: "empty" | "mounted" | "occupied") {
   let mountState = initialState;
   const sandbox = {
     ...fakeSandbox(),
     mountBucket: vi.fn(async () => { mountState = "mounted"; }),
     destroy: vi.fn(async () => {}),
-    setMountState(state: MountState) { mountState = state; },
-    getMountState() { return mountState; },
   };
   sandbox.exec.mockImplementation(async (command: string) => executionResult(
-    isMountProbe(command) ? mountState : "",
+    command.startsWith("if mountpoint -q /workspace") ? mountState : "",
   ));
   return sandbox;
 }
 
-type MountState = "absent" | "empty" | "occupied" | "mounted" | "mounted-unhealthy";
-
-function isMountProbe(command: unknown): boolean {
-  return typeof command === "string" && command.startsWith("if mountpoint -q /workspace");
-}
-
-function isWorkspaceFlush(command: unknown): boolean {
-  return command === "sync -f /workspace";
-}
-
-function executionResult(stdout: string) {
-  return {
-    success: true,
-    exitCode: 0,
-    stdout,
-    stderr: "",
-    duration: 1,
-  };
+function executionResult(stdout: string, stderr = "", exitCode = 0, duration = 1) {
+  return { success: exitCode === 0, exitCode, stdout, stderr, duration };
 }
 
 function fakeNamespace(): DurableObjectNamespace<Sandbox> {
@@ -951,13 +649,7 @@ function fakeNamespace(): DurableObjectNamespace<Sandbox> {
 async function sealPreviewPayload(secret: string, payload: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
-  const key = await crypto.subtle.importKey(
-    "raw",
-    digest,
-    { name: "AES-GCM" },
-    false,
-    ["encrypt"],
-  );
+  const key = await crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt"]);
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
     {
       name: "AES-GCM",

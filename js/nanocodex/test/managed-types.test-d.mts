@@ -18,6 +18,8 @@ const capabilities: Capabilities = {
   live_cancel: true,
   workspace: "cloudflare-computer",
   execution_environments: true,
+  execution_namespace: "cwd-root-v1",
+  native_cross_mounts: false,
 };
 void capabilities;
 

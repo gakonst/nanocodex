@@ -1,15 +1,21 @@
 import { getSandbox } from "@cloudflare/sandbox";
 import type { ToolMap } from "nanocodex";
+import {
+  EXEC_COMMAND_PARAMETERS,
+  EXECUTION_OUTPUT_SCHEMA,
+  MACHINE_PREVIEW_PARAMETERS,
+  PREVIEW_OUTPUT_SCHEMA,
+  WRITE_STDIN_PARAMETERS,
+} from "nanocodex-tools/execution-contract";
 
 import { isPrivateEgressHeader } from "./managed-egress";
 import type { Sandbox } from "./sandbox-runtime";
 
 const WORKSPACE = "/workspace";
 const WORKSPACE_FLUSH_COMMAND = "sync -f /workspace";
-const MAX_COMMAND_CHARS = 32 * 1024;
-const MAX_FILE_BYTES = 1024 * 1024;
-const MAX_OUTPUT_BYTES = 128 * 1024;
-const MAX_LIST_ENTRIES = 512;
+const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
+const APPROXIMATE_BYTES_PER_TOKEN = 4;
+const OUTPUT_CURSOR_PREFIX = "sandbox-output-cursor:";
 const WORKSPACE_MOUNT_PROBE_TIMEOUT_MS = 10_000;
 const WORKSPACE_MOUNT_HEALTH_ATTEMPTS = 3;
 const PREVIEW_CAPABILITY_TTL_MS = 60 * 60 * 1_000;
@@ -58,24 +64,15 @@ type SandboxPreparation = {
   promise: Promise<Sandbox>;
 };
 
-type SandboxProcessStatus =
-  | "starting"
-  | "running"
-  | "completed"
-  | "failed"
-  | "killed"
-  | "error";
+type SandboxProcessStatus = "starting" | "running" | "completed" | "failed" | "killed" | "error";
 
 type SandboxProcess = {
   id: string;
-  pid?: number;
-  command: string;
   status: SandboxProcessStatus;
   exitCode?: number;
   kill(): Promise<void>;
   getStatus(): Promise<SandboxProcessStatus>;
   getLogs(): Promise<{ stdout: string; stderr: string }>;
-  waitForPort(port: number, options?: { timeout?: number }): Promise<void>;
   waitForExit(timeout?: number): Promise<{ exitCode: number }>;
 };
 
@@ -97,27 +94,18 @@ type SandboxToolClient = {
   }>;
   startProcess(
     command: string,
-    options: { cwd: string; autoCleanup: false },
+    options: { cwd: string; processId: string; autoCleanup: false },
   ): Promise<SandboxProcess>;
   getProcess(id: string): Promise<SandboxProcess | null>;
-  readFile(
-    path: string,
-    options: { encoding: "none" },
-  ): Promise<{ size: number; content: ReadableStream<Uint8Array> }>;
-  writeFile(
-    path: string,
-    content: string,
-    options: { encoding: "utf-8" },
-  ): Promise<unknown>;
-  listFiles(
-    path: string,
-    options: { includeHidden: true },
-  ): Promise<{
-    files: Array<{ name: string; type: string; size: number }>;
-  }>;
   tunnels: {
     get(port: number): Promise<{ url: string }>;
   };
+};
+
+type SandboxOutputCursorStorage = {
+  delete(key: string): void;
+  get(key: string): unknown;
+  put(key: string, value: unknown): void;
 };
 
 export function cloudflareSandboxTools(
@@ -126,6 +114,7 @@ export function cloudflareSandboxTools(
   localBucket = false,
   publicOrigin?: string,
   previewSecret?: string,
+  outputCursorStorage?: SandboxOutputCursorStorage,
 ): ToolMap {
   return createCloudflareSandboxTools(
     () => prepareSandbox(namespace, sessionId, localBucket),
@@ -141,6 +130,7 @@ export function cloudflareSandboxTools(
           ),
           persistent: false,
         }),
+    outputCursorStorage,
   );
 }
 
@@ -186,267 +176,91 @@ export async function deleteCloudflareSandboxWorkspace(
 export function createCloudflareSandboxTools(
   createSandbox: () => Promise<SandboxToolClient>,
   createPreview?: (port: number) => Promise<{ port: number; url: string; persistent: boolean }>,
+  outputCursorStorage: SandboxOutputCursorStorage = memoryOutputCursorStorage(),
 ): ToolMap {
   return {
-    sandbox_exec: {
-      description: "Run a foreground shell command in this session's isolated Cloudflare Sandbox workspace.",
-      parameters: {
-        type: "object",
-        properties: {
-          command: { type: "string", description: "Shell command to run." },
-          cwd: { type: "string", description: "Workspace-relative working directory." },
-          timeout_ms: {
-            type: "integer",
-            minimum: 1,
-            description: "Optional Sandbox SDK execution timeout in milliseconds.",
-          },
-        },
-        required: ["command"],
-        additionalProperties: false,
-      },
-      handler: async (input) => {
+    exec_command: {
+      description: "Run a shell command in the retained native Linux sandbox, returning a session when it remains live.",
+      parameters: EXEC_COMMAND_PARAMETERS,
+      outputSchema: EXECUTION_OUTPUT_SCHEMA,
+      handler: async (input, context) => {
         const value = objectInput(input);
-        const command = requiredString(value.command, "command", MAX_COMMAND_CHARS);
-        const cwd = workspacePath(optionalString(value.cwd, "cwd") ?? ".");
-        const timeout = optionalPositiveInteger(value.timeout_ms, "timeout_ms");
+        if (value.sandbox_permissions === "require_escalated") {
+          throw new Error("Cloudflare Sandbox exec_command does not support privilege escalation");
+        }
+        if (value.tty === true) throw new Error("Cloudflare Sandbox exec_command does not support TTY sessions");
+        if (value.shell !== undefined || value.login !== undefined) {
+          throw new Error("Cloudflare Sandbox exec_command does not support shell or login overrides");
+        }
+        const command = requiredString(value.cmd, "cmd");
+        const cwd = workspacePath(optionalString(value.workdir, "workdir") ?? ".");
+        const yieldTime = yieldMilliseconds(value.yield_time_ms, 10_000);
+        const outputByteLimit = requestedOutputBytes(value.max_output_tokens);
+        context?.signal.throwIfAborted();
         const sandbox = await createSandbox();
-        return withSandboxRpcResult(
-          sandbox.exec(command, {
+        context?.signal.throwIfAborted();
+        const sessionId = await availableSessionId(sandbox);
+        outputCursorStorage.put(`${OUTPUT_CURSOR_PREFIX}${sessionId}`, 0);
+        let process: SandboxProcess | undefined;
+        try {
+          process = await sandbox.startProcess(mergedShellCommand(command), {
             cwd,
-            ...(timeout === undefined ? {} : { timeout }),
-          }).catch(async (error: unknown) => {
-            try { await flushWorkspace(sandbox); } catch { /* Preserve the execution failure. */ }
-            throw error;
-          }),
-          async (result) => {
-            await flushWorkspace(sandbox);
-            return {
-              success: result.success,
-              exit_code: result.exitCode,
-              ...boundedOutput(result),
-              duration_ms: result.duration,
-            };
-          },
-        );
-      },
-    },
-    sandbox_read_file: {
-      description: "Read a UTF-8 text file from this session's isolated workspace (maximum 1 MiB).",
-      parameters: pathParameters(),
-      handler: async (input) => {
-        const path = workspacePath(requiredString(objectInput(input).path, "path", 1024));
-        return withSandboxRpcResult(
-          (await createSandbox()).readFile(path, { encoding: "none" }),
-          async (result) => {
-            if (result.size > MAX_FILE_BYTES) {
-              await cancelReadableStream(result.content, "file exceeds 1 MiB");
-              throw new Error("file exceeds 1 MiB");
-            }
-            return { path, content: await readBounded(result.content) };
-          },
-        );
-      },
-    },
-    sandbox_start_process: {
-      description: "Start a managed background process in this session's Cloudflare Sandbox, optionally waiting for an HTTP port to become ready.",
-      parameters: {
-        type: "object",
-        properties: {
-          command: { type: "string", description: "Command to start." },
-          cwd: { type: "string", description: "Workspace-relative working directory." },
-          ready_port: { type: "integer", minimum: 1024, maximum: 65_535 },
-          ready_timeout_ms: {
-            type: "integer",
-            minimum: 1,
-            description: "Optional Sandbox SDK port-readiness timeout in milliseconds.",
-          },
-        },
-        required: ["command"],
-        additionalProperties: false,
-      },
-      handler: async (input) => {
-        const value = objectInput(input);
-        const command = requiredString(value.command, "command", MAX_COMMAND_CHARS);
-        const cwd = workspacePath(optionalString(value.cwd, "cwd") ?? ".");
-        const readyPort = optionalPort(value.ready_port, "ready_port");
-        const readyTimeout = optionalPositiveInteger(
-          value.ready_timeout_ms,
-          "ready_timeout_ms",
-        );
-        const sandbox = await createSandbox();
-        return withSandboxRpcResult(
-          sandbox.startProcess(command, {
-            cwd,
+            processId: sandboxProcessId(sessionId),
             autoCleanup: false,
-          }),
-          async (process) => {
-            if (readyPort !== undefined) {
-              try {
-                await process.waitForPort(
-                  readyPort,
-                  readyTimeout === undefined ? undefined : { timeout: readyTimeout },
-                );
-              } catch (error) {
-                let status = await process.getStatus().catch(() => process.status);
-                let killError: string | undefined;
-                if (!isTerminalProcessStatus(status)) {
-                  try {
-                    await process.kill();
-                    status = await process.getStatus().catch(() => status);
-                  } catch (killFailure) {
-                    killError = errorMessage(killFailure);
-                  }
-                }
-                let flushError: string | undefined;
-                try {
-                  await flushWorkspace(sandbox);
-                } catch (flushFailure) {
-                  flushError = errorMessage(flushFailure);
-                }
-                return {
-                  process_id: process.id,
-                  pid: process.pid,
-                  command,
-                  status,
-                  terminal: isTerminalProcessStatus(status),
-                  ready_port: readyPort,
-                  ready: false,
-                  ready_error: errorMessage(error),
-                  ...(killError === undefined ? {} : { kill_error: killError }),
-                  ...(flushError === undefined ? {} : { flush_error: flushError }),
-                };
-              }
-            }
-            const status = await process.getStatus();
-            if (isTerminalProcessStatus(status)) await flushWorkspace(sandbox);
-            return {
-              process_id: process.id,
-              pid: process.pid,
-              command,
-              status,
-              ...(readyPort === undefined ? {} : { ready_port: readyPort, ready: true }),
-            };
-          },
+          });
+          return await observeProcess(
+            sandbox,
+            process,
+            sessionId,
+            yieldTime,
+            outputByteLimit,
+            outputCursorStorage,
+            context?.signal,
+          );
+        } catch (error) {
+          if (process === undefined) {
+            outputCursorStorage.delete(`${OUTPUT_CURSOR_PREFIX}${sessionId}`);
+            try { await flushWorkspace(sandbox); } catch { /* Preserve the execution failure. */ }
+          }
+          throw error;
+        }
+      },
+    },
+    write_stdin: {
+      description: "Poll a session returned by exec_command in the retained native Linux sandbox, or send Ctrl-C to terminate it.",
+      parameters: WRITE_STDIN_PARAMETERS,
+      outputSchema: EXECUTION_OUTPUT_SCHEMA,
+      handler: async (input, context) => {
+        const value = objectInput(input);
+        if (value.chars !== undefined && value.chars !== "" && value.chars !== "\u0003") {
+          throw new Error("Cloudflare Sandbox write_stdin supports only polling or Ctrl-C termination; stdin is unavailable");
+        }
+        const sessionId = requiredSessionId(value.session_id);
+        const yieldTime = yieldMilliseconds(value.yield_time_ms, 5_000);
+        const outputByteLimit = requestedOutputBytes(value.max_output_tokens);
+        context?.signal.throwIfAborted();
+        const sandbox = await createSandbox();
+        const process = await sandbox.getProcess(sandboxProcessId(sessionId));
+        if (process === null) throw new Error(`unknown sandbox session: ${sessionId}`);
+        if (value.chars === "\u0003") await process.kill().catch(() => {});
+        return observeProcess(
+          sandbox,
+          process,
+          sessionId,
+          yieldTime,
+          outputByteLimit,
+          outputCursorStorage,
+          context?.signal,
         );
       },
     },
-    sandbox_get_process: {
-      description: "Get authoritative status for a background process in this session's Cloudflare Sandbox. Terminal results include accumulated output; set include_output only when partial running output is needed.",
-      parameters: processIdParameters(true),
+    preview: {
+      description: "Expose an HTTP server from the retained native Linux sandbox.",
+      parameters: MACHINE_PREVIEW_PARAMETERS,
+      outputSchema: PREVIEW_OUTPUT_SCHEMA,
       handler: async (input) => {
         const value = objectInput(input);
-        const processId = requiredProcessId(value.process_id);
-        const sandbox = await createSandbox();
-        return withSandboxRpcResult(
-          sandbox.getProcess(processId),
-          async (process) => {
-            if (process === null) return { found: false, process_id: processId };
-            const terminal = isTerminalProcessStatus(process.status);
-            let output;
-            if (terminal || value.include_output === true) {
-              const logs = process.getLogs();
-              output = boundedOutput(await (terminal
-                ? Promise.all([logs, flushWorkspace(sandbox)]).then(([result]) => result)
-                : logs));
-            }
-            return {
-              found: true,
-              process_id: process.id,
-              pid: process.pid,
-              command: process.command,
-              status: process.status,
-              terminal,
-              exit_code: process.exitCode ?? null,
-              ...output,
-            };
-          },
-        );
-      },
-    },
-    sandbox_kill_process: {
-      description: "Terminate a running background process in this session's Cloudflare Sandbox.",
-      parameters: processIdParameters(),
-      handler: async (input) => {
-        const processId = requiredProcessId(objectInput(input).process_id);
-        const sandbox = await createSandbox();
-        return withSandboxRpcResult(
-          sandbox.getProcess(processId),
-          async (process) => {
-            if (process === null) return { found: false, process_id: processId };
-            let status = process.status;
-            const killRequested = !isTerminalProcessStatus(status);
-            if (killRequested) {
-              await process.kill();
-              status = await process.getStatus();
-            }
-            await flushWorkspace(sandbox);
-            return {
-              found: true,
-              process_id: process.id,
-              status,
-              terminal: isTerminalProcessStatus(status),
-              kill_requested: killRequested,
-            };
-          },
-        );
-      },
-    },
-    sandbox_write_file: {
-      description: "Write a UTF-8 text file inside this session's isolated workspace (maximum 1 MiB).",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Workspace-relative file path." },
-          content: { type: "string", description: "Complete UTF-8 file content." },
-        },
-        required: ["path", "content"],
-        additionalProperties: false,
-      },
-      handler: async (input) => {
-        const value = objectInput(input);
-        const path = workspacePath(requiredString(value.path, "path", 1024));
-        const content = requiredContent(value.content);
-        const bytes = new TextEncoder().encode(content).byteLength;
-        if (bytes > MAX_FILE_BYTES) throw new Error("content exceeds 1 MiB");
-        const sandbox = await createSandbox();
-        await sandbox.writeFile(path, content, { encoding: "utf-8" });
-        await flushWorkspace(sandbox);
-        return { path, bytes_written: bytes };
-      },
-    },
-    sandbox_list_files: {
-      description: "List files in a directory inside this session's isolated workspace.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Workspace-relative directory; defaults to the workspace root." },
-        },
-        additionalProperties: false,
-      },
-      handler: async (input) => {
-        const value = objectInput(input);
-        const path = workspacePath(optionalString(value.path, "path") ?? ".");
-        return withSandboxRpcResult(
-          (await createSandbox()).listFiles(path, { includeHidden: true }),
-          (result) => ({
-            path,
-            entries: result.files.slice(0, MAX_LIST_ENTRIES).map((entry) => ({
-              name: entry.name,
-              type: entry.type,
-              size: entry.size,
-            })),
-            truncated: result.files.length > MAX_LIST_ENTRIES,
-          }),
-        );
-      },
-    },
-    sandbox_preview: {
-      // Keep this definition byte-stable so snapshots created before the
-      // Worker-fronted preview implementation can resume safely.
-      description: "Expose a server running in the sandbox through a temporary public Cloudflare Tunnel URL.",
-      parameters: portParameters(),
-      handler: async (input) => {
-        const port = requiredPort(objectInput(input).port);
+        const port = requiredPort(value.port);
         const prepared = await createSandbox();
         if (createPreview) return createPreview(port);
         return withSandboxRpcResult(
@@ -464,6 +278,7 @@ export async function cloudflareSandboxPreviewUrl(
   sessionId: string,
   port: number,
 ): Promise<string> {
+  requiredPort(port);
   const origin = new URL(publicOrigin);
   if (!["http:", "https:"].includes(origin.protocol)
     || origin.username
@@ -497,13 +312,15 @@ export async function openSandboxPreviewCapability(
   const [sessionId, rawPort, rawExpiresAt, ...extra] = new TextDecoder()
     .decode(plaintext)
     .split("\n");
-  const port = Number(rawPort);
+  let port: number;
+  try {
+    port = requiredPort(Number(rawPort));
+  } catch {
+    throw new Error("invalid preview capability");
+  }
   const expiresAt = Number(rawExpiresAt);
   if (!sessionId
     || extra.length > 0
-    || !Number.isInteger(port)
-    || port < 1024
-    || port > 65_535
     || !Number.isSafeInteger(expiresAt)
     || expiresAt <= Date.now()) {
     throw new Error("invalid preview capability");
@@ -518,6 +335,7 @@ export async function proxyCloudflareSandboxPreview(
   request: Request,
   path: string,
 ): Promise<Response> {
+  requiredPort(port);
   const incoming = new URL(request.url);
   const targetPath = path.startsWith("/") ? path : `/${path}`;
   const capabilityPath = sandboxPreviewCapabilityPath(incoming.pathname, targetPath);
@@ -862,7 +680,11 @@ function objectInput(input: unknown): Record<string, unknown> {
   return input as Record<string, unknown>;
 }
 
-function requiredString(value: unknown, name: string, maxChars: number): string {
+function requiredString(
+  value: unknown,
+  name: string,
+  maxChars = Number.MAX_SAFE_INTEGER,
+): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${name} must be a non-empty string`);
   if (value.length > maxChars) throw new Error(`${name} is too long`);
   return value;
@@ -871,6 +693,117 @@ function requiredString(value: unknown, name: string, maxChars: number): string 
 function optionalString(value: unknown, name: string): string | undefined {
   if (value === undefined) return undefined;
   return requiredString(value, name, 1024);
+}
+
+function requiredSessionId(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) {
+    throw new Error("session_id must be a positive safe integer");
+  }
+  return Number(value);
+}
+
+function yieldMilliseconds(value: unknown, defaultValue: number): number {
+  if (value === undefined) return defaultValue;
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new Error("yield_time_ms must be a non-negative safe integer");
+  }
+  return Number(value);
+}
+
+function sandboxProcessId(sessionId: number): string {
+  return `nanocodex-${sessionId}`;
+}
+
+async function availableSessionId(sandbox: SandboxToolClient): Promise<number> {
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const sessionId = crypto.getRandomValues(new Uint32Array(1))[0]! || 1;
+    if (await sandbox.getProcess(sandboxProcessId(sessionId)) === null) return sessionId;
+  }
+  throw new Error("could not allocate a sandbox command session");
+}
+
+async function observeProcess(
+  sandbox: SandboxToolClient,
+  initial: SandboxProcess,
+  sessionId: number,
+  yieldTimeMs: number,
+  outputByteLimit: number,
+  outputCursorStorage: SandboxOutputCursorStorage,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const startedAt = performance.now();
+  let process = initial;
+  let refreshed: SandboxProcess | undefined;
+  try {
+    let status = await process.getStatus();
+    if (!isTerminalProcessStatus(status) && yieldTimeMs > 0) {
+      await waitForProcessExit(process, yieldTimeMs, signal);
+      status = await process.getStatus();
+    }
+    if (isTerminalProcessStatus(status)) {
+      refreshed = await sandbox.getProcess(initial.id) ?? undefined;
+      process = refreshed ?? process;
+    }
+    const logs = await process.getLogs();
+    const accumulatedOutput = `${logs.stdout}${logs.stderr}`;
+    const cursorKey = `${OUTPUT_CURSOR_PREFIX}${sessionId}`;
+    const retainedCursor = outputCursorStorage.get(cursorKey);
+    const delivered = Math.min(
+      Number.isSafeInteger(retainedCursor) && Number(retainedCursor) >= 0
+        ? Number(retainedCursor)
+        : 0,
+      accumulatedOutput.length,
+    );
+    const terminal = isTerminalProcessStatus(status);
+    const chunk = boundedOutput(accumulatedOutput, delivered, outputByteLimit, terminal);
+    const nextCursor = delivered + chunk.consumedCharacters;
+    const result: Record<string, unknown> = {
+      output: chunk.text,
+      chunk_id: `${sessionId}:${nextCursor}`,
+      wall_time_seconds: Math.max(0, (performance.now() - startedAt) / 1_000),
+    };
+    if (chunk.truncated) result.original_token_count = chunk.originalTokenCount;
+    if (terminal) {
+      await flushWorkspace(sandbox);
+      outputCursorStorage.delete(cursorKey);
+      if (typeof process.exitCode === "number") result.exit_code = process.exitCode;
+    } else {
+      outputCursorStorage.put(cursorKey, nextCursor);
+      result.session_id = sessionId;
+    }
+    return result;
+  } catch (error) {
+    await process.kill().catch(() => {});
+    outputCursorStorage.delete(`${OUTPUT_CURSOR_PREFIX}${sessionId}`);
+    try { await flushWorkspace(sandbox); } catch { /* Preserve the process observation failure. */ }
+    throw error;
+  } finally {
+    if (refreshed !== undefined && refreshed !== initial) disposeSandboxRpcValue(refreshed);
+    disposeSandboxRpcValue(initial);
+  }
+}
+
+async function waitForProcessExit(
+  process: SandboxProcess,
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  let removeAbort = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const abort = () => {
+      reject(signal?.reason ?? new Error("sandbox command cancelled"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    removeAbort = () => signal?.removeEventListener("abort", abort);
+  });
+  try {
+    await Promise.race([process.waitForExit(milliseconds), aborted]);
+  } catch (error) {
+    if (!(error instanceof Error && error.name === "ProcessReadyTimeoutError")) throw error;
+  } finally {
+    removeAbort();
+  }
 }
 
 function optionalInteger(
@@ -886,100 +819,15 @@ function optionalInteger(
   return value as number;
 }
 
-function optionalPositiveInteger(value: unknown, name: string): number | undefined {
-  if (value === undefined) return undefined;
-  if (!Number.isSafeInteger(value) || Number(value) < 1) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return Number(value);
-}
-
 function requiredPort(value: unknown): number {
   const port = optionalPort(value, "port");
   if (port === undefined) throw new Error("port is required");
+  if (port === 3_000) throw new Error("port 3000 is reserved for the sandbox control plane");
   return port;
 }
 
 function optionalPort(value: unknown, name: string): number | undefined {
   return optionalInteger(value, name, 1024, 65_535);
-}
-
-function pathParameters(): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: { path: { type: "string", description: "Workspace-relative file path." } },
-    required: ["path"],
-    additionalProperties: false,
-  };
-}
-
-function portParameters(): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: { port: { type: "integer", minimum: 1024, maximum: 65_535 } },
-    required: ["port"],
-    additionalProperties: false,
-  };
-}
-
-function processIdParameters(includeOutput = false): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: {
-      process_id: {
-        type: "string",
-        description: "Process ID returned by sandbox_start_process.",
-      },
-      ...(includeOutput ? {
-        include_output: {
-          type: "boolean",
-          description: "Include accumulated output before the process reaches a terminal state.",
-        },
-      } : {}),
-    },
-    required: ["process_id"],
-    additionalProperties: false,
-  };
-}
-
-async function readBounded(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  let completed = false;
-  let cancelled = false;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) {
-        completed = true;
-        break;
-      }
-      size += next.value.byteLength;
-      if (size > MAX_FILE_BYTES) {
-        cancelled = true;
-        await cancelReader(reader, "file exceeds 1 MiB");
-        throw new Error("file exceeds 1 MiB");
-      }
-      chunks.push(next.value);
-    }
-  } catch (error) {
-    if (!completed && !cancelled) await cancelReader(reader, error);
-    throw error;
-  } finally {
-    reader.releaseLock();
-  }
-  const content = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    content.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(content);
-  } catch {
-    throw new Error("file is not valid UTF-8");
-  }
 }
 
 async function withSandboxRpcResult<T, R>(
@@ -1008,70 +856,109 @@ function disposeSandboxRpcValue(value: unknown): void {
   if (typeof dispose === "function") dispose.call(value);
 }
 
-async function cancelReadableStream(stream: ReadableStream<Uint8Array>, reason: unknown): Promise<void> {
-  try {
-    await stream.cancel(reason);
-  } catch {
-    // Preserve the result or decoding failure when cancellation also fails.
-  }
-}
-
-async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>, reason: unknown): Promise<void> {
-  try {
-    await reader.cancel(reason);
-  } catch {
-    // Preserve the result or decoding failure when cancellation also fails.
-  }
-}
-
-function truncate(value: string): { text: string; truncated: boolean } {
+function boundedOutput(
+  accumulated: string,
+  deliveredCharacters: number,
+  outputByteLimit: number,
+  terminal: boolean,
+): {
+  text: string;
+  truncated: boolean;
+  consumedCharacters: number;
+  originalTokenCount: number;
+} {
+  const value = accumulated.slice(deliveredCharacters);
   const encoded = new TextEncoder().encode(value);
-  if (encoded.byteLength <= MAX_OUTPUT_BYTES) return { text: value, truncated: false };
-  let end = MAX_OUTPUT_BYTES;
+  const originalTokenCount = Math.ceil(encoded.byteLength / APPROXIMATE_BYTES_PER_TOKEN);
+  if (encoded.byteLength <= outputByteLimit) {
+    return {
+      text: value,
+      truncated: false,
+      consumedCharacters: value.length,
+      originalTokenCount,
+    };
+  }
+  if (terminal) {
+    const marker = new TextEncoder().encode("\n… output truncated …\n");
+    if (outputByteLimit <= marker.byteLength) {
+      return {
+        text: decodeUtf8Prefix(encoded, outputByteLimit),
+        truncated: true,
+        consumedCharacters: value.length,
+        originalTokenCount,
+      };
+    }
+    const retainedBytes = outputByteLimit - marker.byteLength;
+    const headBytes = Math.ceil(retainedBytes / 2);
+    const head = decodeUtf8Prefix(encoded, headBytes);
+    const tail = decodeUtf8Suffix(encoded, retainedBytes - new TextEncoder().encode(head).byteLength);
+    return {
+      text: `${head}\n… output truncated …\n${tail}`,
+      truncated: true,
+      consumedCharacters: value.length,
+      originalTokenCount,
+    };
+  }
+  const text = decodeUtf8Prefix(encoded, outputByteLimit);
+  return {
+    text,
+    truncated: true,
+    consumedCharacters: text.length,
+    originalTokenCount,
+  };
+}
+
+function decodeUtf8Prefix(encoded: Uint8Array, limit: number): string {
+  let end = Math.min(encoded.byteLength, limit);
   while (end > 0) {
     try {
-      return {
-        text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(encoded.subarray(0, end)),
-        truncated: true,
-      };
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+        .decode(encoded.subarray(0, end));
     } catch {
       end -= 1;
     }
   }
-  return { text: "", truncated: true };
+  return "";
 }
 
-function boundedOutput(output: { stdout: string; stderr: string }): {
-  stdout: string;
-  stderr: string;
-  stdout_truncated: boolean;
-  stderr_truncated: boolean;
-} {
-  const stdout = truncate(output.stdout);
-  const stderr = truncate(output.stderr);
+function decodeUtf8Suffix(encoded: Uint8Array, limit: number): string {
+  let start = Math.max(0, encoded.byteLength - limit);
+  while (start < encoded.byteLength) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+        .decode(encoded.subarray(start));
+    } catch {
+      start += 1;
+    }
+  }
+  return "";
+}
+
+function requestedOutputBytes(value: unknown): number {
+  if (value !== undefined && (!Number.isSafeInteger(value) || Number(value) < 0)) {
+    throw new Error("max_output_tokens must be a non-negative safe integer");
+  }
+  return Math.min(
+    Number.MAX_SAFE_INTEGER,
+    Number(value ?? DEFAULT_MAX_OUTPUT_TOKENS) * APPROXIMATE_BYTES_PER_TOKEN,
+  );
+}
+
+function memoryOutputCursorStorage(): SandboxOutputCursorStorage {
+  const cursors = new Map<string, unknown>();
   return {
-    stdout: stdout.text,
-    stderr: stderr.text,
-    stdout_truncated: stdout.truncated,
-    stderr_truncated: stderr.truncated,
+    delete: (key) => { cursors.delete(key); },
+    get: (key) => cursors.get(key),
+    put: (key, value) => { cursors.set(key, value); },
   };
+}
+
+function mergedShellCommand(command: string): string {
+  return `exec 2>&1\n${command}`;
 }
 
 function isTerminalProcessStatus(status: SandboxProcessStatus): boolean {
   return status !== "starting" && status !== "running";
-}
-
-function requiredContent(value: unknown): string {
-  if (typeof value !== "string") throw new Error("content must be a string");
-  if (value.length > MAX_FILE_BYTES) throw new Error("content exceeds 1 MiB");
-  return value;
-}
-
-function requiredProcessId(value: unknown): string {
-  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value)) {
-    throw new Error("process_id must be a safe Sandbox process ID");
-  }
-  return value;
 }
 
 function errorMessage(error: unknown): string {

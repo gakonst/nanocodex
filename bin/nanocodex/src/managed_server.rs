@@ -1630,7 +1630,7 @@ fn now() -> f64 {
         .map_or(0.0, |v| v.as_secs_f64())
 }
 fn capabilities() -> Value {
-    json!({"durable_turns":true,"resumable_events":true,"live_steer":true,"live_cancel":true,"workspace":"private-hosted-tools-v1","execution_environments":true})
+    json!({"durable_turns":true,"resumable_events":true,"live_steer":true,"live_cancel":true,"workspace":"private-hosted-tools-v1","execution_environments":true,"execution_namespace":"cwd-root-v1","native_cross_mounts":false})
 }
 fn parse_cursor(value: &str) -> ApiResult<i64> {
     if value.is_empty()
