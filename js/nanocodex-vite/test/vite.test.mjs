@@ -141,6 +141,7 @@ test("one Vite plugin gives only the selected broker exact development bindings"
     const config = await plugin.config({
       worker: {},
     }, { command: "serve" });
+    assert.equal(config.define.__NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET__, "true");
     const application = cloudflareOptions.config({ vars: { FROM_WRANGLER: "kept-too" } });
     assert.deepEqual(application.vars, { APPLICATION_VAR: "kept" });
     const broker = cloudflareOptions.auxiliaryWorkers[0].config({
@@ -151,7 +152,12 @@ test("one Vite plugin gives only the selected broker exact development bindings"
     assert.equal(broker.vars.ENVIRONMENT, "development");
     assert.equal(broker.vars.FROM_WRANGLER, "kept-too");
     assert.equal(broker.vars.ALLOW_INSECURE_LOOPBACK_RELAY, "true");
-    assert.equal(broker.vars.NANOCODEX_LOCAL_CHATGPT_AUTO_CLAIM, "true");
+    assert.equal(broker.vars.NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET, "true");
+    assert.equal(
+      broker.vars.NANOCODEX_SPONSORED_CHATGPT_USER_ID,
+      "00000000-0000-4000-8000-000000000001",
+    );
+    assert.equal(Object.hasOwn(broker.vars, "NANOCODEX_LOCAL_CHATGPT_AUTO_CLAIM"), false);
     assert.equal(broker.vars.GITHUB_OAUTH_CLIENT_ID, "github-id");
     assert.equal(broker.vars.GITHUB_OAUTH_CLIENT_SECRET, "github-secret");
     assert.equal(broker.vars.SLACK_OAUTH_CLIENT_ID, "slack-id");
@@ -215,7 +221,11 @@ test("production builds neither read local auth nor start development egress", a
   }, { buildJsPackage: async (release) => packageBuildModes.push(release) });
   const config = await plugin.config({ plugins: [] }, { command: "build" });
   assert.deepEqual(packageBuildModes, [true]);
+  assert.equal(config.define.__NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET__, "false");
   assert.equal(cloudflareOptions.config({ vars: { PRODUCTION: "yes" } }), undefined);
+  assert.equal(cloudflareOptions.config({
+    vars: { NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET: "must-not-be-overridden" },
+  }), undefined);
   assert.equal(typeof config.worker.plugins, "function");
   await plugin.closeBundle();
 });

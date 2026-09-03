@@ -22,9 +22,9 @@ test("decodes and formats the canonical MACH balance", () => {
     token: "0x20c000000000000000000000f37de3740ADec032",
   }, account.toUpperCase());
   assert.equal(balance.atomics, 12_345_678n);
-  assert.equal(formatWalletBalance(balance), "12.345678 MACH");
-  assert.equal(formatWalletBalance({ ...balance, atomics: 0n }), "0.00 MACH");
-  assert.equal(formatWalletBalance({ ...balance, atomics: 1_200_000n }), "1.2 MACH");
+  assert.equal(formatWalletBalance(balance), "$12.345678");
+  assert.equal(formatWalletBalance({ ...balance, atomics: 0n }), "$0.00");
+  assert.equal(formatWalletBalance({ ...balance, atomics: 1_200_000n }), "$1.20");
   assert.throws(() => decodeWalletBalance({
     account,
     balance: "-1",

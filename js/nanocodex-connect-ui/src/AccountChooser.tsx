@@ -1,4 +1,5 @@
 import { useId, useState, type ReactNode } from "react";
+import { normalizeSmsPhone } from "./smsPhone.js";
 
 export type StoredPasskey = Readonly<{
   address: `0x${string}`;
@@ -57,13 +58,14 @@ export function AccountChooser({
 
   async function sendCode() {
     if (operation) return;
-    const normalized = normalizedPhone(phone);
+    const normalized = normalizeSmsPhone(phone);
     if (!normalized) {
       setLocalFailure(/^\d{6}$/.test(phone.trim())
         ? "That looks like a verification code. First enter your mobile number; we’ll ask for the code next."
         : "Enter a valid mobile number with its country code, like +30 697 123 4567.");
       return;
     }
+    setPhone(normalized);
     setOperation("send");
     setLocalFailure(undefined);
     try {
@@ -255,11 +257,6 @@ export function orderedPasskeys(storedPasskeys: readonly StoredPasskey[]): reado
 function maskedPhone(value: string): string {
   const normalized = value.replace(/\D/g, "");
   return normalized.length > 4 ? `+••• ••${normalized.slice(-4)}` : "your phone";
-}
-
-function normalizedPhone(value: string): string | undefined {
-  const normalized = value.replace(/[\s()-]/g, "");
-  return /^\+[1-9]\d{7,14}$/.test(normalized) ? normalized : undefined;
 }
 
 function otpError(value: unknown, fallback: string): string {

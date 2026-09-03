@@ -47,12 +47,12 @@ export function decodeWalletBalance(value: unknown, expectedAccount: string): Wa
 export function formatWalletBalance(balance: WalletBalance): string {
   const scale = 1_000_000n;
   const whole = balance.atomics / scale;
-  const fractional = (balance.atomics % scale).toString().padStart(6, "0").replace(/0+$/, "");
-  return `${whole.toLocaleString("en-US")}.${fractional || "00"} MACH`;
+  const fractional = (balance.atomics % scale).toString().padStart(6, "0").replace(/0+$/, "").padEnd(2, "0");
+  return `$${whole.toLocaleString("en-US")}.${fractional || "00"}`;
 }
 
 export function decodeMachineUsdConfig(value: unknown): MachineUsdConfig {
-  const record = object(value, "MACH config");
+  const record = object(value, "wallet funding config");
   const min = record.min_usd_amount_cents;
   const max = record.max_usd_amount_cents;
   const enabled = record.onramp_enabled ?? true;
@@ -63,7 +63,7 @@ export function decodeMachineUsdConfig(value: unknown): MachineUsdConfig {
     || typeof record.token_address !== "string"
     || record.token_address.toLowerCase() !== MACHINE_USD
     || typeof record.stripe_publishable_key !== "string") {
-    throw new Error("The MACH onramp configuration is invalid.");
+    throw new Error("The Wallet funding configuration is invalid.");
   }
   return {
     minUsdAmountCents: min as number,
@@ -80,26 +80,26 @@ export function decodeFundingAttempt(
   value: unknown,
   orderToken: string,
 ): FundingAttempt {
-  const record = object(value, "MACH order");
-  const order = object(record.order, "MACH order");
-  const payment = object(record.payment, "MACH payment");
+  const record = object(value, "wallet funding order");
+  const order = object(record.order, "wallet funding order");
+  const payment = object(record.payment, "wallet funding payment");
   if (typeof order.id !== "string" || !order.id || typeof payment.checkout_url !== "string") {
-    throw new Error("The MACH order response is invalid.");
+    throw new Error("The Wallet funding order response is invalid.");
   }
   let checkout: URL;
   try {
     checkout = new URL(payment.checkout_url);
   } catch {
-    throw new Error("The MACH checkout URL is invalid.");
+    throw new Error("The Wallet checkout URL is invalid.");
   }
   if (checkout.origin !== "https://checkout.stripe.com" || checkout.username || checkout.password) {
-    throw new Error("The MACH checkout URL is invalid.");
+    throw new Error("The Wallet checkout URL is invalid.");
   }
   return { checkoutUrl: checkout.href, id: order.id, orderToken };
 }
 
 export function classifyFundingOrder(value: unknown): "complete" | "failed" | "pending" {
-  const record = object(value, "MACH order");
+  const record = object(value, "wallet funding order");
   if (record.status === "complete"
     && typeof record.issuance_transaction_hash === "string"
     && TRANSACTION_HASH.test(record.issuance_transaction_hash)) {
@@ -109,7 +109,7 @@ export function classifyFundingOrder(value: unknown): "complete" | "failed" | "p
   if (record.status === "requires_payment" || record.status === "processing" || record.status === "issuing") {
     return "pending";
   }
-  throw new Error("The MACH order response is invalid.");
+  throw new Error("The Wallet funding order response is invalid.");
 }
 
 export function formatDollars(cents: number): string {

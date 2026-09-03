@@ -6,10 +6,10 @@ import { clientFailureMessage } from "./clientFailure";
 import { deploymentHealth } from "./deploymentHealth";
 import { invalidateModelHealthForAccountTransition } from "./modelHealthAccount";
 
-export type CredentialSource = "brokered" | "user" | null;
+export type CredentialSource = "brokered" | "sponsored" | null;
 export type ModelSessionStatus =
   | { state: "signed_out" }
-  | { state: "ready"; ready: boolean; voiceEnabled: boolean }
+  | { state: "ready"; freePromptsRemaining: number | null; ready: boolean; voiceEnabled: boolean }
   | { state: "error"; error: string };
 
 export type SessionPresentation = {
@@ -20,6 +20,8 @@ export type SessionPresentation = {
   runtime?: "browser" | "managed";
   source: CredentialSource | undefined;
 };
+
+const ACCOUNT_TRANSITION_RETRY_DELAYS_MS = [300, 900, 1_800] as const;
 
 export function inactiveTerminalMessage({
   agentError,
@@ -34,8 +36,14 @@ export function inactiveTerminalMessage({
   if (agentStatus === "error" && source) return agentStartFailure(agentError);
   if (source === undefined || authStatus === undefined) return "";
   const agent = runtime === "managed" ? "managed agent" : "browser agent";
-  if (authStatus.state === "signed_out") return `Sign in by SMS to start the ${agent}.`;
+  if (authStatus.state === "signed_out") return `Verify your phone by SMS to start the ${agent}.`;
   if (authStatus.state === "error") return "Could not check your model connection. Use Retry above.";
+  if (runtime === "managed" && source === "sponsored") {
+    return "The included model is limited to the ephemeral homepage demo. Connect ChatGPT or an OpenAI API key to use durable agents.";
+  }
+  if (runtime === "browser" && source === "sponsored" && authStatus.freePromptsRemaining === 0) {
+    return "Your three free prompts are used. Connect ChatGPT or an OpenAI API key to continue.";
+  }
   if (!authStatus.ready) {
     return `Connect ChatGPT or an OpenAI API key from the account menu to start the ${agent}.`;
   }
@@ -74,7 +82,7 @@ export function AgentSessionBar({
     onSourceChange,
   });
   const ready = agentStatus === "ready";
-  const hasCredential = source === "brokered";
+  const hasCredential = source === "brokered" || source === "sponsored";
   const label = sessionLabel({ agentStatus, authStatus: status, capabilityError, source });
   const compactReady = ready
     && hasCredential
@@ -109,7 +117,7 @@ export function AgentSessionBar({
         </p>
       ) : null}
       {status?.state === "signed_out" ? (
-        <p className="agent-session-note" role="status">Sign in by SMS from the account menu.</p>
+        <p className="agent-session-note" role="status">Verify your phone by SMS from the account menu.</p>
       ) : null}
       {agentError ? (
         <p className="agent-byok-error" role="alert">
@@ -133,7 +141,9 @@ export function useModelSession({
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
   const observedAccountId = useRef<string | undefined>(undefined);
-  const requests = useRef(new GenerationRequestOwner<void>());
+  const requests = useRef(new GenerationRequestOwner<
+    Awaited<ReturnType<typeof deploymentHealth.read>> | undefined
+  >());
   const publish = useCallback((next: ModelSessionStatus, source: CredentialSource) => {
     setStatus(next);
     onStatusChange(next);
@@ -154,9 +164,11 @@ export function useModelSession({
         if (generation.current !== current) return;
         publish({
           state: "ready",
+          freePromptsRemaining: health.freePromptsRemaining,
           ready: health.agentConfigured,
           voiceEnabled: health.voiceEnabled,
         }, health.credentialSource);
+        return health;
       } catch (cause) {
         if (generation.current !== current) return;
         publish({
@@ -185,7 +197,23 @@ export function useModelSession({
       publish({ state: "signed_out" }, null);
       return;
     }
-    void readStatus(accountChanged);
+    let cancelled = false;
+    let retry: number | undefined;
+    const retryWhileStarting = (
+      health: Awaited<ReturnType<typeof deploymentHealth.read>> | undefined,
+      attempt = 0,
+    ) => {
+      if (cancelled || health?.agentConfigured !== false
+        || attempt >= ACCOUNT_TRANSITION_RETRY_DELAYS_MS.length) return;
+      retry = window.setTimeout(() => {
+        void readStatus(true).then((next) => retryWhileStarting(next, attempt + 1));
+      }, ACCOUNT_TRANSITION_RETRY_DELAYS_MS[attempt]);
+    };
+    void readStatus(accountChanged).then((health) => retryWhileStarting(health));
+    return () => {
+      cancelled = true;
+      if (retry !== undefined) window.clearTimeout(retry);
+    };
   }, [account, accountSession.status, publish, readStatus]);
   useEffect(() => {
     let inactive = false;
@@ -233,7 +261,7 @@ function sessionLabel({
   source,
 }: SessionPresentation): string {
   if (capabilityError) return "browser unsupported";
-  if (agentStatus === "starting" && source === "brokered") return "agent starting";
+  if (agentStatus === "starting" && source) return "agent starting";
   if (agentStatus === "ready") return "agent ready";
   if (agentStatus === "error" && source) return "agent unavailable";
   if (authStatus?.state === "signed_out") return "account required";

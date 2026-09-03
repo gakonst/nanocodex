@@ -9,8 +9,8 @@ production evidence live in [../../AGENTS.md](../../AGENTS.md).
 - `wrangler.broker.jsonc` deploys `src/egress.ts` as `nanocodex-egress`.
   It has `workers_dev = false` and no public routes; managed services reach it
   only through a Service Binding. Its named `ChiefOfStaffEgress` RPC can only
-  idempotently install the operator-funded model credential for a managed,
-  server-generated Chief user ID.
+  idempotently install the separately configured Chief credential for a
+  managed, server-generated Chief user ID.
 - `wrangler.agent.jsonc` deploys `src/agent.ts` as the public
   `nanocodex-egress-agent-example`. Its `EGRESS` binding demonstrates the
   private call shape; it is not the broker or a production control surface.
@@ -31,6 +31,28 @@ before storage. Production requires
 Chief of Staff deployments also require `CHIEF_OF_STAFF_OPENAI_API_KEY` on
 this broker. The named RPC copies it directly into the generated user's
 encrypted credential vault; the value is never returned to managed or Chief.
+
+The optional homepage demo sponsor is an ordinary Nanocodex account whose
+ChatGPT connection remains in its own encrypted broker. After connecting that
+account through the Account UI, configure its stable account ID on egress:
+
+```sh
+pnpm --filter nanocodex-egress-service exec wrangler secret put NANOCODEX_SPONSORED_CHATGPT_USER_ID --config wrangler.broker.jsonc
+```
+
+Egress uses that ChatGPT credential only when the requesting account has no
+credential and the model subject is the exact 43-character browser identity.
+The 64-character identity used by durable managed agents cannot fall back to
+the sponsor. User-connected ChatGPT or OpenAI credentials always take
+precedence, and no sponsor token or account identifier is returned to callers.
+Each SMS account may reserve exactly three sponsored root prompt IDs. The
+per-account Durable Object serializes reservations, owns a heartbeat-renewed
+attempt lease, permits at most one retry for an interrupted or orphaned root,
+rejects completed replays, retains
+single-use provider-issued tool and tool-search continuations across SDK
+full-history reconnects, and rejects a fourth prompt before its generation
+frame reaches OpenAI. Egress also forces sponsored frames to Luna, no thinking,
+and standard service.
 
 Credentials and encryption keys never enter browser code, managed Workers,
 agent configuration, tool output, or status/control responses. The managed

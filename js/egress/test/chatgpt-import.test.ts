@@ -237,6 +237,31 @@ describe("Service-Binding-only ChatGPT credential import", () => {
     expect(production.status).toBe(404);
     expect(await production.json()).toEqual({ error: "not_found" });
   });
+
+  it("marks local claims internally without exposing their provenance publicly", async () => {
+    const user = "local-user-provenance";
+    const claimed = await SELF.fetch(
+      `https://broker.internal/users/${user}/credentials/chatgpt/local-claim`,
+      { method: "POST" },
+    );
+    expect(claimed.status).toBe(200);
+    expect(await claimed.json()).not.toHaveProperty("provenance");
+    expect(await internalCredential(workerEnv.USER_CREDENTIALS.getByName(user)))
+      .toMatchObject({ status: 200, body: { provenance: "user" } });
+
+    const sponsor = workerEnv.USER_CREDENTIALS.getByName("local-sponsor-provenance");
+    const sponsored = await sponsor.fetch(
+      "https://credentials.internal/v1/chatgpt/local-claim",
+      {
+        method: "POST",
+        headers: { "x-nanocodex-credential-provenance": "sponsor" },
+      },
+    );
+    expect(sponsored.status).toBe(200);
+    expect(await sponsored.json()).not.toHaveProperty("provenance");
+    expect(await internalCredential(sponsor))
+      .toMatchObject({ status: 200, body: { provenance: "sponsor" } });
+  });
 });
 
 function importedCredential(

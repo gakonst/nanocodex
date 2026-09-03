@@ -9,6 +9,46 @@ export class ChatGptEgress {
   fetch(request) {
     const url = new URL(request.url);
     url.hostname = "chatgpt.com";
+    if (url.pathname.endsWith("/codex/responses")
+      && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      server.accept();
+      server.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data));
+        server.send(JSON.stringify({ type: "provider.received", frame: event.data }));
+        const user = Array.isArray(frame.input)
+          ? frame.input.findLast((item) => item?.type === "message" && item?.role === "user")
+          : undefined;
+        const toolRoot = user?.id === "msg_tool_root";
+        const toolSearchRoot = user?.id === "msg_tool_search_root";
+        const interruptedRetry = user?.id === "msg_retry_root";
+        if (interruptedRetry) return;
+        server.send(JSON.stringify({
+          type: "response.completed",
+          response: {
+            id: toolRoot
+              ? "resp_tool_root"
+              : toolSearchRoot ? "resp_tool_search_root" : "resp_test_complete",
+            status: "completed",
+            output: toolRoot ? [{
+              type: "custom_tool_call",
+              call_id: "call_tool_root",
+              name: "exec",
+              input: "text('ok')",
+            }] : toolSearchRoot ? [{
+              type: "tool_search_call",
+              call_id: "call_tool_search_root",
+              status: "completed",
+              execution: "client",
+              arguments: { query: "tools" },
+            }] : [],
+            usage: null,
+          },
+        }));
+      });
+      return new Response(null, { status: 101, webSocket: client });
+    }
     return Response.json({
       url: url.href,
       credential: request.headers.get("authorization")?.startsWith("Bearer ")
@@ -31,7 +71,9 @@ export default defineConfig({
           ENVIRONMENT: "test",
           CREDENTIAL_ENCRYPTION_KEY: TEST_KEY,
           CHIEF_OF_STAFF_OPENAI_API_KEY: "sk-chief-of-staff-test-secret",
+          NANOCODEX_SPONSORED_CHATGPT_USER_ID: "99999999-9999-4999-8999-999999999999",
           ALLOW_LOCAL_CREDENTIAL_CLAIM: "true",
+          NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET: "true",
           LOCAL_CHATGPT_BOOTSTRAP: JSON.stringify({
             access_token: jwt({ exp: 4_102_444_800, marker: "local-access" }),
             refresh_token: "local-refresh-secret",

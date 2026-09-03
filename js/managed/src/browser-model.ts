@@ -1,5 +1,5 @@
 import {
-  authenticate,
+  authenticatePersistentAccount,
   forwardPrincipalAssertions,
   type AccountAuthEnv,
   type Principal,
@@ -9,6 +9,7 @@ import { bindAgentCredential, browserModelSubject } from "./credentials";
 const MODEL_HOST = "nanocodex.internal";
 const STATUS_HOST = "broker.internal";
 const STATUS_PATH = "/.well-known/nanocodex/model-status";
+const SPONSORED_TRIAL_RESET_PATH = "/.well-known/nanocodex/sponsored-trial-reset";
 const MODEL_PATHS = new Set([
   "/v1/responses",
   "/v1/search",
@@ -40,14 +41,18 @@ export async function routeBrowserModel(
   const status = url.protocol === "https:" && url.hostname === STATUS_HOST
     && !url.port && !url.search && !url.hash && url.pathname === STATUS_PATH
     && request.method === "GET";
+  const resetSponsoredTrial = env.ENVIRONMENT?.trim().toLowerCase() === "development"
+    && url.protocol === "https:" && url.hostname === STATUS_HOST
+    && !url.port && !url.search && !url.hash && url.pathname === SPONSORED_TRIAL_RESET_PATH
+    && request.method === "POST";
   const model = url.protocol === "https:" && url.hostname === MODEL_HOST
     && !url.port && !url.search && !url.hash && MODEL_PATHS.has(url.pathname);
-  if (!status && !model) return undefined;
+  if (!status && !resetSponsoredTrial && !model) return undefined;
 
   const authenticationHeaders = new Headers(request.headers);
   authenticationHeaders.delete("authorization");
   authenticationHeaders.delete("x-nanocodex-subject");
-  const principal = await authenticate(
+  const principal = await authenticatePersistentAccount(
     new Request(request.url, {
       method: request.method,
       headers: authenticationHeaders,
@@ -72,7 +77,7 @@ export async function routeBrowserModel(
   headers.delete("x-nanocodex-agent-id");
   headers.set("x-nanocodex-subject", subject);
 
-  if (status) {
+  if (status || resetSponsoredTrial) {
     const bindingFailure = await bindBrowserModelSubject(env, subject, principal.userId);
     if (bindingFailure) return bindingFailure;
     return env.NANOCODEX.fetch(new Request(request, { headers }));

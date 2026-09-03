@@ -8,12 +8,15 @@ or a second agent backend.
 
 ## User surfaces
 
-- **Home and Durable Agent** show the browser agent and its retained thread.
+- **Home** shows an ephemeral browser-agent demo. **Durable Agent** retains a
+  thread only after the user connects their own ChatGPT or OpenAI credential.
 - **Attached Tools**, **Multiplayer**, and **World** demonstrate browser-hosted
   tools, a shared managed-agent room, and an agent-populated world.
 - **Account** and **Connect** handle SMS OTP account login, connection, device,
   and request-scoped Connect journeys. The Connect dialog is served at
   `/connect-dialog`; the separate Connect API routes remain behind the Worker.
+- Signed-out visitors enter their phone and one-time code directly in the Home
+  terminal before its three-prompt sponsored composer appears.
 - **Docs**, **Evals**, **Source**, **Commits**, and **Changelog** present the
   product reference, evaluation evidence, and published repository data.
 
@@ -29,8 +32,16 @@ repository and thread Git data, evaluation reads, and credential-backed model
 operations. Provider credentials stay behind Worker bindings and are not part
 of browser configuration.
 
-Persistent SMS accounts use a Worker-owned secp256k1 root wallet. This app may
-display its public address and send exact `wallet_connect` or
+The deployment may sponsor exactly three prompts in the signed-in Home demo
+from one operator-connected ChatGPT account. The per-account allowance is
+reserved atomically at egress. That fallback is restricted to the ephemeral
+browser model subject, uses Luna with thinking disabled, and cannot authorize
+Durable Agent or the other managed demos. User-connected credentials take
+precedence and are not subject to the sponsored allowance.
+
+Persistent SMS accounts use a Worker-owned secp256k1 root wallet. The account
+UI presents it simply as `Wallet`, shows its dollar-denominated balance, and
+does not render the crypto address. The app may send exact `wallet_connect` or
 `wallet_revokeAccessKey` requests to the authenticated managed-Worker routes,
 but it never receives the root private key or its encrypted envelope. The key
 is custodial and server-side encrypted in the per-user egress Durable Object;

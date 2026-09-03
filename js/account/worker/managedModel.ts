@@ -9,7 +9,9 @@ export type ManagedModelAccess = Readonly<{
 }>;
 
 export type ManagedModelStatus = Readonly<{
+  freePromptsRemaining: number | null;
   ready: boolean;
+  source: "brokered" | "sponsored" | null;
   voiceEnabled: boolean;
 }>;
 
@@ -28,7 +30,8 @@ const HTTP_OPERATIONS = Object.freeze({
   search: "https://nanocodex.internal/v1/search",
 });
 
-const CREDENTIAL_STATUS_URL = "https://managed.internal/v1/credentials";
+const CREDENTIAL_STATUS_URL = "https://broker.internal/.well-known/nanocodex/model-status";
+const SPONSORED_TRIAL_RESET_URL = "https://broker.internal/.well-known/nanocodex/sponsored-trial-reset";
 
 /** Resolves the deployment-owned model boundary without reading a provider credential. */
 export function managedModelAccess(
@@ -65,19 +68,39 @@ export async function managedModelStatus(access: ManagedModelAccess): Promise<Ma
       || response.headers.get("cache-control") !== "no-store"
       || !response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
       await response.body?.cancel();
-      return { ready: false, voiceEnabled: false };
+      return { freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
     }
     const encoded = await response.text();
-    if (encoded.length > 1_024) return { ready: false, voiceEnabled: false };
+    if (encoded.length > 1_024) {
+      return { freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
+    }
     const value = JSON.parse(encoded) as Record<string, unknown>;
     const ready = value !== null
       && !Array.isArray(value)
       && value.ready === true
       && (value.active === "chatgpt" || value.active === "openai");
-    return { ready, voiceEnabled: ready && value.active === "chatgpt" };
+    const sponsoredRemaining = Number.isSafeInteger(value.free_prompts_remaining)
+      && (value.free_prompts_remaining as number) >= 0
+      && (value.free_prompts_remaining as number) <= 3
+      ? value.free_prompts_remaining as number
+      : null;
+    const source = ready && value.source === "sponsored" && sponsoredRemaining !== null
+      ? "sponsored"
+      : ready && value.source === "user" ? "brokered" : null;
+    return {
+      freePromptsRemaining: source === "sponsored" ? sponsoredRemaining : null,
+      ready: source !== null,
+      source,
+      voiceEnabled: source === "brokered" && value.active === "chatgpt",
+    };
   } catch {
-    return { ready: false, voiceEnabled: false };
+    return { freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
   }
+}
+
+/** Resets only the current development account's sponsored homepage allowance. */
+export function resetManagedSponsoredTrial(access: ManagedModelAccess): Promise<Response> {
+  return access.binding.fetch(new Request(SPONSORED_TRIAL_RESET_URL, { method: "POST" }));
 }
 
 /** Opens the exact placeholder-only Responses WebSocket through the private broker. */

@@ -404,6 +404,177 @@
   margin-bottom: 0;
 }
 
+.nanocodex-demo.is-landing .conversation-main {
+  position: relative;
+}
+
+.terminal-sms-auth {
+  position: relative;
+  z-index: 6;
+  width: 100%;
+  padding: 12px clamp(14px, 3vw, 32px) 14px;
+  color: var(--terminal-foreground, var(--text));
+  background: var(--terminal-background, var(--surface));
+  border-top: 1px solid var(--terminal-border, var(--border-soft));
+  font-family: var(--terminal-font-sans);
+}
+
+.terminal-sms-auth .wizard-page {
+  width: min(100%, 836px);
+  margin: 0;
+  padding: 0;
+}
+
+.terminal-sms-auth .wizard-intro {
+  padding: 0 0 10px;
+}
+
+.terminal-sms-auth .wizard-app {
+  gap: 4px;
+}
+
+.terminal-sms-auth .wizard-app > span,
+.terminal-sms-auth .sms-auth-security {
+  display: none;
+}
+
+.terminal-sms-auth .wizard-app h1 {
+  color: var(--terminal-foreground, var(--text));
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.terminal-sms-auth .wizard-app p,
+.terminal-sms-auth .sms-otp-form > p,
+.terminal-sms-auth .sms-otp-change {
+  color: var(--terminal-muted, var(--muted));
+  font-size: 10px;
+}
+
+.terminal-sms-auth .sms-otp-form {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: 7px;
+}
+
+.terminal-sms-auth .sms-otp-form > label {
+  color: var(--terminal-secondary, var(--text-secondary));
+  font-size: 10px;
+}
+
+.terminal-sms-auth .sms-otp-input-row input {
+  min-height: 44px;
+  color: var(--terminal-foreground, var(--text));
+  background: transparent;
+  border-color: var(--terminal-border, var(--border-soft));
+}
+
+.terminal-sms-auth .sms-otp-input-row input:focus {
+  border-color: var(--terminal-foreground, var(--text));
+}
+
+.terminal-sms-auth .sms-otp-input-row button {
+  min-height: 44px;
+  color: var(--terminal-background, var(--surface));
+  background: var(--terminal-foreground, var(--text));
+  border-color: var(--terminal-foreground, var(--text));
+}
+
+.terminal-sms-auth .account-failure {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--terminal-negative, var(--negative)) 30%, var(--terminal-border, var(--border-soft)));
+}
+
+.homepage-trial-actions {
+  position: relative;
+  z-index: 6;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px clamp(14px, 3vw, 32px);
+  border-top: 1px solid var(--terminal-border);
+  color: var(--terminal-foreground);
+  background: var(--terminal-background);
+  font-family: var(--terminal-font-sans);
+  gap: 18px;
+}
+
+.homepage-trial-actions > div {
+  display: grid;
+  gap: 4px;
+}
+
+.homepage-trial-actions strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.homepage-trial-actions span {
+  color: var(--terminal-muted);
+  font-size: 10px;
+}
+
+.homepage-trial-actions nav {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.homepage-trial-actions a,
+.homepage-trial-actions button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  border: 1px solid var(--terminal-foreground);
+  color: var(--terminal-background);
+  background: var(--terminal-foreground);
+  font-size: 10px;
+  text-decoration: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.homepage-trial-actions a:first-child {
+  color: var(--terminal-foreground);
+  background: transparent;
+}
+
+.homepage-trial-actions a:hover,
+.homepage-trial-actions a:focus-visible,
+.homepage-trial-actions button:hover:not(:disabled),
+.homepage-trial-actions button:focus-visible {
+  outline: 2px solid var(--terminal-foreground);
+  outline-offset: 2px;
+}
+
+.homepage-trial-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+@media (max-width: 520px) {
+  .terminal-sms-auth .sms-otp-input-row {
+    grid-template-columns: 1fr;
+  }
+
+  .homepage-trial-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .homepage-trial-actions nav,
+  .homepage-trial-actions a,
+  .homepage-trial-actions button {
+    flex: 1;
+  }
+
+}
+
 @media (max-width: 740px), (pointer: coarse) and (orientation: landscape) and (max-width: 950px) {
   .nanocodex-demo.is-full .artifact-dock:not(.is-collapsed) {
     position: fixed;

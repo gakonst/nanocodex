@@ -95,6 +95,36 @@ test("controller-backed terminal remains caller-owned when no Agent is attached"
   await act(async () => renderer.unmount());
 });
 
+test("caller can lock the composer without remounting the controller-backed terminal", async () => {
+  let renderer;
+  const props = {
+    agent: undefined,
+    agentError: undefined,
+    mode: "preview",
+    onConversationActivity() {},
+    onStateChange() {},
+    retryAgent() {},
+  };
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(AgentTerminalView, props), {
+      createNodeMock(element) {
+        return element.type === "div"
+          ? { clientHeight: 300, firstElementChild: null, scrollHeight: 300, scrollTop: 0 }
+          : {};
+      },
+    });
+  });
+  assert.equal(renderer.root.findAllByType("form").length, 1);
+  await act(async () => renderer.update(React.createElement(AgentTerminalView, {
+    ...props,
+    composer: React.createElement("div", { "data-trial-exhausted": true }, "Connect or fund"),
+  })));
+  assert.equal(renderer.root.findAllByType("form").length, 0);
+  assert.equal(renderer.root.findByProps({ "data-trial-exhausted": true }).children.join(""), "Connect or fund");
+  assert.equal(renderer.root.findAllByProps({ role: "log" }).length, 1);
+  await act(async () => renderer.unmount());
+});
+
 function voiceSnapshot(overrides = {}) {
   return {
     error: undefined,

@@ -1,5 +1,6 @@
 import {
   memo,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -10,6 +11,7 @@ import {
   createConfig,
   useNanocodex,
 } from "nanocodex-react";
+import type { AgentControllerEvent } from "nanocodex-react/agent";
 import type { ArtifactDocument } from "nanocodex/tools/artifact";
 import {
   AgentTerminalView,
@@ -39,9 +41,11 @@ export { AgentTerminalView } from "nanocodex-terminal";
 type AgentTerminalProps = Readonly<{
   authStatus: ModelSessionStatus | undefined;
   capabilityError?: string;
+  composer?: ReactNode;
   enabled: boolean;
   mode: AgentTerminalMode;
   onConversationActivity(input: string): void;
+  onTerminalEvent?(event: AgentControllerEvent): void;
   onStateChange(state: AgentTerminalState): void;
   source: CredentialSource | undefined;
   threadId: string;
@@ -93,9 +97,11 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
   authStatus,
   accountMcpConnections,
   capabilityError,
+  composer,
   enabled,
   mode,
   onConversationActivity,
+  onTerminalEvent,
   onStateChange,
   source,
   threadId,
@@ -108,21 +114,30 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
     agent: {
       mcp: browserMcpConfiguration(location.origin, threadId, accountMcpConnections),
       durability: false,
+      ...(source === "sponsored" ? {
+        model: "gpt-5.6-luna" as const,
+        thinking: "none" as const,
+        reasoningMode: "standard" as const,
+        fastMode: false,
+      } : {}),
     },
-  }), [accountMcpConnections, threadId]);
+  }), [accountMcpConnections, source, threadId]);
   const {
     data: agent,
     error,
     isError,
     refetch,
   } = useNanocodex({ config: agentConfig, enabled, threadId });
+  const refetchRef = useRef(refetch);
+  refetchRef.current = refetch;
   const retryAgent = useCallback(() => {
-    refetch();
-  }, [refetch]);
+    refetchRef.current();
+  }, []);
   return (
     <AgentTerminalView
       agent={agent}
       agentError={isError ? errorMessage(error) : undefined}
+      composer={composer}
       inactiveMessage={({ agentError, agentStatus }) => inactiveTerminalMessage({
         agentError,
         agentStatus,
@@ -132,6 +147,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       })}
       mode={mode}
       onConversationActivity={onConversationActivity}
+      onTerminalEvent={onTerminalEvent}
       onStateChange={onStateChange}
       retryAgent={retryAgent}
       voice={voiceEnabled}

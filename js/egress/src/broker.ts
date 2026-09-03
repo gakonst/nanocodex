@@ -62,14 +62,28 @@ const PRODUCTION_CONNECT_API_ORIGIN = "https://nanocodex-connect-api.gakonst.wor
 const MAX_WALLET_RESOURCES = 64;
 const MAX_WALLET_RESOURCE_BYTES = 512;
 const MAX_WALLET_RESOURCE_TOTAL_BYTES = 8 * 1024;
+const SPONSORED_PROMPT_STATE_KEY = "sponsored-prompt-state-v1";
+const SPONSORED_CONNECTION_STATE_KEY = "sponsored-connection-state-v1";
+const SPONSORED_PROMPT_LIMIT = 3;
+const SPONSORED_CONNECTION_LIMIT = 3;
+const SPONSORED_PROMPT_MAX_ATTEMPTS = 2;
+const SPONSORED_PROMPT_LEASE_MS = 15_000;
+const TEST_SPONSORED_PROMPT_LEASE_MS = 250;
+const SPONSORED_PROMPT_ID = /^[A-Za-z][A-Za-z0-9_-]{1,127}$/;
+const SPONSORED_PROMPT_HASH = /^[A-Za-z0-9_-]{43}$/;
+const SPONSORED_CONNECTION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SPONSORED_RESPONSE_ID = /^[A-Za-z][A-Za-z0-9._:-]{1,199}$/;
+const SPONSORED_CALL_ID = /^[A-Za-z][A-Za-z0-9._:-]{1,199}$/;
+const MAX_SPONSORED_CALL_IDS = 64;
 
 export interface BrokerEnv extends CredentialVaultEnv {
   AGENT_SUBJECTS: DurableObjectNamespace<AgentSubjectDirectory>;
   CHIEF_OF_STAFF_OPENAI_API_KEY?: string;
+  NANOCODEX_SPONSORED_CHATGPT_USER_ID?: string;
   CHATGPT_ISSUER?: string;
   ALLOW_LOCAL_CREDENTIAL_CLAIM?: string;
+  NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET?: string;
   LOCAL_CHATGPT_BOOTSTRAP?: string;
-  NANOCODEX_LOCAL_CHATGPT_AUTO_CLAIM?: string;
 }
 
 export type UserCredentialSnapshot = Readonly<{
@@ -79,6 +93,7 @@ export type UserCredentialSnapshot = Readonly<{
   fedramp?: boolean;
   expiresAt?: number;
   revision: number;
+  provenance?: "user" | "sponsor";
 }>;
 
 type ApiKeyCredential = { secret: string; createdAt: number; revision: number };
@@ -89,6 +104,7 @@ type ChatGptCredential = {
   fedramp: boolean;
   expiresAt: number;
   revision: number;
+  provenance?: "user" | "sponsor";
   refreshState: "ready" | "in_flight";
   refreshAfter?: number;
   refreshAttempts?: number;
@@ -158,6 +174,27 @@ type CredentialState = {
   browserCookieJars?: Record<string, BrowserCookieJarMetadata>;
 };
 type StoredRow = { envelope: EncryptedEnvelope };
+type SponsoredPrompt = Readonly<{
+  id: string;
+  hash: string;
+  phase: "in_flight" | "retryable" | "continuation" | "terminal";
+  attempts: number;
+  leaseExpiresAt?: number;
+  continuation?: Readonly<{
+    responseId: string;
+    callIds: readonly string[];
+  }>;
+}>;
+type SponsoredPromptState = Readonly<{
+  prompts: readonly SponsoredPrompt[];
+}>;
+type SponsoredConnection = Readonly<{
+  id: string;
+  leaseExpiresAt: number;
+}>;
+type SponsoredConnectionState = Readonly<{
+  connections: readonly SponsoredConnection[];
+}>;
 
 export type ChatGptCredentialImport = Readonly<{
   access_token: string;
@@ -323,12 +360,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
 
   async #initialize(): Promise<void> {
     const row = await this.#state.storage.get<StoredRow>(STATE_KEY);
-    if (!row) {
-      if (localCredentialAutoClaimEnabled(this.#env)) {
-        await this.#claimLocalBootstrap();
-      }
-      return;
-    }
+    if (!row) return;
     const opened = await this.#vault.open<CredentialState>(row.envelope);
     const installed = this.#installRestoredState(opened.value);
     if (installed.legacy.length) {
@@ -347,6 +379,99 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       }
       if (request.method === "GET" && url.pathname === "/v1/status") {
         return json(this.#publicStatus(), 200);
+      }
+      if (url.pathname === "/v1/sponsored-prompts") {
+        if (request.method === "GET") {
+          return json(await this.#sponsoredPromptStatus(), 200);
+        }
+        if (request.method === "POST") {
+          if (!isJsonContentType(request.headers.get("content-type"))) {
+            return jsonError(415, "invalid_content_type");
+          }
+          const body = await readJson(request, 1_024);
+          const promptId = stringField(body, "prompt_id");
+          const promptHash = stringField(body, "prompt_hash");
+          if (!promptId || !SPONSORED_PROMPT_ID.test(promptId)
+            || !promptHash || !SPONSORED_PROMPT_HASH.test(promptHash)) {
+            return jsonError(400, "invalid_sponsored_prompt");
+          }
+          return this.#reserveSponsoredPrompt(promptId, promptHash);
+        }
+        return jsonError(405, "method_not_allowed");
+      }
+      if (url.pathname === "/v1/sponsored-prompts/reset") {
+        if (!localSponsoredTrialResetEnabled(this.#env)) return jsonError(404, "not_found");
+        if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+        if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
+        await this.#state.storage.delete(SPONSORED_PROMPT_STATE_KEY);
+        return json(sponsoredPromptStatus([]), 200);
+      }
+      if (url.pathname === "/v1/sponsored-connections") {
+        if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+        if (!isJsonContentType(request.headers.get("content-type"))) {
+          return jsonError(415, "invalid_content_type");
+        }
+        const body = await readJson(request, 1_024);
+        const action = stringField(body, "action");
+        const connectionId = stringField(body, "connection_id");
+        if (!connectionId || !SPONSORED_CONNECTION_ID.test(connectionId)
+          || (action !== "acquire" && action !== "heartbeat" && action !== "release")) {
+          return jsonError(400, "invalid_sponsored_connection");
+        }
+        return this.#setSponsoredConnection(connectionId, action);
+      }
+      if (url.pathname === "/v1/sponsored-prompts/continuation") {
+        if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+        if (!isJsonContentType(request.headers.get("content-type"))) {
+          return jsonError(415, "invalid_content_type");
+        }
+        const body = await readJson(request, 16 * 1024);
+        const action = stringField(body, "action");
+        const responseId = stringField(body, "response_id");
+        const callIds = sponsoredCallIds(isRecord(body) ? body.call_ids : undefined);
+        if ((responseId !== undefined && !SPONSORED_RESPONSE_ID.test(responseId)) || !callIds) {
+          return jsonError(400, "invalid_sponsored_continuation");
+        }
+        if (action === "grant") {
+          const promptId = stringField(body, "prompt_id");
+          const attempt = numberField(body, "attempt");
+          if (!promptId || !SPONSORED_PROMPT_ID.test(promptId) || !responseId
+            || !attempt || attempt > SPONSORED_PROMPT_MAX_ATTEMPTS) {
+            return jsonError(400, "invalid_sponsored_continuation");
+          }
+          return this.#grantSponsoredContinuation(promptId, attempt, responseId, callIds);
+        }
+        if (action === "consume") {
+          const promptId = stringField(body, "prompt_id");
+          const promptHash = stringField(body, "prompt_hash");
+          if ((promptId !== undefined && !SPONSORED_PROMPT_ID.test(promptId))
+            || (promptHash !== undefined && !SPONSORED_PROMPT_HASH.test(promptHash))) {
+            return jsonError(400, "invalid_sponsored_continuation");
+          }
+          return this.#consumeSponsoredContinuation(
+            responseId,
+            callIds,
+            promptId,
+            promptHash,
+          );
+        }
+        return jsonError(400, "invalid_sponsored_continuation");
+      }
+      if (url.pathname === "/v1/sponsored-prompts/lifecycle") {
+        if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+        if (!isJsonContentType(request.headers.get("content-type"))) {
+          return jsonError(415, "invalid_content_type");
+        }
+        const body = await readJson(request, 1_024);
+        const action = stringField(body, "action");
+        const promptId = stringField(body, "prompt_id");
+        const attempt = numberField(body, "attempt");
+        if (!promptId || !SPONSORED_PROMPT_ID.test(promptId)
+          || !attempt || attempt > SPONSORED_PROMPT_MAX_ATTEMPTS
+          || (action !== "terminal" && action !== "interrupted" && action !== "heartbeat")) {
+          return jsonError(400, "invalid_sponsored_prompt_lifecycle");
+        }
+        return this.#setSponsoredPromptLifecycle(promptId, attempt, action);
       }
       if (url.pathname === "/v1/wallet") {
         if (request.method === "GET") {
@@ -725,7 +850,11 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       if (request.method === "POST" && url.pathname === "/v1/chatgpt/local-claim") {
         if (!localCredentialClaimEnabled(this.#env)) throw new BrokerFailure(404, "not_found");
         if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
-        await this.#claimLocalBootstrap();
+        const provenance = request.headers.get("x-nanocodex-credential-provenance");
+        if (provenance !== "user" && provenance !== "sponsor") {
+          return jsonError(400, "invalid_request");
+        }
+        await this.#claimLocalBootstrap(provenance);
         return json(this.#publicStatus(), 200);
       }
       if (request.method === "PUT" && url.pathname === "/v1/chatgpt") {
@@ -779,6 +908,245 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     };
   }
 
+  async #sponsoredPromptStatus(): Promise<Readonly<{
+    limit: number;
+    used: number;
+    remaining: number;
+  }>> {
+    const stored = await this.#state.storage.get<unknown>(SPONSORED_PROMPT_STATE_KEY);
+    const prompts = sponsoredPrompts(stored);
+    return sponsoredPromptStatus(prompts);
+  }
+
+  async #reserveSponsoredPrompt(promptId: string, promptHash: string): Promise<Response> {
+    const stored = await this.#state.storage.get<unknown>(SPONSORED_PROMPT_STATE_KEY);
+    const prompts = sponsoredPrompts(stored);
+    const status = sponsoredPromptStatus(prompts);
+    const existing = prompts.find(({ id }) => id === promptId);
+    if (existing?.hash === promptHash) {
+      const now = Date.now();
+      if ((existing.phase === "retryable"
+          || (existing.phase === "in_flight" && existing.leaseExpiresAt! <= now))
+        && existing.attempts < SPONSORED_PROMPT_MAX_ATTEMPTS) {
+        const next = prompts.map((prompt) => prompt.id === promptId
+          ? {
+            id: prompt.id,
+            hash: prompt.hash,
+            phase: "in_flight" as const,
+            attempts: prompt.attempts + 1,
+            leaseExpiresAt: now + sponsoredPromptLeaseMs(this.#env),
+          }
+          : prompt);
+        await this.#state.storage.put(SPONSORED_PROMPT_STATE_KEY, {
+          prompts: next,
+        } satisfies SponsoredPromptState);
+        return json({
+          ...status,
+          reserved: false,
+          dispatch: true,
+          attempt: existing.attempts + 1,
+        }, 200);
+      }
+      return json({
+        ...status,
+        reserved: false,
+        dispatch: false,
+        pending: existing.phase === "in_flight",
+        attempt: existing.attempts,
+        ...(existing.phase === "in_flight"
+          ? { retry_after_ms: Math.max(0, existing.leaseExpiresAt! - now) }
+          : {}),
+      }, 200);
+    }
+    if (existing) return jsonError(409, "sponsored_prompt_conflict");
+    if (prompts.length >= SPONSORED_PROMPT_LIMIT) {
+      return json({
+        error: "sponsored_prompt_limit_reached",
+        ...status,
+      }, 402);
+    }
+    const next = [...prompts, {
+      id: promptId,
+      hash: promptHash,
+      phase: "in_flight" as const,
+      attempts: 1,
+      leaseExpiresAt: Date.now() + sponsoredPromptLeaseMs(this.#env),
+    }];
+    await this.#state.storage.put(SPONSORED_PROMPT_STATE_KEY, {
+      prompts: next,
+    } satisfies SponsoredPromptState);
+    return json({
+      limit: SPONSORED_PROMPT_LIMIT,
+      used: next.length,
+      remaining: SPONSORED_PROMPT_LIMIT - next.length,
+      reserved: true,
+      dispatch: true,
+      attempt: 1,
+    }, 200);
+  }
+
+  async #grantSponsoredContinuation(
+    promptId: string,
+    attempt: number,
+    responseId: string,
+    callIds: readonly string[],
+  ): Promise<Response> {
+    const stored = await this.#state.storage.get<unknown>(SPONSORED_PROMPT_STATE_KEY);
+    const prompts = sponsoredPrompts(stored);
+    const index = prompts.findIndex(({ id }) => id === promptId);
+    if (index < 0 || prompts[index]!.attempts !== attempt) {
+      return jsonError(409, "sponsored_prompt_not_admitted");
+    }
+    const current = prompts[index]!;
+    if (current.phase !== "in_flight" || current.leaseExpiresAt! <= Date.now()) {
+      return jsonError(409, "sponsored_prompt_attempt_stale");
+    }
+    const next = [...prompts];
+    const { leaseExpiresAt: _leaseExpiresAt, ...retained } = current;
+    next[index] = {
+      ...retained,
+      phase: "continuation",
+      continuation: { responseId, callIds },
+    };
+    await this.#state.storage.put(SPONSORED_PROMPT_STATE_KEY, {
+      prompts: next,
+    } satisfies SponsoredPromptState);
+    return json({ granted: true }, 200);
+  }
+
+  async #consumeSponsoredContinuation(
+    responseId: string | undefined,
+    callIds: readonly string[],
+    promptId?: string,
+    promptHash?: string,
+  ): Promise<Response> {
+    const stored = await this.#state.storage.get<unknown>(SPONSORED_PROMPT_STATE_KEY);
+    const prompts = sponsoredPrompts(stored);
+    const candidates = prompts.map((prompt, index) => ({ prompt, index }))
+      .filter(({ prompt }) => prompt.phase === "continuation"
+        && prompt.continuation
+        && (!responseId || prompt.continuation.responseId === responseId)
+        && (!promptId || prompt.id === promptId)
+        && (!promptHash || prompt.hash === promptHash)
+        && isStringSubset(prompt.continuation.callIds, callIds));
+    const index = candidates.length === 1 ? candidates[0]!.index : -1;
+    if (index < 0) return jsonError(409, "sponsored_continuation_unavailable");
+    const current = prompts[index]!;
+    const next = [...prompts];
+    const { continuation: _continuation, ...retained } = current;
+    next[index] = {
+      ...retained,
+      phase: "in_flight",
+      leaseExpiresAt: Date.now() + sponsoredPromptLeaseMs(this.#env),
+    };
+    await this.#state.storage.put(SPONSORED_PROMPT_STATE_KEY, {
+      prompts: next,
+    } satisfies SponsoredPromptState);
+    return json({ prompt_id: current.id, attempt: current.attempts }, 200);
+  }
+
+  async #setSponsoredPromptLifecycle(
+    promptId: string,
+    attempt: number,
+    action: "terminal" | "interrupted" | "heartbeat",
+  ): Promise<Response> {
+    const stored = await this.#state.storage.get<unknown>(SPONSORED_PROMPT_STATE_KEY);
+    const prompts = sponsoredPrompts(stored);
+    const index = prompts.findIndex(({ id }) => id === promptId);
+    if (index < 0) return jsonError(409, "sponsored_prompt_not_admitted");
+    const current = prompts[index]!;
+    if (current.attempts !== attempt) return json({ updated: false }, 200);
+    if (action === "heartbeat") {
+      if (current.phase === "continuation" || current.phase === "terminal") {
+        return json({ updated: false, settled: true }, 200);
+      }
+      if (current.phase !== "in_flight" || current.leaseExpiresAt! <= Date.now()) {
+        return json({ updated: false }, 200);
+      }
+      const next = [...prompts];
+      next[index] = {
+        ...current,
+        leaseExpiresAt: Date.now() + sponsoredPromptLeaseMs(this.#env),
+      };
+      await this.#state.storage.put(SPONSORED_PROMPT_STATE_KEY, {
+        prompts: next,
+      } satisfies SponsoredPromptState);
+      return json({ updated: true }, 200);
+    }
+    if (current.phase !== "in_flight"
+      || (action === "terminal" && current.leaseExpiresAt! <= Date.now())) {
+      return json({ updated: false }, 200);
+    }
+    const {
+      continuation: _continuation,
+      leaseExpiresAt: _leaseExpiresAt,
+      ...retained
+    } = current;
+    const next = [...prompts];
+    next[index] = {
+      ...retained,
+      phase: action === "terminal" ? "terminal" : "retryable",
+    };
+    await this.#state.storage.put(SPONSORED_PROMPT_STATE_KEY, {
+      prompts: next,
+    } satisfies SponsoredPromptState);
+    return json({ updated: true }, 200);
+  }
+
+  async #setSponsoredConnection(
+    connectionId: string,
+    action: "acquire" | "heartbeat" | "release",
+  ): Promise<Response> {
+    const now = Date.now();
+    const stored = await this.#state.storage.get<unknown>(SPONSORED_CONNECTION_STATE_KEY);
+    const current = sponsoredConnections(stored).filter(({ leaseExpiresAt }) => (
+      leaseExpiresAt > now
+    ));
+    const index = current.findIndex(({ id }) => id === connectionId);
+    if (action === "release") {
+      if (index < 0) return json({ updated: false }, 200);
+      const next = current.filter(({ id }) => id !== connectionId);
+      await this.#persistSponsoredConnections(next);
+      return json({ updated: true }, 200);
+    }
+    if (action === "heartbeat") {
+      if (index < 0) return json({ updated: false }, 200);
+      const next = [...current];
+      next[index] = {
+        id: connectionId,
+        leaseExpiresAt: now + sponsoredPromptLeaseMs(this.#env),
+      };
+      await this.#persistSponsoredConnections(next);
+      return json({ updated: true }, 200);
+    }
+    const promptStored = await this.#state.storage.get<unknown>(SPONSORED_PROMPT_STATE_KEY);
+    const status = sponsoredPromptStatus(sponsoredPrompts(promptStored));
+    if (status.remaining === 0) {
+      await this.#persistSponsoredConnections(current);
+      return json({ error: "sponsored_prompt_limit_reached", ...status }, 402);
+    }
+    if (index >= 0) return jsonError(409, "sponsored_connection_conflict");
+    if (current.length >= SPONSORED_CONNECTION_LIMIT) {
+      return jsonError(429, "sponsored_connection_limit_reached");
+    }
+    const next = [...current, {
+      id: connectionId,
+      leaseExpiresAt: now + sponsoredPromptLeaseMs(this.#env),
+    }];
+    await this.#persistSponsoredConnections(next);
+    return json({ acquired: true }, 200);
+  }
+
+  async #persistSponsoredConnections(connections: readonly SponsoredConnection[]): Promise<void> {
+    if (connections.length === 0) {
+      await this.#state.storage.delete(SPONSORED_CONNECTION_STATE_KEY);
+      return;
+    }
+    await this.#state.storage.put(SPONSORED_CONNECTION_STATE_KEY, {
+      connections,
+    } satisfies SponsoredConnectionState);
+  }
+
   async #ensureRootWallet(): Promise<RootWallet> {
     const current = this.#credentials.wallet;
     if (current) return current;
@@ -816,6 +1184,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         fedramp: current.fedramp,
         expiresAt: current.expiresAt,
         revision: current.revision,
+        ...(current.provenance ? { provenance: current.provenance } : {}),
       };
     }
     let credential = current;
@@ -840,6 +1209,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       fedramp: credential.fedramp,
       expiresAt: credential.expiresAt,
       revision: credential.revision,
+      ...(credential.provenance ? { provenance: credential.provenance } : {}),
     };
   }
 
@@ -912,7 +1282,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       throw new BrokerFailure(503, "invalid_chatgpt_login_response");
     }
     const tokens = await exchangeAuthorizationCode(issuer, authorizationCode, codeVerifier);
-    this.#credentials.chatgpt = credentialFromTokens(tokens, undefined, 0);
+    this.#credentials.chatgpt = credentialFromTokens(tokens, undefined, 0, "user");
     this.#credentials.active = "chatgpt";
     delete this.#credentials.login;
     await this.#persist();
@@ -920,11 +1290,10 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     return { state: "authenticated", account_id: this.#credentials.chatgpt.accountId };
   }
 
-  async #claimLocalBootstrap(): Promise<void> {
+  async #claimLocalBootstrap(provenance: "user" | "sponsor"): Promise<void> {
     if (!localCredentialClaimEnabled(this.#env)) {
       throw new BrokerFailure(404, "not_found");
     }
-    if (this.#credentials.chatgpt && !this.#credentials.chatgpt.deadReason) return;
     const raw = this.#env.LOCAL_CHATGPT_BOOTSTRAP?.trim();
     if (!raw) throw new BrokerFailure(503, "local_chatgpt_bootstrap_unavailable");
     let parsed: unknown;
@@ -936,13 +1305,22 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     if (!accessToken || !accountId || !expiresAt || expiresAt <= Date.now()) {
       throw new BrokerFailure(503, "invalid_local_chatgpt_bootstrap");
     }
+    const current = this.#credentials.chatgpt;
+    if (current && !current.deadReason) {
+      if (current.accessToken !== accessToken || current.accountId !== accountId) return;
+      if (current.provenance === provenance) return;
+      this.#credentials.chatgpt = { ...current, provenance };
+      await this.#persist();
+      return;
+    }
     this.#credentials.chatgpt = {
       accessToken,
       refreshToken: stringField(parsed, "refresh_token") ?? "",
       accountId,
       fedramp: parsed.fedramp === true,
       expiresAt,
-      revision: (this.#credentials.chatgpt?.revision ?? -1) + 1,
+      revision: (current?.revision ?? -1) + 1,
+      provenance,
       refreshState: "ready",
       deadReason: null,
     };
@@ -957,6 +1335,10 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     if (current && !current.deadReason) {
       if (current.accountId !== imported.account_id) {
         throw new BrokerFailure(409, "chatgpt_account_conflict");
+      }
+      if (current.provenance !== "user") {
+        this.#credentials.chatgpt = { ...current, provenance: "user" };
+        await this.#persist();
       }
       return;
     }
@@ -973,6 +1355,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         fedramp: imported.fedramp,
         expiresAt: imported.expires_at,
         revision: (current?.revision ?? -1) + 1,
+        provenance: "user",
         refreshState: "ready",
         deadReason: null,
       },
@@ -1482,6 +1865,7 @@ function credentialFromTokens(
   tokens: Record<string, unknown>,
   previous: ChatGptCredential | undefined,
   revision: number,
+  provenance: ChatGptCredential["provenance"] = previous?.provenance,
 ): ChatGptCredential {
   const accessToken = stringField(tokens, "access_token");
   const claims = idTokenClaims(stringField(tokens, "id_token"));
@@ -1498,6 +1882,7 @@ function credentialFromTokens(
     fedramp: claims.fedramp ?? previous?.fedramp ?? false,
     expiresAt,
     revision,
+    ...(provenance ? { provenance } : {}),
     refreshState: "ready",
     deadReason: null,
   };
@@ -1894,10 +2279,9 @@ function localCredentialClaimEnabled(env: BrokerEnv): boolean {
     && (environment === "development" || environment === "local" || environment === "test");
 }
 
-function localCredentialAutoClaimEnabled(env: BrokerEnv): boolean {
+function localSponsoredTrialResetEnabled(env: BrokerEnv): boolean {
   return localCredentialClaimEnabled(env)
-    && env.NANOCODEX_LOCAL_CHATGPT_AUTO_CLAIM === "true"
-    && Boolean(env.LOCAL_CHATGPT_BOOTSTRAP?.trim());
+    && env.NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET === "true";
 }
 
 function parseExpiry(value: unknown): number | undefined {
@@ -1970,6 +2354,89 @@ function positiveNumber(value: unknown): number | undefined {
 function positiveNumberString(value: unknown): number | undefined {
   if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) return undefined;
   return positiveNumber(Number(value));
+}
+function sponsoredConnections(value: unknown): readonly SponsoredConnection[] {
+  if (value === undefined) return [];
+  if (!isRecord(value)
+    || Object.keys(value).length !== 1
+    || !Array.isArray(value.connections)
+    || value.connections.length > SPONSORED_CONNECTION_LIMIT
+    || value.connections.some((connection) => !isRecord(connection)
+      || Object.keys(connection).length !== 2
+      || typeof connection.id !== "string"
+      || !SPONSORED_CONNECTION_ID.test(connection.id)
+      || !Number.isSafeInteger(connection.leaseExpiresAt)
+      || (connection.leaseExpiresAt as number) <= 0)
+    || new Set(value.connections.map((connection) => (
+      (connection as Record<string, unknown>).id
+    ))).size !== value.connections.length) {
+    throw new BrokerFailure(503, "sponsored_connection_state_invalid");
+  }
+  return value.connections as readonly SponsoredConnection[];
+}
+function sponsoredPrompts(
+  value: unknown,
+): readonly SponsoredPrompt[] {
+  if (value === undefined) return [];
+  if (!isRecord(value)
+    || Object.keys(value).length !== 1
+    || !Array.isArray(value.prompts)
+    || value.prompts.length > SPONSORED_PROMPT_LIMIT
+    || value.prompts.some((prompt) => !isRecord(prompt)
+      || Object.keys(prompt).some((key) => ![
+        "id", "hash", "phase", "attempts", "leaseExpiresAt", "continuation",
+      ].includes(key))
+      || Object.keys(prompt).length < 4
+      || typeof prompt.id !== "string"
+      || !SPONSORED_PROMPT_ID.test(prompt.id)
+      || typeof prompt.hash !== "string"
+      || !SPONSORED_PROMPT_HASH.test(prompt.hash)
+      || (prompt.phase !== "in_flight" && prompt.phase !== "retryable"
+        && prompt.phase !== "continuation" && prompt.phase !== "terminal")
+      || !Number.isSafeInteger(prompt.attempts)
+      || (prompt.attempts as number) < 1
+      || (prompt.attempts as number) > SPONSORED_PROMPT_MAX_ATTEMPTS
+      || (prompt.phase === "in_flight") !== (Number.isSafeInteger(prompt.leaseExpiresAt)
+        && (prompt.leaseExpiresAt as number) > 0)
+      || (prompt.phase !== "in_flight" && prompt.leaseExpiresAt !== undefined)
+      || (prompt.phase === "continuation") !== validSponsoredContinuation(prompt.continuation)
+      || (prompt.phase !== "continuation" && prompt.continuation !== undefined))
+    || new Set(value.prompts.map((prompt) => (prompt as Record<string, unknown>).id)).size
+      !== value.prompts.length) {
+    throw new BrokerFailure(503, "sponsored_prompt_state_invalid");
+  }
+  return value.prompts as readonly SponsoredPrompt[];
+}
+function validSponsoredContinuation(value: unknown): boolean {
+  return isRecord(value)
+    && Object.keys(value).length === 2
+    && typeof value.responseId === "string"
+    && SPONSORED_RESPONSE_ID.test(value.responseId)
+    && sponsoredCallIds(value.callIds) !== undefined;
+}
+function sponsoredCallIds(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SPONSORED_CALL_IDS
+    || value.some((callId) => typeof callId !== "string" || !SPONSORED_CALL_ID.test(callId))) {
+    return undefined;
+  }
+  const unique = [...new Set(value as string[])].sort();
+  return unique.length === value.length ? unique : undefined;
+}
+function isStringSubset(required: readonly string[], supplied: readonly string[]): boolean {
+  const values = new Set(supplied);
+  return required.every((value) => values.has(value));
+}
+function sponsoredPromptStatus(prompts: readonly unknown[]) {
+  return {
+    limit: SPONSORED_PROMPT_LIMIT,
+    used: prompts.length,
+    remaining: SPONSORED_PROMPT_LIMIT - prompts.length,
+  };
+}
+function sponsoredPromptLeaseMs(env: BrokerEnv): number {
+  return env.ENVIRONMENT?.trim().toLowerCase() === "test"
+    ? TEST_SPONSORED_PROMPT_LEASE_MS
+    : SPONSORED_PROMPT_LEASE_MS;
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
