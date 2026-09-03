@@ -24,30 +24,68 @@ export type ManagedConversation = Readonly<{
   turnCount?: number;
 }>;
 
+export type ManagedConversationSelection = Readonly<{
+  conversations: readonly ManagedConversation[];
+  selectedId?: string;
+  replaceRoute: boolean;
+}>;
+
 export type ManagedTerminalSource = Pick<ManagedAgent, "events" | "id" | "turn" | "type">;
 
-export function listManagedConversations(accountId = "default"): Promise<readonly ManagedConversation[]> {
+export function listManagedConversations(
+  accountId = "default",
+  options: Readonly<{ refresh?: boolean }> = {},
+): Promise<readonly ManagedConversation[]> {
+  if (options.refresh) managedLists.delete(accountId);
   const retained = managedLists.get(accountId);
   if (retained) return retained;
   const loading = Agent.list().then((agents) => {
     const conversations = agents.map((agent) => {
       managedAgents.set(agent.id, agent);
-      return Object.freeze({
-        id: agent.id,
-        title: titleFromPrompt(agent.summary?.title ?? "") || `Conversation ${agent.id.slice(0, 8)}`,
-        ...(agent.summary === undefined ? {} : {
-          updatedAt: agent.summary.updatedAt,
-          turnCount: agent.summary.turnCount,
-        }),
-      });
+      return managedConversation(agent);
     });
     return Object.freeze(conversations.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)));
   }).catch((error) => {
-    managedLists.delete(accountId);
+    if (managedLists.get(accountId) === loading) managedLists.delete(accountId);
     throw error;
   });
   managedLists.set(accountId, loading);
   return loading;
+}
+
+export async function loadManagedConversationSelection(options: Readonly<{
+  accountId?: string;
+  routeAgentId?: string;
+  retainedAgentId?: string;
+  hasCredential: boolean;
+  refresh?: boolean;
+}>): Promise<ManagedConversationSelection> {
+  const accountId = options.accountId ?? "default";
+  const listing = listManagedConversations(accountId, { refresh: options.refresh });
+  if (options.routeAgentId) {
+    const [exact, listed] = await Promise.all([
+      getManagedConversation(options.routeAgentId),
+      listing.catch((): readonly ManagedConversation[] => Object.freeze([])),
+    ]);
+    const conversations = listed.some(({ id }) => id === exact.id)
+      ? listed
+      : Object.freeze([exact, ...listed]);
+    if (managedLists.get(accountId) === listing) {
+      managedLists.set(accountId, Promise.resolve(conversations));
+    }
+    return Object.freeze({ conversations, selectedId: exact.id, replaceRoute: false });
+  }
+  const listed = await listing;
+  const conversations = listed.length || !options.hasCredential
+    ? listed
+    : Object.freeze([await createManagedConversation(accountId)]);
+  const selectedId = conversations.find(({ id }) => id === options.retainedAgentId)?.id
+    ?? conversations[0]?.id;
+  return Object.freeze({
+    conversations,
+    ...(selectedId === undefined ? {} : { selectedId }),
+    replaceRoute: selectedId !== undefined,
+  });
 }
 
 export function createManagedConversation(accountId = "default"): Promise<ManagedConversation> {
@@ -77,6 +115,23 @@ export function openManagedAgent(agentId: string): ManagedAgent {
   const managed = managedAgents.get(agentId) ?? Agent.open(agentId);
   managedAgents.set(agentId, managed);
   return managed;
+}
+
+async function getManagedConversation(agentId: string): Promise<ManagedConversation> {
+  const managed = await Agent.get(agentId);
+  managedAgents.set(agentId, managed);
+  return managedConversation(managed);
+}
+
+function managedConversation(agent: ManagedAgent): ManagedConversation {
+  return Object.freeze({
+    id: agent.id,
+    title: titleFromPrompt(agent.summary?.title ?? "") || `Conversation ${agent.id.slice(0, 8)}`,
+    ...(agent.summary === undefined ? {} : {
+      updatedAt: agent.summary.updatedAt,
+      turnCount: agent.summary.turnCount,
+    }),
+  });
 }
 
 export function managedTerminalAgent(

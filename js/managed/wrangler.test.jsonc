@@ -7,11 +7,21 @@
   "alias": {
     "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
   },
+  "r2_buckets": [
+    {
+      "binding": "NANOCODEX_HISTORY",
+      "bucket_name": "nanocodex-managed-history-test"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
         "name": "NANOCODEX_MEMORY",
         "class_name": "MemoryScope"
+      },
+      {
+        "name": "NANOCODEX_SESSIONS",
+        "class_name": "DurableAgentSession"
       }
     ]
   },
@@ -19,6 +29,10 @@
     {
       "tag": "memory-scope-v1",
       "new_sqlite_classes": ["MemoryScope"]
+    },
+    {
+      "tag": "managed-session-v1",
+      "new_sqlite_classes": ["DurableAgentSession"]
     }
   ]
 }

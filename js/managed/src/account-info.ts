@@ -54,6 +54,8 @@ export type VaultEntry =
 
 export type AccountMachine = Readonly<HostedMachine & {
   kind: "sandbox" | "user";
+  /** Logical namespace root. Native host workspace paths are never projected. */
+  mount: string;
 }>;
 
 export type AccountInfo = Readonly<{
@@ -74,20 +76,34 @@ export type AccountInfo = Readonly<{
   vault: readonly VaultEntry[];
 }>;
 
+export type AccountInfoOptions = Readonly<{
+  allowedConnectors?: readonly ConnectorCapabilityId[];
+  allowedConnections?: ConnectorConnectionSelection;
+  enabled: boolean;
+  machines?: readonly AccountMachine[];
+  signal?: AbortSignal;
+}>;
+
 export async function accountInfo(
   binding: BrokerBinding,
   userId: string,
-  enabled: boolean,
-  allowedConnectors?: readonly ConnectorCapabilityId[],
-  allowedConnections?: ConnectorConnectionSelection,
-  machines: readonly AccountMachine[] = [],
+  {
+    allowedConnectors,
+    allowedConnections,
+    enabled,
+    machines = [],
+    signal,
+  }: AccountInfoOptions,
 ): Promise<AccountInfo> {
   if (!enabled) return emptyInfo("disabled", machines);
+  signal?.throwIfAborted();
   try {
     const encodedUserId = encodeURIComponent(userId);
     const [response, vault] = await Promise.all([
-      binding.fetch(`https://broker.internal/users/${encodedUserId}/connectors`),
-      accountVault(binding, encodedUserId),
+      signal === undefined
+        ? binding.fetch(`https://broker.internal/users/${encodedUserId}/connectors`)
+        : binding.fetch(`https://broker.internal/users/${encodedUserId}/connectors`, { signal }),
+      accountVault(binding, encodedUserId, signal),
     ]);
     if (!response.ok) {
       await response.body?.cancel();
@@ -126,6 +142,7 @@ export async function accountInfo(
       vault,
     };
   } catch {
+    signal?.throwIfAborted();
     return emptyInfo("unavailable", machines);
   }
 }
@@ -223,11 +240,14 @@ function emptyInfo(
 async function accountVault(
   binding: BrokerBinding,
   encodedUserId: string,
+  signal?: AbortSignal,
 ): Promise<readonly VaultEntry[]> {
+  signal?.throwIfAborted();
   try {
-    const response = await binding.fetch(
-      `https://broker.internal/users/${encodedUserId}/credentials`,
-    );
+    const url = `https://broker.internal/users/${encodedUserId}/credentials`;
+    const response = signal === undefined
+      ? await binding.fetch(url)
+      : await binding.fetch(url, { signal });
     if (!response.ok) {
       await response.body?.cancel();
       return [];
@@ -235,6 +255,7 @@ async function accountVault(
     const value: unknown = await response.json();
     return isRecord(value) ? vaultEntries(value.vault) : [];
   } catch {
+    signal?.throwIfAborted();
     return [];
   }
 }

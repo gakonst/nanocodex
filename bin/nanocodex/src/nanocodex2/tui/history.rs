@@ -11,7 +11,7 @@ use nanocodex_managed::{
     EventHistoryPage, ManagedError, ManagedEvent, ManagedEventData, PromptContent, PromptInput,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::Path,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -19,6 +19,88 @@ use std::{
 
 pub(super) type HistoryProjection = (Vec<Arc<TranscriptRecord>>, u64, Vec<RecentPrompt>);
 pub(super) type LiveManagedProjection = (Arc<TranscriptRecord>, Option<RecentPrompt>);
+
+const PREFETCHED_HISTORY_PAGES: usize = 4;
+
+#[derive(Default)]
+pub(super) struct HistoryPrefetch {
+    active_before: Option<String>,
+    pages: VecDeque<(String, EventHistoryPage)>,
+    replay_requested: bool,
+}
+
+impl HistoryPrefetch {
+    pub(super) fn claim(&mut self, history: &HistoryWindow) -> Option<String> {
+        if self.active_before.is_some() || self.pages.len() >= PREFETCHED_HISTORY_PAGES {
+            return None;
+        }
+        let before = if let Some((_, page)) = self.pages.back() {
+            page.has_more
+                .then(|| page.data.first().map(|event| event.cursor.clone()))
+                .flatten()
+        } else {
+            history.has_more.then(|| history.before.clone()).flatten()
+        }?;
+        self.active_before = Some(before.clone());
+        Some(before)
+    }
+
+    pub(super) fn owns(&self, before: &str) -> bool {
+        self.active_before.as_deref() == Some(before)
+    }
+
+    pub(super) fn fail(&mut self, before: &str) -> bool {
+        if !self.owns(before) {
+            return false;
+        }
+        self.active_before = None;
+        true
+    }
+
+    pub(super) fn store(
+        &mut self,
+        before: &str,
+        page: EventHistoryPage,
+    ) -> Result<(), ManagedError> {
+        if !self.owns(before) {
+            return Err(ManagedError::InvalidResponse(
+                "managed history prefetch lost cursor ownership",
+            ));
+        }
+        if page.data.is_empty() && page.has_more {
+            return Err(ManagedError::InvalidResponse(
+                "managed history reports an empty nonterminal page",
+            ));
+        }
+        self.active_before = None;
+        self.pages.push_back((before.to_owned(), page));
+        Ok(())
+    }
+
+    pub(super) fn request_replay(&mut self) {
+        self.replay_requested = true;
+    }
+
+    pub(super) fn take_requested(
+        &mut self,
+        current_before: Option<&str>,
+    ) -> Option<(String, EventHistoryPage)> {
+        if !self.replay_requested
+            || !self
+                .pages
+                .front()
+                .is_some_and(|(before, _)| Some(before.as_str()) == current_before)
+        {
+            return None;
+        }
+        self.replay_requested = false;
+        self.pages.pop_front()
+    }
+
+    pub(super) fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
 
 #[derive(Clone, Default)]
 pub(super) struct HistoryWindow {
@@ -96,7 +178,7 @@ pub(super) fn live_managed_projection(
             };
             (record, Some(prompt))
         }
-        ManagedEventData::Event { event } => {
+        ManagedEventData::Event { event, .. } => {
             let event: AgentEvent = serde_json::from_str(event.get()).map_err(|error| {
                 ManagedError::Configuration(format!(
                     "invalid live agent event in TUI stream: {error}"
@@ -234,7 +316,7 @@ fn history_projection_range_with_sequences(
                     };
                     Ok(Some((Arc::new(record), Some(prompt))))
                 }
-                ManagedEventData::Event { event } => {
+                ManagedEventData::Event { event, .. } => {
                     let event: AgentEvent = serde_json::from_str(event.get()).map_err(|error| {
                         ManagedError::Configuration(format!(
                             "invalid retained agent event in TUI history: {error}"
@@ -321,4 +403,67 @@ pub(super) fn unix_ms() -> u64 {
             .as_millis(),
     )
     .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HistoryPrefetch, HistoryWindow};
+    use nanocodex_managed::{EventHistoryPage, ManagedEvent, ManagedEventData};
+    use serde_json::json;
+
+    #[test]
+    fn prefetch_fetches_ahead_without_replaying_until_requested() {
+        let mut prefetch = HistoryPrefetch::default();
+        let history = HistoryWindow::retry_from("9".to_owned());
+
+        assert_eq!(prefetch.claim(&history).as_deref(), Some("9"));
+        assert!(prefetch.owns("9"));
+        assert!(prefetch.claim(&history).is_none());
+        assert!(!prefetch.fail("8"));
+        prefetch
+            .store("9", page("7", true))
+            .expect("valid page should buffer");
+
+        assert_eq!(prefetch.claim(&history).as_deref(), Some("7"));
+        prefetch.request_replay();
+        let (requested, buffered) = prefetch
+            .take_requested(history.before.as_deref())
+            .expect("the oldest matching buffered page should replay");
+        assert_eq!(requested, "9");
+        assert_eq!(buffered.data[0].cursor, "7");
+    }
+
+    #[test]
+    fn prefetch_stops_at_exhaustion_and_reset_drops_stale_ownership() {
+        let mut prefetch = HistoryPrefetch::default();
+        let history = HistoryWindow::retry_from("9".to_owned());
+        assert_eq!(prefetch.claim(&history).as_deref(), Some("9"));
+
+        prefetch.reset();
+        assert!(!prefetch.owns("9"));
+        assert_eq!(prefetch.claim(&history).as_deref(), Some("9"));
+        prefetch
+            .store("9", page("7", false))
+            .expect("terminal page should buffer");
+        assert!(prefetch.claim(&history).is_none());
+
+        prefetch.reset();
+        assert_eq!(prefetch.claim(&history).as_deref(), Some("9"));
+    }
+
+    fn page(cursor: &str, has_more: bool) -> EventHistoryPage {
+        EventHistoryPage {
+            data: vec![ManagedEvent {
+                cursor: cursor.to_owned(),
+                created_at: None,
+                turn_id: None,
+                data: ManagedEventData::AgentCreated {
+                    agent_id: "agent-1".to_owned(),
+                    capabilities: json!({}),
+                },
+            }],
+            has_more,
+            latest_cursor: "9".to_owned(),
+        }
+    }
 }

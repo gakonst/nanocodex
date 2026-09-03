@@ -7,7 +7,7 @@ import {
 } from "../src/sandbox-runtime";
 import { cloudflareSandboxPreviewUrl } from "../src/sandbox-tools";
 import {
-  createManagedSandboxTools,
+  createManagedNamespaceTools,
   routeSandboxPreviewRequest,
 } from "../src/index";
 
@@ -61,7 +61,17 @@ describe("managed sandbox preview wiring", () => {
     const namespace = {} as DurableObjectNamespace<Sandbox>;
     const sourceHandler = vi.fn(async () => ({ ok: true }));
     const sourceTools: ToolMap = {
-      sandbox_preview: {
+      exec_command: {
+        description: "exec",
+        parameters: { type: "object", additionalProperties: false },
+        handler: sourceHandler,
+      },
+      write_stdin: {
+        description: "poll",
+        parameters: { type: "object", additionalProperties: false },
+        handler: sourceHandler,
+      },
+      preview: {
         description: "preview",
         parameters: { type: "object", additionalProperties: false },
         handler: sourceHandler,
@@ -69,7 +79,7 @@ describe("managed sandbox preview wiring", () => {
     };
     const factory = vi.fn(() => sourceTools) as unknown as typeof import("../src/sandbox-tools").cloudflareSandboxTools;
     let accountOwned = true;
-    const tools = createManagedSandboxTools({
+    const tools = createManagedNamespaceTools({
       NANOCODEX_ADMIN_TOKEN: "server-only-preview-secret",
       NANOCODEX_SANDBOXES: namespace,
       NANOCODEX_SANDBOX_LOCAL: "true",
@@ -85,13 +95,14 @@ describe("managed sandbox preview wiring", () => {
       "https://nanocodex.example",
       "server-only-preview-secret",
     );
-    await expect(tools[0]!.handler({}, toolContext())).resolves.toEqual({ ok: true });
+    expect(tools.map(({ name }) => name)).toEqual(["exec_command", "write_stdin", "preview"]);
+    await expect(tools[0]!.handler({ cmd: "pwd" }, toolContext())).resolves.toEqual({ ok: true });
     expect(sourceHandler).toHaveBeenCalledTimes(1);
 
     accountOwned = false;
     await expect(tools[0]!.handler({}, toolContext())).rejects.toMatchObject({
       status: 403,
-      code: "sandbox_forbidden",
+      code: "namespace_forbidden",
     });
     expect(sourceHandler).toHaveBeenCalledTimes(1);
   });

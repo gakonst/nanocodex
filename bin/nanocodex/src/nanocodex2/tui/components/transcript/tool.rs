@@ -1,6 +1,7 @@
 // Derived from clabby/tact; modified for Nanocodex2.
 // SPDX-License-Identifier: Apache-2.0
 
+mod account;
 mod browser;
 mod code;
 mod mcp;
@@ -33,6 +34,10 @@ use unicode_width::UnicodeWidthStr;
 const MAX_EXPANDED_DETAIL_LINES: usize = 128;
 const MAX_DETAIL_SECTION_LINES: usize = MAX_EXPANDED_DETAIL_LINES / 2;
 const MAX_EXPANDED_TEXT_BYTES: usize = 24 * 1024;
+
+fn count_label(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
+}
 
 #[cfg(test)]
 pub(super) fn render(tool: &ToolEntry, width: u16, theme: &Theme) -> Vec<Line<'static>> {
@@ -151,12 +156,17 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
     if tool.has_mcp_origin() {
         return mcp::present(tool, width, theme, expanded);
     }
-    if is_subagent_tool(tool.family()) {
+    let family = tool.family();
+    if is_subagent_tool(family) {
         return subagent::present(tool, width, theme, expanded);
     }
-    match tool.family() {
+    match family {
+        "accountInfo" | "account_connectors" | "runtimeInfo" => {
+            account::present(tool, width, theme, expanded)
+        }
         family if family.starts_with("sandbox_") => sandbox::present(tool, width, theme, expanded),
         "exec_command" | "write_stdin" => shell::present(tool, width, theme, expanded),
+        "preview" => sandbox::present(tool, width, theme, expanded),
         "update_plan" => plan::present(tool, width, theme, expanded),
         "apply_patch" => patch::present(tool, width, theme, expanded),
         "web__run" => web::present(tool, width, theme, expanded),
@@ -564,7 +574,10 @@ fn generic(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
         let count = tool.arguments.as_object().map_or(0, serde_json::Map::len);
         format!("{count} arguments")
     });
-    let presentation = Presentation::new(title, subject);
+    let mut presentation = Presentation::new(title, subject);
+    if let Some(outcome) = generic_outcome(tool.result.as_ref()) {
+        presentation = presentation.outcome(outcome);
+    }
     if !expanded {
         return presentation;
     }
@@ -637,10 +650,45 @@ pub(super) fn format_bytes(bytes: usize) -> String {
 }
 
 fn meaningful_subject(arguments: &Value) -> Option<String> {
-    ["path", "query", "prompt", "url", "name"]
-        .into_iter()
-        .find_map(|key| arguments.get(key).and_then(Value::as_str))
-        .map(|value| sanitize(value.lines().next().unwrap_or_default()))
+    [
+        "path",
+        "file_path",
+        "query",
+        "prompt",
+        "url",
+        "name",
+        "command",
+        "action",
+        "operation",
+        "process_id",
+        "session_id",
+        "port",
+    ]
+    .into_iter()
+    .find_map(|key| arguments.get(key).and_then(scalar_summary))
+    .map(|value| sanitize(value.lines().next().unwrap_or_default()))
+}
+
+fn scalar_summary(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_i64().map(|value| value.to_string()))
+        .or_else(|| value.as_u64().map(|value| value.to_string()))
+}
+
+fn generic_outcome(result: Option<&Value>) -> Option<String> {
+    let fields = result?.as_object()?;
+    if let Some(status) = fields.get("status").and_then(Value::as_str) {
+        return Some(status.replace('_', " "));
+    }
+    fields.get("ok").and_then(Value::as_bool).map(|ok| {
+        if ok {
+            "succeeded".to_owned()
+        } else {
+            "failed".to_owned()
+        }
+    })
 }
 
 fn first_error_line(result: Option<&Value>) -> Option<String> {
@@ -904,6 +952,180 @@ mod tests {
 
         assert_eq!(lines[0].to_string(), "  ▶ ✓ Batch  2 tools · Local · 1.2s");
         assert!(lines.iter().all(|line| line.width() <= 80));
+    }
+
+    #[test]
+    fn single_child_code_wrapper_is_compact_and_ignores_status_header() {
+        let mut workflow = tool("exec", json!("text(await tools.accountInfo({}))"));
+        workflow.child_count = 1;
+        workflow.result = Some(json!([
+            {
+                "type": "input_text",
+                "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+            },
+            {"type": "input_text", "text": "summary"}
+        ]));
+
+        let collapsed = render(&workflow, 80, &Theme::default())[0].to_string();
+        let expanded = render_expanded(&workflow, 80, &Theme::default())
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>();
+
+        assert!(collapsed.contains("Code  1 emitted item"), "{collapsed}");
+        assert!(!collapsed.contains("Batch  1 tool"), "{collapsed}");
+        assert!(expanded.contains("summary"), "{expanded}");
+        assert!(!expanded.contains("Script completed"), "{expanded}");
+    }
+
+    #[test]
+    fn code_renders_each_counted_image_and_audio_output() {
+        let mut workflow = tool("exec", json!("emit media"));
+        workflow.result = Some(json!([
+            {
+                "type": "input_text",
+                "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+            },
+            {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,IMAGE_BYTES",
+                "detail": "high"
+            },
+            {
+                "type": "input_audio",
+                "audio_url": "data:audio/wav;base64,AUDIO_BYTES"
+            }
+        ]));
+
+        let collapsed = render(&workflow, 80, &Theme::default())[0].to_string();
+        let expanded = render_expanded(&workflow, 80, &Theme::default())
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>();
+
+        assert!(collapsed.contains("Code  2 emitted items"), "{collapsed}");
+        assert!(
+            expanded.contains("image output · high · binary data hidden"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("audio output · binary data hidden"),
+            "{expanded}"
+        );
+        assert!(!expanded.contains("Script completed"), "{expanded}");
+        assert!(!expanded.contains("IMAGE_BYTES"), "{expanded}");
+        assert!(!expanded.contains("AUDIO_BYTES"), "{expanded}");
+    }
+
+    #[test]
+    fn account_info_uses_bounded_semantic_summary_and_details() {
+        let mut account = tool("accountInfo", json!({}));
+        account.result = Some(json!({
+            "status": "ready",
+            "authenticated": ["github"],
+            "accounts": {"github": "octocat@example.test"},
+            "connectorAccounts": {
+                "github": [
+                    {"id": "github-1", "label": "Work GitHub"},
+                    {"id": "github-2", "label": "Personal GitHub"}
+                ]
+            },
+            "machines": [
+                {
+                    "id": "sandbox",
+                    "kind": "sandbox",
+                    "name": "Account sandbox",
+                    "workspace": "/workspace",
+                    "capabilities": ["shell", "files"]
+                },
+                {
+                    "id": "laptop",
+                    "kind": "user",
+                    "name": "Alice's Mac",
+                    "workspace": "/Users/alice/project",
+                    "capabilities": ["exec_command"]
+                }
+            ],
+            "identity": {},
+            "stablecoins": [],
+            "authorizations": [],
+            "vault": [
+                {
+                    "id": "vault-1",
+                    "kind": "login",
+                    "name": "GitHub",
+                    "created_at": 1,
+                    "username": "octocat"
+                }
+            ],
+            "ignored_future_field": {"secret": "must not be dumped"}
+        }));
+
+        let collapsed = render(&account, 120, &Theme::default())[0].to_string();
+        let expanded = render_expanded(&account, 120, &Theme::default())
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>();
+
+        for expected in [
+            "Account info  ready",
+            "Account",
+            "2 connections",
+            "2 machines",
+            "1 Vault item",
+        ] {
+            assert!(
+                collapsed.contains(expected),
+                "missing {expected:?}: {collapsed}"
+            );
+        }
+        for expected in [
+            "github  Work GitHub, Personal GitHub",
+            "Machine Account sandbox  sandbox · /workspace · shell, files",
+            "Machine Alice's Mac  user · /Users/alice/project · exec_command",
+            "Vault · GitHub  login · octocat",
+        ] {
+            assert!(
+                expanded.contains(expected),
+                "missing {expected:?}: {expanded}"
+            );
+        }
+        assert!(!expanded.contains("ignored_future_field"), "{expanded}");
+        assert!(!expanded.contains("must not be dumped"), "{expanded}");
+        assert!(!expanded.contains("\"status\""), "{expanded}");
+    }
+
+    #[test]
+    fn account_info_renders_account_label_when_connector_accounts_are_empty() {
+        let mut account = tool("accountInfo", json!({}));
+        account.result = Some(json!({
+            "status": "ready",
+            "authenticated": ["github"],
+            "accounts": {"github": "octocat@example.test"},
+            "connectorAccounts": {},
+            "machines": []
+        }));
+
+        let summary = render(&account, 120, &Theme::default())[0].to_string();
+        let expanded = render_expanded(&account, 120, &Theme::default())
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>();
+
+        assert!(summary.contains("1 connector"), "{summary}");
+        assert!(
+            expanded.contains("github  octocat@example.test"),
+            "{expanded}"
+        );
+    }
+
+    #[test]
+    fn account_and_runtime_tools_have_semantic_origins() {
+        let account = render(&tool("accountInfo", json!({})), 80, &Theme::default())[0].to_string();
+        let runtime = render(&tool("runtimeInfo", json!({})), 80, &Theme::default())[0].to_string();
+
+        assert!(account.contains(" · Account · "), "{account}");
+        assert!(runtime.contains(" · Runtime · "), "{runtime}");
     }
 
     #[test]
@@ -1348,7 +1570,7 @@ mod tests {
             "terminal": true,
             "kill_requested": true
         }));
-        let mut preview = tool("sandbox_preview", json!({"port": 8000}));
+        let mut preview = tool("preview", json!({"environment": "sandbox", "port": 8000}));
         preview.result = Some(json!({
             "port": 8000,
             "url": "https://preview.example.test",
@@ -1431,78 +1653,6 @@ mod tests {
     }
 
     #[test]
-    fn qualified_machine_tools_use_clean_family_routing_and_machine_origin() {
-        let direct = tool(
-            "user_machine-a_exec_command",
-            json!({"cmd": "pwd", "workdir": "/repo"}),
-        );
-        let sandbox = tool(
-            "user_machine-a_sandbox_exec",
-            json!({"command": "pwd", "cwd": "/repo"}),
-        );
-
-        let direct = render(&direct, 120, &Theme::default())[0].to_string();
-        let sandbox = render(&sandbox, 120, &Theme::default())[0].to_string();
-
-        assert!(direct.contains("Shell  $ pwd"), "{direct}");
-        assert!(direct.contains("Machine machine-a · /repo"), "{direct}");
-        assert!(!direct.contains("user machine"), "{direct}");
-        assert!(sandbox.contains("Run command  $ pwd"), "{sandbox}");
-        assert!(sandbox.contains("Machine machine-a · /repo"), "{sandbox}");
-        assert!(!sandbox.contains("Sandbox"), "{sandbox}");
-    }
-
-    #[test]
-    fn machine_metadata_disambiguates_qualified_names() {
-        let mut shell = tool(
-            "user_build_agent_exec_command",
-            json!({"cmd": "pwd", "workdir": "/repo"}),
-        );
-        shell.metadata = Some(json!({
-            "machine_id": "build_agent",
-            "machine_name": "Build Agent",
-            "tool_name": "exec_command"
-        }));
-        shell.infer_execution();
-
-        let rendered = render(&shell, 120, &Theme::default())[0].to_string();
-
-        assert!(rendered.contains("Shell  $ pwd"), "{rendered}");
-        assert!(
-            rendered.contains("Machine Build Agent · /repo"),
-            "{rendered}"
-        );
-        assert!(!rendered.contains("agent exec command"), "{rendered}");
-    }
-
-    #[test]
-    fn qualified_specialized_tools_dispatch_by_normalized_family() {
-        let stdin = tool(
-            "user_machine-a_write_stdin",
-            json!({"session_id": 7, "chars": "y\n"}),
-        );
-        let image = tool(
-            "user_machine-a_view_image",
-            json!({"path": "/repo/result.png", "detail": "original"}),
-        );
-        let wait = tool("user_machine-a_wait", json!({"cell_id": "cell-7"}));
-
-        let stdin = render(&stdin, 120, &Theme::default())[0].to_string();
-        let image = render(&image, 120, &Theme::default())[0].to_string();
-        let wait = render(&wait, 120, &Theme::default())[0].to_string();
-
-        assert!(stdin.contains("Shell input  send \"y\\n\""), "{stdin}");
-        assert!(stdin.contains("Machine machine-a"), "{stdin}");
-        assert!(
-            image.contains("Image  /repo/result.png · original"),
-            "{image}"
-        );
-        assert!(image.contains("Machine machine-a"), "{image}");
-        assert!(wait.contains("Wait  background work"), "{wait}");
-        assert!(wait.contains("Machine machine-a"), "{wait}");
-    }
-
-    #[test]
     fn direct_shell_only_becomes_sandbox_when_metadata_says_so() {
         let direct = tool("exec_command", json!({"cmd": "pwd", "workdir": "/repo"}));
         let mut sandbox = direct.clone();
@@ -1514,6 +1664,47 @@ mod tests {
 
         assert!(direct.contains(" · Local · "), "{direct}");
         assert!(sandbox.contains("Sandbox · /repo"), "{sandbox}");
+    }
+
+    #[test]
+    fn environment_addressed_execution_names_the_selected_hand() {
+        let sandbox = tool(
+            "exec_command",
+            json!({"environment": "sandbox", "cmd": "pwd", "workdir": "/workspace"}),
+        );
+        let machine = tool(
+            "write_stdin",
+            json!({"environment": "user:build-box", "session_id": 7}),
+        );
+
+        let sandbox = render(&sandbox, 120, &Theme::default())[0].to_string();
+        let machine = render(&machine, 120, &Theme::default())[0].to_string();
+
+        assert!(sandbox.contains("Sandbox · /workspace"), "{sandbox}");
+        assert!(machine.contains("Machine build-box"), "{machine}");
+    }
+
+    #[test]
+    fn machine_qualified_capabilities_keep_their_execution_origin() {
+        let image = tool(
+            "user_machine-a_view_image",
+            json!({"path": "/repo/result.png", "detail": "original"}),
+        );
+        let mcp = tool(
+            "user_machine-a_mcp__linear__search_issues",
+            json!({"query": "renderer"}),
+        );
+
+        let image = render(&image, 120, &Theme::default())[0].to_string();
+        let mcp = render(&mcp, 120, &Theme::default())[0].to_string();
+
+        assert!(
+            image.contains("Image  /repo/result.png · original"),
+            "{image}"
+        );
+        assert!(image.contains("Machine machine-a"), "{image}");
+        assert!(mcp.contains("Linear · search issues"), "{mcp}");
+        assert!(mcp.contains("Machine machine-a"), "{mcp}");
     }
 
     #[test]
@@ -1578,31 +1769,5 @@ mod tests {
             "{rendered}"
         );
         assert!(!rendered.contains("exact"), "{rendered}");
-    }
-
-    #[test]
-    fn qualified_subagents_and_machine_mcp_tools_use_normalized_families() {
-        let mut spawn = tool(
-            "user_machine-a_spawn_agent",
-            json!({"role": "reviewer", "task": "Check routing"}),
-        );
-        spawn.result = Some(json!({"agent_id": 9, "status": {"state": "running"}}));
-        let combined = tool(
-            "user_machine-a_mcp__linear__exec_command",
-            json!({"cmd": "pwd", "workdir": "/repo"}),
-        );
-
-        let spawn = render(&spawn, 120, &Theme::default())[0].to_string();
-        let combined = render(&combined, 120, &Theme::default())[0].to_string();
-
-        assert!(
-            spawn.contains("Spawned  reviewer · Check routing"),
-            "{spawn}"
-        );
-        assert!(spawn.contains("Machine machine-a"), "{spawn}");
-        assert!(spawn.contains("agent 9 · running"), "{spawn}");
-        assert!(combined.contains("Linear · exec command"), "{combined}");
-        assert!(combined.contains("Machine machine-a · /repo"), "{combined}");
-        assert!(!combined.contains("Shell  $"), "{combined}");
     }
 }

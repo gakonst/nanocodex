@@ -19,6 +19,15 @@ export function managedControlTransitionForResolution(
   cancelling: boolean,
   resolution: TurnResolution,
 ): ManagedTurnTransition {
+  const error = resolution.kind === "retry"
+    ? resolution.error
+    : resolution.terminal.type === "turn_failed"
+    ? resolution.terminal.error
+    : undefined;
+  if (cancelling
+    && error === "the targeted turn has already completed or been cancelled") {
+    return { type: "turn_cancelled", id };
+  }
   if (resolution.kind === "retry") {
     return cancelling ? {
       type: "turn_cancelling",

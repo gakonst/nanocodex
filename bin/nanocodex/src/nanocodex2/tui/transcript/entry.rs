@@ -113,6 +113,8 @@ pub(crate) struct ToolEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ToolExecution {
+    Account,
+    Runtime,
     Sandbox { cwd: Option<String> },
     Direct,
     WebClient,
@@ -139,6 +141,30 @@ impl ToolExecution {
                 server: server.to_owned(),
             };
         }
+        if matches!(identity.family, "exec_command" | "write_stdin" | "preview")
+            && let Some(environment) = arguments.get("environment").and_then(Value::as_str)
+        {
+            if environment == "sandbox" {
+                return Self::Sandbox {
+                    cwd: execution_cwd(arguments),
+                };
+            }
+            if let Some(machine) = environment
+                .strip_prefix("user:")
+                .filter(|id| !id.is_empty())
+            {
+                return Self::Machine {
+                    name: machine.to_owned(),
+                    cwd: execution_cwd(arguments),
+                };
+            }
+        }
+        if matches!(identity.family, "accountInfo" | "account_connectors") {
+            return Self::Account;
+        }
+        if identity.family == "runtimeInfo" {
+            return Self::Runtime;
+        }
         if identity.family.starts_with("sandbox_") || metadata.is_some_and(reports_sandbox) {
             return Self::Sandbox {
                 cwd: execution_cwd(arguments),
@@ -160,6 +186,8 @@ impl ToolExecution {
 
     fn qualifier(&self) -> String {
         match self {
+            Self::Account => "Account".to_owned(),
+            Self::Runtime => "Runtime".to_owned(),
             Self::Sandbox { cwd: Some(cwd) } => format!("Sandbox · {cwd}"),
             Self::Sandbox { cwd: None } => "Sandbox".to_owned(),
             Self::Direct => "Local".to_owned(),
@@ -230,7 +258,7 @@ impl<'a> ToolIdentity<'a> {
     fn decode(name: &'a str) -> Self {
         let (machine, qualified) = name
             .strip_prefix("user_")
-            .and_then(|name| name.split_once('_'))
+            .and_then(split_machine_tool)
             .filter(|(machine, family)| !machine.is_empty() && !family.is_empty())
             .map_or((None, name), |(machine, family)| (Some(machine), family));
         let (mcp_server, family) = qualified
@@ -244,6 +272,50 @@ impl<'a> ToolIdentity<'a> {
             mcp_server,
         }
     }
+}
+
+fn split_machine_tool(name: &str) -> Option<(&str, &str)> {
+    if let Some((machine, mcp)) = name.split_once("_mcp__")
+        && !machine.is_empty()
+        && !mcp.is_empty()
+    {
+        return Some((machine, &name[machine.len() + 1..]));
+    }
+    const KNOWN_FAMILIES: &[&str] = &[
+        "account_connectors",
+        "image_gen__imagegen",
+        "send_agent_message",
+        "interrupt_agent",
+        "browser_execute",
+        "exec_command",
+        "submit_result",
+        "list_agents",
+        "spawn_agent",
+        "close_agent",
+        "wait_agent",
+        "update_plan",
+        "write_stdin",
+        "accountInfo",
+        "runtimeInfo",
+        "apply_patch",
+        "view_image",
+        "tool_search",
+        "web__run",
+        "browser",
+        "memory",
+        "preview",
+        "exec",
+        "wait",
+    ];
+    KNOWN_FAMILIES
+        .iter()
+        .find_map(|family| {
+            name.strip_suffix(family)
+                .and_then(|prefix| prefix.strip_suffix('_'))
+                .filter(|machine| !machine.is_empty())
+                .map(|machine| (machine, *family))
+        })
+        .or_else(|| name.split_once('_'))
 }
 
 fn execution_cwd(arguments: &Value) -> Option<String> {

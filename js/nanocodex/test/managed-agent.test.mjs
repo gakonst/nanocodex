@@ -305,8 +305,9 @@ test("managed Agent covers account-scoped create, list, get, and delete", async 
   assert.equal((await Agent.get(agentId, options)).id, agentId);
   const state = await created.state();
   assert.equal(state.latest_event_cursor, "4");
-  assert.equal(state.capabilities.sandbox_tools, true);
-  assert.equal(state.capabilities.sandbox_escalation, false);
+  assert.equal(state.capabilities.execution_environments, true);
+  assert.equal(state.capabilities.execution_namespace, "cwd-root-v1");
+  assert.equal(state.capabilities.native_cross_mounts, false);
   await created.delete();
   await Agent.delete(agentId, options);
 
@@ -1789,8 +1790,9 @@ function agentState() {
       live_steer: true,
       live_cancel: true,
       workspace: "cloudflare-computer",
-      sandbox_tools: true,
-      sandbox_escalation: false,
+      execution_environments: true,
+      execution_namespace: "cwd-root-v1",
+      native_cross_mounts: false,
     },
     latest_event_cursor: "4",
     stream_error: null,

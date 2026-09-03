@@ -27,7 +27,7 @@ import {
 import { conversationTitle } from "./localConversationRuntime";
 import {
   createManagedConversation,
-  listManagedConversations,
+  loadManagedConversationSelection,
   type ManagedConversation,
 } from "./managedAgentRuntime";
 import "nanocodex-connect-ui/styles.css";
@@ -61,6 +61,7 @@ export const AgentExperience = memo(function AgentExperience({
   const [managedConversationId, setManagedConversationId] = useState<string>();
   const [managedError, setManagedError] = useState<string>();
   const [managedAttempt, setManagedAttempt] = useState(0);
+  const refreshManagedList = useRef(false);
   const [conversationPending, setConversationPending] = useState(false);
   const [freePromptsRemaining, setFreePromptsRemaining] = useState<number | null>(null);
   const [sponsoredExhausted, setSponsoredExhausted] = useState(false);
@@ -79,6 +80,9 @@ export const AgentExperience = memo(function AgentExperience({
     : hasDurableCredential;
   const showHomepageTerminal = landing && hasCredential && !activeCapabilityError;
   const voiceEnabled = authStatus?.state === "ready" && authStatus.voiceEnabled === true;
+  const visibleManagedConversationId = agentId === undefined || managedConversationId === agentId
+    ? managedConversationId
+    : undefined;
 
   useEffect(() => {
     setManagedConversations([]);
@@ -96,32 +100,43 @@ export const AgentExperience = memo(function AgentExperience({
     if (landing || account.status !== "ready" || !account.account || !hasDurableCredential) return;
     let cancelled = false;
     const accountId = account.account.id;
+    const refresh = refreshManagedList.current;
+    refreshManagedList.current = false;
+    if (agentId) {
+      setManagedConversationId((current) => current === agentId ? current : undefined);
+      setRuntimeState(undefined);
+    }
     setConversationPending(true);
     setManagedError(undefined);
-    void listManagedConversations(accountId).then(async (listed) => {
+    void loadManagedConversationSelection({
+      accountId,
+      routeAgentId: agentId,
+      retainedAgentId: safeGet(managedSelectionKey(accountId)) ?? undefined,
+      hasCredential,
+      refresh,
+    }).then((selection) => {
       if (cancelled) return;
-      const next = listed.length ? listed : [await createManagedConversation(accountId)];
-      if (cancelled) return;
-      setManagedConversations(next);
+      setManagedConversations(selection.conversations);
+      setManagedConversationId(selection.selectedId);
+      if (selection.selectedId) {
+        safeSet(managedSelectionKey(accountId), selection.selectedId);
+        if (selection.replaceRoute) onAgentChange?.(selection.selectedId, { replace: true });
+      }
     }).catch((error) => {
       if (!cancelled) setManagedError(errorMessage(error));
     }).finally(() => {
       if (!cancelled) setConversationPending(false);
     });
     return () => { cancelled = true; };
-  }, [account.account?.id, account.status, hasDurableCredential, landing, managedAttempt]);
-
-  useEffect(() => {
-    if (landing || !account.account || managedConversations.length === 0) return;
-    const retainedId = safeGet(managedSelectionKey(account.account.id)) ?? undefined;
-    const selected = managedConversations.find(({ id }) => id === agentId)?.id
-      ?? managedConversations.find(({ id }) => id === retainedId)?.id
-      ?? managedConversations[0]?.id;
-    if (!selected) return;
-    setManagedConversationId(selected);
-    safeSet(managedSelectionKey(account.account.id), selected);
-    if (agentId !== selected) onAgentChange?.(selected, { replace: true });
-  }, [account.account, agentId, landing, managedConversations, onAgentChange]);
+  }, [
+    account.account?.id,
+    account.status,
+    agentId,
+    hasDurableCredential,
+    landing,
+    managedAttempt,
+    onAgentChange,
+  ]);
 
   const changeCredentialSource = useCallback((source: CredentialSource) => {
     if (credentialSourceRef.current !== undefined && credentialSourceRef.current !== source) {
@@ -171,6 +186,7 @@ export const AgentExperience = memo(function AgentExperience({
   }, [account.account, conversationPending, onAgentChange]);
   const retryManagedConversations = useCallback(() => {
     setManagedError(undefined);
+    refreshManagedList.current = true;
     setManagedAttempt((value) => value + 1);
   }, []);
   const recordActivity = useCallback((input: string) => {
@@ -203,7 +219,7 @@ export const AgentExperience = memo(function AgentExperience({
       {landing || !hasDurableCredential ? null : <ConversationHistoryRail
         agentStatus={agentStatus}
         conversations={managedConversations} error={managedError}
-        mobileOpen={railOpen} pending={conversationPending} runtime="managed" selectedId={managedConversationId}
+        mobileOpen={railOpen} pending={conversationPending} runtime="managed" selectedId={visibleManagedConversationId}
         onClose={() => setRailOpen(false)} onCreate={createConversation} onOpen={() => setRailOpen(true)}
         onRetry={retryManagedConversations}
         onSelect={selectManaged}
@@ -236,14 +252,16 @@ export const AgentExperience = memo(function AgentExperience({
               mode={mode}
               welcome={homeTerminalWelcome(credentialSource, freePromptsRemaining)}
             />
-            : hasDurableCredential && managedConversationId
-            ? <ManagedAgentTerminal
-              key={managedConversationId} agentId={managedConversationId!} authStatus={authStatus}
-              mode={mode} onConversationActivity={recordActivity} onStateChange={setRuntimeState}
-              source={credentialSource}
-              voiceEnabled={voiceEnabled}
-            />
-            : <ReservedTerminal message={inactiveMessage} mode={mode} />}
+            : managedError
+              ? <ReservedTerminal message={managedError} mode={mode} />
+              : hasDurableCredential && visibleManagedConversationId
+                ? <ManagedAgentTerminal
+                  key={visibleManagedConversationId} agentId={visibleManagedConversationId} authStatus={authStatus}
+                  mode={mode} onConversationActivity={recordActivity} onStateChange={setRuntimeState}
+                  source={credentialSource}
+                  voiceEnabled={voiceEnabled}
+                />
+                : <ReservedTerminal message={inactiveMessage} mode={mode} />}
       </div>
     </div>
   </div>;

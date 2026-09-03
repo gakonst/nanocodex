@@ -1,7 +1,8 @@
+import { sha256Hex } from "./archive-hash";
+
 const VERSION = 1;
 const DEFAULT_RECENT_OPERATIONS = 512;
 const MAX_SEAL_RECEIPTS = 32;
-const MAX_RECEIPT_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
 
 export type ManagedRealtimeReceipt = Readonly<{
@@ -117,9 +118,8 @@ export class ManagedRealtimeArchive {
     const key = `${this.#prefix}by-id/${await sha256Hex(encoder.encode(identity))}.json`;
     const object = await this.#bucket.get(key);
     if (!object) return undefined;
-    if (!object.body || object.size > MAX_RECEIPT_BYTES) {
-      await object.body?.cancel();
-      throw new Error("managed realtime archive receipt exceeds the object boundary");
+    if (!object.body) {
+      throw new Error("managed realtime archive receipt body is unavailable");
     }
     const body = new Uint8Array(await object.arrayBuffer());
     const expectedHash = object.customMetadata?.sha256;
@@ -161,9 +161,6 @@ export class ManagedRealtimeArchive {
         kind: "managed_realtime_receipt",
         receipt,
       } satisfies ReceiptEnvelope));
-      if (body.byteLength > MAX_RECEIPT_BYTES) {
-        throw new Error("managed realtime archive receipt exceeds the object boundary");
-      }
       const bodyHash = await sha256Hex(body);
       const identity = `${receipt.voice_session_id}\n${receipt.operation_id}`;
       const key = `${this.#prefix}by-id/${await sha256Hex(encoder.encode(identity))}.json`;
@@ -283,9 +280,4 @@ function validateReceipt(value: ManagedRealtimeReceipt): void {
 
 function emptySeal(): ManagedRealtimeSealResult {
   return { archived_bytes: 0, archived_receipts: 0, objects: 0, sealed: false };
-}
-
-async function sha256Hex(value: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

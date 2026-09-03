@@ -13,7 +13,7 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
         "sandbox_kill_process" => process_control(tool, "Stop process", width, theme, expanded),
         "sandbox_list_files" => file_operation(tool, "List files", width, theme, expanded),
         "sandbox_start_process" => process(tool, width, theme, expanded),
-        "sandbox_preview" => preview(tool, width, theme, expanded),
+        "preview" => preview(tool, width, theme, expanded),
         "sandbox_read_file" => file_operation(tool, "Read file", width, theme, expanded),
         "sandbox_write_file" => file_operation(tool, "Write file", width, theme, expanded),
         _ => super::generic(tool, width, theme, expanded),

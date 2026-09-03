@@ -1,0 +1,337 @@
+import { describe, expect, it, vi } from "vitest";
+import type { ToolMap } from "nanocodex";
+
+import {
+  createNamespaceExecutionTools,
+  machineMountRoot,
+} from "../src/namespace-tools";
+
+const context = (overrides: Partial<{
+  sessionId: string;
+  parentCallId: string;
+  callId: string;
+}> = {}) => ({
+  callId: overrides.callId ?? "call",
+  model: "gpt-5.6-sol",
+  parentCallId: overrides.parentCallId ?? "cell",
+  sessionId: overrides.sessionId ?? "root-session",
+  signal: new AbortController().signal,
+});
+
+describe("cwd-root namespace execution", () => {
+  it("keeps canonical schemas and routes the default logical cwd to the sandbox", async () => {
+    const sandboxExec = vi.fn(async () => ({
+      output: "/workspace\n",
+      wall_time_seconds: 0.01,
+      exit_code: 0,
+    }));
+    const tools = createNamespaceExecutionTools(sandboxTools(sandboxExec), () => []);
+
+    expect(tools.exec_command!.parameters).toMatchObject({
+      required: ["cmd"],
+      additionalProperties: false,
+    });
+    expect(JSON.stringify(tools.exec_command!.parameters)).not.toContain("environment");
+    expect(tools.write_stdin!.parameters).toMatchObject({
+      required: ["session_id"],
+      additionalProperties: false,
+    });
+    expect(JSON.stringify(tools.write_stdin!.parameters)).not.toMatch(/environment|host/);
+
+    await tools.exec_command!.handler({ cmd: "pwd" }, context());
+    expect(sandboxExec).toHaveBeenCalledWith(
+      { cmd: "pwd", workdir: "/workspace" },
+      expect.objectContaining({ sessionId: "root-session" }),
+    );
+  });
+
+  it("routes by a portable machine mount and translates only the workdir", async () => {
+    const exec = vi.fn(async () => ({ output: "ok", wall_time_seconds: 0, exit_code: 0 }));
+    const resolve = vi.fn((_id: string, name: string) => (
+      name === "exec_command" ? { handler: exec } : { handler: vi.fn() }
+    ));
+    const tools = createNamespaceExecutionTools(
+      sandboxTools(),
+      () => [{
+        id: "laptop",
+        workspace: "/Users/me/repo",
+      }],
+      resolve,
+    );
+
+    await tools.exec_command!.handler({
+      cmd: "cargo test",
+      workdir: "/laptop/crates/core",
+      yield_time_ms: 30_000,
+    }, context());
+
+    expect(exec).toHaveBeenCalledWith({
+      cmd: "cargo test",
+      workdir: "/Users/me/repo/crates/core",
+      yield_time_ms: 30_000,
+    }, expect.anything());
+    expect(resolve).toHaveBeenCalledWith("laptop", "exec_command");
+  });
+
+  it("captures one immutable machine binding per Code Mode cell", async () => {
+    let machines = [{ id: "laptop", workspace: "/old" }];
+    const oldExec = vi.fn(async (_input: unknown) => ({ output: "old", wall_time_seconds: 0, exit_code: 0 }));
+    const newExec = vi.fn(async (_input: unknown) => ({ output: "new", wall_time_seconds: 0, exit_code: 0 }));
+    let generation = "old";
+    const tools = createNamespaceExecutionTools(
+      sandboxTools(),
+      () => machines,
+      (_id, name) => ({
+        handler: name === "exec_command"
+          ? generation === "old" ? oldExec : newExec
+          : vi.fn(),
+      }),
+    );
+
+    await tools.exec_command!.handler({ cmd: "one", workdir: "/laptop" }, context());
+    generation = "new";
+    machines = [{ id: "laptop", workspace: "/new" }];
+    await tools.exec_command!.handler({ cmd: "two", workdir: "/laptop" }, context({ callId: "two" }));
+    await tools.exec_command!.handler(
+      { cmd: "three", workdir: "/laptop" },
+      context({ parentCallId: "next-cell", callId: "three" }),
+    );
+
+    expect(oldExec).toHaveBeenCalledTimes(2);
+    expect(oldExec.mock.calls[1]![0]).toMatchObject({ workdir: "/old" });
+    expect(newExec).toHaveBeenCalledTimes(1);
+    expect(newExec.mock.calls[0]![0]).toMatchObject({ workdir: "/new" });
+  });
+
+  it("rebinds provider-local sessions and rejects cross-agent use", async () => {
+    const machineWrite = vi.fn(async ({ session_id }: { session_id: number }) => ({
+      output: "more",
+      wall_time_seconds: 0,
+      session_id,
+    }));
+    const tools = createNamespaceExecutionTools(
+      sandboxTools(),
+      () => [{ id: "buildbox", workspace: "/srv/repo" }],
+      (_id, name) => ({
+        handler: name === "exec_command"
+          ? vi.fn(async () => ({ output: "start", wall_time_seconds: 0, session_id: 7 }))
+          : name === "write_stdin" ? machineWrite : vi.fn(),
+      }),
+    );
+    const started = await tools.exec_command!.handler(
+      { cmd: "long", workdir: "/buildbox" },
+      context(),
+    ) as { session_id: number };
+    expect(started.session_id).not.toBe(7);
+
+    const polled = await tools.write_stdin!.handler(
+      { session_id: started.session_id },
+      context({ callId: "poll" }),
+    ) as { session_id: number };
+    expect(polled.session_id).toBe(started.session_id);
+    expect(machineWrite).toHaveBeenCalledWith(
+      { session_id: 7 },
+      expect.anything(),
+    );
+    await expect(tools.write_stdin!.handler(
+      { session_id: started.session_id },
+      context({ sessionId: "sibling-session", callId: "steal" }),
+    )).rejects.toThrow("unknown or stale");
+  });
+
+  it("accepts many simultaneously retained process bindings", async () => {
+    let providerSessionId = 0;
+    const exec = vi.fn(async () => ({
+      output: "started",
+      wall_time_seconds: 0,
+      session_id: ++providerSessionId,
+    }));
+    const writeStdin = vi.fn(async ({ session_id }: { session_id: number }) => ({
+      output: "running",
+      wall_time_seconds: 0,
+      session_id,
+    }));
+    const tools = createNamespaceExecutionTools(
+      sandboxTools(),
+      () => [{ id: "buildbox", workspace: "/srv/repo" }],
+      (_id, name) => ({
+        handler: name === "exec_command"
+          ? exec
+          : name === "write_stdin" ? writeStdin : vi.fn(),
+      }),
+    );
+    const retainedSessionCount = 256;
+    const retained: number[] = [];
+
+    for (let index = 0; index < retainedSessionCount; index += 1) {
+      const result = await tools.exec_command!.handler(
+        { cmd: `long-${index}`, workdir: "/buildbox" },
+        context({ callId: `start-${index}` }),
+      ) as { session_id: number };
+      retained.push(result.session_id);
+    }
+
+    expect(new Set(retained).size).toBe(retainedSessionCount);
+    await expect(tools.write_stdin!.handler(
+      { session_id: retained.at(-1)! },
+      context({ callId: "poll-last" }),
+    )).resolves.toMatchObject({ session_id: retained.at(-1) });
+    expect(writeStdin).toHaveBeenLastCalledWith(
+      { session_id: retainedSessionCount },
+      expect.anything(),
+    );
+  });
+
+  it("retains every live Code Mode cell binding until lifecycle cleanup", async () => {
+    let generation: "old" | "new" = "old";
+    const oldExec = vi.fn(async () => ({ output: "old", wall_time_seconds: 0, exit_code: 0 }));
+    const newExec = vi.fn(async () => ({ output: "new", wall_time_seconds: 0, exit_code: 0 }));
+    const tools = createNamespaceExecutionTools(
+      sandboxTools(),
+      () => [{ id: "laptop", workspace: generation === "old" ? "/old" : "/new" }],
+      (_id, name) => ({
+        handler: name === "exec_command"
+          ? generation === "old" ? oldExec : newExec
+          : vi.fn(),
+      }),
+    );
+
+    for (let index = 0; index < 256; index += 1) {
+      await tools.exec_command!.handler(
+        { cmd: `cell-${index}`, workdir: "/laptop" },
+        context({ parentCallId: `cell-${index}`, callId: `call-${index}` }),
+      );
+    }
+    generation = "new";
+    await tools.exec_command!.handler(
+      { cmd: "revisit", workdir: "/laptop" },
+      context({ parentCallId: "cell-0", callId: "revisit" }),
+    );
+
+    expect(oldExec).toHaveBeenCalledTimes(257);
+    expect(oldExec).toHaveBeenLastCalledWith(
+      { cmd: "revisit", workdir: "/old" },
+      expect.anything(),
+    );
+    expect(newExec).not.toHaveBeenCalled();
+  });
+
+  it("releases retained cells and process bindings with the owner session", async () => {
+    let current = "old";
+    const oldExec = vi.fn(async () => ({
+      output: "started",
+      wall_time_seconds: 0,
+      session_id: 7,
+    }));
+    const newExec = vi.fn(async () => ({
+      output: "rebound",
+      wall_time_seconds: 0,
+      exit_code: 0,
+    }));
+    const tools = createNamespaceExecutionTools(
+      sandboxTools(),
+      () => [{ id: "laptop", workspace: current === "old" ? "/old" : "/new" }],
+      (_id, name) => ({
+        handler: name === "exec_command"
+          ? current === "old" ? oldExec : newExec
+          : vi.fn(async () => ({ output: "more", wall_time_seconds: 0, session_id: 7 })),
+      }),
+    );
+    const started = await tools.exec_command!.handler(
+      { cmd: "long", workdir: "/laptop" },
+      context(),
+    ) as { session_id: number };
+
+    tools.exec_command!.releaseSession?.("root-session");
+    current = "new";
+
+    await expect(tools.write_stdin!.handler(
+      { session_id: started.session_id },
+      context({ callId: "stale" }),
+    )).rejects.toThrow("unknown or stale");
+    await tools.exec_command!.handler(
+      { cmd: "fresh", workdir: "/laptop" },
+      context({ callId: "fresh" }),
+    );
+    expect(oldExec).toHaveBeenCalledTimes(1);
+    expect(newExec).toHaveBeenCalledWith(
+      { cmd: "fresh", workdir: "/new" },
+      expect.anything(),
+    );
+  });
+
+  it("lets sibling subagent sessions place work on separate hands concurrently", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started: string[] = [];
+    const handler = (hand: string) => vi.fn(async () => {
+      started.push(hand);
+      await gate;
+      return { output: hand, wall_time_seconds: 0.01, exit_code: 0 };
+    });
+    const laptop = handler("laptop");
+    const buildbox = handler("buildbox");
+    const tools = createNamespaceExecutionTools(
+      sandboxTools(),
+      () => [
+        { id: "laptop", workspace: "/one" },
+        { id: "buildbox", workspace: "/two" },
+      ],
+      (id, name) => ({
+        handler: name === "exec_command"
+          ? id === "laptop" ? laptop : buildbox
+          : vi.fn(),
+      }),
+    );
+    const child = (sessionId: string, agentId: string) => ({
+      ...context({ sessionId, parentCallId: `cell-${agentId}`, callId: `call-${agentId}` }),
+      subagent: {
+        agentId,
+        parentAgentId: null,
+        sessionId,
+        role: "builder",
+        task: "test",
+      },
+    });
+
+    const pending = Promise.all([
+      tools.exec_command!.handler({ cmd: "test", workdir: "/laptop" }, child("child-a", "1")),
+      tools.exec_command!.handler({ cmd: "test", workdir: "/buildbox" }, child("child-b", "2")),
+    ]);
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    release();
+    await expect(pending).resolves.toHaveLength(2);
+    expect(laptop).toHaveBeenCalledTimes(1);
+    expect(buildbox).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed for unknown roots and derives safe deterministic mount names", async () => {
+    const tools = createNamespaceExecutionTools(sandboxTools(), () => []);
+    await expect(tools.exec_command!.handler(
+      { cmd: "pwd", workdir: "/missing/repo" },
+      context(),
+    )).rejects.toThrow("no mount owns");
+    expect(machineMountRoot("laptop")).toBe("/laptop");
+    expect(machineMountRoot("Build Box")).toMatch(/^\/hand-build-box-[0-9a-f]{8}$/);
+    expect(machineMountRoot("sandbox")).toMatch(/^\/hand-sandbox-/);
+  });
+});
+
+function sandboxTools(
+  exec = vi.fn(async () => ({ output: "", wall_time_seconds: 0, exit_code: 0 })),
+): ToolMap {
+  return {
+    exec_command: {
+      description: "sandbox exec",
+      handler: exec,
+    },
+    write_stdin: {
+      description: "sandbox stdin",
+      handler: vi.fn(async () => ({ output: "", wall_time_seconds: 0, exit_code: 0 })),
+    },
+    preview: {
+      description: "sandbox preview",
+      handler: vi.fn(async () => ({ port: 3000, url: "https://preview", persistent: false })),
+    },
+  };
+}

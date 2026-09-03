@@ -22,3 +22,9 @@ test("the account Worker exposes only the exact managed wallet routes", () => {
     assert.equal(isManagedRoutePath(path), false, path);
   }
 });
+
+test("the account Worker projects opaque sandbox preview capabilities", () => {
+  assert.equal(isManagedRoutePath("/sandbox-preview/capability/"), true);
+  assert.equal(isManagedRoutePath("/sandbox-preview/capability/assets/app.js"), true);
+  assert.equal(isManagedRoutePath("/sandbox-preview/"), false);
+});

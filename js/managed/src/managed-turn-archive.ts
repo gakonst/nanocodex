@@ -1,7 +1,8 @@
+import { sha256Hex } from "./archive-hash";
+
 const VERSION = 1;
 const DEFAULT_RECENT_TERMINAL_TURNS = 512;
 const MAX_SEAL_RECEIPTS = 32;
-const MAX_RECEIPT_BYTES = 4 * 1024 * 1024;
 const TRANSFER_BATCH_OBJECTS = 64;
 const TRANSFER_BATCH_BYTES = 8 * 1024 * 1024;
 const TRANSFER_COPY_CONCURRENCY = 4;
@@ -201,9 +202,6 @@ export class ManagedTurnArchive {
         kind: "managed_turn_receipt",
         receipt,
       } satisfies ReceiptEnvelope));
-      if (body.byteLength > MAX_RECEIPT_BYTES) {
-        throw new Error("managed turn archive receipt exceeds the object boundary");
-      }
       const bodyHash = await sha256Hex(body);
       const keys = [
         `${this.#prefix}by-id/${await sha256Hex(encoder.encode(receipt.id))}.json`,
@@ -461,7 +459,7 @@ export class ManagedTurnArchive {
       for (const object of page.objects) {
         const suffix = object.key.slice(prefix.length);
         if (!/^(?:by-id|by-request)\/[0-9a-f]{64}\.json$/.test(suffix)
-          || object.size <= 0 || object.size > MAX_RECEIPT_BYTES
+          || object.size <= 0
           || object.customMetadata?.kind !== "managed_turn_receipt"
           || object.customMetadata?.version !== String(VERSION)
           || !/^[0-9a-f]{64}$/.test(object.customMetadata?.sha256 ?? "")) {
@@ -498,9 +496,8 @@ export class ManagedTurnArchive {
   async #read(key: string): Promise<ManagedTurnReceipt | undefined> {
     const object = await this.#bucket.get(key);
     if (!object) return undefined;
-    if (!object.body || object.size > MAX_RECEIPT_BYTES) {
-      await object.body?.cancel();
-      throw new Error("managed turn archive receipt exceeds the object boundary");
+    if (!object.body) {
+      throw new Error("managed turn archive receipt body is unavailable");
     }
     const body = new Uint8Array(await object.arrayBuffer());
     const expectedHash = object.customMetadata?.sha256;
@@ -639,11 +636,6 @@ function identityFromProgress(progress: TransferProgress): ManagedTurnArchiveIde
     objects: progress.object_count,
     version: VERSION,
   };
-}
-
-async function sha256Hex(value: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function mapWithConcurrency<T>(

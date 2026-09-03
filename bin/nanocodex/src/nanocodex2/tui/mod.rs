@@ -28,7 +28,7 @@ use self::{
         RestoredSessionProjection, RootEffect, RootNode,
     },
     history::{
-        HistoryWindow, history_projection, history_projection_with_sequences,
+        HistoryPrefetch, HistoryWindow, history_projection, history_projection_with_sequences,
         live_managed_projection, older_history_projection_with_sequences, unix_ms,
     },
     pane::PaneId,
@@ -42,7 +42,7 @@ use self::{
 };
 use crate::{config::ReasoningEffort, config::ReasoningMode, host::HostConfig};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
-use futures_util::{StreamExt, future::join_all};
+use futures_util::StreamExt;
 use nanocodex::Model;
 use nanocodex_agent::{Nanocodex, NanocodexError, PromptRequest, Turn, TurnControl, TurnResult};
 use nanocodex_managed::{
@@ -61,9 +61,61 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 type Admission = (PaneId, TurnId, Result<Turn, NanocodexError>);
 type Completion = (PaneId, TurnId, Result<TurnResult, NanocodexError>);
-type SteerCompletion = (PaneId, components::QueueId, Result<(), String>);
+type SteerCompletion = (
+    PaneId,
+    components::QueueId,
+    u64,
+    SteerTarget,
+    Result<(), String>,
+);
 type WaitingSteer = (PaneId, components::QueueId, Submission);
-type CancelCompletion = (PaneId, Vec<TurnId>, Vec<String>, Option<String>);
+enum CancelTarget {
+    Local {
+        generation: u64,
+        agent_id: String,
+        id: TurnId,
+        turn_id: String,
+    },
+    Managed {
+        generation: u64,
+        agent_id: String,
+        turn_id: String,
+    },
+}
+
+impl CancelTarget {
+    fn agent_id(&self) -> &str {
+        match self {
+            Self::Local { agent_id, .. } | Self::Managed { agent_id, .. } => agent_id,
+        }
+    }
+
+    fn turn_id(&self) -> &str {
+        match self {
+            Self::Local { turn_id, .. } | Self::Managed { turn_id, .. } => turn_id,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum SteerTarget {
+    Local(TurnId),
+    Managed { agent_id: String, turn_id: String },
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum SteerResolution {
+    Admitted,
+    Failed(Option<String>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CancelDisposition {
+    Accepted,
+    Terminal,
+}
+
+type CancelCompletion = (PaneId, CancelTarget, Result<CancelDisposition, String>);
 type SettingsCompletion = (
     PaneId,
     String,
@@ -107,6 +159,169 @@ struct ManagedActiveTurns {
 struct ManagedObservation {
     active_changed: bool,
     external: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum CancellationResolution {
+    Accepted,
+    Failed(String),
+    Stale,
+}
+
+#[derive(Debug)]
+struct CancellationFence<Id> {
+    in_flight: HashSet<Id>,
+    accepted: HashSet<Id>,
+    terminal_observed: HashSet<Id>,
+}
+
+impl<Id> Default for CancellationFence<Id> {
+    fn default() -> Self {
+        Self {
+            in_flight: HashSet::new(),
+            accepted: HashSet::new(),
+            terminal_observed: HashSet::new(),
+        }
+    }
+}
+
+impl<Id> CancellationFence<Id>
+where
+    Id: Clone + Eq + std::hash::Hash,
+{
+    fn begin(&mut self, id: Id) -> bool {
+        if self.accepted.contains(&id) {
+            return false;
+        }
+        self.in_flight.insert(id)
+    }
+
+    fn finish(
+        &mut self,
+        id: Id,
+        outcome: Result<CancelDisposition, String>,
+        active: bool,
+    ) -> CancellationResolution {
+        self.in_flight.remove(&id);
+        let terminal_observed = self.terminal_observed.remove(&id);
+        resolve_cancellation(
+            &mut self.accepted,
+            id,
+            outcome,
+            active && !terminal_observed,
+        )
+    }
+
+    fn terminal(&mut self, id: &Id) {
+        self.accepted.remove(id);
+        if self.in_flight.contains(id) {
+            self.terminal_observed.insert(id.clone());
+        } else {
+            self.terminal_observed.remove(id);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.in_flight.clear();
+        self.accepted.clear();
+        self.terminal_observed.clear();
+    }
+}
+
+#[derive(Debug, Default)]
+struct CancellationFences {
+    local: CancellationFence<TurnId>,
+    managed: CancellationFence<String>,
+}
+
+impl CancellationFences {
+    fn has_in_flight(&self) -> bool {
+        !self.local.in_flight.is_empty() || !self.managed.in_flight.is_empty()
+    }
+
+    fn begin_local(&mut self, id: TurnId) -> bool {
+        self.local.begin(id)
+    }
+
+    fn begin_managed(&mut self, id: &str) -> bool {
+        self.managed.begin(id.to_owned())
+    }
+
+    fn finish_local(
+        &mut self,
+        id: TurnId,
+        outcome: Result<CancelDisposition, String>,
+        active: bool,
+    ) -> CancellationResolution {
+        self.local.finish(id, outcome, active)
+    }
+
+    fn finish_managed(
+        &mut self,
+        id: String,
+        outcome: Result<CancelDisposition, String>,
+        active: bool,
+    ) -> CancellationResolution {
+        self.managed.finish(id, outcome, active)
+    }
+
+    fn local_terminal(&mut self, id: TurnId) {
+        self.local.terminal(&id);
+    }
+
+    fn managed_terminal(&mut self, id: &str) {
+        self.managed.terminal(&id.to_owned());
+    }
+
+    fn reset(&mut self) {
+        self.local.reset();
+        self.managed.reset();
+    }
+}
+
+fn resolve_cancellation<Id>(
+    accepted: &mut HashSet<Id>,
+    id: Id,
+    outcome: Result<CancelDisposition, String>,
+    active: bool,
+) -> CancellationResolution
+where
+    Id: Eq + std::hash::Hash,
+{
+    match outcome {
+        Ok(CancelDisposition::Accepted) => {
+            if active && accepted.insert(id) {
+                CancellationResolution::Accepted
+            } else {
+                CancellationResolution::Stale
+            }
+        }
+        Ok(CancelDisposition::Terminal) => CancellationResolution::Stale,
+        Err(error) => {
+            if active && !accepted.contains(&id) {
+                CancellationResolution::Failed(error)
+            } else {
+                CancellationResolution::Stale
+            }
+        }
+    }
+}
+
+fn cancel_disposition(
+    expected_turn_id: &str,
+    returned_turn_id: &str,
+    state: &str,
+) -> Result<CancelDisposition, String> {
+    if returned_turn_id != expected_turn_id {
+        return Err("managed cancel acknowledged a different turn".to_owned());
+    }
+    match state {
+        "cancelling" => Ok(CancelDisposition::Accepted),
+        "completed" | "cancelled" | "failed" => Ok(CancelDisposition::Terminal),
+        other => Err(format!(
+            "managed cancel returned unexpected state `{other}`"
+        )),
+    }
 }
 
 impl ManagedActiveTurns {
@@ -216,6 +431,7 @@ struct DriverRuntime {
     agent: Option<Nanocodex>,
     managed_events: Option<mpsc::UnboundedReceiver<ManagedEvent>>,
     managed_events_open: bool,
+    connection_generation: u64,
     agent_id: String,
     settings: AgentSettings,
     pending_settings: Option<AgentSettings>,
@@ -228,9 +444,9 @@ struct DriverRuntime {
     managed_active_turns: ManagedActiveTurns,
     admitting: HashSet<TurnId>,
     cancel_after_admission: HashSet<TurnId>,
-    cancelling_controls: HashSet<TurnId>,
-    cancelling_managed_turns: HashSet<String>,
+    cancellation_fences: CancellationFences,
     cancellation_failed: bool,
+    cancellation_had_effect: bool,
     admissions: JoinSet<Admission>,
     completions: JoinSet<Completion>,
     steers: JoinSet<SteerCompletion>,
@@ -241,6 +457,7 @@ struct DriverRuntime {
     shells: JoinSet<(PaneId, ShellExecution)>,
     history_loads: JoinSet<HistoryCompletion>,
     history_replays: JoinSet<HistoryReplayCompletion>,
+    history_prefetch: HistoryPrefetch,
     history_generation: u64,
     history: HistoryWindow,
     history_sequences: HashMap<String, u64>,
@@ -327,6 +544,144 @@ fn history_replay_matches(
 }
 
 impl DriverRuntime {
+    fn resolve_steer(
+        &self,
+        generation: u64,
+        target: &SteerTarget,
+        outcome: Result<(), String>,
+    ) -> SteerResolution {
+        let current = generation == self.connection_generation
+            && match target {
+                SteerTarget::Local(id) => self.controls.contains_key(id),
+                SteerTarget::Managed { agent_id, turn_id } => {
+                    agent_id == &self.agent_id && self.managed_active_turns.ids.contains(turn_id)
+                }
+            };
+        match outcome {
+            Ok(()) if current => SteerResolution::Admitted,
+            Ok(()) => SteerResolution::Failed(None),
+            Err(error) if current => SteerResolution::Failed(Some(error)),
+            Err(_) => SteerResolution::Failed(None),
+        }
+    }
+
+    fn finish_cancellation(
+        &mut self,
+        target: CancelTarget,
+        outcome: Result<CancelDisposition, String>,
+    ) -> CancellationResolution {
+        match target {
+            CancelTarget::Local {
+                generation,
+                agent_id,
+                id,
+                turn_id,
+            } if generation == self.connection_generation => {
+                let active = agent_id == self.agent_id
+                    && self.controls.contains_key(&id)
+                    && self.local_managed_turns.get(&id) == Some(&turn_id);
+                self.cancellation_fences.finish_local(id, outcome, active)
+            }
+            CancelTarget::Managed {
+                generation,
+                agent_id,
+                turn_id,
+            } if generation == self.connection_generation => {
+                let active = agent_id == self.agent_id
+                    && (!self.managed_events_open
+                        || self.managed_active_turns.ids.contains(&turn_id));
+                self.cancellation_fences
+                    .finish_managed(turn_id, outcome, active)
+            }
+            _ => CancellationResolution::Stale,
+        }
+    }
+
+    fn start_history_prefetch(&mut self, pane: PaneId) {
+        if !self.history_loads.is_empty() || !self.history_replays.is_empty() {
+            return;
+        }
+        let Some(before) = self.history_prefetch.claim(&self.history) else {
+            return;
+        };
+        debug_assert!(self.history_loads.is_empty());
+        debug_assert!(self.history_replays.is_empty());
+        let client = self.client.clone();
+        let agent_id = self.agent_id.clone();
+        let generation = self.history_generation;
+        self.history_loads.spawn(async move {
+            let result = client
+                .history(&agent_id, Some(&before), HISTORY_PAGE_SIZE)
+                .await;
+            (pane, agent_id, generation, before, result)
+        });
+    }
+
+    fn start_requested_history_replay(&mut self, pane: PaneId) {
+        if !self.history_replays.is_empty() {
+            return;
+        }
+        let Some((requested_before, page)) = self
+            .history_prefetch
+            .take_requested(self.history.before.as_deref())
+        else {
+            return;
+        };
+        let coherent_tail = self
+            .history
+            .events
+            .iter()
+            .any(|event| matches!(event.data, ManagedEventData::TurnAccepted { .. }));
+        let sequences = self.history_sequences.clone();
+        let history_records = self.history_records.clone();
+        let live_records = self.live_records.clone();
+        let next_sequence = self.sequence;
+        let workspace = self.workspace.clone();
+        let effort = effort_from_thinking(self.settings.thinking);
+        let agent_id = self.agent_id.clone();
+        let generation = self.history_generation;
+        self.history_replays.spawn_blocking(move || {
+            let result = prepare_history_replay(
+                page,
+                sequences,
+                next_sequence,
+                history_records,
+                live_records,
+                coherent_tail,
+                &agent_id,
+                &workspace,
+                effort,
+            );
+            (pane, agent_id, generation, requested_before, result)
+        });
+    }
+
+    fn finish_history_replay(
+        &mut self,
+        pane: PaneId,
+        result: Result<PreparedHistoryReplay, ManagedError>,
+    ) -> Result<Box<RestoredSessionProjection>, ManagedError> {
+        let mut prepared = match result {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                // The requested page has already left the prefetch queue. Every later buffered
+                // page depends on its cursor, so none of them can be reached from the unchanged
+                // history window after a projection failure.
+                self.history_prefetch.reset();
+                self.start_history_prefetch(pane);
+                return Err(error);
+            }
+        };
+        self.history.prepend_window(prepared.older_history);
+        self.history_sequences = prepared.sequences;
+        self.sequence = self.sequence.max(prepared.next_sequence);
+        self.next_turn = self.next_turn.max(self.sequence);
+        self.history_records = prepared.history_records;
+        self.recent_prompts.append(&mut prepared.older_prompts);
+        self.start_history_prefetch(pane);
+        Ok(prepared.projection)
+    }
+
     fn local_record(&mut self, event: LocalEvent) -> Result<Arc<TranscriptRecord>, ManagedError> {
         let record =
             TranscriptRecord::from_local(self.sequence, unix_ms(), event).map_err(|error| {
@@ -425,61 +780,56 @@ impl DriverRuntime {
             && self.active_shells == 0
             && self.pending_submission.is_none()
             && self.cancel_after_admission.is_empty()
-            && self.cancelling_controls.is_empty()
-            && self.cancelling_managed_turns.is_empty()
+            && !self.cancellation_fences.has_in_flight()
             && self.connection.is_empty()
     }
 
-    fn cancel_controls(&mut self, pane: PaneId, controls: Vec<(TurnId, TurnControl)>) {
-        if controls.is_empty() {
-            return;
+    fn cancel_local_turns(&mut self, pane: PaneId, turns: Vec<(TurnId, String)>) {
+        for (id, turn_id) in turns {
+            if !self.cancellation_fences.begin_local(id) {
+                continue;
+            }
+            self.spawn_cancellation(
+                pane,
+                CancelTarget::Local {
+                    generation: self.connection_generation,
+                    agent_id: self.agent_id.clone(),
+                    id,
+                    turn_id,
+                },
+            );
         }
-        let ids = controls.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        self.cancelling_controls.extend(ids.iter().copied());
-        self.cancellations.spawn(async move {
-            let results = join_all(
-                controls
-                    .into_iter()
-                    .map(|(_, control)| async move { control.cancel().await }),
-            )
-            .await;
-            let error = results
-                .into_iter()
-                .filter_map(Result::err)
-                .map(|error| error.to_string())
-                .next();
-            (pane, ids, Vec::new(), error)
-        });
     }
 
     fn cancel_managed_turns(&mut self, pane: PaneId, turn_ids: Vec<String>) {
-        if turn_ids.is_empty() {
-            return;
+        for turn_id in turn_ids {
+            if !self.cancellation_fences.begin_managed(&turn_id) {
+                continue;
+            }
+            self.spawn_cancellation(
+                pane,
+                CancelTarget::Managed {
+                    generation: self.connection_generation,
+                    agent_id: self.agent_id.clone(),
+                    turn_id,
+                },
+            );
         }
-        self.cancelling_managed_turns
-            .extend(turn_ids.iter().cloned());
+    }
+
+    fn spawn_cancellation(&mut self, pane: PaneId, target: CancelTarget) {
         let client = self.client.clone();
-        let agent_id = self.agent_id.clone();
         self.cancellations.spawn(async move {
-            let results = join_all(turn_ids.iter().map(|turn_id| {
-                let client = client.clone();
-                let agent_id = agent_id.clone();
-                let turn_id = turn_id.clone();
-                async move {
-                    client
-                        .cancel(&agent_id, &turn_id)
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|action| {
-                            (action.turn_id == turn_id).then_some(()).ok_or_else(|| {
-                                "managed cancel acknowledged a different turn".to_owned()
-                            })
-                        })
-                }
-            }))
-            .await;
-            let error = results.into_iter().find_map(Result::err);
-            (pane, Vec::new(), turn_ids, error)
+            let outcome = {
+                let agent_id = target.agent_id();
+                let turn_id = target.turn_id();
+                client
+                    .cancel(agent_id, turn_id)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|action| cancel_disposition(turn_id, &action.turn_id, &action.state))
+            };
+            (pane, target, outcome)
         });
     }
 }
@@ -631,6 +981,7 @@ async fn run_inner(
         agent: None,
         managed_events: None,
         managed_events_open: false,
+        connection_generation: 0,
         agent_id: String::new(),
         settings: initial_settings,
         pending_settings: None,
@@ -643,9 +994,9 @@ async fn run_inner(
         managed_active_turns: ManagedActiveTurns::default(),
         admitting: HashSet::new(),
         cancel_after_admission: HashSet::new(),
-        cancelling_controls: HashSet::new(),
-        cancelling_managed_turns: HashSet::new(),
+        cancellation_fences: CancellationFences::default(),
         cancellation_failed: false,
+        cancellation_had_effect: false,
         admissions: JoinSet::new(),
         completions: JoinSet::new(),
         steers: JoinSet::new(),
@@ -656,6 +1007,7 @@ async fn run_inner(
         shells: JoinSet::new(),
         history_loads: JoinSet::new(),
         history_replays: JoinSet::new(),
+        history_prefetch: HistoryPrefetch::default(),
         history_generation: 0,
         history: HistoryWindow::default(),
         history_sequences: HashMap::new(),
@@ -708,6 +1060,8 @@ async fn run_inner(
             };
             match result {
                 Err(error) => {
+                    runtime.history_prefetch.reset();
+                    runtime.start_history_prefetch(PaneId::Main);
                     request_render(
                         app.update(AppEvent::NotifyError {
                             pane: PaneId::Main,
@@ -728,26 +1082,21 @@ async fn run_inner(
                         runtime.history.before.as_deref(),
                     ) =>
                 {
-                    match result {
-                        Err(error) => request_render(
-                            app.update(AppEvent::NotifyError {
-                                pane,
-                                error: format!("Could not replay older durable history: {error}"),
-                            }),
-                            &mut scheduler,
-                        ),
-                        Ok(mut prepared) => {
-                            runtime.history.prepend_window(prepared.older_history);
-                            runtime.history_sequences = prepared.sequences;
-                            runtime.sequence = runtime.sequence.max(prepared.next_sequence);
-                            runtime.next_turn = runtime.next_turn.max(runtime.sequence);
-                            runtime.history_records = prepared.history_records;
-                            runtime.recent_prompts.append(&mut prepared.older_prompts);
+                    match runtime.finish_history_replay(pane, result) {
+                        Err(error) => {
                             request_render(
-                                app.update(AppEvent::HistoryReplayed {
+                                app.update(AppEvent::NotifyError {
                                     pane,
-                                    projection: prepared.projection,
+                                    error: format!(
+                                        "Could not replay older durable history: {error}"
+                                    ),
                                 }),
+                                &mut scheduler,
+                            );
+                        }
+                        Ok(projection) => {
+                            request_render(
+                                app.update(AppEvent::HistoryReplayed { pane, projection }),
                                 &mut scheduler,
                             );
                         }
@@ -794,6 +1143,23 @@ async fn run_inner(
             }, if runtime.managed_events_open => {
                 match event {
                     Some(event) => {
+                        match &event.data {
+                            ManagedEventData::TurnCompleted { id, .. }
+                            | ManagedEventData::TurnCancelled { id }
+                            | ManagedEventData::TurnFailed { id, .. } => {
+                                runtime.cancellation_fences.managed_terminal(id);
+                                if let Some(local_id) = runtime
+                                    .local_managed_turns
+                                    .iter()
+                                    .find_map(|(local_id, managed_id)| {
+                                        (managed_id == id).then_some(*local_id)
+                                    })
+                                {
+                                    runtime.cancellation_fences.local_terminal(local_id);
+                                }
+                            }
+                            _ => {}
+                        }
                         let observation = runtime
                             .managed_active_turns
                             .observe(&event, &runtime.local_managed_turns);
@@ -843,6 +1209,11 @@ async fn run_inner(
                         runtime.managed_active_turns.ids.clear();
                         runtime.managed_active_turns.live_steer = false;
                         runtime.managed_active_turns.live_cancel = false;
+                        // Losing the observer does not prove any durable cancellation target
+                        // terminated. Keep same-generation requests fenced until their HTTP
+                        // response or a replacement connection resolves them.
+                        runtime.cancellation_had_effect = false;
+                        runtime.cancellation_failed = false;
                         request_render(
                             app.update(AppEvent::AgentStreamClosed(PaneId::Main)),
                             &mut scheduler,
@@ -924,8 +1295,9 @@ async fn run_inner(
                             };
                             let display_settings = requested_startup_settings.unwrap_or(settings);
                             runtime.history_generation = runtime.history_generation.wrapping_add(1);
-                            runtime.history_loads.abort_all();
-                            runtime.history_replays.abort_all();
+                            runtime.history_loads = JoinSet::new();
+                            runtime.history_replays = JoinSet::new();
+                            runtime.history_prefetch.reset();
                             if !matches!(purpose, ConnectionPurpose::Startup) {
                                 runtime.history_sequences.clear();
                                 runtime.history_records.clear();
@@ -961,13 +1333,17 @@ async fn run_inner(
                                     ConnectionResult::Disconnected(previous.disconnect().await)
                                 });
                             }
+                            runtime.connection_generation =
+                                runtime.connection_generation.wrapping_add(1);
                             runtime.managed_events = Some(managed_events);
                             runtime.managed_events_open = true;
                             runtime.agent_id = agent_id;
                             runtime.settings = settings;
                             runtime.workspace = workspace;
                             runtime.managed_active_turns = active_turns;
-                            runtime.cancelling_managed_turns.clear();
+                            runtime.cancellation_fences.reset();
+                            runtime.cancellation_had_effect = false;
+                            runtime.cancellation_failed = false;
                             runtime.next_turn = runtime.next_turn.max(runtime.sequence);
                             runtime.recent_prompts = prompts;
                             runtime.history = history;
@@ -1046,6 +1422,7 @@ async fn run_inner(
                             {
                                 runtime.start_submission(pane, id, prompt);
                             }
+                            runtime.start_history_prefetch(pane);
                         }
                         ConnectionResult::Agent { purpose, result: Err(failure) } => {
                             let message = format!("Could not connect to the managed agent: {}", failure.error);
@@ -1217,18 +1594,26 @@ async fn run_inner(
                                 {
                                     updates.push(app.update(AppEvent::SteerFailed { pane, id }));
                                 }
-                                runtime.cancel_controls(pane, vec![(id, control)]);
+                                let managed_turn_id = runtime
+                                    .local_managed_turns
+                                    .get(&id)
+                                    .expect("admitted managed turn must retain its request ID")
+                                    .clone();
+                                runtime.cancel_local_turns(pane, vec![(id, managed_turn_id)]);
                             } else {
+                                let local_turn_id = id;
                                 while let Some((pane, id, prompt)) =
                                     runtime.waiting_steers.pop_front()
                                 {
                                     let control = control.clone();
+                                    let generation = runtime.connection_generation;
+                                    let target = SteerTarget::Local(local_turn_id);
                                     runtime.steers.spawn(async move {
                                         let result = control
                                             .steer(prompt.agent_prompt())
                                             .await
                                             .map_err(|error| error.to_string());
-                                        (pane, id, result)
+                                        (pane, id, generation, target, result)
                                     });
                                 }
                             }
@@ -1254,8 +1639,7 @@ async fn run_inner(
                     if cancelled_after_admission
                         && runtime.cancel_after_admission.is_empty()
                         && runtime.cancellations.is_empty()
-                        && runtime.cancelling_controls.is_empty()
-                        && runtime.cancelling_managed_turns.is_empty()
+                        && !runtime.cancellation_fences.has_in_flight()
                     {
                         let update = if runtime.cancellation_failed {
                             runtime.cancellation_failed = false;
@@ -1276,6 +1660,7 @@ async fn run_inner(
                     let (pane, id, outcome) = result.map_err(|error| ManagedError::Configuration(format!("turn task failed: {error}")))?;
                     runtime.controls.remove(&id);
                     runtime.local_managed_turns.remove(&id);
+                    runtime.cancellation_fences.local_terminal(id);
                     let error = outcome.err().map(|error| error.to_string());
                     let record = runtime.local_record(LocalEvent::WorkerTurnFinished { id, error })?;
                     request_render(app.update(AppEvent::Transcript { pane, record }), &mut scheduler);
@@ -1285,50 +1670,74 @@ async fn run_inner(
             }
             result = runtime.steers.join_next(), if !runtime.steers.is_empty() => {
                 if let Some(result) = result {
-                    let (pane, id, outcome) = result.map_err(|error| ManagedError::Configuration(format!("steer task failed: {error}")))?;
-                    let update = match outcome {
-                        Ok(()) => app.update(AppEvent::SteerAdmitted { pane, id }),
-                        Err(error) => {
+                    let (pane, id, generation, target, outcome) = result.map_err(|error| ManagedError::Configuration(format!("steer task failed: {error}")))?;
+                    let update = match runtime.resolve_steer(generation, &target, outcome) {
+                        SteerResolution::Admitted => app.update(AppEvent::SteerAdmitted { pane, id }),
+                        SteerResolution::Failed(Some(error)) => {
                             request_render(app.update(AppEvent::NotifyError { pane, error: format!("Could not steer turn: {error}") }), &mut scheduler);
                             app.update(AppEvent::SteerFailed { pane, id })
                         }
+                        SteerResolution::Failed(None) => app.update(AppEvent::SteerFailed { pane, id }),
                     };
                     stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                 }
             }
             result = runtime.cancellations.join_next(), if !runtime.cancellations.is_empty() => {
                 if let Some(result) = result {
-                    let (pane, ids, managed_ids, error) = result.map_err(|error| ManagedError::Configuration(format!("cancel task failed: {error}")))?;
-                    for id in &ids {
-                        runtime.cancelling_controls.remove(id);
-                    }
-                    for id in &managed_ids {
-                        runtime.cancelling_managed_turns.remove(id);
-                    }
-                    runtime.cancellation_failed |= error.is_some();
-                    let count = ids.len().saturating_add(managed_ids.len());
-                    let record = runtime.local_record(LocalEvent::WorkerTurnsInterrupted {
-                        count,
-                        error: error.clone(),
-                    })?;
-                    request_render(app.update(AppEvent::Transcript { pane, record }), &mut scheduler);
+                    let (pane, target, outcome) = result.map_err(|error| ManagedError::Configuration(format!("cancel task failed: {error}")))?;
+                    let resolution = runtime.finish_cancellation(target, outcome);
+                    let final_error = match resolution {
+                        CancellationResolution::Accepted => {
+                            runtime.cancellation_had_effect = true;
+                            let record = runtime.local_record(
+                                LocalEvent::WorkerTurnsInterrupted {
+                                    count: 1,
+                                    error: None,
+                                },
+                            )?;
+                            request_render(
+                                app.update(AppEvent::Transcript { pane, record }),
+                                &mut scheduler,
+                            );
+                            None
+                        }
+                        CancellationResolution::Failed(error) => {
+                            runtime.cancellation_failed = true;
+                            let record = runtime.local_record(
+                                LocalEvent::WorkerTurnsInterrupted {
+                                    count: 0,
+                                    error: Some(error.clone()),
+                                },
+                            )?;
+                            request_render(
+                                app.update(AppEvent::Transcript { pane, record }),
+                                &mut scheduler,
+                            );
+                            Some(error)
+                        }
+                        CancellationResolution::Stale => None,
+                    };
                     if runtime.cancel_after_admission.is_empty()
                         && runtime.cancellations.is_empty()
-                        && runtime.cancelling_controls.is_empty()
-                        && runtime.cancelling_managed_turns.is_empty()
+                        && !runtime.cancellation_fences.has_in_flight()
                     {
                         let update = if runtime.cancellation_failed {
                             runtime.cancellation_failed = false;
-                            app.update(AppEvent::NotifyError {
+                            Some(app.update(AppEvent::NotifyError {
                                 pane,
-                                error: error.unwrap_or_else(|| {
+                                error: final_error.unwrap_or_else(|| {
                                     "One or more managed cancellation requests failed.".to_owned()
                                 }),
-                            })
+                            }))
+                        } else if runtime.cancellation_had_effect {
+                            Some(app.update(AppEvent::TurnsCancelled(pane)))
                         } else {
-                            app.update(AppEvent::TurnsCancelled(pane))
+                            None
                         };
-                        stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                        runtime.cancellation_had_effect = false;
+                        if let Some(update) = update {
+                            stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                        }
                     }
                 }
             }
@@ -1358,50 +1767,37 @@ async fn run_inner(
                 if let Some(result) = result {
                     match result {
                         Err(error) => {
+                            runtime.history_prefetch.reset();
                             request_render(app.update(AppEvent::NotifyError {
                                 pane: PaneId::Main,
                                 error: format!("Older durable history task stopped unexpectedly: {error}"),
                             }), &mut scheduler);
                         }
                         Ok((pane, agent_id, generation, requested_before, result))
-                            if history_replay_matches(
-                                &agent_id,
-                                generation,
-                                &requested_before,
-                                &runtime.agent_id,
-                                runtime.history_generation,
-                                runtime.history.before.as_deref(),
-                            ) => match result {
+                            if agent_id == runtime.agent_id
+                                && generation == runtime.history_generation
+                                && runtime.history_prefetch.owns(&requested_before) => match result {
                             Err(error) => {
+                                let _ = runtime.history_prefetch.fail(&requested_before);
                                 request_render(app.update(AppEvent::NotifyError {
                                     pane,
                                     error: format!("Could not load older durable history: {error}"),
                                 }), &mut scheduler);
                             }
                             Ok(page) => {
-                                let coherent_tail = runtime.history.events.iter().any(|event| {
-                                    matches!(event.data, ManagedEventData::TurnAccepted { .. })
-                                });
-                                let sequences = runtime.history_sequences.clone();
-                                let history_records = runtime.history_records.clone();
-                                let live_records = runtime.live_records.clone();
-                                let next_sequence = runtime.sequence;
-                                let workspace = runtime.workspace.clone();
-                                let effort = effort_from_thinking(runtime.settings.thinking);
-                                runtime.history_replays.spawn_blocking(move || {
-                                    let result = prepare_history_replay(
-                                        page,
-                                        sequences,
-                                        next_sequence,
-                                        history_records,
-                                        live_records,
-                                        coherent_tail,
-                                        &agent_id,
-                                        &workspace,
-                                        effort,
-                                    );
-                                    (pane, agent_id, generation, requested_before, result)
-                                });
+                                if let Err(error) = runtime
+                                    .history_prefetch
+                                    .store(&requested_before, page)
+                                {
+                                    let _ = runtime.history_prefetch.fail(&requested_before);
+                                    request_render(app.update(AppEvent::NotifyError {
+                                        pane,
+                                        error: format!("Could not buffer older durable history: {error}"),
+                                    }), &mut scheduler);
+                                } else {
+                                    runtime.start_requested_history_replay(pane);
+                                    runtime.start_history_prefetch(pane);
+                                }
                             }
                             },
                         Ok(_) => {}
@@ -1484,13 +1880,20 @@ async fn apply_update(
                         });
                     }
                     RootEffect::Steer { id, prompt } => {
-                        if let Some(control) = runtime.controls.values().next().cloned() {
+                        if let Some((turn_id, control)) = runtime
+                            .controls
+                            .iter()
+                            .next()
+                            .map(|(turn_id, control)| (*turn_id, control.clone()))
+                        {
+                            let generation = runtime.connection_generation;
+                            let target = SteerTarget::Local(turn_id);
                             runtime.steers.spawn(async move {
                                 let result = control
                                     .steer(prompt.agent_prompt())
                                     .await
                                     .map_err(|error| error.to_string());
-                                (pane, id, result)
+                                (pane, id, generation, target, result)
                             });
                         } else if !runtime.managed_active_turns.ids.is_empty() {
                             let target = runtime
@@ -1502,6 +1905,11 @@ async fn apply_update(
                                     let client = runtime.client.clone();
                                     let agent_id = runtime.agent_id.clone();
                                     let input = prompt.managed_prompt();
+                                    let generation = runtime.connection_generation;
+                                    let target = SteerTarget::Managed {
+                                        agent_id: agent_id.clone(),
+                                        turn_id: turn_id.clone(),
+                                    };
                                     runtime.steers.spawn(async move {
                                         let result = client
                                             .steer(&agent_id, &turn_id, &input)
@@ -1515,7 +1923,7 @@ async fn apply_update(
                                                     },
                                                 )
                                             });
-                                        (pane, id, result)
+                                        (pane, id, generation, target, result)
                                     });
                                     Ok(())
                                 }
@@ -1561,14 +1969,15 @@ async fn apply_update(
                     }
                     RootEffect::CancelTurns => {
                         if runtime.cancellations.is_empty()
-                            && runtime.cancelling_controls.is_empty()
-                            && runtime.cancelling_managed_turns.is_empty()
+                            && !runtime.cancellation_fences.has_in_flight()
                         {
                             runtime.cancellation_failed = false;
+                            runtime.cancellation_had_effect = false;
                         }
-                        for (steer_pane, id) in
-                            take_waiting_steer_failures(&mut runtime.waiting_steers)
-                        {
+                        let waiting_steers =
+                            take_waiting_steer_failures(&mut runtime.waiting_steers);
+                        runtime.cancellation_had_effect |= !waiting_steers.is_empty();
+                        for (steer_pane, id) in waiting_steers {
                             absorb(
                                 app.update(AppEvent::SteerFailed {
                                     pane: steer_pane,
@@ -1579,6 +1988,7 @@ async fn apply_update(
                             );
                         }
                         if let Some((pending_pane, id, _)) = runtime.pending_submission.take() {
+                            runtime.cancellation_had_effect = true;
                             let record = runtime.local_record(LocalEvent::WorkerTurnFinished {
                                 id,
                                 error: Some("cancelled before managed admission".to_owned()),
@@ -1603,21 +2013,20 @@ async fn apply_update(
                         runtime
                             .cancel_after_admission
                             .extend(runtime.admitting.iter().copied());
-                        let controls = runtime
+                        let local_turns = runtime
                             .controls
-                            .iter()
-                            .filter(|(id, _)| !runtime.cancelling_controls.contains(id))
-                            .map(|(id, control)| (*id, control.clone()))
+                            .keys()
+                            .filter_map(|id| {
+                                runtime
+                                    .local_managed_turns
+                                    .get(id)
+                                    .map(|managed_id| (*id, managed_id.clone()))
+                            })
                             .collect::<Vec<_>>();
-                        runtime.cancel_controls(pane, controls);
+                        runtime.cancel_local_turns(pane, local_turns);
                         if runtime.managed_active_turns.live_cancel {
-                            let managed_turns = runtime
-                                .managed_active_turns
-                                .ids
-                                .iter()
-                                .filter(|id| !runtime.cancelling_managed_turns.contains(*id))
-                                .cloned()
-                                .collect();
+                            let managed_turns =
+                                runtime.managed_active_turns.ids.iter().cloned().collect();
                             runtime.cancel_managed_turns(pane, managed_turns);
                         } else if !runtime.managed_active_turns.ids.is_empty() {
                             runtime.cancellation_failed = true;
@@ -1633,8 +2042,7 @@ async fn apply_update(
                         }
                         if runtime.cancel_after_admission.is_empty()
                             && runtime.cancellations.is_empty()
-                            && runtime.cancelling_controls.is_empty()
-                            && runtime.cancelling_managed_turns.is_empty()
+                            && !runtime.cancellation_fences.has_in_flight()
                         {
                             absorb(
                                 app.update(AppEvent::TurnsCancelled(pane)),
@@ -1670,21 +2078,9 @@ async fn apply_update(
                         );
                     }
                     RootEffect::LoadOlderHistory => {
-                        if runtime.history.has_more
-                            && runtime.history_loads.is_empty()
-                            && runtime.history_replays.is_empty()
-                            && let Some(before) = runtime.history.before.clone()
-                        {
-                            let client = runtime.client.clone();
-                            let agent_id = runtime.agent_id.clone();
-                            let generation = runtime.history_generation;
-                            runtime.history_loads.spawn(async move {
-                                let result = client
-                                    .history(&agent_id, Some(&before), HISTORY_PAGE_SIZE)
-                                    .await;
-                                (pane, agent_id, generation, before, result)
-                            });
-                        }
+                        runtime.history_prefetch.request_replay();
+                        runtime.start_requested_history_replay(pane);
+                        runtime.start_history_prefetch(pane);
                     }
                     RootEffect::ResumeSession(agent_id) => {
                         if !runtime.idle() {
@@ -2063,21 +2459,243 @@ fn terminal_error(error: io::Error) -> ManagedError {
 #[cfg(test)]
 mod tests {
     use super::{
-        HistoryWindow, ManagedActiveTurns, cursor_at_or_before, decimal_successor,
-        history_projection, history_projection_with_sequences, history_replay_matches,
-        live_managed_projection, prepare_history_replay, session_summaries,
-        take_waiting_steer_failures,
+        CancelDisposition, CancelTarget, CancellationFences, CancellationResolution, DriverRuntime,
+        HistoryPrefetch, HistoryWindow, ManagedActiveTurns, SteerResolution, SteerTarget,
+        cursor_at_or_before, decimal_successor, history_projection,
+        history_projection_with_sequences, history_replay_matches, live_managed_projection,
+        prepare_history_replay, session_summaries, take_waiting_steer_failures,
     };
     use crate::config::ReasoningEffort;
     use crate::tui::{components::QueueId, pane::PaneId, prompt::Submission, transcript::TurnId};
     use nanocodex_managed::{
-        AgentList, AgentSummary, EventHistoryPage, ManagedEvent, ManagedEventData, PromptInput,
+        AgentList, AgentSettings, AgentSummary, EventHistoryPage, ManagedApiKey, ManagedClient,
+        ManagedEvent, ManagedEventData, PromptInput,
     };
     use serde_json::{json, value::to_raw_value};
     use std::{
         collections::{BTreeMap, HashMap, HashSet, VecDeque},
         path::Path,
     };
+    use tokio::task::JoinSet;
+
+    fn history_runtime(history: HistoryWindow) -> DriverRuntime {
+        let mut history_sequences = HashMap::new();
+        let mut sequence = 1;
+        let (history_records, recent_prompts) = history_projection_with_sequences(
+            &history.events,
+            "agent-1",
+            Path::new("/workspace"),
+            &mut history_sequences,
+            &mut sequence,
+        )
+        .unwrap();
+        let api_key =
+            ManagedApiKey::parse(format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)))
+                .unwrap();
+        DriverRuntime {
+            client: ManagedClient::new("http://127.0.0.1:9", api_key).unwrap(),
+            agent: None,
+            managed_events: None,
+            managed_events_open: false,
+            connection_generation: 1,
+            agent_id: "agent-1".to_owned(),
+            settings: AgentSettings::default(),
+            pending_settings: None,
+            workspace: Path::new("/workspace").to_path_buf(),
+            sequence,
+            next_turn: sequence,
+            next_shell: 1,
+            controls: HashMap::new(),
+            local_managed_turns: HashMap::new(),
+            managed_active_turns: ManagedActiveTurns::default(),
+            admitting: HashSet::new(),
+            cancel_after_admission: HashSet::new(),
+            cancellation_fences: CancellationFences::default(),
+            cancellation_failed: false,
+            cancellation_had_effect: false,
+            admissions: JoinSet::new(),
+            completions: JoinSet::new(),
+            steers: JoinSet::new(),
+            waiting_steers: VecDeque::new(),
+            cancellations: JoinSet::new(),
+            settings_updates: JoinSet::new(),
+            settings_queue: VecDeque::new(),
+            shells: JoinSet::new(),
+            history_loads: JoinSet::new(),
+            history_replays: JoinSet::new(),
+            history_prefetch: HistoryPrefetch::default(),
+            history_generation: 1,
+            history,
+            history_sequences,
+            history_records,
+            live_records: Vec::new(),
+            active_shells: 0,
+            shell_context: Vec::new(),
+            pending_submission: None,
+            recent_prompts,
+            connection: JoinSet::new(),
+            retry_target: None,
+        }
+    }
+
+    #[test]
+    fn accepted_local_cancel_stays_fenced_until_terminal_completion() {
+        let mut fences = CancellationFences::default();
+        let id = TurnId::new(7);
+
+        assert!(fences.begin_local(id));
+        assert_eq!(
+            fences.finish_local(id, Ok(CancelDisposition::Accepted), true),
+            CancellationResolution::Accepted
+        );
+        assert!(!fences.begin_local(id));
+
+        fences.local_terminal(id);
+        assert!(fences.begin_local(id));
+    }
+
+    #[test]
+    fn accepted_managed_cancel_stays_fenced_until_terminal_event() {
+        let mut fences = CancellationFences::default();
+
+        assert!(fences.begin_managed("turn-7"));
+        assert_eq!(
+            fences.finish_managed("turn-7".to_owned(), Ok(CancelDisposition::Accepted), true,),
+            CancellationResolution::Accepted
+        );
+        assert!(!fences.begin_managed("turn-7"));
+
+        fences.managed_terminal("turn-7");
+        assert!(fences.begin_managed("turn-7"));
+    }
+
+    #[test]
+    fn terminal_before_cancel_response_makes_late_error_stale() {
+        let mut fences = CancellationFences::default();
+
+        assert!(fences.begin_managed("turn-7"));
+        assert_eq!(
+            fences.finish_managed(
+                "turn-7".to_owned(),
+                Err("503 Service Unavailable".to_owned()),
+                false,
+            ),
+            CancellationResolution::Stale
+        );
+        assert!(fences.begin_managed("turn-7"));
+    }
+
+    #[test]
+    fn stream_close_preserves_same_target_cancel_failure() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime.managed_events_open = false;
+
+        assert!(runtime.cancellation_fences.begin_managed("turn-7"));
+        assert_eq!(
+            runtime.finish_cancellation(
+                CancelTarget::Managed {
+                    generation: 1,
+                    agent_id: "agent-1".to_owned(),
+                    turn_id: "turn-7".to_owned(),
+                },
+                Err("503 Service Unavailable".to_owned()),
+            ),
+            CancellationResolution::Failed("503 Service Unavailable".to_owned())
+        );
+    }
+
+    #[test]
+    fn replaced_connection_cannot_consume_same_target_cancel_fence() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime.connection_generation = 7;
+        assert!(runtime.cancellation_fences.begin_managed("turn-7"));
+
+        runtime.connection_generation = 8;
+        runtime.cancellation_fences.reset();
+        assert!(runtime.cancellation_fences.begin_managed("turn-7"));
+        assert_eq!(
+            runtime.finish_cancellation(
+                CancelTarget::Managed {
+                    generation: 7,
+                    agent_id: "agent-1".to_owned(),
+                    turn_id: "turn-7".to_owned(),
+                },
+                Err("old connection failed".to_owned()),
+            ),
+            CancellationResolution::Stale
+        );
+        assert!(!runtime.cancellation_fences.begin_managed("turn-7"));
+    }
+
+    #[test]
+    fn terminal_target_fences_late_successful_steer() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime.managed_active_turns.ids.insert("turn-7".to_owned());
+        let target = SteerTarget::Managed {
+            agent_id: "agent-1".to_owned(),
+            turn_id: "turn-7".to_owned(),
+        };
+
+        assert_eq!(
+            runtime.resolve_steer(1, &target, Ok(())),
+            SteerResolution::Admitted
+        );
+        runtime.managed_active_turns.ids.remove("turn-7");
+        assert_eq!(
+            runtime.resolve_steer(1, &target, Ok(())),
+            SteerResolution::Failed(None)
+        );
+    }
+
+    #[test]
+    fn local_managed_terminal_before_cancel_response_makes_late_error_stale() {
+        let mut fences = CancellationFences::default();
+        let id = TurnId::new(7);
+
+        assert!(fences.begin_local(id));
+        fences.local_terminal(id);
+        assert_eq!(
+            fences.finish_local(id, Err("503 Service Unavailable".to_owned()), true),
+            CancellationResolution::Stale
+        );
+    }
+
+    #[test]
+    fn terminal_cancel_action_is_stale_even_before_the_event_arrives() {
+        let mut fences = CancellationFences::default();
+
+        assert!(fences.begin_managed("turn-7"));
+        assert_eq!(
+            fences.finish_managed("turn-7".to_owned(), Ok(CancelDisposition::Terminal), true,),
+            CancellationResolution::Stale
+        );
+    }
+
+    #[test]
+    fn first_active_cancel_failure_is_reported_and_retryable() {
+        let mut fences = CancellationFences::default();
+        let id = TurnId::new(7);
+
+        assert!(fences.begin_local(id));
+        assert_eq!(
+            fences.finish_local(id, Err("backend unavailable".to_owned()), true),
+            CancellationResolution::Failed("backend unavailable".to_owned())
+        );
+        assert!(fences.begin_local(id));
+    }
+
+    #[test]
+    fn cancellation_fences_are_scoped_to_the_exact_target() {
+        let mut fences = CancellationFences::default();
+
+        assert!(fences.begin_managed("turn-7"));
+        assert_eq!(
+            fences.finish_managed("turn-7".to_owned(), Ok(CancelDisposition::Accepted), true,),
+            CancellationResolution::Accepted
+        );
+        assert!(!fences.begin_managed("turn-7"));
+        assert!(fences.begin_managed("turn-8"));
+    }
 
     #[test]
     fn terminal_failures_drain_waiting_steers_in_queue_safe_order() {
@@ -2248,7 +2866,10 @@ mod tests {
                 cursor: "2".to_owned(),
                 created_at: Some(1_750_000_001.0),
                 turn_id: Some("turn-1".to_owned()),
-                data: ManagedEventData::Event { event: agent_event },
+                data: ManagedEventData::Event {
+                    event: agent_event,
+                    agent_id: None,
+                },
             },
         ];
 
@@ -2310,6 +2931,7 @@ mod tests {
                     }
                 }))
                 .unwrap(),
+                agent_id: None,
             },
         };
 
@@ -2497,6 +3119,7 @@ mod tests {
             turn_id: Some("turn-3".to_owned()),
             data: ManagedEventData::Event {
                 event: to_raw_value(&json!({ "not": "an agent event" })).unwrap(),
+                agent_id: None,
             },
         };
 
@@ -2525,6 +3148,115 @@ mod tests {
         assert_eq!(history.events.len(), 1);
         assert_eq!(history.events[0].cursor, "5");
         assert_eq!(sequences, HashMap::from([("5".to_owned(), 1)]));
+    }
+
+    #[tokio::test]
+    async fn driver_runtime_consumes_buffered_pages_before_refilling() {
+        let mut runtime = history_runtime(HistoryWindow {
+            events: vec![managed_turn("9", "retained")],
+            before: Some("9".to_owned()),
+            has_more: true,
+        });
+        for (cursor, prompt) in [
+            ("7", "older"),
+            ("5", "older 2"),
+            ("3", "older 3"),
+            ("1", "oldest"),
+        ] {
+            let before = runtime.history_prefetch.claim(&runtime.history).unwrap();
+            runtime
+                .history_prefetch
+                .store(
+                    &before,
+                    EventHistoryPage {
+                        data: vec![managed_turn(cursor, prompt)],
+                        has_more: true,
+                        latest_cursor: "9".to_owned(),
+                    },
+                )
+                .unwrap();
+        }
+        assert!(runtime.history_prefetch.claim(&runtime.history).is_none());
+
+        runtime.history_prefetch.request_replay();
+        runtime.start_requested_history_replay(PaneId::Main);
+        assert_eq!(runtime.history_replays.len(), 1);
+        runtime.start_history_prefetch(PaneId::Main);
+        assert!(runtime.history_loads.is_empty());
+
+        let (_, _, _, requested_before, result) =
+            runtime.history_replays.join_next().await.unwrap().unwrap();
+        assert_eq!(requested_before, "9");
+        drop(runtime.finish_history_replay(PaneId::Main, result).unwrap());
+        assert_eq!(runtime.history.before.as_deref(), Some("7"));
+        assert!(runtime.history_prefetch.owns("1"));
+        assert_eq!(runtime.history_loads.len(), 1);
+
+        runtime.history_prefetch.request_replay();
+        runtime.start_requested_history_replay(PaneId::Main);
+        assert_eq!(runtime.history_replays.len(), 1);
+        runtime.start_history_prefetch(PaneId::Main);
+        assert_eq!(runtime.history_loads.len(), 1);
+        let (_, _, _, requested_before, result) =
+            runtime.history_replays.join_next().await.unwrap().unwrap();
+        assert_eq!(requested_before, "7");
+        drop(runtime.finish_history_replay(PaneId::Main, result).unwrap());
+        assert_eq!(runtime.history.before.as_deref(), Some("5"));
+        assert!(runtime.history_prefetch.owns("1"));
+        runtime.history_loads.abort_all();
+    }
+
+    #[tokio::test]
+    async fn driver_runtime_projection_failure_refetches_from_the_current_cursor() {
+        let mut runtime = history_runtime(HistoryWindow {
+            events: vec![managed_turn("9", "retained")],
+            before: Some("9".to_owned()),
+            has_more: true,
+        });
+        let malformed = ManagedEvent {
+            cursor: "8".to_owned(),
+            created_at: Some(1_750_000_000.0),
+            turn_id: Some("turn-7".to_owned()),
+            data: ManagedEventData::Event {
+                event: to_raw_value(&json!({ "not": "an agent event" })).unwrap(),
+                agent_id: None,
+            },
+        };
+        let first_before = runtime.history_prefetch.claim(&runtime.history).unwrap();
+        runtime
+            .history_prefetch
+            .store(
+                &first_before,
+                EventHistoryPage {
+                    data: vec![managed_turn("7", "older"), malformed],
+                    has_more: true,
+                    latest_cursor: "9".to_owned(),
+                },
+            )
+            .unwrap();
+        let dependent_before = runtime.history_prefetch.claim(&runtime.history).unwrap();
+        runtime
+            .history_prefetch
+            .store(
+                &dependent_before,
+                EventHistoryPage {
+                    data: vec![managed_turn("5", "unreachable")],
+                    has_more: true,
+                    latest_cursor: "9".to_owned(),
+                },
+            )
+            .unwrap();
+
+        runtime.history_prefetch.request_replay();
+        runtime.start_requested_history_replay(PaneId::Main);
+        let (_, _, _, requested_before, result) =
+            runtime.history_replays.join_next().await.unwrap().unwrap();
+        assert_eq!(requested_before, "9");
+        assert!(runtime.finish_history_replay(PaneId::Main, result).is_err());
+        assert_eq!(runtime.history.before.as_deref(), Some("9"));
+        assert!(runtime.history_prefetch.owns("9"));
+        assert_eq!(runtime.history_loads.len(), 1);
+        runtime.history_loads.abort_all();
     }
 
     #[test]
@@ -2608,6 +3340,7 @@ mod tests {
             turn_id: Some("older-turn".to_owned()),
             data: ManagedEventData::Event {
                 event: to_raw_value(&json!({ "not": "an agent event" })).unwrap(),
+                agent_id: None,
             },
         };
 
@@ -2641,6 +3374,7 @@ mod tests {
             turn_id: Some("older-turn".to_owned()),
             data: ManagedEventData::Event {
                 event: to_raw_value(&json!({ "not": "an agent event" })).unwrap(),
+                agent_id: None,
             },
         };
 

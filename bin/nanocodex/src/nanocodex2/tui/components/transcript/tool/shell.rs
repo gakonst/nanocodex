@@ -56,22 +56,7 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
             Style::default().fg(theme.muted()),
         ));
     }
-    let output = tool
-        .result
-        .as_ref()
-        .and_then(|result| result.get("output"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if !output.is_empty() {
-        presentation =
-            presentation.selectable_plain(output, width, Style::default().fg(theme.text()));
-    }
-    let line_count = output.lines().count();
-    let line_label = if line_count == 1 { "line" } else { "lines" };
-    presentation.footer(format!(
-        "{line_count} {line_label} · {}",
-        format_bytes(output.len())
-    ))
+    with_shell_output(presentation, tool, width, theme)
 }
 
 fn command_spans(command: &str) -> Vec<Span<'static>> {
@@ -96,28 +81,53 @@ fn command_spans(command: &str) -> Vec<Span<'static>> {
 }
 
 fn stdin(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
+    let session = tool
+        .arguments
+        .get("session_id")
+        .and_then(Value::as_i64)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "<session unavailable>".to_owned());
     let subject = tool
         .arguments
         .get("chars")
         .and_then(Value::as_str)
         .filter(|chars| !chars.is_empty())
         .map_or_else(
-            || "poll process".to_owned(),
-            |chars| format!("send {chars:?}"),
+            || format!("poll {session}"),
+            |chars| format!("send {chars:?} to {session}"),
         );
-    let presentation = Presentation::new("Shell input", subject).truncate_summary();
+    let mut presentation = Presentation::new("Process", subject).truncate_summary();
+    if let Some(outcome) = shell_outcome(tool.result.as_ref()) {
+        presentation = presentation.outcome(outcome);
+    }
     if !expanded {
         return presentation;
     }
-    match &tool.result {
-        Some(result) => {
-            let (source, details) = super::selectable_result(result, width, theme);
-            presentation
-                .selectable_details(source, details)
-                .footer("process interaction")
-        }
-        None => presentation.footer("process interaction"),
+    with_shell_output(presentation, tool, width, theme)
+}
+
+fn with_shell_output(
+    mut presentation: Presentation,
+    tool: &ToolEntry,
+    width: u16,
+    theme: &Theme,
+) -> Presentation {
+    let output = tool
+        .result
+        .as_ref()
+        .and_then(|result| result.get("output"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !output.is_empty() {
+        presentation =
+            presentation.selectable_plain(output, width, Style::default().fg(theme.text()));
     }
+    let line_count = output.lines().count();
+    let line_label = if line_count == 1 { "line" } else { "lines" };
+    presentation.footer(format!(
+        "{line_count} {line_label} · {}",
+        format_bytes(output.len())
+    ))
 }
 
 fn shell_outcome(result: Option<&Value>) -> Option<String> {

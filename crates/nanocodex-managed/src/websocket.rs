@@ -556,7 +556,9 @@ mod tests {
                 "live_steer": true,
                 "live_cancel": true,
                 "workspace": "cloud",
-                "sandbox_escalation": false
+                "execution_environments": true,
+                "execution_namespace": "cwd-root-v1",
+                "native_cross_mounts": false
             },
             "latest_event_cursor": "0"
         });
@@ -573,5 +575,7 @@ mod tests {
         assert_eq!(parsed.settings.model, Model::Luna);
         assert_eq!(parsed.settings.thinking, Thinking::Low);
         assert!(parsed.settings.fast_mode);
+        assert_eq!(parsed.capabilities.execution_namespace, "cwd-root-v1");
+        assert!(!parsed.capabilities.native_cross_mounts);
     }
 }

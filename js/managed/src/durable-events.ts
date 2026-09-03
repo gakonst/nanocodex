@@ -1,15 +1,6 @@
 const REPLAY_PAGE_SIZE = 256;
 export const MAX_HISTORY_PAGE_SIZE = 256;
 const KEEPALIVE_MS = 15_000;
-// A logical event must fit the archive's 16 MiB object envelope with 2 MiB
-// retained for the segment wrapper and event metadata.
-export const MAX_EVENT_BYTES = 14 * 1024 * 1024;
-const MAX_EVENT_LOG_BYTES = 256 * 1024 * 1024;
-// Keep one worst-case terminal slot for every accepted turn in the API's
-// 16-turn queue. The larger log ceiling preserves the previous 32 MiB
-// noncritical budget while allowing every reserved event to reach the new
-// end-to-end archive boundary.
-const TERMINAL_RESERVE_BYTES = 16 * MAX_EVENT_BYTES;
 const MAX_SUBSCRIBERS = 32;
 const MAX_CURSOR = 9_223_372_036_854_775_807n;
 const DIRECT_EVENT_BYTES = 1_000_000;
@@ -40,14 +31,6 @@ export type DurableEventTail<Message> = Readonly<{
   events: readonly DurableEvent<Message>[];
   high_water_cursor: string;
 }>;
-
-export class EventLogCapacityError extends Error {
-  readonly code = "event_log_full";
-
-  constructor(message = "durable event log capacity reached") {
-    super(message);
-  }
-}
 
 type Subscriber = {
   after: string;
@@ -111,15 +94,9 @@ export class DurableEventLog<Message extends { type: string }> {
   append(
     message: Message,
     turnId: string | null = null,
-    critical = false,
   ): DurableEvent<Message> {
     const messageJson = JSON.stringify(message);
     const messageBytes = sseEncoder.encode(messageJson).byteLength;
-    if (messageBytes > MAX_EVENT_BYTES) {
-      throw new RangeError(`managed event exceeds ${MAX_EVENT_BYTES} encoded bytes`);
-    }
-    const ceiling = critical ? MAX_EVENT_LOG_BYTES : MAX_EVENT_LOG_BYTES - TERMINAL_RESERVE_BYTES;
-    if (this.totalBytes() + messageBytes > ceiling) throw new EventLogCapacityError();
     const createdAt = Date.now();
     const chunked = messageBytes > DIRECT_EVENT_BYTES;
     const inserted = this.#storage.sql.exec<{ cursor: string }>(
@@ -152,8 +129,8 @@ export class DurableEventLog<Message extends { type: string }> {
     return { cursor: inserted.cursor, created_at: createdAt, message, turn_id: turnId };
   }
 
-  record(message: Message, turnId: string | null = null, critical = false): DurableEvent<Message> {
-    const event = this.#storage.transactionSync(() => this.append(message, turnId, critical));
+  record(message: Message, turnId: string | null = null): DurableEvent<Message> {
+    const event = this.#storage.transactionSync(() => this.append(message, turnId));
     this.publish(event);
     return event;
   }
@@ -200,11 +177,7 @@ export class DurableEventLog<Message extends { type: string }> {
       previous = event.cursor;
       const messageJson = JSON.stringify(event.message);
       const bytes = sseEncoder.encode(messageJson).byteLength;
-      if (bytes > MAX_EVENT_BYTES) throw new Error("managed event portable tail exceeds event size");
       totalBytes += bytes;
-      if (totalBytes > MAX_EVENT_LOG_BYTES) {
-        throw new Error("managed event portable tail exceeds the local event boundary");
-      }
       return { event, messageJson, bytes };
     });
     const adopt = () => {
@@ -249,10 +222,6 @@ export class DurableEventLog<Message extends { type: string }> {
     return this.#storage.sql.exec<{ total_bytes: number }>(
       "SELECT total_bytes FROM managed_event_meta WHERE singleton = 1",
     ).toArray()[0]?.total_bytes ?? 0;
-  }
-
-  canAcceptTurn(): boolean {
-    return this.totalBytes() < MAX_EVENT_LOG_BYTES - TERMINAL_RESERVE_BYTES;
   }
 
   page(after: string, limit = REPLAY_PAGE_SIZE): DurableEvent<Message>[] {

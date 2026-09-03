@@ -33,7 +33,7 @@ use config::ReasoningEffort;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use history::{
-    HistoryWindow, history_projection, history_projection_with_sequences,
+    HistoryPrefetch, HistoryWindow, history_projection, history_projection_with_sequences,
     older_history_projection_with_sequences,
 };
 use nanocodex_agent::events::{AgentEvent, AgentEventKind};
@@ -390,6 +390,7 @@ fn agent_data(
     };
     ManagedEventData::Event {
         event: to_raw_value(&event).expect("benchmark event should serialize"),
+        agent_id: None,
     }
 }
 
@@ -561,6 +562,53 @@ fn prepend_replay_benchmarks(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn proactive_prefetch_orchestration_benchmarks(criterion: &mut Criterion) {
+    const PAGE_COUNT: usize = 4_096;
+    let mut group = criterion.benchmark_group("nanocodex2_history/proactive_prefetch");
+    group.throughput(Throughput::Elements(PAGE_COUNT as u64));
+    group.bench_function("sequential_cursor_chain_4096_pages", |bencher| {
+        bencher.iter(|| {
+            let mut history = HistoryWindow::retry_from(PAGE_COUNT.to_string());
+            let mut prefetch = HistoryPrefetch::default();
+            for next_before in (0..PAGE_COUNT).rev() {
+                let requested = prefetch
+                    .claim(&history)
+                    .expect("synthetic prefetch should remain available");
+                black_box(prefetch.claim(&history));
+                prefetch
+                    .store(&requested, prefetch_page(next_before, next_before != 0))
+                    .expect("synthetic page should buffer");
+                prefetch.request_replay();
+                black_box(
+                    prefetch
+                        .take_requested(history.before.as_deref())
+                        .expect("synthetic page should replay from the buffer"),
+                );
+                history.before = Some(next_before.to_string());
+                history.has_more = next_before != 0;
+            }
+            black_box(prefetch.claim(&history))
+        });
+    });
+    group.finish();
+}
+
+fn prefetch_page(cursor: usize, has_more: bool) -> EventHistoryPage {
+    EventHistoryPage {
+        data: vec![ManagedEvent {
+            cursor: cursor.to_string(),
+            created_at: None,
+            turn_id: None,
+            data: ManagedEventData::AgentCreated {
+                agent_id: "synthetic-agent".to_owned(),
+                capabilities: json!({}),
+            },
+        }],
+        has_more,
+        latest_cursor: "synthetic-latest".to_owned(),
+    }
+}
+
 fn near_top_harness(records: &[Arc<TranscriptRecord>]) -> Harness {
     let mut harness = Harness::from_records(records.to_vec(), WIDTH, HEIGHT);
     harness.render();
@@ -604,33 +652,23 @@ fn scroll_benchmarks(criterion: &mut Criterion) {
 
     let mut group = criterion.benchmark_group("nanocodex2_history/scroll_lazy_load_decision");
     group.sample_size(10);
+    // These decisions only read cached viewport state. Reuse each prepared harness so dropping its
+    // large transcript and layout cache is not accidentally included in the timed routine.
     group.bench_function("far_from_top_page_up", |bencher| {
-        bencher.iter_batched(
-            || prewarmed_harness(&records),
-            |mut harness| black_box(harness.page_up()),
-            BatchSize::LargeInput,
-        );
+        let mut harness = prewarmed_harness(&records);
+        bencher.iter(|| black_box(harness.page_up()));
     });
     group.bench_function("near_top_page_up", |bencher| {
-        bencher.iter_batched(
-            || near_top_harness(&records),
-            |mut harness| black_box(harness.page_up()),
-            BatchSize::LargeInput,
-        );
+        let mut harness = near_top_harness(&records);
+        bencher.iter(|| black_box(harness.page_up()));
     });
     group.bench_function("home", |bencher| {
-        bencher.iter_batched(
-            || prewarmed_harness(&records),
-            |mut harness| black_box(harness.key_update(KeyCode::Home, KeyModifiers::CONTROL).0),
-            BatchSize::LargeInput,
-        );
+        let mut harness = prewarmed_harness(&records);
+        bencher.iter(|| black_box(harness.key_update(KeyCode::Home, KeyModifiers::CONTROL).0));
     });
     group.bench_function("page_down", |bencher| {
-        bencher.iter_batched(
-            || prewarmed_harness(&records),
-            |mut harness| black_box(harness.key_update(KeyCode::PageDown, KeyModifiers::NONE).0),
-            BatchSize::LargeInput,
-        );
+        let mut harness = prewarmed_harness(&records);
+        bencher.iter(|| black_box(harness.key_update(KeyCode::PageDown, KeyModifiers::NONE).0));
     });
     group.bench_function("prewarmed_page_up_and_frame", |bencher| {
         bencher.iter_batched(
@@ -775,6 +813,7 @@ criterion_group!(
     projection_benchmarks,
     replay_and_frame_benchmarks,
     prepend_replay_benchmarks,
+    proactive_prefetch_orchestration_benchmarks,
     scroll_benchmarks,
     user_prompt_payload_benchmarks,
     tool_payload_benchmarks,

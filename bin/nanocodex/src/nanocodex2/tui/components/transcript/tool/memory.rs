@@ -292,7 +292,7 @@ fn scan(
     let outcome = if abstained {
         "abstained".to_owned()
     } else {
-        count_label(candidates.len(), "candidate", "candidates")
+        super::count_label(candidates.len(), "candidate", "candidates")
     };
     let presentation =
         completed_presentation(backend.as_ref(), "scan", "Memory scan", query.to_owned())
@@ -320,7 +320,7 @@ fn scan(
     } else if shown < candidates.len() {
         format!("{shown} of {} candidates", candidates.len())
     } else {
-        count_label(candidates.len(), "candidate", "candidates")
+        super::count_label(candidates.len(), "candidate", "candidates")
     };
     presentation.footer(footer)
 }
@@ -340,7 +340,7 @@ fn read(
     let ResultValue::Read { backend, memories } = result else {
         return Presentation::new("Memory read", subject);
     };
-    let count = count_label(memories.len(), "memory", "memories");
+    let count = super::count_label(memories.len(), "memory", "memories");
     let presentation =
         completed_presentation(backend.as_ref(), "read", "Memory read", subject).outcome(&count);
     if !expanded {
@@ -497,11 +497,6 @@ fn was_replaced(value: &Value) -> bool {
 
 fn wrap(text: &str, width: u16, style: Style) -> Vec<Line<'static>> {
     super::super::markdown::wrap_plain(text, width, style)
-}
-
-fn count_label(count: usize, singular: &str, plural: &str) -> String {
-    let label = if count == 1 { singular } else { plural };
-    format!("{count} {label}")
 }
 
 fn format_score(score: f64) -> String {
