@@ -2361,7 +2361,10 @@ impl RootNode {
     }
 
     fn submit_next_queued(&mut self) -> ComponentUpdate<RootEffect> {
-        if self.has_active_turns() || self.queue.component().has_pending_steer() {
+        if !self.interactive
+            || self.has_active_turns()
+            || self.queue.component().has_pending_steer()
+        {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         let prompts = self.queue.component_mut().drain_ready();
@@ -3192,7 +3195,7 @@ fn is_plain_key(event: &Event, character: char) -> bool {
 
 #[cfg(test)]
 mod history_tests {
-    use super::{Component, RootEffect, RootEvent, RootNode};
+    use super::{Component, RenderRequest, RootEffect, RootEvent, RootNode};
     use crate::config::ReasoningEffort;
     use crate::tui::{
         theme::Theme,
@@ -3303,6 +3306,33 @@ mod history_tests {
 
         panic!("expected to prefetch before entering the cached near-top window");
     }
+
+    #[test]
+    fn background_history_replay_does_not_restore_the_original_prompt_into_the_composer() {
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        root.composer
+            .component_mut()
+            .replace_draft("new follow-up draft".to_owned());
+        let original = Arc::new(
+            TranscriptRecord::from_local(
+                1,
+                1,
+                LocalEvent::UserSubmitted {
+                    id: TurnId::new(1),
+                    text: "original prompt".to_owned(),
+                },
+            )
+            .unwrap(),
+        );
+        let projection = RootNode::project_open_session(ReasoningEffort::Medium, vec![original]);
+
+        let update = root.update(RootEvent::HistoryReplayed {
+            projection: Box::new(projection),
+        });
+
+        assert_eq!(update.render, RenderRequest::Immediate);
+        assert_eq!(root.composer.component().draft(), "new follow-up draft");
+    }
 }
 
 #[cfg(test)]
@@ -3369,6 +3399,31 @@ mod live_control_tests {
         assert_eq!(root.in_flight_turns, 0);
         assert_eq!(root.managed_active_turns, 1);
         assert!(root.queue.component().has_pending_steer());
+    }
+
+    #[test]
+    fn terminal_then_late_steer_recovery_drains_the_queue() {
+        let mut root = root_with_draft("change attached direction");
+        let _ = root.update(RootEvent::ManagedActiveTurns(1));
+        let steer = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = steer.effects.as_slice() else {
+            panic!("active submission should start a steer");
+        };
+        let id = *id;
+        root.queue.component_mut().push("follow up".to_owned());
+
+        let terminal = root.update(RootEvent::ManagedActiveTurns(0));
+        assert!(terminal.effects.is_empty());
+        assert!(root.queue.component().has_pending_steer());
+
+        let recovered = root.update(RootEvent::SteerFailed { id });
+        assert!(
+            matches!(recovered.effects.as_slice(), [RootEffect::Submit(prompt)]
+                if prompt.display_text().contains("change attached direction")
+                    && prompt.display_text().contains("follow up"))
+        );
+        assert!(root.queue.component().is_empty());
+        assert!(!root.queue.component().has_pending_steer());
     }
 
     #[test]

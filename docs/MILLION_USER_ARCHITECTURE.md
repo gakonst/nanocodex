@@ -27,7 +27,7 @@ The current implementation:
 - enables automatic Worker traces across the web, managed, and egress Workers;
 - lets an embedding Durable Object explicitly own event persistence; managed
   agents use that mode, clear the old raw event projection on reopen, and retain
-  only `managed_events`; and
+  only normalized replay events in `managed_events`;
 - fixes `Agent.extend()` so nested adapter actions such as `events.connect` and
   `turn.route` are actually merged at runtime instead of existing only in the
   type declarations;
@@ -238,24 +238,23 @@ objects. Once an agent has archived receipts, a genuinely new ID pays an R2
 miss because indefinite exact-ID conflict detection cannot safely infer
 absence from a bounded local filter.
 
-### Two event histories (inherited topology)
+### Replay events and transport observability
 
-The Cloudflare adapter stores every raw `AgentEvent` in
-`nanocodex_cloudflare_events`, capped at 64 MiB. The managed application watches
-that stream, wraps it as a managed stream message, and stores it again in
-`managed_events`, also capped at 64 MiB. Managed acceptance, cancellation, and
-terminal messages are added to the second log as well.
+The generic Cloudflare adapter can retain every raw `AgentEvent` for embedders
+that select its durable event socket. Managed agents instead select caller-owned
+persistence, clear that generic projection, and retain one managed cursor log.
 
-This is intentional layering today, but it means much of the largest streaming
-content is retained twice. When `managed_events` reaches its admission ceiling,
-the agent rejects new work until it is deleted or replaced.
+That log contains the normalized agent-domain events and managed lifecycle
+messages required to reconstruct the client transcript. It does not retain
+`api.event`: those frames repeat complete provider requests, tool schemas, and
+cumulative response bodies already represented by normalized assistant,
+reasoning, tool, model, and run events. Transport diagnostics belong in
+Cloudflare invocation logs and traces rather than replay history; structured
+transport observations contain lifecycle metadata but never provider payloads.
 
-The first implementation slice removes this duplication for the managed
-application. The Cloudflare SDK keeps durable event persistence as its default,
-while the managed AgentDO selects caller-owned persistence and uses its managed
-cursor log as the canonical retained stream. This preserves SDK behavior for
-other embedders and removes stale raw rows when an existing managed agent next
-opens.
+There is no application byte ceiling that can poison an agent or reject later
+turns. Byte thresholds only start asynchronous sealing; the AgentDO continues
+sealing immutable prefixes until the SQLite tail is below the threshold.
 
 ### Workspace
 
@@ -430,8 +429,8 @@ R2 should not preserve accidental duplication forever. The order of work is:
    the single Rust state, managed events, raw AgentEvents, turn receipts, realtime
    receipts, and the SQLite remainder. Computer workspace bytes are still part
    of the visible remainder and need a first-class Computer accounting API.
-2. **Implemented:** remove the second full event projection or make the managed
-   stream a typed view over one canonical retained event log.
+2. **Implemented:** keep one canonical managed replay log, exclude raw provider
+   frames, and leave transport diagnostics to Cloudflare observability.
 3. **Implemented:** replace the total Rust state after pruning terminal
    receipts, retaining the latest checkpoint, unresolved work, and a
    caller-selected recent replay window.

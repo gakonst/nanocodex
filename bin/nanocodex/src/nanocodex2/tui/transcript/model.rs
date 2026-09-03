@@ -4,6 +4,7 @@
 use super::{
     DirectedMessageEntry, EntryId, EntryKind, MessageDelivery, MessagePhase, SessionStarted,
     ShellId, ToolEntry, ToolState, TranscriptEntry, TranscriptRecord, TransientStatus,
+    code_mode_output_text,
 };
 use crate::{config::ReasoningEffort, tui::format::humanize_tool};
 use nanocodex::{
@@ -55,7 +56,7 @@ pub(crate) struct TranscriptModel {
     active_assistants: HashMap<(u32, MessagePhase), EntryId>,
     reasoning: HashMap<ReasoningKey, EntryId>,
     tools: HashMap<String, EntryId>,
-    shell_sessions: HashMap<i64, EntryId>,
+    shell_sessions: HashMap<ShellSessionKey, EntryId>,
     shell_followups: HashMap<String, EntryId>,
     code_children: HashMap<EntryId, Vec<EntryId>>,
     code_cells: HashMap<String, EntryId>,
@@ -81,6 +82,24 @@ struct AssistantKey {
 struct ReasoningKey {
     request: Option<Arc<str>>,
     call: u32,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ShellSessionKey {
+    environment: Option<String>,
+    session_id: i64,
+}
+
+impl ShellSessionKey {
+    fn from_arguments(arguments: &Value, session_id: i64) -> Self {
+        Self {
+            environment: arguments
+                .get("environment")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            session_id,
+        }
+    }
 }
 
 impl TranscriptModel {
@@ -577,7 +596,10 @@ impl TranscriptModel {
         let parent = self.code_parent(&call_id);
         if tool == "write_stdin"
             && let Some(session_id) = arguments.get("session_id").and_then(Value::as_i64)
-            && let Some(id) = self.shell_sessions.get(&session_id).copied()
+            && let Some(id) = self
+                .shell_sessions
+                .get(&ShellSessionKey::from_arguments(&arguments, session_id))
+                .copied()
         {
             if parent.is_some() {
                 self.shell_followups.insert(call_id.clone(), id);
@@ -647,7 +669,7 @@ impl TranscriptModel {
         } else {
             state
         };
-        let shell_session = (payload.tool == "exec_command")
+        let shell_session_id = (payload.tool == "exec_command")
             .then(|| tool_session_id(&result))
             .flatten();
         let id = self
@@ -682,6 +704,13 @@ impl TranscriptModel {
                 self.tools.insert(payload.call_id.clone(), id);
                 id
             });
+        let shell_session = shell_session_id.map(|session_id| {
+            let arguments = self.entry(id).and_then(|entry| match &entry.kind {
+                EntryKind::Tool(tool) => Some(&tool.arguments),
+                _ => None,
+            });
+            ShellSessionKey::from_arguments(arguments.unwrap_or(&Value::Null), session_id)
+        });
         let running_code_cell = (payload.tool == "exec")
             .then(|| running_code_cell_id(&result))
             .flatten()
@@ -714,12 +743,24 @@ impl TranscriptModel {
             }
         });
         if payload.tool == "exec"
-            && self.code_children.contains_key(&id)
-            && (entry_state == ToolState::Failed || code_mode_has_own_output(self.entry(id)))
-            && let Some(index) = self.index_of(id)
+            && let Some(children) = self.code_children.get(&id)
         {
-            self.entries[index].hidden = false;
-            self.entries[index].revision = self.entries[index].revision.saturating_add(1);
+            let only_code_child = <&[EntryId; 1]>::try_from(children.as_slice())
+                .ok()
+                .and_then(|[child]| self.entry(*child))
+                .and_then(|entry| match &entry.kind {
+                    EntryKind::Tool(tool) => Some((tool.result.as_ref(), tool.state)),
+                    _ => None,
+                });
+            if code_mode_has_distinct_output(
+                self.entry(id),
+                only_code_child.and_then(|(result, _)| result),
+                only_code_child.is_some_and(|(_, state)| state == ToolState::Failed),
+            ) && let Some(index) = self.index_of(id)
+            {
+                self.entries[index].hidden = false;
+                self.entries[index].revision = self.entries[index].revision.saturating_add(1);
+            }
         }
         if let Some(shell) = resumed_shell {
             let resumed_result = resumed_result.expect("resumed shell result was retained");
@@ -1026,8 +1067,9 @@ impl TranscriptModel {
         });
         let children = self.code_children.entry(parent).or_default();
         children.push(child);
+        let single_child = children.len() == 1;
         let index = self.index_of(parent).expect("code parent is retained");
-        self.entries[index].hidden = true;
+        self.entries[index].hidden = single_child;
         self.entries[index].revision = self.entries[index].revision.saturating_add(1);
 
         let child_index = self.index_of(child).expect("code child is retained");
@@ -1165,7 +1207,11 @@ fn code_mode_status(result: &Value) -> Option<&str> {
     }
 }
 
-fn code_mode_has_own_output(entry: Option<&TranscriptEntry>) -> bool {
+fn code_mode_has_distinct_output(
+    entry: Option<&TranscriptEntry>,
+    only_child_result: Option<&Value>,
+    only_child_failed: bool,
+) -> bool {
     let Some(TranscriptEntry {
         kind: EntryKind::Tool(tool),
         ..
@@ -1176,35 +1222,110 @@ fn code_mode_has_own_output(entry: Option<&TranscriptEntry>) -> bool {
     let Some(result) = &tool.result else {
         return false;
     };
-    code_mode_value_has_output(result)
+    code_mode_value_has_output(result, only_child_result, only_child_failed)
 }
 
-fn code_mode_value_has_output(result: &Value) -> bool {
+fn code_mode_value_has_output(
+    result: &Value,
+    only_child_result: Option<&Value>,
+    only_child_failed: bool,
+) -> bool {
+    if only_child_result.is_some_and(|child| values_duplicate(result, child)) {
+        return false;
+    }
     match result {
-        Value::String(text) => status_text_has_output(text),
-        Value::Array(items) => items.iter().any(code_mode_value_has_output),
+        Value::String(text) => text_has_distinct_output(text, only_child_result, only_child_failed),
+        Value::Array(items) => items
+            .iter()
+            .any(|item| code_mode_value_has_output(item, only_child_result, only_child_failed)),
         Value::Object(fields) => {
             if let Some(text) = fields.get("text").and_then(Value::as_str) {
-                return status_text_has_output(text);
+                return text_has_distinct_output(text, only_child_result, only_child_failed);
             }
-            ["content", "output", "image_url", "audio_url"]
-                .into_iter()
-                .any(|key| fields.get(key).is_some_and(code_mode_value_has_output))
+            let mut has_supported_output = false;
+            for key in ["content", "output", "image_url", "audio_url"] {
+                let Some(value) = fields.get(key) else {
+                    continue;
+                };
+                has_supported_output = true;
+                if code_mode_value_has_output(value, only_child_result, only_child_failed) {
+                    return true;
+                }
+            }
+            !has_supported_output && !fields.is_empty()
         }
         Value::Bool(_) | Value::Number(_) => true,
         Value::Null => false,
     }
 }
 
-fn status_text_has_output(text: &str) -> bool {
-    if let Some((status, output)) = text.split_once("\nOutput:\n")
-        && (status.starts_with("Script completed")
-            || status.starts_with("Script running")
-            || status.starts_with("Script terminated"))
-    {
-        return !output.trim().is_empty();
+fn values_duplicate(candidate: &Value, child: &Value) -> bool {
+    candidate == child
+        || content_envelope_matches(candidate, child)
+        || content_envelope_matches(child, candidate)
+}
+
+fn content_envelope_matches(envelope: &Value, payload: &Value) -> bool {
+    let Some(fields) = envelope.as_object() else {
+        return false;
+    };
+    if !matches!(
+        fields.get("type").and_then(Value::as_str),
+        Some("input_text" | "input_image" | "input_audio")
+    ) {
+        return false;
     }
-    !text.trim().is_empty()
+    let Some(payload) = payload.as_object() else {
+        return false;
+    };
+    fields.len() == payload.len() + 1
+        && fields
+            .iter()
+            .filter(|(key, _)| key.as_str() != "type")
+            .all(|(key, value)| payload.get(key) == Some(value))
+}
+
+fn text_has_distinct_output(
+    text: &str,
+    only_child_result: Option<&Value>,
+    only_child_failed: bool,
+) -> bool {
+    let failed_envelope = text.starts_with("Script failed");
+    let text = code_mode_output_text(text);
+    if text.trim().is_empty() {
+        return false;
+    }
+    if failed_envelope
+        && only_child_failed
+        && only_child_result
+            .and_then(Value::as_str)
+            .is_some_and(|child| !child.trim().is_empty() && text.contains(child.trim()))
+    {
+        return false;
+    }
+    !only_child_result.is_some_and(|child| text_duplicates_value(text, child))
+}
+
+fn text_duplicates_value(text: &str, value: &Value) -> bool {
+    let text = text.trim();
+    value.as_str() == Some(text)
+        || (text_may_encode_value(text, value)
+            && serde_json::from_str::<Value>(text).is_ok_and(|decoded| decoded == *value))
+}
+
+fn text_may_encode_value(text: &str, value: &Value) -> bool {
+    let Some(first) = text.as_bytes().first() else {
+        return false;
+    };
+    match value {
+        Value::Object(_) => *first == b'{',
+        Value::Array(_) => *first == b'[',
+        Value::String(_) => *first == b'"',
+        Value::Number(_) => *first == b'-' || first.is_ascii_digit(),
+        Value::Bool(true) => *first == b't',
+        Value::Bool(false) => *first == b'f',
+        Value::Null => *first == b'n',
+    }
 }
 
 fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
@@ -1478,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_children_hide_code_mode_wrapper_without_grouping_children_under_it() {
+    fn semantic_children_hide_single_wrapper_but_keep_multi_tool_batch() {
         let mut model = TranscriptModel::default();
         model.apply(&call(1, "outer", "exec", json!("await tools.one({})")));
         model.apply(&call(
@@ -1487,6 +1608,7 @@ mod tests {
             "exec_command",
             json!({"cmd": "pwd"}),
         ));
+        assert!(model.entries()[0].hidden);
         model.apply(&call(
             3,
             "outer/code-1",
@@ -1495,7 +1617,7 @@ mod tests {
         ));
 
         assert_eq!(model.entries().len(), 3);
-        assert!(model.entries()[0].hidden);
+        assert!(!model.entries()[0].hidden);
         assert!(!model.entries()[1].hidden);
         assert!(!model.entries()[2].hidden);
         assert!(model.entries()[1].parent.is_none());
@@ -1597,6 +1719,87 @@ mod tests {
     }
 
     #[test]
+    fn shell_sessions_are_correlated_by_environment_and_session_id() {
+        let mut model = TranscriptModel::default();
+        model.apply(&call(
+            1,
+            "sandbox-shell",
+            "exec_command",
+            json!({"environment": "sandbox", "cmd": "interactive", "tty": true}),
+        ));
+        model.apply(&result(
+            2,
+            "sandbox-shell",
+            "exec_command",
+            Value::Null,
+            json!({"session_id": 7, "output": "sandbox ready\n"}),
+            Value::Null,
+        ));
+        model.apply(&call(
+            3,
+            "machine-shell",
+            "exec_command",
+            json!({"environment": "user:build-box", "cmd": "interactive", "tty": true}),
+        ));
+        model.apply(&result(
+            4,
+            "machine-shell",
+            "exec_command",
+            Value::Null,
+            json!({"session_id": 7, "output": "machine ready\n"}),
+            Value::Null,
+        ));
+        model.apply(&call(
+            5,
+            "sandbox-input",
+            "write_stdin",
+            json!({"environment": "sandbox", "session_id": 7, "chars": "sandbox input\n"}),
+        ));
+        model.apply(&result(
+            6,
+            "sandbox-input",
+            "write_stdin",
+            Value::Null,
+            json!({"session_id": 7, "output": "sandbox output\n"}),
+            Value::Null,
+        ));
+        model.apply(&call(
+            7,
+            "machine-input",
+            "write_stdin",
+            json!({"environment": "user:build-box", "session_id": 7, "chars": "machine input\n"}),
+        ));
+        model.apply(&result(
+            8,
+            "machine-input",
+            "write_stdin",
+            Value::Null,
+            json!({"session_id": 7, "output": "machine output\n"}),
+            Value::Null,
+        ));
+
+        assert_eq!(model.entries().len(), 2);
+        let EntryKind::Tool(sandbox) = &model.entries()[0].kind else {
+            panic!("first entry should remain the sandbox shell");
+        };
+        let EntryKind::Tool(machine) = &model.entries()[1].kind else {
+            panic!("second entry should remain the machine shell");
+        };
+        assert_eq!(sandbox.execution_qualifier(), "Sandbox");
+        assert_eq!(machine.execution_qualifier(), "Machine build-box");
+        assert_eq!(sandbox.substeps, ["sent \"sandbox input\\n\""]);
+        assert_eq!(machine.substeps, ["sent \"machine input\\n\""]);
+        assert_eq!(
+            sandbox.result.as_ref().unwrap()["output"],
+            "sandbox ready\nsandbox output\n"
+        );
+        assert_eq!(
+            machine.result.as_ref().unwrap()["output"],
+            "machine ready\nmachine output\n"
+        );
+    }
+
+    #[test]
     fn hidden_code_wrapper_returns_for_failure_or_authoritative_output() {
         let mut failed = TranscriptModel::default();
         failed.apply(&call(1, "failed", "exec", json!("await tools.one({})")));
@@ -1644,6 +1847,195 @@ mod tests {
             Value::Null,
         ));
         assert!(status_only.entries()[0].hidden);
+    }
+
+    #[test]
+    fn failed_single_child_echo_keeps_only_the_semantic_child() {
+        let child_error = "Error: sandbox workspace is unavailable";
+        let mut model = TranscriptModel::default();
+        model.apply(&call(
+            1,
+            "failed-echo",
+            "exec",
+            json!("await tools.exec_command({environment: 'sandbox', cmd: 'sleep 20'})"),
+        ));
+        model.apply(&call(
+            2,
+            "failed-echo/code-0",
+            "exec_command",
+            json!({"environment": "sandbox", "cmd": "sleep 20"}),
+        ));
+        model.apply(&agent_record(
+            3,
+            AgentEventKind::ToolResult,
+            json!({
+                "call_id": "failed-echo/code-0",
+                "tool": "exec_command",
+                "status": "failed",
+                "duration_ns": 10,
+                "result": child_error,
+                "structured_result": child_error,
+                "metadata": null
+            }),
+        ));
+        model.apply(&agent_record(
+            4,
+            AgentEventKind::ToolResult,
+            json!({
+                "call_id": "failed-echo",
+                "tool": "exec",
+                "status": "failed",
+                "duration_ns": 10,
+                "result": format!(
+                    "Script failed\nWall time 0.1 seconds\nOutput:\nError: {child_error}\n    at unwrap (index.js:1:1)"
+                ),
+                "structured_result": null,
+                "metadata": null
+            }),
+        ));
+
+        assert!(model.entries()[0].hidden);
+        assert!(!model.entries()[1].hidden);
+    }
+
+    #[test]
+    fn exact_single_child_echo_does_not_restore_code_wrapper() {
+        let account = json!({
+            "status": "ready",
+            "authenticated": ["github"],
+            "machines": [{"id": "sandbox", "kind": "sandbox"}],
+            "vault": []
+        });
+        let mut model = TranscriptModel::default();
+        model.apply(&call(
+            1,
+            "account-wrapper",
+            "exec",
+            json!("text(await tools.accountInfo({}))"),
+        ));
+        model.apply(&call(2, "account-wrapper/code-0", "accountInfo", json!({})));
+        model.apply(&result(
+            3,
+            "account-wrapper/code-0",
+            "accountInfo",
+            account.clone(),
+            account.clone(),
+            Value::Null,
+        ));
+        model.apply(&result(
+            4,
+            "account-wrapper",
+            "exec",
+            json!([
+                {
+                    "type": "input_text",
+                    "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+                },
+                {"type": "input_text", "text": serde_json::to_string(&account).unwrap()}
+            ]),
+            Value::Null,
+            Value::Null,
+        ));
+
+        assert!(model.entries()[0].hidden);
+        assert!(!model.entries()[1].hidden);
+        let EntryKind::Tool(child) = &model.entries()[1].kind else {
+            panic!("accountInfo child should remain visible");
+        };
+        assert_eq!(child.duration_ns, Some(10));
+        assert_eq!(child.result, Some(account));
+    }
+
+    #[test]
+    fn exact_object_echoes_keep_only_the_semantic_child() {
+        let child_result = json!({"output": "artifact", "status": "ready"});
+        for parent_result in [child_result.clone(), json!([child_result.clone()])] {
+            let mut model = TranscriptModel::default();
+            model.apply(&call(
+                1,
+                "object-wrapper",
+                "exec",
+                json!("await tools.inspect({})"),
+            ));
+            model.apply(&call(2, "object-wrapper/code-0", "inspect", json!({})));
+            model.apply(&result(
+                3,
+                "object-wrapper/code-0",
+                "inspect",
+                child_result.clone(),
+                child_result.clone(),
+                Value::Null,
+            ));
+            model.apply(&result(
+                4,
+                "object-wrapper",
+                "exec",
+                parent_result,
+                Value::Null,
+                Value::Null,
+            ));
+
+            assert!(model.entries()[0].hidden);
+            assert!(!model.entries()[1].hidden);
+            let EntryKind::Tool(child) = &model.entries()[1].kind else {
+                panic!("inspect child should remain visible");
+            };
+            assert_eq!(child.result.as_ref(), Some(&child_result));
+        }
+    }
+
+    #[test]
+    fn multimodal_content_echoes_keep_only_the_semantic_child() {
+        for (child_result, emitted_item) in [
+            (
+                json!({"image_url": "data:image/png;base64,AAAA", "detail": "high"}),
+                json!({
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,AAAA",
+                    "detail": "high"
+                }),
+            ),
+            (
+                json!({"audio_url": "data:audio/wav;base64,AAAA"}),
+                json!({
+                    "type": "input_audio",
+                    "audio_url": "data:audio/wav;base64,AAAA"
+                }),
+            ),
+        ] {
+            let mut model = TranscriptModel::default();
+            model.apply(&call(1, "media-wrapper", "exec", json!("emit media")));
+            model.apply(&call(2, "media-wrapper/code-0", "media_tool", json!({})));
+            model.apply(&result(
+                3,
+                "media-wrapper/code-0",
+                "media_tool",
+                child_result.clone(),
+                child_result.clone(),
+                Value::Null,
+            ));
+            model.apply(&result(
+                4,
+                "media-wrapper",
+                "exec",
+                json!([
+                    {
+                        "type": "input_text",
+                        "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+                    },
+                    emitted_item
+                ]),
+                Value::Null,
+                Value::Null,
+            ));
+
+            assert!(model.entries()[0].hidden);
+            assert!(!model.entries()[1].hidden);
+            let EntryKind::Tool(child) = &model.entries()[1].kind else {
+                panic!("media child should remain visible");
+            };
+            assert_eq!(child.result.as_ref(), Some(&child_result));
+        }
     }
 
     #[test]

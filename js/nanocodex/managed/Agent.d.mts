@@ -130,10 +130,8 @@ export type Capabilities = Readonly<{
   live_steer: true;
   live_cancel: true;
   workspace: "cloudflare-computer";
-  /** Explicit sandbox_* tools expose one separate, agent-owned Linux hand. */
-  sandbox_tools: true;
-  /** Legacy compatibility field; the brain's shell does not fall through automatically. */
-  sandbox_escalation: boolean;
+  /** Tools can target explicit sandbox and connected-user environments. */
+  execution_environments: true;
 }>;
 
 export type State = Readonly<{

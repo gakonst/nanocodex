@@ -37,6 +37,16 @@ const PREVIEW_HTTP_RESPONSE_HEADERS_BLOCKED = new Set([
   "trailer",
   "transfer-encoding",
 ]);
+const PREVIEW_HTML_URL_ATTRIBUTES = [
+  "action",
+  "cite",
+  "data",
+  "formaction",
+  "href",
+  "poster",
+  "src",
+] as const;
+const PREVIEW_HTML_URL_SET_ATTRIBUTES = ["imagesrcset", "srcset"] as const;
 
 let cachedPreviewKey:
   | { secret: string; promise: Promise<CryptoKey> }
@@ -510,6 +520,7 @@ export async function proxyCloudflareSandboxPreview(
 ): Promise<Response> {
   const incoming = new URL(request.url);
   const targetPath = path.startsWith("/") ? path : `/${path}`;
+  const capabilityPath = sandboxPreviewCapabilityPath(incoming.pathname, targetPath);
   const target = new URL(`http://sandbox.internal${targetPath}${incoming.search}`);
   const forwarded = new Request(target, request);
   const websocket = request.headers.get("Upgrade")?.toLowerCase() === "websocket";
@@ -521,7 +532,7 @@ export async function proxyCloudflareSandboxPreview(
     const response = await sandbox.wsConnect(forwarded, port);
     if (response.status !== 101 || !response.webSocket) {
       if (response.status === 101) return new Response("Sandbox WebSocket upgrade failed", { status: 502 });
-      return hardenPreviewHttpResponse(response);
+      return hardenPreviewHttpResponse(response, capabilityPath);
     }
     const responseHeaders = new Headers();
     for (const [name, value] of response.headers) {
@@ -535,10 +546,10 @@ export async function proxyCloudflareSandboxPreview(
       webSocket: response.webSocket,
     });
   }
-  return hardenPreviewHttpResponse(await sandbox.containerFetch(forwarded, port));
+  return hardenPreviewHttpResponse(await sandbox.containerFetch(forwarded, port), capabilityPath);
 }
 
-function hardenPreviewHttpResponse(response: Response): Response {
+function hardenPreviewHttpResponse(response: Response, capabilityPath?: string): Response {
   const responseHeaders = new Headers(response.headers);
   for (const name of [...responseHeaders.keys()]) {
     if (PREVIEW_HTTP_RESPONSE_HEADERS_BLOCKED.has(name.toLowerCase())
@@ -550,11 +561,64 @@ function hardenPreviewHttpResponse(response: Response): Response {
   );
   responseHeaders.set("permissions-policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()");
   responseHeaders.set("referrer-policy", "no-referrer");
-  return new Response(response.body, {
+  const location = responseHeaders.get("location");
+  if (capabilityPath && location && isRootRelativeUrl(location)) {
+    responseHeaders.set("location", scopeRootRelativeUrl(location, capabilityPath));
+  }
+  const hardened = new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers: responseHeaders,
   });
+  if (!capabilityPath || !responseHeaders.get("content-type")?.toLowerCase().startsWith("text/html")) {
+    return hardened;
+  }
+  const browserScope = `<script type="importmap">${JSON.stringify({ imports: { "/": `${capabilityPath}/` } })}</script><script>(()=>{const p=${JSON.stringify(capabilityPath)},W=globalThis.WebSocket;globalThis.WebSocket=new Proxy(W,{construct(t,a,n){try{const u=new URL(a[0],location.href);if((u.protocol==="ws:"||u.protocol==="wss:")&&u.host===location.host&&u.pathname!==p&&!u.pathname.startsWith(p+"/")){u.pathname=p+(u.pathname.startsWith("/")?u.pathname:"/"+u.pathname);a[0]=u.href}}catch{}return Reflect.construct(t,a,n)}})})()</script>`;
+  return new HTMLRewriter()
+    .on("*", {
+      element(element) {
+        for (const attribute of PREVIEW_HTML_URL_ATTRIBUTES) {
+          const value = element.getAttribute(attribute);
+          if (value && isRootRelativeUrl(value)) {
+            element.setAttribute(attribute, scopeRootRelativeUrl(value, capabilityPath));
+          }
+        }
+        for (const attribute of PREVIEW_HTML_URL_SET_ATTRIBUTES) {
+          const value = element.getAttribute(attribute);
+          if (value) {
+            element.setAttribute(attribute, value.replace(
+              /(^|,\s*)(\/(?!\/)[^\s,]*)/g,
+              (_match, separator: string, url: string) => `${separator}${scopeRootRelativeUrl(url, capabilityPath)}`,
+            ));
+          }
+        }
+      },
+    })
+    .on("head", {
+      element(element) {
+        element.prepend(browserScope, { html: true });
+      },
+    })
+    .transform(hardened);
+}
+
+function sandboxPreviewCapabilityPath(incomingPath: string, targetPath: string): string | undefined {
+  if (targetPath === "/" && /^\/sandbox-preview\/[^/]+$/.test(incomingPath)) return incomingPath;
+  if (!incomingPath.endsWith(targetPath)) return undefined;
+  const capabilityPath = incomingPath.slice(0, -targetPath.length);
+  return /^\/sandbox-preview\/[^/]+$/.test(capabilityPath) ? capabilityPath : undefined;
+}
+
+function isRootRelativeUrl(value: string): boolean {
+  return value.startsWith("/") && !value.startsWith("//");
+}
+
+function scopeRootRelativeUrl(value: string, capabilityPath: string): string {
+  if (value === capabilityPath
+    || value.startsWith(`${capabilityPath}/`)
+    || value.startsWith(`${capabilityPath}?`)
+    || value.startsWith(`${capabilityPath}#`)) return value;
+  return `${capabilityPath}${value}`;
 }
 
 async function sealSandboxPreview(

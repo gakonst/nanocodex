@@ -29,8 +29,7 @@ export type AgentCapabilities = Readonly<{
   live_steer: true;
   live_cancel: true;
   workspace: "cloudflare-computer";
-  sandbox_tools: true;
-  sandbox_escalation: boolean;
+  execution_environments: true;
 }>;
 
 export type ServerMessage = (

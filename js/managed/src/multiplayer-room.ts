@@ -2,7 +2,6 @@ import { DurableObject } from "cloudflare:workers";
 
 import {
   DurableEventLog,
-  EventLogCapacityError,
   parseCursor,
   type DurableEvent,
 } from "./durable-events";
@@ -796,9 +795,6 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
         this.#scheduleExpiryCleanup();
         return roomJson({ error: error.code }, { status: error.status });
       }
-      if (error instanceof EventLogCapacityError) {
-        return roomJson({ error: error.code }, { status: 507 });
-      }
       throw error;
     }
     if (result.event) this.#publish(result.event);
@@ -1222,14 +1218,7 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
           await this.#rescheduleAlarm();
           return;
         }
-        try {
-          if (!this.#projectAgentMessage(job, message)) return;
-        } catch (error) {
-          if (!(error instanceof EventLogCapacityError)) throw error;
-          this.#blockJob(job.source_cursor);
-          await this.#rescheduleAlarm();
-          return;
-        }
+        if (!this.#projectAgentMessage(job, message)) return;
         continue;
       }
       if (turn.state === "cancelled") {
@@ -1238,14 +1227,7 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
           await this.#rescheduleAlarm();
           return;
         }
-        try {
-          if (!this.#projectAgentFailure(job, "cancelled", false)) return;
-        } catch (error) {
-          if (!(error instanceof EventLogCapacityError)) throw error;
-          this.#blockJob(job.source_cursor);
-          await this.#rescheduleAlarm();
-          return;
-        }
+        if (!this.#projectAgentFailure(job, "cancelled", false)) return;
         continue;
       }
       if (turn.state === "failed") {
@@ -1254,14 +1236,7 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
           await this.#rescheduleAlarm();
           return;
         }
-        try {
-          if (!this.#projectAgentFailure(job, "failed", false)) return;
-        } catch (error) {
-          if (!(error instanceof EventLogCapacityError)) throw error;
-          this.#blockJob(job.source_cursor);
-          await this.#rescheduleAlarm();
-          return;
-        }
+        if (!this.#projectAgentFailure(job, "failed", false)) return;
         continue;
       }
       this.#blockJob(job.source_cursor);
@@ -1337,7 +1312,7 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
           id: `agent-${job.source_cursor}`,
           text: projectedText,
           reply_to: job.source_cursor,
-        }, job.turn_id, true);
+        }, job.turn_id);
         this.ctx.storage.sql.exec(
           `UPDATE room_agent_jobs SET state = 'completed', updated_at = ?
            WHERE source_cursor = CAST(? AS INTEGER) AND state = 'submitted'`,
@@ -1369,7 +1344,7 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
           id: `agent-${job.source_cursor}`,
           code,
           reply_to: job.source_cursor,
-        }, job.turn_id, true);
+        }, job.turn_id);
         this.ctx.storage.sql.exec(
           `UPDATE room_agent_jobs SET state = ?, updated_at = ?
            WHERE source_cursor = CAST(? AS INTEGER) AND state = 'submitted'`,
@@ -1398,7 +1373,7 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
           id: `agent-${job.source_cursor}`,
           code: "rate_limited",
           reply_to: job.source_cursor,
-        }, job.turn_id, true);
+        }, job.turn_id);
         this.ctx.storage.sql.exec(
           `UPDATE room_agent_jobs SET state = 'completed', updated_at = ?
            WHERE source_cursor = CAST(? AS INTEGER) AND state = 'quota_pending'`,
@@ -1470,7 +1445,7 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
           id: `agent-${job.source_cursor}`,
           code: "blocked",
           reply_to: job.source_cursor,
-        }, job.turn_id, true);
+        }, job.turn_id);
         this.ctx.storage.sql.exec(
           `UPDATE room_agent_jobs SET state = 'blocked', updated_at = ?
            WHERE source_cursor = CAST(? AS INTEGER)
@@ -2196,15 +2171,6 @@ export class MultiplayerRoom extends DurableObject<MultiplayerRoomEnv> {
   #sendSayError(socket: WebSocket, clientId: string, error: unknown): boolean {
     if (error instanceof RoomMutationError) {
       if (error.code === "room_unavailable") this.#scheduleExpiryCleanup();
-      this.#send(socket, {
-        type: "error",
-        id: clientId,
-        code: error.code,
-        message: error.message,
-      });
-      return true;
-    }
-    if (error instanceof EventLogCapacityError) {
       this.#send(socket, {
         type: "error",
         id: clientId,

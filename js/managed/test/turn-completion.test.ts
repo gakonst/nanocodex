@@ -193,6 +193,48 @@ describe("managed cancellation projection", () => {
     });
   });
 
+  it("reconciles Rust's exact already-terminal ambiguity after cancellation was accepted", () => {
+    const resolution = classifyTurnFailure(
+      "turn-already-terminal",
+      new Error("the targeted turn has already completed or been cancelled"),
+    );
+
+    expect(resolution).toEqual({
+      kind: "terminal",
+      terminal: {
+        type: "turn_failed",
+        id: "turn-already-terminal",
+        error: "the targeted turn has already completed or been cancelled",
+      },
+      reopenAgent: false,
+    });
+    expect(managedControlTransitionForResolution(
+      "turn-already-terminal",
+      true,
+      resolution,
+    )).toEqual({
+      type: "turn_cancelled",
+      id: "turn-already-terminal",
+    });
+  });
+
+  it("does not terminally reconcile the same ambiguity without an accepted cancellation", () => {
+    const resolution = classifyTurnFailure(
+      "turn-not-cancelling",
+      new Error("the targeted turn has already completed or been cancelled"),
+    );
+
+    expect(managedControlTransitionForResolution(
+      "turn-not-cancelling",
+      false,
+      resolution,
+    )).toEqual({
+      type: "turn_failed",
+      id: "turn-not-cancelling",
+      error: "the targeted turn has already completed or been cancelled",
+    });
+  });
+
   it("does not mistake a control-path terminal classification for the turn result", () => {
     expect(managedControlTransitionForResolution("turn-control", true, {
       kind: "terminal",

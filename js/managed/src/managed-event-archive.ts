@@ -1,11 +1,11 @@
 import {
   hydrateManagedEventRows,
-  MAX_EVENT_BYTES,
   type DurableEvent,
   type DurableEventHistory,
   type DurableEventLog,
   type ManagedEventRow,
 } from "./durable-events";
+import { sha256Hex } from "./archive-hash";
 
 const VERSION = 1;
 const DEFAULT_SEAL_THRESHOLD_BYTES = 16 * 1024 * 1024;
@@ -13,11 +13,6 @@ const DEFAULT_SEGMENT_TARGET_BYTES = 8 * 1024 * 1024;
 const DEFAULT_RECENT_EVENT_COUNT = 512;
 const MAX_RECENT_DESCRIPTORS = 16;
 const MAX_SEAL_ROWS = 4_096;
-const MAX_ARCHIVE_OBJECT_BYTES = 16 * 1024 * 1024;
-// Reserve a bounded envelope allowance for 4,096 cursors, timestamps, turn
-// identities, JSON structure, and R2 metadata. The final encoded size remains
-// authoritative below.
-const MAX_SEGMENT_PAYLOAD_BYTES = MAX_EVENT_BYTES;
 const encoder = new TextEncoder();
 
 type EventRow = ManagedEventRow;
@@ -125,17 +120,13 @@ export class ManagedEventArchive<Message extends { type: string }> {
       1,
       4_096,
     );
-    this.#sealThresholdBytes = boundedInteger(
+    this.#sealThresholdBytes = positiveInteger(
       policy.sealThresholdBytes,
       DEFAULT_SEAL_THRESHOLD_BYTES,
-      1,
-      48 * 1024 * 1024,
     );
-    this.#segmentTargetBytes = boundedInteger(
+    this.#segmentTargetBytes = positiveInteger(
       policy.segmentTargetBytes,
       DEFAULT_SEGMENT_TARGET_BYTES,
-      1,
-      MAX_SEGMENT_PAYLOAD_BYTES,
     );
     storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS managed_event_archive_state (
@@ -271,9 +262,6 @@ export class ManagedEventArchive<Message extends { type: string }> {
       events,
     } satisfies SegmentEnvelope<Message>);
     const segmentBytes = encoder.encode(segmentBody);
-    if (segmentBytes.byteLength > MAX_ARCHIVE_OBJECT_BYTES) {
-      throw new Error("managed event archive segment exceeds the object boundary");
-    }
     const segmentHash = await sha256Hex(segmentBytes);
     const descriptor: SegmentDescriptor = {
       bytes: segmentBytes.byteLength,
@@ -582,7 +570,7 @@ export class ManagedEventArchive<Message extends { type: string }> {
     if (cache.segment?.key === descriptor.key) return cache.segment.events;
     const object = await this.#bucket.get(this.#portableObjectKey(descriptor.key));
     if (!object || !object.body) throw new Error("managed event archive segment is unavailable");
-    if (object.size !== descriptor.bytes || object.size > MAX_ARCHIVE_OBJECT_BYTES) {
+    if (object.size !== descriptor.bytes) {
       await object.body.cancel();
       throw new Error("managed event archive segment size does not match its descriptor");
     }
@@ -619,10 +607,6 @@ export class ManagedEventArchive<Message extends { type: string }> {
     const key = this.#indexKey(ordinal);
     const object = await this.#bucket.get(key);
     if (!object || !object.body) throw new Error("managed event archive index is unavailable");
-    if (object.size > MAX_ARCHIVE_OBJECT_BYTES) {
-      await object.body.cancel();
-      throw new Error("managed event archive index exceeds the object boundary");
-    }
     const encoded = new Uint8Array(await object.arrayBuffer());
     const expectedHash = object.customMetadata?.sha256;
     if (!expectedHash || object.customMetadata?.kind !== "managed_event_index"
@@ -785,6 +769,10 @@ function boundedInteger(
   return Number.isSafeInteger(value) ? Math.min(maximum, Math.max(minimum, value!)) : fallback;
 }
 
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isSafeInteger(value) && value! > 0 ? value! : fallback;
+}
+
 function emptySeal(cursor: string): ManagedEventSealResult {
   return {
     archived_bytes: 0,
@@ -813,9 +801,4 @@ function sameFence(left: ArchiveReadFence, right: ArchiveReadFence): boolean {
 
 function padCursor(cursor: string): string {
   return cursor.padStart(19, "0");
-}
-
-async function sha256Hex(value: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

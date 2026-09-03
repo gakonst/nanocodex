@@ -615,7 +615,92 @@ describe("Cloudflare sandbox tools", () => {
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
   });
 
-  it("preserves a WebSocket while allowing only handshake response headers", async () => {
+  it("keeps root-relative redirects inside the preview capability", async () => {
+    const containerFetch = vi.fn(async (request: Request) => new Response(null, {
+      status: 302,
+      headers: {
+        location: request.url.endsWith("/scoped")
+          ? "/sandbox-preview/capability/login"
+          : "/login?next=%2Fapp#form",
+      },
+    }));
+    sandboxSdk.getSandbox.mockReturnValue({
+      containerFetch,
+      wsConnect: vi.fn(),
+    });
+
+    const response = await proxyCloudflareSandboxPreview(
+      fakeNamespace(),
+      "preview-session",
+      8_080,
+      new Request("https://nanocodex.example/sandbox-preview/capability/private"),
+      "/private",
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "/sandbox-preview/capability/login?next=%2Fapp#form",
+    );
+    const scopedResponse = await proxyCloudflareSandboxPreview(
+      fakeNamespace(),
+      "preview-session",
+      8_080,
+      new Request("https://nanocodex.example/sandbox-preview/capability/scoped"),
+      "/scoped",
+    );
+    expect(scopedResponse.headers.get("location")).toBe("/sandbox-preview/capability/login");
+  });
+
+  it("keeps root-relative HTML asset requests inside the preview capability", async () => {
+    const containerFetch = vi.fn(async (request: Request) => request.url.endsWith("/app.css")
+      ? new Response("css")
+      : new Response([
+        "<!doctype html><html><head>",
+        '<link rel="stylesheet" href="/app.css">',
+        '<script type="module" src="/@vite/client"></script>',
+        '<img srcset="/small.png 1x, /large.png 2x">',
+        '<img src="/sandbox-preview/capability/already-scoped.png">',
+        '<script src="//cdn.example/library.js"></script>',
+        "</head></html>",
+      ].join(""), { headers: { "content-type": "text/html; charset=utf-8" } }));
+    sandboxSdk.getSandbox.mockReturnValue({
+      containerFetch,
+      wsConnect: vi.fn(),
+    });
+    const namespace = fakeNamespace();
+    const previewUrl = "https://nanocodex.example/sandbox-preview/capability/";
+
+    const documentResponse = await proxyCloudflareSandboxPreview(
+      namespace,
+      "preview-session",
+      8_080,
+      new Request(previewUrl),
+      "/",
+    );
+    const html = await documentResponse.text();
+    expect(html).toContain('href="/sandbox-preview/capability/app.css"');
+    expect(html).toContain('src="/sandbox-preview/capability/@vite/client"');
+    expect(html).toContain(
+      'srcset="/sandbox-preview/capability/small.png 1x, /sandbox-preview/capability/large.png 2x"',
+    );
+    expect(html).toContain('src="/sandbox-preview/capability/already-scoped.png"');
+    expect(html).toContain('src="//cdn.example/library.js"');
+    expect(html).toContain('{"imports":{"/":"/sandbox-preview/capability/"}}');
+    expect(html).toContain("globalThis.WebSocket=new Proxy");
+    expect(html).toContain('const p="/sandbox-preview/capability"');
+
+    const assetUrl = new URL("/sandbox-preview/capability/app.css", previewUrl);
+    await proxyCloudflareSandboxPreview(
+      namespace,
+      "preview-session",
+      8_080,
+      new Request(assetUrl),
+      "/app.css",
+    );
+    expect(containerFetch.mock.calls[1]![0].url).toBe("http://sandbox.internal/app.css");
+  });
+
+  it("retains the preview capability for Vite HMR WebSockets", async () => {
     const sockets = new WebSocketPair();
     const wsConnect = vi.fn(async (_request: Request, _port: number) => ({
       status: 101,
@@ -634,7 +719,7 @@ describe("Cloudflare sandbox tools", () => {
       containerFetch: vi.fn(),
       wsConnect,
     });
-    const request = new Request("https://nanocodex.example/sandbox-preview/capability/socket", {
+    const request = new Request("https://nanocodex.example/sandbox-preview/capability/?token=hmr", {
       headers: {
         connection: "Upgrade",
         cookie: "nanocodex=session-secret",
@@ -653,10 +738,11 @@ describe("Cloudflare sandbox tools", () => {
       "preview-session",
       8_080,
       request,
-      "/socket",
+      "/",
     );
 
     const forwarded = wsConnect.mock.calls[0]![0];
+    expect(forwarded.url).toBe("http://sandbox.internal/?token=hmr");
     expect(forwarded.headers.get("connection")).toBe("Upgrade");
     expect(forwarded.headers.get("upgrade")).toBe("websocket");
     expect(forwarded.headers.get("sec-websocket-key")).toBe("socket-key");

@@ -556,7 +556,7 @@ mod tests {
                 "live_steer": true,
                 "live_cancel": true,
                 "workspace": "cloud",
-                "sandbox_escalation": false
+                "execution_environments": true
             },
             "latest_event_cursor": "0"
         });

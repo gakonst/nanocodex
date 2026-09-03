@@ -294,8 +294,8 @@ pub struct AgentCapabilities {
     pub live_cancel: bool,
     /// Server-advertised workspace mode.
     pub workspace: String,
-    /// Whether sandbox escalation is available.
-    pub sandbox_escalation: bool,
+    /// Whether tools can target explicit sandbox and connected-user environments.
+    pub execution_environments: bool,
 }
 
 /// Model and reasoning policy owned by one managed agent.
@@ -722,6 +722,9 @@ pub enum ManagedEventData {
         /// Exact nested agent-event JSON. The raw object is decoded directly
         /// into AgentEvent only when requested; it never traverses Value.
         event: Box<RawValue>,
+        /// Numeric subagent identity. Absent for the root agent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<u64>,
     },
     /// The server-side durable stream failed.
     StreamFailed {
@@ -784,6 +787,7 @@ impl ManagedEventData {
         #[derive(Deserialize)]
         struct Event {
             event: Box<RawValue>,
+            agent_id: Option<u64>,
         }
         #[derive(Deserialize)]
         struct StreamFailed {
@@ -845,7 +849,10 @@ impl ManagedEventData {
             }
             "event" => {
                 let value: Event = decode_raw(raw)?;
-                Ok(Self::Event { event: value.event })
+                Ok(Self::Event {
+                    event: value.event,
+                    agent_id: value.agent_id,
+                })
             }
             "stream_failed" => {
                 let value: StreamFailed = decode_raw(raw)?;
@@ -863,7 +870,7 @@ impl ManagedEventData {
     /// Returns ManagedError::InvalidEvent when the nested object violates the
     /// canonical agent-event schema.
     pub fn agent_event(&self) -> Result<Option<AgentEvent>, ManagedError> {
-        let Self::Event { event } = self else {
+        let Self::Event { event, .. } = self else {
             return Ok(None);
         };
         serde_json::from_str(event.get())
@@ -874,7 +881,7 @@ impl ManagedEventData {
     /// Returns the exact nested agent-event object without decoding it.
     #[must_use]
     pub fn raw_agent_event(&self) -> Option<&RawValue> {
-        let Self::Event { event } = self else {
+        let Self::Event { event, .. } = self else {
             return None;
         };
         Some(event)
@@ -1022,7 +1029,7 @@ mod tests {
     #[test]
     fn nested_agent_event_retains_its_raw_object() {
         let json = concat!(
-            r#"{"cursor":"2","created_at":1,"turn_id":"turn-1","type":"event","#,
+            r#"{"cursor":"2","created_at":1,"turn_id":"turn-1","type":"event","agent_id":7,"#,
             r#""event": { "protocol_version":1, "request_id":"request-1", "seq":1,"#,
             r#""type":"assistant.delta", "payload": { "delta" : "hi" } }}"#
         );
@@ -1032,6 +1039,13 @@ mod tests {
         assert!(raw.starts_with(r#"{ "protocol_version""#));
         assert!(raw.contains(r#""payload": { "delta" : "hi" }"#));
         assert_eq!(event.data.agent_event().unwrap().unwrap().seq, 1);
+        assert!(matches!(
+            event.data,
+            ManagedEventData::Event {
+                agent_id: Some(7),
+                ..
+            }
+        ));
     }
 
     #[test]

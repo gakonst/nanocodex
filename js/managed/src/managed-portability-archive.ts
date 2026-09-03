@@ -1,3 +1,5 @@
+import { sha256Hex } from "./archive-hash";
+
 const VERSION = 1;
 const BATCH_OBJECTS = 64;
 const BATCH_BYTES = 8 * 1024 * 1024;
@@ -243,7 +245,7 @@ export class ManagedPortabilityArchive {
       const suffix = object.key.slice(archivePrefix.length);
       const objectKind = object.customMetadata?.kind ?? "";
       if (!validObject(kind, suffix, objectKind)
-        || object.size <= 0 || object.size > 16 * 1024 * 1024
+        || object.size <= 0
         || object.customMetadata?.version !== String(VERSION)
         || !/^[0-9a-f]{64}$/.test(object.customMetadata?.sha256 ?? "")) {
         throw new Error(`managed ${kind} archive contains an invalid object identity`);
@@ -310,11 +312,6 @@ function validateIdentity(value: ManagedPortableArchiveIdentity): void {
     || !/^[0-9a-f]{64}$/.test(value.digest)) {
     throw new Error("managed portable archive identity is invalid");
   }
-}
-
-async function sha256Hex(value: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function mapWithConcurrency<T>(

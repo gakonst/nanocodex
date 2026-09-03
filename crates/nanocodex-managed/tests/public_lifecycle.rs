@@ -39,6 +39,9 @@ const SESSION_ID: &str = "019fc927-b280-79a7-8445-1b9996ad2fb0";
 const ACTIVE_REQUEST_ID: &str = "caller-request-active";
 const RETAINED_REQUEST_ID: &str = "caller-request-retained";
 const CANCELLED_REQUEST_ID: &str = "caller-request-cancelled";
+const FOREIGN_REQUEST_ID: &str = "caller-request-foreign";
+const ROOT_SOURCE_REQUEST_ID: &str = "server-private-session";
+const CHILD_SOURCE_REQUEST_ID: &str = "server-private-subagent";
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
@@ -310,34 +313,63 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
             .send_event(accepted_event(41, ACTIVE_REQUEST_ID, "live prompt"))
             .await;
         fixture
-            .send_event(nested_event(
+            .send_event(completed_event_with_usage(
                 42,
+                FOREIGN_REQUEST_ID,
+                "foreign answer",
+                json!({"future_usage_schema": true}),
+            ))
+            .await;
+        fixture
+            .send_event(nested_event(
+                43,
+                ROOT_SOURCE_REQUEST_ID,
+                None,
                 "assistant.message",
                 json!({"text": "live"}),
             ))
             .await;
         fixture
             .send_event(nested_event(
-                43,
+                44,
+                CHILD_SOURCE_REQUEST_ID,
+                Some(7),
+                "assistant.message",
+                json!({"text": "child"}),
+            ))
+            .await;
+        fixture
+            .send_event(nested_event(
+                45,
+                CHILD_SOURCE_REQUEST_ID,
+                Some(7),
+                "run.completed",
+                json!({"status": "completed"}),
+            ))
+            .await;
+        fixture
+            .send_event(nested_event(
+                46,
+                ROOT_SOURCE_REQUEST_ID,
+                None,
+                "assistant.message",
+                json!({"text": "after child"}),
+            ))
+            .await;
+        assert!(
+            (&mut turn).now_or_never().is_none(),
+            "a nested subagent terminal must not stop the parent turn"
+        );
+        fixture
+            .send_event(nested_event(
+                47,
+                ROOT_SOURCE_REQUEST_ID,
+                None,
                 "run.completed",
                 json!({"status": "completed"}),
             ))
             .await;
 
-        let assistant = events
-            .recv()
-            .await
-            .expect("rewritten assistant event should be public");
-        assert_eq!(assistant.kind, AgentEventKind::AssistantMessage);
-        assert_eq!(assistant.seq, 1);
-        assert_eq!(assistant.request_id.as_ref(), SESSION_ID);
-        let terminal = events
-            .recv()
-            .await
-            .expect("rewritten run terminal should be public");
-        assert_eq!(terminal.kind, AgentEventKind::RunCompleted);
-        assert_eq!(terminal.seq, 2);
-        assert_eq!(terminal.request_id.as_ref(), SESSION_ID);
         assert!(
             (&mut turn).now_or_never().is_none(),
             "the result must not complete from the nested run terminal alone"
@@ -348,15 +380,43 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
         );
 
         fixture
-            .send_event(completed_event(44, ACTIVE_REQUEST_ID, "live answer"))
+            .send_event(completed_event(48, ACTIVE_REQUEST_ID, "live answer"))
             .await;
+        let mut published = Vec::new();
+        for _ in 0..5 {
+            published.push(
+                events
+                    .recv()
+                    .await
+                    .expect("rewritten parent event stream should remain open"),
+            );
+        }
+        assert_eq!(
+            published.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            [
+                AgentEventKind::AssistantMessage,
+                AgentEventKind::AssistantMessage,
+                AgentEventKind::RunCompleted,
+                AgentEventKind::AssistantMessage,
+                AgentEventKind::RunCompleted,
+            ]
+        );
+        assert_eq!(
+            published.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert!(
+            published
+                .iter()
+                .all(|event| event.request_id.as_ref() == SESSION_ID)
+        );
         let result: TurnResult = turn
             .await
             .expect("live terminal should complete the result");
         assert_result(&result, ACTIVE_REQUEST_ID, "live answer");
 
         let mut observed = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..8 {
             observed.push(
                 observed_events
                     .recv()
@@ -369,7 +429,7 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
                 .iter()
                 .map(|event| event.cursor.as_str())
                 .collect::<Vec<_>>(),
-            ["41", "42", "43", "44"]
+            ["41", "42", "43", "44", "45", "46", "47", "48"]
         );
         assert!(matches!(
             &observed[0].data,
@@ -378,10 +438,14 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
                 ..
             } if input == "live prompt"
         ));
-        assert!(matches!(observed[1].data, ManagedEventData::Event { .. }));
-        assert!(matches!(observed[2].data, ManagedEventData::Event { .. }));
         assert!(matches!(
-            observed[3].data,
+            observed[1].data,
+            ManagedEventData::TurnCompleted { .. }
+        ));
+        assert!(matches!(observed[2].data, ManagedEventData::Event { .. }));
+        assert!(matches!(observed[3].data, ManagedEventData::Event { .. }));
+        assert!(matches!(
+            observed[7].data,
             ManagedEventData::TurnCompleted { .. }
         ));
         assert_eq!(
@@ -680,7 +744,7 @@ fn agent_state_json(agent_id: &str, latest_event_cursor: &str) -> Value {
             "live_steer": true,
             "live_cancel": true,
             "workspace": "cloud",
-            "sandbox_escalation": false
+            "execution_environments": true
         },
         "settings": {
             "model": "gpt-5.6-sol",
@@ -865,20 +929,29 @@ fn turn_view(
     })
 }
 
-fn nested_event(cursor: u64, kind: &str, payload: Value) -> Bytes {
-    let envelope = json!({
+fn nested_event(
+    cursor: u64,
+    request_id: &str,
+    agent_id: Option<u64>,
+    kind: &str,
+    payload: Value,
+) -> Bytes {
+    let mut envelope = json!({
         "cursor": cursor.to_string(),
         "created_at": cursor,
         "turn_id": ACTIVE_REQUEST_ID,
         "type": "event",
         "event": {
             "protocol_version": 1,
-            "request_id": "server-private-session",
+            "request_id": request_id,
             "seq": 1,
             "type": kind,
             "payload": payload
         }
     });
+    if let Some(agent_id) = agent_id {
+        envelope["agent_id"] = agent_id.into();
+    }
     Bytes::from(format!("id: {cursor}\nevent: event\ndata: {envelope}\n\n"))
 }
 
@@ -898,6 +971,15 @@ fn accepted_event(cursor: u64, turn_id: &str, input: &str) -> Bytes {
 }
 
 fn completed_event(cursor: u64, turn_id: &str, final_message: &str) -> Bytes {
+    completed_event_with_usage(cursor, turn_id, final_message, exact_usage())
+}
+
+fn completed_event_with_usage(
+    cursor: u64,
+    turn_id: &str,
+    final_message: &str,
+    usage: Value,
+) -> Bytes {
     let envelope = json!({
         "cursor": cursor.to_string(),
         "created_at": cursor,
@@ -905,7 +987,7 @@ fn completed_event(cursor: u64, turn_id: &str, final_message: &str) -> Bytes {
         "type": "turn_completed",
         "id": turn_id,
         "final_message": final_message,
-        "usage": exact_usage(),
+        "usage": usage,
         "citations": [],
         "usage_error": null
     });

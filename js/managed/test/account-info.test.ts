@@ -10,6 +10,28 @@ const ADDRESS_ID = "a".repeat(22);
 const PHONE_ID = "p".repeat(22);
 
 describe("managed account info", () => {
+  it("forwards cancellation to every broker request and preserves its reason", async () => {
+    const controller = new AbortController();
+    const reason = new Error("turn cancelled");
+    const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBe(controller.signal);
+      if (String(input).endsWith("/connectors")) return Promise.resolve(Response.json(statuses()));
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    });
+
+    const pending = accountInfo(
+      { fetch },
+      "user",
+      { enabled: true, signal: controller.signal },
+    );
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("projects provider-neutral Google and Slack connection identities", async () => {
     const fetch = vi.fn(async () => Response.json(statuses()));
     const machines = [{
@@ -22,10 +44,7 @@ describe("managed account info", () => {
     const info = await accountInfo(
       { fetch },
       "user/with spaces",
-      true,
-      undefined,
-      undefined,
-      machines,
+      { enabled: true, machines },
     );
 
     expect(info).toEqual({
@@ -56,9 +75,10 @@ describe("managed account info", () => {
 
   it("filters exact grant connection IDs and withholds selectors from legacy grants", async () => {
     const binding = { fetch: async () => Response.json(statuses()) };
-    const exact = await accountInfo(binding, "user", true, ["gmail", "slack"], {
-      gmail: [B],
-      slack: [],
+    const exact = await accountInfo(binding, "user", {
+      allowedConnectors: ["gmail", "slack"],
+      allowedConnections: { gmail: [B], slack: [] },
+      enabled: true,
     });
     expect(exact.authenticated).toEqual(["gmail"]);
     expect(exact.accounts).toEqual({ gmail: "home@example.com" });
@@ -66,7 +86,10 @@ describe("managed account info", () => {
       gmail: [{ id: B, label: "home@example.com", accountId: "google-home", capabilities: ["gmail"] }],
     });
 
-    const legacyGrant = await accountInfo(binding, "user", true, ["gmail"]);
+    const legacyGrant = await accountInfo(binding, "user", {
+      allowedConnectors: ["gmail"],
+      enabled: true,
+    });
     expect(legacyGrant.authenticated).toEqual(["gmail"]);
     expect(legacyGrant.connectorAccounts).toEqual({});
   });
@@ -76,7 +99,7 @@ describe("managed account info", () => {
       fetch: async () => Response.json({ connectors: {
         github: { connected: true, label: "octocat", account_id: "legacy-id" },
       } }),
-    }, "user", true);
+    }, "user", { enabled: true });
     expect(legacy.authenticated).toEqual(["github"]);
     expect(legacy.accounts).toEqual({ github: "octocat" });
     expect(legacy.connectorAccounts).toEqual({});
@@ -95,7 +118,7 @@ describe("managed account info", () => {
       fetch: async () => Response.json({ connectors: {
         github: { connected: true, connections: [{ id: "not-opaque", label: "bad" }] },
       } }),
-    }, "user", true);
+    }, "user", { enabled: true });
     expect(unavailable).toMatchObject({ status: "unavailable", connectorAccounts: {} });
 
     const prompt = withInitialAccountInfo("Use my calendar", unavailable);
@@ -116,10 +139,7 @@ describe("managed account info", () => {
     const info = await accountInfo(
       { fetch: async () => new Response(null, { status: 503 }) },
       "user",
-      true,
-      undefined,
-      undefined,
-      machines,
+      { enabled: true, machines },
     );
     expect(info).toMatchObject({ status: "unavailable", machines });
   });
@@ -177,7 +197,10 @@ describe("managed accountInfo vault projection", () => {
       ] },
     ));
 
-    const result = await accountInfo({ fetch }, "user/id", true, ["github"]);
+    const result = await accountInfo({ fetch }, "user/id", {
+      allowedConnectors: ["github"],
+      enabled: true,
+    });
 
     expect(result).toEqual({
       status: "ready",
@@ -228,7 +251,7 @@ describe("managed accountInfo vault projection", () => {
       fetch: async (input) => Response.json(
         String(input).endsWith("/connectors") ? { connectors: {} } : { vault },
       ),
-    }, "user", true);
+    }, "user", { enabled: true });
 
     expect(result.status).toBe("ready");
     expect(result.vault).toEqual([]);
@@ -265,17 +288,21 @@ describe("managed accountInfo vault projection", () => {
         fetch: async (input) => Response.json(
           String(input).endsWith("/connectors") ? { connectors: {} } : { vault },
         ),
-      }, "user", true);
+      }, "user", { enabled: true });
 
       expect(result.vault).toEqual([]);
     }
   });
 
   it("includes an empty required Vault field in disabled and unavailable results", async () => {
-    await expect(accountInfo({ fetch: vi.fn() }, "user", false)).resolves.toMatchObject({ vault: [] });
+    await expect(accountInfo(
+      { fetch: vi.fn() },
+      "user",
+      { enabled: false },
+    )).resolves.toMatchObject({ vault: [] });
     await expect(accountInfo({
       fetch: async () => new Response(null, { status: 503 }),
-    }, "user", true)).resolves.toMatchObject({ status: "unavailable", vault: [] });
+    }, "user", { enabled: true })).resolves.toMatchObject({ status: "unavailable", vault: [] });
   });
 
   it("keeps connector information ready when only credential metadata is unavailable", async () => {
@@ -283,7 +310,7 @@ describe("managed accountInfo vault projection", () => {
       fetch: async (input) => String(input).endsWith("/connectors")
         ? Response.json({ connectors: { github: { connected: true, label: "octocat" } } })
         : new Response(null, { status: 503 }),
-    }, "user", true);
+    }, "user", { enabled: true });
 
     expect(result).toMatchObject({
       status: "ready",

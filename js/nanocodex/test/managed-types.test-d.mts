@@ -17,8 +17,7 @@ const capabilities: Capabilities = {
   live_steer: true,
   live_cancel: true,
   workspace: "cloudflare-computer",
-  sandbox_tools: true,
-  sandbox_escalation: false,
+  execution_environments: true,
 };
 void capabilities;
 

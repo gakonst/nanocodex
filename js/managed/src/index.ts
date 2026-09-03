@@ -11,6 +11,7 @@ import type {
   EventWatcher,
   NamedTool,
   PromptInput,
+  ToolContext,
   Tools,
   Turn,
 } from "nanocodex";
@@ -63,12 +64,12 @@ import {
 } from "./connector-status";
 import {
   DurableEventLog,
-  EventLogCapacityError,
   MAX_HISTORY_PAGE_SIZE,
   parseCursor,
   type DurableEvent,
   type DurableEventTail,
 } from "./durable-events";
+import { persistEventStreamFailure } from "./event-stream-failure";
 import { watchManagedAgentFamilyEvents } from "./agent-event-watcher";
 import {
   ManagedEventArchive,
@@ -223,9 +224,6 @@ export { MemoryScope } from "./memory-scope";
 export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account-auth";
 
 const MAX_CLIENT_MESSAGE_BYTES = 1024 * 1024;
-const MAX_CLIENT_REPLAY_BYTES = 8 * 1024 * 1024;
-const MAX_CLIENT_REPLAY_EVENTS = 256;
-const MAX_ACTIVE_TURNS = 16;
 const MAX_PRE_ADMISSION_CANCELLATIONS = 64;
 const MAX_CLIENT_CONNECTIONS = 64;
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
@@ -587,8 +585,7 @@ const AGENT_CAPABILITIES = Object.freeze({
   live_steer: true,
   live_cancel: true,
   workspace: "cloudflare-computer",
-  sandbox_tools: true,
-  sandbox_escalation: false,
+  execution_environments: true,
 }) satisfies AgentCapabilities;
 
 const AGENT_SANDBOX_MACHINE = Object.freeze({
@@ -2535,6 +2532,11 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       return;
     }
+    if (this.#eventArchive.needsSeal(this.#eventLog)) {
+      // A failed alarm is retried by Durable Objects. This is the persistent
+      // continuation for a seal that outlived or failed its originating turn.
+      await this.#sealEventArchive(false);
+    }
     if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
     else await this.#drainHistoryProjections();
     // An alarm may be the first event delivered to a freshly reconstructed
@@ -2562,9 +2564,7 @@ export class DurableAgentSession extends DurableComputerSession {
       return;
     }
     this.#logCapacity("idle_shutdown");
-    while (this.#eventArchive.needsSeal(this.#eventLog)) {
-      if (!(await this.#sealEventArchive(false)).sealed) break;
-    }
+    if (this.#eventArchive.needsSeal(this.#eventLog)) await this.#sealEventArchive(false);
     while (this.#turnArchive.needsSeal()) {
       if (!(await this.#sealTurnArchive(false)).sealed) break;
     }
@@ -2774,7 +2774,7 @@ export class DurableAgentSession extends DurableComputerSession {
           type: "agent_created",
           agent_id: sessionId,
           capabilities: this.#capabilities(),
-        }, null, true);
+        });
       });
     } catch (error) {
       if (error instanceof ManagedRequestError) {
@@ -2834,14 +2834,9 @@ export class DurableAgentSession extends DurableComputerSession {
   async #replayClientSocket(socket: WebSocket, after: string): Promise<void> {
     const page = this.#eventArchive.pageReader(this.#eventLog);
     let cursor = after;
-    let replayBytes = 0;
-    let replayEvents = 0;
     try {
       while (socket.readyState === WebSocket.OPEN) {
-        const events = await page(
-          cursor,
-          Math.min(MAX_HISTORY_PAGE_SIZE, MAX_CLIENT_REPLAY_EVENTS - replayEvents),
-        );
+        const events = await page(cursor, MAX_HISTORY_PAGE_SIZE);
         for (const event of events) {
           const message: ServerMessage = {
             ...event.message,
@@ -2850,23 +2845,12 @@ export class DurableAgentSession extends DurableComputerSession {
             ...(event.turn_id === null ? {} : { turn_id: event.turn_id }),
           };
           const encoded = JSON.stringify(message);
-          const bytes = encoder.encode(encoded).byteLength;
-          if (replayEvents > 0 && replayBytes + bytes > MAX_CLIENT_REPLAY_BYTES) {
-            closeSocket(socket, 1013, "durable replay continuation required");
-            return;
-          }
           if (!this.#sendEncoded(socket, encoded)) return;
           cursor = event.cursor;
-          replayBytes += bytes;
-          replayEvents += 1;
           socket.serializeAttachment({
             ...(socket.deserializeAttachment() as SessionSocketAttachment),
             replayAfter: cursor,
           } satisfies SessionSocketAttachment);
-        }
-        if (replayEvents >= MAX_CLIENT_REPLAY_EVENTS) {
-          closeSocket(socket, 1013, "durable replay continuation required");
-          return;
         }
         if (events.length > 0) continue;
         socket.serializeAttachment({
@@ -3968,20 +3952,6 @@ export class DurableAgentSession extends DurableComputerSession {
         this.#streamError,
       );
     }
-    if (this.#unfinishedTurnCount() >= MAX_ACTIVE_TURNS) {
-      throw new ManagedRequestError(
-        429,
-        "turn_queue_full",
-        `at most ${MAX_ACTIVE_TURNS} turns may be unfinished`,
-      );
-    }
-    if (!this.#eventLog.canAcceptTurn()) {
-      throw new ManagedRequestError(
-        507,
-        "event_log_full",
-        "delete or replace this agent before submitting more work",
-      );
-    }
   }
 
   async #acceptRoutedTurn(
@@ -4170,13 +4140,6 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#streamError) {
       throw new ManagedRequestError(503, "event_stream_failed", this.#streamError);
     }
-    if (this.#unfinishedTurnCount() >= MAX_ACTIVE_TURNS) {
-      throw new ManagedRequestError(429, "turn_queue_full", `at most ${MAX_ACTIVE_TURNS} turns may be unfinished`);
-    }
-    if (!this.#eventLog.canAcceptTurn()) {
-      throw new ManagedRequestError(507, "event_log_full", "delete or replace this agent before submitting more work");
-    }
-
     const now = Date.now();
     const accepted: StreamMessage = { type: "turn_accepted", id, input, replayed: false };
     const firstPrompt = promptInputText(input);
@@ -4194,7 +4157,7 @@ export class DurableAgentSession extends DurableComputerSession {
       ).toArray()[0] !== undefined;
       event = this.#eventLog.append(accepted, id);
       if (cancellationRequested) {
-        cancellingEvent = this.#eventLog.append({ type: "turn_cancelling", id }, id, true);
+        cancellingEvent = this.#eventLog.append({ type: "turn_cancelling", id }, id);
       }
       this.ctx.storage.sql.exec(
         `INSERT INTO managed_turns (
@@ -4291,7 +4254,7 @@ export class DurableAgentSession extends DurableComputerSession {
     this.ctx.storage.transactionSync(() => {
       const row = this.#managedTurn(id);
       if (!row || isTerminalState(row.state) || row.state === "cancelling") return;
-      event = this.#eventLog.append(message, id, true);
+      event = this.#eventLog.append(message, id);
       this.ctx.storage.sql.exec(
         `UPDATE managed_turns
          SET state = 'cancelling', error = NULL, retry_at = NULL, updated_at = ?
@@ -5006,11 +4969,14 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       const events = watchManagedAgentFamilyEvents(
         resolvedAgent,
-        (event, agentId) => this.#recordAgentEvent(
-          event,
-          resolvedAgent.sessionId,
-          agentId,
-        ),
+        {
+          replay: (event, agentId) => this.#recordAgentEvent(
+            event,
+            resolvedAgent.sessionId,
+            agentId,
+          ),
+          observe: (event) => this.#observeTransportEvent(event),
+        },
       );
       if (!this.#ownsAgentConstruction(construction)) {
         events.off();
@@ -5117,9 +5083,7 @@ export class DurableAgentSession extends DurableComputerSession {
       account: await accountInfo(
         this.env.NANOCODEX,
         session.owner_id,
-        true,
-        allowedConnectors,
-        allowedConnections,
+        { allowedConnectors, allowedConnections, enabled: true },
       ),
     } satisfies InitialAccountContext;
     await this.ctx.storage.put(INITIAL_ACCOUNT_CONTEXT_KEY, prepared);
@@ -5216,15 +5180,22 @@ export class DurableAgentSession extends DurableComputerSession {
       sshIdentityAllowed: (reference) => this.#activeTurnSshIdentityAllowed(reference),
     });
     const computerRuntimeMs = performance.now() - phaseStartedAt;
-    const currentAccountInfo = () => {
+    const currentAccountInfo = (signal?: AbortSignal) => {
       const authorization = this.#activeTurnAuthorization();
       return accountInfo(
         this.env.NANOCODEX,
         session.owner_id,
-        !multiplayer,
-        authorization === undefined ? [] : accountConnectorProjection(authorization),
-        authorization === undefined ? {} : accountConnectionProjection(authorization),
-        this.#accountMachines(authorization),
+        {
+          allowedConnectors: authorization === undefined
+            ? []
+            : accountConnectorProjection(authorization),
+          allowedConnections: authorization === undefined
+            ? {}
+            : accountConnectionProjection(authorization),
+          enabled: !multiplayer,
+          machines: this.#accountMachines(authorization),
+          signal,
+        },
       );
     };
     const internalRuntime = Symbol.for("nanocodex.cloudflare.internalRuntime");
@@ -5266,7 +5237,7 @@ export class DurableAgentSession extends DurableComputerSession {
         name: "accountInfo",
         description: "Report live machine hands, account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Vault references may show usernames, addresses, phone numbers, and card last four, but never passwords or complete card data.",
         parameters: { type: "object", additionalProperties: false },
-        handler: currentAccountInfo,
+        handler: (_input: unknown, context: ToolContext) => currentAccountInfo(context.signal),
       }]),
       ...(multiplayer ? [] : [accountConnectorsTool({
         broker: this.env.NANOCODEX,
@@ -5303,7 +5274,7 @@ export class DurableAgentSession extends DurableComputerSession {
         name: "runtimeInfo",
         description: "Return information about the durable brain and its live account context.",
         parameters: { type: "object", additionalProperties: false },
-        handler: async () => ({
+        handler: async (_input: unknown, context: ToolContext) => ({
           runtime: "cloudflare-durable-object",
           shell: multiplayer ? computer.descriptor.shell : "unavailable",
           shell_network: multiplayer ? computer.descriptor.network.mode : "unavailable",
@@ -5315,7 +5286,7 @@ export class DurableAgentSession extends DurableComputerSession {
           pty: multiplayer ? computer.descriptor.pty : false,
           sessions: multiplayer ? computer.descriptor.sessions : false,
           sandbox_escalation: false,
-          account: await currentAccountInfo(),
+          account: await currentAccountInfo(context.signal),
         }),
       },
       ...(multiplayer ? [] : memorySessionTools({
@@ -5777,7 +5748,7 @@ export class DurableAgentSession extends DurableComputerSession {
       const terminal = isTerminalState(state);
       const detail = "error" in message ? message.error ?? null : null;
       const encoded = terminal ? JSON.stringify(message) : null;
-      event = this.#eventLog.append(message, id, true);
+      event = this.#eventLog.append(message, id);
       this.ctx.storage.sql.exec(
         `UPDATE managed_turns
          SET state = ?, terminal_json = ?, terminal_cursor = ?, error = ?,
@@ -6010,6 +5981,27 @@ export class DurableAgentSession extends DurableComputerSession {
     }
   }
 
+  #observeTransportEvent(event: AgentEvent): void {
+    const payload = event.payload;
+    const operation = [payload.direction, payload.phase ?? payload.purpose]
+      .filter((value): value is string => typeof value === "string")
+      .join(":");
+    this.#observe("managed.agent.transport", {
+      message_type: event.type,
+      ...(typeof payload.transport === "string" ? { transport: payload.transport } : {}),
+      ...(operation ? { operation_kind: operation } : {}),
+      ...(typeof payload.attempt === "number" ? { attempt_count: payload.attempt } : {}),
+      ...(typeof payload.error_class === "string" ? { error_kind: payload.error_class } : {}),
+      outcome: event.type.endsWith(".failed")
+        ? "failure"
+        : event.type.endsWith(".completed")
+        ? "success"
+        : event.type.endsWith(".retrying")
+        ? "retrying"
+        : "observed",
+    });
+  }
+
   #releaseEventTurn(id: string): void {
     if (this.#eventTurnId === id) this.#eventTurnId = undefined;
     const queued = this.#eventTurnQueue.indexOf(id);
@@ -6045,24 +6037,23 @@ export class DurableAgentSession extends DurableComputerSession {
       outcome: "failure",
       error_kind: error instanceof Error ? error.name : typeof error,
     }, "error");
-    let event: DurableEvent<StreamMessage> | undefined;
-    try {
-      this.ctx.storage.transactionSync(() => {
-        this.ctx.storage.sql.exec(
-          "UPDATE session_state SET stream_error = ?, last_active = ? WHERE singleton = 1",
-          detail,
-          Date.now(),
-        );
-        event = this.#eventLog.append({ type: "stream_failed", error: detail }, null, true);
-      });
-    } catch (projectionError) {
+    const persistence = persistEventStreamFailure(
+      this.ctx.storage,
+      detail,
+      Date.now(),
+      () => this.#eventLog.append({ type: "stream_failed", error: detail }),
+    );
+    const persistenceError = persistence.fenceError ?? persistence.noticeError;
+    if (persistenceError !== undefined) {
       this.#observe("managed.event_stream_persist_failed", {
         outcome: "failure",
-        error_kind: projectionError instanceof Error ? projectionError.name : typeof projectionError,
+        error_kind: persistenceError instanceof Error
+          ? persistenceError.name
+          : typeof persistenceError,
       }, "error");
       return;
     }
-    this.#publish(event!);
+    this.#publish(persistence.event!);
   }
 
   #publish(event: DurableEvent<StreamMessage>): void {
@@ -6085,26 +6076,32 @@ export class DurableAgentSession extends DurableComputerSession {
       return force ? active.then(() => this.#sealEventArchive(true)) : active;
     }
     const started = performance.now();
-    const observed = this.#eventArchive.seal(force).then((result) => {
-      if (result.sealed) {
-        this.#logCapacity("archive_seal", {
-          archived_bytes: result.archived_bytes,
-          archived_events: result.archived_events,
-          index_node_created: result.index_node_created ? 1 : 0,
-          seal_ms: Math.round((performance.now() - started) * 100) / 100,
-        });
-      }
-      return result;
-    }).catch((error) => {
-      console.warn({ type: "managed.event_archive_seal_failed", error_kind: errorKind(error) });
-      throw error;
-    });
+    const observed = this.#scheduleNextAlarm()
+      .then(() => this.#eventArchive.seal(force))
+      .then(async (result) => {
+        this.#logEventArchiveSeal(result, started);
+        await this.#scheduleNextAlarm();
+        return result;
+      }).catch((error) => {
+        console.warn({ type: "managed.event_archive_seal_failed", error_kind: errorKind(error) });
+        throw error;
+      });
     this.#eventArchiveTask = observed;
     void observed.finally(() => {
       if (this.#eventArchiveTask === observed) this.#eventArchiveTask = undefined;
     }).catch(() => {});
     this.ctx.waitUntil(observed.catch(() => {}));
     return observed;
+  }
+
+  #logEventArchiveSeal(result: ManagedEventSealResult, started: number): void {
+    if (!result.sealed) return;
+    this.#logCapacity("archive_seal", {
+      archived_bytes: result.archived_bytes,
+      archived_events: result.archived_events,
+      index_node_created: result.index_node_created ? 1 : 0,
+      seal_ms: Math.round((performance.now() - started) * 100) / 100,
+    });
   }
 
   #sealTurnArchive(
@@ -6730,12 +6727,6 @@ export class DurableAgentSession extends DurableComputerSession {
         id,
       );
     });
-  }
-
-  #unfinishedTurnCount(): number {
-    return this.ctx.storage.sql.exec<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM managed_turns WHERE state IN ('accepted', 'cancelling')",
-    ).toArray()[0]?.count ?? 0;
   }
 
   #recoverableTurnCount(): number {
@@ -7481,9 +7472,6 @@ async function fetchCreateStage(
 function managedHttpError(error: unknown, fallbackCode = "managed_request_failed") {
   if (error instanceof ManagedRequestError) {
     return { status: error.status, code: error.code, message: error.message };
-  }
-  if (error instanceof EventLogCapacityError) {
-    return { status: 507, code: error.code, message: error.message };
   }
   const code = (error as { code?: unknown } | null)?.code;
   if (code === "invalid_request") return { status: 400, code, message: errorMessage(error) };

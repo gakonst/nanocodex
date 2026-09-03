@@ -589,7 +589,7 @@ test("subagent and host tools share concise what, where, state, duration, and ou
     {
       id: "local", kind: "tool", tool: {
         callId: "local", name: "exec_command", status: "running",
-        arguments: "pwd", input: JSON.stringify({ cmd: "pwd", cwd: "/repo" }), children: [],
+        arguments: "pwd", input: JSON.stringify({ cmd: "pwd", workdir: "/repo" }), children: [],
       },
     },
     {
@@ -643,6 +643,61 @@ test("subagent and host tools share concise what, where, state, duration, and ou
     .children.some((node) => node.children?.join("") === "2.00 s"));
   assert.equal(renderer.root.findAllByProps({ role: "status" })[0].children.join(""), "Running");
   assert.ok(renderer.root.findAllByType("pre").some((node) => node.children.join("").includes("output_schema")));
+  await act(async () => renderer.unmount());
+});
+
+test("machine aliases use result metadata and stay truthful while provenance is unavailable", async () => {
+  const machineTool = (callId, status, metadata) => ({
+    callId,
+    name: "user_build_agent_exec_command",
+    status,
+    arguments: "pwd",
+    input: JSON.stringify({ cmd: "pwd", workdir: "/repo" }),
+    ...(status === "running" ? {} : { output: JSON.stringify({ exit_code: 1, output: "denied" }) }),
+    ...(metadata === undefined ? {} : { metadata }),
+    children: [],
+  });
+  const entries = [
+    { id: "running", kind: "tool", tool: machineTool("running", "running") },
+    { id: "failed", kind: "tool", tool: machineTool("failed", "failed") },
+    {
+      id: "identified", kind: "tool", tool: machineTool("identified", "failed", {
+        machine_id: "build_agent",
+        tool_name: "exec_command",
+      }),
+    },
+  ];
+  let renderer;
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(TerminalTranscriptSurface, {
+      canLoadOlder: false,
+      composer: null,
+      entries,
+      inactiveMessage: "",
+      isLoadingOlder: false,
+      mode: "full",
+      status: "ready",
+      onLoadOlder: async () => false,
+    }), {
+      createNodeMock(element) {
+        return element.type === "div"
+          ? { clientHeight: 300, firstElementChild: null, scrollHeight: 600, scrollTop: 0 }
+          : {};
+      },
+    });
+  });
+
+  assert.deepEqual(renderer.root.findAllByType("strong").map((node) => node.children.join("")), [
+    "Machine tool", "Machine tool", "Run command",
+  ]);
+  assert.deepEqual(renderer.root.findAllByProps({ className: "agent-terminal-tool-source" })
+    .map((node) => node.children.join("")), [
+    "Machine · /repo", "Machine · /repo", "Machine build_agent · /repo",
+  ]);
+  assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-tool-source" })
+    .some((node) => node.children.join("") === "Machine build"), false);
+  assert.equal(renderer.root.findAllByType("code")
+    .filter((node) => node.children.join("") === "user_build_agent_exec_command").length, 3);
   await act(async () => renderer.unmount());
 });
 

@@ -16,3 +16,18 @@ pub(crate) use record::{
     LocalEvent, SCHEMA_VERSION, SessionEnded, SessionOutcome, SessionStarted, ShellId,
     TranscriptRecord, TurnId,
 };
+
+pub(crate) fn code_mode_output_text(text: &str) -> &str {
+    let status_envelope = [
+        "Script completed",
+        "Script running",
+        "Script terminated",
+        "Script failed",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix));
+    if status_envelope && let Some((_, output)) = text.split_once("\nOutput:\n") {
+        return output;
+    }
+    text
+}

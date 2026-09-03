@@ -182,13 +182,17 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   const managed = useMemo(() => openManagedAgent(agentId), [agentId]);
   const agent = useMemo(() => managedTerminalAgent(managed), [managed]);
   const [browserHand, setBrowserHand] = useState<Awaited<ReturnType<typeof attachManagedBrowserHand>>>();
-  const [browserHandError, setBrowserHandError] = useState<string>();
   const [browserHandAttempt, setBrowserHandAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     let hand: Awaited<ReturnType<typeof attachManagedBrowserHand>> | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const reconnect = () => {
+      if (!controller.signal.aborted) {
+        retry = setTimeout(() => setBrowserHandAttempt((current) => current + 1), 1_000);
+      }
+    };
     setBrowserHand(undefined);
-    setBrowserHandError(undefined);
     void attachManagedBrowserHand(managed, controller.signal).then((attached) => {
       if (controller.signal.aborted) {
         void attached.close();
@@ -199,13 +203,16 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       void hand.closed().then(() => {
         if (controller.signal.aborted) return;
         setBrowserHand(undefined);
-        setBrowserHandError("The browser workspace hand disconnected. Retry to attach it again.");
+        reconnect();
       });
     }).catch((error) => {
-      if (!controller.signal.aborted) setBrowserHandError(errorMessage(error));
+      if (controller.signal.aborted) return;
+      console.warn("nanocodex:browser_hand_attach_failed", { error: errorMessage(error) });
+      reconnect();
     });
     return () => {
       controller.abort();
+      if (retry) clearTimeout(retry);
       if (hand) void hand.close();
     };
   }, [browserHandAttempt, managed]);
@@ -214,8 +221,8 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   }, []);
   return (
     <AgentTerminalView
-      agent={browserHand ? agent : undefined}
-      agentError={browserHandError}
+      agent={agent}
+      agentError={undefined}
       inactiveMessage={({ agentError, agentStatus }) => inactiveTerminalMessage({
         agentError,
         agentStatus,

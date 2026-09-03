@@ -14,7 +14,7 @@ use nanocodex_agent::{
     },
     input::{ImageDetail, Prompt, PromptInput as AgentPromptInput, UserInput},
 };
-use nanocodex_oai_api::events::AgentEventPublisher;
+use nanocodex_oai_api::events::{AgentEvent, AgentEventPublisher};
 use tokio::sync::{mpsc, watch};
 use tower::Service;
 
@@ -28,7 +28,6 @@ use crate::{
 use crate::attachment::AttachmentSupervisor;
 
 const COMMAND_CAPACITY: usize = 32;
-const MAX_PENDING_TURNS: usize = 256;
 
 pub(crate) enum Command {
     Submit(
@@ -406,11 +405,6 @@ where
         prompt: BackendPrompt,
         completion: tokio::sync::oneshot::Sender<nanocodex_agent::Result<TurnResult>>,
     ) -> nanocodex_agent::Result<String> {
-        if self.pending.len() >= MAX_PENDING_TURNS {
-            return Err(NanocodexError::InvalidRequest(
-                "managed pending turn capacity is exhausted".to_owned(),
-            ));
-        }
         let cancel_on_admission = prompt.cancel_on_admission;
         let input = managed_prompt(prompt.prompt)?;
         let request_id = prompt
@@ -599,20 +593,30 @@ where
         if let Some(observer) = &self.event_observer {
             drop(observer.send(event.clone()));
         }
-        if let Some(mut nested) = event.data.agent_event().map_err(backend_error)? {
-            nested.seq = self.next_event_seq;
-            self.next_event_seq = self.next_event_seq.checked_add(1).ok_or_else(|| {
-                backend_error(ManagedError::InvalidEvent(
-                    "managed agent event sequence exhausted".to_owned(),
-                ))
-            })?;
-            nested.request_id = Arc::from(self.events.request_id());
-            let publisher = event
+        if let Some(nested) = event.data.agent_event().map_err(backend_error)? {
+            let child_terminal = nested.kind.is_terminal()
+                && matches!(
+                    event.data,
+                    ManagedEventData::Event {
+                        agent_id: Some(_),
+                        ..
+                    }
+                );
+            let pending = event
                 .turn_id
                 .as_deref()
-                .and_then(|turn_id| self.pending.get(turn_id))
-                .map_or(&self.events, |pending| &pending.events);
-            publisher.publish(nested).map_err(backend_error)?;
+                .and_then(|turn_id| self.pending.get(turn_id));
+            if let Some(pending) = pending {
+                let publisher = if child_terminal {
+                    self.events.clone()
+                } else {
+                    pending.events.clone()
+                };
+                self.publish_nested(&publisher, nested)?;
+            } else {
+                let publisher = self.events.clone();
+                self.publish_nested(&publisher, nested)?;
+            }
         }
 
         match event.data {
@@ -622,15 +626,15 @@ where
                 usage,
                 ..
             } => {
-                let usage = usage
-                    .map(serde_json::from_value::<TurnUsage>)
-                    .transpose()
-                    .map_err(|_| {
-                        backend_error(ManagedError::InvalidEvent(
-                            "managed turn usage is not an exact TurnUsage".to_owned(),
-                        ))
-                    })?;
                 self.complete(&id, |pending| {
+                    let usage = usage
+                        .map(serde_json::from_value::<TurnUsage>)
+                        .transpose()
+                        .map_err(|_| {
+                            backend_error(ManagedError::InvalidEvent(
+                                "managed turn usage is not an exact TurnUsage".to_owned(),
+                            ))
+                        })?;
                     Ok(TurnResult::from_backend(
                         Some(pending.request_id.clone()),
                         final_message,
@@ -657,6 +661,21 @@ where
             | ManagedEventData::TurnRetryable { .. } => {}
         }
         Ok(())
+    }
+
+    fn publish_nested(
+        &mut self,
+        publisher: &AgentEventPublisher,
+        mut event: AgentEvent,
+    ) -> nanocodex_agent::Result<()> {
+        event.seq = self.next_event_seq;
+        self.next_event_seq = self.next_event_seq.checked_add(1).ok_or_else(|| {
+            backend_error(ManagedError::InvalidEvent(
+                "managed agent event sequence exhausted".to_owned(),
+            ))
+        })?;
+        event.request_id = Arc::from(self.events.request_id());
+        publisher.publish(event).map_err(backend_error)
     }
 
     fn complete(

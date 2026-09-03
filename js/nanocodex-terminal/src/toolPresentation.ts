@@ -24,6 +24,8 @@ const TITLE_OVERRIDES: Readonly<Record<string, string>> = {
   sandbox_start_process: "Start process",
 };
 
+const OPAQUE_MACHINE_TOOL = "opaque_machine_tool";
+
 export function presentTool(tool: ToolActivity): ToolPresentation {
   const decodedName = decodeToolName(tool.name, tool.metadata);
   const input = parseDetail(tool.input ?? tool.arguments);
@@ -98,16 +100,13 @@ export function boundedToolDetail(value: string): string {
 
 function decodeToolName(name: string, metadata: unknown): { family: string; sources: string[] } {
   const sources: string[] = [];
-  const metadataName = findMetadataString(metadata, ["tool_name", "toolName"]);
-  const metadataMachine = findMetadataString(metadata, ["machine_name", "machineName"]);
-  let family = metadataName ?? name;
-  if (metadataMachine) sources.push(`Machine ${metadataMachine}`);
-  if (!metadataName && family.startsWith("user_")) {
-    const separator = family.indexOf("_", 5);
-    if (separator > 5 && separator < family.length - 1) {
-      sources.push(`Machine ${family.slice(5, separator)}`);
-      family = family.slice(separator + 1);
-    }
+  const metadataName = metadataString(metadata, ["tool_name", "toolName"]);
+  const metadataMachine = metadataString(metadata, ["machine_name", "machineName"])
+    ?? metadataString(metadata, ["machine_id", "machineId"]);
+  const machineAlias = name.startsWith("user_");
+  let family = metadataName ?? (machineAlias ? OPAQUE_MACHINE_TOOL : name);
+  if (metadataMachine || machineAlias) {
+    sources.push(metadataMachine ? `Machine ${metadataMachine}` : "Machine");
   }
   const mcp = /^mcp__(.+?)__(.+)$/.exec(family);
   if (mcp) {
@@ -124,14 +123,10 @@ function decodeToolName(name: string, metadata: unknown): { family: string; sour
   return { family, sources };
 }
 
-function findMetadataString(value: unknown, keys: readonly string[]): string | undefined {
+function metadataString(value: unknown, keys: readonly string[]): string | undefined {
   if (!isRecord(value)) return undefined;
   for (const key of keys) {
     if (typeof value[key] === "string") return value[key];
-  }
-  for (const nested of Object.values(value)) {
-    const found = findMetadataString(nested, keys);
-    if (found) return found;
   }
   return undefined;
 }
@@ -154,9 +149,15 @@ function toolSource(
 ): string | undefined {
   const resolved = sources.slice();
   if (semanticWrapper && resolved.length === 0) resolved.push("Code mode");
-  const cwd = isRecord(input) ? stringField(input, "cwd") : undefined;
-  if (cwd && (family.startsWith("sandbox_") || family === "exec_command" || resolved[0]?.startsWith("Machine "))) {
-    resolved[0] = `${resolved[0]} · ${compact(cwd)}`;
+  const executionDirectory = isRecord(input)
+    ? family.startsWith("sandbox_")
+      ? stringField(input, "cwd")
+      : family === "exec_command" || resolved[0] === "Machine" || resolved[0]?.startsWith("Machine ")
+        ? stringField(input, "workdir")
+        : undefined
+    : undefined;
+  if (executionDirectory && resolved.length > 0) {
+    resolved[0] = `${resolved[0]} · ${compact(executionDirectory)}`;
   }
   return resolved.length ? resolved.join(" · ") : undefined;
 }
@@ -334,6 +335,7 @@ function parseDetail(value: string | undefined): unknown {
 }
 
 function humanize(value: string): string {
+  if (value === OPAQUE_MACHINE_TOOL) return "Machine tool";
   const words = value
     .replace(/([a-z\d])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
