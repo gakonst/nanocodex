@@ -71,6 +71,14 @@ jobs:
             cargo build --locked --profile nightly \
               --package nanocodex2-bin --bin nanocodex2 \
               --target ${{ matrix.target }}
+      - name: Sign macOS VM hand host
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          codesign --force --sign - \
+            --entitlements nanocodex-vm.entitlements \
+            "target/${{ matrix.target }}/nightly/nanocodex2"
+          codesign --verify --strict "target/${{ matrix.target }}/nightly/nanocodex2"
       - name: Stage artifact
         shell: bash
         env:

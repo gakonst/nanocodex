@@ -604,7 +604,17 @@ impl ManagedClient {
     }
 
     #[cfg(feature = "tools")]
-    pub(crate) fn attachment_target(
+    /// Resolves the authenticated reverse-tool endpoint for one owned agent.
+    ///
+    /// The returned target redacts its bearer credential from debug output and
+    /// can be passed directly to [`nanocodex_tools::Tools::attach`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed agent identifiers or an origin that cannot form a
+    /// WebSocket endpoint.
+    #[cfg_attr(docsrs, doc(cfg(feature = "tools")))]
+    pub fn attachment_target(
         &self,
         agent_id: &str,
     ) -> Result<nanocodex_tools::attachment::AttachmentTarget, ManagedError> {

@@ -18,7 +18,9 @@ Each native nightly contains both `nanocodex` and `nanocodex2`; x86_64 Linux
 also contains the static VM guest. `nanocodex update --nightly` verifies and
 installs that complete platform bundle atomically and exposes both CLI launchers
 under `$NANOCODEX_DIR/bin`. Stable releases publish the same two native CLI
-binaries. Switching to a PR or local build removes the owned `nanocodex2`
+binaries. The Apple Silicon `nanocodex2` artifact is ad-hoc signed with the
+hypervisor entitlement required by its VM hand VMM child. Switching to a PR or
+local build removes the owned `nanocodex2`
 launcher because those preview channels do not publish the companion. Updaters
 published before this bundle contract need one
 nightly update to promote the bundle-aware manager and a second invocation to
