@@ -4,7 +4,11 @@ import {
   createBrowserRuntimeFetch,
   installBrowserEgressFetch,
 } from "./browserEgress.mjs";
-import { browserAccountInfoTool, browserRuntimeInfoTool } from "./accountInfo.mjs";
+import {
+  browserAccountConnectionTool,
+  browserAccountInfoTool,
+  browserRuntimeInfoTool,
+} from "./accountInfo.mjs";
 
 const preparedBrowsers = new Map();
 
@@ -124,6 +128,7 @@ export function bindBrowser(prepared, options = {}) {
       standard.namedTool("exec_command", shell.execTool),
       browserRuntimeInfoTool(account, shell.descriptor),
       browserAccountInfoTool(account),
+      ...(options.accountConnectionRequests ? [browserAccountConnectionTool()] : []),
       standard.web(web),
       standard.imageGeneration({
         ...images,

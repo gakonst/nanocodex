@@ -14,6 +14,20 @@ const CONNECTOR_IDS = [
   "x",
   "chatgpt",
 ];
+const ACCOUNT_CONNECTION_IDS = Object.freeze(CONNECTOR_IDS.filter((id) => id !== "chatgpt"));
+const ACCOUNT_CONNECTION_LABELS = Object.freeze({
+  github: "GitHub",
+  gmail: "Gmail",
+  gdrive: "Google Drive",
+  gcalendar: "Google Calendar",
+  gtasks: "Google Tasks",
+  gdocs: "Google Docs",
+  gsheets: "Google Sheets",
+  gslides: "Google Slides",
+  gcontacts: "Google Contacts",
+  slack: "Slack",
+  x: "X",
+});
 const CONNECTOR_CONNECTION_IDS = CONNECTOR_IDS.filter((id) => id !== "chatgpt");
 const CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const CONNECTOR_CONNECTION_SCHEMA = {
@@ -241,12 +255,53 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
+const ACCOUNT_CONNECTION_REQUEST_SCHEMA = Object.freeze({
+  type: "object",
+  properties: {
+    status: { type: "string", enum: ["user_action_required"] },
+    action: { type: "string", enum: ["connect_account"] },
+    connector: { type: "string", enum: ACCOUNT_CONNECTION_IDS },
+    label: { type: "string" },
+  },
+  required: ["status", "action", "connector", "label"],
+  additionalProperties: false,
+});
+
 export function browserAccountInfoTool(options) {
   return namedTool("accountInfo", {
     description: "Report account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Vault references never include passwords, full card numbers, CVVs, expiry details, or billing ZIPs.",
     parameters: { type: "object", additionalProperties: false },
     outputSchema: ACCOUNT_INFO_SCHEMA,
     handler: (_input, context) => browserAccountInfo(options, context?.signal),
+  });
+}
+
+export function browserAccountConnectionTool() {
+  return namedTool("requestAccountConnection", {
+    description: "Request a user-clickable account connection for GitHub, Gmail or another Google Workspace app, Slack, or X. Call this when the user asks to connect or authenticate one of these services. The host renders the request as a button; do not send the user to Settings or claim the account is connected until accountInfo confirms it.",
+    parameters: {
+      type: "object",
+      properties: {
+        connector: { type: "string", enum: ACCOUNT_CONNECTION_IDS },
+      },
+      required: ["connector"],
+      additionalProperties: false,
+    },
+    outputSchema: ACCOUNT_CONNECTION_REQUEST_SCHEMA,
+    handler(input) {
+      const connector = input?.connector;
+      if (!ACCOUNT_CONNECTION_IDS.includes(connector)) {
+        throw new TypeError("account connection connector is invalid");
+      }
+      const label = ACCOUNT_CONNECTION_LABELS[connector];
+      if (!label) throw new TypeError("account connection connector is invalid");
+      return {
+        status: "user_action_required",
+        action: "connect_account",
+        connector,
+        label,
+      };
+    },
   });
 }
 

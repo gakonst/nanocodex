@@ -1074,11 +1074,14 @@ test("Worker runtime prewarms the engine and exact browser harness before boot",
 test("stable browser harness identity opts into Worker-owned durability", async () => {
   const durableWorker = new HarnessWorker();
   const durableAgent = await createWorkerAgent({
+    accountConnectionRequests: true,
     sessionId: "model-session",
     threadId: "browser-thread",
   }, { worker: durableWorker });
   const durableConfig = durableWorker.incoming.find(({ type }) => type === "boot").config;
   assert.equal(durableConfig.workerDurabilityId, "browser-thread");
+  assert.equal(durableConfig.harness.accountConnectionRequests, true);
+  assert.equal(Object.hasOwn(durableConfig, "accountConnectionRequests"), false);
   assert.equal(Object.hasOwn(durableConfig, "threadId"), false);
   durableAgent.dispose();
 

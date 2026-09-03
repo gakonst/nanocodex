@@ -15,6 +15,7 @@ export type ToolPresentation = Readonly<{
 
 const TITLE_OVERRIDES: Readonly<Record<string, string>> = {
   accountInfo: "Account info",
+  requestAccountConnection: "Connect account",
   exec: "Run code",
   exec_command: "Run command",
   sandbox_exec: "Run command",
@@ -120,6 +121,7 @@ function decodeToolName(name: string, metadata: unknown): { family: string; sour
   } else if (sources.length === 0 && family === "exec_command") sources.push("Local");
   else if (sources.length === 0 && SUBAGENT_TOOLS.has(family)) sources.push("Subagent");
   else if (sources.length === 0 && family === "accountInfo") sources.push("Account");
+  else if (sources.length === 0 && family === "requestAccountConnection") sources.push("Account");
   return { family, sources };
 }
 

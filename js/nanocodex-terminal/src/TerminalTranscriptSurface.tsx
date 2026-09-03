@@ -26,6 +26,8 @@ export type VoiceTerminalEntry = Readonly<{
 
 type TerminalEntry = AgentEntry | VoiceTerminalEntry;
 
+export type AgentTerminalToolAction = (tool: ToolActivity) => ReactNode;
+
 export function TerminalTranscriptSurface({
   canLoadOlder,
   composer,
@@ -34,6 +36,7 @@ export function TerminalTranscriptSurface({
   inactiveMessage,
   isLoadingOlder,
   mode,
+  renderToolAction,
   showToolCalls = true,
   status,
   voiceEntries = [],
@@ -47,6 +50,7 @@ export function TerminalTranscriptSurface({
   inactiveMessage: string;
   isLoadingOlder: boolean;
   mode: AgentTerminalMode;
+  renderToolAction?: AgentTerminalToolAction;
   showToolCalls?: boolean;
   status: AgentStatus;
   voiceEntries?: readonly VoiceTerminalEntry[];
@@ -131,7 +135,12 @@ export function TerminalTranscriptSurface({
             </Streamdown>
           </article> : null}
           {transcriptEntries.map((entry) => (
-            <TerminalEntryView entry={entry} key={entry.id} showToolCalls={showToolCalls} />
+            <TerminalEntryView
+              entry={entry}
+              key={entry.id}
+              renderToolAction={renderToolAction}
+              showToolCalls={showToolCalls}
+            />
           ))}
           {status !== "ready" && inactiveMessage ? (
             <p className="agent-terminal-status" role={status === "error" ? "alert" : "status"}>
@@ -259,9 +268,11 @@ function decodeRealtimeText(text: string): string {
 
 const TerminalEntryView = memo(function TerminalEntryView({
   entry,
+  renderToolAction,
   showToolCalls,
 }: {
   entry: TerminalEntry;
+  renderToolAction?: AgentTerminalToolAction;
   showToolCalls: boolean;
 }) {
   const voice = isVoiceEntry(entry);
@@ -290,9 +301,27 @@ const TerminalEntryView = memo(function TerminalEntryView({
       {step.step}
     </li>)}
   </ol>;
-  if (entry.kind === "tool") return showToolCalls ? <TerminalToolView tool={entry.tool} /> : null;
+  if (entry.kind === "tool") return <>
+    {showToolCalls ? <TerminalToolView tool={entry.tool} /> : null}
+    {renderToolAction ? <TerminalToolActions render={renderToolAction} tool={entry.tool} /> : null}
+  </>;
   return null;
 });
+
+function TerminalToolActions({
+  render,
+  tool,
+}: {
+  render: AgentTerminalToolAction;
+  tool: ToolActivity;
+}) {
+  return <>
+    {render(tool)}
+    {tool.children.map((child) => (
+      <TerminalToolActions key={child.callId} render={render} tool={child} />
+    ))}
+  </>;
+}
 
 function MarkdownInput({
   node: _node,

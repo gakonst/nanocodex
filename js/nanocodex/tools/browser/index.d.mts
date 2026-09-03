@@ -129,6 +129,8 @@ export type BrowserOptions = Readonly<{
   fetch?: typeof globalThis.fetch | undefined;
   headers?: HeadersInit | undefined;
   installFetch?: boolean | undefined;
+  /** Exposes a structured request that an app can render as an account-connect button. */
+  accountConnectionRequests?: boolean | undefined;
   accountInfo?: Readonly<{
     endpoint?: string | undefined;
     requireAuthorization?: boolean | undefined;

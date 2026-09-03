@@ -36,6 +36,7 @@ import "nanocodex-terminal/styles.css";
 import "./Home.css";
 import { formatDollars } from "./walletFunding";
 import { useWalletFunding } from "./useWalletFunding";
+import { homeTerminalWelcome } from "./homeTerminalWelcome";
 
 /** Ephemeral homepage consumer and managed-durable Agent demo. */
 export const AgentExperience = memo(function AgentExperience({
@@ -339,36 +340,6 @@ const LocalSponsoredTrialReset = LOCAL_SPONSORED_TRIAL_RESET
     default: (await import("./LocalSponsoredTrialReset")).LocalSponsoredTrialReset,
   }))
   : () => null;
-
-const HOME_TERMINAL_WELCOME = `# High-performance Codex SDK. Runs anywhere.
-
-\`curl -fsSL https://nanocodex.paradigm.xyz | bash\`
-
-Rust · Node · browser WASM
-One agent keeps its WebSocket, typed history, tools, and context across turns.
-
-**Terminal-Bench 2.1 high · 82.2% · 890/890 runs**
-
-This is the local browser agent.`;
-
-function homeTerminalWelcome(
-  source: CredentialSource | undefined,
-  freePromptsRemaining: number | null,
-): string {
-  if (source === "brokered") {
-    return `${HOME_TERMINAL_WELCOME}
-
-This homepage demo uses your connected model account and is ephemeral: reloading discards the model thread.`;
-  }
-  const included = source === "sponsored" && freePromptsRemaining === 0
-    ? "Your three free Luna prompts are used."
-    : source === "sponsored" && freePromptsRemaining !== null
-      ? `${freePromptsRemaining} of 3 free Luna prompts remain.`
-      : "Verify your phone by SMS to get three free Luna prompts.";
-  return `${HOME_TERMINAL_WELCOME}
-
-${included} Free prompts use Luna without thinking and are ephemeral: reloading discards the model thread.`;
-}
 
 function managedSelectionKey(accountId: string) {
   return `nanocodex.managed-conversation.v2.${accountId}`;

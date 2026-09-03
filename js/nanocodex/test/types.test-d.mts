@@ -165,6 +165,7 @@ async function check() {
     }],
   });
   const workerResource = {
+    accountConnectionRequests: true,
     module: browserModule,
     origin: "https://example.com",
     sessionId: "session-1",

@@ -7,7 +7,7 @@ type WorkerAgentResourceOptions = Readonly<createBrowserAgent.Options & {
 }>;
 type WorkerAgentIdentityOptions = Pick<
   WorkerAgentResourceOptions,
-  "module" | "origin" | "sessionId" | "threadId"
+  "accountConnectionRequests" | "module" | "origin" | "sessionId" | "threadId"
 >;
 type WorkerAgentPreparationOptions =
   | Readonly<WorkerAgentIdentityOptions & { harness: false }>

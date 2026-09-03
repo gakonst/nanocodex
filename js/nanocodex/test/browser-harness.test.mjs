@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { bindBrowser } from "../tools/browser/index.mjs";
+import { ToolRouter, toolMapSource } from "../runtime/tool-router.mjs";
 import * as datasets from "../tools/dataset.mjs";
 import { namedTool } from "../tools/namedTool.mjs";
 import * as standard from "../tools/standard.mjs";
@@ -29,7 +30,7 @@ const shellDescriptor = Object.freeze({
   sandboxEscalation: false,
 });
 
-test("the default browser harness exposes one exact model-visible tool set", async () => {
+test("the account-action browser harness exposes one exact model-visible tool set", async () => {
   const requests = [];
   const workspace = {
     async readFile(path) {
@@ -108,6 +109,7 @@ test("the default browser harness exposes one exact model-visible tool set", asy
       workspace,
     },
   }, {
+    accountConnectionRequests: true,
     dataset: {
       fetch: async () => new Response('{"id":1}\n'),
     },
@@ -132,6 +134,7 @@ test("the default browser harness exposes one exact model-visible tool set", asy
     "exec_command",
     "runtimeInfo",
     "accountInfo",
+    "requestAccountConnection",
     "web__run",
     "image_gen__imagegen",
     "view_image",
@@ -194,6 +197,29 @@ test("the default browser harness exposes one exact model-visible tool set", asy
   assert.equal(runtimeInfo.pty, false);
   assert.equal(runtimeInfo.sessions, false);
   assert.equal(runtimeInfo.sandbox_escalation, false);
+  assert.deepEqual(await byName.requestAccountConnection.handler({ connector: "gmail" }, context), {
+    status: "user_action_required",
+    action: "connect_account",
+    connector: "gmail",
+    label: "Gmail",
+  });
+  assert.deepEqual(
+    byName.requestAccountConnection.parameters.properties.connector.enum,
+    ["github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts", "slack", "x"],
+  );
+  assert.match(byName.requestAccountConnection.description, /host renders the request as a button/i);
+  assert.throws(
+    () => byName.requestAccountConnection.handler({ connector: "chatgpt" }, context),
+    /connector is invalid/,
+  );
+  const router = new ToolRouter([toolMapSource("browser", byName, {
+    kind: "attached",
+    mode: "attached-over-cloud",
+  })]);
+  const discovered = await router.execute("tool_search", {
+    query: "connect authenticate Gmail account OAuth connector",
+  }, context);
+  assert(discovered.structuredResult.some(({ name }) => name === "requestAccountConnection"));
   assert.equal(await byName.web__run.handler({ time: [{ utc_offset: "+03:00" }] }, context), "searched");
   assert.deepEqual(await byName.image_gen__imagegen.handler({ prompt: "draw" }, context), {
     image_url: "data:image/png;base64,Z2VuZXJhdGVk",
@@ -222,6 +248,7 @@ test("the default browser harness exposes one exact model-visible tool set", asy
   }, context);
   assert.deepEqual(opened.previewRows, [{ id: 1 }]);
   assert.deepEqual(await byName.render_artifact.handler({}, context), { artifactId: "ui" });
+  await router.reset();
 });
 
 test("the browser harness preserves explicit tool URLs", async () => {
@@ -243,6 +270,7 @@ test("the browser harness preserves explicit tool URLs", async () => {
     },
   });
   const byName = Object.fromEntries(runtime.tools.map((tool) => [tool.name, tool]));
+  assert.equal(byName.requestAccountConnection, undefined);
   await byName.web__run.handler({ search_query: [{ q: "override" }] }, context);
   await byName.image_gen__imagegen.handler({ prompt: "override" }, context);
   assert.deepEqual(urls, ["https://tools.test/search", "https://tools.test/images"]);

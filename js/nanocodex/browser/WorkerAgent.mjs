@@ -1323,6 +1323,7 @@ function serializeConfig(options) {
       && config.durabilityId === undefined
     ) config.workerDurabilityId = stableThreadId;
   }
+  delete config.accountConnectionRequests;
   delete config.threadId;
   assertNoFunctions(config, "Agent options");
   assertCloneable(config, "Agent options");
@@ -1439,6 +1440,7 @@ function harnessDescriptor(options = {}, requireIdentity = false) {
   return {
     threadId: threadId ?? randomId(),
     origin: nonEmptyString(options.origin) ?? globalThis.location?.origin,
+    ...(options.accountConnectionRequests === true ? { accountConnectionRequests: true } : {}),
   };
 }
 function harnessKey(harness) { return `${harness?.origin ?? ""}\n${harness?.threadId ?? ""}`; }
