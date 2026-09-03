@@ -15,7 +15,6 @@ import type { AgentControllerEvent } from "nanocodex-react/agent";
 import type { ArtifactDocument } from "nanocodex/tools/artifact";
 import {
   AgentTerminalView,
-  type AgentTerminalToolAction,
   type AgentTerminalMode,
   type AgentTerminalState,
 } from "nanocodex-terminal";
@@ -34,11 +33,6 @@ import {
 import { clientFailureMessage } from "./clientFailure";
 import { attachManagedBrowserHand } from "./managedBrowserHand";
 import { managedTerminalAgent, openManagedAgent } from "./managedAgentRuntime";
-import {
-  connectRequestedAccount,
-  requestedAccountConnection,
-  type RequestedAccountConnection,
-} from "./accountConnectionRequest";
 
 export type { AgentTerminalMode, AgentTerminalState } from "nanocodex-terminal";
 export { AgentTerminalView } from "nanocodex-terminal";
@@ -156,7 +150,6 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       onConversationActivity={onConversationActivity}
       onTerminalEvent={onTerminalEvent}
       onStateChange={onStateChange}
-      renderToolAction={renderAccountConnectionAction}
       retryAgent={retryAgent}
       voice={voiceEnabled}
       welcome={welcome}
@@ -242,7 +235,6 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       mode={mode}
       onConversationActivity={onConversationActivity}
       onStateChange={onStateChange}
-      renderToolAction={renderAccountConnectionAction}
       retryAgent={retryAgent}
       voice={voiceEnabled}
       accessory={({ agentReady, submit }) => browserHand ? (
@@ -256,48 +248,6 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
     />
   );
 });
-
-const renderAccountConnectionAction: AgentTerminalToolAction = (tool) => {
-  const request = requestedAccountConnection(tool);
-  return request ? <AccountConnectionAction request={request} /> : null;
-};
-
-function AccountConnectionAction({
-  request,
-}: {
-  request: RequestedAccountConnection;
-}) {
-  const [state, setState] = useState<"idle" | "connecting" | "connected">("idle");
-  const [failure, setFailure] = useState<string>();
-  const attempt = useRef<AbortController | undefined>(undefined);
-  useEffect(() => () => attempt.current?.abort(), []);
-  const connect = useCallback(() => {
-    if (state !== "idle") return;
-    const controller = new AbortController();
-    attempt.current = controller;
-    setState("connecting");
-    setFailure(undefined);
-    void connectRequestedAccount(request, controller.signal).then(() => {
-      if (!controller.signal.aborted) setState("connected");
-    }).catch((error) => {
-      if (controller.signal.aborted) return;
-      setFailure(errorMessage(error));
-      setState("idle");
-    }).finally(() => {
-      if (attempt.current === controller) attempt.current = undefined;
-    });
-  }, [request, state]);
-  return <div aria-live="polite" className={`agent-account-connection-action is-${state}`}>
-    <button disabled={state !== "idle"} onClick={connect} type="button">
-      {state === "connecting"
-        ? `Connecting ${request.label}…`
-        : state === "connected"
-          ? `${request.label} connected`
-          : `Connect ${request.label}`}
-    </button>
-    {failure ? <p role="alert">{failure}</p> : null}
-  </div>;
-}
 
 function artifactFollowOnPrompt(
   artifact: ArtifactDocument,

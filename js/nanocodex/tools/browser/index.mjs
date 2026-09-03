@@ -11,6 +11,7 @@ import {
 } from "./accountInfo.mjs";
 
 const preparedBrowsers = new Map();
+const ACCOUNT_CONNECTION_INSTRUCTIONS = "Use requestAccountConnection when the user asks to connect or authenticate GitHub, a Google Workspace service, Slack, or X. For authorization_required results, return the exact authorization_url as a Markdown link. Never claim the account is connected until a later accountInfo call reports it as authenticated.";
 
 export {
   createOpfsGitFs,
@@ -122,13 +123,15 @@ export function bindBrowser(prepared, options = {}) {
   };
   return Object.freeze({
     filesystem: shell.workspace,
-    instructions: shell.instructions,
+    instructions: options.accountConnectionRequests
+      ? `${shell.instructions}\n\n${ACCOUNT_CONNECTION_INSTRUCTIONS}`
+      : shell.instructions,
     projectInstructions: shell.projectInstructions,
     tools: Object.freeze([
       standard.namedTool("exec_command", shell.execTool),
       browserRuntimeInfoTool(account, shell.descriptor),
       browserAccountInfoTool(account),
-      ...(options.accountConnectionRequests ? [browserAccountConnectionTool()] : []),
+      ...(options.accountConnectionRequests ? [browserAccountConnectionTool(account)] : []),
       standard.web(web),
       standard.imageGeneration({
         ...images,

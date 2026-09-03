@@ -588,32 +588,3 @@
     height: auto;
   }
 }
-
-.agent-account-connection-action {
-  display: grid;
-  gap: 8px;
-  justify-items: start;
-  margin: -8px 0 22px;
-  padding-left: 30px;
-  font: 600 13px/1.4 var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-}
-
-.agent-account-connection-action button {
-  min-height: 38px;
-  padding: 8px 14px;
-  color: var(--terminal-background, #fff);
-  font: inherit;
-  background: var(--terminal-foreground, #111);
-  border: 1px solid var(--terminal-foreground, #111);
-  cursor: pointer;
-}
-
-.agent-account-connection-action button:hover:not(:disabled),
-.agent-account-connection-action button:focus-visible {
-  color: var(--terminal-foreground, #111);
-  background: var(--terminal-background, #fff);
-}
-
-.agent-account-connection-action button:disabled { cursor: wait; opacity: 0.7; }
-.agent-account-connection-action.is-connected button { cursor: default; opacity: 1; }
-.agent-account-connection-action p { margin: 0; color: var(--negative, #d53b3b); font-weight: 400; }

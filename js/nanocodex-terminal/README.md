@@ -32,10 +32,6 @@ visible transcript.
 pieces for consumers that already own their controller composition. The
 transcript accepts `followTailRequest` for explicit submit-to-tail behavior and
 `showToolCalls` for surfaces that intentionally hide tool activity.
-Pass `renderToolAction` to either terminal component to render app-owned
-controls for matching root or nested tool activity. Tool execution and
-authorization policy remain with the host; the terminal only places the
-returned React node in the transcript.
 The stylesheet consumes optional `--terminal-background`,
 `--terminal-foreground`, `--terminal-muted`, `--terminal-border`,
 `--terminal-hover`, `--negative`, and `--font-mono` variables and includes

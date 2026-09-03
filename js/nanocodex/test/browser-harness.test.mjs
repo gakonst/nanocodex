@@ -32,6 +32,7 @@ const shellDescriptor = Object.freeze({
 
 test("the account-action browser harness exposes one exact model-visible tool set", async () => {
   const requests = [];
+  let accountConnectionRequest;
   const workspace = {
     async readFile(path) {
       assert.equal(path, "/workspace/pixel.png");
@@ -40,8 +41,18 @@ test("the account-action browser harness exposes one exact model-visible tool se
   };
   const runtime = bindBrowser({
     datasets,
-    fetch: async (input) => {
-      requests.push(String(input));
+    fetch: async (input, init) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "https://demo.test/v1/connectors/google") {
+        accountConnectionRequest = init;
+        return Response.json({
+          authorization_url: providerAuthorizationUrl(
+            "google",
+            "https://demo.test/v1/connectors/google/callback",
+          ),
+        });
+      }
       return Response.json({
         connectors: {
           github: { connected: true, connections: [{
@@ -128,7 +139,8 @@ test("the account-action browser harness exposes one exact model-visible tool se
   });
 
   assert.equal(runtime.filesystem, workspace);
-  assert.equal(runtime.instructions, "browser harness");
+  assert.match(runtime.instructions, /^browser harness\n\nUse requestAccountConnection/);
+  assert.match(runtime.instructions, /exact authorization_url as a Markdown link/);
   assert.equal(runtime.projectInstructions, "project instructions");
   assert.deepEqual(runtime.tools.map(({ name }) => name), [
     "exec_command",
@@ -197,19 +209,28 @@ test("the account-action browser harness exposes one exact model-visible tool se
   assert.equal(runtimeInfo.pty, false);
   assert.equal(runtimeInfo.sessions, false);
   assert.equal(runtimeInfo.sandbox_escalation, false);
+  const authorizationUrl = providerAuthorizationUrl(
+    "google",
+    "https://demo.test/v1/connectors/google/callback",
+  );
   assert.deepEqual(await byName.requestAccountConnection.handler({ connector: "gmail" }, context), {
-    status: "user_action_required",
-    action: "connect_account",
+    status: "authorization_required",
     connector: "gmail",
     label: "Gmail",
+    authorization_url: authorizationUrl,
+    expires_in_seconds: 600,
+    message: "Open the authorization link to connect Gmail.",
   });
+  assert.deepEqual(JSON.parse(String(accountConnectionRequest.body)), { return_to: "/connect" });
+  assert.equal(accountConnectionRequest.credentials, "same-origin");
+  assert.equal(accountConnectionRequest.cache, "no-store");
   assert.deepEqual(
     byName.requestAccountConnection.parameters.properties.connector.enum,
     ["github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts", "slack", "x"],
   );
-  assert.match(byName.requestAccountConnection.description, /host renders the request as a button/i);
-  assert.throws(
-    () => byName.requestAccountConnection.handler({ connector: "chatgpt" }, context),
+  assert.match(byName.requestAccountConnection.description, /exact authorization_url as a Markdown link/i);
+  await assert.rejects(
+    byName.requestAccountConnection.handler({ connector: "chatgpt" }, context),
     /connector is invalid/,
   );
   const router = new ToolRouter([toolMapSource("browser", byName, {
@@ -227,6 +248,7 @@ test("the account-action browser harness exposes one exact model-visible tool se
   assert.deepEqual(requests, [
     "https://demo.test/v1/connectors",
     "https://demo.test/v1/connectors",
+    "https://demo.test/v1/connectors/google",
     "https://demo.test/api/tools/web-search",
     "https://demo.test/api/tools/image-generation",
   ]);
@@ -249,6 +271,42 @@ test("the account-action browser harness exposes one exact model-visible tool se
   assert.deepEqual(opened.previewRows, [{ id: 1 }]);
   assert.deepEqual(await byName.render_artifact.handler({}, context), { artifactId: "ui" });
   await router.reset();
+});
+
+test("account connection links reject unexpected provider and callback URLs", async () => {
+  for (const authorization_url of [
+    "https://attacker.test/oauth?client_id=x&state=y&scope=z&redirect_uri=https%3A%2F%2Fdemo.test%2Fv1%2Fconnectors%2Fgoogle%2Fcallback",
+    providerAuthorizationUrl("google", "https://attacker.test/v1/connectors/google/callback"),
+    providerAuthorizationUrl("google", "http://127.0.0.1:47891/v1/connectors/google/callback"),
+    `${providerAuthorizationUrl("google", "https://demo.test/v1/connectors/google/callback")}&client_secret=secret`,
+  ]) {
+    const runtime = bindBrowser({
+      ...preparedBrowser(),
+      fetch: async () => Response.json({ authorization_url }),
+    }, { accountConnectionRequests: true });
+    const connection = runtime.tools.find(({ name }) => name === "requestAccountConnection");
+    await assert.rejects(
+      connection.handler({ connector: "gmail" }, context),
+      /invalid authorization URL/,
+    );
+  }
+});
+
+test("account connection links accept the fixed local OAuth relay only for local Nanocodex", async () => {
+  const authorization_url = providerAuthorizationUrl(
+    "google",
+    "http://127.0.0.1:47891/v1/connectors/google/callback",
+  );
+  const runtime = bindBrowser({
+    ...preparedBrowser(),
+    origin: "https://nanocodex.localhost",
+    fetch: async () => Response.json({ authorization_url }),
+  }, { accountConnectionRequests: true });
+  const connection = runtime.tools.find(({ name }) => name === "requestAccountConnection");
+  assert.equal(
+    (await connection.handler({ connector: "gdrive" }, context)).authorization_url,
+    authorization_url,
+  );
 });
 
 test("the browser harness preserves explicit tool URLs", async () => {
@@ -492,6 +550,22 @@ test("accountInfo rejects Vault metadata outside broker-compatible bounds", asyn
     assert.deepEqual((await accountInfo.handler({}, context)).vault, []);
   }
 });
+
+function providerAuthorizationUrl(provider, redirectUri) {
+  const authorization = new URL(provider === "google"
+    ? "https://accounts.google.com/o/oauth2/v2/auth"
+    : `https://${provider}.example/authorize`);
+  authorization.search = new URLSearchParams({
+    client_id: "client-id",
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: "openid email",
+    state: "opaque-state",
+    code_challenge: "A".repeat(43),
+    code_challenge_method: "S256",
+  }).toString();
+  return authorization.href;
+}
 
 function preparedBrowser() {
   const workspace = { async readFile() { return new Uint8Array(); } };

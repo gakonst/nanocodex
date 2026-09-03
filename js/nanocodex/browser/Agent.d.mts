@@ -42,7 +42,7 @@ export declare namespace create {
     transport?: WorkerTransport | undefined;
     /** Stable OPFS/Git workspace identity for the default browser harness. */
     threadId?: string | undefined;
-    /** Exposes host-rendered account connection requests in the default browser harness. */
+    /** Exposes provider authorization links in the default browser harness. */
     accountConnectionRequests?: boolean | undefined;
     /** Set false to keep this browser session out of the IndexedDB durability store. */
     durability?: false | undefined;

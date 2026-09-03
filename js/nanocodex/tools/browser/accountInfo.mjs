@@ -28,6 +28,39 @@ const ACCOUNT_CONNECTION_LABELS = Object.freeze({
   slack: "Slack",
   x: "X",
 });
+const GOOGLE_CONNECTION_IDS = new Set([
+  "gmail",
+  "gdrive",
+  "gcalendar",
+  "gtasks",
+  "gdocs",
+  "gsheets",
+  "gslides",
+  "gcontacts",
+]);
+const ACCOUNT_AUTHORIZATION_ENDPOINTS = Object.freeze({
+  github: { origin: "https://github.com", pathname: "/login/oauth/authorize" },
+  google: { origin: "https://accounts.google.com", pathname: "/o/oauth2/v2/auth" },
+  slack: { origin: "https://slack.com", pathname: "/oauth/v2/authorize" },
+  x: { origin: "https://x.com", pathname: "/i/oauth2/authorize" },
+});
+const ACCOUNT_AUTHORIZATION_QUERY_KEYS = new Set([
+  "access_type",
+  "client_id",
+  "code_challenge",
+  "code_challenge_method",
+  "enable_granular_consent",
+  "include_granted_scopes",
+  "login_hint",
+  "prompt",
+  "redirect_uri",
+  "response_type",
+  "scope",
+  "state",
+  "team",
+  "user_scope",
+]);
+const LOCAL_OAUTH_RELAY_ORIGIN = "http://127.0.0.1:47891";
 const CONNECTOR_CONNECTION_IDS = CONNECTOR_IDS.filter((id) => id !== "chatgpt");
 const CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
 const CONNECTOR_CONNECTION_SCHEMA = {
@@ -258,12 +291,21 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
 const ACCOUNT_CONNECTION_REQUEST_SCHEMA = Object.freeze({
   type: "object",
   properties: {
-    status: { type: "string", enum: ["user_action_required"] },
-    action: { type: "string", enum: ["connect_account"] },
+    status: { type: "string", enum: ["authorization_required"] },
     connector: { type: "string", enum: ACCOUNT_CONNECTION_IDS },
     label: { type: "string" },
+    authorization_url: { type: "string" },
+    expires_in_seconds: { type: "integer", minimum: 1 },
+    message: { type: "string" },
   },
-  required: ["status", "action", "connector", "label"],
+  required: [
+    "status",
+    "connector",
+    "label",
+    "authorization_url",
+    "expires_in_seconds",
+    "message",
+  ],
   additionalProperties: false,
 });
 
@@ -276,9 +318,9 @@ export function browserAccountInfoTool(options) {
   });
 }
 
-export function browserAccountConnectionTool() {
+export function browserAccountConnectionTool(options) {
   return namedTool("requestAccountConnection", {
-    description: "Request a user-clickable account connection for GitHub, Gmail or another Google Workspace app, Slack, or X. Call this when the user asks to connect or authenticate one of these services. The host renders the request as a button; do not send the user to Settings or claim the account is connected until accountInfo confirms it.",
+    description: "Request an account authorization link for GitHub, Gmail or another Google Workspace app, Slack, or X. Call this when the user asks to connect or authenticate one of these services. Return the exact authorization_url as a Markdown link in your response; do not claim the account is connected until accountInfo confirms it.",
     parameters: {
       type: "object",
       properties: {
@@ -288,21 +330,100 @@ export function browserAccountConnectionTool() {
       additionalProperties: false,
     },
     outputSchema: ACCOUNT_CONNECTION_REQUEST_SCHEMA,
-    handler(input) {
+    async handler(input, context) {
       const connector = input?.connector;
       if (!ACCOUNT_CONNECTION_IDS.includes(connector)) {
         throw new TypeError("account connection connector is invalid");
       }
       const label = ACCOUNT_CONNECTION_LABELS[connector];
       if (!label) throw new TypeError("account connection connector is invalid");
+      if (typeof options?.fetch !== "function") {
+        throw new TypeError("browser account connection requires fetch");
+      }
+      const provider = accountConnectionProvider(connector);
+      const endpoint = new URL(`/v1/connectors/${provider}`, options.origin);
+      const response = await options.fetch(endpoint, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ return_to: "/connect" }),
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: context?.signal,
+      });
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error(`account connection request failed with HTTP ${response.status}`);
+      }
+      const value = await response.json().catch(() => undefined);
+      const authorizationUrl = record(value) && typeof value.authorization_url === "string"
+        ? safeAccountAuthorizationUrl(value.authorization_url, provider, options.origin)
+        : undefined;
+      if (!authorizationUrl) {
+        throw new Error("account connection returned an invalid authorization URL");
+      }
       return {
-        status: "user_action_required",
-        action: "connect_account",
+        status: "authorization_required",
         connector,
         label,
+        authorization_url: authorizationUrl,
+        expires_in_seconds: 600,
+        message: `Open the authorization link to connect ${label}.`,
       };
     },
   });
+}
+
+function accountConnectionProvider(connector) {
+  return GOOGLE_CONNECTION_IDS.has(connector) ? "google" : connector;
+}
+
+function safeAccountAuthorizationUrl(value, provider, publicOrigin) {
+  let authorization;
+  try { authorization = new URL(value); } catch { return undefined; }
+  const expected = ACCOUNT_AUTHORIZATION_ENDPOINTS[provider];
+  if (!expected
+    || authorization.origin !== expected.origin
+    || authorization.pathname !== expected.pathname
+    || authorization.username
+    || authorization.password
+    || authorization.hash
+    || !authorization.searchParams.get("client_id")
+    || !authorization.searchParams.get("state")
+    || !authorization.searchParams.get(provider === "slack" ? "user_scope" : "scope")
+    || !safeAccountRedirectUri(authorization.searchParams.get("redirect_uri"), provider, publicOrigin)) {
+    return undefined;
+  }
+  const seen = new Set();
+  for (const key of authorization.searchParams.keys()) {
+    if (!ACCOUNT_AUTHORIZATION_QUERY_KEYS.has(key) || seen.has(key)) return undefined;
+    seen.add(key);
+  }
+  const responseType = authorization.searchParams.get("response_type");
+  if (responseType !== null && responseType !== "code") return undefined;
+  if (provider !== "slack" && (
+    authorization.searchParams.get("code_challenge_method") !== "S256"
+    || !/^[A-Za-z0-9_-]{43}$/.test(authorization.searchParams.get("code_challenge") ?? "")
+  )) return undefined;
+  const granularConsent = authorization.searchParams.get("enable_granular_consent");
+  if (granularConsent !== null && (provider !== "google" || granularConsent !== "true")) {
+    return undefined;
+  }
+  return authorization.href;
+}
+
+function safeAccountRedirectUri(value, provider, publicOrigin) {
+  let redirect;
+  try { redirect = new URL(value); } catch { return false; }
+  if (redirect.username || redirect.password || redirect.search || redirect.hash
+    || redirect.pathname !== `/v1/connectors/${provider}/callback`) return false;
+  const origin = new URL(publicOrigin);
+  if (redirect.origin === origin.origin) return true;
+  return redirect.origin === LOCAL_OAUTH_RELAY_ORIGIN
+    && (origin.hostname === "nanocodex.localhost"
+      || origin.hostname.endsWith(".nanocodex.localhost"));
 }
 
 export function browserRuntimeInfoTool(options, descriptor) {

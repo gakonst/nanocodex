@@ -349,7 +349,12 @@ test("welcome is replaced by the first visible durable or voice entry", async ()
 test("transcript renders semantic reasoning, plans, and accessible nested tools", async () => {
   const entries = [
     { id: "r", kind: "reasoning", text: "checking", streaming: true },
-    { id: "a", kind: "assistant", text: "**done**", streaming: false },
+    {
+      id: "a",
+      kind: "assistant",
+      text: "**done** [Authorize Google](https://accounts.google.com/o/oauth2/v2/auth?state=opaque)",
+      streaming: false,
+    },
     { id: "p", kind: "plan", update: { plan: [{ step: "verify", status: "completed" }] } },
     {
       id: "t",
@@ -393,6 +398,10 @@ test("transcript renders semantic reasoning, plans, and accessible nested tools"
     .map((status) => status.children.join("")), ["Succeeded", "Succeeded"]);
   assert.deepEqual(renderer.root.findAllByProps({ className: "agent-terminal-tool-source" })
     .map((source) => source.children.join("")), ["Code mode", "Sandbox · /workspace"]);
+  assert.equal(
+    renderer.root.findByProps({ "data-streamdown": "link" }).children.join(""),
+    "Authorize Google",
+  );
   assert.deepEqual(renderer.root.findAllByType("h4").map((heading) => heading.children.join("")), [
     "Command", "Stdout", "Stderr",
   ]);
@@ -410,63 +419,6 @@ test("transcript renders semantic reasoning, plans, and accessible nested tools"
     onLoadOlder: async () => false,
   })));
   assert.equal(renderer.root.findAllByType("details").length, 0);
-  await act(async () => renderer.unmount());
-});
-
-test("caller tool actions render for nested tools even when tool chrome is hidden", async () => {
-  const requested = [];
-  const entries = [{
-    id: "exec",
-    kind: "tool",
-    tool: {
-      callId: "exec",
-      name: "exec",
-      arguments: "",
-      status: "completed",
-      children: [{
-        callId: "connect",
-        name: "requestAccountConnection",
-        arguments: JSON.stringify({ connector: "gmail" }),
-        output: JSON.stringify({
-          status: "user_action_required",
-          action: "connect_account",
-          connector: "gmail",
-          label: "Gmail",
-        }),
-        status: "completed",
-        children: [],
-      }],
-    },
-  }];
-  let renderer;
-  await act(async () => {
-    renderer = TestRenderer.create(React.createElement(TerminalTranscriptSurface, {
-      canLoadOlder: false,
-      composer: null,
-      entries,
-      inactiveMessage: "",
-      isLoadingOlder: false,
-      mode: "full",
-      renderToolAction(tool) {
-        requested.push(tool.name);
-        return tool.name === "requestAccountConnection"
-          ? React.createElement("button", { type: "button" }, "Connect Gmail")
-          : null;
-      },
-      showToolCalls: false,
-      status: "ready",
-      onLoadOlder: async () => false,
-    }), {
-      createNodeMock(element) {
-        return element.type === "div"
-          ? { clientHeight: 300, firstElementChild: null, scrollHeight: 300, scrollTop: 0 }
-          : {};
-      },
-    });
-  });
-  assert.deepEqual(requested, ["exec", "requestAccountConnection"]);
-  assert.equal(renderer.root.findAllByType("details").length, 0);
-  assert.equal(renderer.root.findByType("button").children.join(""), "Connect Gmail");
   await act(async () => renderer.unmount());
 });
 

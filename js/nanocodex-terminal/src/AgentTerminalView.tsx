@@ -20,10 +20,7 @@ import {
 import { X } from "lucide-react";
 import { TerminalComposer } from "./TerminalComposer.js";
 import { TerminalTranscriptSurface } from "./TerminalTranscriptSurface.js";
-import type {
-  AgentTerminalToolAction,
-  VoiceTerminalEntry,
-} from "./TerminalTranscriptSurface.js";
+import type { VoiceTerminalEntry } from "./TerminalTranscriptSurface.js";
 import type {
   AgentStatus,
   AgentTerminalMode,
@@ -49,7 +46,6 @@ export function AgentTerminalView({
   onTerminalEvent,
   onStateChange,
   promptIntent,
-  renderToolAction,
   retryAgent,
   showToolCalls = true,
   voice = false,
@@ -72,8 +68,6 @@ export function AgentTerminalView({
   onTerminalEvent?(event: AgentControllerEvent): void;
   onStateChange(state: AgentTerminalState): void;
   promptIntent?: "queue" | "steer";
-  /** Renders caller-owned actions for matching root or nested tool activity. */
-  renderToolAction?: AgentTerminalToolAction;
   retryAgent(): void;
   showToolCalls?: boolean;
   /** Enables the package-owned microphone control. */
@@ -254,7 +248,6 @@ export function AgentTerminalView({
       inactiveMessage={unavailableMessage ?? ""}
       isLoadingOlder={controller.isLoadingOlder}
       mode={mode}
-      renderToolAction={renderToolAction}
       showToolCalls={showToolCalls}
       status={agentStatus}
       voiceEntries={voiceEntries}
