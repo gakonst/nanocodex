@@ -48,10 +48,80 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
         "--vm-memory-mib <MIB>",
         "--machine-id <MACHINE_ID>",
         "--machine-name <MACHINE_NAME>",
+        "--log-filter <LOG_FILTER>",
+        "--log-format <LOG_FORMAT>",
+        "--log-file <LOG_FILE>",
+        "--otel-endpoint <OTEL_ENDPOINT>",
     ] {
         assert!(
             stdout.contains(expected),
             "missing {expected:?} in:\n{stdout}"
+        );
+    }
+}
+
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+#[tokio::test]
+async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
+    let api_key = format!("ncx_live_{}_{}", "7".repeat(12), "8".repeat(43));
+    let root_parent = tempfile::tempdir().unwrap();
+    let missing_root = root_parent.path().join("private-root-sentinel.ext4");
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .args([
+            "hand",
+            "--vm",
+            missing_root.to_str().unwrap(),
+            "--machine-id",
+            "trace-hand",
+            "--machine-name",
+            "private-name-sentinel",
+            "--vm-cpus",
+            "24",
+            "--vm-memory-mib",
+            "98304",
+            "--log-format",
+            "json",
+        ])
+        .env("NANOCODEX_MANAGED_URL", "http://127.0.0.1:9")
+        .env("NC_API_KEY", &api_key)
+        .env_remove("NANOCODEX_API_KEY")
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for secret in [api_key.as_str(), "private-name-sentinel"] {
+        assert!(
+            !stderr.contains(secret),
+            "stderr leaked {secret:?}: {stderr}"
+        );
+    }
+    let traces = stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect::<Vec<_>>();
+    assert!(!traces.is_empty(), "{stderr}");
+    let encoded = serde_json::to_string(&traces).unwrap();
+    assert!(encoded.contains("vm.launch"), "{encoded}");
+    assert!(encoded.contains("failed"), "{encoded}");
+    for expected in ["trace-hand", "24", "98304", "missing"] {
+        assert!(
+            encoded.contains(expected),
+            "missing {expected:?} in {encoded}"
+        );
+    }
+    for secret in [
+        api_key.as_str(),
+        missing_root.to_str().unwrap(),
+        "private-root-sentinel",
+        "private-name-sentinel",
+    ] {
+        assert!(
+            !encoded.contains(secret),
+            "trace leaked {secret:?}: {encoded}"
         );
     }
 }

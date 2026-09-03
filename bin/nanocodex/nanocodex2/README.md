@@ -37,3 +37,14 @@ The immutable attachment snapshot publishes the guest workspace plus `vm`,
 `accountInfo().machines`. Reconnecting the hand replaces its current account
 attachment generation under the existing lease/fencing rules. Ctrl-C drains
 admitted calls, syncs the guest filesystem, and stops the VM.
+
+The command emits structured lifecycle and call traces to stderr by default.
+They include the machine ID, configured CPU/memory and root-image size,
+connection and catalog state, and each call's ID, tool name, outcome, and
+duration. VM launch, VM shutdown, and each attachment call are bounded spans,
+so long-running hands export them continuously. Command arguments, output,
+credentials, remote failure reasons, machine names, workspaces, and host paths
+are omitted. Use `--log-format json`, `--log-file PATH`, or
+`--otel-endpoint URL` for standard JSON, retained-file, or OTLP output;
+`--log-filter` and
+`RUST_LOG` accept normal tracing filter directives.

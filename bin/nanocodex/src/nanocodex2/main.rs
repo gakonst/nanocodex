@@ -8,6 +8,7 @@
 
 #[allow(dead_code)]
 mod config;
+mod hand_observability;
 mod host;
 #[allow(dead_code)]
 mod installation;
@@ -32,9 +33,11 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
+    time::Instant,
 };
 
 use clap::{Args, Parser, Subcommand, builder::NonEmptyStringValueParser};
+use hand_observability::HandObservabilityArgs;
 use host::HostConfig;
 use nanocodex_agent::{AgentEvents, Nanocodex, NanocodexError, PromptRequest, Turn, TurnResult};
 use nanocodex_managed::{
@@ -46,6 +49,7 @@ use nanocodex_tools::{
     attachment::{Attachment, AttachmentMetadata, AttachmentTarget},
 };
 use percent_encoding::percent_decode_str;
+use tracing::Instrument as _;
 use url::Url;
 
 const MANAGED_URL_ENV: &str = "NANOCODEX_MANAGED_URL";
@@ -109,6 +113,9 @@ struct AgentReference {
 
 #[derive(Args)]
 struct Hand {
+    #[command(flatten)]
+    observability: HandObservabilityArgs,
+
     /// Writable raw ext4 image or development directory used as the retained VM root.
     #[arg(long = "vm", visible_alias = "vm-rootfs", value_name = "ROOTFS")]
     rootfs: PathBuf,
@@ -253,7 +260,13 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
         }
-        Some(Command::Hand(command)) => serve_vm_hand(&client, command).await,
+        Some(Command::Hand(command)) => {
+            let _observability = command
+                .observability
+                .install()
+                .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+            serve_vm_hand(&client, command).await
+        }
         Some(Command::New) => write_json(&client.create().await?),
         Some(Command::List) => write_json(&client.list().await?),
         Some(Command::State(command)) => write_json(&client.state(&command.agent_id).await?),
@@ -287,18 +300,78 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
     }
 }
 
+async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError> {
+    let (root_kind, root_bytes) = match std::fs::metadata(&command.rootfs) {
+        Ok(metadata) if metadata.is_file() => ("file", metadata.len()),
+        Ok(metadata) if metadata.is_dir() => ("directory", 0),
+        Ok(_) => ("other", 0),
+        Err(_) => ("missing", 0),
+    };
+    let span = tracing::info_span!(
+        target: "nanocodex2",
+        "vm.launch",
+        otel.kind = "internal",
+        otel.status_code = tracing::field::Empty,
+        machine.id = command.machine_id.as_str(),
+        vm.cpu.count = command.vm_cpus,
+        vm.memory.limit_mib = command.vm_memory_mib,
+        vm.root.kind = root_kind,
+        vm.root.bytes = root_bytes,
+        network.enabled = !command.vm_no_network,
+        status = tracing::field::Empty,
+        duration_ns = tracing::field::Empty,
+    );
+    let started = Instant::now();
+    async {
+        tracing::info!(
+            target: "nanocodex2",
+            stage = "vm.launch.starting",
+            "starting VM hand"
+        );
+        let result = vm_hand::VmHand::start(command).await;
+        span.record(
+            "duration_ns",
+            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        );
+        match &result {
+            Ok(_) => {
+                span.record("status", "ready");
+                span.record("otel.status_code", "OK");
+                tracing::info!(
+                    target: "nanocodex2",
+                    stage = "vm.launch.ready",
+                    "VM guest is ready"
+                );
+            }
+            Err(_) => {
+                span.record("status", "failed");
+                span.record("otel.status_code", "ERROR");
+                tracing::error!(
+                    target: "nanocodex2",
+                    stage = "vm.launch.failed",
+                    "VM guest failed to start"
+                );
+            }
+        }
+        result
+    }
+    .instrument(span.clone())
+    .await
+}
+
 async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
     let target = client.account_attachment_target()?;
-    let hand = vm_hand::VmHand::start(&command).await?;
+    let hand = launch_vm_hand(&command).await?;
+    drop(command);
     let connected = connect_vm_hand(&hand, target).await;
     let attachment = match connected {
         Ok(Some(attachment)) => attachment,
         Ok(None) => {
-            hand.shutdown().await?;
+            shutdown_vm_hand(hand).await?;
             return Ok(());
         }
         Err(error) => {
-            return match hand.shutdown().await {
+            return match shutdown_vm_hand(hand).await {
                 Ok(()) => Err(error),
                 Err(shutdown) => Err(ManagedError::Configuration(format!(
                     "{error}; VM shutdown also failed: {shutdown}"
@@ -306,13 +379,10 @@ async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), Mana
             };
         }
     };
-
-    eprintln!(
-        "VM hand {} registered for the account at {} ({} vCPU, {} MiB); press Ctrl-C to detach",
-        hand.machine().name(),
-        hand.machine().workspace(),
-        command.vm_cpus,
-        command.vm_memory_mib,
+    tracing::info!(
+        target: "nanocodex2",
+        stage = "vm.hand.ready",
+        "VM hand is ready; press Ctrl-C to detach"
     );
     let closed = attachment.clone();
     let attachment_result = tokio::select! {
@@ -326,7 +396,7 @@ async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), Mana
     };
     drop(attachment);
     drop(closed);
-    let shutdown = hand.shutdown().await;
+    let shutdown = shutdown_vm_hand(hand).await;
     match (attachment_result, shutdown) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(ManagedError::Configuration(error.to_string())),
@@ -337,6 +407,50 @@ async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), Mana
     }
 }
 
+async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
+    let span = tracing::info_span!(
+        target: "nanocodex2",
+        "vm.shutdown",
+        otel.kind = "internal",
+        otel.status_code = tracing::field::Empty,
+        status = tracing::field::Empty,
+        duration_ns = tracing::field::Empty,
+    );
+    let started = Instant::now();
+    async {
+        tracing::info!(
+            target: "nanocodex2",
+            stage = "vm.shutdown.starting",
+            "stopping VM guest"
+        );
+        let result = hand.shutdown().await;
+        span.record(
+            "duration_ns",
+            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        );
+        if result.is_ok() {
+            span.record("status", "completed");
+            span.record("otel.status_code", "OK");
+            tracing::info!(
+                target: "nanocodex2",
+                stage = "vm.shutdown.completed",
+                "VM guest stopped"
+            );
+        } else {
+            span.record("status", "failed");
+            span.record("otel.status_code", "ERROR");
+            tracing::error!(
+                target: "nanocodex2",
+                stage = "vm.shutdown.failed",
+                "VM guest failed to stop cleanly"
+            );
+        }
+        result
+    }
+    .instrument(span.clone())
+    .await
+}
+
 async fn connect_vm_hand(
     hand: &vm_hand::VmHand,
     target: AttachmentTarget,
@@ -345,7 +459,7 @@ async fn connect_vm_hand(
         .tools()
         .attach(target)
         .metadata(AttachmentMetadata::machine(hand.machine().clone()));
-    tokio::select! {
+    let connected = tokio::select! {
         signal = tokio::signal::ctrl_c() => {
             signal.map_err(|error| ManagedError::Configuration(
                 format!("failed to listen for Ctrl-C: {error}")
@@ -353,9 +467,10 @@ async fn connect_vm_hand(
             Ok(None)
         }
         connected = connector.connect() => connected
-            .map(|(attachment, _events)| Some(attachment))
+            .map(Some)
             .map_err(|error| ManagedError::Configuration(error.to_string())),
-    }
+    };
+    connected.map(|connected| connected.map(|(attachment, _events)| attachment))
 }
 
 fn client_from_environment(url_origin: Option<&str>) -> Result<ManagedClient, ManagedError> {

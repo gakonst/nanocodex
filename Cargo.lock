@@ -5915,6 +5915,7 @@ dependencies = [
 name = "nanocodex-observability"
 version = "0.5.0"
 dependencies = [
+ "clap",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
@@ -6101,6 +6102,7 @@ dependencies = [
  "nanocodex",
  "nanocodex-agent",
  "nanocodex-managed",
+ "nanocodex-observability",
  "nanocodex-subagents",
  "nanocodex-tools",
  "nanocodex-vm",
@@ -6120,6 +6122,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tracing",
  "unicode-segmentation",
  "unicode-width 0.2.0",
  "url",

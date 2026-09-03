@@ -15,6 +15,7 @@ use tokio_tungstenite::{
         protocol::{CloseFrame, frame::coding::CloseCode},
     },
 };
+use tracing::Instrument as _;
 use url::Url;
 
 use super::protocol::{self, ExecutorFrame, RemoteFrame};
@@ -190,10 +191,27 @@ struct PendingCall {
 
 struct CallEvents {
     call_id: Box<str>,
+    span: tracing::Span,
+    started_at: Instant,
 }
 
 impl CallEvents {
     fn complete(self, events: &mpsc::Sender<AttachmentEvent>, outcome: AttachmentCallOutcome) {
+        let status = attachment_call_outcome_name(outcome);
+        let duration_ns = u64::try_from(self.started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.span.record("status", status);
+        self.span.record(
+            "otel.status_code",
+            if matches!(outcome, AttachmentCallOutcome::Completed) {
+                "OK"
+            } else {
+                "ERROR"
+            },
+        );
+        self.span.record("duration_ns", duration_ns);
+        self.span.in_scope(|| {
+            record_attachment_call_completion(outcome);
+        });
         emit(
             events,
             AttachmentEvent::CallCompleted {
@@ -208,7 +226,29 @@ fn begin_call_events(
     events: &mpsc::Sender<AttachmentEvent>,
     call_id: Box<str>,
     name: Box<str>,
+    attachment_id: Option<&str>,
 ) -> CallEvents {
+    let span = tracing::info_span!(
+        target: "nanocodex_tools::attachment",
+        "attachment.call",
+        otel.kind = "server",
+        otel.status_code = tracing::field::Empty,
+        attachment.id = tracing::field::Empty,
+        tool.name = name.as_ref(),
+        tool.call_id = call_id.as_ref(),
+        status = tracing::field::Empty,
+        duration_ns = tracing::field::Empty,
+    );
+    if let Some(attachment_id) = attachment_id {
+        span.record("attachment.id", attachment_id);
+    }
+    span.in_scope(|| {
+        tracing::info!(
+            target: "nanocodex_tools::attachment",
+            stage = "attachment.call.started",
+            "attachment call started"
+        );
+    });
     emit(
         events,
         AttachmentEvent::CallStarted {
@@ -216,7 +256,39 @@ fn begin_call_events(
             name,
         },
     );
-    CallEvents { call_id }
+    CallEvents {
+        call_id,
+        span,
+        started_at: Instant::now(),
+    }
+}
+
+fn record_attachment_call_completion(outcome: AttachmentCallOutcome) {
+    if matches!(
+        outcome,
+        AttachmentCallOutcome::Unavailable | AttachmentCallOutcome::Ambiguous
+    ) {
+        tracing::warn!(
+            target: "nanocodex_tools::attachment",
+            stage = "attachment.call.completed",
+            "attachment call completed"
+        );
+    } else {
+        tracing::info!(
+            target: "nanocodex_tools::attachment",
+            stage = "attachment.call.completed",
+            "attachment call completed"
+        );
+    }
+}
+
+const fn attachment_call_outcome_name(outcome: AttachmentCallOutcome) -> &'static str {
+    match outcome {
+        AttachmentCallOutcome::Completed => "completed",
+        AttachmentCallOutcome::Unavailable => "unavailable",
+        AttachmentCallOutcome::Ambiguous => "ambiguous",
+        AttachmentCallOutcome::Cancelled => "cancelled",
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -280,66 +352,70 @@ fn start_ready_calls(
         let id = identity.call_id.clone();
         let id_for_task = id.clone();
         let task_identity = identity.clone();
-        let task = tokio::spawn(async move {
-            let remaining = task_identity.deadline_at.saturating_sub(now_ms());
-            let (outcome, observed) = if remaining == 0 {
-                (
-                    unavailable("tool deadline elapsed before execution"),
-                    AttachmentCallOutcome::Unavailable,
-                )
-            } else {
-                let duration = Duration::from_millis(remaining.min(tool_timeout));
-                let call = PreparedToolCall::new(
-                    task_identity.model.to_string(),
-                    task_identity.session_id.to_string(),
-                    task_identity.call_id.to_string(),
-                    task_identity.name.to_string(),
-                    task_identity.input.clone(),
-                    task_identity.output_token_budget as usize,
-                );
-                match tokio::time::timeout(duration, runtime.execute(call)).await {
-                    Ok(Ok(output)) => match serde_json::to_value(output) {
-                        Ok(output)
-                            if serde_json::to_vec(&output).is_ok_and(|bytes| {
-                                bytes.len() as u64 <= task_identity.output_byte_budget
-                            }) =>
-                        {
-                            (
-                                json!({"status":"completed", "output":output}),
-                                AttachmentCallOutcome::Completed,
-                            )
-                        }
-                        Ok(_) => bounded_completed_failure(
-                            "tool output exceeded byte budget",
-                            task_identity.output_byte_budget,
-                        ),
-                        Err(_) => (
-                            ambiguous("tool output could not be encoded"),
+        let task_span = events.span.clone();
+        let task = tokio::spawn(
+            async move {
+                let remaining = task_identity.deadline_at.saturating_sub(now_ms());
+                let (outcome, observed) = if remaining == 0 {
+                    (
+                        unavailable("tool deadline elapsed before execution"),
+                        AttachmentCallOutcome::Unavailable,
+                    )
+                } else {
+                    let duration = Duration::from_millis(remaining.min(tool_timeout));
+                    let call = PreparedToolCall::new(
+                        task_identity.model.to_string(),
+                        task_identity.session_id.to_string(),
+                        task_identity.call_id.to_string(),
+                        task_identity.name.to_string(),
+                        task_identity.input.clone(),
+                        task_identity.output_token_budget as usize,
+                    );
+                    match tokio::time::timeout(duration, runtime.execute(call)).await {
+                        Ok(Ok(output)) => match serde_json::to_value(output) {
+                            Ok(output)
+                                if serde_json::to_vec(&output).is_ok_and(|bytes| {
+                                    bytes.len() as u64 <= task_identity.output_byte_budget
+                                }) =>
+                            {
+                                (
+                                    json!({"status":"completed", "output":output}),
+                                    AttachmentCallOutcome::Completed,
+                                )
+                            }
+                            Ok(_) => bounded_completed_failure(
+                                "tool output exceeded byte budget",
+                                task_identity.output_byte_budget,
+                            ),
+                            Err(_) => (
+                                ambiguous("tool output could not be encoded"),
+                                AttachmentCallOutcome::Ambiguous,
+                            ),
+                        },
+                        Ok(Err(error @ PreparedToolError::InvalidOutput(_))) => (
+                            ambiguous(&error.to_string()),
                             AttachmentCallOutcome::Ambiguous,
                         ),
-                    },
-                    Ok(Err(error @ PreparedToolError::InvalidOutput(_))) => (
-                        ambiguous(&error.to_string()),
-                        AttachmentCallOutcome::Ambiguous,
-                    ),
-                    Ok(Err(error)) => (
-                        unavailable(&error.to_string()),
-                        AttachmentCallOutcome::Unavailable,
-                    ),
-                    Err(_) => (
-                        ambiguous("tool deadline elapsed"),
-                        AttachmentCallOutcome::Ambiguous,
-                    ),
-                }
-            };
-            let _ = tx
-                .send(Completion::Result {
-                    call_id: id_for_task,
-                    outcome,
-                    observed,
-                })
-                .await;
-        });
+                        Ok(Err(error)) => (
+                            unavailable(&error.to_string()),
+                            AttachmentCallOutcome::Unavailable,
+                        ),
+                        Err(_) => (
+                            ambiguous("tool deadline elapsed"),
+                            AttachmentCallOutcome::Ambiguous,
+                        ),
+                    }
+                };
+                let _ = tx
+                    .send(Completion::Result {
+                        call_id: id_for_task,
+                        outcome,
+                        observed,
+                    })
+                    .await;
+            }
+            .instrument(task_span),
+        );
         in_flight.insert(
             id,
             InFlight {
@@ -494,7 +570,12 @@ where
                             if admitted != &identity { break ConnectionEnd::Rejected("duplicate in-flight call changed immutable fields".into()); }
                             continue;
                         }
-                        let call_events = begin_call_events(events, call_id.clone().into(), name.clone().into());
+                        let call_events = begin_call_events(
+                            events,
+                            call_id.clone().into(),
+                            name.clone().into(),
+                            config.metadata.as_ref().map(AttachmentMetadata::attachment_id),
+                        );
                         if receipts.len().saturating_add(in_flight.len()).saturating_add(pending.len()) >= protocol::MAX_RECEIPTS {
                             call_events.complete(events, AttachmentCallOutcome::Unavailable);
                             break ConnectionEnd::Rejected("result receipt capacity exhausted".into());
@@ -758,5 +839,163 @@ fn now_ms() -> u64 {
         })
 }
 fn emit(events: &mpsc::Sender<AttachmentEvent>, event: AttachmentEvent) {
+    trace_attachment_event(&event);
     let _ = events.try_send(event);
+}
+
+fn trace_attachment_event(event: &AttachmentEvent) {
+    match event {
+        AttachmentEvent::Connecting => tracing::info!(
+            target: "nanocodex_tools::attachment",
+            stage = "attachment.connecting",
+            "connecting attachment"
+        ),
+        AttachmentEvent::Attached => tracing::info!(
+            target: "nanocodex_tools::attachment",
+            stage = "attachment.attached",
+            "attachment accepted"
+        ),
+        AttachmentEvent::CatalogPublished { tool_count } => tracing::info!(
+            target: "nanocodex_tools::attachment",
+            stage = "attachment.catalog_published",
+            tool.count = tool_count,
+            "attachment catalog published"
+        ),
+        AttachmentEvent::Detached { .. } => tracing::info!(
+            target: "nanocodex_tools::attachment",
+            stage = "attachment.detached",
+            "attachment detached"
+        ),
+        AttachmentEvent::Fenced { .. } => tracing::warn!(
+            target: "nanocodex_tools::attachment",
+            stage = "attachment.fenced",
+            "attachment fenced"
+        ),
+        AttachmentEvent::CallStarted { .. } | AttachmentEvent::CallCompleted { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod tracing_tests {
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
+
+    use tracing::{
+        Subscriber,
+        field::{Field, Visit},
+        span::{Attributes, Id, Record},
+    };
+    use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct CallSpanCapture(Arc<Mutex<Option<CapturedCallSpan>>>);
+
+    struct CapturedCallSpan {
+        id: u64,
+        target: &'static str,
+        fields: HashMap<String, String>,
+        closed: bool,
+    }
+
+    struct FieldCapture<'a>(&'a mut HashMap<String, String>);
+
+    impl Visit for FieldCapture<'_> {
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.0.insert(field.name().to_owned(), value.to_string());
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().to_owned(), value.to_owned());
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().to_owned(), format!("{value:?}"));
+        }
+    }
+
+    impl<S> Layer<S> for CallSpanCapture
+    where
+        S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    {
+        fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, _context: Context<'_, S>) {
+            if attributes.metadata().name() != "attachment.call" {
+                return;
+            }
+            let mut fields = HashMap::new();
+            attributes.record(&mut FieldCapture(&mut fields));
+            *self.0.lock().unwrap() = Some(CapturedCallSpan {
+                id: id.clone().into_u64(),
+                target: attributes.metadata().target(),
+                fields,
+                closed: false,
+            });
+        }
+
+        fn on_record(&self, id: &Id, values: &Record<'_>, _context: Context<'_, S>) {
+            let mut captured = self.0.lock().unwrap();
+            let Some(captured) = captured.as_mut() else {
+                return;
+            };
+            if captured.id == id.clone().into_u64() {
+                values.record(&mut FieldCapture(&mut captured.fields));
+            }
+        }
+
+        fn on_close(&self, id: Id, _context: Context<'_, S>) {
+            let mut captured = self.0.lock().unwrap();
+            let Some(captured) = captured.as_mut() else {
+                return;
+            };
+            if captured.id == id.into_u64() {
+                captured.closed = true;
+            }
+        }
+    }
+
+    #[test]
+    fn attachment_call_span_owns_bounded_structural_telemetry() {
+        let capture = CallSpanCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let (events, mut received) = mpsc::channel(4);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            begin_call_events(
+                &events,
+                "call-1".into(),
+                "exec_command".into(),
+                Some("hand-1"),
+            )
+            .complete(&events, AttachmentCallOutcome::Completed);
+        });
+
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            AttachmentEvent::CallStarted { .. }
+        ));
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            AttachmentEvent::CallCompleted { .. }
+        ));
+        let captured = capture.0.lock().unwrap();
+        let captured = captured.as_ref().unwrap();
+        assert_eq!(captured.target, "nanocodex_tools::attachment");
+        assert!(captured.closed);
+        assert_eq!(captured.fields.get("attachment.id").unwrap(), "hand-1");
+        assert_eq!(captured.fields.get("tool.name").unwrap(), "exec_command");
+        assert_eq!(captured.fields.get("tool.call_id").unwrap(), "call-1");
+        assert_eq!(captured.fields.get("status").unwrap(), "completed");
+        assert_eq!(captured.fields.get("otel.status_code").unwrap(), "OK");
+        assert!(captured.fields.contains_key("duration_ns"));
+        assert_eq!(
+            captured.fields.len(),
+            7,
+            "attachment call spans must remain structural: {:?}",
+            captured.fields
+        );
+    }
 }

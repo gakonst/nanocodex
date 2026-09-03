@@ -24,6 +24,7 @@ image.workspace = true
 nanocodex = { path = "../../../crates/nanocodex", version = "0.5.0", default-features = false }
 nanocodex-agent = { path = "../../../crates/nanocodex-agent", version = "0.5.0", default-features = false }
 nanocodex-managed = { path = "../../../crates/nanocodex-managed", version = "0.5.0", default-features = false, features = ["tools"] }
+nanocodex-observability = { workspace = true, features = ["cli"] }
 nanocodex-tools = { path = "../../../crates/nanocodex-tools", version = "0.5.0", default-features = false, features = ["attachment", "workspace-runtime"] }
 png = "0.18.1"
 percent-encoding.workspace = true
@@ -42,6 +43,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util.workspace = true
 toml.workspace = true
+tracing.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 url.workspace = true

@@ -3,6 +3,9 @@
 
 extern crate self as nanocodex_observability;
 
+#[cfg(feature = "cli")]
+mod cli;
+
 use std::{fs::OpenOptions, io, path::PathBuf};
 
 use opentelemetry::trace::TracerProvider as _;
@@ -19,6 +22,9 @@ use tracing_appender::non_blocking::{NonBlockingBuilder, WorkerGuard};
 use tracing_subscriber::{
     EnvFilter, Layer, fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt,
 };
+
+#[cfg(feature = "cli")]
+pub use cli::ObservabilityOutputArgs;
 
 const DEPLOYMENT_ENVIRONMENT_NAME: &str = "deployment.environment.name";
 const LOCAL_LOG_BUFFERED_LINES_LIMIT: usize = 4_096;

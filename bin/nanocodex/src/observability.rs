@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use clap::{Args, ValueEnum, builder::NonEmptyStringValueParser};
+use clap::{Args, builder::NonEmptyStringValueParser};
 use eyre::Result;
-use nanocodex_observability::{LogFormat, LogOutput, ObservabilityBuilder, ObservabilityGuard};
+use nanocodex_observability::{LogOutput, ObservabilityGuard, ObservabilityOutputArgs};
 
 const DEFAULT_FILTER: &str = "warn,nanocodex=info,nanocodex_agent=info,nanocodex_eval=info,nanocodex_oai_api=info,nanocodex_tools=info,nanocodex_vm=info,mpp_egress=info";
 
@@ -26,71 +26,25 @@ pub(crate) struct ObservabilityArgs {
     )]
     otel_filter: String,
 
-    /// Local tracing output format.
-    #[arg(long, env = "NANOCODEX_LOG_FORMAT", default_value_t, value_enum)]
-    log_format: LogFormatArg,
-
-    /// Append local tracing output to this file instead of stderr.
-    #[arg(long, env = "NANOCODEX_LOG_FILE")]
-    log_file: Option<PathBuf>,
-
-    /// Export spans through OTLP/HTTP protobuf.
-    #[arg(
-        long,
-        env = "OTEL_EXPORTER_OTLP_ENDPOINT",
-        value_parser = NonEmptyStringValueParser::new()
-    )]
-    otel_endpoint: Option<String>,
-
-    /// Deployment environment attached to exported spans.
-    #[arg(
-        long,
-        env = "OTEL_DEPLOYMENT_ENVIRONMENT",
-        default_value = "development",
-        value_parser = NonEmptyStringValueParser::new()
-    )]
-    otel_environment: String,
-}
-
-#[derive(Clone, Copy, Default, ValueEnum)]
-enum LogFormatArg {
-    Pretty,
-    #[default]
-    Compact,
-    Json,
+    #[command(flatten)]
+    output: ObservabilityOutputArgs,
 }
 
 impl ObservabilityArgs {
     pub(crate) fn install(self, interactive: bool, workspace: &Path) -> Result<ObservabilityGuard> {
-        let output = self.log_file.map_or_else(
-            || {
-                if interactive {
-                    LogOutput::File(workspace.join(".nanocodex/logs/tui.log"))
-                } else {
-                    LogOutput::Stderr
-                }
-            },
-            LogOutput::File,
-        );
-        let mut builder = ObservabilityBuilder::new("nanocodex", env!("CARGO_PKG_VERSION"))
-            .filter(self.log_filter)
-            .otel_filter(self.otel_filter)
-            .format(self.log_format.into())
-            .output(output)
-            .environment(self.otel_environment);
-        if let Some(endpoint) = self.otel_endpoint {
-            builder = builder.otlp_endpoint(endpoint);
-        }
-        builder.install().map_err(Into::into)
-    }
-}
-
-impl From<LogFormatArg> for LogFormat {
-    fn from(format: LogFormatArg) -> Self {
-        match format {
-            LogFormatArg::Pretty => Self::Pretty,
-            LogFormatArg::Compact => Self::Compact,
-            LogFormatArg::Json => Self::Json,
-        }
+        let default_output = if interactive {
+            LogOutput::File(workspace.join(".nanocodex/logs/tui.log"))
+        } else {
+            LogOutput::Stderr
+        };
+        self.output
+            .install(
+                "nanocodex",
+                env!("CARGO_PKG_VERSION"),
+                self.log_filter,
+                self.otel_filter,
+                default_output,
+            )
+            .map_err(Into::into)
     }
 }
