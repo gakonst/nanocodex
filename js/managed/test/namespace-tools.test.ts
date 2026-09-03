@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
 
 import {
-  createNamespaceExecutionTools,
+  createNamespaceExecutionRuntime,
+  createNamespaceExecutionTools as createRuntimeNamespaceExecutionTools,
   machineMountRoot,
 } from "../src/namespace-tools";
 
@@ -19,7 +20,14 @@ const context = (overrides: Partial<{
 });
 
 describe("cwd-root namespace execution", () => {
-  it("keeps canonical schemas and routes the default logical cwd to the sandbox", async () => {
+  it("starts with no executable hand and fails closed at the brain cwd", async () => {
+    const tools = createRuntimeNamespaceExecutionTools(() => []);
+
+    await expect(tools.exec_command!.handler({ cmd: "pwd" }, context()))
+      .rejects.toThrow("call mount when native execution is needed");
+  });
+
+  it("keeps canonical schemas and routes an explicit logical cwd to a sandbox hand", async () => {
     const sandboxExec = vi.fn(async () => ({
       output: "/workspace\n",
       wall_time_seconds: 0.01,
@@ -38,7 +46,7 @@ describe("cwd-root namespace execution", () => {
     });
     expect(JSON.stringify(tools.write_stdin!.parameters)).not.toMatch(/environment|host/);
 
-    await tools.exec_command!.handler({ cmd: "pwd" }, context());
+    await tools.exec_command!.handler({ cmd: "pwd", workdir: "/sandbox" }, context());
     expect(sandboxExec).toHaveBeenCalledWith(
       { cmd: "pwd", workdir: "/workspace" },
       expect.objectContaining({ sessionId: "root-session" }),
@@ -101,6 +109,26 @@ describe("cwd-root namespace execution", () => {
     expect(oldExec.mock.calls[1]![0]).toMatchObject({ workdir: "/old" });
     expect(newExec).toHaveBeenCalledTimes(1);
     expect(newExec.mock.calls[0]![0]).toMatchObject({ workdir: "/new" });
+  });
+
+  it("keeps a mount created after capture out of the calling cell", async () => {
+    let machines: readonly { id: string; root: string; workspace: string }[] = [];
+    const exec = vi.fn(async () => ({ output: "mounted", wall_time_seconds: 0, exit_code: 0 }));
+    const runtime = createNamespaceExecutionRuntime(
+      () => machines,
+      (_id, name) => name === "exec_command" ? { handler: exec } : undefined,
+    );
+    runtime.capture(context());
+    machines = [{ id: "sandbox:mounted", root: "/mnt-test-12345678", workspace: "/workspace" }];
+
+    await expect(runtime.tools.exec_command!.handler({
+      cmd: "pwd",
+      workdir: "/mnt-test-12345678",
+    }, context())).rejects.toThrow("no mount owns");
+    await expect(runtime.tools.exec_command!.handler({
+      cmd: "pwd",
+      workdir: "/mnt-test-12345678",
+    }, context({ parentCallId: "later-cell" }))).resolves.toMatchObject({ output: "mounted" });
   });
 
   it("rebinds provider-local sessions and rejects cross-agent use", async () => {
@@ -334,4 +362,17 @@ function sandboxTools(
       handler: vi.fn(async () => ({ port: 3000, url: "https://preview", persistent: false })),
     },
   };
+}
+
+function createNamespaceExecutionTools(
+  sandbox: ToolMap,
+  machines: () => readonly { id: string; workspace: string }[],
+  resolveMachineTool: Parameters<typeof createRuntimeNamespaceExecutionTools>[1] = () => undefined,
+) {
+  return createRuntimeNamespaceExecutionTools(
+    () => [{ id: "sandbox", root: "/sandbox", workspace: "/workspace" }, ...machines()],
+    (machineId, name) => machineId === "sandbox"
+      ? sandbox[name]
+      : resolveMachineTool(machineId, name),
+  );
 }

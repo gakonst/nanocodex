@@ -134,6 +134,15 @@ export function cloudflareSandboxTools(
   );
 }
 
+/** Provisions one named Cloudflare Sandbox and attaches its retained workspace. */
+export async function prepareCloudflareSandbox(
+  namespace: DurableObjectNamespace<Sandbox>,
+  resourceId: string,
+  localBucket = false,
+): Promise<void> {
+  await prepareSandbox(namespace, resourceId, localBucket);
+}
+
 export async function destroyCloudflareSandbox(
   namespace: DurableObjectNamespace<Sandbox>,
   sessionId: string,

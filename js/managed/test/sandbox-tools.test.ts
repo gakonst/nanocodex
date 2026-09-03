@@ -9,6 +9,7 @@ import {
   createCloudflareSandboxTools,
   deleteCloudflareSandboxWorkspace,
   openSandboxPreviewCapability,
+  prepareCloudflareSandbox,
   proxyCloudflareSandboxPreview,
 } from "../src/sandbox-tools";
 import type { Sandbox } from "../src/sandbox-runtime";
@@ -235,6 +236,18 @@ describe("Cloudflare sandbox tools", () => {
     expect(sandbox.mountBucket).toHaveBeenCalledWith(
       "NANOCODEX_WORKSPACES", "/workspace", { prefix: "/sessions/retained/" },
     );
+  });
+
+  it("provisions and mounts a retained workspace without running a command", async () => {
+    const sandbox = preparingSandbox("empty");
+    sandboxSdk.getSandbox.mockReturnValue(sandbox);
+
+    await prepareCloudflareSandbox(fakeNamespace(), "mounted-hand");
+
+    expect(sandbox.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_WORKSPACES", "/workspace", { prefix: "/sessions/mounted-hand/" },
+    );
+    expect(sandbox.startProcess).not.toHaveBeenCalled();
   });
 
   it("preserves local R2 mount options and refuses unsafe remote remounts", async () => {

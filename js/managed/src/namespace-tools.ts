@@ -15,7 +15,7 @@ import {
 } from "nanocodex-tools";
 
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
-const DEFAULT_CWD = "/sandbox";
+const DEFAULT_CWD = "/brain";
 
 type RoutedTool = Readonly<{
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
@@ -23,6 +23,7 @@ type RoutedTool = Readonly<{
 
 export type NamespaceMachine = Readonly<{
   id: string;
+  root?: string;
   workspace: string;
 }>;
 
@@ -52,23 +53,24 @@ type ProcessBinding = Readonly<{
   writeStdin: RoutedTool;
 }>;
 
+export type NamespaceExecutionRuntime = Readonly<{
+  tools: ToolMap;
+  capture(context: ToolContext): void;
+}>;
+
 /**
  * Routes the canonical process tools by the root of their logical cwd. The
  * binding captured for a Code Mode call owns its exact attached tool handles,
  * so a disconnect or reconnect cannot retarget an admitted command.
  */
-export function createNamespaceExecutionTools(
-  sandboxTools: ToolMap,
+export function createNamespaceExecutionRuntime(
   machines: () => readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver = () => undefined,
-): ToolMap {
-  const sandbox = Object.freeze({
-    mountId: "mount:sandbox",
-    root: "/sandbox",
+): NamespaceExecutionRuntime {
+  const brain = Object.freeze({
+    mountId: "mount:brain",
+    root: "/brain",
     workspace: "/workspace",
-    exec: requiredTool(sandboxTools, "exec_command"),
-    writeStdin: requiredTool(sandboxTools, "write_stdin"),
-    preview: requiredTool(sandboxTools, "preview"),
   }) satisfies MountedHand;
   const cells = new Map<string, CellBinding>();
   const sessions = new Map<number, ProcessBinding>();
@@ -77,7 +79,7 @@ export function createNamespaceExecutionTools(
     const key = `${context.sessionId}\u0000${context.parentCallId}`;
     const retained = cells.get(key);
     if (retained !== undefined) return retained;
-    const created = createCellBinding(sandbox, machines(), resolveMachineTool, key);
+    const created = createCellBinding(brain, machines(), resolveMachineTool, key);
     cells.set(key, created);
     return created;
   };
@@ -96,15 +98,21 @@ export function createNamespaceExecutionTools(
     sessions.clear();
   };
 
-  return {
+  const tools: ToolMap = {
     exec_command: {
-      description: "Run a command on the hand that owns the root of workdir. workdir is a logical namespace path such as /sandbox/repo or /laptop/repo; it defaults to /sandbox.",
+      description: "Run a command on the hand that owns the root of workdir. workdir is a logical namespace path returned by mount or listed by accountInfo, such as /repo-test/repo or /laptop/repo. No execution hand is attached by default.",
       parameters: EXEC_COMMAND_PARAMETERS,
       outputSchema: EXECUTION_OUTPUT_SCHEMA,
       handler: async (input, context) => {
         const value = record(input);
+        const workdir = optionalString(value.workdir, "workdir");
+        if (workdir === undefined) {
+          throw new Error(
+            "exec_command.workdir must select an attached hand; call mount when native execution is needed",
+          );
+        }
         const binding = cell(context);
-        const route = routeNamespaceCwd(binding.scope, optionalString(value.workdir, "workdir"));
+        const route = routeNamespaceCwd(binding.scope, workdir);
         const hand = binding.hands.get(route.mount.mountId);
         if (hand?.exec === undefined) {
           throw new Error(`namespace mount ${route.mount.root} is not executable`);
@@ -164,7 +172,7 @@ export function createNamespaceExecutionTools(
       parameters: {
         type: "object",
         properties: {
-          workdir: { type: "string", description: "Logical namespace path selecting the server's hand; defaults to /sandbox." },
+          workdir: { type: "string", description: "Logical namespace path selecting the server's hand." },
           port: { type: "integer", minimum: 1024, maximum: 65_535 },
         },
         required: ["port"],
@@ -189,21 +197,32 @@ export function createNamespaceExecutionTools(
       dispose,
     },
   };
+  return Object.freeze({
+    tools,
+    capture: (context: ToolContext) => { void cell(context); },
+  });
+}
+
+export function createNamespaceExecutionTools(
+  machines: () => readonly NamespaceMachine[],
+  resolveMachineTool: MachineToolResolver = () => undefined,
+): ToolMap {
+  return createNamespaceExecutionRuntime(machines, resolveMachineTool).tools;
 }
 
 export const machineMountRoot = namespaceMountRoot;
 
 function createCellBinding(
-  sandbox: MountedHand,
+  brain: MountedHand,
   sourceMachines: readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver,
   key: string,
 ): CellBinding {
-  const hands: MountedHand[] = [sandbox];
-  const roots = new Set([sandbox.root]);
+  const hands: MountedHand[] = [brain];
+  const roots = new Set([brain.root]);
   const keyHash = stableHash(key);
   for (const machine of sourceMachines) {
-    const root = machineMountRoot(machine.id);
+    const root = machine.root ?? machineMountRoot(machine.id);
     if (roots.has(root)) throw new Error(`duplicate namespace mount root ${root}`);
     roots.add(root);
     hands.push(Object.freeze({
@@ -221,8 +240,8 @@ function createCellBinding(
     mounts: hands.map((hand) => ({
       root: hand.root,
       mountId: hand.mountId,
-      handId: hand.machineId === undefined ? "hand:sandbox" : `hand:user:${hand.machineId}`,
-      exportId: hand.machineId === undefined ? "export:sandbox-workspace" : `export:user:${hand.machineId}`,
+      handId: hand.machineId === undefined ? "hand:brain" : `hand:${hand.machineId}`,
+      exportId: hand.machineId === undefined ? "export:brain-workspace" : `export:${hand.machineId}`,
       generation: `cell:${keyHash}:${stableHash(hand.mountId)}`,
       rights: handRights(hand),
     })),
@@ -248,12 +267,6 @@ function nativeWorkdir(workspace: string, relativePath: string): string {
   }
   if (relativePath === "/") return workspace;
   return `${workspace.replace(/\/$/, "")}/${relativePath.slice(1)}`;
-}
-
-function requiredTool(tools: ToolMap, name: string): NonNullable<ToolMap[string]> {
-  const tool = tools[name];
-  if (tool === undefined) throw new Error(`sandbox tool source is missing ${name}`);
-  return tool;
 }
 
 function executionResult(value: unknown): Record<string, unknown> | undefined {

@@ -1,21 +1,23 @@
 ---
 title: Cloudflare Durable Objects
-description: Run Rust/WASM inside one SQLite-backed Durable Object with an R2-backed Sandbox workspace.
+description: Run Rust/WASM inside one SQLite-backed Durable Object with on-demand R2-backed Sandbox hands.
 ---
 
 # Cloudflare Durable Objects
 
 The Cloudflare example is one concrete adapter. One SQLite-backed Durable
 Object owns one Nanocodex session, its Rust/WASM driver, OpenAI socket, client
-sockets, and opaque durability journal. A separate Cloudflare Sandbox owns
-Linux execution; R2 backs its per-session workspace.
+sockets, and opaque durability journal. The agent begins without a sandbox.
+When work needs native Linux execution, the provider-neutral `mount` tool
+provisions and attaches a named Cloudflare Sandbox hand; R2 backs each retained
+workspace. One agent may mount several independent hands.
 
 ```text
 client -> Worker router -> DurableAgentSession Durable Object
                           |- Rust/WASM agent
                           |- SQLite journal batches
                           |- hibernatable client sockets
-                          `- Sandbox DO -> container -> R2 workspace
+                          `- zero or more Sandbox DOs -> containers -> R2 workspaces
 ```
 
 ## Adopt the pattern
@@ -68,7 +70,7 @@ hibernatable. The next client command reconstructs the agent from the SQLite
 journal. Clients resume their event projection; they do not send prior
 messages, response IDs, or tool results back to Rust.
 
-The session journal and R2 workspace have separate lifetimes. Restoring files
+The session journal and mounted R2 workspaces have separate lifetimes. Restoring files
 does not prove that a model/tool step committed, and restoring the journal does
 not recreate a stopped container process.
 

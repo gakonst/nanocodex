@@ -57,8 +57,7 @@ describe("sandbox runtime egress", () => {
 });
 
 describe("managed sandbox preview wiring", () => {
-  it("constructs account sandbox tools with the session origin and server secret", async () => {
-    const namespace = {} as DurableObjectNamespace<Sandbox>;
+  it("routes a mounted sandbox hand only for account-owned turns", async () => {
     const sourceHandler = vi.fn(async () => ({ ok: true }));
     const sourceTools: ToolMap = {
       exec_command: {
@@ -77,26 +76,18 @@ describe("managed sandbox preview wiring", () => {
         handler: sourceHandler,
       },
     };
-    const factory = vi.fn(() => sourceTools) as unknown as typeof import("../src/sandbox-tools").cloudflareSandboxTools;
     let accountOwned = true;
-    const tools = createManagedNamespaceTools({
-      NANOCODEX_ADMIN_TOKEN: "server-only-preview-secret",
-      NANOCODEX_SANDBOXES: namespace,
-      NANOCODEX_SANDBOX_LOCAL: "true",
-    }, {
-      session_id: "session-id",
-      public_origin: "https://nanocodex.example",
-    }, () => accountOwned, factory);
-
-    expect(factory).toHaveBeenCalledWith(
-      namespace,
-      "session-id",
-      true,
-      "https://nanocodex.example",
-      "server-only-preview-secret",
+    const tools = createManagedNamespaceTools(
+      () => accountOwned,
+      () => [{ id: "sandbox:test", root: "/test", workspace: "/workspace" }],
+      (_machineId, name) => sourceTools[name],
     );
+
     expect(tools.map(({ name }) => name)).toEqual(["exec_command", "write_stdin", "preview"]);
-    await expect(tools[0]!.handler({ cmd: "pwd" }, toolContext())).resolves.toEqual({ ok: true });
+    await expect(tools[0]!.handler(
+      { cmd: "pwd", workdir: "/test" },
+      toolContext(),
+    )).resolves.toEqual({ ok: true });
     expect(sourceHandler).toHaveBeenCalledTimes(1);
 
     accountOwned = false;

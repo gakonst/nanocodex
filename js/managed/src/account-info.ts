@@ -53,10 +53,12 @@ export type VaultEntry =
     }>;
 
 export type AccountMachine = Readonly<HostedMachine & {
-  kind: "sandbox" | "user";
   /** Logical namespace root. Native host workspace paths are never projected. */
   mount: string;
-}>;
+} & (
+  | { kind: "sandbox"; provider: string }
+  | { kind: "user"; provider?: never }
+)>;
 
 export type AccountInfo = Readonly<{
   status: "disabled" | "ready" | "unavailable";

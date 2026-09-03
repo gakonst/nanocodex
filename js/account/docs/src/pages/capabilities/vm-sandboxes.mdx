@@ -35,17 +35,21 @@ composed egress leases are explicit policy. Read the
 
 JavaScript deployment examples demonstrate other ownership choices:
 
-- Cloudflare Durable Objects own SQLite session state, a Sandbox container, and
-  an R2-backed workspace.
+- Cloudflare Durable Objects own SQLite session state and expose a generic
+  `mount` capability. Its built-in provider provisions zero or more named
+  Cloudflare Sandbox containers with independent R2-backed workspaces.
 - Rivet Actors own SQLite state and an AgentOS sandbox.
 - Vercel Workflow owns replayable state and one persistent Vercel Sandbox.
 - exe.dev demonstrates both an agent inside a persistent VM and an external
   agent using an exe.dev VM as a caller-defined tool.
 
-These are examples, not a generic Nanocodex sandbox API. The application owns
-provisioning, credentials, tenancy, persistence, timeout policy, egress, and
-recovery. Choose a boundary based on the code being executed and the isolation
-you actually need; browser-native OPFS and just-bash do not require any of them.
+These are examples, not a generic core Nanocodex sandbox API. The managed
+Cloudflare product's `mount` tool is an application-owned provider boundary;
+other applications may expose different policies or no mount capability. The
+application owns provisioning, credentials, tenancy, persistence, timeout
+policy, egress, and recovery. Choose a boundary based on the code being
+executed and the isolation you actually need; browser-native OPFS and just-bash
+do not require any of them.
 
 Evaluation is stricter: each benchmark attempt and verifier run in a fresh
 microVM overlay. See [Evaluation](/evals).

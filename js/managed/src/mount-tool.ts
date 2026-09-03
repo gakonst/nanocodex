@@ -1,0 +1,96 @@
+import type { NamedTool, ToolContext } from "nanocodex";
+
+const MOUNT_NAME = /^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$/;
+
+export const MANAGED_MOUNT_PROVIDERS = Object.freeze(["cloudflare"] as const);
+
+export type ManagedMountProvider = (typeof MANAGED_MOUNT_PROVIDERS)[number];
+
+export type ManagedMountRequest = Readonly<{
+  provider: ManagedMountProvider;
+  name: string;
+}>;
+
+export type ManagedMountResult = Readonly<{
+  id: string;
+  name: string;
+  provider: string;
+  mount: string;
+  status: "mounted";
+  created: boolean;
+}>;
+
+export const MANAGED_MOUNT_PARAMETERS = Object.freeze({
+  type: "object",
+  properties: {
+    provider: {
+      type: "string",
+      enum: MANAGED_MOUNT_PROVIDERS,
+      description: "Sandbox provider to mount. Cloudflare is the built-in managed provider.",
+    },
+    name: {
+      type: "string",
+      pattern: MOUNT_NAME.source,
+      description: "Stable lowercase name for this hand within the agent, such as repo-test or build.",
+    },
+  },
+  required: ["provider", "name"],
+  additionalProperties: false,
+} as const);
+
+export const MANAGED_MOUNT_OUTPUT_SCHEMA = Object.freeze({
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    provider: { type: "string" },
+    mount: { type: "string" },
+    status: { type: "string", enum: ["mounted"] },
+    created: { type: "boolean" },
+  },
+  required: ["id", "name", "provider", "mount", "status", "created"],
+  additionalProperties: false,
+} as const);
+
+export function managedMountTool(
+  mount: (request: ManagedMountRequest, context: ToolContext) => Promise<ManagedMountResult>,
+): NamedTool {
+  return {
+    name: "mount",
+    description: [
+      "Provision and attach a sandbox provider as an execution hand when the task needs native tools.",
+      "The agent begins without a sandbox; infer when one is needed instead of asking the user to request it.",
+      "The operation is idempotent by name and returns a logical mount path to use as exec_command.workdir in a later Code Mode cell.",
+      "A later provider may be user-supplied; never assume that all mounts are Cloudflare sandboxes.",
+    ].join(" "),
+    parameters: MANAGED_MOUNT_PARAMETERS,
+    outputSchema: MANAGED_MOUNT_OUTPUT_SCHEMA,
+    handler: (input, context) => mount(parseManagedMountRequest(input), context),
+  };
+}
+
+export function parseManagedMountRequest(input: unknown): ManagedMountRequest {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("mount input must be an object");
+  }
+  const value = input as Record<string, unknown>;
+  const unsupported = Object.keys(value).find((key) => key !== "provider" && key !== "name");
+  if (unsupported !== undefined) throw new TypeError(`mount input contains unsupported field ${unsupported}`);
+  if (value.provider !== "cloudflare") {
+    throw new TypeError("mount provider must be cloudflare");
+  }
+  if (typeof value.name !== "string" || !MOUNT_NAME.test(value.name)) {
+    throw new TypeError(
+      "mount name must be a lowercase portable identifier of 1-63 characters",
+    );
+  }
+  return Object.freeze({ provider: value.provider, name: value.name });
+}
+
+export function managedMountRoot(name: string, id: string): string {
+  const parsed = parseManagedMountRequest({ provider: "cloudflare", name });
+  if (!/^[a-f0-9-]{36}$/.test(id)) throw new TypeError("mount id must be a lowercase UUID");
+  const suffix = id.replaceAll("-", "").slice(-8);
+  const stem = parsed.name.slice(0, 49).replace(/[._-]+$/, "") || "hand";
+  return `/mnt-${stem}-${suffix}`;
+}

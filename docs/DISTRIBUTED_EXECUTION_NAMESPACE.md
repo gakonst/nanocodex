@@ -12,12 +12,16 @@ namespace:
 ```text
 /
 ├── brain/        durable brain scratch
-├── sandbox/      lazy Linux sandbox
+├── mnt-test-a1b2c3d4/  explicitly mounted sandbox hand
 ├── laptop/       connected user hand
 ├── buildbox/     connected user hand
 └── .nanocodex/   synthetic namespace metadata
 ```
 
+- **C0 — Provisioning:** an agent begins with no sandbox hand. The generic
+  `mount` capability selects a provider, provisions a named hand, and returns
+  its logical root. A model should infer this need from work such as building or
+  testing code; the user does not have to request a mount explicitly.
 - **C1 — Placement:** the mount root containing a command's effective cwd
   selects the hand that executes it.
 - **C2 — Access:** every process sees the same authorized mounts. Discovery,
@@ -58,8 +62,9 @@ The broker creates an immutable cell manifest mapping each mount root to opaque
 hand and export identities, attachment generation, lease, and rights. Mount
 names are portable, unique, non-overlapping, and distinct from reserved roots
 such as `brain`, `sandbox`, `.nanocodex`, `dev`, `proc`, and `tmp`. Names and
-paths locate resources but never authorize them. `brain` and `sandbox` are
-broker-owned system roots; user-assigned roots cannot reuse any reserved name.
+paths locate resources but never authorize them. `brain` is a broker-owned
+system root; provider mounts receive broker-issued roots and user-assigned
+roots cannot reuse any reserved name.
 `/laptop/a` means `a` beneath
 the configured export, not OS path `/a` unless the OS root was deliberately
 exported.
@@ -72,7 +77,9 @@ a later cell; revocation may invalidate existing authority immediately.
 The canonical tool schemas remain authoritative.
 
 - `workdir` sets the initial cwd; relative paths resolve against the cell's
-  captured default cwd. Shell `cd` is applied before external execution.
+  captured default cwd. The managed default is non-executable `/brain`, so the
+  model must use a returned or discovered hand root. Shell `cd` is applied
+  before external execution.
 - The longest component-boundary mount match of the effective cwd selects the
   hand. Executable lookup, environment, architecture, and children belong to
   that hand.
@@ -185,6 +192,7 @@ sessions:
 | Event | Required behavior |
 | --- | --- |
 | Cell starts | Capture authorized mount mapping and default cwd |
+| `mount` completes | Retain provider identity and expose the new hand to later namespace snapshots |
 | Child spawns | Atomically bind inherited or attenuated namespace ceiling |
 | Message/steer/task replacement | Preserve namespace, cwd, and authority |
 | Process starts | Pin hand, manifest, rights, lease, and generation |

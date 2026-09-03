@@ -29,6 +29,9 @@ storage ownership.
 - `/v1/agents` lists or creates agents. Agent routes create turns, read state,
   cancel or steer work, delete an agent, and support explicit durability import
   and export. Stable `Idempotency-Key` values make create and turn retries safe.
+- Managed agents begin with no sandbox hand. The provider-neutral `mount` model
+  tool provisions and attaches named execution hands on demand; Cloudflare
+  Sandbox is the first provider, and repeated names resolve idempotently.
 - Agent events are a durable, ordered cursor stream. SSE resumes with `cursor`
   or `Last-Event-ID`; same-origin browser WebSockets carry the typed
   prompt/steer/cancel protocol. Realtime calls and sideband transport have

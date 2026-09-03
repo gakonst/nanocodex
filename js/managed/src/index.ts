@@ -18,17 +18,20 @@ import type {
 import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
 import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
+import { MAX_NAMESPACE_MOUNTS } from "nanocodex-tools";
 import { managedCodeEvaluator } from "./code-evaluator";
 import {
   cloudflareSandboxTools,
   deleteCloudflareSandbox,
   openSandboxPreviewCapability,
+  prepareCloudflareSandbox,
   proxyCloudflareSandboxPreview,
 } from "./sandbox-tools";
 import {
-  createNamespaceExecutionTools,
+  createNamespaceExecutionRuntime,
   machineMountRoot,
   type MachineToolResolver,
+  type NamespaceMachine,
 } from "./namespace-tools";
 import {
   ContainerProxy,
@@ -171,6 +174,12 @@ import {
   withInitialAccountInfo,
 } from "./account-info";
 import { accountConnectorsTool } from "./account-connectors-tool";
+import {
+  managedMountRoot,
+  managedMountTool,
+  type ManagedMountRequest,
+  type ManagedMountResult,
+} from "./mount-tool";
 import { routeConnectorRequest } from "./connectors";
 import {
   attachAgent,
@@ -388,6 +397,27 @@ type AgentSettingsRow = {
   fast_mode: number;
 };
 
+type ManagedMountState = "mounting" | "mounted" | "failed";
+
+type ManagedMountRow = {
+  id: string;
+  provider: string;
+  name: string;
+  root: string;
+  provider_resource_id: string;
+  configuration_json: string;
+  state: ManagedMountState;
+  created_at: number;
+  updated_at: number;
+};
+
+type ManagedMountCallRow = {
+  provider: string;
+  name: string;
+  mount_id: string;
+  created: number;
+};
+
 type ManagedTurnState =
   | "accepted"
   | "cancelling"
@@ -595,20 +625,14 @@ const AGENT_CAPABILITIES = Object.freeze({
   native_cross_mounts: false,
 }) satisfies AgentCapabilities;
 
-const AGENT_SANDBOX_MACHINE = Object.freeze({
-  id: "sandbox",
-  name: "Agent sandbox",
-  kind: "sandbox",
-  mount: "/sandbox",
-  workspace: "/sandbox",
-  capabilities: Object.freeze([
-    "filesystem",
-    "native-linux",
-    "packages",
-    "processes",
-    "servers",
-  ]),
-}) satisfies AccountMachine;
+const SANDBOX_HAND_CAPABILITIES = Object.freeze([
+  "filesystem",
+  "native-linux",
+  "packages",
+  "processes",
+  "servers",
+]);
+const MAX_MANAGED_MOUNTS = 16;
 
 const json = (body: unknown, init: ResponseInit = {}) => Response.json(body, {
   ...init,
@@ -1545,28 +1569,23 @@ export async function routeSandboxPreviewRequest(
 }
 
 export function createManagedNamespaceTools(
-  env: Pick<
-    Env,
-    "NANOCODEX_ADMIN_TOKEN" | "NANOCODEX_SANDBOXES" | "NANOCODEX_SANDBOX_LOCAL"
-  >,
-  session: { session_id: string; public_origin: string },
   isAccountOwnedTurn: () => boolean,
-  createTools: typeof cloudflareSandboxTools = cloudflareSandboxTools,
-  machines: () => readonly HostedMachine[] = () => [],
+  machines: () => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
 ): NamedTool[] {
-  const sandboxTools = createTools(
-    env.NANOCODEX_SANDBOXES,
-    session.session_id,
-    env.NANOCODEX_SANDBOX_LOCAL === "true",
-    session.public_origin,
-    env.NANOCODEX_ADMIN_TOKEN,
-  );
-  return Object.entries(createNamespaceExecutionTools(
-    sandboxTools,
+  return createManagedNamespaceRuntime(isAccountOwnedTurn, machines, resolveMachineTool).tools;
+}
+
+function createManagedNamespaceRuntime(
+  isAccountOwnedTurn: () => boolean,
+  machines: () => readonly NamespaceMachine[] = () => [],
+  resolveMachineTool: MachineToolResolver = () => undefined,
+): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): void }> {
+  const runtime = createNamespaceExecutionRuntime(
     machines,
     resolveMachineTool,
-  )).map(([name, tool]) => ({
+  );
+  const tools = Object.entries(runtime.tools).map(([name, tool]) => ({
     name,
     ...tool,
     handler: async (input, context) => {
@@ -1580,6 +1599,7 @@ export function createManagedNamespaceTools(
       return tool.handler(input, context);
     },
   } satisfies NamedTool));
+  return Object.freeze({ tools, capture: runtime.capture });
 }
 
 export class ChiefOfStaffBackend extends WorkerEntrypoint<Env> {
@@ -1768,6 +1788,27 @@ export class DurableAgentSession extends DurableComputerSession {
       INSERT OR IGNORE INTO managed_agent_settings
         (singleton, model, thinking, reasoning_mode, fast_mode)
       VALUES (1, 'gpt-5.6-sol', 'high', 'standard', 0);
+      CREATE TABLE IF NOT EXISTS managed_mounts (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        name TEXT NOT NULL UNIQUE,
+        root TEXT NOT NULL UNIQUE,
+        provider_resource_id TEXT NOT NULL UNIQUE,
+        configuration_json TEXT NOT NULL DEFAULT '{}',
+        state TEXT NOT NULL CHECK (state IN ('mounting', 'mounted', 'failed')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS managed_mount_calls (
+        tool_session_id TEXT NOT NULL,
+        tool_call_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        name TEXT NOT NULL,
+        mount_id TEXT NOT NULL,
+        created INTEGER NOT NULL CHECK (created IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (tool_session_id, tool_call_id)
+      );
       CREATE TABLE IF NOT EXISTS managed_turns (
         id TEXT PRIMARY KEY,
         request_key TEXT,
@@ -4675,11 +4716,22 @@ export class DurableAgentSession extends DurableComputerSession {
         },
       );
       if (!tombstoned.ok) throw new Error(`memory tombstone failed with HTTP ${tombstoned.status}`);
-      await deleteCloudflareSandbox(
+      const retainedMounts = this.#managedMounts();
+      const unsupportedMount = retainedMounts.find(({ provider }) => provider !== "cloudflare");
+      if (unsupportedMount !== undefined) {
+        throw new Error(`unsupported retained mount provider: ${unsupportedMount.provider}`);
+      }
+      const cloudflareResources = new Set([
+        // Preserve cleanup for agents that used the pre-mount singleton sandbox.
+        session.session_id,
+        ...retainedMounts
+          .map(({ provider_resource_id }) => provider_resource_id),
+      ]);
+      await Promise.all([...cloudflareResources].map((resourceId) => deleteCloudflareSandbox(
         this.env.NANOCODEX_SANDBOXES,
         this.env.NANOCODEX_WORKSPACES,
-        session.session_id,
-      );
+        resourceId,
+      )));
     }
     for (const socket of this.ctx.getWebSockets()) closeSocket(socket, 1000, "session deleted");
     const credentialBinding = this.#credentialBinding ?? (
@@ -5239,18 +5291,61 @@ export class DurableAgentSession extends DurableComputerSession {
             (connectionId) => this.#activeTurnMcpAllowed(connectionId),
           ),
     };
-    const namespaceTools = multiplayer ? [] : createManagedNamespaceTools(
-      this.env,
-      session,
+    const sandboxToolsByMount = new Map<string, ReturnType<typeof cloudflareSandboxTools>>();
+    const namespaceMachines = () => [
+      ...this.#managedMounts("mounted").map((mount) => ({
+        id: `sandbox:${mount.id}`,
+        root: mount.root,
+        workspace: "/workspace",
+      })),
+      ...this.#hostedTools.machines().map((machine) => ({
+        id: `user:${machine.id}`,
+        root: machineMountRoot(machine.id),
+        workspace: machine.workspace,
+      })),
+    ];
+    const resolveNamespaceMachineTool: MachineToolResolver = (machineId, name) => {
+      if (machineId.startsWith("sandbox:")) {
+        const mountId = machineId.slice("sandbox:".length);
+        const mount = this.#managedMount(mountId);
+        if (mount?.state !== "mounted" || mount.provider !== "cloudflare") return undefined;
+        let tools = sandboxToolsByMount.get(mount.id);
+        if (tools === undefined) {
+          tools = cloudflareSandboxTools(
+            this.env.NANOCODEX_SANDBOXES,
+            mount.provider_resource_id,
+            this.env.NANOCODEX_SANDBOX_LOCAL === "true",
+            session.public_origin,
+            this.env.NANOCODEX_ADMIN_TOKEN,
+          );
+          sandboxToolsByMount.set(mount.id, tools);
+        }
+        return tools[name];
+      }
+      if (!machineId.startsWith("user:")) return undefined;
+      return this.#hostedTools.machineTool(machineId.slice("user:".length), name);
+    };
+    const namespaceRuntime = multiplayer ? undefined : createManagedNamespaceRuntime(
       () => this.#isAccountOwnedTurn(),
-      cloudflareSandboxTools,
-      () => this.#hostedTools.machines(),
-      (machineId, name) => this.#hostedTools.machineTool(machineId, name),
+      namespaceMachines,
+      resolveNamespaceMachineTool,
     );
     const cloudTools: NamedTool[] = [
       ...(browserRuntime?.tools ?? []),
       ...(multiplayer ? [computer.tool] : []),
-      ...namespaceTools,
+      ...(multiplayer ? [] : [managedMountTool(async (request, context) => {
+        if (!this.#isAccountOwnedTurn()) {
+          throw new ManagedRequestError(
+            403,
+            "mount_forbidden",
+            "mount is available only to account-owned turns",
+          );
+        }
+        context.signal.throwIfAborted();
+        namespaceRuntime?.capture(context);
+        return this.#mount(request, context, session);
+      })]),
+      ...(namespaceRuntime?.tools ?? []),
       ...(multiplayer ? [] : [{
         name: "accountInfo",
         description: "Report live machine hands, account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Vault references may show usernames, addresses, phone numbers, and card last four, but never passwords or complete card data.",
@@ -5298,7 +5393,7 @@ export class DurableAgentSession extends DurableComputerSession {
           shell_network: multiplayer ? computer.descriptor.network.mode : "unavailable",
           namespace: multiplayer ? { status: "disabled" } : {
             status: "cwd-placement",
-            default_cwd: "/sandbox",
+            default_cwd: "/brain",
             native_cross_mounts: false,
             mounts: this.#accountMachines(this.#activeTurnAuthorization()).map(({ id, mount }) => ({
               id,
@@ -5372,7 +5467,8 @@ export class DurableAgentSession extends DurableComputerSession {
           ].join("\n\n")
           : [
             "You are the durable Nanocodex brain running on Cloudflare Workers. The brain does not execute shell commands. Its own /workspace is scratch storage for brain-owned artifacts only.",
-            "Hands appear as logical top-level paths listed in accountInfo().machines. exec_command has its standard shape: set workdir to /sandbox/... or an exact connected-hand mount such as /laptop/...; the root of that cwd selects where the process runs. write_stdin remains pinned to the hand that created its session. There is no environment or host argument.",
+            "The agent starts without a sandbox hand. When a task such as cloning a repository, building code, or running tests needs native Linux execution, infer that need and call mount with provider cloudflare and a useful stable name. Do not ask the user to request a routine sandbox mount. mount provisions and attaches the hand before it returns.",
+            "Hands appear as logical top-level paths returned by mount or listed in accountInfo().machines. exec_command has its standard shape: set workdir to the exact hand mount or a path beneath it; the root of that cwd selects where the process runs. The default /brain cwd is not executable. write_stdin remains pinned to the hand that created its session. There is no environment or host argument.",
             "A Code Mode cell captures its mount mapping. Commands in Promise.all may run concurrently on different cwd roots, and subagents use the same cwd rule independently. A disconnect or reconnect never retargets an admitted command or session.",
             "The current cwd router is a placement milestone, not a native shared filesystem: native_cross_mounts is false, so a process cannot yet reach peer mounts through ordinary filesystem syscalls. Do not imply files are synchronized or use shell cd to select another hand; select placement with exec_command.workdir until a conforming native namespace adapter is advertised.",
             "The browser_execute tool is the managed remote browser. Reuse its retained session when continuity matters. Never inspect, return, or persist cookies, authorization material, CDP connection URLs, provider URLs, or Live View URLs. If a login, MFA, CAPTCHA, or other human-only gate appears, stop and ask the user to complete it outside the model-visible browser tool; do not bypass or evade the gate.",
@@ -5572,10 +5668,177 @@ export class DurableAgentSession extends DurableComputerSession {
     catch { return undefined; }
   }
 
+  async #mount(
+    request: ManagedMountRequest,
+    context: ToolContext,
+    session: SessionRow,
+  ): Promise<ManagedMountResult> {
+    const replay = this.ctx.storage.sql.exec<ManagedMountCallRow>(
+      `SELECT provider, name, mount_id, created
+       FROM managed_mount_calls WHERE tool_session_id = ? AND tool_call_id = ?`,
+      context.sessionId,
+      context.callId,
+    ).toArray()[0];
+    let mount: ManagedMountRow | undefined;
+    let created = false;
+    if (replay !== undefined) {
+      if (replay.provider !== request.provider || replay.name !== request.name) {
+        throw new ManagedRequestError(
+          409,
+          "mount_call_conflict",
+          "mount call identity was already used for different input",
+        );
+      }
+      mount = this.#managedMount(replay.mount_id);
+      if (mount === undefined) throw new Error("durable mount receipt references a missing mount");
+      created = replay.created !== 0;
+    } else {
+      mount = this.ctx.storage.sql.exec<ManagedMountRow>(
+        `SELECT id, provider, name, root, provider_resource_id, configuration_json,
+                state, created_at, updated_at
+         FROM managed_mounts WHERE name = ?`,
+        request.name,
+      ).toArray()[0];
+      created = mount === undefined;
+    }
+    if (mount === undefined) {
+      const count = this.ctx.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM managed_mounts",
+      ).one().count;
+      if (count >= MAX_MANAGED_MOUNTS) {
+        throw new ManagedRequestError(
+          409,
+          "mount_limit_reached",
+          `an agent may retain at most ${MAX_MANAGED_MOUNTS} mounts`,
+        );
+      }
+      if (count + this.#hostedTools.machines().length >= MAX_NAMESPACE_MOUNTS - 1) {
+        throw new ManagedRequestError(
+          409,
+          "namespace_mount_limit_reached",
+          `the execution namespace may contain at most ${MAX_NAMESPACE_MOUNTS} mounts`,
+        );
+      }
+      const id = uuidV7();
+      const now = Date.now();
+      const providerCount = this.ctx.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM managed_mounts WHERE provider = ?",
+        request.provider,
+      ).one().count;
+      const providerResourceId = providerCount === 0
+        ? session.session_id
+        : `${session.session_id}-mount-${id}`;
+      const root = managedMountRoot(request.name, id);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO managed_mounts (
+           id, provider, name, root, provider_resource_id, configuration_json,
+           state, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, '{}', 'mounting', ?, ?)`,
+        id,
+        request.provider,
+        request.name,
+        root,
+        providerResourceId,
+        now,
+        now,
+      );
+      const retained = this.#managedMount(id);
+      if (retained === undefined) throw new Error("durable mount intent was not retained");
+      mount = retained;
+    }
+    if (mount.provider !== request.provider) {
+      throw new ManagedRequestError(
+        409,
+        "mount_name_conflict",
+        `mount ${request.name} already belongs to provider ${mount.provider}`,
+      );
+    }
+    if (replay === undefined) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO managed_mount_calls (
+           tool_session_id, tool_call_id, provider, name, mount_id, created, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        context.sessionId,
+        context.callId,
+        request.provider,
+        request.name,
+        mount.id,
+        created ? 1 : 0,
+        Date.now(),
+      );
+    }
+    if (mount.state !== "mounted") {
+      try {
+        await this.#prepareManagedMount(mount);
+        this.ctx.storage.sql.exec(
+          "UPDATE managed_mounts SET state = 'mounted', updated_at = ? WHERE id = ?",
+          Date.now(),
+          mount.id,
+        );
+      } catch (error) {
+        this.ctx.storage.sql.exec(
+          "UPDATE managed_mounts SET state = 'failed', updated_at = ? WHERE id = ?",
+          Date.now(),
+          mount.id,
+        );
+        throw error;
+      }
+    }
+    return Object.freeze({
+      id: mount.id,
+      name: mount.name,
+      provider: mount.provider,
+      mount: mount.root,
+      status: "mounted" as const,
+      created,
+    });
+  }
+
+  async #prepareManagedMount(mount: ManagedMountRow): Promise<void> {
+    switch (mount.provider) {
+      case "cloudflare":
+        await prepareCloudflareSandbox(
+          this.env.NANOCODEX_SANDBOXES,
+          mount.provider_resource_id,
+          this.env.NANOCODEX_SANDBOX_LOCAL === "true",
+        );
+        return;
+      default:
+        throw new Error(`unsupported retained mount provider: ${mount.provider}`);
+    }
+  }
+
+  #managedMount(id: string): ManagedMountRow | undefined {
+    return this.ctx.storage.sql.exec<ManagedMountRow>(
+      `SELECT id, provider, name, root, provider_resource_id, configuration_json,
+              state, created_at, updated_at
+       FROM managed_mounts WHERE id = ?`,
+      id,
+    ).toArray()[0];
+  }
+
+  #managedMounts(state?: ManagedMountState): readonly ManagedMountRow[] {
+    return this.ctx.storage.sql.exec<ManagedMountRow>(
+      `SELECT id, provider, name, root, provider_resource_id, configuration_json,
+              state, created_at, updated_at
+       FROM managed_mounts${state === undefined ? "" : " WHERE state = ?"}
+       ORDER BY created_at, id`,
+      ...(state === undefined ? [] : [state]),
+    ).toArray();
+  }
+
   #accountMachines(authorization: TurnAuthorization | undefined): readonly AccountMachine[] {
     if (!this.#isAccountOwnedTurn(authorization)) return [];
     return Object.freeze([
-      AGENT_SANDBOX_MACHINE,
+      ...this.#managedMounts("mounted").map((mount) => Object.freeze({
+        id: `sandbox:${mount.id}`,
+        name: mount.name,
+        kind: "sandbox" as const,
+        provider: mount.provider,
+        mount: mount.root,
+        workspace: mount.root,
+        capabilities: SANDBOX_HAND_CAPABILITIES,
+      })),
       ...this.#hostedTools.machines().map((machine) => {
         const mount = machineMountRoot(machine.id);
         return Object.freeze({
