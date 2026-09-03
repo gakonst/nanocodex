@@ -50,7 +50,27 @@
     {
       "binding": "NANOCODEX_WORKSPACES",
       "bucket_name": "nanocodex-sandbox-workspaces"
-    }
+    },
+    {
+      "binding": "NANOCODEX_BRAIN",
+      "bucket_name": "nanocodex-sandbox-workspaces"
+    },
+    { "binding": "NANOCODEX_WORKSPACES_0", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_1", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_2", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_3", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_4", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_5", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_6", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_7", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_8", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_9", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_10", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_11", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_12", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_13", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_14", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_15", "bucket_name": "nanocodex-sandbox-workspaces" }
   ],
   "ai_search": [
     {
@@ -150,7 +170,24 @@
       ],
       "r2_buckets": [
         { "binding": "NANOCODEX_HISTORY", "bucket_name": "nanocodex-managed-history" },
-        { "binding": "NANOCODEX_WORKSPACES", "bucket_name": "nanocodex-sandbox-workspaces" }
+        { "binding": "NANOCODEX_WORKSPACES", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_BRAIN", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_0", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_1", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_2", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_3", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_4", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_5", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_6", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_7", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_8", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_9", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_10", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_11", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_12", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_13", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_14", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_15", "bucket_name": "nanocodex-sandbox-workspaces" }
       ],
       "ai_search": [],
       "durable_objects": {

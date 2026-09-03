@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  managedMountProviderResourceId,
   managedMountRoot,
   managedMountTool,
   parseManagedMountRequest,
@@ -71,5 +72,15 @@ describe("managed mount protocol", () => {
       "a".repeat(63),
       "01234567-89ab-7def-8123-456789abcdef",
     ).length).toBeLessThanOrEqual(64);
+  });
+
+  it("keeps additional Cloudflare sandbox IDs within the provider limit", () => {
+    const sessionId = "0198d3f0-8844-7000-8000-000000000001";
+    const mountId = "0198d3f0-8844-7000-8000-000000000002";
+
+    expect(managedMountProviderResourceId(sessionId, mountId, 0)).toBe(sessionId);
+    expect(managedMountProviderResourceId(sessionId, mountId, 1)).toBe(mountId);
+    expect(`nanocodex-${managedMountProviderResourceId(sessionId, mountId, 1)}`)
+      .toHaveLength(46);
   });
 });

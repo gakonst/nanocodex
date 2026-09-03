@@ -4,11 +4,15 @@ import type { ToolMap } from "nanocodex";
 import {
   Sandbox,
   handleSandboxEgress,
+  isCrossBindingR2Copy,
 } from "../src/sandbox-runtime";
 import { cloudflareSandboxPreviewUrl } from "../src/sandbox-tools";
 import {
+  createSharedBrainReadWorkspace,
   createManagedNamespaceTools,
   routeSandboxPreviewRequest,
+  turnControlAuthorizationMatches,
+  turnCanUseExecutionNamespace,
 } from "../src/index";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -54,10 +58,70 @@ describe("sandbox runtime egress", () => {
     expect(upstream).not.toHaveBeenCalled();
     expect(broker.fetch).not.toHaveBeenCalled();
   });
+
+  it("blocks the Sandbox SDK cross-binding copy prefix escape", () => {
+    expect(isCrossBindingR2Copy(new Request(
+      "http://r2.internal/NANOCODEX_WORKSPACES_0/authorized/destination",
+      { method: "PUT", headers: {
+        "x-amz-copy-source": "/NANOCODEX_WORKSPACES_1/sessions/another-agent/secret",
+      } },
+    ))).toBe(true);
+    expect(isCrossBindingR2Copy(new Request(
+      "http://r2.internal/NANOCODEX_WORKSPACES_0/authorized/destination",
+      { method: "PUT", headers: {
+        "x-amz-copy-source": "/NANOCODEX_WORKSPACES_0/authorized/source",
+      } },
+    ))).toBe(false);
+  });
 });
 
 describe("managed sandbox preview wiring", () => {
-  it("routes a mounted sandbox hand only for account-owned turns", async () => {
+  it("reads shared /brain files from the durable R2 prefix and preserves private fallback reads", async () => {
+    const bucket = {
+      get: vi.fn(async () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer })),
+    } as unknown as R2Bucket;
+    const fallback = { readFile: vi.fn(async () => new Uint8Array([9])) };
+    const workspace = createSharedBrainReadWorkspace(bucket, "durable-agent", fallback);
+
+    await expect(workspace.readFile("/brain/output.png")).resolves.toEqual(new Uint8Array([1, 2, 3]));
+    expect(bucket.get).toHaveBeenCalledWith("brains/durable-agent/output.png");
+    await expect(workspace.readFile("/workspace/private.png")).resolves.toEqual(new Uint8Array([9]));
+    expect(fallback.readFile).toHaveBeenCalledWith("/workspace/private.png");
+    await expect(workspace.readFile("/brain/../secret")).rejects.toThrow("canonical file");
+  });
+
+  it("reserves retained execution hands for full account authority", () => {
+    expect(turnCanUseExecutionNamespace({
+      capabilities: ["agents:write", "tools:use"],
+    })).toBe(true);
+    expect(turnCanUseExecutionNamespace({
+      capabilities: ["agents:write", "tools:use"],
+      connectGrant: {
+        grantId: `0x${"a".repeat(64)}`,
+        connectors: ["chatgpt"],
+        mcpIds: [],
+      },
+    })).toBe(false);
+    expect(turnCanUseExecutionNamespace({ capabilities: ["agents:write"] })).toBe(false);
+    expect(turnCanUseExecutionNamespace(undefined)).toBe(false);
+  });
+
+  it("prevents a Connect grant from steering a turn with different authority", () => {
+    const account = { capabilities: ["agents:write", "tools:use"] as const };
+    const connect = {
+      capabilities: ["agents:write", "tools:use"] as const,
+      connectGrant: {
+        grantId: `0x${"a".repeat(64)}`,
+        connectors: ["chatgpt"] as const,
+        mcpIds: [],
+      },
+    };
+    expect(turnControlAuthorizationMatches(account, account)).toBe(true);
+    expect(turnControlAuthorizationMatches(connect, connect)).toBe(true);
+    expect(turnControlAuthorizationMatches(account, connect)).toBe(false);
+  });
+
+  it("routes mounted hands only when the active turn has execution authority", async () => {
     const sourceHandler = vi.fn(async () => ({ ok: true }));
     const sourceTools: ToolMap = {
       exec_command: {
@@ -76,9 +140,9 @@ describe("managed sandbox preview wiring", () => {
         handler: sourceHandler,
       },
     };
-    let accountOwned = true;
+    let executionAuthorized = true;
     const tools = createManagedNamespaceTools(
-      () => accountOwned,
+      () => executionAuthorized,
       () => [{ id: "sandbox:test", root: "/test", workspace: "/workspace" }],
       (_machineId, name) => sourceTools[name],
     );
@@ -90,10 +154,11 @@ describe("managed sandbox preview wiring", () => {
     )).resolves.toEqual({ ok: true });
     expect(sourceHandler).toHaveBeenCalledTimes(1);
 
-    accountOwned = false;
+    executionAuthorized = false;
     await expect(tools[0]!.handler({}, toolContext())).rejects.toMatchObject({
       status: 403,
       code: "namespace_forbidden",
+      message: "the current authorization cannot use execution hands",
     });
     expect(sourceHandler).toHaveBeenCalledTimes(1);
   });

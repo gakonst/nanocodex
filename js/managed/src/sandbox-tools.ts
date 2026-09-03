@@ -12,12 +12,22 @@ import { isPrivateEgressHeader } from "./managed-egress";
 import type { Sandbox } from "./sandbox-runtime";
 
 const WORKSPACE = "/workspace";
-const WORKSPACE_FLUSH_COMMAND = "sync -f /workspace";
+const BRAIN_WORKSPACE = "/brain";
+const BRAIN_WORKSPACE_BINDING = "NANOCODEX_BRAIN";
+const LOCAL_PEER_SOURCE_ROOT = "/run/nanocodex/peer-sources";
+// A process may mutate its own workspace and the shared brain workspace. Peer
+// hand workspaces are read-only. Flush every FUSE mount before reporting
+// completion so acknowledged writes become visible.
+const WORKSPACE_FLUSH_COMMAND = "sync";
 const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
 const APPROXIMATE_BYTES_PER_TOKEN = 4;
 const OUTPUT_CURSOR_PREFIX = "sandbox-output-cursor:";
 const WORKSPACE_MOUNT_PROBE_TIMEOUT_MS = 10_000;
 const WORKSPACE_MOUNT_HEALTH_ATTEMPTS = 3;
+const MAX_CLOUDFLARE_NAMESPACE_MOUNTS = 16;
+// The SDK's R2 defaults cache positive and negative stats for 60 seconds.
+// Revalidate every lookup so a peer observes an acknowledged writer flush.
+const R2_COHERENCE_OPTIONS = Object.freeze(["stat_cache_expire=0"]);
 const PREVIEW_CAPABILITY_TTL_MS = 60 * 60 * 1_000;
 const PREVIEW_AAD = new TextEncoder().encode("nanocodex-cloudflare-sandbox-preview-v1");
 const PREVIEW_WEBSOCKET_RESPONSE_HEADERS = new Set([
@@ -64,6 +74,17 @@ type SandboxPreparation = {
   promise: Promise<Sandbox>;
 };
 
+export type CloudflareSandboxNamespaceMount = Readonly<{
+  resourceId: string;
+  root: string;
+  slot: number;
+}>;
+
+export type CloudflareBrainWorkspace = Readonly<{
+  /** Stable durable-agent id isolating one shared writable scratch prefix. */
+  resourceId: string;
+}>;
+
 type SandboxProcessStatus = "starting" | "running" | "completed" | "failed" | "killed" | "error";
 
 type SandboxProcess = {
@@ -79,6 +100,16 @@ type SandboxProcess = {
 const sandboxPreparations = new WeakMap<
   DurableObjectNamespace<Sandbox>,
   Map<string, SandboxPreparation>
+>();
+
+// Local SDK mounts are synchronized directories rather than kernel
+// mountpoints, and the SDK exposes no mount-list operation. Remember settled
+// and in-flight local mounts so reconstructing tools does not deliberately
+// invoke mountBucket just to catch its noisy "already in use" error. This is
+// development-only state; production mounts are always inspected in-container.
+const localSandboxMounts = new WeakMap<
+  DurableObjectNamespace<Sandbox>,
+  Map<string, Map<string, Promise<void>>>
 >();
 
 type SandboxToolClient = {
@@ -115,9 +146,19 @@ export function cloudflareSandboxTools(
   publicOrigin?: string,
   previewSecret?: string,
   outputCursorStorage?: SandboxOutputCursorStorage,
+  namespaceMounts?: () => readonly CloudflareSandboxNamespaceMount[],
+  brainWorkspace?: CloudflareBrainWorkspace,
 ): ToolMap {
   return createCloudflareSandboxTools(
-    () => prepareSandbox(namespace, sessionId, localBucket),
+    () => namespaceMounts === undefined
+      ? prepareSandbox(namespace, sessionId, localBucket)
+      : prepareSandboxNamespace(
+          namespace,
+          sessionId,
+          localBucket,
+          namespaceMounts(),
+          brainWorkspace,
+        ),
     publicOrigin === undefined || previewSecret === undefined
       ? undefined
       : async (port) => ({
@@ -141,6 +182,33 @@ export async function prepareCloudflareSandbox(
   localBucket = false,
 ): Promise<void> {
   await prepareSandbox(namespace, resourceId, localBucket);
+}
+
+/**
+ * Reconciles one Cloudflare hand so native processes can mutate their local
+ * workspace and shared brain scratch while addressing peer workspaces through
+ * read-only logical mount roots. The trees remain separate R2 prefixes and are
+ * mounted rather than copied or synchronized.
+ */
+export async function prepareCloudflareSandboxHand(
+  namespace: DurableObjectNamespace<Sandbox>,
+  resourceId: string,
+  mounts: readonly CloudflareSandboxNamespaceMount[],
+  localBucket = false,
+  brainWorkspace?: CloudflareBrainWorkspace,
+): Promise<void> {
+  const normalized = validateNamespaceMounts(mounts);
+  if (brainWorkspace === undefined) {
+    throw new Error("Cloudflare namespace requires a shared brain workspace");
+  }
+  const brain = validateBrainWorkspace(brainWorkspace);
+  await prepareSandboxNamespace(
+    namespace,
+    resourceId,
+    localBucket,
+    normalized,
+    brain,
+  );
 }
 
 export async function destroyCloudflareSandbox(
@@ -173,7 +241,18 @@ export async function deleteCloudflareSandboxWorkspace(
   bucket: R2Bucket,
   sessionId: string,
 ): Promise<void> {
-  const prefix = `/sessions/${sessionId}/`;
+  await deleteCloudflareWorkspacePrefix(bucket, `sessions/${sessionId}/`);
+}
+
+/** Deletes the shared writable scratch workspace owned by one durable agent. */
+export async function deleteCloudflareBrainWorkspace(
+  bucket: R2Bucket,
+  resourceId: string,
+): Promise<void> {
+  await deleteCloudflareWorkspacePrefix(bucket, `brains/${resourceId}/`);
+}
+
+async function deleteCloudflareWorkspacePrefix(bucket: R2Bucket, prefix: string): Promise<void> {
   while (true) {
     const page = await bucket.list({ prefix, limit: 1_000 });
     const keys = page.objects.map(({ key }) => key);
@@ -207,6 +286,8 @@ export function createCloudflareSandboxTools(
         const outputByteLimit = requestedOutputBytes(value.max_output_tokens);
         context?.signal.throwIfAborted();
         const sandbox = await createSandbox();
+        context?.signal.throwIfAborted();
+        await assertSandboxWorkdirAvailable(sandbox, cwd);
         context?.signal.throwIfAborted();
         const sessionId = await availableSessionId(sandbox);
         outputCursorStorage.put(`${OUTPUT_CURSOR_PREFIX}${sessionId}`, 0);
@@ -537,7 +618,12 @@ async function prepareSandbox(
     sandbox,
     promise: Promise.resolve(sandbox),
   };
-  const prepared = prepareSandboxWorkspace(sandbox, sessionId, localBucket);
+  const prepared = prepareSandboxWorkspace(
+    sandbox,
+    sessionId,
+    localBucket,
+    localBucket ? localSandboxMountRegistry(namespace, sessionId) : undefined,
+  );
   entry.promise = prepared.then(
     (value) => {
       releaseSandboxPreparation(namespace, key, entry);
@@ -552,10 +638,210 @@ async function prepareSandbox(
   return entry.promise;
 }
 
+async function prepareSandboxNamespace(
+  namespace: DurableObjectNamespace<Sandbox>,
+  sessionId: string,
+  localBucket: boolean,
+  mounts: readonly CloudflareSandboxNamespaceMount[],
+  brainWorkspace?: CloudflareBrainWorkspace,
+): Promise<Sandbox> {
+  const sandbox = await prepareSandbox(namespace, sessionId, localBucket);
+  const localMounts = localBucket
+    ? localSandboxMountRegistry(namespace, sessionId)
+    : undefined;
+  const normalized = validateNamespaceMounts(mounts);
+  const local = normalized.find(({ resourceId }) => resourceId === sessionId);
+  if (local === undefined) {
+    throw new Error("Cloudflare namespace does not contain its executing hand");
+  }
+  await ensureWorkspaceAlias(sandbox, local.root);
+  if (brainWorkspace === undefined) {
+    throw new Error("Cloudflare namespace requires a shared brain workspace");
+  }
+  await ensureBrainWorkspaceMount(
+    sandbox,
+    validateBrainWorkspace(brainWorkspace),
+    localBucket,
+    localMounts,
+  );
+  for (const peer of normalized) {
+    if (peer.resourceId === sessionId) continue;
+    await ensurePeerWorkspaceMount(sandbox, peer, localBucket, localMounts);
+  }
+  return sandbox;
+}
+
+function validateNamespaceMounts(
+  mounts: readonly CloudflareSandboxNamespaceMount[],
+): readonly CloudflareSandboxNamespaceMount[] {
+  const resources = new Set<string>();
+  const roots = new Set<string>();
+  const slots = new Set<number>();
+  if (mounts.length > MAX_CLOUDFLARE_NAMESPACE_MOUNTS) {
+    throw new Error(`Cloudflare namespace supports at most ${MAX_CLOUDFLARE_NAMESPACE_MOUNTS} mounts`);
+  }
+  for (const mount of mounts) {
+    if (!/^[A-Za-z0-9._:-]{1,256}$/.test(mount.resourceId)) {
+      throw new Error("Cloudflare namespace mount has an invalid resource id");
+    }
+    if (!/^\/mnt-[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?-[a-f0-9]{8}$/.test(mount.root)) {
+      throw new Error("Cloudflare namespace mount has an invalid logical root");
+    }
+    if (!Number.isInteger(mount.slot)
+      || mount.slot < 0
+      || mount.slot >= MAX_CLOUDFLARE_NAMESPACE_MOUNTS) {
+      throw new Error("Cloudflare namespace mount has an invalid binding slot");
+    }
+    if (resources.has(mount.resourceId) || roots.has(mount.root) || slots.has(mount.slot)) {
+      throw new Error("Cloudflare namespace mounts must have unique resources, roots, and slots");
+    }
+    resources.add(mount.resourceId);
+    roots.add(mount.root);
+    slots.add(mount.slot);
+  }
+  return mounts;
+}
+
+function validateBrainWorkspace(
+  brainWorkspace: CloudflareBrainWorkspace,
+): CloudflareBrainWorkspace {
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(brainWorkspace.resourceId)) {
+    throw new Error("Cloudflare brain workspace has an invalid resource id");
+  }
+  return brainWorkspace;
+}
+
+async function ensureWorkspaceAlias(sandbox: Sandbox, root: string): Promise<void> {
+  const result = await sandbox.exec(
+    `if [ -L '${root}' ] && [ "$(readlink -f '${root}')" = /workspace ]; then printf linked; `
+      + `elif [ ! -e '${root}' ]; then ln -s /workspace '${root}' && printf linked; `
+      + "else printf occupied; fi",
+    { cwd: "/", timeout: WORKSPACE_MOUNT_PROBE_TIMEOUT_MS },
+  );
+  if (!result.success || result.exitCode !== 0 || result.stdout.trim() !== "linked") {
+    throw new Error(`logical workspace root ${root} is occupied or unhealthy`);
+  }
+}
+
+async function ensureBrainWorkspaceMount(
+  sandbox: Sandbox,
+  brainWorkspace: CloudflareBrainWorkspace,
+  localBucket: boolean,
+  localMounts?: Map<string, Promise<void>>,
+): Promise<void> {
+  if (localBucket) {
+    await ensureLocalBucketMount(localMounts, BRAIN_WORKSPACE, async () => {
+      await sandbox.mountBucket(BRAIN_WORKSPACE_BINDING, BRAIN_WORKSPACE, {
+        prefix: `/brains/${brainWorkspace.resourceId}/`,
+        localBucket: true,
+      });
+    });
+    return;
+  }
+  const state = await peerMountState(sandbox, BRAIN_WORKSPACE);
+  if (state === "mounted") return;
+  if (state === "occupied" || state === "mounted-unhealthy") {
+    throw new Error(`shared brain workspace root ${BRAIN_WORKSPACE} is ${state}`);
+  }
+  try {
+    await sandbox.mountBucket(BRAIN_WORKSPACE_BINDING, BRAIN_WORKSPACE, {
+      prefix: `/brains/${brainWorkspace.resourceId}/`,
+      s3fsOptions: [...R2_COHERENCE_OPTIONS],
+    });
+  } catch (error) {
+    if (await peerMountState(sandbox, BRAIN_WORKSPACE) === "mounted") return;
+    throw error;
+  }
+  if (await peerMountState(sandbox, BRAIN_WORKSPACE) !== "mounted") {
+    throw new Error(`shared brain workspace root ${BRAIN_WORKSPACE} did not become healthy`);
+  }
+}
+
+async function ensurePeerWorkspaceMount(
+  sandbox: Sandbox,
+  peer: CloudflareSandboxNamespaceMount,
+  localBucket: boolean,
+  localMounts?: Map<string, Promise<void>>,
+): Promise<void> {
+  if (localBucket) {
+    const source = `${LOCAL_PEER_SOURCE_ROOT}/${peer.slot}`;
+    await ensureLocalBucketMount(localMounts, source, async () => {
+      await sandbox.mountBucket(`NANOCODEX_WORKSPACES_${peer.slot}`, source, {
+        prefix: `/sessions/${peer.resourceId}/`,
+        localBucket: true,
+        readOnly: true,
+      });
+    });
+    await ensureLocalReadOnlyProjection(sandbox, source, peer.root);
+    return;
+  }
+  const state = await peerMountState(sandbox, peer.root);
+  if (state === "mounted") return;
+  if (state === "occupied" || state === "mounted-unhealthy") {
+    throw new Error(`logical peer workspace root ${peer.root} is ${state}`);
+  }
+  try {
+    // The Sandbox SDK permits only one prefix per R2 binding in a container.
+    // Fixed aliases all target the same physical bucket but give every peer an
+    // independent, prefix-scoped FUSE mount without exposing the bucket root.
+    await sandbox.mountBucket(`NANOCODEX_WORKSPACES_${peer.slot}`, peer.root, {
+      prefix: `/sessions/${peer.resourceId}/`,
+      readOnly: true,
+      s3fsOptions: [...R2_COHERENCE_OPTIONS],
+    });
+  } catch (error) {
+    if (await peerMountState(sandbox, peer.root) === "mounted") return;
+    throw error;
+  }
+  if (await peerMountState(sandbox, peer.root) !== "mounted") {
+    throw new Error(`logical peer workspace root ${peer.root} did not become healthy`);
+  }
+}
+
+async function ensureLocalReadOnlyProjection(
+  sandbox: Sandbox,
+  source: string,
+  root: string,
+): Promise<void> {
+  const result = await sandbox.exec(
+    `mkdir -p '${root}' && `
+      + `if mountpoint -q '${root}'; then `
+      + `findmnt -n -o OPTIONS --target '${root}' | tr ',' '\n' | grep -qx ro; `
+      + `else mount --bind '${source}' '${root}' && `
+      + `(mount -o remount,bind,ro '${root}' || { umount '${root}' || true; exit 1; }); fi`,
+    { cwd: "/", timeout: WORKSPACE_MOUNT_PROBE_TIMEOUT_MS },
+  );
+  if (!result.success || result.exitCode !== 0) {
+    throw new Error(`could not expose local peer workspace ${root} read-only`);
+  }
+}
+
+async function peerMountState(
+  sandbox: SandboxToolClient,
+  root: string,
+): Promise<WorkspaceMountState> {
+  const result = await sandbox.exec(
+    `if mountpoint -q '${root}'; then `
+      + `if stat '${root}' >/dev/null; then printf mounted; else printf mounted-unhealthy; fi; `
+      + `elif [ ! -e '${root}' ]; then printf absent; `
+      + `elif [ -d '${root}' ] && [ -z "$(find '${root}' -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then printf empty; `
+      + "else printf occupied; fi",
+    { cwd: "/", timeout: WORKSPACE_MOUNT_PROBE_TIMEOUT_MS },
+  );
+  if (!result.success || result.exitCode !== 0) {
+    throw new Error(`could not inspect logical peer workspace root ${root}`);
+  }
+  const state = result.stdout.trim();
+  if (state === "absent" || state === "empty" || state === "occupied"
+    || state === "mounted" || state === "mounted-unhealthy") return state;
+  throw new Error(`unexpected peer mount probe result: ${state || "empty output"}`);
+}
+
 async function prepareSandboxWorkspace(
   sandbox: Sandbox,
   sessionId: string,
   localBucket: boolean,
+  localMounts?: Map<string, Promise<void>>,
 ): Promise<Sandbox> {
   if (!localBucket) {
     const state = await workspaceMountState(sandbox);
@@ -572,25 +858,49 @@ async function prepareSandboxWorkspace(
     }
   }
 
+  if (localBucket) {
+    await ensureLocalBucketMount(localMounts, WORKSPACE, async () => {
+      await sandbox.mountBucket("NANOCODEX_WORKSPACES", WORKSPACE, {
+        prefix: `/sessions/${sessionId}/`,
+        localBucket: true,
+      });
+    });
+    return sandbox;
+  }
+
   try {
     await sandbox.mountBucket("NANOCODEX_WORKSPACES", WORKSPACE, {
       prefix: `/sessions/${sessionId}/`,
-      ...(localBucket ? { localBucket: true as const } : {}),
+      s3fsOptions: [...R2_COHERENCE_OPTIONS],
     });
   } catch (error) {
-    if (localBucket && errorMessage(error).toLowerCase().includes("mount path already in use")) {
-      return sandbox;
-    }
     // Another preparation can win between the preflight probe and the SDK's
     // serialized mount operation. Reuse only a mount that is demonstrably live;
     // never suppress a mount error merely because /workspace contains files.
-    if (!localBucket && await workspaceMountState(sandbox) === "mounted") return sandbox;
+    if (await workspaceMountState(sandbox) === "mounted") return sandbox;
     throw error;
   }
-  if (!localBucket && await workspaceMountState(sandbox) !== "mounted") {
+  if (await workspaceMountState(sandbox) !== "mounted") {
     throw new Error("the R2 workspace mount did not become healthy");
   }
   return sandbox;
+}
+
+async function ensureLocalBucketMount(
+  mounts: Map<string, Promise<void>> | undefined,
+  path: string,
+  mount: () => Promise<void>,
+): Promise<void> {
+  if (mounts === undefined) throw new Error("local sandbox mount registry is unavailable");
+  const existing = mounts.get(path);
+  if (existing !== undefined) return existing;
+  const pending = mount().catch((error: unknown) => {
+    if (errorMessage(error).toLowerCase().includes("mount path already in use")) return;
+    if (mounts.get(path) === pending) mounts.delete(path);
+    throw error;
+  });
+  mounts.set(path, pending);
+  return pending;
 }
 
 type WorkspaceMountState = "absent" | "empty" | "occupied" | "mounted" | "mounted-unhealthy";
@@ -640,11 +950,32 @@ function clearSandboxPreparations(
   sessionId: string,
 ): void {
   const sessions = sandboxPreparations.get(namespace);
-  if (!sessions) return;
-  for (const [key, entry] of sessions) {
-    if (entry.sessionId === sessionId) sessions.delete(key);
+  if (sessions !== undefined) {
+    for (const [key, entry] of sessions) {
+      if (entry.sessionId === sessionId) sessions.delete(key);
+    }
+    if (sessions.size === 0) sandboxPreparations.delete(namespace);
   }
-  if (sessions.size === 0) sandboxPreparations.delete(namespace);
+  const localSessions = localSandboxMounts.get(namespace);
+  localSessions?.delete(sessionId);
+  if (localSessions?.size === 0) localSandboxMounts.delete(namespace);
+}
+
+function localSandboxMountRegistry(
+  namespace: DurableObjectNamespace<Sandbox>,
+  sessionId: string,
+): Map<string, Promise<void>> {
+  let sessions = localSandboxMounts.get(namespace);
+  if (sessions === undefined) {
+    sessions = new Map();
+    localSandboxMounts.set(namespace, sessions);
+  }
+  let mounts = sessions.get(sessionId);
+  if (mounts === undefined) {
+    mounts = new Map();
+    sessions.set(sessionId, mounts);
+  }
+  return mounts;
 }
 
 function releaseSandboxPreparation(
@@ -682,6 +1013,26 @@ export function workspacePath(raw: string): string {
   const parts = relative.split("/").filter((part) => part !== "" && part !== ".");
   if (parts.includes("..")) throw new Error("path must not contain '..'");
   return parts.length === 0 ? WORKSPACE : `${WORKSPACE}/${parts.join("/")}`;
+}
+
+async function assertSandboxWorkdirAvailable(
+  sandbox: SandboxToolClient,
+  cwd: string,
+): Promise<void> {
+  if (cwd === WORKSPACE) return;
+  try {
+    const result = await sandbox.exec(":", {
+      cwd,
+      timeout: WORKSPACE_MOUNT_PROBE_TIMEOUT_MS,
+    });
+    if (result.success && result.exitCode === 0) return;
+    const detail = (result.stderr.trim() || result.stdout.trim()).slice(0, 500);
+    throw new Error(detail || `exit code ${result.exitCode}`);
+  } catch (error) {
+    throw new Error(
+      `exec_command.workdir is unavailable: ${cwd}: ${errorMessage(error)}`,
+    );
+  }
 }
 
 function objectInput(input: unknown): Record<string, unknown> {

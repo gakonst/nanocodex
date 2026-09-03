@@ -7,12 +7,16 @@ import {
   cloudflareSandboxPreviewUrl,
   cloudflareSandboxTools,
   createCloudflareSandboxTools,
+  deleteCloudflareBrainWorkspace,
   deleteCloudflareSandboxWorkspace,
   openSandboxPreviewCapability,
   prepareCloudflareSandbox,
+  prepareCloudflareSandboxHand,
   proxyCloudflareSandboxPreview,
 } from "../src/sandbox-tools";
 import type { Sandbox } from "../src/sandbox-runtime";
+
+const SHARED_BRAIN = { resourceId: "durable-agent" } as const;
 
 const context = {
   callId: "call",
@@ -91,7 +95,25 @@ describe("Cloudflare sandbox tools", () => {
       processId: expect.stringMatching(/^nanocodex-[1-9][0-9]*$/),
       autoCleanup: false,
     });
-    expect(sandbox.exec).toHaveBeenCalledWith("sync -f /workspace", { cwd: "/" });
+    expect(sandbox.exec).toHaveBeenCalledWith("sync", { cwd: "/" });
+  });
+
+  it("rejects an unavailable workdir before starting a retained process", async () => {
+    const sandbox = fakeSandbox();
+    sandbox.exec.mockResolvedValueOnce(executionResult(
+      "",
+      "Failed to change directory to '/workspace/workspace/dtolnay/itoa'",
+      1,
+    ));
+    const tools = createCloudflareSandboxTools(async () => sandbox);
+
+    await expect(tools.exec_command!.handler({
+      cmd: "cargo test",
+      workdir: "workspace/dtolnay/itoa",
+    }, context)).rejects.toThrow(
+      "exec_command.workdir is unavailable: /workspace/workspace/dtolnay/itoa: Failed to change directory",
+    );
+    expect(sandbox.startProcess).not.toHaveBeenCalled();
   });
 
   it("persists the output cursor across tool reconstruction and preserves a terminal tail", async () => {
@@ -202,7 +224,7 @@ describe("Cloudflare sandbox tools", () => {
 
     await expect(tools.exec_command!.handler({ cmd: "task" }, context))
       .rejects.toBe(failure);
-    expect(sandbox.exec).toHaveBeenLastCalledWith("sync -f /workspace", { cwd: "/" });
+    expect(sandbox.exec).toHaveBeenLastCalledWith("sync", { cwd: "/" });
   });
 
   it("kills and flushes a started process when observation fails", async () => {
@@ -216,7 +238,7 @@ describe("Cloudflare sandbox tools", () => {
     await expect(tools.exec_command!.handler({ cmd: "task" }, context))
       .rejects.toBe(failure);
     expect(process.kill).toHaveBeenCalledTimes(1);
-    expect(sandbox.exec).toHaveBeenLastCalledWith("sync -f /workspace", { cwd: "/" });
+    expect(sandbox.exec).toHaveBeenLastCalledWith("sync", { cwd: "/" });
   });
 
   it("mounts one retained workspace and reuses it across tool reconstruction", async () => {
@@ -234,7 +256,10 @@ describe("Cloudflare sandbox tools", () => {
     expect(sandboxSdk.getSandbox).toHaveBeenCalledTimes(2);
     expect(sandbox.mountBucket).toHaveBeenCalledTimes(1);
     expect(sandbox.mountBucket).toHaveBeenCalledWith(
-      "NANOCODEX_WORKSPACES", "/workspace", { prefix: "/sessions/retained/" },
+      "NANOCODEX_WORKSPACES", "/workspace", {
+        prefix: "/sessions/retained/",
+        s3fsOptions: ["stat_cache_expire=0"],
+      },
     );
   });
 
@@ -245,9 +270,149 @@ describe("Cloudflare sandbox tools", () => {
     await prepareCloudflareSandbox(fakeNamespace(), "mounted-hand");
 
     expect(sandbox.mountBucket).toHaveBeenCalledWith(
-      "NANOCODEX_WORKSPACES", "/workspace", { prefix: "/sessions/mounted-hand/" },
+      "NANOCODEX_WORKSPACES", "/workspace", {
+        prefix: "/sessions/mounted-hand/",
+        s3fsOptions: ["stat_cache_expire=0"],
+      },
     );
     expect(sandbox.startProcess).not.toHaveBeenCalled();
+  });
+
+  it("mounts every Cloudflare workspace into every peer native namespace", async () => {
+    const one = namespaceSandbox();
+    const two = namespaceSandbox();
+    sandboxSdk.getSandbox.mockReturnValueOnce(one).mockReturnValueOnce(two);
+    const mounts = [
+      { resourceId: "resource-one", root: "/mnt-one-11111111", slot: 7 },
+      { resourceId: "resource-two", root: "/mnt-two-22222222", slot: 3 },
+    ];
+
+    const namespace = fakeNamespace();
+    await prepareCloudflareSandboxHand(
+      namespace, "resource-one", mounts, false, SHARED_BRAIN,
+    );
+    await prepareCloudflareSandboxHand(
+      namespace, "resource-two", mounts, false, SHARED_BRAIN,
+    );
+
+    expect(one.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_WORKSPACES_3",
+      "/mnt-two-22222222",
+      {
+        prefix: "/sessions/resource-two/",
+        readOnly: true,
+        s3fsOptions: ["stat_cache_expire=0"],
+      },
+    );
+    expect(two.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_WORKSPACES_7",
+      "/mnt-one-11111111",
+      {
+        prefix: "/sessions/resource-one/",
+        readOnly: true,
+        s3fsOptions: ["stat_cache_expire=0"],
+      },
+    );
+    for (const sandbox of [one, two]) {
+      expect(sandbox.mountBucket).toHaveBeenCalledWith(
+        "NANOCODEX_BRAIN",
+        "/brain",
+        {
+          prefix: "/brains/durable-agent/",
+          s3fsOptions: ["stat_cache_expire=0"],
+        },
+      );
+    }
+    expect(one.exec).toHaveBeenCalledWith(
+      expect.stringContaining("ln -s /workspace '/mnt-one-11111111'"),
+      { cwd: "/", timeout: 10_000 },
+    );
+    expect(two.exec).toHaveBeenCalledWith(
+      expect.stringContaining("ln -s /workspace '/mnt-two-22222222'"),
+      { cwd: "/", timeout: 10_000 },
+    );
+  });
+
+  it("rejects ambiguous Cloudflare peer binding slots before provisioning", async () => {
+    await expect(prepareCloudflareSandboxHand(fakeNamespace(), "resource-one", [
+      { resourceId: "resource-one", root: "/mnt-one-11111111", slot: 0 },
+      { resourceId: "resource-two", root: "/mnt-two-22222222", slot: 0 },
+    ], false, SHARED_BRAIN)).rejects.toThrow("unique resources, roots, and slots");
+    expect(sandboxSdk.getSandbox).not.toHaveBeenCalled();
+  });
+
+  it("accepts local synchronized peer directories without requiring FUSE mountpoints", async () => {
+    const sandbox = namespaceSandbox();
+    sandboxSdk.getSandbox.mockReturnValue(sandbox);
+
+    await prepareCloudflareSandboxHand(fakeNamespace(), "resource-one", [
+      { resourceId: "resource-one", root: "/mnt-one-11111111", slot: 0 },
+      { resourceId: "resource-two", root: "/mnt-two-22222222", slot: 1 },
+    ], true, SHARED_BRAIN);
+
+    expect(sandbox.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_WORKSPACES_1",
+      "/run/nanocodex/peer-sources/1",
+      { prefix: "/sessions/resource-two/", localBucket: true, readOnly: true },
+    );
+    expect(sandbox.exec).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "mount --bind '/run/nanocodex/peer-sources/1' '/mnt-two-22222222'",
+      ),
+      { cwd: "/", timeout: 10_000 },
+    );
+    expect(sandbox.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_BRAIN",
+      "/brain",
+      { prefix: "/brains/durable-agent/", localBucket: true },
+    );
+  });
+
+  it("deduplicates local SDK mounts across hand reconstruction", async () => {
+    const sandbox = namespaceSandbox();
+    sandboxSdk.getSandbox.mockReturnValue(sandbox);
+    const namespace = fakeNamespace();
+    const mounts = [
+      { resourceId: "resource-one", root: "/mnt-one-11111111", slot: 0 },
+      { resourceId: "resource-two", root: "/mnt-two-22222222", slot: 1 },
+    ];
+
+    await prepareCloudflareSandboxHand(
+      namespace, "resource-one", mounts, true, SHARED_BRAIN,
+    );
+    await prepareCloudflareSandboxHand(
+      namespace, "resource-one", mounts, true, SHARED_BRAIN,
+    );
+
+    expect(sandboxSdk.getSandbox).toHaveBeenCalledTimes(2);
+    expect(sandbox.mountBucket).toHaveBeenCalledTimes(3);
+    expect(sandbox.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_WORKSPACES", "/workspace",
+      { prefix: "/sessions/resource-one/", localBucket: true },
+    );
+    expect(sandbox.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_BRAIN", "/brain",
+      { prefix: "/brains/durable-agent/", localBucket: true },
+    );
+    expect(sandbox.mountBucket).toHaveBeenCalledWith(
+      "NANOCODEX_WORKSPACES_1", "/run/nanocodex/peer-sources/1",
+      { prefix: "/sessions/resource-two/", localBucket: true, readOnly: true },
+    );
+  });
+
+  it("requires a valid shared brain workspace before provisioning hands", async () => {
+    const mount = [{
+      resourceId: "resource-one",
+      root: "/mnt-one-11111111",
+      slot: 0,
+    }];
+    await expect(prepareCloudflareSandboxHand(
+      fakeNamespace(), "resource-one", mount,
+    )).rejects.toThrow("requires a shared brain workspace");
+    await expect(prepareCloudflareSandboxHand(
+      fakeNamespace(), "resource-one", mount, false, { resourceId: "../agent" },
+    )).rejects.toThrow("invalid resource id");
+    expect(sandboxSdk.getSandbox).not.toHaveBeenCalled();
   });
 
   it("preserves local R2 mount options and refuses unsafe remote remounts", async () => {
@@ -591,8 +756,8 @@ describe("Cloudflare sandbox tools", () => {
 
   it("deletes every persisted object owned by a removed sandbox", async () => {
     const pages = [
-      { objects: [{ key: "/sessions/session/a" }, { key: "/sessions/session/b" }] },
-      { objects: [{ key: "/sessions/session/c" }] },
+      { objects: [{ key: "sessions/session/a" }, { key: "sessions/session/b" }] },
+      { objects: [{ key: "sessions/session/c" }] },
       { objects: [] },
     ];
     const bucket = {
@@ -603,8 +768,23 @@ describe("Cloudflare sandbox tools", () => {
     await deleteCloudflareSandboxWorkspace(bucket, "session");
 
     expect(bucket.list).toHaveBeenCalledTimes(3);
-    expect(bucket.delete).toHaveBeenCalledWith(["/sessions/session/a", "/sessions/session/b"]);
-    expect(bucket.delete).toHaveBeenCalledWith(["/sessions/session/c"]);
+    expect(bucket.list).toHaveBeenCalledWith({ prefix: "sessions/session/", limit: 1_000 });
+    expect(bucket.delete).toHaveBeenCalledWith(["sessions/session/a", "sessions/session/b"]);
+    expect(bucket.delete).toHaveBeenCalledWith(["sessions/session/c"]);
+  });
+
+  it("deletes the durable agent's shared brain workspace", async () => {
+    const bucket = {
+      list: vi.fn()
+        .mockResolvedValueOnce({ objects: [{ key: "brains/agent/artifact" }] })
+        .mockResolvedValueOnce({ objects: [] }),
+      delete: vi.fn(async () => {}),
+    } as unknown as R2Bucket;
+
+    await deleteCloudflareBrainWorkspace(bucket, "agent");
+
+    expect(bucket.list).toHaveBeenCalledWith({ prefix: "brains/agent/", limit: 1_000 });
+    expect(bucket.delete).toHaveBeenCalledWith(["brains/agent/artifact"]);
   });
 });
 
@@ -648,6 +828,31 @@ function preparingSandbox(initialState: "empty" | "mounted" | "occupied") {
   sandbox.exec.mockImplementation(async (command: string) => executionResult(
     command.startsWith("if mountpoint -q /workspace") ? mountState : "",
   ));
+  return sandbox;
+}
+
+function namespaceSandbox() {
+  let workspaceMounted = false;
+  const peerMounts = new Set<string>();
+  const sandbox = {
+    ...fakeSandbox(),
+    mountBucket: vi.fn(async (_bucket: string, path: string) => {
+      if (path === "/workspace") workspaceMounted = true;
+      else peerMounts.add(path);
+    }),
+    destroy: vi.fn(async () => {}),
+  };
+  sandbox.exec.mockImplementation(async (command: string) => {
+    if (command.startsWith("if mountpoint -q /workspace")) {
+      return executionResult(workspaceMounted ? "mounted" : "empty");
+    }
+    if (command.startsWith("if [ -L '/mnt-")) return executionResult("linked");
+    const peer = [...peerMounts].find((root) => command.startsWith(`if mountpoint -q '${root}'`));
+    if (peer !== undefined) return executionResult("mounted");
+    if (command.startsWith("if mountpoint -q '/mnt-")) return executionResult("absent");
+    if (command.startsWith("if mountpoint -q '/brain'")) return executionResult("absent");
+    return executionResult("");
+  });
   return sandbox;
 }
 

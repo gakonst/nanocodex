@@ -1,4 +1,5 @@
 import {
+  ContainerProxy as CloudflareContainerProxy,
   Sandbox as CloudflareSandbox,
 } from "@cloudflare/sandbox";
 
@@ -35,5 +36,40 @@ export async function handleSandboxEgress(
 
 Sandbox.outbound = handleSandboxEgress;
 
-// Required by the Sandbox SDK for transparent HTTP(S) interception.
-export { ContainerProxy } from "@cloudflare/sandbox";
+/**
+ * Required by the Sandbox SDK for transparent HTTP(S) interception. Sandbox
+ * 0.12.4 does not apply a source mount's prefix to cross-binding S3 COPY
+ * requests. We bind one alias per peer prefix, so fail those server-side copies
+ * closed; ordinary cross-mount filesystem copies stream reads and writes and do
+ * not require this optimization.
+ */
+export class ContainerProxy extends CloudflareContainerProxy {
+  override fetch(request: Request): Promise<Response> {
+    if (isCrossBindingR2Copy(request)) {
+      return Promise.resolve(new Response("Cross-binding R2 copy is forbidden", { status: 403 }));
+    }
+    return super.fetch(request);
+  }
+}
+
+export function isCrossBindingR2Copy(request: Request): boolean {
+  const url = new URL(request.url);
+  const copySource = request.headers.get("x-amz-copy-source");
+  if (url.hostname !== "r2.internal" || copySource === null) return false;
+  try {
+    const destinationBinding = bucketBinding(url.pathname);
+    const sourcePath = decodeURIComponent(copySource.split("?", 1)[0] ?? "");
+    const sourceBinding = bucketBinding(sourcePath);
+    return destinationBinding === undefined
+      || sourceBinding === undefined
+      || sourceBinding !== destinationBinding;
+  } catch {
+    return true;
+  }
+}
+
+function bucketBinding(path: string): string | undefined {
+  const stripped = path.replace(/^\/+/, "");
+  const binding = stripped.split("/", 1)[0];
+  return binding || undefined;
+}

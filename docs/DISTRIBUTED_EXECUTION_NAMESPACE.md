@@ -1,8 +1,59 @@
 # Distributed execution namespace
 
-Status: contract plus cwd-routing milestone implemented locally; not deployed.
-Native cross-mount filesystem access (C2/C5) remains gated. This supersedes the
-proposed `environment` argument on execution tools.
+Status: contract plus cwd routing implemented. Cloudflare sandbox hands compose
+their retained R2 workspace prefixes as native peer mounts. Native cross-mount
+filesystem access (C2/C5) for connected user hands and future providers remains
+gated on a conforming provider adapter. This supersedes the proposed
+`environment` argument on execution tools.
+
+## Product model
+
+A durable agent is a small personal compute cluster. The durable agent is its
+control plane and persistence boundary; browser, CLI, API,
+Connect, and subagent turns are transports that invoke it, not different kinds
+of ownership. The brain starts without a computer and mounts provider-backed
+hands when native work requires them.
+
+```text
+account
+└── durable agent cluster
+    ├── /brain       shared durable scratch
+    ├── /build       Cloudflare worker + durable workspace
+    ├── /test        Cloudflare worker + durable workspace
+    └── /laptop      explicitly granted user-provided worker
+```
+
+Mount topology belongs to the durable agent, not to the invocation that created
+it. Agent-owned mounts persist with the agent and are visible by default to an
+invocation authorized to use that agent's execution namespace. The initial
+Cloudflare release has no configurable per-mount permission model. Account-wide
+devices, connectors, identities, and secrets retain their existing explicit
+authorization boundaries; paths and transport types never grant authority.
+
+The initial filesystem policy is fixed:
+
+- A process may read and write the workspace of the hand it executes on.
+- It may read every peer hand workspace but cannot mutate one.
+- Every hand may read and write `/brain`.
+- `/brain` is shared scratch only. Credentials, grants, prompts, and durable
+  control-plane state never live in a path that hand processes can mutate.
+- `/github`, when present, is a shared read-only repository cache.
+
+The acceptance stories are:
+
+- A user can ask an agent to clone and test a repository without first asking
+  for a sandbox.
+- An agent can lazily mount multiple named workers from Cloudflare or future
+  providers and choose placement through `workdir`.
+- A process on one worker can read every peer mount and write its own mount and
+  `/brain` using ordinary filesystem paths.
+- Mount identity and files survive sleeping, restarting, or replacing compute.
+- The same durable cluster is available through web, CLI, API, and Connect,
+  bounded by each invocation's capabilities.
+- Subagents can fan work across the cluster under the same fixed filesystem
+  policy.
+- Failures identify the unavailable resource or missing operation, never an
+  internal transport or ownership category.
 
 ## Core contract
 
@@ -24,17 +75,20 @@ namespace:
   testing code; the user does not have to request a mount explicitly.
 - **C1 — Placement:** the mount root containing a command's effective cwd
   selects the hand that executes it.
-- **C2 — Access:** every process sees the same authorized mounts. Discovery,
-  read, and write rights are independent of placement.
+- **C2 — Access:** every process sees the same mounts. Placement grants write
+  access to the executing hand; peer hands are read-only; `/brain` is writable
+  from every hand.
 - **C3 — Stable tools:** `exec_command` and `write_stdin` keep their canonical
   shapes; no environment, machine, host, or sandbox selector is added.
-- **C4 — Stable context:** a Code Mode cell has an immutable namespace and
-  default-cwd snapshot. Each command captures its cwd when scheduled.
+- **C4 — Stable placement:** each command captures its cwd when scheduled and
+  retained process sessions stay pinned to their originating hand. The initial
+  Cloudflare mount table is agent-global and additive, so a reconciled hand may
+  expose a newly mounted read-only peer to an already-running process.
 - **C5 — Native namespace:** arbitrary native children access mounts through
   normal filesystem syscalls. Rewriting `workdir`, parsing shell text, or
   copying/syncing trees is not conforming.
-- **C6 — Subagent inheritance:** each child gets a stable, capability-bounded
-  namespace and independently uses C1–C5, including concurrent use of hands.
+- **C6 — Subagents:** each child uses the same fixed C1–C5 policy and may fan
+  work across hands concurrently.
 
 Thus both forms below execute on `laptop`, while Cargo and its children may use
 other authorized mounts:
@@ -58,8 +112,8 @@ explicitly configured physical directory, never an implicit OS root. A stable
 logical **mount root** such as `/laptop` names it; the mount root containing the
 cwd is the **execution root**.
 
-The broker creates an immutable cell manifest mapping each mount root to opaque
-hand and export identities, attachment generation, lease, and rights. Mount
+The broker creates a routing manifest mapping each mount root to opaque hand
+and export identities. Mount
 names are portable, unique, non-overlapping, and distinct from reserved roots
 such as `brain`, `sandbox`, `.nanocodex`, `dev`, `proc`, and `tmp`. Names and
 paths locate resources but never authorize them. `brain` is a broker-owned
@@ -69,8 +123,8 @@ roots cannot reuse any reserved name.
 the configured export, not OS path `/a` unless the OS root was deliberately
 exported.
 
-A cell's name-to-identity mapping never changes. New connections appear only in
-a later cell; revocation may invalidate existing authority immediately.
+Placement routing never retargets a retained process. Native peer visibility is
+agent-global in the initial Cloudflare adapter and may grow as hands mount.
 
 ## Execution semantics
 
@@ -108,22 +162,18 @@ The canonical task tree and its tools, including `spawn_agent`, keep their
 schemas and authority rules. Spawning creates a model session, not a process on
 a hand, and adds no hand selector.
 
-At admission the runtime atomically binds the child to the invoking cell's
-manifest and generations, the parent's default logical cwd, necessary leases,
-task-tree/session/cancellation identities, and an authority ceiling no broader
-than the parent's effective rights. Exact inheritance is the compatibility
-default. Trusted host policy may attenuate mounts, subtrees, or write rights;
-grandchildren may only attenuate further. If the resulting scope cannot access
-the inherited cwd, spawn fails atomically. Roles, tasks, messages, paths, and
-mount names cannot grant authority.
+The initial Cloudflare release gives children the durable agent's current mount
+table and the same fixed filesystem policy: the executing hand and `/brain` are
+writable, while peer hands are read-only. A future configurable permission
+model may snapshot or attenuate a child's view, but it is not part of v1.
 
 A child is not pinned to a hand. Every command is placed from that command's
 effective cwd, so one child may use several hands and siblings may fan out
 concurrently. Task text can suggest a cwd; ordinary `exec_command({workdir})` or
 shell `cd` performs placement under the server-bound authority.
 
-Parents and children share exported files subject to individual rights and
-filesystem consistency. Model sessions, conversation state, Code Mode stores,
+Parents and children share exported files under the fixed filesystem policy.
+Model sessions, conversation state, Code Mode stores,
 output cursors, and cancellation controllers remain private. Concurrent
 writers need disjoint worktrees/subtrees, a trusted write-scope policy, or
 ordinary filesystem locking; descriptive task text is not a write lease.
@@ -133,7 +183,11 @@ turns; each hand separately bounds processes, sessions, filesystem requests,
 and bytes in flight. Model/thinking selection affects inference only, never
 execution placement.
 
-## Filesystem and capabilities
+## Future provider-neutral filesystem protocol and capabilities
+
+The remainder of this section describes the protocol needed to extend the
+namespace beyond the initial fixed Cloudflare policy. It is not a configurable
+permission surface in the first release.
 
 Every full-capability execution hand receives an actual private root or mount
 namespace. Its own export should be a local mount; peer exports are remote
@@ -250,19 +304,21 @@ sockets, and secret exposure.
 ## Phased delivery
 
 1. Specify the manifest and host-generic filesystem interface. (Manifest and
-   authority substrate complete; filesystem operation interface pending.)
+   authority substrate complete; filesystem operation interface pending for
+   non-Cloudflare providers.)
 2. Prove one rooted server and one native Linux namespace client.
 3. Add the streaming data plane, receipts, and lifecycle fencing.
-4. Mount two real hands and prove native cross-host read/write.
+4. Mount two real Cloudflare hands and prove native cross-hand read/write.
 5. Bind root and child sessions to namespace/cwd contexts; prove sibling fan-out.
 6. Replace environment-addressed execution with cwd-root placement. (Complete
-   for canonical `workdir`; shell `cd` requires the native adapter.)
+   for canonical `workdir`; shell `cd` works across Cloudflare hands and requires
+   the native adapter for other providers.)
 7. Add each platform adapter only after its conformance gate passes.
 8. Verify reload, reconnect, revocation, cross-account isolation, and secret
    containment before deployment.
 
-Cwd routing may be an internal milestone, but the distributed namespace cannot
-ship until native processes can access peer mounts.
+Cwd routing alone is an internal milestone. A provider joins the distributed
+namespace only after native processes can access that provider's peer mounts.
 
 ## References
 

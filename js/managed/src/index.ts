@@ -22,10 +22,13 @@ import { MAX_NAMESPACE_MOUNTS } from "nanocodex-tools";
 import { managedCodeEvaluator } from "./code-evaluator";
 import {
   cloudflareSandboxTools,
-  deleteCloudflareSandbox,
+  deleteCloudflareBrainWorkspace,
+  deleteCloudflareSandboxWorkspace,
+  destroyCloudflareSandbox,
   openSandboxPreviewCapability,
-  prepareCloudflareSandbox,
+  prepareCloudflareSandboxHand,
   proxyCloudflareSandboxPreview,
+  type CloudflareSandboxNamespaceMount,
 } from "./sandbox-tools";
 import {
   createNamespaceExecutionRuntime,
@@ -175,6 +178,7 @@ import {
 } from "./account-info";
 import { accountConnectorsTool } from "./account-connectors-tool";
 import {
+  managedMountProviderResourceId,
   managedMountRoot,
   managedMountTool,
   type ManagedMountRequest,
@@ -290,7 +294,10 @@ const MEMORY_TEAM_ASSERTION = "x-nanocodex-team-id";
 const MEMORY_SUBJECT_ASSERTION = "x-nanocodex-subject-id";
 const MEMORY_MUTATION_ASSERTION = "x-nanocodex-memory-mutation";
 
-export interface Env extends AccountAuthEnv, ChiefOfStaffPrincipalEnv, HostPrincipalEnv {
+export interface Env extends
+  AccountAuthEnv,
+  ChiefOfStaffPrincipalEnv,
+  HostPrincipalEnv {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
   NANOCODEX_ROOMS: DurableObjectNamespace<MultiplayerRoom>;
   NANOCODEX_MULTIPLAYER_QUOTA: DurableObjectNamespace<MultiplayerQuota>;
@@ -417,6 +424,19 @@ type ManagedMountCallRow = {
   mount_id: string;
   created: number;
 };
+
+type ManagedMountConfiguration = Readonly<{
+  namespace_slot?: number;
+  [key: string]: unknown;
+}>;
+
+function managedMountConfiguration(encoded: string): ManagedMountConfiguration {
+  const value = JSON.parse(encoded) as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("retained mount configuration is invalid");
+  }
+  return value as ManagedMountConfiguration;
+}
 
 type ManagedTurnState =
   | "accepted"
@@ -702,6 +722,52 @@ function parseTurnAuthorization(encoded: string): TurnAuthorization {
   if (parsed.connectGrant === undefined) return { capabilities: parsed.capabilities };
   if (!isConnectGrantSlice(parsed.connectGrant)) throw new Error("invalid turn authorization");
   return { capabilities: parsed.capabilities, connectGrant: parsed.connectGrant };
+}
+
+export function turnCanUseExecutionNamespace(
+  authorization: Pick<TurnAuthorization, "capabilities"> & { connectGrant?: unknown } | undefined,
+): boolean {
+  return authorization !== undefined
+    // Retained execution hands are available only to full account authority.
+    && authorization.connectGrant === undefined
+    && authorization.capabilities.includes("agents:write")
+    && authorization.capabilities.includes("tools:use");
+}
+
+export function turnControlAuthorizationMatches(
+  retained: TurnAuthorization,
+  requester: TurnAuthorization,
+): boolean {
+  if (retained.connectGrant === undefined && requester.connectGrant === undefined) return true;
+  return JSON.stringify(retained) === JSON.stringify(requester);
+}
+
+export function createSharedBrainReadWorkspace(
+  bucket: R2Bucket,
+  resourceId: string,
+  fallback: Readonly<{ readFile(path: string): Promise<Uint8Array> }>,
+): Readonly<{ readFile(path: string): Promise<Uint8Array> }> {
+  return Object.freeze({
+    readFile: async (path: string): Promise<Uint8Array> => {
+      const key = sharedBrainObjectKey(resourceId, path);
+      if (key === undefined) return fallback.readFile(path);
+      const object = await bucket.get(key);
+      if (object === null) throw new Error(`brain workspace file not found: ${path}`);
+      return new Uint8Array(await object.arrayBuffer());
+    },
+  });
+}
+
+function sharedBrainObjectKey(resourceId: string, path: string): string | undefined {
+  if (!path.startsWith("/brain/")) return undefined;
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(resourceId)) {
+    throw new Error("brain workspace has an invalid resource id");
+  }
+  const parts = path.slice("/brain/".length).split("/");
+  if (parts.some((part) => part.length === 0 || part === "." || part === ".." || part.includes("\0"))) {
+    throw new Error("brain workspace path must name a canonical file beneath /brain");
+  }
+  return `brains/${resourceId}/${parts.join("/")}`;
 }
 
 function isConnectGrantSlice(value: unknown): value is ConnectGrantSlice {
@@ -1569,15 +1635,15 @@ export async function routeSandboxPreviewRequest(
 }
 
 export function createManagedNamespaceTools(
-  isAccountOwnedTurn: () => boolean,
+  canUseExecutionNamespace: () => boolean,
   machines: () => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
 ): NamedTool[] {
-  return createManagedNamespaceRuntime(isAccountOwnedTurn, machines, resolveMachineTool).tools;
+  return createManagedNamespaceRuntime(canUseExecutionNamespace, machines, resolveMachineTool).tools;
 }
 
 function createManagedNamespaceRuntime(
-  isAccountOwnedTurn: () => boolean,
+  canUseExecutionNamespace: () => boolean,
   machines: () => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
 ): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): void }> {
@@ -1589,11 +1655,11 @@ function createManagedNamespaceRuntime(
     name,
     ...tool,
     handler: async (input, context) => {
-      if (!isAccountOwnedTurn()) {
+      if (!canUseExecutionNamespace()) {
         throw new ManagedRequestError(
           403,
           "namespace_forbidden",
-          "execution namespace tools are available only to account-owned turns",
+          "the current authorization cannot use execution hands",
         );
       }
       return tool.handler(input, context);
@@ -2452,7 +2518,7 @@ export class DurableAgentSession extends DurableComputerSession {
         }
       }
       if (request.method === "POST" && turnRoute[2] === "steer") {
-        return this.#steerHttpTurn(turnId, request);
+        return this.#steerHttpTurn(turnId, request, turnAuthorization);
       }
       if (request.method === "POST" && turnRoute[2] === "cancel") {
         return this.#cancelHttpTurn(turnId);
@@ -3288,14 +3354,28 @@ export class DurableAgentSession extends DurableComputerSession {
         return;
       }
       try {
+        const attachment = socket.deserializeAttachment() as SessionSocketAttachment | null;
+        const row = this.#managedTurn(command.id);
+        if (row === undefined
+          || !turnControlAuthorizationMatches(
+            parseTurnAuthorization(row.authorization_json),
+            attachment?.authorization ?? { capabilities: [] },
+          )) {
+          throw new ManagedRequestError(
+            403,
+            "turn_authority_mismatch",
+            "this authorization cannot control the active turn",
+          );
+        }
         await this.#settingsMutationTail;
         this.#assertDurabilityAdmissionActive();
         if (this.#turns.get(command.id) !== turn) {
-          throw retryableError("turn ownership changed while applying settings");
+          throw retryableError("the active turn changed while applying settings; retry the request");
         }
         await turn.steer({ input: command.input });
       } catch (error) {
-        this.#send(socket, { type: "error", code: "steer_failed", message: errorMessage(error) });
+        const failure = managedHttpError(error, "steer_failed");
+        this.#send(socket, { type: "error", code: failure.code, message: failure.message });
       }
       return;
     }
@@ -3912,7 +3992,11 @@ export class DurableAgentSession extends DurableComputerSession {
     }
   }
 
-  async #steerHttpTurn(id: string, request: Request): Promise<Response> {
+  async #steerHttpTurn(
+    id: string,
+    request: Request,
+    authorization: TurnAuthorization,
+  ): Promise<Response> {
     if (this.#durabilityExported || this.#durabilityImportState === "pending") {
       return json({ error: "durability_transfer_pending" }, { status: 409 });
     }
@@ -3920,6 +4004,15 @@ export class DurableAgentSession extends DurableComputerSession {
     try { row = await this.#findManagedTurn(id); }
     catch (error) { return managedErrorResponse(error, "turn_archive_unavailable"); }
     if (!row) return json({ error: "turn_not_found" }, { status: 404 });
+    let retainedAuthorization: TurnAuthorization;
+    try { retainedAuthorization = parseTurnAuthorization(row.authorization_json); }
+    catch { return json({ error: "turn_authorization_invalid" }, { status: 409 }); }
+    if (!turnControlAuthorizationMatches(retainedAuthorization, authorization)) {
+      return json({
+        error: "turn_authority_mismatch",
+        message: "this authorization cannot control the active turn",
+      }, { status: 403 });
+    }
     if (row.state !== "accepted") {
       return json(
         { error: "turn_not_steerable", state: row.state },
@@ -3948,7 +4041,7 @@ export class DurableAgentSession extends DurableComputerSession {
       await this.#settingsMutationTail;
       this.#assertDurabilityAdmissionActive();
       if (this.#turns.get(id) !== turn) {
-        throw retryableError("turn ownership changed while applying settings");
+        throw retryableError("the active turn changed while applying settings; retry the request");
       }
       await turn.steer({ input: value.input as PromptInput });
       return json({ turn_id: id, state: "steering" }, { status: 202 });
@@ -4727,11 +4820,20 @@ export class DurableAgentSession extends DurableComputerSession {
         ...retainedMounts
           .map(({ provider_resource_id }) => provider_resource_id),
       ]);
-      await Promise.all([...cloudflareResources].map((resourceId) => deleteCloudflareSandbox(
+      // Every Cloudflare hand mounts peer prefixes. Stop all possible writers
+      // before purging any prefix so a late FUSE flush cannot recreate another
+      // hand's deleted workspace.
+      await Promise.all([...cloudflareResources].map((resourceId) => destroyCloudflareSandbox(
         this.env.NANOCODEX_SANDBOXES,
-        this.env.NANOCODEX_WORKSPACES,
         resourceId,
       )));
+      await Promise.all([...cloudflareResources].map((resourceId) => (
+        deleteCloudflareSandboxWorkspace(this.env.NANOCODEX_WORKSPACES, resourceId)
+      )));
+      await deleteCloudflareBrainWorkspace(
+        this.env.NANOCODEX_WORKSPACES,
+        session.session_id,
+      );
     }
     for (const socket of this.ctx.getWebSockets()) closeSocket(socket, 1000, "session deleted");
     const credentialBinding = this.#credentialBinding ?? (
@@ -5246,6 +5348,11 @@ export class DurableAgentSession extends DurableComputerSession {
       ),
       sshIdentityAllowed: (reference) => this.#activeTurnSshIdentityAllowed(reference),
     });
+    const sharedBrainWorkspace = createSharedBrainReadWorkspace(
+      this.env.NANOCODEX_WORKSPACES,
+      session.session_id,
+      computer.filesystem,
+    );
     const computerRuntimeMs = performance.now() - phaseStartedAt;
     const currentAccountInfo = (signal?: AbortSignal) => {
       const authorization = this.#activeTurnAuthorization();
@@ -5292,19 +5399,27 @@ export class DurableAgentSession extends DurableComputerSession {
           ),
     };
     const sandboxToolsByMount = new Map<string, ReturnType<typeof cloudflareSandboxTools>>();
-    const namespaceMachines = () => [
-      ...this.#managedMounts("mounted").map((mount) => ({
-        id: `sandbox:${mount.id}`,
-        root: mount.root,
-        workspace: "/workspace",
-      })),
-      ...this.#hostedTools.machines().map((machine) => ({
-        id: `user:${machine.id}`,
-        root: machineMountRoot(machine.id),
-        workspace: machine.workspace,
-      })),
-    ];
+    const namespaceMachines = () => {
+      const authorization = this.#activeTurnAuthorization();
+      if (!this.#canUseExecutionNamespace(authorization)) return [];
+      return [
+        ...this.#managedMounts("mounted").map((mount) => ({
+          id: `sandbox:${mount.id}`,
+          root: mount.root,
+          workspace: "/workspace",
+        })),
+        ...(this.#hasFullAccountAuthority(authorization)
+          ? this.#hostedTools.machines()
+          : []).map((machine) => ({
+            id: `user:${machine.id}`,
+            root: machineMountRoot(machine.id),
+            workspace: machine.workspace,
+          })),
+      ];
+    };
     const resolveNamespaceMachineTool: MachineToolResolver = (machineId, name) => {
+      const authorization = this.#activeTurnAuthorization();
+      if (!this.#canUseExecutionNamespace(authorization)) return undefined;
       if (machineId.startsWith("sandbox:")) {
         const mountId = machineId.slice("sandbox:".length);
         const mount = this.#managedMount(mountId);
@@ -5317,16 +5432,21 @@ export class DurableAgentSession extends DurableComputerSession {
             this.env.NANOCODEX_SANDBOX_LOCAL === "true",
             session.public_origin,
             this.env.NANOCODEX_ADMIN_TOKEN,
+            undefined,
+            () => this.#cloudflareNamespaceMounts("mounted"),
+            { resourceId: session.session_id },
           );
           sandboxToolsByMount.set(mount.id, tools);
         }
         return tools[name];
       }
-      if (!machineId.startsWith("user:")) return undefined;
+      if (!machineId.startsWith("user:") || !this.#hasFullAccountAuthority(authorization)) {
+        return undefined;
+      }
       return this.#hostedTools.machineTool(machineId.slice("user:".length), name);
     };
     const namespaceRuntime = multiplayer ? undefined : createManagedNamespaceRuntime(
-      () => this.#isAccountOwnedTurn(),
+      () => this.#canUseExecutionNamespace(),
       namespaceMachines,
       resolveNamespaceMachineTool,
     );
@@ -5334,11 +5454,11 @@ export class DurableAgentSession extends DurableComputerSession {
       ...(browserRuntime?.tools ?? []),
       ...(multiplayer ? [computer.tool] : []),
       ...(multiplayer ? [] : [managedMountTool(async (request, context) => {
-        if (!this.#isAccountOwnedTurn()) {
+        if (!this.#canUseExecutionNamespace()) {
           throw new ManagedRequestError(
             403,
             "mount_forbidden",
-            "mount is available only to account-owned turns",
+            "the current authorization cannot provision execution hands",
           );
         }
         context.signal.throwIfAborted();
@@ -5379,9 +5499,9 @@ export class DurableAgentSession extends DurableComputerSession {
       imageGeneration({
         url: "https://managed-tools.internal/image-generation",
         fetch: managedImageFetch(this.env, this.ctx.id.toString()),
-        workspace: computer.filesystem,
+        workspace: sharedBrainWorkspace,
       }),
-      viewImage({ workspace: computer.filesystem }),
+      viewImage({ workspace: sharedBrainWorkspace }),
       updatePlan(),
       {
         name: "runtimeInfo",
@@ -5395,10 +5515,16 @@ export class DurableAgentSession extends DurableComputerSession {
             status: "cwd-placement",
             default_cwd: "/brain",
             native_cross_mounts: false,
+            cloudflare_native_cross_mounts: this.env.NANOCODEX_SANDBOX_LOCAL !== "true",
             mounts: this.#accountMachines(this.#activeTurnAuthorization()).map(({ id, mount }) => ({
               id,
               mount,
             })),
+            brain_workspace: {
+              mount: "/brain",
+              writable: true,
+              shared_between_cloudflare_hands: true,
+            },
           },
           workspace: computer.descriptor.cwd,
           commands: multiplayer ? computer.descriptor.commands : [],
@@ -5466,11 +5592,11 @@ export class DurableAgentSession extends DurableComputerSession {
             "No process sandbox is attached. Bounded Just Bash is the complete local execution boundary.",
           ].join("\n\n")
           : [
-            "You are the durable Nanocodex brain running on Cloudflare Workers. The brain does not execute shell commands. Its own /workspace is scratch storage for brain-owned artifacts only.",
+            "You are the durable Nanocodex brain running on Cloudflare Workers. The brain does not execute shell commands. /brain is durable shared scratch mounted read-write in every Cloudflare hand; it never contains credentials or control-plane authority.",
             "The agent starts without a sandbox hand. When a task such as cloning a repository, building code, or running tests needs native Linux execution, infer that need and call mount with provider cloudflare and a useful stable name. Do not ask the user to request a routine sandbox mount. mount provisions and attaches the hand before it returns.",
             "Hands appear as logical top-level paths returned by mount or listed in accountInfo().machines. exec_command has its standard shape: set workdir to the exact hand mount or a path beneath it; the root of that cwd selects where the process runs. The default /brain cwd is not executable. write_stdin remains pinned to the hand that created its session. There is no environment or host argument.",
             "A Code Mode cell captures its mount mapping. Commands in Promise.all may run concurrently on different cwd roots, and subagents use the same cwd rule independently. A disconnect or reconnect never retargets an admitted command or session.",
-            "The current cwd router is a placement milestone, not a native shared filesystem: native_cross_mounts is false, so a process cannot yet reach peer mounts through ordinary filesystem syscalls. Do not imply files are synchronized or use shell cd to select another hand; select placement with exec_command.workdir until a conforming native namespace adapter is advertised.",
+            "Cloudflare sandbox hands are separate retained workspaces mounted into each other's native filesystem namespaces. A process may write its executing hand through /workspace or that hand's logical mount path, read peer hand paths without mutating them, and read or write /brain using ordinary filesystem syscalls. The trees are mounted, never copied or synchronized. Connected user hands and future providers remain placement-only until their provider advertises a conforming native namespace adapter, so native_cross_mounts remains false globally while runtimeInfo.cloudflare_native_cross_mounts is true.",
             "The browser_execute tool is the managed remote browser. Reuse its retained session when continuity matters. Never inspect, return, or persist cookies, authorization material, CDP connection URLs, provider URLs, or Live View URLs. If a login, MFA, CAPTCHA, or other human-only gate appears, stop and ask the user to complete it outside the model-visible browser tool; do not bypass or evade the gate.",
             "For ordinary account operations, accountInfo is not a prerequisite to an explicit gh, git, curl, or other shell command. Those commands use transparent authenticated egress when the current grant permits it. accountInfo is a tool, not a shell command.",
             "When accountInfo lists multiple connectorAccounts for a service, choose the appropriate connection by label and pass its exact id as X-Nanocodex-Connector-Connection on that provider request. Never invent a connection id. The egress proxy validates it against the active grant.",
@@ -5725,20 +5851,26 @@ export class DurableAgentSession extends DurableComputerSession {
         "SELECT COUNT(*) AS count FROM managed_mounts WHERE provider = ?",
         request.provider,
       ).one().count;
-      const providerResourceId = providerCount === 0
-        ? session.session_id
-        : `${session.session_id}-mount-${id}`;
+      const providerResourceId = managedMountProviderResourceId(
+        session.session_id,
+        id,
+        providerCount,
+      );
       const root = managedMountRoot(request.name, id);
+      const configuration = request.provider === "cloudflare"
+        ? JSON.stringify({ namespace_slot: this.#nextCloudflareNamespaceSlot() })
+        : "{}";
       this.ctx.storage.sql.exec(
         `INSERT INTO managed_mounts (
            id, provider, name, root, provider_resource_id, configuration_json,
            state, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, '{}', 'mounting', ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, 'mounting', ?, ?)`,
         id,
         request.provider,
         request.name,
         root,
         providerResourceId,
+        configuration,
         now,
         now,
       );
@@ -5796,13 +5928,18 @@ export class DurableAgentSession extends DurableComputerSession {
 
   async #prepareManagedMount(mount: ManagedMountRow): Promise<void> {
     switch (mount.provider) {
-      case "cloudflare":
-        await prepareCloudflareSandbox(
+      case "cloudflare": {
+        const session = this.#session();
+        if (session === undefined) throw new Error("managed session is not initialized");
+        await prepareCloudflareSandboxHand(
           this.env.NANOCODEX_SANDBOXES,
           mount.provider_resource_id,
+          this.#cloudflareNamespaceMountsForPreparation(mount.id),
           this.env.NANOCODEX_SANDBOX_LOCAL === "true",
+          { resourceId: session.session_id },
         );
         return;
+      }
       default:
         throw new Error(`unsupported retained mount provider: ${mount.provider}`);
     }
@@ -5827,8 +5964,79 @@ export class DurableAgentSession extends DurableComputerSession {
     ).toArray();
   }
 
+  #cloudflareNamespaceMounts(
+    ...states: readonly ManagedMountState[]
+  ): readonly CloudflareSandboxNamespaceMount[] {
+    return this.#projectCloudflareNamespaceMounts((mount) => (
+      states.length === 0 || states.includes(mount.state)
+    ));
+  }
+
+  #cloudflareNamespaceMountsForPreparation(
+    mountId: string,
+  ): readonly CloudflareSandboxNamespaceMount[] {
+    return this.#projectCloudflareNamespaceMounts((mount) => (
+      mount.id === mountId || mount.state === "mounting" || mount.state === "mounted"
+    ));
+  }
+
+  #projectCloudflareNamespaceMounts(
+    include: (mount: ManagedMountRow) => boolean,
+  ): readonly CloudflareSandboxNamespaceMount[] {
+    const slots = this.#ensureCloudflareNamespaceSlots();
+    return this.#managedMounts()
+      .filter((mount) => mount.provider === "cloudflare" && include(mount))
+      .map(({ id, provider_resource_id: resourceId, root }) => Object.freeze({
+        resourceId,
+        root,
+        slot: slots.get(id)!,
+      }));
+  }
+
+  #nextCloudflareNamespaceSlot(): number {
+    const used = new Set(this.#ensureCloudflareNamespaceSlots().values());
+    for (let slot = 0; slot < MAX_MANAGED_MOUNTS; slot += 1) {
+      if (!used.has(slot)) return slot;
+    }
+    throw new Error("Cloudflare namespace has no free binding slot");
+  }
+
+  #ensureCloudflareNamespaceSlots(): ReadonlyMap<string, number> {
+    const mounts = this.#managedMounts().filter(({ provider }) => provider === "cloudflare");
+    const slots = new Map<string, number>();
+    const used = new Set<number>();
+    for (const mount of mounts) {
+      const configuration = managedMountConfiguration(mount.configuration_json);
+      const slot = configuration.namespace_slot;
+      if (slot === undefined) continue;
+      if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_MANAGED_MOUNTS || used.has(slot)) {
+        throw new Error("retained Cloudflare mount has an invalid namespace slot");
+      }
+      slots.set(mount.id, slot);
+      used.add(slot);
+    }
+    for (const mount of mounts) {
+      if (slots.has(mount.id)) continue;
+      let slot = 0;
+      while (used.has(slot)) slot += 1;
+      if (slot >= MAX_MANAGED_MOUNTS) {
+        throw new Error("retained Cloudflare mounts exceed the namespace binding limit");
+      }
+      const configuration = managedMountConfiguration(mount.configuration_json);
+      this.ctx.storage.sql.exec(
+        "UPDATE managed_mounts SET configuration_json = ?, updated_at = ? WHERE id = ?",
+        JSON.stringify({ ...configuration, namespace_slot: slot }),
+        Date.now(),
+        mount.id,
+      );
+      slots.set(mount.id, slot);
+      used.add(slot);
+    }
+    return slots;
+  }
+
   #accountMachines(authorization: TurnAuthorization | undefined): readonly AccountMachine[] {
-    if (!this.#isAccountOwnedTurn(authorization)) return [];
+    if (!this.#canUseExecutionNamespace(authorization)) return [];
     return Object.freeze([
       ...this.#managedMounts("mounted").map((mount) => Object.freeze({
         id: `sandbox:${mount.id}`,
@@ -5839,21 +6047,29 @@ export class DurableAgentSession extends DurableComputerSession {
         workspace: mount.root,
         capabilities: SANDBOX_HAND_CAPABILITIES,
       })),
-      ...this.#hostedTools.machines().map((machine) => {
-        const mount = machineMountRoot(machine.id);
-        return Object.freeze({
-          id: `user:${machine.id}`,
-          name: machine.name,
-          kind: "user" as const,
-          mount,
-          workspace: mount,
-          capabilities: machine.capabilities,
-        });
-      }),
+      ...(this.#hasFullAccountAuthority(authorization)
+        ? this.#hostedTools.machines()
+        : []).map((machine) => {
+          const mount = machineMountRoot(machine.id);
+          return Object.freeze({
+            id: `user:${machine.id}`,
+            name: machine.name,
+            kind: "user" as const,
+            mount,
+            workspace: mount,
+            capabilities: machine.capabilities,
+          });
+        }),
     ]);
   }
 
-  #isAccountOwnedTurn(
+  #canUseExecutionNamespace(
+    authorization: TurnAuthorization | undefined = this.#activeTurnAuthorization(),
+  ): authorization is TurnAuthorization {
+    return turnCanUseExecutionNamespace(authorization);
+  }
+
+  #hasFullAccountAuthority(
     authorization: TurnAuthorization | undefined = this.#activeTurnAuthorization(),
   ): authorization is TurnAuthorization {
     return authorization !== undefined && authorization.connectGrant === undefined;
@@ -5881,9 +6097,9 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #activeTurnSshIdentityAllowed(_reference: string): boolean {
-    // Account-owned turns may use account identities. Connect grants fail closed
+    // Full account turns may use account identities. Connect grants fail closed
     // until signed resources can enumerate exact SSH identity references.
-    return this.#isAccountOwnedTurn();
+    return this.#hasFullAccountAuthority();
   }
 
   #activeTurnHostedToolAllowed(
@@ -6924,10 +7140,8 @@ export class DurableAgentSession extends DurableComputerSession {
     catch {
       throw new ManagedRequestError(403, "forbidden", "voice session authorization is invalid");
     }
-    if (retained.connectGrant || authorization.connectGrant) {
-      if (JSON.stringify(retained) !== JSON.stringify(authorization)) {
-        throw new ManagedRequestError(403, "forbidden", "voice session belongs to another grant");
-      }
+    if (!turnControlAuthorizationMatches(retained, authorization)) {
+      throw new ManagedRequestError(403, "forbidden", "voice session belongs to another grant");
     }
   }
 

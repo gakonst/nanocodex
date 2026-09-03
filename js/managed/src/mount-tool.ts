@@ -94,3 +94,19 @@ export function managedMountRoot(name: string, id: string): string {
   const stem = parsed.name.slice(0, 49).replace(/[._-]+$/, "") || "hand";
   return `/mnt-${stem}-${suffix}`;
 }
+
+export function managedMountProviderResourceId(
+  sessionId: string,
+  mountId: string,
+  providerCount: number,
+): string {
+  if (!/^[a-f0-9-]{36}$/.test(sessionId)) throw new TypeError("session id must be a lowercase UUID");
+  if (!/^[a-f0-9-]{36}$/.test(mountId)) throw new TypeError("mount id must be a lowercase UUID");
+  if (!Number.isSafeInteger(providerCount) || providerCount < 0) {
+    throw new TypeError("provider count must be a non-negative safe integer");
+  }
+  // Keep the original hand's session-derived identity so upgraded agents
+  // reattach its retained workspace. Additional hands use their mount UUID;
+  // combining both UUIDs exceeds the provider's 63-character sandbox ID cap.
+  return providerCount === 0 ? sessionId : mountId;
+}
