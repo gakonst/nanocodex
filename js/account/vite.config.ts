@@ -169,7 +169,6 @@ export default defineConfig({
   server: {
     allowedHosts: [".nanocodex.localhost"],
     host: process.env.HOST,
-    origin: process.env.PORTLESS_URL,
     port: localServerPort,
     // The Connect playground calls the paired application origin with its
     // account cookie, while the live artifact frame has an opaque `null`

@@ -20,7 +20,9 @@ its runtime, transport, credentials, or persistence policy. It forwards
 changing retained state. Set `voice` to render and own the standard microphone
 control; normalized managed and Connect sources retain their canonical voice
 handle, while a normal browser Agent works directly. `voiceOptions` is available
-for application policy such as a pre-turn authorization fence.
+for application policy such as a pre-turn authorization fence. Pass `composer`
+to replace the input surface without detaching the controller or clearing the
+visible transcript.
 
 ```tsx
 <AgentTerminalView agent={agent} voice {...terminalProps} />

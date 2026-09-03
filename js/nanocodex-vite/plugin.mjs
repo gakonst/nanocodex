@@ -12,6 +12,8 @@ import { defaultCodexAuthFile, readCodexSubscription } from "./codex-auth-file.m
 import { startChatGptWorkerEgress } from "./chatgpt-egress.mjs";
 import { startLocalOAuthRelay } from "./oauth-relay-server.mjs";
 
+const LOCAL_SPONSORED_CHATGPT_USER_ID = "00000000-0000-4000-8000-000000000001";
+
 const buildScript = fileURLToPath(new URL("./scripts/build-js-package.sh", import.meta.url));
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const rustBuildFiles = new Set([
@@ -99,7 +101,7 @@ export function createNanocodexVitePlugin(options, integration) {
       ) {
         if (integration.target === "cloudflare") await cleanup();
         integration.setDevBindings?.(undefined);
-        return { worker: { plugins: nestedWorker } };
+        return nanocodexConfig(nestedWorker, false);
       }
 
       await cleanup();
@@ -115,7 +117,7 @@ export function createNanocodexVitePlugin(options, integration) {
       }
       if (chatGpt === false) {
         integration.setDevBindings(Object.freeze(oauthBindings));
-        return { worker: { plugins: nestedWorker } };
+        return nanocodexConfig(nestedWorker, false);
       }
       try {
         const configuredAuthFile = chatGpt.authFile === undefined
@@ -131,7 +133,8 @@ export function createNanocodexVitePlugin(options, integration) {
             ...oauthBindings,
             ALLOW_INSECURE_LOOPBACK_RELAY: "true",
             CODEX_RELAY_URL: egress.relayUrl,
-            NANOCODEX_LOCAL_CHATGPT_AUTO_CLAIM: "true",
+            NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET: "true",
+            NANOCODEX_SPONSORED_CHATGPT_USER_ID: LOCAL_SPONSORED_CHATGPT_USER_ID,
             LOCAL_CHATGPT_BOOTSTRAP: JSON.stringify({
               access_token: workerAuth.accessToken,
               account_id: workerAuth.accountId,
@@ -157,7 +160,7 @@ export function createNanocodexVitePlugin(options, integration) {
           `Nanocodex local ChatGPT setup failed: ${errorMessage(error)}. Run \`codex login\` and retry.`,
         );
       }
-      return { worker: { plugins: nestedWorker } };
+      return nanocodexConfig(nestedWorker, Boolean(credentialBrokerWorker));
     },
     async configureServer(vite) {
       vite.httpServer?.once("close", () => {
@@ -193,6 +196,15 @@ export function createNanocodexVitePlugin(options, integration) {
     async closeBundle() {
       await Promise.all([cleanup(), cleanupOAuthRelay(), cleanupDevApplications()]);
     },
+  };
+}
+
+function nanocodexConfig(nestedWorker, localSponsoredTrialReset) {
+  return {
+    define: {
+      __NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET__: JSON.stringify(localSponsoredTrialReset),
+    },
+    worker: { plugins: nestedWorker },
   };
 }
 

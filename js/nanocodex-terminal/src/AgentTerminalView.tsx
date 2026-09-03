@@ -37,6 +37,7 @@ export function AgentTerminalView({
   accessory,
   agent,
   agentError,
+  composer,
   controls,
   inactiveMessage,
   maxEntries,
@@ -54,6 +55,8 @@ export function AgentTerminalView({
   accessory?(controls: AgentTerminalAccessory): ReactNode;
   agent: Agent | undefined;
   agentError: string | undefined;
+  /** Replaces the default composer without detaching the transcript controller. */
+  composer?: ReactNode;
   controls?(controls: Pick<AgentTerminalAccessory, "agentReady">): ReactNode;
   inactiveMessage?(state: Readonly<{
     agentError: string | undefined;
@@ -221,7 +224,7 @@ export function AgentTerminalView({
 
   const terminal = (
     <TerminalTranscriptSurface
-      composer={(
+      composer={composer === undefined ? (
         <TerminalComposer
           controls={(voice || controls) ? <>
             {voice ? <VoiceControl agentReady={agentStatus === "ready"} voice={voiceState} /> : null}
@@ -238,7 +241,7 @@ export function AgentTerminalView({
           }}
           onSubmit={submitTouchPrompt}
         />
-      )}
+      ) : composer}
       canLoadOlder={controller.canLoadOlder}
       entries={controller.entries}
       followTailRequest={followTailRequest}

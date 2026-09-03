@@ -1,9 +1,10 @@
-export type DeploymentCredentialSource = "brokered" | "user" | null;
+export type DeploymentCredentialSource = "brokered" | "sponsored" | null;
 
 export type DeploymentHealth = Readonly<{
   agentConfigured: boolean;
   credentialSource: DeploymentCredentialSource;
   deploymentSha: string | undefined;
+  freePromptsRemaining: number | null;
   voiceEnabled: boolean;
 }>;
 
@@ -11,6 +12,7 @@ type HealthPayload = {
   agent_configured?: unknown;
   credential_source?: unknown;
   deployment_sha?: unknown;
+  free_prompts_remaining?: unknown;
   voice_enabled?: unknown;
 };
 
@@ -33,18 +35,26 @@ export function createDeploymentHealthResource(
         throw new Error(`Could not check the agent session (HTTP ${response.status})`);
       }
       const payload = await response.json() as HealthPayload;
+      const sponsoredRemaining = Number.isSafeInteger(payload.free_prompts_remaining)
+        && (payload.free_prompts_remaining as number) >= 0
+        && (payload.free_prompts_remaining as number) <= 3
+        ? payload.free_prompts_remaining as number
+        : null;
       const credentialSource = payload.agent_configured !== true
         ? null
         : payload.credential_source === "brokered" || payload.credential_source === "subscription"
           ? "brokered"
-          : payload.credential_source === "user" ? "user" : null;
+          : payload.credential_source === "sponsored" && sponsoredRemaining !== null
+            ? "sponsored"
+            : payload.credential_source === "user" ? "brokered" : null;
       return Object.freeze({
         agentConfigured: credentialSource !== null,
         credentialSource,
         deploymentSha: typeof payload.deployment_sha === "string"
           ? payload.deployment_sha
           : undefined,
-        voiceEnabled: credentialSource === "brokered" && payload.voice_enabled === true,
+        freePromptsRemaining: credentialSource === "sponsored" ? sponsoredRemaining : null,
+        voiceEnabled: credentialSource !== "sponsored" && payload.voice_enabled === true,
       });
     });
     inFlight = current;

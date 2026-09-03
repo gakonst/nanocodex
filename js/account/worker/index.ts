@@ -53,6 +53,7 @@ import {
   managedModelStatus,
   openManagedResponsesWebSocket,
   openManagedRealtimeSideband,
+  resetManagedSponsoredTrial,
   type ManagedModelAccess,
 } from "./managedModel.ts";
 
@@ -96,6 +97,8 @@ const SECURE_BYOK_COOKIE = "__Secure-nanocodex_byok_v2";
 const CHATGPT_COOKIE = "nanocodex_chatgpt_v2";
 const SECURE_CHATGPT_COOKIE = "__Secure-nanocodex_chatgpt_v2";
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
+const LOCAL_SPONSORED_TRIAL_RESET = typeof __NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET__ !== "undefined"
+  && __NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET__;
 
 type WorkerEnv = GitStorageEnv & ThreadGitStorageEnv & EvalStorageEnv & ChatGptEgressEnv
   & AccountFundingProxyEnv
@@ -177,7 +180,12 @@ export default {
         const model = await managedModelStatus(managed);
         return json({
           agent_configured: model.ready,
-          credential_source: model.ready ? "brokered" : null,
+          credential_source: model.source === "sponsored"
+            ? "sponsored"
+            : model.ready ? "brokered" : null,
+          ...(model.source === "sponsored"
+            ? { free_prompts_remaining: model.freePromptsRemaining }
+            : {}),
           voice_enabled: model.voiceEnabled,
           deployment_sha: GIT_SHA_PATTERN.test(env.DEPLOYMENT_SHA ?? "")
             ? env.DEPLOYMENT_SHA
@@ -205,6 +213,27 @@ export default {
         runtime: "cloudflare-workers",
         status: "ok",
       });
+    }
+
+    if (LOCAL_SPONSORED_TRIAL_RESET && url.pathname === "/api/dev/sponsored-trial/reset") {
+      const environment = env.ENVIRONMENT?.trim().toLowerCase();
+      if (environment !== "development" && environment !== "local") {
+        return json({ error: "not_found" }, { status: 404 });
+      }
+      if (request.method !== "POST") {
+        return json({ error: "method_not_allowed" }, { status: 405 });
+      }
+      const managed = managedAccess(request, env);
+      if (managed instanceof Response) return managed;
+      if (!managed) return json({ error: "managed model access unavailable" }, { status: 503 });
+      const reset = await resetManagedSponsoredTrial(managed);
+      if (!reset.ok) {
+        const status = reset.status >= 400 && reset.status < 500 ? reset.status : 503;
+        await reset.body?.cancel();
+        return json({ error: "sponsored_trial_reset_failed" }, { status });
+      }
+      await reset.body?.cancel();
+      return json({ free_prompts_remaining: 3 });
     }
 
     if (url.pathname === "/api/auth/chatgpt" && request.method === "POST") {

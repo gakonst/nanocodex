@@ -42,11 +42,19 @@ export { McpConnectionDirectory } from "./mcp-connection-owner";
 const SUBJECT_DIRECTORY_PREFIX = "agent-subject-v1:";
 const READINESS_SUBJECT_DIRECTORY_NAME = "agent-subject-readiness-v1";
 const SUBJECT = /^[A-Za-z0-9_-]{43,128}$/;
+const EPHEMERAL_BROWSER_MODEL_SUBJECT = /^[A-Za-z0-9_-]{43}$/;
+const SPONSORED_PROMPT_ID = /^[A-Za-z][A-Za-z0-9_-]{1,127}$/;
+const SPONSORED_RESPONSE_ID = /^[A-Za-z][A-Za-z0-9._:-]{1,199}$/;
+const SPONSORED_CALL_ID = /^[A-Za-z][A-Za-z0-9._:-]{1,199}$/;
+const MAX_SPONSORED_CALL_IDS = 64;
+const MAX_SPONSORED_RESPONSES_FRAME_CHARS = 16 * 1024 * 1024;
 const USER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CHIEF_USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SUBJECT_HEADER = "x-nanocodex-subject";
+const CREDENTIAL_PROVENANCE_HEADER = "x-nanocodex-credential-provenance";
 const PROVIDER_PLACEHOLDER = "Bearer NANOCODEX_PROVIDER_CREDENTIAL";
 const MODEL_STATUS_PATH = "/.well-known/nanocodex/model-status";
+const SPONSORED_TRIAL_RESET_PATH = "/.well-known/nanocodex/sponsored-trial-reset";
 const BROKER_READINESS_PATH = "/.well-known/nanocodex/broker-readiness";
 const MAX_CONTROL_BODY_BYTES = 16 * 1024;
 const MAX_CHATGPT_IMPORT_BODY_BYTES = 64 * 1024;
@@ -284,7 +292,7 @@ export default {
 export async function handleEgress(
   request: Request,
   env: EgressEnv,
-  _ctx?: Pick<ExecutionContext, "waitUntil">,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
   upstreamFetch: typeof fetch = fetch,
   diagnostics?: Readonly<{ upstreamException(error: Readonly<{ name: string }>): void }>,
 ): Promise<Response> {
@@ -318,6 +326,9 @@ export async function handleEgress(
   }
   if (url.pathname === BROKER_READINESS_PATH) return handleReadiness(request, env);
   if (url.pathname === MODEL_STATUS_PATH) return handleModelStatus(request, env);
+  if (url.pathname === SPONSORED_TRIAL_RESET_PATH) {
+    return handleSponsoredTrialReset(request, env);
+  }
 
   const operation = OPERATIONS.find((candidate) => (
     candidate.method === request.method && candidate.path === url.pathname
@@ -352,33 +363,21 @@ export async function handleEgress(
   let userId: string | undefined;
   try {
     userId = await resolveSubject(env, subject);
-    let credential = await resolveCredential(env, userId, false);
+    const sponsoredDemo = EPHEMERAL_BROWSER_MODEL_SUBJECT.test(subject)
+      && operation.id === "responses";
+    let credential = await resolveCredential(env, userId, false, undefined, sponsoredDemo);
     if (operation.chatGptOnly && credential.kind !== "chatgpt") {
       return auditedError(409, "chatgpt_credential_required", request, url, operation.id, started, {
         user_id: userId,
         deployment_sha: env.DEPLOYMENT_SHA,
       });
     }
-    const body = await replayableBody(request, operation);
-    let upstream = await fetchUpstream(
-      env,
-      userId,
-      credential,
-      operation,
-      buildUpstreamRequest(request, env, operation, credential, body),
-      upstreamFetch,
-    );
-    let recovered = false;
-    if (upstream.status === 401 && credential.kind === "chatgpt") {
-      await cancelResponseBody(upstream);
-      credential = await resolveCredential(env, userId, true, credential.revision);
-      if (operation.chatGptOnly && credential.kind !== "chatgpt") {
-        return auditedError(409, "chatgpt_credential_required", request, url, operation.id, started, {
-          user_id: userId,
-          deployment_sha: env.DEPLOYMENT_SHA,
-        });
-      }
-      upstream = await fetchUpstream(
+    let sponsoredConnectionId = credential.source === "sponsored" && operation.id === "responses"
+      ? await acquireSponsoredConnection(env, userId)
+      : undefined;
+    try {
+      const body = await replayableBody(request, operation);
+      let upstream = await fetchUpstream(
         env,
         userId,
         credential,
@@ -386,39 +385,84 @@ export async function handleEgress(
         buildUpstreamRequest(request, env, operation, credential, body),
         upstreamFetch,
       );
-      recovered = true;
-    }
-    if (REDIRECT_STATUS.has(upstream.status)) {
-      await cancelResponseBody(upstream);
-      return auditedError(502, "upstream_redirect_blocked", request, url, operation.id, started, {
+      let recovered = false;
+      if (upstream.status === 401 && credential.kind === "chatgpt") {
+        await cancelResponseBody(upstream);
+        credential = await resolveCredential(
+          env,
+          userId,
+          true,
+          credential.revision,
+          sponsoredDemo,
+        );
+        if (operation.chatGptOnly && credential.kind !== "chatgpt") {
+          return auditedError(409, "chatgpt_credential_required", request, url, operation.id, started, {
+            user_id: userId,
+            deployment_sha: env.DEPLOYMENT_SHA,
+          });
+        }
+        upstream = await fetchUpstream(
+          env,
+          userId,
+          credential,
+          operation,
+          buildUpstreamRequest(request, env, operation, credential, body),
+          upstreamFetch,
+        );
+        recovered = true;
+      }
+      if (REDIRECT_STATUS.has(upstream.status)) {
+        await cancelResponseBody(upstream);
+        return auditedError(502, "upstream_redirect_blocked", request, url, operation.id, started, {
+          user_id: userId,
+          deployment_sha: env.DEPLOYMENT_SHA,
+        });
+      }
+      if (upstream.status >= 400) {
+        const upstreamStatus = upstream.status;
+        await cancelResponseBody(upstream);
+        return auditedError(
+          upstreamStatus === 429 ? 503 : 502,
+          "upstream_rejected",
+          request,
+          url,
+          operation.id,
+          started,
+          {
+            upstream_status: upstreamStatus,
+            user_id: userId,
+            deployment_sha: env.DEPLOYMENT_SHA,
+          },
+        );
+      }
+      audit("allow", request, url, operation.id, started, {
+        status: upstream.status,
+        recovered,
+        model_source: credential.source,
         user_id: userId,
         deployment_sha: env.DEPLOYMENT_SHA,
       });
+      if (credential.source === "sponsored" && operation.id === "responses") {
+        if (!sponsoredConnectionId) {
+          throw new EgressFailure(503, "sponsored_connection_lease_unavailable");
+        }
+        const response = sponsoredResponsesWebSocket(
+          upstream,
+          env,
+          userId,
+          sponsoredConnectionId,
+          ctx,
+        );
+        sponsoredConnectionId = undefined;
+        return response;
+      }
+      return sanitizeUpstreamResponse(upstream);
+    } finally {
+      if (sponsoredConnectionId) {
+        await updateSponsoredConnection(env, userId, sponsoredConnectionId, "release")
+          .catch(logSponsoredConnectionReleaseFailure);
+      }
     }
-    if (upstream.status >= 400) {
-      const upstreamStatus = upstream.status;
-      await cancelResponseBody(upstream);
-      return auditedError(
-        upstreamStatus === 429 ? 503 : 502,
-        "upstream_rejected",
-        request,
-        url,
-        operation.id,
-        started,
-        {
-          upstream_status: upstreamStatus,
-          user_id: userId,
-          deployment_sha: env.DEPLOYMENT_SHA,
-        },
-      );
-    }
-    audit("allow", request, url, operation.id, started, {
-      status: upstream.status,
-      recovered,
-      user_id: userId,
-      deployment_sha: env.DEPLOYMENT_SHA,
-    });
-    return sanitizeUpstreamResponse(upstream);
   } catch (error) {
     const problem = egressFailure(error);
     if (!(error instanceof EgressFailure)) {
@@ -877,7 +921,16 @@ function sanitizeUpstreamResponse(upstream: Response): Response {
   // An upgraded socket must be returned intact. Its peer is the explicitly
   // trusted provider/relay selected by the fixed rule, never caller input.
   if (upstream.webSocket) return upstream;
-  const headers = new Headers(upstream.headers);
+  const headers = sanitizedUpstreamHeaders(upstream.headers);
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  });
+}
+
+function sanitizedUpstreamHeaders(source: Headers): Headers {
+  const headers = new Headers(source);
   for (const name of [
     "authorization",
     "chatgpt-account-id",
@@ -886,11 +939,677 @@ function sanitizeUpstreamResponse(upstream: Response): Response {
     "set-cookie",
     "x-openai-fedramp",
   ]) headers.delete(name);
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers,
+  return headers;
+}
+
+type SponsoredPromptStatus = Readonly<{
+  limit: number;
+  used: number;
+  remaining: number;
+}>;
+
+async function acquireSponsoredConnection(env: EgressEnv, userId: string): Promise<string> {
+  const connectionId = crypto.randomUUID();
+  const response = await userBroker(env, userId).fetch(
+    "https://credentials.internal/v1/sponsored-connections",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "acquire", connection_id: connectionId }),
+    },
+  );
+  if (response.status === 402) {
+    await cancelResponseBody(response);
+    throw new EgressFailure(402, "sponsored_prompt_limit_reached");
+  }
+  if (response.status === 429) {
+    await cancelResponseBody(response);
+    throw new EgressFailure(429, "sponsored_connection_limit_reached");
+  }
+  if (response.status !== 200) {
+    await cancelResponseBody(response);
+    throw new EgressFailure(503, "sponsored_connection_lease_unavailable");
+  }
+  let value: unknown;
+  try { value = JSON.parse(await readBoundedText(response, 1_024)); }
+  catch { throw new EgressFailure(503, "invalid_sponsored_connection_lease"); }
+  if (!isRecord(value) || value.acquired !== true) {
+    throw new EgressFailure(503, "invalid_sponsored_connection_lease");
+  }
+  return connectionId;
+}
+
+async function updateSponsoredConnection(
+  env: EgressEnv,
+  userId: string,
+  connectionId: string,
+  action: "heartbeat" | "release",
+): Promise<boolean> {
+  const response = await userBroker(env, userId).fetch(
+    "https://credentials.internal/v1/sponsored-connections",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, connection_id: connectionId }),
+    },
+  );
+  if (response.status !== 200) {
+    await cancelResponseBody(response);
+    throw new EgressFailure(503, "sponsored_connection_lease_unavailable");
+  }
+  let value: unknown;
+  try { value = JSON.parse(await readBoundedText(response, 1_024)); }
+  catch { throw new EgressFailure(503, "invalid_sponsored_connection_lease"); }
+  if (!isRecord(value) || typeof value.updated !== "boolean") {
+    throw new EgressFailure(503, "invalid_sponsored_connection_lease");
+  }
+  return value.updated;
+}
+
+function logSponsoredConnectionReleaseFailure(error: unknown): void {
+  console.error({
+    type: "sponsored_connection.release_failed",
+    error_kind: error instanceof Error ? error.name : typeof error,
   });
+}
+
+async function sponsoredPromptStatus(
+  env: EgressEnv,
+  userId: string,
+): Promise<SponsoredPromptStatus> {
+  const response = await userBroker(env, userId).fetch(
+    "https://credentials.internal/v1/sponsored-prompts",
+  );
+  if (response.status !== 200) {
+    await cancelResponseBody(response);
+    throw new EgressFailure(503, "sponsored_prompt_status_unavailable");
+  }
+  return parseSponsoredPromptStatus(response);
+}
+
+async function reserveSponsoredPrompt(
+  env: EgressEnv,
+  userId: string,
+  promptId: string,
+  promptHash: string,
+  cancelled: () => boolean = () => false,
+): Promise<{
+  allowed: boolean;
+  attempt?: number;
+  dispatch: boolean;
+  status: SponsoredPromptStatus;
+}> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (cancelled()) throw new EgressFailure(409, "sponsored_prompt_socket_closed");
+    const response = await userBroker(env, userId).fetch(
+      "https://credentials.internal/v1/sponsored-prompts",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt_id: promptId, prompt_hash: promptHash }),
+      },
+    );
+    if (response.status !== 200 && response.status !== 402) {
+      await cancelResponseBody(response);
+      throw new EgressFailure(503, "sponsored_prompt_reservation_unavailable");
+    }
+    let value: unknown;
+    try { value = JSON.parse(await readBoundedText(response, 1_024)); }
+    catch { throw new EgressFailure(503, "invalid_sponsored_prompt_status"); }
+    const pending = response.status === 200 && isRecord(value) && value.pending === true;
+    if (pending && attempt < 3) {
+      const retryAfterMs = isRecord(value) && Number.isSafeInteger(value.retry_after_ms)
+        ? value.retry_after_ms as number
+        : -1;
+      if (retryAfterMs < 0 || retryAfterMs > 15_000) {
+        throw new EgressFailure(503, "invalid_sponsored_prompt_retry_lease");
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryAfterMs + 5));
+      if (cancelled()) throw new EgressFailure(409, "sponsored_prompt_socket_closed");
+      continue;
+    }
+    return {
+      allowed: response.status === 200,
+      ...(response.status === 200 && isRecord(value)
+        && Number.isSafeInteger(value.attempt)
+        && (value.attempt as number) >= 1
+        && (value.attempt as number) <= 2
+        ? { attempt: value.attempt as number }
+        : {}),
+      dispatch: response.status === 200 && isRecord(value) && value.dispatch === true,
+      status: parseSponsoredPromptStatusValue(value),
+    };
+  }
+  throw new EgressFailure(503, "sponsored_prompt_reservation_unavailable");
+}
+
+async function parseSponsoredPromptStatus(response: Response): Promise<SponsoredPromptStatus> {
+  let value: unknown;
+  try {
+    value = JSON.parse(await readBoundedText(response, 1_024));
+  } catch {
+    throw new EgressFailure(503, "invalid_sponsored_prompt_status");
+  }
+  return parseSponsoredPromptStatusValue(value);
+}
+
+function parseSponsoredPromptStatusValue(value: unknown): SponsoredPromptStatus {
+  if (!isRecord(value)
+    || value.limit !== 3
+    || !Number.isSafeInteger(value.used)
+    || !Number.isSafeInteger(value.remaining)
+    || (value.used as number) < 0
+    || (value.remaining as number) < 0
+    || (value.used as number) + (value.remaining as number) !== 3) {
+    throw new EgressFailure(503, "invalid_sponsored_prompt_status");
+  }
+  return {
+    limit: 3,
+    used: value.used as number,
+    remaining: value.remaining as number,
+  };
+}
+
+async function grantSponsoredContinuation(
+  env: EgressEnv,
+  userId: string,
+  promptId: string,
+  attempt: number,
+  responseId: string,
+  callIds: readonly string[],
+): Promise<void> {
+  const response = await userBroker(env, userId).fetch(
+    "https://credentials.internal/v1/sponsored-prompts/continuation",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "grant",
+        prompt_id: promptId,
+        attempt,
+        response_id: responseId,
+        call_ids: callIds,
+      }),
+    },
+  );
+  if (response.status !== 200) {
+    await cancelResponseBody(response);
+    throw new EgressFailure(503, "sponsored_continuation_grant_unavailable");
+  }
+  await cancelResponseBody(response);
+}
+
+async function consumeSponsoredContinuation(
+  env: EgressEnv,
+  userId: string,
+  callIds: readonly string[],
+  options?: Readonly<{
+    responseId?: string;
+    promptId?: string;
+    promptHash?: string;
+  }>,
+): Promise<Readonly<{ promptId: string; attempt: number }> | undefined> {
+  const response = await userBroker(env, userId).fetch(
+    "https://credentials.internal/v1/sponsored-prompts/continuation",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "consume",
+        ...(options?.responseId ? { response_id: options.responseId } : {}),
+        ...(options?.promptId ? { prompt_id: options.promptId } : {}),
+        ...(options?.promptHash ? { prompt_hash: options.promptHash } : {}),
+        call_ids: callIds,
+      }),
+    },
+  );
+  if (response.status === 409) {
+    await cancelResponseBody(response);
+    return undefined;
+  }
+  if (response.status !== 200) {
+    await cancelResponseBody(response);
+    throw new EgressFailure(409, "sponsored_continuation_unavailable");
+  }
+  let value: unknown;
+  try { value = JSON.parse(await readBoundedText(response, 1_024)); }
+  catch { throw new EgressFailure(503, "invalid_sponsored_continuation"); }
+  const promptId = stringField(value, "prompt_id");
+  const attempt = isRecord(value) && Number.isSafeInteger(value.attempt)
+    ? value.attempt as number
+    : undefined;
+  if (!promptId || !SPONSORED_PROMPT_ID.test(promptId)
+    || !attempt || attempt > 2) {
+    throw new EgressFailure(503, "invalid_sponsored_continuation");
+  }
+  return { promptId, attempt };
+}
+
+async function setSponsoredPromptLifecycle(
+  env: EgressEnv,
+  userId: string,
+  promptId: string,
+  attempt: number,
+  action: "terminal" | "interrupted" | "heartbeat",
+): Promise<"updated" | "settled"> {
+  const response = await userBroker(env, userId).fetch(
+    "https://credentials.internal/v1/sponsored-prompts/lifecycle",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, prompt_id: promptId, attempt }),
+    },
+  );
+  if (response.status !== 200) {
+    await cancelResponseBody(response);
+    throw new EgressFailure(503, "sponsored_prompt_lifecycle_unavailable");
+  }
+  let value: unknown;
+  try { value = JSON.parse(await readBoundedText(response, 1_024)); }
+  catch { throw new EgressFailure(503, "invalid_sponsored_prompt_lifecycle"); }
+  if (isRecord(value) && value.updated === true) return "updated";
+  if (action === "heartbeat" && isRecord(value)
+    && value.updated === false && value.settled === true) return "settled";
+  throw new EgressFailure(409, "sponsored_prompt_attempt_stale");
+}
+
+async function publishSponsoredInterruption(
+  env: EgressEnv,
+  userId: string,
+  promptId: string,
+  attempt: number,
+): Promise<void> {
+  let failure: unknown;
+  for (let retry = 0; retry < 3; retry += 1) {
+    try {
+      await setSponsoredPromptLifecycle(env, userId, promptId, attempt, "interrupted");
+      return;
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure;
+}
+
+function sponsoredResponsesWebSocket(
+  upstreamResponse: Response,
+  env: EgressEnv,
+  userId: string,
+  connectionId: string,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Response {
+  const upstream = upstreamResponse.webSocket;
+  if (!upstream) throw new EgressFailure(502, "sponsored_responses_upgrade_missing");
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair);
+  upstream.accept();
+  server.accept();
+  let closed = false;
+  let activePromptId: string | undefined;
+  let activeAttempt: number | undefined;
+  let generationInFlight = false;
+  let clientTail = Promise.resolve();
+  let upstreamTail = Promise.resolve();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let heartbeatRunning = false;
+  let connectionHeartbeat: ReturnType<typeof setInterval> | undefined;
+  let connectionHeartbeatRunning = false;
+  let connectionReleased = false;
+
+  const retain = (promise: Promise<void>) => {
+    if (ctx) ctx.waitUntil(promise);
+    else void promise;
+  };
+
+  const interruptActiveGeneration = () => {
+    if (!generationInFlight || !activePromptId || !activeAttempt) return;
+    generationInFlight = false;
+    const publication = publishSponsoredInterruption(
+      env,
+      userId,
+      activePromptId,
+      activeAttempt,
+    ).catch((error) => {
+      console.error({
+        type: "sponsored_prompt.interruption_failed",
+        error_kind: error instanceof Error ? error.name : typeof error,
+      });
+    });
+    retain(publication);
+  };
+
+  const releaseConnection = () => {
+    if (connectionReleased) return;
+    connectionReleased = true;
+    retain(updateSponsoredConnection(env, userId, connectionId, "release")
+      .then(() => undefined)
+      .catch(logSponsoredConnectionReleaseFailure));
+  };
+
+  const close = (code: number, reason: string, retryActive = false) => {
+    if (closed) return;
+    if (retryActive) interruptActiveGeneration();
+    closed = true;
+    if (heartbeat !== undefined) clearInterval(heartbeat);
+    if (connectionHeartbeat !== undefined) clearInterval(connectionHeartbeat);
+    releaseConnection();
+    closeSponsoredSocket(server, code, reason);
+    closeSponsoredSocket(upstream, code, reason);
+  };
+
+  const heartbeatMs = env.ENVIRONMENT?.trim().toLowerCase() === "test" ? 75 : 5_000;
+  heartbeat = setInterval(() => {
+    if (closed || !generationInFlight || !activePromptId || !activeAttempt || heartbeatRunning) return;
+    heartbeatRunning = true;
+    const renewal = setSponsoredPromptLifecycle(
+      env,
+      userId,
+      activePromptId,
+      activeAttempt,
+      "heartbeat",
+    ).then(() => undefined)
+      .catch(() => close(1011, "sponsored prompt heartbeat failed", true))
+      .finally(() => { heartbeatRunning = false; });
+    retain(renewal);
+  }, heartbeatMs);
+  connectionHeartbeat = setInterval(() => {
+    if (closed || connectionHeartbeatRunning) return;
+    connectionHeartbeatRunning = true;
+    const renewal = updateSponsoredConnection(env, userId, connectionId, "heartbeat")
+      .then((updated) => {
+        if (!updated) close(1011, "sponsored connection lease lost", true);
+      })
+      .catch(() => close(1011, "sponsored connection heartbeat failed", true))
+      .finally(() => { connectionHeartbeatRunning = false; });
+    retain(renewal);
+  }, heartbeatMs);
+
+  server.addEventListener("message", (event) => {
+    clientTail = clientTail.then(async () => {
+      if (closed) return;
+      if (typeof event.data !== "string"
+        || event.data.length > MAX_SPONSORED_RESPONSES_FRAME_CHARS) {
+        close(4002, "invalid sponsored prompt frame");
+        return;
+      }
+      const frame = sponsoredResponsesFrame(event.data);
+      if (!frame.valid) {
+        close(4002, "invalid sponsored prompt frame");
+        return;
+      }
+      if (frame.generation) {
+        if (generationInFlight) {
+          close(4002, "sponsored generation already in flight");
+          return;
+        }
+        let continuationClaim: Readonly<{ promptId: string; attempt: number }> | undefined;
+        if (frame.continuation
+          && (frame.continuation.responseId || (frame.promptId && frame.prompt))) {
+          const promptHash = frame.prompt ? await sponsoredPromptHash(frame.prompt) : undefined;
+          continuationClaim = await consumeSponsoredContinuation(
+            env,
+            userId,
+            frame.continuation.callIds,
+            {
+              ...(frame.continuation.responseId
+                ? { responseId: frame.continuation.responseId }
+                : {}),
+              ...(frame.promptId ? { promptId: frame.promptId } : {}),
+              ...(promptHash ? { promptHash } : {}),
+            },
+          );
+        }
+        if (continuationClaim) {
+          activePromptId = continuationClaim.promptId;
+          activeAttempt = continuationClaim.attempt;
+        } else if (frame.promptId) {
+          const promptHash = await sponsoredPromptHash(frame.prompt);
+          const reservation = await reserveSponsoredPrompt(
+            env,
+            userId,
+            frame.promptId,
+            promptHash,
+            () => closed
+              || server.readyState !== WebSocket.OPEN
+              || upstream.readyState !== WebSocket.OPEN,
+          );
+          if (!reservation.allowed) {
+            sendSponsoredPromptError(server);
+            close(4003, "three free prompts used");
+            return;
+          }
+          if (!reservation.dispatch) {
+            sendSponsoredProtocolError(
+              server,
+              "sponsored_prompt_replay",
+              "This free prompt was already dispatched.",
+            );
+            close(4002, "sponsored prompt already dispatched");
+            return;
+          }
+          if (!reservation.attempt) {
+            close(1011, "sponsored prompt attempt unavailable");
+            return;
+          }
+          activePromptId = frame.promptId;
+          activeAttempt = reservation.attempt;
+        } else {
+          close(4002, "sponsored prompt identity required");
+          return;
+        }
+        generationInFlight = true;
+      }
+      if (upstream.readyState === WebSocket.OPEN) upstream.send(frame.encoded);
+    }).catch(() => close(1011, "sponsored prompt check failed"));
+  });
+  upstream.addEventListener("message", (event) => {
+    upstreamTail = upstreamTail.then(async () => {
+      if (closed) return;
+      if (typeof event.data === "string") {
+        const providerFrame = sponsoredProviderFrame(event.data);
+        if (providerFrame.grant) {
+          if (!activePromptId || !activeAttempt) {
+            throw new EgressFailure(503, "sponsored_prompt_identity_unavailable");
+          }
+          await grantSponsoredContinuation(
+            env,
+            userId,
+            activePromptId,
+            activeAttempt,
+            providerFrame.grant.responseId,
+            providerFrame.grant.callIds,
+          );
+        } else if (providerFrame.terminal && activePromptId && activeAttempt) {
+          await setSponsoredPromptLifecycle(
+            env,
+            userId,
+            activePromptId,
+            activeAttempt,
+            "terminal",
+          );
+        }
+        if (providerFrame.terminal) generationInFlight = false;
+      }
+      if (server.readyState === WebSocket.OPEN) server.send(event.data);
+    }).catch(() => close(1011, "sponsored continuation check failed"));
+  });
+  server.addEventListener("close", (event) => {
+    close(event.code, event.reason || "client closed", true);
+  });
+  server.addEventListener("error", () => close(1011, "client WebSocket failed", true));
+  upstream.addEventListener("close", (event) => {
+    close(event.code, event.reason || "provider closed", true);
+  });
+  upstream.addEventListener("error", () => close(1011, "provider WebSocket failed", true));
+
+  return new Response(null, {
+    status: 101,
+    headers: sanitizedUpstreamHeaders(upstreamResponse.headers),
+    webSocket: client,
+  });
+}
+
+export function sponsoredResponsesFrame(encoded: string): Readonly<{
+  valid: boolean;
+  generation: boolean;
+  encoded: string;
+  promptId?: string;
+  prompt?: Readonly<Record<string, unknown>>;
+  continuation?: Readonly<{ responseId?: string; callIds: readonly string[] }>;
+}> {
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch {
+    return { valid: false, generation: false, encoded };
+  }
+  if (!isRecord(value)) return { valid: false, generation: false, encoded };
+  if (value.type !== "response.create") {
+    return { valid: true, generation: false, encoded };
+  }
+  const canonical = canonicalSponsoredResponseCreate(value);
+  if (value.generate === false) {
+    return { valid: true, generation: false, encoded: JSON.stringify(canonical) };
+  }
+  const input = Array.isArray(value.input) ? value.input : [];
+  const continuation = sponsoredContinuation(value, input);
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = input[index];
+    if (!isRecord(item) || item.type !== "message" || item.role !== "user") continue;
+    return typeof item.id === "string" && SPONSORED_PROMPT_ID.test(item.id)
+      ? {
+        valid: true,
+        generation: true,
+        encoded: JSON.stringify(canonical),
+        promptId: item.id,
+        prompt: item,
+        ...(continuation ? { continuation } : {}),
+      }
+      : {
+        valid: true,
+        generation: true,
+        encoded: JSON.stringify(canonical),
+        ...(continuation ? { continuation } : {}),
+      };
+  }
+  return {
+    valid: true,
+    generation: true,
+    encoded: JSON.stringify(canonical),
+    ...(continuation ? { continuation } : {}),
+  };
+}
+
+function canonicalSponsoredResponseCreate(
+  value: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const reasoning = isRecord(value.reasoning) ? value.reasoning : {};
+  const canonical: Record<string, unknown> = {
+    ...value,
+    model: "gpt-5.6-luna",
+    reasoning: { ...reasoning, effort: "none", mode: "standard" },
+  };
+  delete canonical.service_tier;
+  return canonical;
+}
+
+function sponsoredContinuation(
+  value: Readonly<Record<string, unknown>>,
+  input: readonly unknown[],
+): Readonly<{ responseId?: string; callIds: readonly string[] }> | undefined {
+  const responseId = typeof value.previous_response_id === "string"
+    && SPONSORED_RESPONSE_ID.test(value.previous_response_id)
+    ? value.previous_response_id
+    : undefined;
+  const callIds: string[] = [];
+  for (const item of input) {
+    if (!isRecord(item) || typeof item.type !== "string"
+      || !/^(?:(?:custom_tool|function|computer)_call_output|tool_search_output)$/.test(item.type)) {
+      continue;
+    }
+    if (item.call_id === undefined && item.type === "tool_search_output") continue;
+    if (typeof item.call_id !== "string" || !SPONSORED_CALL_ID.test(item.call_id)) {
+      return undefined;
+    }
+    callIds.push(item.call_id);
+  }
+  const unique = [...new Set(callIds)].sort();
+  return unique.length > 0 && unique.length === callIds.length
+    && unique.length <= MAX_SPONSORED_CALL_IDS
+    ? { ...(responseId ? { responseId } : {}), callIds: unique }
+    : undefined;
+}
+
+function sponsoredProviderFrame(encoded: string): Readonly<{
+  terminal: boolean;
+  grant?: Readonly<{ responseId: string; callIds: readonly string[] }>;
+}> {
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch { return { terminal: false }; }
+  if (!isRecord(value)) return { terminal: false };
+  const terminal = value.type === "response.completed"
+    || value.type === "response.failed"
+    || value.type === "response.incomplete"
+    || value.type === "response.cancelled";
+  if (value.type !== "response.completed" || !isRecord(value.response)
+    || typeof value.response.id !== "string"
+    || !SPONSORED_RESPONSE_ID.test(value.response.id)
+    || !Array.isArray(value.response.output)) return { terminal };
+  const callIds = value.response.output.flatMap((item) => isRecord(item)
+    && (item.type === "custom_tool_call"
+      || item.type === "function_call"
+      || item.type === "computer_call"
+      || item.type === "tool_search_call")
+    && typeof item.call_id === "string"
+    && SPONSORED_CALL_ID.test(item.call_id)
+    ? [item.call_id]
+    : []);
+  const unique = [...new Set(callIds)].sort();
+  return unique.length > 0 && unique.length <= MAX_SPONSORED_CALL_IDS
+    ? { terminal, grant: { responseId: value.response.id, callIds: unique } }
+    : { terminal };
+}
+
+async function sponsoredPromptHash(prompt: Readonly<Record<string, unknown>> | undefined) {
+  if (!prompt) throw new EgressFailure(400, "sponsored_prompt_identity_required");
+  const bytes = new Uint8Array(await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(prompt)),
+  ));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function sendSponsoredPromptError(socket: WebSocket): void {
+  sendSponsoredProtocolError(
+    socket,
+    "sponsored_prompt_limit_reached",
+    "Your three free prompts are used. Connect ChatGPT to continue.",
+    "usage_limit_error",
+  );
+}
+
+function sendSponsoredProtocolError(
+  socket: WebSocket,
+  code: string,
+  message: string,
+  type = "invalid_request_error",
+): void {
+  if (socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: "error",
+    error: {
+      type,
+      code,
+      message,
+      param: null,
+    },
+  }));
+}
+
+function closeSponsoredSocket(socket: WebSocket, code: number, reason: string): void {
+  if (socket.readyState !== WebSocket.CONNECTING && socket.readyState !== WebSocket.OPEN) return;
+  const safeCode = code === 1000 || (code >= 3000 && code <= 4999) ? code : 1011;
+  socket.close(safeCode, reason.slice(0, 120));
 }
 
 async function handleControl(request: Request, url: URL, env: EgressEnv): Promise<Response> {
@@ -1171,6 +1890,7 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
     if (await hasRequestPayload(request)) return jsonError(400, "invalid_request");
     return userBroker(env, userId).fetch("https://credentials.internal/v1/chatgpt/local-claim", {
       method: "POST",
+      headers: { [CREDENTIAL_PROVENANCE_HEADER]: "user" },
     });
   }
 
@@ -1279,9 +1999,56 @@ async function handleModelStatus(request: Request, env: EgressEnv): Promise<Resp
   if (!subject || !SUBJECT.test(subject)) return jsonError(403, "agent_subject_required");
   try {
     const userId = await resolveSubject(env, subject);
-    await resolveCredential(env, userId, false);
-    return json({ ready: true }, 200);
+    const credential = await resolveCredential(
+      env,
+      userId,
+      false,
+      undefined,
+      EPHEMERAL_BROWSER_MODEL_SUBJECT.test(subject),
+    );
+    const sponsoredPrompts = credential.source === "sponsored"
+      ? await sponsoredPromptStatus(env, userId)
+      : undefined;
+    return json({
+      ready: true,
+      active: credential.kind,
+      source: credential.source,
+      ...(sponsoredPrompts
+        ? { free_prompts_remaining: sponsoredPrompts.remaining }
+        : {}),
+    }, 200);
   } catch { return jsonError(503, "broker_not_ready"); }
+}
+
+async function handleSponsoredTrialReset(request: Request, env: EgressEnv): Promise<Response> {
+  if (!localSponsoredTrialResetEnabled(env)
+    || request.method !== "POST") {
+    return jsonError(404, "not_found");
+  }
+  const subject = request.headers.get(SUBJECT_HEADER);
+  if (!subject || !EPHEMERAL_BROWSER_MODEL_SUBJECT.test(subject)) {
+    return jsonError(403, "agent_subject_required");
+  }
+  try {
+    const userId = await resolveSubject(env, subject);
+    const credential = await resolveCredential(env, userId, false, undefined, true);
+    if (credential.source !== "sponsored") return jsonError(409, "sponsored_trial_unavailable");
+    const reset = await userBroker(env, userId).fetch(
+      "https://credentials.internal/v1/sponsored-prompts/reset",
+      { method: "POST" },
+    );
+    if (!reset.ok) {
+      await cancelResponseBody(reset);
+      return jsonError(503, "sponsored_trial_reset_failed");
+    }
+    const value = await reset.json<Record<string, unknown>>();
+    if (value.remaining !== 3 || value.used !== 0 || value.limit !== 3) {
+      return jsonError(503, "sponsored_trial_reset_failed");
+    }
+    return json({ free_prompts_remaining: 3 }, 200);
+  } catch {
+    return jsonError(503, "sponsored_trial_reset_failed");
+  }
 }
 
 function buildUpstreamRequest(
@@ -1480,6 +2247,82 @@ async function resolveCredential(
   userId: string,
   recover: boolean,
   revision?: number,
+  allowSponsored = false,
+): Promise<ResolvedModelCredential> {
+  try {
+    const credential = await resolveUserCredential(env, userId, recover, revision);
+    if (!isLegacyLocalBootstrapCredential(env, userId, credential)) {
+      return { ...credential, source: "user" };
+    }
+  } catch (error) {
+    if (!(error instanceof EgressFailure) || error.status !== 409) throw error;
+  }
+  if (!allowSponsored) throw new EgressFailure(409, "user_credential_unavailable");
+  return { ...await resolveSponsoredChatGptCredential(env, recover, revision), source: "sponsored" };
+}
+
+type ResolvedModelCredential = UserCredentialSnapshot & Readonly<{
+  source: "sponsored" | "user";
+}>;
+
+async function resolveSponsoredChatGptCredential(
+  env: EgressEnv,
+  recover: boolean,
+  revision?: number,
+): Promise<UserCredentialSnapshot> {
+  const sponsorUserId = env.NANOCODEX_SPONSORED_CHATGPT_USER_ID?.trim();
+  if (!sponsorUserId || !USER_ID.test(sponsorUserId)) {
+    throw new EgressFailure(409, "sponsored_chatgpt_unavailable");
+  }
+  if (localClaimEnabled(env)) {
+    const claimed = await userBroker(env, sponsorUserId).fetch(
+      "https://credentials.internal/v1/chatgpt/local-claim",
+      {
+        method: "POST",
+        headers: { [CREDENTIAL_PROVENANCE_HEADER]: "sponsor" },
+      },
+    );
+    if (!claimed.ok) {
+      await cancelResponseBody(claimed);
+      throw new EgressFailure(409, "sponsored_chatgpt_unavailable");
+    }
+    await cancelResponseBody(claimed);
+  }
+  const credential = await resolveUserCredential(env, sponsorUserId, recover, revision);
+  if (credential.kind !== "chatgpt") {
+    throw new EgressFailure(409, "sponsored_chatgpt_unavailable");
+  }
+  return credential;
+}
+
+export function isLegacyLocalBootstrapCredential(
+  env: Pick<EgressEnv,
+    "ALLOW_LOCAL_CREDENTIAL_CLAIM" | "ENVIRONMENT" | "LOCAL_CHATGPT_BOOTSTRAP"
+    | "NANOCODEX_SPONSORED_CHATGPT_USER_ID">,
+  userId: string,
+  credential: UserCredentialSnapshot,
+): boolean {
+  if (!localClaimEnabled(env) || credential.kind !== "chatgpt" || credential.provenance
+    || userId === env.NANOCODEX_SPONSORED_CHATGPT_USER_ID?.trim()) {
+    return false;
+  }
+  const raw = env.LOCAL_CHATGPT_BOOTSTRAP?.trim();
+  if (!raw) return false;
+  try {
+    const bootstrap = JSON.parse(raw) as unknown;
+    if (!isRecord(bootstrap)) return false;
+    const accountId = stringField(bootstrap, "account_id");
+    return Boolean(accountId && credential.accountId === accountId);
+  } catch {
+    return false;
+  }
+}
+
+async function resolveUserCredential(
+  env: EgressEnv,
+  userId: string,
+  recover: boolean,
+  revision?: number,
 ): Promise<UserCredentialSnapshot> {
   const response = await userBroker(env, userId).fetch("https://credentials.internal/v1/credential", {
     method: "POST",
@@ -1566,10 +2409,19 @@ function connectorBroker(env: EgressEnv, userId: string): DurableObjectStub<User
 async function cancelResponseBody(response: Response): Promise<void> {
   try { await response.body?.cancel(); } catch { /* Response disposal is best-effort. */ }
 }
-function localClaimEnabled(env: EgressEnv): boolean {
+function localClaimEnabled(
+  env: Pick<EgressEnv, "ALLOW_LOCAL_CREDENTIAL_CLAIM" | "ENVIRONMENT">,
+): boolean {
   const environment = env.ENVIRONMENT?.trim().toLowerCase();
   return env.ALLOW_LOCAL_CREDENTIAL_CLAIM === "true"
     && (environment === "development" || environment === "local" || environment === "test");
+}
+function localSponsoredTrialResetEnabled(
+  env: Pick<EgressEnv,
+    "ALLOW_LOCAL_CREDENTIAL_CLAIM" | "ENVIRONMENT" | "NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET">,
+): boolean {
+  return localClaimEnabled(env)
+    && env.NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET === "true";
 }
 async function readJson(request: Request, limit: number): Promise<Record<string, unknown> | undefined> {
   try {
