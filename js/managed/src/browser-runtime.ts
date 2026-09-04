@@ -38,11 +38,12 @@ const BROWSERBASE_API_ORIGIN = "https://api.browserbase.com";
 const DEFAULT_KEEP_ALIVE_MS = 10 * 60_000;
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 const MAX_BROWSERBASE_RESPONSE_BYTES = 256 * 1024;
-const BROWSER_EXECUTE_SCOPE_BOUNDARY = [
-  "Scope boundary: the instructions below apply only to JavaScript passed in this tool's `code` parameter.",
-  "`codemode`, `cdp`, and connector globals exist only inside that nested browser sandbox; they are not available in the surrounding Nanocodex Code Mode runtime.",
-  "From Nanocodex Code Mode, call this tool through `tools.browser_execute(...)`, and use `tools.web__run(...)` for ordinary web search.",
-  "Never call `codemode.search(...)` or `codemode.describe(...)` outside the `browser_execute` code string.",
+const MANAGED_BROWSER_EXECUTE_DESCRIPTION = [
+  "Run browser automation in the retained managed browser session.",
+  "The `code` parameter runs in a separate nested JavaScript sandbox. Its `cdp` connector and `codemode` helper are not globals in the surrounding Nanocodex Code Mode cell, whose nested-tool API is `tools.*`.",
+  "From the surrounding cell, invoke this tool as `await tools.browser_execute({ code })`.",
+  "Only inside the `code` string, use `codemode.search(...)` and `codemode.describe(...)` before calling unfamiliar `cdp` methods; never guess method names.",
+  "For ordinary public-web search, use `tools.web__run(...)` in the surrounding Nanocodex Code Mode cell.",
 ].join("\n");
 const MODEL_SAFE_CDP_METHODS = new Set([
   "Target.getTargets",
@@ -430,12 +431,11 @@ export async function adaptAiSdkTools(
     if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
       throw new TypeError(`AI SDK browser tool ${name} has a non-object input schema`);
     }
-    const upstreamDescription = typeof tool.description === "string"
-      ? tool.description
-      : "Use the managed browser runtime.";
     const description = name === "browser_execute"
-      ? `${BROWSER_EXECUTE_SCOPE_BOUNDARY}\n\n${upstreamDescription}`
-      : upstreamDescription;
+      ? MANAGED_BROWSER_EXECUTE_DESCRIPTION
+      : typeof tool.description === "string"
+        ? tool.description
+        : "Use the managed browser runtime.";
     return Object.freeze({
       name,
       description,

@@ -261,12 +261,13 @@ describe("AI SDK browser tool adapter", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
-  it("scopes the official codemode instructions to the nested browser sandbox", async () => {
+  it("replaces the foreign codemode prompt with the Rust Code Mode tool contract", async () => {
     const upstreamDescription = [
       "Execute JavaScript in a sandbox with access to connector SDKs.",
+      "## Workflow",
       "Call `codemode.search(query)` before using the `cdp` connector.",
     ].join("\n");
-    const [adapted] = await adaptAiSdkTools({
+    const tools = await adaptAiSdkTools({
       browser_execute: tool({
         description: upstreamDescription,
         inputSchema: jsonSchema({
@@ -277,17 +278,29 @@ describe("AI SDK browser tool adapter", () => {
         }),
         execute: async () => ({ ok: true }),
       }),
+      browser_markdown: tool({
+        description: "Read a page as Markdown.",
+        inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+        execute: async () => "page",
+      }),
     });
+    const adapted = tools.find(({ name }) => name === "browser_execute");
+    const ordinary = tools.find(({ name }) => name === "browser_markdown");
 
     expect(adapted?.description).toContain(
-      "`codemode`, `cdp`, and connector globals exist only inside that nested browser sandbox",
+      "`code` parameter runs in a separate nested JavaScript sandbox",
     );
-    expect(adapted?.description).toContain("call this tool through `tools.browser_execute(...)`");
-    expect(adapted?.description).toContain("use `tools.web__run(...)` for ordinary web search");
     expect(adapted?.description).toContain(
-      "Never call `codemode.search(...)` or `codemode.describe(...)` outside",
+      "surrounding Nanocodex Code Mode cell, whose nested-tool API is `tools.*`",
     );
-    expect(adapted?.description.endsWith(upstreamDescription)).toBe(true);
+    expect(adapted?.description).toContain("`await tools.browser_execute({ code })`");
+    expect(adapted?.description).toContain(
+      "Only inside the `code` string, use `codemode.search(...)` and `codemode.describe(...)`",
+    );
+    expect(adapted?.description).toContain("use `tools.web__run(...)`");
+    expect(adapted?.description).not.toContain(upstreamDescription);
+    expect(adapted?.description).not.toContain("## Workflow");
+    expect(ordinary?.description).toBe("Read a page as Markdown.");
   });
 
   it("redacts provider URLs and scalar cookie material", () => {
