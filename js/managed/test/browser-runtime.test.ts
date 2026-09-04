@@ -288,15 +288,26 @@ describe("AI SDK browser tool adapter", () => {
     const ordinary = tools.find(({ name }) => name === "browser_markdown");
 
     expect(adapted?.description).toContain(
-      "`code` parameter runs in a separate nested JavaScript sandbox",
+      "Outer contract (Nanocodex Rust/WASM Code Mode)",
     );
     expect(adapted?.description).toContain(
-      "surrounding Nanocodex Code Mode cell, whose nested-tool API is `tools.*`",
+      "nested tools exist only on `tools.*`; `cdp` and `codemode` are not globals",
     );
     expect(adapted?.description).toContain("`await tools.browser_execute({ code })`");
     expect(adapted?.description).toContain(
-      "Only inside the `code` string, use `codemode.search(...)` and `codemode.describe(...)`",
+      "only host globals are `cdp` and `codemode`",
     );
+    expect(adapted?.description).toContain(
+      '`await codemode.search("short intent")`',
+    );
+    expect(adapted?.description).toContain(
+      '`await codemode.describe("cdp.method")`',
+    );
+    expect(adapted?.description).toContain(
+      '`await cdp.send({ method: "Target.getTargets" })`',
+    );
+    expect(adapted?.description).toContain("including `Runtime.evaluate`");
+    expect(adapted?.description).toContain("`Target.getTargetInfo` is not available");
     expect(adapted?.description).toContain("use `tools.web__run(...)`");
     expect(adapted?.description).not.toContain(upstreamDescription);
     expect(adapted?.description).not.toContain("## Workflow");
