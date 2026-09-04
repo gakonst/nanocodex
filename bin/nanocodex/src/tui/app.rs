@@ -2786,7 +2786,7 @@ impl App {
     pub(super) fn can_change_start_settings(&self) -> bool {
         self.main.run_generation == 0
             && self.main.pending_turns == 0
-            && self.main.transcript.len() == 0
+            && self.main.transcript.is_empty()
             && self.main_branches.is_empty()
             && self.btw.is_none()
     }
