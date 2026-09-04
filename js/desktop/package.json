@@ -1,0 +1,70 @@
+{
+  "name": "@nanocodex/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nanocodex desktop \u2014 managed agents and compute Hands",
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "playwright test",
+    "package": "pnpm run build && electron-builder --dir"
+  },
+  "dependencies": {
+    "lucide-react": "1.24.0",
+    "nanocodex": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "streamdown": "2.5.0",
+    "@nanocodex/desktop-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "^22.20.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "electron": "44.1.1",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "5.9.3",
+    "vite": "8.2.1"
+  },
+  "build": {
+    "afterPack": "./after-pack.cjs",
+    "appId": "xyz.paradigm.nanocodex.electron",
+    "productName": "Nanocodex",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!node_modules{,/**/*}"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dir",
+      "icon": "../../assets/nanocodex/icon.icns",
+      "extendInfo": {
+        "CFBundleDisplayName": "Nanocodex",
+        "CFBundleName": "Nanocodex"
+      }
+    },
+    "copyright": "Copyright \u00a9 2026 Nanocodex",
+    "extraResources": [
+      {
+        "from": "../../assets/nanocodex/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "npmRebuild": false
+  },
+  "author": "Nanocodex",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/gakonst/nanocodex"
+}

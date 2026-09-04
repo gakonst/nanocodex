@@ -5,6 +5,10 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
+    "./node": {
+      "types": "./tools/nodeProcess.d.mts",
+      "import": "./tools/nodeProcess.mjs"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

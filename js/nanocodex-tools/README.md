@@ -18,3 +18,11 @@ JS-only host capabilities; `nanocodex-tools` never imports `nanocodex`.
 Cloudflare Workers may supply Durable Object persistence and WebSocket
 registries to the hosted-tools core, but Cloudflare bindings, account authority,
 Connect grants, and storage schemas remain owned by those Workers.
+
+`nanocodex-tools/node` supplies native `exec_command` and `write_stdin` pipe
+sessions for explicitly authorized desktop/Node Hands. Processes use an explicit
+workspace cwd and a small environment allowlist, and sessions are fenced by the
+calling agent. The workspace is not an OS sandbox; hosts must make the native
+authority clear and use a VM for isolation. Closing the runtime terminates owned
+processes. This entrypoint imports Node APIs and must not be bundled into Workers
+or browser applications.

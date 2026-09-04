@@ -17,6 +17,7 @@ data, memory, infrastructure, and policy.
 
 **[Rust](#rust-start-here)** · **[JavaScript](#javascript-node-browser-and-wasm)** ·
 **[Python](#python)** · **[Capabilities](#one-agent-owned-end-to-end)** ·
+**[Desktop apps](#desktop-apps)** ·
 **[Evaluation](#evaluation-is-a-product-boundary)** ·
 **[Deployments](#deployment-proofs)** · **[Status](#what-is-stable)**
 
@@ -49,6 +50,20 @@ The interface is deliberately not part of that list. Consume ordered typed
 events in a native TUI, wterm, xterm.js, React, logs, or something that only
 your product could have. The included renderers are complete consumers, not a
 UI protocol every embedding must adopt.
+
+## Desktop apps
+
+Nanocodex has a [native SwiftUI/AppKit macOS app](macos/README.md) and an
+[Electron app](js/desktop/README.md). Both use the managed-agent API, persistent
+sidebar or top tabs, streamed conversations, and local, VM, and cloud Hands.
+Choosing a folder and sending automatically connects compute for that thread.
+Their shared transport and Hand lifecycle live in
+[`@nanocodex/desktop-runtime`](js/desktop-runtime/README.md).
+
+Use `pnpm dev:desktop` for Electron development. Build its app bundle with
+`pnpm --filter @nanocodex/desktop package`; build Swift with `pnpm build:macos`
+after preparing the documented bundled Node runtime. Each app's README describes
+account setup, native controls, and real-service verification.
 
 ## Install
 
