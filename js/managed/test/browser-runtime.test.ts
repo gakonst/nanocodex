@@ -261,6 +261,35 @@ describe("AI SDK browser tool adapter", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  it("scopes the official codemode instructions to the nested browser sandbox", async () => {
+    const upstreamDescription = [
+      "Execute JavaScript in a sandbox with access to connector SDKs.",
+      "Call `codemode.search(query)` before using the `cdp` connector.",
+    ].join("\n");
+    const [adapted] = await adaptAiSdkTools({
+      browser_execute: tool({
+        description: upstreamDescription,
+        inputSchema: jsonSchema({
+          type: "object",
+          properties: { code: { type: "string" } },
+          required: ["code"],
+          additionalProperties: false,
+        }),
+        execute: async () => ({ ok: true }),
+      }),
+    });
+
+    expect(adapted?.description).toContain(
+      "`codemode`, `cdp`, and connector globals exist only inside that nested browser sandbox",
+    );
+    expect(adapted?.description).toContain("call this tool through `tools.browser_execute(...)`");
+    expect(adapted?.description).toContain("use `tools.web__run(...)` for ordinary web search");
+    expect(adapted?.description).toContain(
+      "Never call `codemode.search(...)` or `codemode.describe(...)` outside",
+    );
+    expect(adapted?.description.endsWith(upstreamDescription)).toBe(true);
+  });
+
   it("redacts provider URLs and scalar cookie material", () => {
     expect(sanitizeBrowserToolResult({
       provider: "https://live.browser.run/session/signed",
