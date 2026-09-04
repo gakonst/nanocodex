@@ -263,6 +263,10 @@ impl<S> ModelRun<S> {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the private run owns each injected lifecycle component directly"
+    )]
     pub(crate) fn from_checkpoint(
         events: EventSink,
         config: Arc<ModelConfig>,

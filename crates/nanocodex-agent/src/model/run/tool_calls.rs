@@ -156,9 +156,7 @@ async fn execute_code_call(
     tools: &ToolRuntime,
     call: &CodeCall,
     owned_context: Option<OwnedToolContext>,
-    session_id: &str,
-    model: Model,
-    host_context: Option<&str>,
+    context: ToolContext<'_>,
     observer: &mut dyn CodeModeObserver,
     tool_span: &tracing::Span,
 ) -> CodeModeExecution {
@@ -168,14 +166,6 @@ async fn execute_code_call(
             .instrument(tool_span.clone())
             .await
     } else {
-        let context = ToolContext::new(
-            model.as_str(),
-            session_id,
-            &call.call_id,
-            &[],
-            DEFAULT_TOOL_OUTPUT_TOKENS,
-        )
-        .with_host_context(host_context);
         tools
             .wait_for_code_with_updates(&call.input, context, observer)
             .instrument(tool_span.clone())
@@ -677,6 +667,14 @@ where
             });
         }
         let owned_context = owned_code_context(&call, history, session_id, model, host_context)?;
+        let context = ToolContext::new(
+            model.as_str(),
+            session_id,
+            &call.call_id,
+            &[],
+            DEFAULT_TOOL_OUTPUT_TOKENS,
+        )
+        .with_host_context(host_context);
         let mut observer = NestedToolEventObserver {
             events,
             tool_call_indices,
@@ -689,9 +687,7 @@ where
             tools,
             &call,
             owned_context,
-            session_id,
-            model,
-            host_context,
+            context,
             &mut observer,
             tool_span,
         )
