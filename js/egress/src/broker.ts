@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Provider, ProviderRequest, secp256k1, Storage } from "accounts";
 import { http } from "viem";
-import { Actions } from "viem/tempo";
+import { Account as TempoAccount, Actions } from "viem/tempo";
 import { tempo } from "viem/tempo/chains";
 
 import {
@@ -1616,13 +1616,8 @@ async function createRootWallet(): Promise<RootWallet> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const privateKey = randomRootPrivateKey();
     try {
-      const provider = rootWalletProvider({ privateKey, address: "0x0000000000000000000000000000000000000000", createdAt: Date.now() });
-      const result = await provider.request({
-        method: "wallet_connect",
-        params: [{ chainId: TEMPO_CHAIN_ID, capabilities: { method: "login" } }],
-      } as never) as { accounts?: readonly { address?: unknown }[] };
-      const address = result.accounts?.[0]?.address;
-      if (typeof address === "string" && ROOT_WALLET_ADDRESS.test(address)) {
+      const address = TempoAccount.fromSecp256k1(privateKey).address;
+      if (ROOT_WALLET_ADDRESS.test(address)) {
         return {
           privateKey,
           address: address.toLowerCase() as `0x${string}`,

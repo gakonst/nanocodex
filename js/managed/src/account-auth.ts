@@ -23,6 +23,7 @@ const OTP_RESEND_SECONDS = 60;
 const OTP_PHONE_REQUESTS_PER_HOUR = 5;
 const OTP_IP_REQUESTS_PER_HOUR = 20;
 const OTP_PROVIDER_TIMEOUT_MS = 10_000;
+const ACCOUNT_PROVISION_TIMEOUT_MS = 10_000;
 const MAX_WALLET_MUTATION_BODY_BYTES = 16 * 1024;
 const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -618,10 +619,12 @@ async function verifySmsOtp(
   if (!isSmsIdentity(identity)) {
     return json({ error: "sms_identity_unavailable" }, { status: 503 });
   }
-  await ensureAccount(env, identity.userId, true);
   let wallet: AccountWalletMetadata;
   try {
-    wallet = await ensureAccountWallet(env, identity.userId);
+    [wallet] = await Promise.all([
+      ensureAccountWallet(env, identity.userId),
+      ensureAccount(env, identity.userId, true),
+    ]);
   } catch {
     await store.set(`challenge:${challengeId}`, challenge, {
       ttl: Math.max(1, challenge.expiresAt - now),
@@ -1254,26 +1257,34 @@ export async function ensureAccount(
   env: AccountAuthEnv,
   userId: string,
   persistent: boolean,
+  timeoutMs = ACCOUNT_PROVISION_TIMEOUT_MS,
 ): Promise<void> {
   if (!isUserId(userId)) {
     throw new Error("invalid account identity");
   }
-  const response = await env.NANOCODEX_USERS.getByName(userId).fetch(
+  const accountStub = env.NANOCODEX_USERS.getByName(userId);
+  const status = await fetchResponseWithDeadline(
+    accountStub,
     "https://user.internal/account",
     {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: userId, persistent }),
     },
+    timeoutMs,
+    "account provisioning",
+    (response) => response.status,
   );
-  if (response.ok) {
-    await response.body?.cancel();
-    return;
-  }
-  const status = response.status;
-  await response.body?.cancel();
+  if (status >= 200 && status < 300) return;
   if (status === 409) {
-    const current = await readAccount(env, userId);
+    const current = await fetchResponseWithDeadline(
+      accountStub,
+      "https://user.internal/account",
+      {},
+      timeoutMs,
+      "account provisioning verification",
+      (response) => response.ok ? response.json<UserRecord>() : undefined,
+    );
     if (current?.id === userId && (current.persistent || !persistent)) return;
   }
   throw new Error("account provisioning failed");
@@ -1283,24 +1294,26 @@ export async function ensureAccount(
 export async function ensureAccountWallet(
   env: AccountAuthEnv,
   userId: string,
+  timeoutMs = ACCOUNT_PROVISION_TIMEOUT_MS,
 ): Promise<AccountWalletMetadata> {
   if (!isUserId(userId) || !env.NANOCODEX) throw new Error("wallet unavailable");
-  let response: Response;
   try {
-    response = await env.NANOCODEX.fetch(
+    return await fetchResponseWithDeadline(
+      env.NANOCODEX,
       `https://broker.internal/users/${encodeURIComponent(userId)}/wallet`,
       { method: "PUT" },
+      timeoutMs,
+      "account wallet provisioning",
+      async (response) => {
+        if (!response.ok) throw new Error("wallet unavailable");
+        const metadata = await response.json<unknown>().catch(() => undefined);
+        if (!isAccountWalletMetadata(metadata)) throw new Error("wallet unavailable");
+        return metadata;
+      },
     );
   } catch {
     throw new Error("wallet unavailable");
   }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => {});
-    throw new Error("wallet unavailable");
-  }
-  const metadata = await response.json<unknown>().catch(() => undefined);
-  if (!isAccountWalletMetadata(metadata)) throw new Error("wallet unavailable");
-  return metadata;
 }
 
 async function readAccountWallet(

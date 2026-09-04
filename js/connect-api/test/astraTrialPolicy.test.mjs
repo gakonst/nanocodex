@@ -22,7 +22,7 @@ function policy() {
 test("pins the registered Astra trial identity and one-shot amount", () => {
   assert.equal(astraTrialAppId, "astra-one-shot");
   assert.equal(astraTrialAppOrigin, "https://nanocodex-astra-mpp-trial.gakonst.workers.dev");
-  assert.equal(astraTrialMppLimit, 50_000_000n);
+  assert.equal(astraTrialMppLimit, 100_000n);
   assert.equal(hasConsistentAstraTrialIdentity(astraTrialAppId, astraTrialAppOrigin), true);
   assert.equal(hasConsistentAstraTrialIdentity("another-app", "https://another.example"), true);
   assert.equal(hasConsistentAstraTrialIdentity(astraTrialAppId, "https://another.example"), false);

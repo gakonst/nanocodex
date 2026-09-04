@@ -3,7 +3,7 @@ import { Mppx, Store, tempo } from "mppx/server";
 import { MACH, TEMPO_CHAIN_ID } from "./policy";
 
 export type PaymentConfiguration = Readonly<{
-  amount: "0" | "50";
+  amount: "0" | "0.1";
   recipient: `0x${string}`;
   secret: string;
   tempoApiKey?: string;

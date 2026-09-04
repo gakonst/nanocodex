@@ -244,24 +244,24 @@ test("production Connect policy pins the API and registered embedding app", () =
   });
 });
 
-test("Astra consent exposes its exact 50 MACH recipient-bound authority", () => {
+test("Astra consent exposes its exact 0.1 MACH recipient-bound authority", () => {
   const token = "0x20c000000000000000000000f37de3740adec032";
   const recipient = "0x1234567890abcdef1234567890abcdef12345678";
-  assert.deepEqual(mppConsentDetails("astra-one-shot", token, 50_000_000n, [{
+  assert.deepEqual(mppConsentDetails("astra-one-shot", token, 100_000n, [{
     address: token,
     selector: "0x95777d59",
     recipients: [recipient],
-  }]), { maxPerRequest: 50_000_000n, recipient });
+  }]), { maxPerRequest: 100_000n, recipient });
   assert.deepEqual(mppConsentDetails("another-app", token, 10_000_000n, [{
     address: token,
     selector: "0x95777d59",
     recipients: [recipient],
   }]), { maxPerRequest: 250_000n, recipient });
-  assert.deepEqual(mppConsentDetails("astra-one-shot", token, 50_000_000n, [{
+  assert.deepEqual(mppConsentDetails("astra-one-shot", token, 100_000n, [{
     address: token,
     selector: "0xa9059cbb",
     recipients: [recipient],
-  }]), { maxPerRequest: 50_000_000n });
+  }]), { maxPerRequest: 100_000n });
 });
 
 test("only top-level popup dialogs admit unknown secure app origins", () => {

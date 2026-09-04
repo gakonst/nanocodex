@@ -1,6 +1,6 @@
 export const astraTrialAppId = "astra-one-shot";
 export const astraTrialAppOrigin = "https://nanocodex-astra-mpp-trial.gakonst.workers.dev";
-export const astraTrialMppLimit = 50_000_000n;
+export const astraTrialMppLimit = 100_000n;
 
 export function hasConsistentAstraTrialIdentity(appId: unknown, origin: unknown): boolean {
   const claimsIdentity = appId === astraTrialAppId || origin === astraTrialAppOrigin;
