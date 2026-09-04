@@ -1832,7 +1832,7 @@ async fn account_default_settings(client: &ManagedClient) -> AgentSettings {
         Ok(capabilities) if capabilities.astra_entitled => AgentSettings {
             model: Model::Astra,
             thinking: Thinking::High,
-            reasoning_mode: ReasoningMode::Standard,
+            reasoning_mode: ManagedReasoningMode::Standard,
             fast_mode: false,
         },
         Ok(_) | Err(_) => AgentSettings::default(),

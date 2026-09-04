@@ -257,6 +257,7 @@ fn model_name(model: Model) -> &'static str {
         Model::Terra => "Terra",
         Model::Sol => "Sol",
         Model::Astra => "Astra",
+        _ => model.as_str(),
     }
 }
 
@@ -356,7 +357,7 @@ mod tests {
 
     #[test]
     fn filled_bar_uses_the_selected_model_color() {
-        let mut selector = ModelSelector::new(Model::Sol);
+        let mut selector = ModelSelector::new(Model::Astra);
         let terminal = render(&mut selector);
         let rail = terminal
             .backend()
@@ -367,7 +368,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(!rail.is_empty());
-        assert!(rail.iter().all(|cell| cell.fg == Color::Yellow));
+        assert!(rail.iter().all(|cell| cell.fg == Color::LightMagenta));
     }
 
     #[test]

@@ -179,6 +179,7 @@ impl Theme {
             Model::Terra => Color::Green,
             Model::Sol => Color::Yellow,
             Model::Astra => Color::LightMagenta,
+            _ => Color::White,
         }
     }
 
