@@ -96,7 +96,6 @@ impl Clone for Transcript {
 }
 
 impl Transcript {
-    #[cfg(test)]
     pub(super) const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
