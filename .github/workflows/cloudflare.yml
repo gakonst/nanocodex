@@ -39,6 +39,19 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      - name: Select managed container rollout
+        id: managed-container
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          rollout=immediate
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            if git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- js/managed/Dockerfile js/managed/wrangler.jsonc; then
+              rollout=none
+            fi
+          fi
+          echo "rollout=$rollout" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
@@ -79,7 +92,7 @@ jobs:
         run: npx wrangler deploy --dry-run --config wrangler.broker.jsonc
       - name: Validate managed Worker
         working-directory: js/managed
-        run: npx wrangler deploy --dry-run --config wrangler.jsonc
+        run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}"
       - name: Upload Connect dialog preview version
         working-directory: js/connect-dialog
         run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
@@ -121,6 +134,19 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      - name: Select managed container rollout
+        id: managed-container
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          rollout=immediate
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            if git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- js/managed/Dockerfile js/managed/wrangler.jsonc; then
+              rollout=none
+            fi
+          fi
+          echo "rollout=$rollout" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
@@ -159,7 +185,7 @@ jobs:
         run: npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy managed agent service
         working-directory: js/managed
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: npx wrangler deploy --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}" --message "$DEPLOY_MESSAGE"
       - name: Deploy Connect dialog assets
         working-directory: js/connect-dialog
         run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
