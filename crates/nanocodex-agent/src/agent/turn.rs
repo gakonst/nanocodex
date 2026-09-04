@@ -403,11 +403,13 @@ pub(super) enum Command {
     },
     Spawn {
         options: SpawnOptions,
+        host_context: Option<Arc<str>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },
     SpawnBatch {
         count: usize,
         observer: Option<Arc<SpawnObserver>>,
+        host_context: Option<Arc<str>>,
         result: oneshot::Sender<Result<Vec<(Nanocodex, AgentEvents)>>>,
     },
     SetModel {

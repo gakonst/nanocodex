@@ -27,6 +27,8 @@ mod vm_hand;
 )))]
 #[path = "vm_hand_unsupported.rs"]
 mod vm_hand;
+mod vm_hand_config;
+mod vm_host;
 
 use std::{
     env,
@@ -36,13 +38,13 @@ use std::{
     time::Instant,
 };
 
-use clap::{Args, Parser, Subcommand, builder::NonEmptyStringValueParser};
+use clap::{Args, Parser, Subcommand, ValueEnum, builder::NonEmptyStringValueParser};
 use hand_observability::HandObservabilityArgs;
 use host::HostConfig;
 use nanocodex_agent::{AgentEvents, Nanocodex, NanocodexError, PromptRequest, Turn, TurnResult};
 use nanocodex_managed::{
     AgentSettings, AgentState, EventCursor, Managed, ManagedApiKey, ManagedClient, ManagedError,
-    ManagedEvent, PromptInput,
+    ManagedEvent, PromptInput, validate_vm_factory_name,
 };
 use nanocodex_tools::{
     Tools, WorkspaceTools,
@@ -55,6 +57,7 @@ use url::Url;
 const MANAGED_URL_ENV: &str = "NANOCODEX_MANAGED_URL";
 const API_KEY_ENV: &str = "NANOCODEX_API_KEY";
 const API_KEY_FALLBACK_ENV: &str = "NC_API_KEY";
+const SYSTEM_HOST_TOKEN_ENV: &str = "NANOCODEX_SYSTEM_HOST_TOKEN";
 const DEFAULT_MANAGED_ORIGIN: &str = "https://nanocodex.gakonst.workers.dev";
 
 #[derive(Parser)]
@@ -73,6 +76,8 @@ enum Command {
     Attach(Attach),
     /// Register one retained libkrun VM as a compute hand for the account.
     Hand(Hand),
+    /// Serve a bounded pool of on-demand libkrun VM hands.
+    Host(Host),
     /// Create a managed agent and print its receipt as JSON.
     New,
     /// List account-owned managed agents as JSON.
@@ -161,11 +166,110 @@ struct Hand {
     machine_name: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum HostScope {
+    User,
+    Agent,
+    System,
+}
+
+#[derive(Args)]
+struct Host {
+    #[command(flatten)]
+    observability: HandObservabilityArgs,
+
+    /// Authority scope that may provision VMs from this host.
+    #[arg(long, value_enum, default_value_t = HostScope::User)]
+    scope: HostScope,
+
+    /// Exact /mount provider selector, unique within the selected scope.
+    #[arg(long, value_name = "FACTORY_NAME")]
+    factory_name: String,
+
+    /// Managed agent ID. Required only with --scope agent.
+    #[arg(long, value_name = "AGENT_ID", required_if_eq("scope", "agent"))]
+    agent: Option<String>,
+
+    /// Immutable raw ext4 image cloned privately for every allocation.
+    #[arg(long, value_name = "ROOTFS")]
+    vm_template: PathBuf,
+
+    /// Durable private host state and per-allocation VM roots.
+    #[arg(long, value_name = "PATH")]
+    state_dir: PathBuf,
+
+    /// Maximum number of provisioning, live, or releasing VMs.
+    #[arg(long, value_name = "COUNT", default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
+    max_vms: u16,
+
+    /// Stable host UUID. Generated and persisted under --state-dir when omitted.
+    #[arg(long, value_name = "UUID")]
+    host_id: Option<uuid::Uuid>,
+
+    /// Statically linked Linux guest executable used with the raw ext4 roots.
+    #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
+    vm_guest_runtime: PathBuf,
+
+    /// Cache for the prepared read-only guest runtime disk.
+    #[arg(long, value_name = "PATH", default_value = ".cache/vm")]
+    vm_cache: PathBuf,
+
+    /// Directory containing the platform libkrun firmware library.
+    #[arg(long, value_name = "PATH", env = "NANOCODEX_KRUNFW_DIR")]
+    vm_firmware: Option<PathBuf>,
+
+    /// Absolute working directory inside every provisioned VM.
+    #[arg(long, value_name = "PATH", default_value = "/app")]
+    vm_workspace: String,
+
+    /// Number of virtual CPUs assigned to each VM.
+    #[arg(long, value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=64))]
+    vm_cpus: u8,
+
+    /// Guest memory in mebibytes assigned to each VM.
+    #[arg(long, value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(128..=262_144))]
+    vm_memory_mib: u32,
+
+    /// Shell name described to the managed brain.
+    #[arg(long, value_name = "SHELL", default_value = "sh")]
+    vm_shell: String,
+
+    /// Disable guest internet socket proxying.
+    #[arg(long)]
+    vm_no_network: bool,
+}
+
 #[derive(Args)]
 struct VmRunConfig {
     /// Mode-0600 launch record prepared by nanocodex-vm.
     #[arg(long)]
     config: PathBuf,
+}
+
+impl Host {
+    fn validate(&self) -> Result<(), ManagedError> {
+        validate_vm_factory_name(&self.factory_name)?;
+        if self.host_id.is_some_and(|id| {
+            id.get_version_num() != 4 || id.get_variant() != uuid::Variant::RFC4122
+        }) {
+            return Err(ManagedError::Configuration(
+                "--host-id must be a UUID v4".to_owned(),
+            ));
+        }
+        match (self.scope, self.agent.as_deref()) {
+            (HostScope::Agent, Some(agent)) if valid_managed_agent_id(agent) => Ok(()),
+            (HostScope::Agent, Some(_)) => Err(ManagedError::Configuration(
+                "--agent must be a safe managed agent identifier".to_owned(),
+            )),
+            (HostScope::Agent, None) => Err(ManagedError::Configuration(
+                "--agent is required with --scope agent".to_owned(),
+            )),
+            (HostScope::User | HostScope::System, Some(_)) => Err(ManagedError::Configuration(
+                "--agent is only valid with --scope agent".to_owned(),
+            )),
+            (HostScope::User | HostScope::System, None) => Ok(()),
+        }
+    }
 }
 
 #[derive(Args)]
@@ -248,15 +352,23 @@ fn try_main() -> Result<(), ManagedError> {
 }
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
-    if let Some(Command::VmRunConfig(command)) = &cli.command {
-        return vm_hand::run_config(&command.config);
-    }
-    let managed_origin = match &cli.command {
+    let command = match cli.command {
+        Some(Command::VmRunConfig(command)) => return vm_hand::run_config(&command.config),
+        Some(Command::Host(command)) => {
+            let _observability = command
+                .observability
+                .install()
+                .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+            return vm_host::serve(command).await;
+        }
+        command => command,
+    };
+    let managed_origin = match &command {
         Some(Command::Attach(Attach { agent: Some(agent) })) => agent.managed_origin.as_deref(),
         _ => None,
     };
     let client = client_from_environment(managed_origin)?;
-    match cli.command {
+    match command {
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
         }
@@ -267,6 +379,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
                 .map_err(|error| ManagedError::Configuration(error.to_string()))?;
             serve_vm_hand(&client, command).await
         }
+        Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
         Some(Command::New) => write_json(&client.create().await?),
         Some(Command::List) => write_json(&client.list().await?),
         Some(Command::State(command)) => write_json(&client.state(&command.agent_id).await?),
@@ -805,5 +918,83 @@ mod tests {
         ] {
             assert!(parse_agent_reference(value).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn host_scope_requires_agent_exactly_for_agent_scope() {
+        let common = [
+            "--factory-name",
+            "garage-mac",
+            "--vm-template",
+            "/tmp/template.ext4",
+            "--state-dir",
+            "/tmp/host-state",
+            "--vm-guest-runtime",
+            "/tmp/guest",
+        ];
+        let user = Cli::try_parse_from(["nanocodex2", "host"].into_iter().chain(common)).unwrap();
+        let Some(Command::Host(user)) = user.command else {
+            panic!("host parsed into the wrong command")
+        };
+        assert_eq!(user.scope, HostScope::User);
+        assert_eq!(user.factory_name, "garage-mac");
+        user.validate().unwrap();
+
+        for invalid_name in ["host", "cloudflare", "cf_sandbox", "Garage-Mac", "bad/name"] {
+            let invalid = Cli::try_parse_from(
+                ["nanocodex2", "host", "--factory-name", invalid_name]
+                    .into_iter()
+                    .chain(common[2..].iter().copied()),
+            )
+            .unwrap();
+            let Some(Command::Host(invalid)) = invalid.command else {
+                panic!("invalid factory host parsed into the wrong command")
+            };
+            assert!(invalid.validate().is_err(), "accepted {invalid_name:?}");
+        }
+
+        assert!(
+            Cli::try_parse_from(
+                ["nanocodex2", "host", "--scope", "agent"]
+                    .into_iter()
+                    .chain(common),
+            )
+            .is_err()
+        );
+        let agent = Cli::try_parse_from(
+            [
+                "nanocodex2",
+                "host",
+                "--scope",
+                "agent",
+                "--agent",
+                "agent-1",
+            ]
+            .into_iter()
+            .chain(common),
+        )
+        .unwrap();
+        let Some(Command::Host(agent)) = agent.command else {
+            panic!("agent host parsed into the wrong command")
+        };
+        agent.validate().unwrap();
+
+        let system_with_agent = Cli::try_parse_from(
+            [
+                "nanocodex2",
+                "host",
+                "--scope",
+                "system",
+                "--agent",
+                "agent-1",
+            ]
+            .into_iter()
+            .chain(common),
+        )
+        .unwrap();
+        let Some(Command::Host(system_with_agent)) = system_with_agent.command else {
+            panic!("system host parsed into the wrong command")
+        };
+        assert!(system_with_agent.validate().is_err());
     }
 }

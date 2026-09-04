@@ -337,21 +337,34 @@ pub(super) fn handle_idle_command<S>(
                         defaults.model,
                         defaults.thinking,
                         defaults.fast_mode,
+                        spawner.host_context.as_ref().map(Arc::clone),
                     )
                 });
             drop(result.send(outcome));
         }
-        Command::Spawn { options, result } => {
+        Command::Spawn {
+            options,
+            host_context,
+            result,
+        } => {
             let model = options.model.unwrap_or(defaults.model);
             let thinking = options.thinking.unwrap_or(defaults.thinking);
             let outcome = validate_model_thinking(model, thinking).and_then(|()| {
-                spawner.spawn_clean(workspace, session_id, model, thinking, defaults.fast_mode)
+                spawner.spawn_clean(
+                    workspace,
+                    session_id,
+                    model,
+                    thinking,
+                    defaults.fast_mode,
+                    host_context.or_else(|| spawner.host_context.as_ref().map(Arc::clone)),
+                )
             });
             drop(result.send(outcome));
         }
         Command::SpawnBatch {
             count,
             observer,
+            host_context,
             result,
         } => {
             let outcome = spawner.spawn_clean_many(
@@ -360,6 +373,7 @@ pub(super) fn handle_idle_command<S>(
                 defaults,
                 count,
                 observer.as_deref(),
+                host_context,
             );
             drop(result.send(outcome));
         }

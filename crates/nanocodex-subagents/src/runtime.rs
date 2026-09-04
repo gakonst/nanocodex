@@ -33,6 +33,7 @@ use web_time::Instant;
 
 pub(super) struct ChildSession {
     pub(super) descriptor: AgentDescriptor,
+    pub(super) host_context: Option<Arc<str>>,
     pub(super) event_task: Option<Task<()>>,
     pub(super) harness: Option<HarnessHandle>,
     pub(super) harness_task: Option<Task<()>>,
@@ -478,7 +479,7 @@ impl RegistryState {
                     root_session_id.to_owned(),
                     descriptor.id,
                     descriptor.session_id.clone(),
-                    restored_tombstone(descriptor.clone()),
+                    restored_tombstone(descriptor.clone(), None),
                 )?;
                 ordered.push(descriptor);
             }
@@ -1027,11 +1028,26 @@ impl Registry {
         root_session_id: &str,
         descriptors: Vec<AgentDescriptor>,
     ) -> std::io::Result<()> {
-        let restored = self
-            .state
-            .lock()
+        self.restore_with_host_contexts(root_session_id, descriptors, HashMap::new())
             .await
-            .restore(root_session_id, descriptors)?;
+    }
+
+    /// Restores logical children with embedding-private invocation context.
+    #[doc(hidden)]
+    pub async fn restore_with_host_contexts(
+        &self,
+        root_session_id: &str,
+        descriptors: Vec<AgentDescriptor>,
+        mut host_contexts: HashMap<String, Arc<str>>,
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().await;
+        let restored = state.restore(root_session_id, descriptors)?;
+        if let Some(scope) = state.scopes.get_mut(root_session_id) {
+            for session in scope.sessions.values_mut() {
+                session.host_context = host_contexts.remove(&session.descriptor.session_id);
+            }
+        }
+        drop(state);
         for descriptor in restored {
             let id = descriptor.id;
             self.send(root_session_id, AgentUpdate::Added(descriptor));
@@ -1045,6 +1061,32 @@ impl Registry {
         }
         self.changed();
         Ok(())
+    }
+
+    /// Returns embedding-private context for one retained child session.
+    #[doc(hidden)]
+    pub async fn host_context(&self, root_session_id: &str, id: AgentId) -> Option<Arc<str>> {
+        self.state
+            .lock()
+            .await
+            .scopes
+            .get(root_session_id)
+            .and_then(|scope| scope.sessions.get(&id))
+            .and_then(|session| session.host_context.as_ref().map(Arc::clone))
+    }
+
+    /// Returns embedding-private context inherited by a descendant session.
+    #[doc(hidden)]
+    pub async fn host_context_for_session(&self, session_id: &str) -> Option<Arc<str>> {
+        let state = self.state.lock().await;
+        let root_session_id = state.root_by_session.get(session_id)?;
+        state
+            .scopes
+            .get(root_session_id)?
+            .sessions
+            .values()
+            .find(|session| session.descriptor.session_id == session_id)
+            .and_then(|session| session.host_context.as_ref().map(Arc::clone))
     }
 
     pub(super) async fn reserve(&self, session_id: &str) -> std::io::Result<AgentReservation> {
@@ -1099,6 +1141,7 @@ impl Registry {
         self: &Arc<Self>,
         root_session_id: String,
         descriptor: AgentDescriptor,
+        host_context: Option<Arc<str>>,
         agent: Nanocodex,
         event_task: Task<()>,
         contract: OutputContract,
@@ -1120,6 +1163,7 @@ impl Registry {
             descriptor.session_id.clone(),
             ChildSession {
                 descriptor,
+                host_context,
                 event_task: Some(event_task),
                 harness: Some(harness),
                 harness_task: Some(harness_task),
@@ -1779,9 +1823,10 @@ fn complete_session(session: &mut ChildSession, output: Option<Value>) -> AgentS
     AgentStatus::Completed { output }
 }
 
-fn restored_tombstone(descriptor: AgentDescriptor) -> ChildSession {
+fn restored_tombstone(descriptor: AgentDescriptor, host_context: Option<Arc<str>>) -> ChildSession {
     ChildSession {
         descriptor,
+        host_context,
         event_task: None,
         harness: None,
         harness_task: None,
@@ -1931,6 +1976,7 @@ mod tests {
     };
     use serde_json::json;
     use std::{
+        collections::HashMap,
         future::{Pending, pending},
         result::Result as StdResult,
         sync::Arc,
@@ -2112,6 +2158,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restored_host_contexts_remain_private_and_session_scoped() {
+        let (updates, _receiver) = mpsc::unbounded_channel();
+        let registry = Registry::new(updates, 3);
+        let first = AgentDescriptor {
+            id: AgentId::new(1),
+            session_id: "first-session".to_owned(),
+            role: "first".to_owned(),
+            task: "inspect".to_owned(),
+            parent: None,
+        };
+        let second = AgentDescriptor {
+            id: AgentId::new(2),
+            session_id: "second-session".to_owned(),
+            role: "second".to_owned(),
+            task: "review".to_owned(),
+            parent: None,
+        };
+
+        registry
+            .restore_with_host_contexts(
+                "root",
+                vec![first.clone(), second.clone()],
+                HashMap::from([
+                    (
+                        first.session_id.clone(),
+                        Arc::<str>::from("opaque-first-turn"),
+                    ),
+                    (
+                        second.session_id.clone(),
+                        Arc::<str>::from("opaque-second-turn"),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.host_context("root", first.id).await.as_deref(),
+            Some("opaque-first-turn")
+        );
+        assert_eq!(
+            registry.host_context("root", second.id).await.as_deref(),
+            Some("opaque-second-turn")
+        );
+        assert_eq!(
+            registry
+                .host_context_for_session("first-session")
+                .await
+                .as_deref(),
+            Some("opaque-first-turn")
+        );
+        assert_eq!(registry.host_context("other-root", first.id).await, None);
+        assert_eq!(
+            registry.directory("root", true, false).await.len(),
+            2,
+            "private context must not change the public directory projection"
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_restored_topologies_are_rejected_atomically() {
         let descriptor = |id: u64, session_id: &str, parent: Option<u64>| AgentDescriptor {
             id: AgentId::new(id),
@@ -2187,6 +2293,7 @@ mod tests {
                     task: "work".to_owned(),
                     parent: None,
                 },
+                None,
                 agent,
                 forward_events(
                     "root".to_owned(),
@@ -2265,6 +2372,7 @@ mod tests {
             .insert(
                 reservation.root_session_id.clone(),
                 descriptor,
+                None,
                 agent,
                 event_task,
                 test_contract(),
@@ -2333,6 +2441,7 @@ mod tests {
         };
         ChildSession {
             descriptor,
+            host_context: None,
             event_task: Some(platform::spawn(async {})),
             harness: None,
             harness_task: None,

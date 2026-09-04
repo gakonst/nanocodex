@@ -68,6 +68,7 @@ where
                 self.tools.clone(),
                 prompt_cache.clone(),
                 initial,
+                self.spawner.host_context.as_ref().map(Arc::clone),
             )
         } else {
             ModelRun::new(
@@ -79,6 +80,7 @@ where
                 self.tools.clone(),
                 prompt_cache.clone(),
                 self.spawner.context_source.clone(),
+                self.spawner.host_context.as_ref().map(Arc::clone),
             )
         };
         let mut turn_index = 0_u64;
@@ -953,6 +955,13 @@ where
                 ));
                 continue;
             }
+            model.set_host_context(
+                self.spawner
+                    .host_context
+                    .as_ref()
+                    .map(Arc::clone)
+                    .or_else(|| execution_operation.as_deref().map(Arc::from)),
+            );
             turn_index += 1;
             logical_turn_index = logical_turn_index.saturating_add(1);
             let prompt_content = tracing::enabled!(
@@ -1696,6 +1705,7 @@ where
             tools.clone(),
             prompt_cache.clone(),
             prepared,
+            spawner.host_context.as_ref().map(Arc::clone),
         )
     } else {
         ModelRun::new(
@@ -1707,6 +1717,7 @@ where
             tools.clone(),
             prompt_cache.clone(),
             spawner.context_source.clone(),
+            spawner.host_context.as_ref().map(Arc::clone),
         )
     }
 }

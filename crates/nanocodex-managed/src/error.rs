@@ -26,6 +26,9 @@ pub enum ManagedError {
     /// A durable event-stream frame or envelope violated its protocol.
     #[error("managed event stream is malformed: {0}")]
     InvalidEvent(String),
+    /// A VM-host control connection or strict protocol frame was invalid.
+    #[error("managed VM host control failed: {0}")]
+    VmHost(String),
     /// A managed turn reached an unsuccessful terminal state.
     #[error("managed turn {turn_id} {state}: {message}")]
     Turn {

@@ -328,6 +328,7 @@ pub(super) fn owned_code_context(
     history: Option<Arc<Vec<ResponseItem>>>,
     session_id: &str,
     model: Model,
+    host_context: Option<&str>,
 ) -> Result<Option<OwnedToolContext>> {
     if call.name != "exec" {
         return Ok(None);
@@ -335,13 +336,16 @@ pub(super) fn owned_code_context(
     let history = history.ok_or(NanocodexError::MalformedResponse {
         detail: "exec call did not have an owned history snapshot",
     })?;
-    Ok(Some(OwnedToolContext::new(
-        model.as_str(),
-        session_id,
-        &call.call_id,
-        history,
-        DEFAULT_TOOL_OUTPUT_TOKENS,
-    )))
+    Ok(Some(
+        OwnedToolContext::new(
+            model.as_str(),
+            session_id,
+            &call.call_id,
+            history,
+            DEFAULT_TOOL_OUTPUT_TOKENS,
+        )
+        .with_host_context(host_context.map(Arc::from)),
+    ))
 }
 
 pub(super) fn record_span_content(span: &tracing::Span, kind: &'static str, content: &str) {

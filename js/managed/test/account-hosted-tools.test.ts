@@ -292,6 +292,42 @@ describe("account Hosted Tools provider", () => {
     expect(requested).toContain(ACCOUNT_B);
   });
 
+  it("rechecks account hand calls against the invoking subagent context", async () => {
+    const invoked: string[] = [];
+    const namespace = fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
+      if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
+      const body = await request.json<{ session_id: string }>();
+      invoked.push(body.session_id);
+      return Response.json({
+        output: "ok",
+        structured_result: null,
+        success: true,
+        metadata: null,
+        value: "ok",
+      });
+    }]]));
+    const provider = new AccountHostedToolsProvider(
+      namespace,
+      ACCOUNT_A,
+      (context) => context === undefined || context.sessionId === "allowed-child",
+    );
+    await provider.refresh();
+    const tool = provider.resolve("fixture__lookup")!;
+
+    const denied = await tool.handler({}, {
+      sessionId: "denied-child",
+      callId: "call-denied",
+    });
+    expect(denied).toMatchObject({
+      success: false,
+      structuredResult: { status: "unavailable" },
+    });
+    expect(invoked).toEqual([]);
+
+    await tool.handler({}, { sessionId: "allowed-child", callId: "call-allowed" });
+    expect(invoked).toEqual(["allowed-child"]);
+  });
+
   it("fails closed for malformed snapshots and duplicate public tool names", async () => {
     const malformed = [
       null,

@@ -731,7 +731,7 @@ fn install_default_rustls_crypto_provider() {
     }
 }
 
-fn validate_origin(origin: &Url) -> Result<(), ManagedError> {
+pub(crate) fn validate_origin(origin: &Url) -> Result<(), ManagedError> {
     if !matches!(origin.scheme(), "http" | "https")
         || !origin.username().is_empty()
         || origin.password().is_some()

@@ -89,6 +89,10 @@
         "class_name": "AccountHostedTools"
       },
       {
+        "name": "NANOCODEX_VM_HOST_POOLS",
+        "class_name": "VmHostPool"
+      },
+      {
         "name": "NANOCODEX_ROOMS",
         "class_name": "MultiplayerRoom"
       },
@@ -151,6 +155,10 @@
     {
       "tag": "v7",
       "new_sqlite_classes": ["AccountHostedTools"]
+    },
+    {
+      "tag": "v8",
+      "new_sqlite_classes": ["VmHostPool"]
     }
   ],
   "vars": {
@@ -202,6 +210,7 @@
         "bindings": [
           { "name": "NANOCODEX_SESSIONS", "class_name": "DurableAgentSession" },
           { "name": "NANOCODEX_ACCOUNT_TOOLS", "class_name": "AccountHostedTools" },
+          { "name": "NANOCODEX_VM_HOST_POOLS", "class_name": "VmHostPool" },
           { "name": "NANOCODEX_ROOMS", "class_name": "MultiplayerRoom" },
           { "name": "NANOCODEX_MULTIPLAYER_QUOTA", "class_name": "MultiplayerQuota" },
           { "name": "NANOCODEX_AUTH", "class_name": "NonceStorage" },
@@ -221,6 +230,7 @@
         "NANOCODEX_OTP_HMAC_KEY": "nanocodex-local-sms-otp-hmac-key-v1-only",
         "NANOCODEX_LOCAL_WEBAUTHN_HMAC_KEY": "nanocodex-local-passkey-portability-v1",
         "NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY": "nanocodex-local-oauth-relay-hmac-v1-only",
+        "NANOCODEX_SYSTEM_HOST_TOKEN": "nanocodex-local-system-vm-host-token-v1-ONLY",
         "NANOCODEX_SANDBOX_LOCAL": "true"
       },
       "containers": [

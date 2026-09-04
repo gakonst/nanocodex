@@ -60,6 +60,48 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
     }
 }
 
+#[tokio::test]
+async fn host_help_exposes_the_bounded_vm_pool_contract() {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .args(["host", "--help"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains(
+            "Usage: nanocodex2 host [OPTIONS] --factory-name <FACTORY_NAME> --vm-template <ROOTFS> --state-dir <PATH> --vm-guest-runtime <ELF>"
+        ),
+        "{stdout}"
+    );
+    for expected in [
+        "--scope <SCOPE>",
+        "--agent <AGENT_ID>",
+        "--factory-name <FACTORY_NAME>",
+        "--vm-template <ROOTFS>",
+        "--state-dir <PATH>",
+        "--max-vms <COUNT>",
+        "--host-id <UUID>",
+        "--vm-guest-runtime <ELF>",
+        "--vm-workspace <PATH>",
+        "--vm-cpus <COUNT>",
+        "--vm-memory-mib <MIB>",
+        "--log-filter <LOG_FILTER>",
+        "--otel-endpoint <OTEL_ENDPOINT>",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "missing {expected:?} in:\n{stdout}"
+        );
+    }
+    assert!(stdout.contains("[default: user]"), "{stdout}");
+    assert!(
+        stdout.contains("possible values: user, agent, system"),
+        "{stdout}"
+    );
+}
+
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
     all(target_os = "macos", target_arch = "aarch64")

@@ -115,6 +115,7 @@ where
             context_source,
             depth: 0,
             execution: codex.execution,
+            host_context: None,
             service_factory,
         },
         session_id,

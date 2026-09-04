@@ -154,7 +154,18 @@ export async function create(options = {}) {
           activateCloudflareAgentSession(cloudflareReservation);
           const restoredSubagents = subagentSessions?.restore?.() ?? [];
           if (restoredSubagents.length > 0) {
-            await raw.restoreSubagents(JSON.stringify(restoredSubagents));
+            const restoredHostContextRefs = Object.fromEntries(
+              restoredSubagents.flatMap((descriptor) => {
+                const hostContextRef = subagentSessions?.hostContextRef?.(descriptor.sessionId);
+                return hostContextRef === undefined
+                  ? []
+                  : [[descriptor.sessionId, hostContextRef]];
+              }),
+            );
+            await raw.restoreSubagents(
+              JSON.stringify(restoredSubagents),
+              JSON.stringify(restoredHostContextRefs),
+            );
           }
         }
         return raw;

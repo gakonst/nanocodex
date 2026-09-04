@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -183,6 +183,7 @@ extern "C" {
         root_session_id: &str,
         session_id: &str,
         context_json: &str,
+        host_context_ref: Option<&str>,
     ) -> Result<(), JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = releaseSubagentSession)]
@@ -1031,6 +1032,7 @@ impl WasmSubagents {
         let event_forwarders = Rc::new(Cell::new(0));
         forward_subagent_updates(
             host_definition_id,
+            Arc::downgrade(&registry),
             updates,
             Rc::clone(&sessions),
             Rc::clone(&event_forwarders),
@@ -1076,9 +1078,10 @@ impl WasmSubagents {
         &self,
         root_session_id: &str,
         descriptors: Vec<AgentDescriptor>,
+        host_contexts: HashMap<String, Arc<str>>,
     ) -> Result<(), JsValue> {
         self.registry
-            .restore(root_session_id, descriptors.clone())
+            .restore_with_host_contexts(root_session_id, descriptors.clone(), host_contexts.clone())
             .await
             .map_err(js_error)?;
         for descriptor in &descriptors {
@@ -1087,6 +1090,9 @@ impl WasmSubagents {
                 &self.sessions,
                 root_session_id,
                 descriptor,
+                host_contexts
+                    .get(&descriptor.session_id)
+                    .map(AsRef::<str>::as_ref),
             )?;
         }
         Ok(())
@@ -1261,18 +1267,49 @@ impl WasmNanocodex {
     /// Rejects malformed descriptors, disabled subagents, duplicate restoration,
     /// or an invalid persisted topology.
     #[wasm_bindgen(js_name = restoreSubagents)]
-    pub async fn restore_subagents(&self, descriptors_json: &str) -> Result<(), JsValue> {
+    pub async fn restore_subagents(
+        &self,
+        descriptors_json: &str,
+        host_contexts_json: Option<String>,
+    ) -> Result<(), JsValue> {
         let descriptors = serde_json::from_str::<Vec<WasmRestoredSubagent>>(descriptors_json)
             .map_err(|error| js_error(format!("invalid restored subagents: {error}")))?
             .into_iter()
             .map(WasmRestoredSubagent::descriptor)
             .collect::<Result<Vec<_>, _>>()?;
+        let host_contexts = host_contexts_json
+            .map(|encoded| {
+                serde_json::from_str::<HashMap<String, String>>(&encoded).map_err(|error| {
+                    js_error(format!("invalid restored subagent host contexts: {error}"))
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        for (session_id, host_context) in &host_contexts {
+            if host_context.is_empty() {
+                return Err(js_error(format!(
+                    "restored subagent host context for {session_id} must not be empty"
+                )));
+            }
+            if !descriptors
+                .iter()
+                .any(|descriptor| descriptor.session_id == *session_id)
+            {
+                return Err(js_error(format!(
+                    "restored subagent host context refers to unknown session {session_id}"
+                )));
+            }
+        }
+        let host_contexts = host_contexts
+            .into_iter()
+            .map(|(session_id, host_context)| (session_id, Arc::<str>::from(host_context)))
+            .collect();
         let subagents = self
             .subagents
             .as_ref()
             .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?;
         subagents
-            .restore(self.inner.session_id(), descriptors)
+            .restore(self.inner.session_id(), descriptors, host_contexts)
             .await
     }
 
@@ -2786,6 +2823,7 @@ fn forward_events(mut events: AgentEvents, forwarding: Rc<Cell<bool>>) {
 
 fn forward_subagent_updates(
     host_definition_id: u32,
+    registry: Weak<SubagentRegistry>,
     mut updates: tokio::sync::mpsc::UnboundedReceiver<ScopedAgentUpdate>,
     sessions: Rc<RefCell<HashMap<(String, SubagentId), String>>>,
     event_forwarders: Rc<Cell<usize>>,
@@ -2796,11 +2834,16 @@ fn forward_subagent_updates(
             let root_session_id = scoped.root_session_id;
             match scoped.update {
                 SubagentUpdate::Added(descriptor) => {
+                    let Some(registry) = registry.upgrade() else {
+                        break;
+                    };
+                    let host_context = registry.host_context(&root_session_id, descriptor.id).await;
                     if let Err(error) = bind_subagent_session(
                         host_definition_id,
                         &sessions,
                         &root_session_id,
                         &descriptor,
+                        host_context.as_deref(),
                     ) {
                         report_subagent_host_error("binding a subagent session", &error);
                     }
@@ -2858,6 +2901,7 @@ fn bind_subagent_session(
     sessions: &Rc<RefCell<HashMap<(String, SubagentId), String>>>,
     root_session_id: &str,
     descriptor: &AgentDescriptor,
+    host_context_ref: Option<&str>,
 ) -> Result<(), JsValue> {
     let context = serde_json::json!({
         "agentId": descriptor.id.to_string(),
@@ -2871,6 +2915,7 @@ fn bind_subagent_session(
         root_session_id,
         &descriptor.session_id,
         &context.to_string(),
+        host_context_ref,
     )?;
     sessions.borrow_mut().insert(
         (root_session_id.to_owned(), descriptor.id),

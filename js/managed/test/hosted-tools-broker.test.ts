@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { hostedToolCatalogDigest } from "nanocodex/tools/hosted-catalog";
 import {
   EXEC_COMMAND_PARAMETERS,
@@ -80,6 +80,201 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.machines()).toEqual(machines);
     await fixture.broker.message(host.webSocket, JSON.stringify({ type: "drain" }));
     expect(fixture.broker.machines()).toEqual([]);
+  });
+
+  it("caps leased attachments at their control lease and revokes their exact route", async () => {
+    const fixture = createFixture();
+    const firstRoute = "vm-host:33333333-3333-4333-8333-333333333333:1";
+    const successorRoute = "vm-host:33333333-3333-4333-8333-333333333333:2";
+    const host = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 10, firstRoute);
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "leased-vm",
+      tools: [machineEntry("exec_command")],
+      machines: [{
+        id: "leased-vm",
+        name: "Leased VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+
+    expect(fixture.persistence.state(firstRoute)?.lease_expires_at).toBe(NOW + 10);
+    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "ping", nonce: "" }));
+    expect(fixture.persistence.state(firstRoute)?.lease_expires_at).toBe(NOW + 10);
+
+    fixture.persistence.routes.get(firstRoute)!.lease_expires_at = NOW - 1;
+    fixture.broker.expire();
+    expect(host.closed).toMatchObject({ code: 1008 });
+
+    const successor = fixture.socket(
+      undefined, undefined, undefined, "leased-vm", NOW + 20, successorRoute,
+    );
+    await fixture.broker.message(successor.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "leased-vm",
+      tools: [machineEntry("exec_command")],
+      machines: [{
+        id: "leased-vm",
+        name: "Successor VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+
+    expect(fixture.broker.revokeRoute(firstRoute, "delayed old revocation")).toBe(false);
+    expect(successor.closed).toBeUndefined();
+    expect(fixture.broker.machines()).toEqual([expect.objectContaining({ id: "leased-vm" })]);
+    expect(fixture.broker.revokeRoute(successorRoute, "current control lease ended")).toBe(true);
+    expect(successor.closed).toMatchObject({ code: 1008 });
+  });
+
+  it("revalidates a leased bearer and keeps the exact route live past its initial control lease", async () => {
+    let now = NOW;
+    const route = "vm-host:33333333-3333-4333-8333-333333333333:4";
+    const renew = vi.fn(async () => now + 60_000);
+    const fixture = createFixture(undefined, {
+      now: () => now,
+      renewLeasedAttachment: renew,
+    });
+    const host = fixture.socket(
+      undefined, undefined, undefined, "leased-vm", NOW + 60_000, route, "opaque-renewal",
+    );
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "leased-vm",
+      tools: [machineEntry("exec_command")],
+      machines: [{
+        id: "leased-vm",
+        name: "Leased VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+
+    now += 40_000;
+    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "ping", nonce: "renew" }));
+    expect(renew).toHaveBeenCalledWith({
+      expectedAttachmentId: "leased-vm",
+      fixedRouteId: route,
+      renewalToken: "opaque-renewal",
+    });
+    expect(fixture.persistence.state(route)?.lease_expires_at).toBe(NOW + 100_000);
+
+    now = NOW + 61_000;
+    fixture.broker.expire();
+    expect(host.closed).toBeUndefined();
+    expect(fixture.broker.machineOnRoute(route, "leased-vm")).toBeDefined();
+
+    renew.mockResolvedValueOnce(undefined as never);
+    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "ping", nonce: "stale" }));
+    expect(host.closed).toMatchObject({ code: 1008 });
+    expect(fixture.broker.machineOnRoute(route, "leased-vm")).toBeUndefined();
+  });
+
+  it("durably rejects a leased route revoked before catalog admission", async () => {
+    const fixture = createFixture();
+    const route = "vm-host:44444444-4444-4444-8444-444444444444:7";
+    expect(fixture.broker.revokeRoute(route, "control lease already ended")).toBe(false);
+
+    const delayed = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 20, route);
+    await fixture.broker.message(delayed.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "leased-vm",
+      tools: [machineEntry("exec_command")],
+      machines: [{
+        id: "leased-vm",
+        name: "Delayed stale VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+
+    expect(delayed.closed).toMatchObject({
+      code: 1008,
+      reason: expect.stringContaining("route_revoked"),
+    });
+    expect(fixture.broker.machines()).toEqual([]);
+
+    const resumed = new HostedToolsBroker(fixture.context, {
+      persistence: fixture.persistence,
+      now: () => NOW,
+      resumeRetainedSockets: true,
+    });
+    const retried = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 30, route);
+    await resumed.message(retried.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "leased-vm",
+      tools: [machineEntry("exec_command")],
+      machines: [{
+        id: "leased-vm",
+        name: "Retried stale VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+    expect(retried.closed?.reason).toContain("route_revoked");
+  });
+
+  it("resolves leased machines and tools only through their exact live route", async () => {
+    const fixture = createFixture();
+    const route = "vm-host:44444444-4444-4444-8444-444444444444:8";
+    const leased = fixture.socket(undefined, undefined, undefined, "vm:mount", NOW + 20, route);
+    await fixture.broker.message(leased.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "vm:mount",
+      tools: [machineEntry("exec_command")],
+      machines: [{
+        id: "vm:mount",
+        name: "Leased VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+
+    expect(fixture.broker.machineOnRoute(route, "vm:mount")).toMatchObject({ id: "vm:mount" });
+    expect(fixture.broker.machineToolOnRoute(route, "vm:mount", "exec_command")).toBeDefined();
+    fixture.broker.revokeRoute(route, "lease replaced");
+
+    const ordinary = fixture.socket();
+    await fixture.broker.message(ordinary.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "vm:mount",
+      tools: [machineEntry("exec_command")],
+      machines: [{
+        id: "vm:mount",
+        name: "Impostor",
+        workspace: "/tmp/impostor",
+        capabilities: ["filesystem"],
+      }],
+    }));
+
+    expect(fixture.broker.machines()).toEqual([expect.objectContaining({ name: "Impostor" })]);
+    expect(fixture.broker.machineOnRoute(route, "vm:mount")).toBeUndefined();
+    expect(fixture.broker.machineToolOnRoute(route, "vm:mount", "exec_command")).toBeUndefined();
+  });
+
+  it("rejects non-machine tools from leased attachments", async () => {
+    const fixture = createFixture();
+    const route = "vm-host:44444444-4444-4444-8444-444444444444:9";
+    const leased = fixture.socket(undefined, undefined, undefined, "vm:mount", NOW + 20, route);
+    await fixture.broker.message(leased.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "vm:mount",
+      tools: [machineEntry("exec_command"), entry("fixture__injected")],
+      machines: [{
+        id: "vm:mount",
+        name: "Leased VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+
+    expect(leased.closed).toMatchObject({
+      code: 1008,
+      reason: expect.stringContaining("leased tool attachments may publi"),
+    });
+    expect(fixture.broker.provider().definitions()).toEqual([]);
   });
 
   it("replaces the live machine snapshot without rebuilding its broker", async () => {
@@ -755,6 +950,14 @@ function createFixture(
     connectGrantId?: string,
     appToolCatalogDigest?: string,
   ) => boolean,
+  options?: Readonly<{
+    now?: () => number;
+    renewLeasedAttachment?: (renewal: {
+      expectedAttachmentId: string;
+      fixedRouteId: string;
+      renewalToken: string;
+    }) => Promise<number | undefined>;
+  }>,
 ) {
   const persistence = new MemoryPersistence();
   const sockets: FakeSocket[] = [];
@@ -766,7 +969,10 @@ function createFixture(
   } as unknown as HostedToolsBrokerContext;
   const broker = new HostedToolsBroker(context, {
     persistence,
-    now: () => NOW,
+    now: options?.now ?? (() => NOW),
+    ...(options?.renewLeasedAttachment === undefined ? {} : {
+      renewLeasedAttachment: options.renewLeasedAttachment,
+    }),
     ...(entryAllowed === undefined ? {} : { entryAllowed }),
     randomUUID: () => ids.shift() ?? crypto.randomUUID(),
   });
@@ -778,6 +984,10 @@ function createFixture(
       allowedMcpIds?: readonly string[],
       appToolCatalogDigest?: `0x${string}`,
       connectGrantId?: string,
+      expectedAttachmentId?: string,
+      maximumLeaseExpiresAt?: number,
+      fixedRouteId?: string,
+      renewalToken?: string,
     ) {
       const socket = new FakeSocket();
       socket.serializeAttachment({
@@ -786,6 +996,10 @@ function createFixture(
         ...(allowedMcpIds === undefined ? {} : { allowedMcpIds }),
         ...(appToolCatalogDigest === undefined ? {} : { appToolCatalogDigest }),
         ...(connectGrantId === undefined ? {} : { connectGrantId }),
+        ...(expectedAttachmentId === undefined ? {} : { expectedAttachmentId }),
+        ...(maximumLeaseExpiresAt === undefined ? {} : { maximumLeaseExpiresAt }),
+        ...(fixedRouteId === undefined ? {} : { fixedRouteId }),
+        ...(renewalToken === undefined ? {} : { renewalToken }),
       });
       sockets.push(socket);
       return socket;

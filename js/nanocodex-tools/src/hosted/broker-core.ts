@@ -26,6 +26,7 @@ const DEFAULT_MAX_IN_FLIGHT = 64;
 const OPEN = 1;
 const MAX_RETAINED_RECEIPTS = 512;
 const MAX_CALLS_PER_GENERATION = 512;
+const REVOKED_ROUTE_LEASE_EXPIRES_AT = -1;
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const LEGACY_ROUTE_ID = "$legacy";
 export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
@@ -89,6 +90,10 @@ type HostedToolsSocketAttachment = {
   allowedMcpIds?: readonly string[];
   appToolCatalogDigest?: `0x${string}`;
   connectGrantId?: string;
+  expectedAttachmentId?: string;
+  maximumLeaseExpiresAt?: number;
+  fixedRouteId?: string;
+  renewalToken?: string;
   routeId?: string;
   leaseId?: string;
   generation?: number;
@@ -228,6 +233,22 @@ export type HostedToolsBrokerCoreOptions = Readonly<{
     connectGrantId?: string,
     appToolCatalogDigest?: string,
   ) => boolean;
+  renewLeasedAttachment?: (
+    renewal: HostedToolsLeasedAttachmentRenewal,
+  ) => Promise<number | undefined>;
+}>;
+
+export type HostedToolsLeasedAttachmentPolicy = Readonly<{
+  expectedAttachmentId: string;
+  maximumLeaseExpiresAt: number;
+  fixedRouteId: string;
+  renewalToken: string;
+}>;
+
+export type HostedToolsLeasedAttachmentRenewal = Readonly<{
+  expectedAttachmentId: string;
+  fixedRouteId: string;
+  renewalToken: string;
 }>;
 
 /** Owns one reverse-tool attachment over an injected socket and durable ledger. */
@@ -245,6 +266,9 @@ export class HostedToolsBrokerCore {
     connectGrantId?: string,
     appToolCatalogDigest?: string,
   ) => boolean;
+  readonly #renewLeasedAttachment:
+    | ((renewal: HostedToolsLeasedAttachmentRenewal) => Promise<number | undefined>)
+    | undefined;
   #catalogValidator: HostedToolsCatalogValidator | undefined;
   #nextCandidateGeneration: number;
 
@@ -267,6 +291,7 @@ export class HostedToolsBrokerCore {
     this.#persistence = options.persistence;
     this.#onCatalogChanged = options.onCatalogChanged;
     this.#entryAllowed = options.entryAllowed ?? (() => true);
+    this.#renewLeasedAttachment = options.renewLeasedAttachment;
     const now = this.#now();
     const sockets = this.context.sockets();
     const retainHosts = options.resumeRetainedSockets === true && sockets.length > 0;
@@ -338,6 +363,29 @@ export class HostedToolsBrokerCore {
     for (const state of this.#persistence.states()) this.#retireState(state, reason);
   }
 
+  /** Fences one attachment only when its exact durable route is still current. */
+  revokeRoute(routeId: string, reason: string): boolean {
+    const state = this.#persistence.state(routeId) ?? emptyState(routeId);
+    const active = state.lease_id !== null;
+    if (active) {
+      const socket = this.#socketForState(state);
+      if (socket) this.#fence(socket, reason);
+      else this.#retireState(state, reason);
+    }
+    // Revocation can race ahead of catalog publication in another Durable
+    // Object. Retain an exact route tombstone so a previously validated socket
+    // cannot publish after its control-plane fence has completed.
+    const retired = this.#persistence.state(routeId) ?? state;
+    this.#persistence.replaceHost({
+      ...retired,
+      host_id: null,
+      lease_id: null,
+      lease_expires_at: REVOKED_ROUTE_LEASE_EXPIRES_AT,
+      catalog_json: null,
+    });
+    return active;
+  }
+
   isReady(): boolean { return this.#definitions().length > 0; }
 
   hasPendingCalls(): boolean { return this.#pending.size > 0; }
@@ -358,6 +406,39 @@ export class HostedToolsBrokerCore {
       prepared.appToolCatalogDigest,
     )) return undefined;
     return this.#codeTool(name, prepared);
+  }
+
+  /** Resolves one canonical machine primitive only on the named durable route. */
+  machineToolOnRoute(
+    routeId: string,
+    machineId: string,
+    name: HostedMachineToolName,
+  ): HostedToolsCodeTool | undefined {
+    if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
+    const binding = this.#catalogBindings(undefined, true).find((candidate) => (
+      candidate.routeId === routeId
+      && candidate.machine?.id === machineId
+      && candidate.wireName === name
+    ));
+    if (!binding) return undefined;
+    const prepared = this.#preparedTool(binding);
+    if (!this.#entryAllowed(
+      prepared.entry,
+      prepared.connectGrantId,
+      prepared.appToolCatalogDigest,
+    )) return undefined;
+    return this.#codeTool(name, prepared);
+  }
+
+  /** Returns one live machine only when its exact durable route still owns it. */
+  machineOnRoute(routeId: string, machineId: string): HostedMachine | undefined {
+    const state = this.#persistence.state(routeId);
+    if (state === undefined) return undefined;
+    const socket = this.#liveRoutingSocketForState(state);
+    if (socket === undefined) return undefined;
+    const attachment = this.#attachment(socket);
+    if (attachment?.connectGrantId !== undefined) return undefined;
+    return attachment?.machines?.find(({ id }) => id === machineId);
   }
 
   /** Returns the live, non-secret user-machine snapshot for the account-owned host. */
@@ -387,9 +468,18 @@ export class HostedToolsBrokerCore {
     allowedMcpIds?: readonly string[],
     appToolCatalogDigest?: `0x${string}`,
     connectGrantId?: string,
+    leasedAttachment?: HostedToolsLeasedAttachmentPolicy,
   ): void {
     if (allowedMcpIds !== undefined && !isConnectGrantId(connectGrantId)) {
       throw new TypeError("Connect Hosted Tools requires an exact grant ID");
+    }
+    if (leasedAttachment !== undefined && (connectGrantId !== undefined
+      || leasedAttachment.expectedAttachmentId.length === 0
+      || leasedAttachment.fixedRouteId.length === 0
+      || leasedAttachment.renewalToken.length === 0
+      || leasedAttachment.renewalToken.length > 2_048
+      || !Number.isSafeInteger(leasedAttachment.maximumLeaseExpiresAt))) {
+      throw new TypeError("leased Hosted Tools requires one complete ordinary-route policy");
     }
     this.context.writeAttachment(socket, {
       kind: SOCKET_TAG,
@@ -397,6 +487,12 @@ export class HostedToolsBrokerCore {
       ...(allowedMcpIds === undefined ? {} : { allowedMcpIds: [...allowedMcpIds] }),
       ...(appToolCatalogDigest === undefined ? {} : { appToolCatalogDigest }),
       ...(connectGrantId === undefined ? {} : { connectGrantId }),
+      ...(leasedAttachment === undefined ? {} : {
+        expectedAttachmentId: leasedAttachment.expectedAttachmentId,
+        maximumLeaseExpiresAt: leasedAttachment.maximumLeaseExpiresAt,
+        fixedRouteId: leasedAttachment.fixedRouteId,
+        renewalToken: leasedAttachment.renewalToken,
+      }),
     } satisfies HostedToolsSocketAttachment);
     this.context.accept(socket);
   }
@@ -476,7 +572,7 @@ export class HostedToolsBrokerCore {
 
   async #dispatchHostFrame(socket: HostedToolsSocket, frame: HostedToolsHostFrame): Promise<void> {
     if (frame.type === "catalog") await this.#publishCatalog(socket, frame);
-    else if (frame.type === "ping") this.#heartbeat(socket, frame);
+    else if (frame.type === "ping") await this.#heartbeat(socket, frame);
     else if (frame.type === "drain") this.#drain(socket);
     else this.#completeResult(socket, frame);
   }
@@ -495,12 +591,50 @@ export class HostedToolsBrokerCore {
     return attachment;
   }
 
-  #heartbeat(
+  async #heartbeat(
     socket: HostedToolsSocket,
     frame: Extract<HostedToolsHostFrame, { type: "ping" }>,
-  ): void {
-    const attachment = this.#activeAttachment(socket);
-    const expiresAt = this.#now() + HOSTED_TOOLS_LEASE_MS;
+  ): Promise<void> {
+    let attachment = this.#activeAttachment(socket);
+    if (attachment.renewalToken !== undefined) {
+      const renewal = {
+        expectedAttachmentId: attachment.expectedAttachmentId!,
+        fixedRouteId: attachment.fixedRouteId!,
+        renewalToken: attachment.renewalToken,
+      };
+      let maximumLeaseExpiresAt: number | undefined;
+      try {
+        maximumLeaseExpiresAt = await this.#renewLeasedAttachment?.(renewal);
+      } catch {
+        this.#retire(socket, "leased Hosted Tools validation unavailable");
+        closeSocket(socket, 1011, "leased Hosted Tools validation unavailable");
+        return;
+      }
+      if (!Number.isSafeInteger(maximumLeaseExpiresAt)
+        || Number(maximumLeaseExpiresAt) <= this.#now()) {
+        this.revokeRoute(renewal.fixedRouteId, "leased Hosted Tools validation failed");
+        return;
+      }
+      const renewedExpiry = Number(maximumLeaseExpiresAt);
+      const renewed = this.#activeAttachment(socket);
+      if (renewed.routeId !== attachment.routeId
+        || renewed.leaseId !== attachment.leaseId
+        || renewed.generation !== attachment.generation
+        || renewed.fixedRouteId !== renewal.fixedRouteId
+        || renewed.expectedAttachmentId !== renewal.expectedAttachmentId
+        || renewed.renewalToken !== renewal.renewalToken) {
+        throw new HostedToolsProtocolError(
+          "stale_socket",
+          "socket changed while its leased attachment was being validated",
+        );
+      }
+      attachment = { ...renewed, maximumLeaseExpiresAt: renewedExpiry };
+      this.context.writeAttachment(socket, attachment);
+    }
+    const expiresAt = Math.min(
+      this.#now() + HOSTED_TOOLS_LEASE_MS,
+      attachment.maximumLeaseExpiresAt ?? Number.MAX_SAFE_INTEGER,
+    );
     const state = this.#persistence.state(attachment.routeId!)!;
     this.#persistence.replaceHost({ ...state, lease_expires_at: expiresAt });
     this.#send(socket, {
@@ -520,8 +654,39 @@ export class HostedToolsBrokerCore {
     if (this.#nextCandidateGeneration >= Number.MAX_SAFE_INTEGER) {
       throw new HostedToolsProtocolError("generation_exhausted", "Hosted Tools generation is exhausted");
     }
-    const routeId = scopedRouteId(initial.connectGrantId, frame.attachment_id);
+    const routeId = initial.fixedRouteId ?? scopedRouteId(initial.connectGrantId, frame.attachment_id);
+    let maximumLeaseExpiresAt = initial.maximumLeaseExpiresAt;
+    if (initial.renewalToken !== undefined) {
+      const renewal = {
+        expectedAttachmentId: initial.expectedAttachmentId!,
+        fixedRouteId: routeId,
+        renewalToken: initial.renewalToken,
+      };
+      try {
+        const renewed = await this.#renewLeasedAttachment?.(renewal);
+        if (!Number.isSafeInteger(renewed) || Number(renewed) <= this.#now()) {
+          this.revokeRoute(routeId, "leased Hosted Tools validation failed before admission");
+          throw new HostedToolsProtocolError(
+            "route_revoked",
+            "leased Hosted Tools validation failed before admission",
+          );
+        }
+        maximumLeaseExpiresAt = Number(renewed);
+      } catch (error) {
+        if (error instanceof HostedToolsProtocolError) throw error;
+        throw new HostedToolsProtocolError(
+          "lease_validation_unavailable",
+          "leased Hosted Tools validation was unavailable before admission",
+        );
+      }
+    }
     let state = this.#persistence.state(routeId) ?? emptyState(routeId);
+    if (state.lease_id === null && state.lease_expires_at === REVOKED_ROUTE_LEASE_EXPIRES_AT) {
+      throw new HostedToolsProtocolError(
+        "route_revoked",
+        "tool attachment route was revoked before admission",
+      );
+    }
     if (state.lease_id && state.lease_expires_at <= this.#now()) {
       const expiredSocket = this.#socketForState(state);
       if (expiredSocket) this.#fence(expiredSocket, "Hosted Tools lease expired");
@@ -540,9 +705,13 @@ export class HostedToolsBrokerCore {
     }
     const generation = ++this.#nextCandidateGeneration;
     const leaseId = this.#randomUUID();
-    const expiresAt = this.#now() + HOSTED_TOOLS_LEASE_MS;
+    const expiresAt = Math.min(
+      this.#now() + HOSTED_TOOLS_LEASE_MS,
+      maximumLeaseExpiresAt ?? Number.MAX_SAFE_INTEGER,
+    );
     const candidate = {
       ...initial,
+      ...(maximumLeaseExpiresAt === undefined ? {} : { maximumLeaseExpiresAt }),
       routeId,
       leaseId,
       generation,
@@ -567,6 +736,18 @@ export class HostedToolsBrokerCore {
       if ((frame.machines?.length ?? 0) > 0
         && (frame.machines?.length !== 1 || frame.attachment_id !== frame.machines[0]?.id)) {
         throw new Error("an account machine route requires one machine whose id equals attachment_id");
+      }
+      if (initial.expectedAttachmentId !== undefined
+        && (frame.attachment_id !== initial.expectedAttachmentId
+          || frame.machines?.length !== 1
+          || frame.machines[0]?.id !== initial.expectedAttachmentId)) {
+        throw new Error("leased tool attachment must publish its exact assigned machine ID");
+      }
+      if (initial.expectedAttachmentId !== undefined) {
+        const extra = frame.tools.find((entry) => !MACHINE_TOOL_NAMES.has(entry.definition.name));
+        if (extra !== undefined) {
+          throw new Error("leased tool attachments may publish only canonical machine primitives");
+        }
       }
       if (machine !== undefined) validateMachineToolContracts(frame.tools);
       if (initial.allowedMcpIds !== undefined) {

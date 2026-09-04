@@ -4,11 +4,16 @@ use nanocodex_managed::ManagedError;
 use nanocodex_tools::{Tools, attachment::AttachmentMachine};
 
 use super::Hand;
+pub(crate) use super::vm_hand_config::VmHandConfig;
 
 pub(crate) struct VmHand;
 
 impl VmHand {
     pub(crate) async fn start(_config: &Hand) -> Result<Self, ManagedError> {
+        Err(unsupported())
+    }
+
+    pub(crate) async fn start_config(_config: &VmHandConfig) -> Result<Self, ManagedError> {
         Err(unsupported())
     }
 

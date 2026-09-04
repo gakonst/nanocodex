@@ -15,6 +15,7 @@ use nanocodex_vm::{
 use tokio::time::sleep;
 
 use super::Hand;
+pub(crate) use super::vm_hand_config::VmHandConfig;
 
 const DEFAULT_KRUNFW_DIRECTORY: &str = ".cache/libkrunfw/libkrunfw";
 const CAPABILITY_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -29,6 +30,10 @@ pub(crate) struct VmHand {
 
 impl VmHand {
     pub(crate) async fn start(config: &Hand) -> Result<Self, ManagedError> {
+        Self::start_config(&VmHandConfig::from(config)).await
+    }
+
+    pub(crate) async fn start_config(config: &VmHandConfig) -> Result<Self, ManagedError> {
         if !Path::new(&config.vm_workspace).is_absolute() {
             return Err(configuration(format!(
                 "--vm-workspace must be an absolute guest path, got {:?}",
@@ -166,7 +171,7 @@ pub(crate) fn run_config(path: &Path) -> Result<(), ManagedError> {
         .map_err(|error| configuration(format!("VM process failed: {error}")))
 }
 
-fn firmware_directory(config: &Hand) -> Option<PathBuf> {
+fn firmware_directory(config: &VmHandConfig) -> Option<PathBuf> {
     if let Some(directory) = &config.vm_firmware {
         return Some(directory.clone());
     }

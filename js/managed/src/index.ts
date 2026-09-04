@@ -48,11 +48,25 @@ import {
   managedAccountMcpServers,
   type ManagedAccountMcpConnection,
 } from "./default-mcp";
-import { HostedToolsBroker } from "./hosted-tools-broker";
+import {
+  HostedToolsBroker,
+  type HostedToolsLeasedAttachmentRenewal,
+} from "./hosted-tools-broker";
 import {
   AccountHostedTools,
   AccountHostedToolsProvider,
 } from "./account-hosted-tools";
+import { VmHostPool } from "./vm-host-pool";
+import { isVmFactoryName } from "./vm-factory-name";
+import {
+  VM_HOST_ATTACHMENT_ROUTE,
+  VM_HOST_DONOR,
+  VM_HOST_POOL_AGENT,
+  VM_HOST_POOL_LOCATOR,
+  VM_HOST_POOL_OWNER,
+  VM_HOST_POOL_SCOPE,
+  VM_HOST_PUBLIC_ORIGIN,
+} from "./vm-host-boundary";
 import {
   hostedToolCatalogEntryAllowed,
   isAppToolCatalogDigest,
@@ -186,6 +200,7 @@ import {
 } from "./account-info";
 import { accountConnectorsTool } from "./account-connectors-tool";
 import {
+  MANAGED_CLOUDFLARE_PROVIDER,
   managedMountProviderResourceId,
   managedMountRoot,
   managedMountTool,
@@ -248,6 +263,7 @@ import { memorySessionTools } from "./memory-session-tools";
 import { MemoryScope } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
 export { AccountHostedTools } from "./account-hosted-tools";
+export { VmHostPool } from "./vm-host-pool";
 export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account-auth";
 
 const MAX_CLIENT_MESSAGE_BYTES = 1024 * 1024;
@@ -302,13 +318,13 @@ const MEMORY_ORGANIZATION_ASSERTION = "x-nanocodex-organization-id";
 const MEMORY_TEAM_ASSERTION = "x-nanocodex-team-id";
 const MEMORY_SUBJECT_ASSERTION = "x-nanocodex-subject-id";
 const MEMORY_MUTATION_ASSERTION = "x-nanocodex-memory-mutation";
-
 export interface Env extends
   AccountAuthEnv,
   ChiefOfStaffPrincipalEnv,
   HostPrincipalEnv {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
   NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
+  NANOCODEX_VM_HOST_POOLS: DurableObjectNamespace<VmHostPool>;
   NANOCODEX_ROOMS: DurableObjectNamespace<MultiplayerRoom>;
   NANOCODEX_MULTIPLAYER_QUOTA: DurableObjectNamespace<MultiplayerQuota>;
   NANOCODEX_MEMORY: DurableObjectNamespace<MemoryScope>;
@@ -317,6 +333,7 @@ export interface Env extends
   NANOCODEX_HISTORY: R2Bucket;
   NANOCODEX_WORKSPACES: R2Bucket;
   NANOCODEX_ADMIN_TOKEN: string;
+  NANOCODEX_SYSTEM_HOST_TOKEN?: string;
   HISTORY_AI_SEARCH?: AiSearchInstance;
   BROWSER?: import("agents/browser").BrowserBinding;
   LOADER?: WorkerLoader;
@@ -438,8 +455,65 @@ type ManagedMountCallRow = {
 
 type ManagedMountConfiguration = Readonly<{
   namespace_slot?: number;
+  vm_factory_name?: string;
+  vm_pool_locator?: string;
+  vm_host?: Readonly<{
+    pool_locator: string;
+    allocation_id: string;
+    generation: number;
+    machine_id: string;
+    route_id?: string;
+  }>;
   [key: string]: unknown;
 }>;
+
+type VmHostPoolScope = "agent" | "account" | "system";
+
+type VmHostAllocation = Readonly<{
+  allocation_id: string;
+  generation: number;
+  factory_name: string;
+  machine_id: string;
+  host_id: string;
+  slot: number;
+  route_id: string;
+}>;
+
+type VmHostAttachmentGrant = Readonly<{
+  valid: true;
+  allocation_id: string;
+  generation: number;
+  agent_id: string;
+  owner_id: string;
+  organization_id: string;
+  team_id: string;
+  authorization_epoch: number;
+  public_origin: string;
+  machine_id: string;
+  lease_expires_at: number;
+  route_id: string;
+}>;
+
+type VmHostAttachmentRenewalClaim = Readonly<{
+  pool_locator: string;
+  allocation_id: string;
+  generation: number;
+  bearer: string;
+}>;
+
+function validVmHostAllocation(value: unknown): value is VmHostAllocation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const allocation = value as Partial<VmHostAllocation>;
+  return typeof allocation.allocation_id === "string" && UUID.test(allocation.allocation_id)
+    && Number.isSafeInteger(allocation.generation) && Number(allocation.generation) >= 1
+    && typeof allocation.factory_name === "string"
+    && /^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$/.test(allocation.factory_name)
+    && typeof allocation.machine_id === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,122}$/.test(allocation.machine_id)
+    && typeof allocation.host_id === "string" && UUID.test(allocation.host_id)
+    && Number.isSafeInteger(allocation.slot) && Number(allocation.slot) >= 0
+    && typeof allocation.route_id === "string" && VM_HOST_ATTACHMENT_ROUTE.test(allocation.route_id);
+}
 
 function managedMountConfiguration(encoded: string): ManagedMountConfiguration {
   const value = JSON.parse(encoded) as unknown;
@@ -447,6 +521,58 @@ function managedMountConfiguration(encoded: string): ManagedMountConfiguration {
     throw new Error("retained mount configuration is invalid");
   }
   return value as ManagedMountConfiguration;
+}
+
+function managedMountStorageProvider(provider: string): "cloudflare" | "host" {
+  return provider === MANAGED_CLOUDFLARE_PROVIDER ? "cloudflare" : "host";
+}
+
+function sameManagedMountProvider(left: string, right: string): boolean {
+  const normalized = (provider: string) => provider === "cloudflare"
+    ? MANAGED_CLOUDFLARE_PROVIDER
+    : provider;
+  return normalized(left) === normalized(right);
+}
+
+function vmHostFactoryName(
+  mount: Pick<ManagedMountRow, "configuration_json" | "provider">,
+): string | undefined {
+  if (mount.provider !== "host") return undefined;
+  const name = managedMountConfiguration(mount.configuration_json).vm_factory_name;
+  return isVmFactoryName(name) ? name : undefined;
+}
+
+function managedMountUsesProvider(mount: ManagedMountRow, provider: string): boolean {
+  return mount.provider === "cloudflare"
+    ? provider === MANAGED_CLOUDFLARE_PROVIDER
+    : mount.provider === "host" && vmHostFactoryName(mount) === provider;
+}
+
+function managedMountPublicProvider(mount: ManagedMountRow): string {
+  if (mount.provider === "cloudflare") return MANAGED_CLOUDFLARE_PROVIDER;
+  const factoryName = vmHostFactoryName(mount);
+  if (factoryName !== undefined) return factoryName;
+  throw new Error("retained VM host mount has no valid factory name");
+}
+
+function vmHostMountAllocation(
+  mount: Pick<ManagedMountRow, "configuration_json" | "provider">,
+): ManagedMountConfiguration["vm_host"] | undefined {
+  if (mount.provider !== "host") return undefined;
+  const allocation = managedMountConfiguration(mount.configuration_json).vm_host;
+  if (!allocation || typeof allocation !== "object"
+    || typeof allocation.pool_locator !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/.test(allocation.pool_locator)
+    || typeof allocation.allocation_id !== "string" || !UUID.test(allocation.allocation_id)
+    || !Number.isSafeInteger(allocation.generation) || allocation.generation < 1
+    || typeof allocation.machine_id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,122}$/.test(allocation.machine_id)
+    || (allocation.route_id !== undefined
+      && (typeof allocation.route_id !== "string"
+        || !VM_HOST_ATTACHMENT_ROUTE.test(allocation.route_id)))) {
+    return undefined;
+  }
+  return allocation;
 }
 
 type ManagedTurnState =
@@ -526,6 +652,20 @@ type ManagedRealtimeRouteResult = Readonly<{
 type TurnAuthorization = Readonly<{
   capabilities: readonly OrganizationCapability[];
   connectGrant?: ConnectGrantSlice;
+}>;
+
+type ManagedSubagentDescriptor = Readonly<{
+  agentId: string;
+  parentAgentId: string | null;
+  sessionId: string;
+  role: string;
+  task: string;
+}>;
+
+type ManagedSubagentAuthorizationRow = ManagedSubagentDescriptor & Readonly<{
+  authorization_json: string;
+  host_context_ref: string;
+  root_session_id: string;
 }>;
 
 type SessionSocketAttachment = Readonly<{
@@ -733,6 +873,167 @@ function parseTurnAuthorization(encoded: string): TurnAuthorization {
   if (parsed.connectGrant === undefined) return { capabilities: parsed.capabilities };
   if (!isConnectGrantSlice(parsed.connectGrant)) throw new Error("invalid turn authorization");
   return { capabilities: parsed.capabilities, connectGrant: parsed.connectGrant };
+}
+
+function managedSubagentDescriptor(value: unknown): ManagedSubagentDescriptor {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("invalid managed subagent descriptor");
+  }
+  const descriptor = value as Record<string, unknown>;
+  if (Object.keys(descriptor).sort().join("\0")
+      !== ["agentId", "parentAgentId", "role", "sessionId", "task"].sort().join("\0")
+    || typeof descriptor.agentId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/u.test(descriptor.agentId)
+    || (descriptor.parentAgentId !== null
+      && (typeof descriptor.parentAgentId !== "string"
+        || !/^[A-Za-z0-9._:-]{1,128}$/u.test(descriptor.parentAgentId)))
+    || typeof descriptor.sessionId !== "string" || !SESSION_ID.test(descriptor.sessionId)
+    || typeof descriptor.role !== "string" || descriptor.role.length === 0
+    || descriptor.role.length > 1_024 || descriptor.role.includes("\0")
+    || typeof descriptor.task !== "string" || descriptor.task.length === 0
+    || descriptor.task.length > MAX_REQUEST_BODY_BYTES || descriptor.task.includes("\0")) {
+    throw new TypeError("invalid managed subagent descriptor");
+  }
+  return Object.freeze({
+    agentId: descriptor.agentId,
+    parentAgentId: descriptor.parentAgentId,
+    sessionId: descriptor.sessionId,
+    role: descriptor.role,
+    task: descriptor.task,
+  }) as ManagedSubagentDescriptor;
+}
+
+function sameManagedSubagentDescriptor(
+  row: ManagedSubagentAuthorizationRow,
+  descriptor: ManagedSubagentDescriptor,
+): boolean {
+  return row.agentId === descriptor.agentId
+    && row.parentAgentId === descriptor.parentAgentId
+    && row.sessionId === descriptor.sessionId
+    && row.role === descriptor.role
+    && row.task === descriptor.task;
+}
+
+/** Managed half of the private Cloudflare subagent lifecycle transaction. */
+export function applyManagedSubagentLifecycle(
+  storage: DurableObjectStorage,
+  value: unknown,
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("invalid managed subagent lifecycle event");
+  }
+  const event = value as Record<string, unknown>;
+  const type = event.type;
+  if ((type !== "bind" && type !== "reconstruct" && type !== "release")
+    || typeof event.rootSessionId !== "string" || !SESSION_ID.test(event.rootSessionId)
+    || typeof event.sessionId !== "string" || !SESSION_ID.test(event.sessionId)
+    || typeof event.hostContextRef !== "string" || !TURN_ID.test(event.hostContextRef)) {
+    throw new TypeError("invalid managed subagent lifecycle event");
+  }
+  const rootSessionId = event.rootSessionId;
+  const sessionId = event.sessionId;
+  const hostContextRef = event.hostContextRef;
+  const retained = storage.sql.exec<ManagedSubagentAuthorizationRow>(
+    `SELECT root_session_id, session_id AS sessionId, agent_id AS agentId,
+            parent_agent_id AS parentAgentId, role, task, host_context_ref, authorization_json
+     FROM managed_subagent_authorizations WHERE session_id = ?`,
+    sessionId,
+  ).toArray()[0];
+  if (type === "release") {
+    if (Object.keys(event).some((key) => !["type", "rootSessionId", "sessionId", "hostContextRef"].includes(key))
+      || retained === undefined
+      || retained.root_session_id !== rootSessionId
+      || retained.host_context_ref !== hostContextRef) {
+      throw new Error("managed subagent release does not match retained authorization");
+    }
+    storage.sql.exec(
+      `DELETE FROM managed_subagent_authorizations
+       WHERE session_id = ? AND root_session_id = ? AND host_context_ref = ?`,
+      sessionId,
+      rootSessionId,
+      hostContextRef,
+    );
+    return;
+  }
+  if (Object.keys(event).some((key) => ![
+    "type", "rootSessionId", "sessionId", "descriptor", "hostContextRef",
+  ].includes(key))) {
+    throw new TypeError("invalid managed subagent lifecycle event");
+  }
+  const descriptor = managedSubagentDescriptor(event.descriptor);
+  if (descriptor.sessionId !== sessionId) {
+    throw new Error("managed subagent session does not match its descriptor");
+  }
+  if (retained !== undefined) {
+    if (retained.root_session_id !== rootSessionId
+      || retained.host_context_ref !== hostContextRef
+      || !sameManagedSubagentDescriptor(retained, descriptor)) {
+      throw new Error("managed subagent binding conflicts with retained authorization");
+    }
+    return;
+  }
+  let authorizationJson: string;
+  if (descriptor.parentAgentId === null) {
+    const turn = storage.sql.exec<Pick<ManagedTurnRow, "authorization_json">>(
+      "SELECT authorization_json FROM managed_turns WHERE id = ?",
+      hostContextRef,
+    ).toArray()[0];
+    if (turn === undefined) throw new Error("managed subagent authorization turn is missing");
+    authorizationJson = JSON.stringify(parseTurnAuthorization(turn.authorization_json));
+  } else {
+    const parent = storage.sql.exec<ManagedSubagentAuthorizationRow>(
+      `SELECT authorization_json, host_context_ref
+       FROM managed_subagent_authorizations
+       WHERE root_session_id = ? AND agent_id = ?`,
+      rootSessionId,
+      descriptor.parentAgentId,
+    ).toArray()[0];
+    if (parent === undefined || parent.host_context_ref !== hostContextRef) {
+      throw new Error("managed nested subagent authorization parent is missing");
+    }
+    authorizationJson = JSON.stringify(parseTurnAuthorization(parent.authorization_json));
+  }
+  storage.sql.exec(
+    `INSERT INTO managed_subagent_authorizations
+       (session_id, root_session_id, agent_id, parent_agent_id, role, task,
+        host_context_ref, authorization_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    descriptor.sessionId,
+    rootSessionId,
+    descriptor.agentId,
+    descriptor.parentAgentId,
+    descriptor.role,
+    descriptor.task,
+    hostContextRef,
+    authorizationJson,
+    Date.now(),
+  );
+}
+
+export function managedAuthorizationForToolContext(
+  storage: DurableObjectStorage,
+  rootSessionId: string | undefined,
+  activeAuthorization: TurnAuthorization | undefined,
+  context: Pick<ToolContext, "sessionId" | "subagent">,
+): TurnAuthorization | undefined {
+  if (context.subagent === undefined) {
+    return rootSessionId !== undefined && context.sessionId === rootSessionId
+      ? activeAuthorization
+      : undefined;
+  }
+  let descriptor: ManagedSubagentDescriptor;
+  try { descriptor = managedSubagentDescriptor(context.subagent); }
+  catch { return undefined; }
+  if (descriptor.sessionId !== context.sessionId) return undefined;
+  const retained = storage.sql.exec<ManagedSubagentAuthorizationRow>(
+    `SELECT root_session_id, session_id AS sessionId, agent_id AS agentId,
+            parent_agent_id AS parentAgentId, role, task, host_context_ref, authorization_json
+     FROM managed_subagent_authorizations WHERE session_id = ?`,
+    context.sessionId,
+  ).toArray()[0];
+  if (retained === undefined || retained.root_session_id !== rootSessionId
+    || !sameManagedSubagentDescriptor(retained, descriptor)) return undefined;
+  try { return parseTurnAuthorization(retained.authorization_json); }
+  catch { return undefined; }
 }
 
 export function turnCanUseExecutionNamespace(
@@ -957,6 +1258,58 @@ async function managedFetch(
       } catch {
         return json({ astra_entitled: false });
       }
+    }
+    const leasedVmHost = url.pathname.match(
+      /^\/v1\/vm-host-attachments\/([A-Za-z0-9_-]{43})\/([0-9a-f-]{36})\/tool-host$/,
+    );
+    if (leasedVmHost) {
+      return routeVmHostToolAttachment(
+        request,
+        env,
+        url,
+        leasedVmHost[1]!,
+        leasedVmHost[2]!,
+      );
+    }
+    if (url.pathname === "/v1/system/vm-host") {
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        return new Response("Expected WebSocket upgrade", { status: 426 });
+      }
+      if (!await authorizedSystemVmHost(request, env.NANOCODEX_SYSTEM_HOST_TOKEN)) {
+        return json({ error: "unauthorized" }, { status: 401 });
+      }
+      const locator = await vmHostPoolLocator("system", "system");
+      return vmHostPoolUpgrade(request, env, {
+        scope: "system",
+        donor: "system",
+        locator,
+        publicOrigin: url.origin,
+      });
+    }
+    if (url.pathname === "/v1/account/vm-host") {
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        return new Response("Expected WebSocket upgrade", { status: 426 });
+      }
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
+      if (principal.connectGrant
+        || !principal.capabilities.includes("agents:write")
+        || !principal.capabilities.includes("tools:use")) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      if (principal.kind !== "api_key" && request.headers.get("origin") !== url.origin) {
+        return json({ error: "forbidden_origin" }, { status: 403 });
+      }
+      const locator = await vmHostPoolLocator("account", principal.userId);
+      return vmHostPoolUpgrade(request, env, {
+        scope: "account",
+        owner: principal.userId,
+        donor: principal.userId,
+        locator,
+        publicOrigin: url.origin,
+      });
     }
     if (url.pathname === "/v1/account/tool-host") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
@@ -1439,8 +1792,40 @@ async function managedFetch(
       });
     }
     const sessionHeaders = new Headers(request.headers);
+    sessionHeaders.delete("x-nanocodex-vm-machine-id");
+    sessionHeaders.delete("x-nanocodex-vm-lease-expires-at");
+    sessionHeaders.delete("x-nanocodex-vm-route-id");
+    sessionHeaders.delete("x-nanocodex-vm-renewal");
     forwardPrincipalAssertions(sessionHeaders, principal);
     const publicOrigin = `public_origin=${encodeURIComponent(url.origin)}`;
+    if (resource === "vm-host") {
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        return new Response("Expected WebSocket upgrade", { status: 426 });
+      }
+      if (principal.connectGrant
+        || !principal.capabilities.includes("agents:write")
+        || !principal.capabilities.includes("tools:use")) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      if (principal.kind !== "api_key" && request.headers.get("origin") !== url.origin) {
+        return json({ error: "forbidden_origin" }, { status: 403 });
+      }
+      const existence = await stub.fetch("https://session.internal/vm-host-existence", {
+        headers: sessionHeaders,
+      });
+      if (!existence.ok) return existence;
+      await existence.body?.cancel();
+      const locator = await vmHostPoolLocator("agent", agentId);
+      return vmHostPoolUpgrade(request, env, {
+        scope: "agent",
+        owner: principal.userId,
+        agent: agentId,
+        donor: principal.userId,
+        locator,
+        publicOrigin: url.origin,
+      });
+    }
     if (resource === "ws" || resource === "tool-host" || resource === "device-host") {
       if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
         return new Response("Expected WebSocket upgrade", { status: 426 });
@@ -1669,6 +2054,150 @@ async function managedFetch(
     return json({ error: "method_not_allowed" }, { status: 405 });
 }
 
+async function routeVmHostToolAttachment(
+  request: Request,
+  env: Env,
+  url: URL,
+  poolLocator: string,
+  allocationId: string,
+): Promise<Response> {
+  if (url.search !== "" || request.method !== "GET"
+    || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return new Response("Expected WebSocket upgrade", { status: 426 });
+  }
+  const bearer = request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
+  if (!bearer) return json({ error: "unauthorized" }, { status: 401 });
+  const pool = env.NANOCODEX_VM_HOST_POOLS.getByName(poolLocator);
+  let validated: Response;
+  try {
+    validated = await pool.fetch("https://vm-host-pool.internal/validate-attachment", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ allocation_id: allocationId, bearer }),
+    });
+  } catch {
+    return json({ error: "attachment_unavailable" }, { status: 503 });
+  }
+  if (!validated.ok) {
+    await validated.body?.cancel();
+    return json({ error: "not_found" }, { status: 404 });
+  }
+  let grant: VmHostAttachmentGrant;
+  try { grant = await validated.json<VmHostAttachmentGrant>(); }
+  catch { return json({ error: "attachment_unavailable" }, { status: 503 }); }
+  if (!validVmHostAttachmentGrant(grant) || grant.allocation_id !== allocationId) {
+    return json({ error: "attachment_unavailable" }, { status: 503 });
+  }
+  const headers = new Headers(request.headers);
+  headers.delete("authorization");
+  headers.delete("cookie");
+  headers.delete("origin");
+  headers.set(SESSION_OWNER_ASSERTION, grant.owner_id);
+  headers.set(SESSION_ORGANIZATION_ASSERTION, grant.organization_id);
+  headers.set(SESSION_TEAM_ASSERTION, grant.team_id);
+  headers.set(SESSION_AUTHORIZATION_EPOCH_ASSERTION, String(grant.authorization_epoch));
+  headers.set(SESSION_CAPABILITIES_ASSERTION, JSON.stringify(["agents:write", "tools:use"]));
+  headers.set("x-nanocodex-vm-machine-id", grant.machine_id);
+  headers.set("x-nanocodex-vm-lease-expires-at", String(grant.lease_expires_at));
+  headers.set("x-nanocodex-vm-route-id", grant.route_id);
+  headers.delete("x-nanocodex-vm-renewal");
+  headers.set("x-nanocodex-vm-renewal", JSON.stringify({
+    pool_locator: poolLocator,
+    allocation_id: allocationId,
+    generation: grant.generation,
+    bearer,
+  } satisfies VmHostAttachmentRenewalClaim));
+  return env.NANOCODEX_SESSIONS.getByName(grant.agent_id).fetch(
+    `https://session.internal/tool-host?public_origin=${encodeURIComponent(grant.public_origin)}`,
+    new Request(request, { headers }),
+  );
+}
+
+function validVmHostAttachmentGrant(value: unknown): value is VmHostAttachmentGrant {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const grant = value as Partial<VmHostAttachmentGrant>;
+  return grant.valid === true
+    && typeof grant.allocation_id === "string" && UUID.test(grant.allocation_id)
+    && typeof grant.agent_id === "string" && SESSION_ID.test(grant.agent_id)
+    && Number.isSafeInteger(grant.generation) && Number(grant.generation) >= 1
+    && isUserId(grant.owner_id)
+    && typeof grant.organization_id === "string" && UUID.test(grant.organization_id)
+    && typeof grant.team_id === "string" && UUID.test(grant.team_id)
+    && Number.isSafeInteger(grant.authorization_epoch) && Number(grant.authorization_epoch) >= 1
+    && typeof grant.public_origin === "string" && validPublicOrigin(grant.public_origin)
+    && typeof grant.machine_id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,122}$/.test(grant.machine_id)
+    && Number.isSafeInteger(grant.lease_expires_at)
+    && Number(grant.lease_expires_at) > Date.now()
+    && typeof grant.route_id === "string" && VM_HOST_ATTACHMENT_ROUTE.test(grant.route_id);
+}
+
+function vmHostAttachmentRenewalClaim(encoded: string): VmHostAttachmentRenewalClaim | undefined {
+  let value: unknown;
+  try { value = JSON.parse(encoded); }
+  catch { return undefined; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const claim = value as Partial<VmHostAttachmentRenewalClaim>;
+  return typeof claim.pool_locator === "string" && /^[A-Za-z0-9_-]{43}$/.test(claim.pool_locator)
+    && typeof claim.allocation_id === "string" && UUID.test(claim.allocation_id)
+    && Number.isSafeInteger(claim.generation) && Number(claim.generation) >= 1
+    && typeof claim.bearer === "string" && /^[A-Za-z0-9_-]{43}$/.test(claim.bearer)
+    ? claim as VmHostAttachmentRenewalClaim
+    : undefined;
+}
+
+function vmHostPoolUpgrade(
+  request: Request,
+  env: Env,
+  options: Readonly<{
+    scope: VmHostPoolScope;
+    owner?: string;
+    agent?: string;
+    donor: string;
+    locator: string;
+    publicOrigin: string;
+  }>,
+): Promise<Response> {
+  const headers = new Headers(request.headers);
+  headers.delete("authorization");
+  headers.delete("cookie");
+  headers.delete("origin");
+  headers.set(VM_HOST_POOL_SCOPE, options.scope);
+  if (options.owner === undefined) headers.delete(VM_HOST_POOL_OWNER);
+  else headers.set(VM_HOST_POOL_OWNER, options.owner);
+  if (options.agent === undefined) headers.delete(VM_HOST_POOL_AGENT);
+  else headers.set(VM_HOST_POOL_AGENT, options.agent);
+  headers.set(VM_HOST_DONOR, options.donor);
+  headers.set(VM_HOST_PUBLIC_ORIGIN, options.publicOrigin);
+  headers.set(VM_HOST_POOL_LOCATOR, options.locator);
+  return env.NANOCODEX_VM_HOST_POOLS.getByName(options.locator).fetch(
+    "https://vm-host-pool.internal/host",
+    new Request(request, { headers }),
+  );
+}
+
+async function vmHostPoolLocator(scope: VmHostPoolScope, identity: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest(
+    "SHA-256",
+    encoder.encode(`nanocodex:vm-host-pool:v1\0${scope}\0${identity}`),
+  ));
+  let binary = "";
+  for (const byte of digest) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+async function authorizedSystemVmHost(request: Request, expected: string | undefined): Promise<boolean> {
+  const supplied = request.headers.get("authorization")?.match(/^Bearer (\S{32,512})$/)?.[1];
+  if (!supplied || !expected) return false;
+  const [left, right] = await Promise.all([supplied, expected].map(async (value) => (
+    new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)))
+  )));
+  let difference = left.length ^ right.length;
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+  }
+  return difference === 0;
+}
+
 export async function routeSandboxPreviewRequest(
   request: Request,
   env: Pick<Env, "NANOCODEX_ADMIN_TOKEN" | "NANOCODEX_SANDBOXES">,
@@ -1695,37 +2224,85 @@ export async function routeSandboxPreviewRequest(
 }
 
 export function createManagedNamespaceTools(
-  canUseExecutionNamespace: () => boolean,
-  machines: () => readonly NamespaceMachine[] = () => [],
+  canUseExecutionNamespace: (context: ToolContext) => boolean,
+  machines: (context: ToolContext) => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
+  prepareNamespace: (context: ToolContext) => Promise<void> = async () => {},
 ): NamedTool[] {
-  return createManagedNamespaceRuntime(canUseExecutionNamespace, machines, resolveMachineTool).tools;
+  return createManagedNamespaceRuntime(
+    canUseExecutionNamespace,
+    machines,
+    resolveMachineTool,
+    prepareNamespace,
+  ).tools;
 }
 
 function createManagedNamespaceRuntime(
-  canUseExecutionNamespace: () => boolean,
-  machines: () => readonly NamespaceMachine[] = () => [],
+  canUseExecutionNamespace: (context: ToolContext) => boolean,
+  machines: (context: ToolContext) => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
-): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): void }> {
+  prepareNamespace: (context: ToolContext) => Promise<void> = async () => {},
+): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): Promise<void> }> {
   const runtime = createNamespaceExecutionRuntime(
     machines,
     resolveMachineTool,
   );
+  const captured = new Set<string>();
+  const preparations = new Map<string, Promise<void>>();
+  const cellKey = (context: ToolContext): string => (
+    `${context.sessionId}\u0000${context.parentCallId}`
+  );
+  const capture = async (context: ToolContext): Promise<void> => {
+    const key = cellKey(context);
+    if (captured.has(key)) return;
+    const pending = preparations.get(key);
+    if (pending !== undefined) return pending;
+    const preparation = (async () => {
+      await prepareNamespace(context);
+      runtime.capture(context);
+      captured.add(key);
+    })();
+    preparations.set(key, preparation);
+    try {
+      await preparation;
+    } finally {
+      if (preparations.get(key) === preparation) preparations.delete(key);
+    }
+  };
+  const releaseSession = (sessionId: string): void => {
+    const prefix = `${sessionId}\u0000`;
+    for (const key of captured) {
+      if (key.startsWith(prefix)) captured.delete(key);
+    }
+    for (const key of preparations.keys()) {
+      if (key.startsWith(prefix)) preparations.delete(key);
+    }
+  };
   const tools = Object.entries(runtime.tools).map(([name, tool]) => ({
     name,
     ...tool,
     handler: async (input, context) => {
-      if (!canUseExecutionNamespace()) {
+      if (!canUseExecutionNamespace(context)) {
         throw new ManagedRequestError(
           403,
           "namespace_forbidden",
           "the current authorization cannot use execution hands",
         );
       }
+      await capture(context);
       return tool.handler(input, context);
     },
+    releaseSession: (sessionId: string) => {
+      releaseSession(sessionId);
+      tool.releaseSession?.(sessionId);
+    },
+    dispose: () => {
+      captured.clear();
+      preparations.clear();
+      tool.dispose?.();
+    },
   } satisfies NamedTool));
-  return Object.freeze({ tools, capture: runtime.capture });
+  return Object.freeze({ tools, capture });
 }
 
 export class ChiefOfStaffBackend extends WorkerEntrypoint<Env> {
@@ -1861,6 +2438,7 @@ export class DurableAgentSession extends DurableComputerSession {
   readonly #realtimeOperations = new Map<string, Promise<unknown>>();
   #realtimeOperationTail: Promise<void> = Promise.resolve();
   readonly #inFlight = new Set<Promise<unknown>>();
+  readonly #namespaceMountRefreshTasks = new Map<string, Promise<void>>();
   #realtimeEventBuffer?: AgentEvent[];
   #realtimeRouteTail: Promise<void> = Promise.resolve();
   #settingsMutationTail: Promise<void> = Promise.resolve();
@@ -1949,6 +2527,18 @@ export class DurableAgentSession extends DurableComputerSession {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS managed_turns_request_key
         ON managed_turns(request_key) WHERE request_key IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS managed_subagent_authorizations (
+        session_id TEXT PRIMARY KEY,
+        root_session_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        parent_agent_id TEXT,
+        role TEXT NOT NULL,
+        task TEXT NOT NULL,
+        host_context_ref TEXT NOT NULL,
+        authorization_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE (root_session_id, agent_id)
+      );
       CREATE TABLE IF NOT EXISTS managed_turn_cancel_intents (
         turn_id TEXT PRIMARY KEY,
         created_at INTEGER NOT NULL
@@ -2034,6 +2624,7 @@ export class DurableAgentSession extends DurableComputerSession {
       entryAllowed: (entry, connectGrantId, appToolCatalogDigest) => (
         this.#activeTurnHostedToolAllowed(entry, connectGrantId, appToolCatalogDigest)
       ),
+      renewLeasedAttachment: (renewal) => this.#renewVmHostAttachment(renewal),
     });
     this.#eventLog = new DurableEventLog<StreamMessage>(this.ctx.storage);
     this.#eventArchive = new ManagedEventArchive<StreamMessage>(
@@ -2130,6 +2721,12 @@ export class DurableAgentSession extends DurableComputerSession {
         return json({ error: "not_found" }, { status: 404 });
       }
       turnAuthorization = asserted.authorization;
+    }
+    if (request.method === "GET" && url.pathname === "/vm-host-existence") {
+      const session = this.#session();
+      return session?.runtime_profile === "managed" && !this.#deleting && !this.#deleted
+        ? new Response(null, { status: 204 })
+        : json({ error: "not_found" }, { status: 404 });
     }
     if (request.method === "PUT" && url.pathname === "/credential-binding") {
       if (this.#deleting || this.#deleted) return new Response(null, { status: 409 });
@@ -2395,6 +2992,16 @@ export class DurableAgentSession extends DurableComputerSession {
     }
     if (request.method === "GET" && url.pathname === "/socket")
       return this.#upgrade(turnAuthorization, url.searchParams.get("cursor"));
+    if (request.method === "POST" && url.pathname === "/vm-host-revoke") {
+      const routeId = request.headers.get("x-nanocodex-vm-route-id");
+      if (!routeId || !VM_HOST_ATTACHMENT_ROUTE.test(routeId)) {
+        return json({ error: "not_found" }, { status: 404 });
+      }
+      const reason = request.headers.get("x-nanocodex-vm-revoke-reason")
+        ?? "VM host control lease ended";
+      this.#hostedTools.revokeRoute(routeId, reason.slice(0, 256));
+      return new Response(null, { status: 204 });
+    }
     if (request.method === "GET" && url.pathname === "/tool-host") {
       if (ownerAssertion === null) return json({ error: "not_found" }, { status: 404 });
       if (this.#deleting) return new Response("Agent is being deleted", { status: 409 });
@@ -2415,11 +3022,35 @@ export class DurableAgentSession extends DurableComputerSession {
         console.error({ type: "managed.tool_router_startup_failed", error_kind: errorKind(error) });
         return json({ error: "tool_router_unavailable" }, { status: 503 });
       }
+      const expectedMachineId = request.headers.get("x-nanocodex-vm-machine-id") ?? undefined;
+      const maximumLeaseExpiresAt = Number(
+        request.headers.get("x-nanocodex-vm-lease-expires-at") ?? Number.MAX_SAFE_INTEGER,
+      );
+      const fixedRouteId = request.headers.get("x-nanocodex-vm-route-id") ?? undefined;
+      const renewalToken = request.headers.get("x-nanocodex-vm-renewal") ?? undefined;
+      if (expectedMachineId !== undefined
+        && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,122}$/.test(expectedMachineId)) {
+        return json({ error: "not_found" }, { status: 404 });
+      }
+      if (!Number.isSafeInteger(maximumLeaseExpiresAt) || maximumLeaseExpiresAt <= Date.now()) {
+        return json({ error: "not_found" }, { status: 404 });
+      }
+      if ((expectedMachineId === undefined) !== (fixedRouteId === undefined)
+        || (fixedRouteId !== undefined && (!VM_HOST_ATTACHMENT_ROUTE.test(fixedRouteId)
+          || renewalToken === undefined || vmHostAttachmentRenewalClaim(renewalToken) === undefined))) {
+        return json({ error: "not_found" }, { status: 404 });
+      }
       return this.#hostedTools.upgrade(
         session.session_id,
         turnAuthorization.connectGrant?.mcpIds,
         turnAuthorization.connectGrant?.appToolCatalogDigest,
         turnAuthorization.connectGrant?.grantId,
+        expectedMachineId === undefined ? undefined : {
+          expectedAttachmentId: expectedMachineId,
+          maximumLeaseExpiresAt,
+          fixedRouteId: fixedRouteId!,
+          renewalToken: renewalToken!,
+        },
       );
     }
     if (request.method === "GET" && url.pathname === "/device-host")
@@ -4863,14 +5494,20 @@ export class DurableAgentSession extends DurableComputerSession {
       );
       if (!tombstoned.ok) throw new Error(`memory tombstone failed with HTTP ${tombstoned.status}`);
       const retainedMounts = this.#managedMounts();
-      const unsupportedMount = retainedMounts.find(({ provider }) => provider !== "cloudflare");
+      const unsupportedMount = retainedMounts.find(
+        ({ provider }) => provider !== "cloudflare" && provider !== "host",
+      );
       if (unsupportedMount !== undefined) {
         throw new Error(`unsupported retained mount provider: ${unsupportedMount.provider}`);
       }
+      await Promise.all(retainedMounts
+        .filter(({ provider }) => provider === "host")
+        .map((mount) => this.#releaseHostMount(mount, false)));
       const cloudflareResources = new Set([
         // Preserve cleanup for agents that used the pre-mount singleton sandbox.
         session.session_id,
         ...retainedMounts
+          .filter(({ provider }) => provider === "cloudflare")
           .map(({ provider_resource_id }) => provider_resource_id),
       ]);
       // Every Cloudflare hand mounts peer prefixes. Stop all possible writers
@@ -4939,6 +5576,7 @@ export class DurableAgentSession extends DurableComputerSession {
     CloudflareAgent.destroy(this);
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
+      this.ctx.storage.sql.exec("DELETE FROM managed_subagent_authorizations");
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_cancel_intents");
       this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");
@@ -5363,7 +6001,11 @@ export class DurableAgentSession extends DurableComputerSession {
     this.#accountHostedTools ??= new AccountHostedToolsProvider(
       this.env.NANOCODEX_ACCOUNT_TOOLS,
       session.owner_id,
-      () => this.#hasFullAccountAuthority(),
+      (context) => this.#hasFullAccountAuthority(
+        context === undefined
+          ? this.#activeTurnAuthorization()
+          : this.#authorizationForToolContext(context),
+      ),
     );
     await this.#accountHostedTools.refresh();
   }
@@ -5419,9 +6061,9 @@ export class DurableAgentSession extends DurableComputerSession {
       computer.filesystem,
     );
     const computerRuntimeMs = performance.now() - phaseStartedAt;
-    const currentAccountInfo = async (signal?: AbortSignal) => {
+    const currentAccountInfo = async (context: ToolContext) => {
       await this.#accountHostedTools?.refresh();
-      const authorization = this.#activeTurnAuthorization();
+      const authorization = this.#authorizationForToolContext(context);
       return await accountInfo(
         this.env.NANOCODEX,
         session.owner_id,
@@ -5434,7 +6076,7 @@ export class DurableAgentSession extends DurableComputerSession {
             : accountConnectionProjection(authorization),
           enabled: !multiplayer,
           machines: this.#accountMachines(authorization),
-          signal,
+          signal: context.signal,
         },
       );
     };
@@ -5449,6 +6091,10 @@ export class DurableAgentSession extends DurableComputerSession {
       codeEvaluator: await managedCodeEvaluator(),
       toolMode: "code" as const,
       toolProviders: hostedProviders,
+      subagentLifecycle: (event: unknown) => applyManagedSubagentLifecycle(
+        this.ctx.storage,
+        event,
+      ),
     };
     const codeEvaluatorMs = performance.now() - codeEvaluatorStartedAt;
     const accountMcpConnections = this.#accountMcpConnections ?? [];
@@ -5468,14 +6114,16 @@ export class DurableAgentSession extends DurableComputerSession {
           ),
     };
     const sandboxToolsByMount = new Map<string, ReturnType<typeof cloudflareSandboxTools>>();
-    const namespaceMachines = () => {
-      const authorization = this.#activeTurnAuthorization();
+    const namespaceMachines = (context: ToolContext) => {
+      const authorization = this.#authorizationForToolContext(context);
       if (!this.#canUseExecutionNamespace(authorization)) return [];
       return [
-        ...this.#managedMounts("mounted").map((mount) => ({
+        ...this.#availableManagedMounts().map((mount) => ({
           id: `sandbox:${mount.id}`,
           root: mount.root,
-          workspace: "/workspace",
+          workspace: mount.provider === "host"
+            ? this.#hostMachineForMount(mount)!.workspace
+            : "/workspace",
         })),
         ...(this.#hasFullAccountAuthority(authorization)
           ? this.#userHandMachines()
@@ -5486,13 +6134,24 @@ export class DurableAgentSession extends DurableComputerSession {
           })),
       ];
     };
-    const resolveNamespaceMachineTool: MachineToolResolver = (machineId, name) => {
-      const authorization = this.#activeTurnAuthorization();
+    const resolveNamespaceMachineTool: MachineToolResolver = (machineId, name, context) => {
+      const authorization = this.#authorizationForToolContext(context);
       if (!this.#canUseExecutionNamespace(authorization)) return undefined;
       if (machineId.startsWith("sandbox:")) {
         const mountId = machineId.slice("sandbox:".length);
         const mount = this.#managedMount(mountId);
-        if (mount?.state !== "mounted" || mount.provider !== "cloudflare") return undefined;
+        if (mount?.state !== "mounted") return undefined;
+        if (mount.provider === "host") {
+          const allocation = vmHostMountAllocation(mount);
+          return allocation?.route_id === undefined
+            ? undefined
+            : this.#hostedTools.machineToolOnRoute(
+              allocation.route_id,
+              allocation.machine_id,
+              name,
+            );
+        }
+        if (mount.provider !== "cloudflare") return undefined;
         let tools = sandboxToolsByMount.get(mount.id);
         if (tools === undefined) {
           tools = cloudflareSandboxTools(
@@ -5518,15 +6177,18 @@ export class DurableAgentSession extends DurableComputerSession {
         ?? this.#accountHostedTools?.machineTool(id, name);
     };
     const namespaceRuntime = multiplayer ? undefined : createManagedNamespaceRuntime(
-      () => this.#canUseExecutionNamespace(),
+      (context) => this.#canUseExecutionNamespace(this.#authorizationForToolContext(context)),
       namespaceMachines,
       resolveNamespaceMachineTool,
+      (context) => this.#refreshMountedHostMounts(
+        this.#authorizationForToolContext(context),
+      ),
     );
     const cloudTools: NamedTool[] = [
       ...(browserRuntime?.tools ?? []),
       ...(multiplayer ? [computer.tool] : []),
       ...(multiplayer ? [] : [managedMountTool(async (request, context) => {
-        if (!this.#canUseExecutionNamespace()) {
+        if (!this.#canUseExecutionNamespace(this.#authorizationForToolContext(context))) {
           throw new ManagedRequestError(
             403,
             "mount_forbidden",
@@ -5534,7 +6196,7 @@ export class DurableAgentSession extends DurableComputerSession {
           );
         }
         context.signal.throwIfAborted();
-        namespaceRuntime?.capture(context);
+        await namespaceRuntime?.capture(context);
         return this.#mount(request, context, session);
       })]),
       ...(namespaceRuntime?.tools ?? []),
@@ -5542,7 +6204,7 @@ export class DurableAgentSession extends DurableComputerSession {
         name: "accountInfo",
         description: "Report live machine hands, account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Vault references may show usernames, addresses, phone numbers, and card last four, but never passwords or complete card data.",
         parameters: { type: "object", additionalProperties: false },
-        handler: (_input: unknown, context: ToolContext) => currentAccountInfo(context.signal),
+        handler: (_input: unknown, context: ToolContext) => currentAccountInfo(context),
       }]),
       ...(multiplayer ? [] : [accountConnectorsTool({
         broker: this.env.NANOCODEX,
@@ -5588,7 +6250,7 @@ export class DurableAgentSession extends DurableComputerSession {
             default_cwd: "/brain",
             native_cross_mounts: false,
             cloudflare_native_cross_mounts: this.env.NANOCODEX_SANDBOX_LOCAL !== "true",
-            mounts: this.#accountMachines(this.#activeTurnAuthorization()).map(({ id, mount }) => ({
+            mounts: this.#accountMachines(this.#authorizationForToolContext(context)).map(({ id, mount }) => ({
               id,
               mount,
             })),
@@ -5605,7 +6267,7 @@ export class DurableAgentSession extends DurableComputerSession {
           pty: multiplayer ? computer.descriptor.pty : false,
           sessions: multiplayer ? computer.descriptor.sessions : false,
           sandbox_escalation: false,
-          account: await currentAccountInfo(context.signal),
+          account: await currentAccountInfo(context),
         }),
       },
       ...(multiplayer ? [] : memorySessionTools({
@@ -5665,7 +6327,7 @@ export class DurableAgentSession extends DurableComputerSession {
           ].join("\n\n")
           : [
             "You are the durable Nanocodex brain running on Cloudflare Workers. The brain does not execute shell commands. /brain is durable shared scratch mounted read-write in every Cloudflare hand; it never contains credentials or control-plane authority.",
-            "The agent starts without a sandbox hand. When a task such as cloning a repository, building code, or running tests needs native Linux execution, infer that need and call mount with provider cloudflare and a useful stable name. Do not ask the user to request a routine sandbox mount. mount provisions and attaches the hand before it returns.",
+            "The agent starts without a sandbox hand. When a task such as cloning a repository, building code, or running tests needs native Linux execution, infer that need and call mount with provider cf_sandbox and a useful stable name. Use another provider only when the user supplied its exact connected VM factory name. Do not ask the user to request a routine sandbox mount. mount provisions and attaches the hand before it returns.",
             "Hands appear as logical top-level paths returned by mount or listed in accountInfo().machines. exec_command has its standard shape: set workdir to the exact hand mount or a path beneath it; the root of that cwd selects where the process runs. The default /brain cwd is not executable. write_stdin remains pinned to the hand that created its session. There is no environment or host argument.",
             "A Code Mode cell captures its mount mapping. Commands in Promise.all may run concurrently on different cwd roots, and subagents use the same cwd rule independently. A disconnect or reconnect never retargets an admitted command or session.",
             "Cloudflare sandbox hands are separate retained workspaces mounted into each other's native filesystem namespaces. A process may write its executing hand through /workspace or that hand's logical mount path, read peer hand paths without mutating them, and read or write /brain using ordinary filesystem syscalls. The trees are mounted, never copied or synchronized. Connected user hands and future providers remain placement-only until their provider advertises a conforming native namespace adapter, so native_cross_mounts remains false globally while runtimeInfo.cloudflare_native_cross_mounts is true.",
@@ -5866,11 +6528,29 @@ export class DurableAgentSession extends DurableComputerSession {
     catch { return undefined; }
   }
 
+  #authorizationForToolContext(
+    context: Pick<ToolContext, "sessionId" | "subagent">,
+  ): TurnAuthorization | undefined {
+    let rootSessionId: string | undefined;
+    try {
+      rootSessionId = this.ctx.storage.sql.exec<{ session_id: string }>(
+        "SELECT session_id FROM nanocodex_cloudflare_agent WHERE singleton = 1",
+      ).toArray()[0]?.session_id;
+    } catch { /* The adapter creates the identity table during construction. */ }
+    return managedAuthorizationForToolContext(
+      this.ctx.storage,
+      rootSessionId,
+      this.#activeTurnAuthorization(),
+      context,
+    );
+  }
+
   async #mount(
     request: ManagedMountRequest,
     context: ToolContext,
     session: SessionRow,
   ): Promise<ManagedMountResult> {
+    const storageProvider = managedMountStorageProvider(request.provider);
     const replay = this.ctx.storage.sql.exec<ManagedMountCallRow>(
       `SELECT provider, name, mount_id, created
        FROM managed_mount_calls WHERE tool_session_id = ? AND tool_call_id = ?`,
@@ -5880,7 +6560,8 @@ export class DurableAgentSession extends DurableComputerSession {
     let mount: ManagedMountRow | undefined;
     let created = false;
     if (replay !== undefined) {
-      if (replay.provider !== request.provider || replay.name !== request.name) {
+      if (!sameManagedMountProvider(replay.provider, request.provider)
+        || replay.name !== request.name) {
         throw new ManagedRequestError(
           409,
           "mount_call_conflict",
@@ -5921,24 +6602,24 @@ export class DurableAgentSession extends DurableComputerSession {
       const now = Date.now();
       const providerCount = this.ctx.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM managed_mounts WHERE provider = ?",
-        request.provider,
+        storageProvider,
       ).one().count;
       const providerResourceId = managedMountProviderResourceId(
         session.session_id,
         id,
-        providerCount,
+        storageProvider === "host" ? 1 : providerCount,
       );
       const root = managedMountRoot(request.name, id);
-      const configuration = request.provider === "cloudflare"
+      const configuration = storageProvider === "cloudflare"
         ? JSON.stringify({ namespace_slot: this.#nextCloudflareNamespaceSlot() })
-        : "{}";
+        : JSON.stringify({ vm_factory_name: request.provider });
       this.ctx.storage.sql.exec(
         `INSERT INTO managed_mounts (
            id, provider, name, root, provider_resource_id, configuration_json,
            state, created_at, updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, 'mounting', ?, ?)`,
         id,
-        request.provider,
+        storageProvider,
         request.name,
         root,
         providerResourceId,
@@ -5950,11 +6631,11 @@ export class DurableAgentSession extends DurableComputerSession {
       if (retained === undefined) throw new Error("durable mount intent was not retained");
       mount = retained;
     }
-    if (mount.provider !== request.provider) {
+    if (!managedMountUsesProvider(mount, request.provider)) {
       throw new ManagedRequestError(
         409,
         "mount_name_conflict",
-        `mount ${request.name} already belongs to provider ${mount.provider}`,
+        `mount ${request.name} already belongs to provider ${managedMountPublicProvider(mount)}`,
       );
     }
     if (replay === undefined) {
@@ -5971,7 +6652,8 @@ export class DurableAgentSession extends DurableComputerSession {
         Date.now(),
       );
     }
-    if (mount.state !== "mounted") {
+    if (mount.state !== "mounted"
+      || (mount.provider === "host" && this.#hostMachineForMount(mount) === undefined)) {
       try {
         await this.#prepareManagedMount(mount);
         this.ctx.storage.sql.exec(
@@ -5991,7 +6673,7 @@ export class DurableAgentSession extends DurableComputerSession {
     return Object.freeze({
       id: mount.id,
       name: mount.name,
-      provider: mount.provider,
+      provider: managedMountPublicProvider(mount),
       mount: mount.root,
       status: "mounted" as const,
       created,
@@ -6012,9 +6694,303 @@ export class DurableAgentSession extends DurableComputerSession {
         );
         return;
       }
+      case "host": {
+        await this.#prepareHostMount(mount);
+        return;
+      }
       default:
         throw new Error(`unsupported retained mount provider: ${mount.provider}`);
     }
+  }
+
+  async #renewVmHostAttachment(
+    renewal: HostedToolsLeasedAttachmentRenewal,
+  ): Promise<number | undefined> {
+    const claim = vmHostAttachmentRenewalClaim(renewal.renewalToken);
+    const session = this.#session();
+    if (claim === undefined || session === undefined || this.#deleting || this.#deleted
+      || renewal.expectedAttachmentId.length === 0
+      || !renewal.fixedRouteId.startsWith(`vm-host:${claim.allocation_id}:`)) {
+      return undefined;
+    }
+    return fetchResponseWithDeadline(
+      this.env.NANOCODEX_VM_HOST_POOLS.getByName(claim.pool_locator),
+      "https://vm-host-pool.internal/validate-attachment",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ allocation_id: claim.allocation_id, bearer: claim.bearer }),
+      },
+      5_000,
+      "VM host attachment validation",
+      async (response) => {
+        if (response.status === 404) return undefined;
+        if (!response.ok) {
+          throw new Error(`VM host attachment validation failed with HTTP ${response.status}`);
+        }
+        const grant = await response.json<unknown>();
+        if (!validVmHostAttachmentGrant(grant)
+          || grant.allocation_id !== claim.allocation_id
+          || grant.generation !== claim.generation
+          || grant.agent_id !== session.session_id
+          || grant.owner_id !== session.owner_id
+          || grant.organization_id !== session.organization_id
+          || grant.team_id !== session.team_id
+          || grant.authorization_epoch !== session.authorization_epoch
+          || grant.machine_id !== renewal.expectedAttachmentId
+          || grant.route_id !== renewal.fixedRouteId) return undefined;
+        return grant.lease_expires_at;
+      },
+    );
+  }
+
+  async #refreshMountedHostMounts(
+    authorization: TurnAuthorization | undefined,
+  ): Promise<void> {
+    if (!this.#canUseExecutionNamespace(authorization)) {
+      throw new ManagedRequestError(
+        403,
+        "namespace_forbidden",
+        "the current authorization cannot use execution hands",
+      );
+    }
+    if (this.#deleting || this.#deleted) throw retryableError("agent is being deleted");
+    const deletionGeneration = this.#deletionGeneration;
+    const mounts = this.#managedMounts("mounted").filter((mount) => (
+      mount.provider === "host" && vmHostMountAllocation(mount) !== undefined
+    ));
+    await Promise.all(mounts.map((mount) => this.#refreshMountedHostMount(mount)));
+    if (this.#deleting || this.#deleted || this.#deletionGeneration !== deletionGeneration) {
+      throw retryableError("agent is being deleted");
+    }
+  }
+
+  #refreshMountedHostMount(mount: ManagedMountRow): Promise<void> {
+    const pending = this.#namespaceMountRefreshTasks.get(mount.id);
+    if (pending !== undefined) return pending;
+    const refresh = this.#prepareHostMount(mount);
+    this.#namespaceMountRefreshTasks.set(mount.id, refresh);
+    void refresh.finally(() => {
+      if (this.#namespaceMountRefreshTasks.get(mount.id) === refresh) {
+        this.#namespaceMountRefreshTasks.delete(mount.id);
+      }
+    }).catch(() => {});
+    return refresh;
+  }
+
+  async #prepareHostMount(mount: ManagedMountRow): Promise<void> {
+    const session = this.#session();
+    if (session === undefined) throw new Error("managed session is not initialized");
+    let configuration = managedMountConfiguration(mount.configuration_json);
+    const persistConfiguration = (next: ManagedMountConfiguration): void => {
+      configuration = next;
+      this.ctx.storage.sql.exec(
+        "UPDATE managed_mounts SET configuration_json = ?, updated_at = ? WHERE id = ?",
+        JSON.stringify(next), Date.now(), mount.id,
+      );
+    };
+    const factoryName = vmHostFactoryName(mount);
+    if (factoryName === undefined) {
+      throw new Error("retained VM host mount has no valid factory name");
+    }
+    let retained = vmHostMountAllocation(mount);
+    if (retained === undefined) {
+      const candidates: readonly [VmHostPoolScope, string][] = [
+        ["agent", session.session_id],
+        ["account", session.owner_id],
+        ["system", "system"],
+      ];
+      const located = await Promise.all(candidates.map(async ([scope, identity]) => ({
+        scope,
+        locator: await vmHostPoolLocator(scope, identity),
+      })));
+      const selection = configuration.vm_pool_locator;
+      if (selection !== undefined && (typeof selection !== "string"
+        || !/^[A-Za-z0-9_-]{43}$/.test(selection))) {
+        throw new Error("retained VM host mount has an invalid pool selection intent");
+      }
+      const selectedIndex = selection === undefined
+        ? 0
+        : located.findIndex(({ locator }) => locator === selection);
+      if (selectedIndex < 0) {
+        throw new Error("retained VM host mount pool selection is outside its visible scopes");
+      }
+      for (const { locator } of located.slice(selectedIndex)) {
+        if (configuration.vm_pool_locator !== locator) {
+          persistConfiguration({ ...configuration, vm_pool_locator: locator });
+        }
+        const response = await this.env.NANOCODEX_VM_HOST_POOLS.getByName(locator).fetch(
+          "https://vm-host-pool.internal/acquire",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              factory_name: factoryName,
+              owner_id: session.owner_id,
+              organization_id: session.organization_id,
+              team_id: session.team_id,
+              authorization_epoch: session.authorization_epoch,
+              agent_id: session.session_id,
+              mount_id: mount.id,
+              pool_locator: locator,
+            }),
+          },
+        );
+        if (!response.ok) {
+          const failure = await response.json<{ error?: unknown }>().catch(() => undefined);
+          if (response.status === 404 && failure?.error === "factory_not_found") continue;
+          if (response.status === 409 && failure?.error === "factory_unavailable") {
+            throw new ManagedRequestError(
+              503,
+              "factory_unavailable",
+              `VM factory ${factoryName} has no available capacity`,
+            );
+          }
+          throw new Error(`VM host allocation failed with HTTP ${response.status}`);
+        }
+        const allocation = await response.json<unknown>();
+        if (!validVmHostAllocation(allocation) || allocation.factory_name !== factoryName) {
+          throw new Error("VM host pool returned an invalid allocation");
+        }
+        retained = {
+          pool_locator: locator,
+          allocation_id: allocation.allocation_id,
+          generation: allocation.generation,
+          machine_id: allocation.machine_id,
+          route_id: allocation.route_id,
+        };
+        const { vm_pool_locator: _selection, ...stableConfiguration } = configuration;
+        persistConfiguration({ ...stableConfiguration, vm_host: retained });
+        break;
+      }
+      if (retained === undefined) {
+        const { vm_pool_locator: _selection, ...stableConfiguration } = configuration;
+        persistConfiguration(stableConfiguration);
+        throw new ManagedRequestError(
+          404,
+          "factory_not_found",
+          `VM factory ${factoryName} is not connected in any visible scope`,
+        );
+      }
+    }
+    const identity = {
+      owner_id: session.owner_id,
+      agent_id: session.session_id,
+      mount_id: mount.id,
+      allocation_id: retained.allocation_id,
+      generation: retained.generation,
+      pool_locator: retained.pool_locator,
+    };
+    const pool = this.env.NANOCODEX_VM_HOST_POOLS.getByName(retained.pool_locator);
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const response = await pool.fetch("https://vm-host-pool.internal/ready", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(identity),
+      });
+      if (!response.ok) throw new Error(`VM host readiness failed with HTTP ${response.status}`);
+      const status = await response.json<unknown>();
+      if (!status || typeof status !== "object" || Array.isArray(status)) {
+        throw new Error("VM host pool returned an invalid readiness response");
+      }
+      const readiness = status as { ready?: unknown; state?: unknown };
+      if (validVmHostAllocation(status)
+        && status.factory_name === factoryName
+        && status.allocation_id === retained.allocation_id
+        && status.generation === retained.generation
+        && status.machine_id === retained.machine_id
+        && status.route_id !== retained.route_id) {
+        const refreshed = this.#persistRefreshedHostRoute(mount, retained, status.route_id);
+        if (refreshed === undefined) {
+          throw new Error("retained VM host mount changed while refreshing its route");
+        }
+        retained = refreshed;
+      }
+      const current = this.#managedMount(mount.id);
+      if (this.#deleting || this.#deleted || current === undefined || current.state === "failed") {
+        throw retryableError("retained VM host mount is no longer available");
+      }
+      if (readiness.ready === true && current.state === "mounted"
+        && this.#hostMachineForMount(current)) return;
+      if (readiness.ready === true && mount.state === "mounting"
+        && current.state === "mounting" && this.#hostMachineForMount(current)) return;
+      if (readiness.state === "releasing" || readiness.state === "released") {
+        throw new Error("VM host allocation was released before becoming ready");
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+    throw new ManagedRequestError(503, "host_not_ready", "VM host did not publish its assigned machine route");
+  }
+
+  #persistRefreshedHostRoute(
+    mount: ManagedMountRow,
+    expected: NonNullable<ManagedMountConfiguration["vm_host"]>,
+    routeId: string,
+  ): ManagedMountConfiguration["vm_host"] | undefined {
+    return this.ctx.storage.transactionSync(() => {
+      const current = this.#managedMount(mount.id);
+      if (current === undefined || current.provider !== "host"
+        || (current.state !== mount.state
+          && !(mount.state === "mounting" && current.state === "mounted"))) return undefined;
+      const allocation = vmHostMountAllocation(current);
+      if (allocation === undefined
+        || allocation.pool_locator !== expected.pool_locator
+        || allocation.allocation_id !== expected.allocation_id
+        || allocation.generation !== expected.generation
+        || allocation.machine_id !== expected.machine_id) return undefined;
+      if (allocation.route_id === routeId) return allocation;
+      const configuration = managedMountConfiguration(current.configuration_json);
+      const refreshed = Object.freeze({ ...allocation, route_id: routeId });
+      this.ctx.storage.sql.exec(
+        "UPDATE managed_mounts SET configuration_json = ?, updated_at = ? WHERE id = ?",
+        JSON.stringify({ ...configuration, vm_host: refreshed }), Date.now(), mount.id,
+      );
+      return refreshed;
+    });
+  }
+
+  async #releaseHostMount(mount: ManagedMountRow, waitForHost = true): Promise<void> {
+    const session = this.#session();
+    const allocation = vmHostMountAllocation(mount);
+    if (session === undefined) return;
+    const configuration = managedMountConfiguration(mount.configuration_json);
+    const factoryName = vmHostFactoryName(mount);
+    const locator = allocation?.pool_locator ?? configuration.vm_pool_locator;
+    if (factoryName === undefined || typeof locator !== "string"
+      || !/^[A-Za-z0-9_-]{43}$/.test(locator)) return;
+    const pool = this.env.NANOCODEX_VM_HOST_POOLS.getByName(locator);
+    const identity = allocation === undefined ? {
+      factory_name: factoryName,
+      owner_id: session.owner_id,
+      organization_id: session.organization_id,
+      team_id: session.team_id,
+      authorization_epoch: session.authorization_epoch,
+      agent_id: session.session_id,
+      mount_id: mount.id,
+      pool_locator: locator,
+    } : {
+      owner_id: session.owner_id,
+      agent_id: session.session_id,
+      mount_id: mount.id,
+      allocation_id: allocation.allocation_id,
+      generation: allocation.generation,
+      pool_locator: locator,
+    };
+    const path = allocation === undefined ? "release-intent" : "release";
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const response = await pool.fetch(`https://vm-host-pool.internal/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(identity),
+      });
+      if (!response.ok) throw new Error(`VM host release failed with HTTP ${response.status}`);
+      const status = await response.json<{ state?: unknown }>();
+      if (status.state === "released" || !waitForHost) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error("VM host release acknowledgement timed out");
   }
 
   #managedMount(id: string): ManagedMountRow | undefined {
@@ -6034,6 +7010,20 @@ export class DurableAgentSession extends DurableComputerSession {
        ORDER BY created_at, id`,
       ...(state === undefined ? [] : [state]),
     ).toArray();
+  }
+
+  #availableManagedMounts(): readonly ManagedMountRow[] {
+    return this.#managedMounts("mounted").filter((mount) => (
+      mount.provider === "cloudflare"
+      || (vmHostFactoryName(mount) !== undefined && this.#hostMachineForMount(mount) !== undefined)
+    ));
+  }
+
+  #hostMachineForMount(mount: ManagedMountRow): HostedMachine | undefined {
+    if (mount.provider !== "host") return undefined;
+    const allocation = vmHostMountAllocation(mount);
+    if (allocation?.route_id === undefined) return undefined;
+    return this.#hostedTools.machineOnRoute(allocation.route_id, allocation.machine_id);
   }
 
   #cloudflareNamespaceMounts(
@@ -6110,15 +7100,18 @@ export class DurableAgentSession extends DurableComputerSession {
   #accountMachines(authorization: TurnAuthorization | undefined): readonly AccountMachine[] {
     if (!this.#canUseExecutionNamespace(authorization)) return [];
     return Object.freeze([
-      ...this.#managedMounts("mounted").map((mount) => Object.freeze({
-        id: `sandbox:${mount.id}`,
-        name: mount.name,
-        kind: "sandbox" as const,
-        provider: mount.provider,
-        mount: mount.root,
-        workspace: mount.root,
-        capabilities: SANDBOX_HAND_CAPABILITIES,
-      })),
+      ...this.#availableManagedMounts().map((mount) => {
+        const hostMachine = mount.provider === "host" ? this.#hostMachineForMount(mount) : undefined;
+        return Object.freeze({
+          id: `sandbox:${mount.id}`,
+          name: mount.name,
+          kind: "sandbox" as const,
+          provider: managedMountPublicProvider(mount),
+          mount: mount.root,
+          workspace: mount.root,
+          capabilities: hostMachine?.capabilities ?? SANDBOX_HAND_CAPABILITIES,
+        });
+      }),
       ...(this.#hasFullAccountAuthority(authorization)
         ? this.#userHandMachines()
         : []).map((machine) => {
@@ -6148,6 +7141,10 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #userHandMachines(): readonly HostedMachine[] {
+    const leasedMachineIds = new Set(this.#managedMounts().flatMap((mount) => {
+      const allocation = vmHostMountAllocation(mount);
+      return allocation === undefined ? [] : [allocation.machine_id];
+    }));
     const machines = [
       ...this.#hostedTools.machines(),
       ...(this.#accountHostedTools?.machines() ?? []),
@@ -6155,7 +7152,7 @@ export class DurableAgentSession extends DurableComputerSession {
     const counts = new Map<string, number>();
     for (const machine of machines) counts.set(machine.id, (counts.get(machine.id) ?? 0) + 1);
     return machines
-      .filter((machine) => counts.get(machine.id) === 1)
+      .filter((machine) => counts.get(machine.id) === 1 && !leasedMachineIds.has(machine.id))
       .sort((left, right) => left.id.localeCompare(right.id));
   }
 

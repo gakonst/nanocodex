@@ -316,6 +316,10 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     && (!internalRuntime || typeof internalRuntime !== "object" || Array.isArray(internalRuntime))) {
     throw new TypeError("Cloudflare Agent internal runtime options must be an object");
   }
+  if (internalRuntime?.subagentLifecycle !== undefined
+    && typeof internalRuntime.subagentLifecycle !== "function") {
+    throw new TypeError("Cloudflare Agent subagent lifecycle hook must be a function");
+  }
   validateInternalConfiguration(internalConfiguration);
   const eventSocket = eventPersistence === "durable"
     ? createCloudflareEventSocket(context)
@@ -346,6 +350,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
   const subagentSessions = cloudflareSubagentSessions(
     context.storage,
     sessionReservation,
+    internalRuntime?.subagentLifecycle,
   );
   let agent;
   let watcher;
@@ -633,40 +638,99 @@ function initializeAgentStorage(storage) {
     CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_subagents (
       session_id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL UNIQUE,
-      descriptor_json TEXT NOT NULL
+      descriptor_json TEXT NOT NULL,
+      host_context_ref TEXT
     )
   `);
+  const subagentColumns = storage.sql.exec(
+    "PRAGMA table_info('nanocodex_cloudflare_subagents')",
+  ).toArray();
+  if (!subagentColumns.some(({ name }) => name === "host_context_ref")) {
+    storage.sql.exec(
+      "ALTER TABLE nanocodex_cloudflare_subagents ADD COLUMN host_context_ref TEXT",
+    );
+  }
 }
 
-function cloudflareSubagentSessions(storage, reservation) {
+function cloudflareSubagentSessions(storage, reservation, lifecycle) {
+  const restoredHostContextRefs = new Map();
   return Object.freeze({
     restore() {
       const restored = storage.sql.exec(
-        "SELECT descriptor_json FROM nanocodex_cloudflare_subagents",
-      ).toArray().map(({ descriptor_json }) => Object.freeze(JSON.parse(descriptor_json)));
+        "SELECT descriptor_json, host_context_ref FROM nanocodex_cloudflare_subagents",
+      ).toArray().map(({ descriptor_json, host_context_ref }) => {
+        const descriptor = Object.freeze(JSON.parse(descriptor_json));
+        restoredHostContextRefs.set(
+          descriptor.sessionId,
+          host_context_ref === null ? undefined : host_context_ref,
+        );
+        return descriptor;
+      });
       return Object.freeze(restored);
     },
-    bind(sessionId, descriptor) {
-      if (!mayBindCloudflareSubagentSession(reservation)) return;
-      storage.sql.exec(
-        `INSERT INTO nanocodex_cloudflare_subagents
-           (session_id, agent_id, descriptor_json) VALUES (?, ?, ?)
-         ON CONFLICT (session_id) DO UPDATE SET
-           agent_id = excluded.agent_id,
-           descriptor_json = excluded.descriptor_json`,
-        sessionId,
-        descriptor.agentId,
-        JSON.stringify(descriptor),
-      );
+    hostContextRef(sessionId) {
+      return restoredHostContextRefs.get(sessionId);
     },
-    release(sessionId) {
+    bind(sessionId, descriptor, hostContextRef) {
+      if (!mayBindCloudflareSubagentSession(reservation)) return;
+      if (hostContextRef !== undefined
+        && (typeof hostContextRef !== "string" || hostContextRef.length === 0)) {
+        throw new TypeError("subagent host context ref must be a non-empty string when supplied");
+      }
+      const type = restoredHostContextRefs.has(sessionId) ? "reconstruct" : "bind";
+      storage.transactionSync(() => {
+        storage.sql.exec(
+          `INSERT INTO nanocodex_cloudflare_subagents
+             (session_id, agent_id, descriptor_json, host_context_ref) VALUES (?, ?, ?, ?)
+           ON CONFLICT (session_id) DO UPDATE SET
+             agent_id = excluded.agent_id,
+             descriptor_json = excluded.descriptor_json,
+             host_context_ref = excluded.host_context_ref`,
+          sessionId,
+          descriptor.agentId,
+          JSON.stringify(descriptor),
+          hostContextRef ?? null,
+        );
+        notifySubagentLifecycle(lifecycle, {
+          type,
+          rootSessionId: reservation.sessionId,
+          sessionId,
+          descriptor,
+          hostContextRef,
+        });
+      });
+      restoredHostContextRefs.delete(sessionId);
+    },
+    release(sessionId, hostContextRef) {
       if (!mayReleaseCloudflareSubagentSession(reservation)) return;
-      storage.sql.exec(
-        "DELETE FROM nanocodex_cloudflare_subagents WHERE session_id = ?",
-        sessionId,
-      );
+      storage.transactionSync(() => {
+        const retained = storage.sql.exec(
+          `SELECT 1 AS retained FROM nanocodex_cloudflare_subagents
+           WHERE session_id = ? AND host_context_ref IS ?`,
+          sessionId,
+          hostContextRef ?? null,
+        ).toArray();
+        if (retained.length === 0) return;
+        notifySubagentLifecycle(lifecycle, {
+          type: "release",
+          rootSessionId: reservation.sessionId,
+          sessionId,
+          hostContextRef,
+        });
+        storage.sql.exec(
+          `DELETE FROM nanocodex_cloudflare_subagents
+           WHERE session_id = ? AND host_context_ref IS ?`,
+          sessionId,
+          hostContextRef ?? null,
+        );
+      });
     },
   });
+}
+
+function notifySubagentLifecycle(lifecycle, event) {
+  if (lifecycle === undefined) return;
+  lifecycle(Object.freeze(event));
 }
 
 function storedSessionId(storage) {

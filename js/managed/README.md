@@ -30,8 +30,15 @@ storage ownership.
   cancel or steer work, delete an agent, and support explicit durability import
   and export. Stable `Idempotency-Key` values make create and turn retries safe.
 - Managed agents begin with no sandbox hand. The provider-neutral `mount` model
-  tool provisions and attaches named execution hands on demand; Cloudflare
-  Sandbox is the first provider, and repeated names resolve idempotently.
+  tool provisions and attaches named execution hands on demand. `cf_sandbox`
+  names the built-in Cloudflare Sandbox factory (`cloudflare` remains a legacy
+  input alias); any other provider value is the exact name of a connected VM
+  factory. Several agent-, account-, or system-scoped factories may coexist,
+  and repeated mount names resolve idempotently.
+- Code Mode routes each command from the root of its `cwd`: mounted roots may
+  live on different factories while remaining visible in one namespace.
+  Subagents inherit the spawning turn's exact namespace authorization, so a
+  long-lived child cannot borrow capabilities from a later root turn.
 - Agent events are a durable, ordered cursor stream. SSE resumes with `cursor`
   or `Last-Event-ID`; same-origin browser WebSockets carry the typed
   prompt/steer/cancel protocol. Realtime calls and sideband transport have

@@ -80,7 +80,7 @@ describe("cwd-root namespace execution", () => {
       workdir: "/Users/me/repo/crates/core",
       yield_time_ms: 30_000,
     }, expect.anything());
-    expect(resolve).toHaveBeenCalledWith("laptop", "exec_command");
+    expect(resolve).toHaveBeenCalledWith("laptop", "exec_command", expect.anything());
   });
 
   it("lets the real tool router dispatch separate hands concurrently", async () => {
@@ -401,8 +401,8 @@ function createNamespaceExecutionTools(
 ) {
   return createRuntimeNamespaceExecutionTools(
     () => [{ id: "sandbox", root: "/sandbox", workspace: "/workspace" }, ...machines()],
-    (machineId, name) => machineId === "sandbox"
+    (machineId, name, context) => machineId === "sandbox"
       ? sandbox[name]
-      : resolveMachineTool(machineId, name),
+      : resolveMachineTool(machineId, name, context),
   );
 }

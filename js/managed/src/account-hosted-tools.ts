@@ -10,6 +10,7 @@ import {
   type HostedToolsCodeTool,
   type HostedToolsDynamicProvider,
 } from "nanocodex-tools/hosted";
+import type { SubagentToolContext } from "nanocodex-tools";
 
 import { isUserId } from "./account-auth";
 import { HostedToolsBroker } from "./hosted-tools-broker";
@@ -62,6 +63,14 @@ type InvocationResult = Readonly<{
   metadata: unknown;
   value: unknown;
   pre_admission_unavailable?: true;
+}>;
+
+type InvocationContext = Readonly<{
+  sessionId: string;
+  callId: string;
+  model?: string;
+  signal?: AbortSignal;
+  subagent?: SubagentToolContext;
 }>;
 
 /** One account-owned reverse attachment shared by every managed agent in that account. */
@@ -192,7 +201,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   readonly sourceId = "account-hands";
   readonly #stub: DurableObjectStub<AccountHostedTools>;
   readonly #ownerId: string;
-  readonly #allowed: () => boolean;
+  readonly #allowed: (context?: InvocationContext) => boolean;
   #definitions: readonly HostedToolsCodeDefinition[] = [];
   #candidates: readonly HostedToolsCatalogCandidate[] = [];
   #machines: readonly HostedMachine[] = [];
@@ -205,7 +214,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   constructor(
     namespace: DurableObjectNamespace<AccountHostedTools>,
     ownerId: string,
-    allowed: () => boolean,
+    allowed: (context?: InvocationContext) => boolean,
   ) {
     this.#stub = namespace.getByName(ownerId);
     this.#ownerId = ownerId;
@@ -304,7 +313,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         ...(entry.summary === undefined ? {} : { summary: entry.summary }),
         handler: (
           input: unknown,
-          context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
+          context: InvocationContext,
         ) => this.#invoke(definition.name, entry.route_token, input, context),
       };
       tools.set(definition.name, Object.freeze(tool));
@@ -323,7 +332,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
           routeToken: route.route_token,
           handler: (
             input: unknown,
-            context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
+            context: InvocationContext,
           ) => this.#invoke(route.name, route.route_token, input, context, entry.machine.id),
         }));
       }
@@ -337,10 +346,12 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     name: string,
     routeToken: string,
     input: unknown,
-    context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
+    context: InvocationContext,
     machineId?: string,
   ): Promise<unknown> {
-    if (!this.#allowed()) return failedToolResult("Account hand is outside the active grant", "unavailable", true);
+    if (!this.#allowed(context)) {
+      return failedToolResult("Account hand is outside the active grant", "unavailable", true);
+    }
     let response: Response;
     try {
       response = await this.#stub.fetch("https://account-tools.internal/invoke", {
