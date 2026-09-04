@@ -20,6 +20,7 @@ use crate::{
 
 const MAX_HISTORY_PAGE: u16 = 256;
 const SUBMIT_ATTEMPTS: usize = 3;
+const READ_ATTEMPTS: usize = 3;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Builder for a cloneable native managed HTTP client.
@@ -68,8 +69,9 @@ impl ManagedClientBuilder {
 /// Cloneable authenticated client for the account-managed control plane.
 ///
 /// Clones share one redirect-disabled HTTP pool and immutable authorization
-/// policy. Turn submission retries with its durable identity; steering retries
-/// only an explicit recovery rejection that guarantees no input was delivered.
+/// policy. Reads retry transient failures, turn submission retries with its
+/// durable identity, and steering retries only an explicit recovery rejection
+/// that guarantees no input was delivered.
 #[derive(Clone)]
 pub struct ManagedClient {
     pub(crate) http: reqwest::Client,
@@ -463,14 +465,7 @@ impl ManagedClient {
                 query.append_pair("before", cursor);
             }
         }
-        let response = self
-            .http
-            .get(url)
-            .timeout(REQUEST_TIMEOUT)
-            .send()
-            .await
-            .map_err(ManagedError::Transport)?;
-        let page: EventHistoryPage = decode_response(response).await?;
+        let page: EventHistoryPage = self.read_json(url).await?;
         crate::sse::validate_numeric_cursor(&page.latest_cursor)?;
         if page.data.len() > limit as usize {
             return Err(ManagedError::InvalidResponse(
@@ -703,8 +698,38 @@ impl ManagedClient {
         body: Option<&[u8]>,
         idempotency_key: Option<&str>,
     ) -> Result<T, ManagedError> {
+        if method == Method::GET && body.is_none() && idempotency_key.is_none() {
+            return self.read_json(self.url(path)?).await;
+        }
         let response = self.request(method, path, body, idempotency_key).await?;
         decode_response(response).await
+    }
+
+    async fn read_json<T: DeserializeOwned>(&self, url: Url) -> Result<T, ManagedError> {
+        for attempt in 0..READ_ATTEMPTS {
+            let result = match self
+                .http
+                .get(url.clone())
+                .timeout(REQUEST_TIMEOUT)
+                .send()
+                .await
+            {
+                Ok(response) => decode_response(response).await,
+                Err(error) => Err(ManagedError::Transport(error)),
+            };
+            let retry = match &result {
+                Err(ManagedError::Transport(_)) => true,
+                Err(ManagedError::Http { status, .. }) => {
+                    status.is_server_error() || *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                }
+                _ => false,
+            };
+            if !retry || attempt + 1 == READ_ATTEMPTS {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(250 << attempt)).await;
+        }
+        unreachable!("the last read attempt always returns")
     }
 
     async fn request(
@@ -872,6 +897,50 @@ mod tests {
 
     fn key() -> String {
         format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43))
+    }
+
+    #[tokio::test]
+    async fn history_retries_transient_failures_with_the_same_page_cursor() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for (status, expected_attempts) in [
+            (StatusCode::SERVICE_UNAVAILABLE, 3),
+            (StatusCode::TOO_MANY_REQUESTS, 3),
+            (StatusCode::FORBIDDEN, 1),
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let observed = attempts.clone();
+            let app = Router::new().route("/v1/agents/agent-1/events/history", get(move |uri: axum::http::Uri| {
+                let observed = observed.clone();
+                async move {
+                    assert_eq!(uri.query(), Some("limit=256&before=500"));
+                    if observed.fetch_add(1, Ordering::SeqCst) < 2 {
+                        (status, axum::Json(serde_json::json!({"error": "fixture", "message": "temporarily unavailable"})))
+                    } else {
+                        (StatusCode::OK, axum::Json(serde_json::json!({"data": [], "has_more": false, "latest_cursor": "500"})))
+                    }
+                }
+            }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = ManagedClient::new(
+                format!("http://{address}"),
+                ManagedApiKey::parse(key()).unwrap(),
+            )
+            .unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                client.history("agent-1", Some("500"), 256),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.is_ok(), expected_attempts == 3);
+            assert_eq!(attempts.load(Ordering::SeqCst), expected_attempts);
+            server.abort();
+        }
     }
 
     #[tokio::test]
