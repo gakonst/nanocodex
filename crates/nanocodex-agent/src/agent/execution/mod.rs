@@ -181,6 +181,18 @@ pub trait ExecutionPolicy: Send + Sync {
         })
     }
 
+    /// Reads the original input of an existing step before reconstructing its request.
+    /// Stateless policies have no retained input. Beginning the step still authorizes
+    /// execution and validates its definition before any external effect runs.
+    fn retained_step_input<'a>(
+        &'a self,
+        _operation_id: String,
+        _step_id: String,
+        _kind: String,
+    ) -> ExecutionFuture<'a, Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Begins or replays one typed external effect.
     fn begin_step<'a>(
         &'a self,
@@ -311,6 +323,18 @@ pub trait ExecutionPolicy: Send + Sync {
             })
         })
     }
+    /// Reads the original input of an existing step before reconstructing its request.
+    /// Stateless policies have no retained input. Beginning the step still authorizes
+    /// execution and validates its definition before any external effect runs.
+    fn retained_step_input<'a>(
+        &'a self,
+        _operation_id: String,
+        _step_id: String,
+        _kind: String,
+    ) -> ExecutionFuture<'a, Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Begins or replays one external effect.
     fn begin_step<'a>(
         &'a self,
@@ -719,6 +743,22 @@ pub(crate) enum ExecutionStep<O> {
 }
 
 impl ExecutionSteps {
+    pub(crate) async fn retained_input(
+        &self,
+        step_id: &str,
+        kind: &str,
+    ) -> Result<Option<Box<serde_json::value::RawValue>>> {
+        self.policy
+            .retained_step_input(
+                self.operation_id.clone(),
+                step_id.to_owned(),
+                kind.to_owned(),
+            )
+            .await?
+            .map(|input| decode(&input))
+            .transpose()
+    }
+
     pub(crate) async fn bind_steer(&self, steer_index: u32, model_call_index: u32) -> Result<()> {
         self.policy
             .bind_steer(self.operation_id.clone(), steer_index, model_call_index)

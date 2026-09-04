@@ -139,9 +139,12 @@ Each external effect follows an intent/effect/settlement boundary. A start
 commits `effect_pending`; settlement atomically replaces it with `completed`
 and the exact output. A crash before settlement executes the effect again with
 the same stable identity and input. A crash after settlement replays the output
-without invoking the effect again. There is no per-effect retry policy or
-uncertainty state. Operation terminals atomically carry their checkpoint and
-replay receipt.
+without invoking the effect again. Agent model calls, warmups, and compactions
+reconstruct their requests from that retained input, so changed instructions,
+tool catalogs, or environment context cannot redefine an interrupted call.
+New calls use the current runtime; live tool authorization and owner fencing
+still apply. There is no per-effect retry policy or uncertainty state. Operation
+terminals atomically carry their checkpoint and replay receipt.
 
 Unlike a store that stages an output separately from source-ordered transcript
 placement, this store owns one opaque total state. A second materialization

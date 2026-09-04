@@ -7,6 +7,9 @@ pub(super) struct WarmupExecution {
     pub(super) connection_generation: u32,
     pub(super) usage: Option<Usage>,
     pub(super) server_reasoning_included: bool,
+    // A persisted response ID cannot continue on a replacement transport.
+    #[serde(skip)]
+    transport_continuation_valid: bool,
 }
 
 #[derive(Serialize)]
@@ -195,7 +198,9 @@ where
                         .add(usage, self.model, self.fast_mode);
                 }
                 (
-                    Some(execution.response_id),
+                    execution
+                        .transport_continuation_valid
+                        .then_some(execution.response_id),
                     "response",
                     Some(execution.attempt),
                     Some(execution.connection_generation),
@@ -236,26 +241,56 @@ where
         factory: &ResponsesAttemptFactory,
         span: &tracing::Span,
     ) -> Result<WarmupExecution> {
-        let mut recorded_request_prefix = factory.profile().prefix().to_vec();
-        for item in &mut recorded_request_prefix {
-            item.strip_id();
-        }
-        let recorded = RecordedWarmupCall {
-            model: self.model.as_str(),
-            model_id_prefix: self.config.model_id_prefix.as_deref(),
-            reasoning_mode: self.config.reasoning_mode.as_str(),
-            effort: self.thinking.as_str(),
-            fast_mode: self.fast_mode,
-            store_responses: self.config.store_responses,
-            transport: self.config.responses_transport.as_str(),
-            websocket_url: &self.config.websocket_url,
-            api_base_url: &self.config.api_base_url,
-            prompt_cache_key: factory.profile().prompt_cache_key(),
-            request_prefix: &recorded_request_prefix,
+        let retained_input = if let Some(steps) = &self.execution_steps {
+            steps.retained_input("warmup", "warmup").await?
+        } else {
+            None
         };
+        let retained_request = retained_input
+            .as_deref()
+            .map(RetainedModelRequest::decode)
+            .transpose()?;
+        let retained_factory = retained_request
+            .as_ref()
+            .map(|request| request.factory(factory));
+        let factory = retained_factory.as_ref().unwrap_or(factory);
+        let model = retained_request
+            .as_ref()
+            .map_or(self.model, |request| request.model);
+        let thinking = retained_request
+            .as_ref()
+            .map_or(self.thinking, |request| request.effort);
+        let fast_mode = retained_request
+            .as_ref()
+            .map_or(self.fast_mode, |request| request.fast_mode);
         if let Some(steps) = &self.execution_steps {
+            let input = match retained_input {
+                Some(input) => input,
+                None => {
+                    let mut recorded_request_prefix = factory.profile().prefix().to_vec();
+                    for item in &mut recorded_request_prefix {
+                        item.strip_id();
+                    }
+                    let recorded = RecordedWarmupCall {
+                        model: self.model.as_str(),
+                        model_id_prefix: self.config.model_id_prefix.as_deref(),
+                        reasoning_mode: self.config.reasoning_mode.as_str(),
+                        effort: self.thinking.as_str(),
+                        fast_mode: self.fast_mode,
+                        store_responses: self.config.store_responses,
+                        transport: self.config.responses_transport.as_str(),
+                        websocket_url: &self.config.websocket_url,
+                        api_base_url: &self.config.api_base_url,
+                        prompt_cache_key: factory.profile().prompt_cache_key(),
+                        request_prefix: &recorded_request_prefix,
+                    };
+                    serde_json::value::to_raw_value(&recorded).map_err(|error| {
+                        NanocodexError::InvalidExecutionPolicy(error.to_string())
+                    })?
+                }
+            };
             match steps
-                .begin::<_, WarmupExecution>("warmup", "warmup", &recorded)
+                .begin::<_, WarmupExecution>("warmup", "warmup", &input)
                 .await?
             {
                 crate::agent::ExecutionStep::Replay(output) => return Ok(output),
@@ -264,7 +299,7 @@ where
         }
         let success = self
             .client
-            .execute(factory.warmup(self.model, self.thinking, self.fast_mode))
+            .execute(factory.warmup(model, thinking, fast_mode))
             .instrument(span.clone())
             .await
             .map_err(|error| NanocodexError::Response(error.into()))?;
@@ -284,6 +319,7 @@ where
             connection_generation,
             usage: response.usage,
             server_reasoning_included,
+            transport_continuation_valid: retained_request.is_none(),
         };
         if let Some(steps) = &self.execution_steps {
             steps.complete("warmup", &output).await?;
@@ -320,13 +356,49 @@ where
         auto_compact_token_limit: u64,
         factory: &ResponsesAttemptFactory,
     ) -> Result<(ResponseItem, Option<Usage>, bool)> {
+        let step_id = format!("compaction-{after_model_call_index}");
+        let retained_input = if let Some(steps) = &self.execution_steps {
+            steps.retained_input(&step_id, "compaction").await?
+        } else {
+            None
+        };
+        let retained_request = retained_input
+            .as_deref()
+            .map(RetainedModelRequest::decode)
+            .transpose()?;
+        let retained_factory = retained_request
+            .as_ref()
+            .map(|request| request.factory(factory));
+        let factory = retained_factory.as_ref().unwrap_or(factory);
+        let model = retained_request
+            .as_ref()
+            .map_or(self.model, |request| request.model);
+        let thinking = retained_request
+            .as_ref()
+            .map_or(self.thinking, |request| request.effort);
+        let fast_mode = retained_request
+            .as_ref()
+            .map_or(self.fast_mode, |request| request.fast_mode);
+        let previous_response_id = previous_response_id.filter(|_| retained_request.is_none());
+        let incremental_start = if retained_request.is_some() {
+            0
+        } else {
+            incremental_start
+        };
         let trigger = compaction::trigger();
-        let mut history = history;
-        compaction::trim_tool_outputs_to_fit_context_window(
-            &mut history,
-            factory.profile().prefix(),
-            self.config.context_window_tokens,
-        );
+        let mut history = match &retained_request {
+            Some(request) => {
+                nanocodex_oai_api::responses::ResponseHistory::new(request.prompt_history.clone())
+            }
+            None => history,
+        };
+        if retained_request.is_none() {
+            compaction::trim_tool_outputs_to_fit_context_window(
+                &mut history,
+                factory.profile().prefix(),
+                self.config.context_window_tokens,
+            );
+        }
         let started_at = Instant::now();
         self.stats.compactions += 1;
         self.events.emit(
@@ -345,9 +417,9 @@ where
             incremental_start,
             previous_response_id,
             trigger,
-            self.model,
-            self.thinking,
-            self.fast_mode,
+            model,
+            thinking,
+            fast_mode,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = compaction_span(after_model_call_index, input_item_count, input_bytes);
@@ -355,33 +427,40 @@ where
             record_span_content(&span, "model.input", input_content);
         }
         let execution_steps = self.execution_steps.clone();
-        let step_id = format!("compaction-{after_model_call_index}");
-        let mut recorded_prompt_history = history.iter().cloned().collect::<Vec<_>>();
-        for item in &mut recorded_prompt_history {
-            item.strip_id();
-        }
-        let mut recorded_request_prefix = factory.profile().prefix().to_vec();
-        for item in &mut recorded_request_prefix {
-            item.strip_id();
-        }
-        let step_input = RecordedCompactionCall {
-            after_model_call_index,
-            model: self.model.as_str(),
-            model_id_prefix: self.config.model_id_prefix.as_deref(),
-            reasoning_mode: self.config.reasoning_mode.as_str(),
-            effort: self.thinking.as_str(),
-            fast_mode: self.fast_mode,
-            store_responses: self.config.store_responses,
-            transport: self.config.responses_transport.as_str(),
-            websocket_url: &self.config.websocket_url,
-            api_base_url: &self.config.api_base_url,
-            prompt_cache_key: factory.profile().prompt_cache_key(),
-            request_prefix: &recorded_request_prefix,
-            prompt_history: &recorded_prompt_history,
-        };
         let recovered = if let Some(steps) = &execution_steps {
+            let input = match retained_input {
+                Some(input) => input,
+                None => {
+                    let mut recorded_prompt_history = history.iter().cloned().collect::<Vec<_>>();
+                    for item in &mut recorded_prompt_history {
+                        item.strip_id();
+                    }
+                    let mut recorded_request_prefix = factory.profile().prefix().to_vec();
+                    for item in &mut recorded_request_prefix {
+                        item.strip_id();
+                    }
+                    let step_input = RecordedCompactionCall {
+                        after_model_call_index,
+                        model: model.as_str(),
+                        model_id_prefix: self.config.model_id_prefix.as_deref(),
+                        reasoning_mode: self.config.reasoning_mode.as_str(),
+                        effort: thinking.as_str(),
+                        fast_mode,
+                        store_responses: self.config.store_responses,
+                        transport: self.config.responses_transport.as_str(),
+                        websocket_url: &self.config.websocket_url,
+                        api_base_url: &self.config.api_base_url,
+                        prompt_cache_key: factory.profile().prompt_cache_key(),
+                        request_prefix: &recorded_request_prefix,
+                        prompt_history: &recorded_prompt_history,
+                    };
+                    serde_json::value::to_raw_value(&step_input).map_err(|error| {
+                        NanocodexError::InvalidExecutionPolicy(error.to_string())
+                    })?
+                }
+            };
             match steps
-                .begin::<_, RecordedCompactionResult>(&step_id, "compaction", &step_input)
+                .begin::<_, RecordedCompactionResult>(&step_id, "compaction", &input)
                 .await?
             {
                 crate::agent::ExecutionStep::Execute => None,
@@ -459,8 +538,8 @@ where
         self.stats.model_duration_ns += duration_ns;
         self.stats.compaction_duration_ns += duration_ns;
         if let Some(usage) = &usage {
-            record_usage(&span, usage, self.model, self.fast_mode);
-            self.stats.usage.add(usage, self.model, self.fast_mode);
+            record_usage(&span, usage, model, self.fast_mode);
+            self.stats.usage.add(usage, model, self.fast_mode);
         }
         self.stats.last_response_id = Some(response_id.clone());
         self.events.emit(

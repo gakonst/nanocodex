@@ -196,6 +196,13 @@ enum Command {
         model_call_index: u32,
         result: oneshot::Sender<Result<()>>,
     },
+    RetainedStepInput {
+        caller: Caller,
+        operation_id: String,
+        step_id: String,
+        kind: String,
+        result: oneshot::Sender<Result<Option<EncodedPayload>>>,
+    },
     BeginStep {
         caller: Caller,
         operation_id: String,
@@ -461,6 +468,30 @@ impl Driver {
                         }
                         Err(error) => Err(error),
                     };
+                    drop(result.send(outcome));
+                }
+                Command::RetainedStepInput {
+                    caller,
+                    operation_id,
+                    step_id,
+                    kind,
+                    result,
+                } => {
+                    let outcome = self.authorize(&caller).and_then(|()| {
+                        self.require_claimed(&caller, &operation_id)?;
+                        self.require_running(&operation_id)?;
+                        self.state.operation(&operation_id)
+                            .and_then(|operation| operation.steps.get(&step_id))
+                            .map(|step| {
+                                if step.kind != kind {
+                                    return Err(Error::InvalidState(format!(
+                                        "step `{step_id}` in operation `{operation_id}` changed kind"
+                                    )));
+                                }
+                                Ok(step.input.clone())
+                            })
+                            .transpose()
+                    });
                     drop(result.send(outcome));
                 }
                 Command::BeginStep {
@@ -1827,6 +1858,24 @@ impl DurableOwner {
             operation_id,
             steer_index,
             model_call_index,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn retained_step_input(
+        &self,
+        operation_id: String,
+        step_id: String,
+        kind: String,
+    ) -> Result<Option<EncodedPayload>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::RetainedStepInput {
+            caller: self.caller()?,
+            operation_id,
+            step_id,
+            kind,
             result,
         })
         .await?;

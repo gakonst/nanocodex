@@ -707,7 +707,11 @@ where
             let ModelCallOutcome {
                 response,
                 transport_continuation_valid,
+                retained_context,
             } = model_call;
+            if let Some(context) = retained_context {
+                session.context.establish(context);
+            }
             session
                 .conversation
                 .update_token_info(response.usage.as_ref());

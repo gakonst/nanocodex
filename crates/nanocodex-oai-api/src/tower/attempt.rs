@@ -529,6 +529,30 @@ impl ResponsesAttemptFactory {
         &self.profile
     }
 
+    /// Reconstructs retained request content on the current event and transport owner.
+    #[doc(hidden)]
+    pub fn with_request_content(
+        &self,
+        prompt_cache_key: String,
+        prefix: Arc<[ResponseItem]>,
+        model_id_prefix: Option<String>,
+        reasoning_mode: crate::ReasoningMode,
+        store_responses: bool,
+    ) -> Self {
+        Self {
+            profile: Arc::new((*self.profile).clone().with_request_content(
+                prompt_cache_key,
+                prefix,
+                model_id_prefix,
+                reasoning_mode,
+                store_responses,
+            )),
+            observer: self.observer.clone(),
+            logical_turn: self.logical_turn,
+            session_transport: Arc::clone(&self.session_transport),
+        }
+    }
+
     /// Builds a WebSocket warmup attempt.
     #[must_use]
     pub fn warmup(&self, model: Model, thinking: Thinking, fast_mode: bool) -> ResponsesAttempt {

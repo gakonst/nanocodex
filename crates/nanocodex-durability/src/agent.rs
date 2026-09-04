@@ -291,6 +291,22 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn retained_step_input<'a>(
+        &'a self,
+        operation_id: String,
+        step_id: String,
+        kind: String,
+    ) -> ExecutionFuture<'a, AgentResult<Option<String>>> {
+        Box::pin(async move {
+            self.owner()
+                .await?
+                .retained_step_input(operation_id, step_id, kind)
+                .await
+                .map(|input| input.map(|input| input.json().to_owned()))
+                .map_err(agent_error)
+        })
+    }
+
     fn begin_step<'a>(
         &'a self,
         operation_id: String,

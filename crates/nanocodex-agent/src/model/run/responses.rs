@@ -17,6 +17,54 @@ struct RecordedModelCall<'a> {
     prompt_history: &'a [ResponseItem],
 }
 
+// The persisted request is the source of truth during recovery. Environment
+// context, instructions, and tool catalogs can change while a turn is asleep.
+// Keep the original JSON for begin_step's definition check, including fields
+// written by older versions, instead of reserializing a reconstructed request.
+#[derive(Deserialize)]
+pub(super) struct RetainedModelRequest {
+    #[serde(deserialize_with = "parse_request_setting")]
+    pub(super) model: Model,
+    model_id_prefix: Option<String>,
+    #[serde(deserialize_with = "parse_request_setting")]
+    pub(super) reasoning_mode: nanocodex_oai_api::ReasoningMode,
+    store_responses: bool,
+    pub(super) effort: Thinking,
+    pub(super) fast_mode: bool,
+    prompt_cache_key: String,
+    request_prefix: Vec<ResponseItem>,
+    #[serde(default)]
+    pub(super) prompt_history: Vec<ResponseItem>,
+}
+
+fn parse_request_setting<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    String::deserialize(deserializer)?
+        .parse()
+        .map_err(serde::de::Error::custom)
+}
+
+impl RetainedModelRequest {
+    pub(super) fn decode(input: &RawValue) -> Result<Self> {
+        serde_json::from_str(input.get())
+            .map_err(|error| NanocodexError::InvalidExecutionPolicy(error.to_string()))
+    }
+
+    pub(super) fn factory(&self, factory: &ResponsesAttemptFactory) -> ResponsesAttemptFactory {
+        factory.with_request_content(
+            self.prompt_cache_key.clone(),
+            self.request_prefix.clone().into(),
+            self.model_id_prefix.clone(),
+            self.reasoning_mode,
+            self.store_responses,
+        )
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct RecordedModelResult {
     response: TurnResult,
@@ -29,6 +77,7 @@ struct RecordedModelResult {
 pub(super) struct ModelCallOutcome {
     pub(super) response: TurnResult,
     pub(super) transport_continuation_valid: bool,
+    pub(super) retained_context: Option<ContextSnapshot>,
 }
 
 impl<S> ModelRun<S>
@@ -43,6 +92,40 @@ where
         conversation: &mut ConversationState,
         factory: &ResponsesAttemptFactory,
     ) -> Result<ModelCallOutcome> {
+        let step_id = format!("model-{call_index}");
+        let retained_input = if let Some(steps) = &self.execution_steps {
+            steps.retained_input(&step_id, "model_call").await?
+        } else {
+            None
+        };
+        let retained_request = retained_input
+            .as_deref()
+            .map(RetainedModelRequest::decode)
+            .transpose()?;
+        let retained_factory = retained_request
+            .as_ref()
+            .map(|request| request.factory(factory));
+        let factory = retained_factory.as_ref().unwrap_or(factory);
+        let model = retained_request
+            .as_ref()
+            .map_or(self.model, |request| request.model);
+        let thinking = retained_request
+            .as_ref()
+            .map_or(self.thinking, |request| request.effort);
+        let reasoning_mode = retained_request
+            .as_ref()
+            .map_or(self.config.reasoning_mode, |request| request.reasoning_mode);
+        let fast_mode = retained_request
+            .as_ref()
+            .map_or(self.fast_mode, |request| request.fast_mode);
+        if let Some(request) = &retained_request {
+            let history =
+                nanocodex_oai_api::responses::ResponseHistory::new(request.prompt_history.clone());
+            let context = ContextSnapshot::reconstruct(&request.prompt_history);
+            conversation.set_canonical_context(context.full_item());
+            conversation.adopt_prompt_history(history);
+            conversation.reset_for_full_request();
+        }
         let (prompt_history, prompt_repaired) = conversation.prompt_history_with_repair();
         let previous_response_id = if prompt_repaired {
             None
@@ -55,9 +138,9 @@ where
             AgentEventKind::ModelCallStarted,
             ModelCallStarted {
                 call_index,
-                model: self.model.as_str(),
-                reasoning_mode: self.config.reasoning_mode.as_str(),
-                effort: self.thinking.as_str(),
+                model: model.as_str(),
+                reasoning_mode: reasoning_mode.as_str(),
+                effort: thinking.as_str(),
                 previous_response_id: previous_response_id.as_deref(),
             },
         )?;
@@ -67,16 +150,16 @@ where
             conversation.shared_history(),
             conversation.delta_start(),
             previous_response_id.as_deref(),
-            self.model,
-            self.thinking,
-            self.fast_mode,
+            model,
+            thinking,
+            fast_mode,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
             call_index,
-            self.model.as_str(),
-            self.config.reasoning_mode.as_str(),
-            self.thinking.as_str(),
+            model.as_str(),
+            reasoning_mode.as_str(),
+            thinking.as_str(),
             previous_response_id.is_some(),
             input_item_count,
             input_bytes,
@@ -85,33 +168,41 @@ where
             record_span_content(&span, "model.input", input_content);
         }
         let execution_steps = self.execution_steps.clone();
-        let step_id = format!("model-{call_index}");
-        let mut recorded_prompt_history = prompt_history.iter().cloned().collect::<Vec<_>>();
-        for item in &mut recorded_prompt_history {
-            item.strip_id();
-        }
-        let mut recorded_request_prefix = factory.profile().prefix().to_vec();
-        for item in &mut recorded_request_prefix {
-            item.strip_id();
-        }
-        let step_input = RecordedModelCall {
-            call_index,
-            model: self.model.as_str(),
-            model_id_prefix: self.config.model_id_prefix.as_deref(),
-            reasoning_mode: self.config.reasoning_mode.as_str(),
-            effort: self.thinking.as_str(),
-            fast_mode: self.fast_mode,
-            store_responses: self.config.store_responses,
-            transport: self.config.responses_transport.as_str(),
-            websocket_url: &self.config.websocket_url,
-            api_base_url: &self.config.api_base_url,
-            prompt_cache_key: factory.profile().prompt_cache_key(),
-            request_prefix: &recorded_request_prefix,
-            prompt_history: &recorded_prompt_history,
-        };
         let recovered = if let Some(steps) = &execution_steps {
+            let input = match retained_input {
+                Some(input) => input,
+                None => {
+                    let mut recorded_prompt_history =
+                        prompt_history.iter().cloned().collect::<Vec<_>>();
+                    for item in &mut recorded_prompt_history {
+                        item.strip_id();
+                    }
+                    let mut recorded_request_prefix = factory.profile().prefix().to_vec();
+                    for item in &mut recorded_request_prefix {
+                        item.strip_id();
+                    }
+                    let step_input = RecordedModelCall {
+                        call_index,
+                        model: model.as_str(),
+                        model_id_prefix: self.config.model_id_prefix.as_deref(),
+                        reasoning_mode: reasoning_mode.as_str(),
+                        effort: thinking.as_str(),
+                        fast_mode,
+                        store_responses: self.config.store_responses,
+                        transport: self.config.responses_transport.as_str(),
+                        websocket_url: &self.config.websocket_url,
+                        api_base_url: &self.config.api_base_url,
+                        prompt_cache_key: factory.profile().prompt_cache_key(),
+                        request_prefix: &recorded_request_prefix,
+                        prompt_history: &recorded_prompt_history,
+                    };
+                    serde_json::value::to_raw_value(&step_input).map_err(|error| {
+                        NanocodexError::InvalidExecutionPolicy(error.to_string())
+                    })?
+                }
+            };
             match steps
-                .begin::<_, RecordedModelResult>(&step_id, "model_call", &step_input)
+                .begin::<_, RecordedModelResult>(&step_id, "model_call", &input)
                 .await?
             {
                 crate::agent::ExecutionStep::Execute => None,
@@ -157,7 +248,7 @@ where
             if let Some(steps) = &execution_steps {
                 steps.complete(&step_id, &output).await?;
             }
-            (output, true)
+            (output, retained_request.is_none())
         };
         let RecordedModelResult {
             response,
@@ -176,18 +267,18 @@ where
         span.record("otel.status_code", "OK");
         span.record("duration_ns", duration_ns);
         if let Some(usage) = &response.usage {
-            record_usage(&span, usage, self.model, self.fast_mode);
+            record_usage(&span, usage, model, fast_mode);
         }
         self.stats.model_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
-            self.stats.usage.add(usage, self.model, self.fast_mode);
+            self.stats.usage.add(usage, model, fast_mode);
         }
         self.stats.last_response_id = transport_continuation_valid.then(|| response.id.clone());
         self.events.emit(
             AgentEventKind::ModelCallCompleted,
             ModelCallCompleted {
                 call_index,
-                model: self.model.as_str(),
+                model: model.as_str(),
                 response_id: &response.id,
                 attempt,
                 connection_generation,
@@ -202,6 +293,8 @@ where
         Ok(ModelCallOutcome {
             response,
             transport_continuation_valid,
+            retained_context: retained_request
+                .map(|request| ContextSnapshot::reconstruct(&request.prompt_history)),
         })
     }
 

@@ -348,6 +348,7 @@ struct DurableToolService {
 #[derive(Clone)]
 struct RemovedToolRecoveryService {
     generations: Arc<std::sync::atomic::AtomicUsize>,
+    requests: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 }
 
 #[derive(Clone)]
@@ -979,6 +980,20 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedToolR
             },
         };
 
+        if matches!(request.kind(), ResponsesAttemptKind::Generation) {
+            let items = request
+                .input_items()
+                .cloned()
+                .map(|mut item| {
+                    item.strip_id();
+                    item
+                })
+                .collect::<Vec<_>>();
+            self.requests
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(items).unwrap());
+        }
         let output = match request.kind() {
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(WarmupResponse {
                 id: "warmup".to_owned(),
@@ -1023,9 +1038,11 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedToolR
                         } if &**call_id == "call-recorded-hidden-tool" => Some(output.as_ref()),
                         _ => None,
                     });
-                    let recovered_output =
-                        recovered_output.expect("recovery must replay the completed tool result");
-                    assert!(recovered_output.contains("durably recorded"));
+                    if request.model_call_index() != Some(1) {
+                        let recovered_output = recovered_output
+                            .expect("recovery must replay the completed tool result");
+                        assert!(recovered_output.contains("durably recorded"));
+                    }
                     ResponsesOutput::Generation(GenerationOutput {
                         id: "recovered-response".to_owned(),
                         status: "completed".to_owned(),
@@ -2174,6 +2191,7 @@ async fn cold_reopen_resubmits_a_pending_standalone_compaction() -> Result<()> {
     let state = DurableSession::open(store.clone(), state_id).await?;
     let (agent, events) = Nanocodex::builder(openai()?)
         .workspace(&workspace)
+        .instructions("original compaction instructions")
         .durability(state)
         .await?
         .build()?;
@@ -2220,6 +2238,7 @@ async fn cold_reopen_resubmits_a_pending_standalone_compaction() -> Result<()> {
 
     let (resumed, resumed_events) = Nanocodex::builder(openai()?)
         .workspace(&workspace)
+        .instructions("updated compaction instructions")
         .durability(reopened)
         .await?
         .build()?;
@@ -3076,6 +3095,77 @@ async fn abandoned_routed_terminal_replay_emits_no_terminal_event() -> Result<()
 }
 
 #[tokio::test]
+async fn follow_on_turn_replays_after_cold_reopen() -> Result<()> {
+    let store = MemoryStore::new()?;
+    let failing_store = FailEntryOnce {
+        inner: store.clone(),
+        entry_tag: "\"operation_completed\"",
+        operation_id: "second-turn",
+        failed: Arc::new(AtomicBool::new(false)),
+    };
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let openai = || {
+        let generations = Arc::clone(&generations);
+        OpenAi::builder("test-key")
+            .service(move || DurableReplayService {
+                generations: Arc::clone(&generations),
+            })
+            .build()
+    };
+    let workspace = temporary_workspace("durable-follow-on-replay")?;
+    let state = DurableSession::open(failing_store, "follow-on-replay").await?;
+    let (agent, events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .execution_environment(nanocodex_agent::ExecutionEnvironment::new(
+            "2026-09-03",
+            "Etc/UTC",
+        ))
+        .durability(state)
+        .await?
+        .build()?;
+    agent
+        .prompt(PromptRequest::new("first").request_id("first-turn"))
+        .await?
+        .result()
+        .await?;
+    let error = agent
+        .prompt(PromptRequest::new("second").request_id("second-turn"))
+        .await?
+        .result()
+        .await
+        .expect_err("second turn settlement must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("injected state replacement failure")
+    );
+    agent.shutdown().await?;
+    drop((agent, events));
+
+    let state = DurableSession::open(store, "follow-on-replay").await?;
+    let (agent, events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .execution_environment(nanocodex_agent::ExecutionEnvironment::new(
+            "2026-09-04",
+            "Etc/UTC",
+        ))
+        .durability(state)
+        .await?
+        .build()?;
+    let result = agent
+        .prompt(PromptRequest::new("second").request_id("second-turn"))
+        .await?
+        .result()
+        .await?;
+    assert_eq!(result.final_message(), "durably replayed");
+    assert_eq!(generations.load(Ordering::SeqCst), 2);
+    agent.shutdown().await?;
+    drop((agent, events));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn portable_state_replays_a_completed_model_step_after_terminal_commit_failure() -> Result<()>
 {
     let store = crate::MemoryStore::new()?;
@@ -3314,6 +3404,7 @@ async fn completed_tool_output_replays_after_tool_is_removed() -> Result<()> {
         OpenAi::builder("test-key")
             .service(move || RemovedToolRecoveryService {
                 generations: Arc::clone(&generations),
+                requests: Arc::default(),
             })
             .build()
     };
@@ -3392,71 +3483,128 @@ async fn completed_tool_output_replays_after_tool_is_removed() -> Result<()> {
 }
 
 #[tokio::test]
-async fn changed_model_tool_profile_still_blocks_recovery() -> Result<()> {
-    let store = crate::MemoryStore::new()?;
-    let failing_store = FailReplaceOnce {
-        inner: store.clone(),
-        expected_revision: 7,
-        failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    };
-    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let tool_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let openai = || {
-        let generations = Arc::clone(&generations);
-        OpenAi::builder("test-key")
-            .service(move || RemovedToolRecoveryService {
-                generations: Arc::clone(&generations),
+async fn model_recovery_uses_recorded_requests_across_runtime_changes() -> Result<()> {
+    for (warmup, pending) in [(false, false), (false, true), (true, false), (true, true)] {
+        let expected_revision = 5 + u64::from(warmup) * 2 + u64::from(pending);
+        let store = crate::MemoryStore::new()?;
+        let failing_store = FailReplaceOnce {
+            inner: store.clone(),
+            expected_revision,
+            failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let openai = || {
+            let requests = Arc::clone(&requests);
+            let generations = Arc::clone(&generations);
+            OpenAi::builder("test-key")
+                .websocket_warmup(warmup)
+                .service(move || RemovedToolRecoveryService {
+                    generations: Arc::clone(&generations),
+                    requests: Arc::clone(&requests),
+                })
+                .build()
+        };
+        let workspace = temporary_workspace("durability-changed-tool-profile")?;
+        let first_tools = Tools::builder()
+            .without_defaults()
+            .tool(RecordedHiddenTool {
+                calls: Arc::clone(&tool_calls),
             })
-            .build()
-    };
-    let workspace = temporary_workspace("durability-changed-tool-profile")?;
-    let first_tools = Tools::builder()
-        .without_defaults()
-        .tool(RecordedHiddenTool {
-            calls: Arc::clone(&tool_calls),
-        })
-        .build()?;
-    let state = crate::DurableSession::open(failing_store, "changed-tool-profile").await?;
-    let builder = Nanocodex::builder(openai()?)
-        .workspace(&workspace)
-        .session_id(test_session_id())
-        .tools(first_tools)
-        .durability(state)
-        .await?;
-    let (agent, events) = builder.build()?;
+            .build()?;
+        let state = crate::DurableSession::open(failing_store, "changed-tool-profile").await?;
+        let builder = Nanocodex::builder(openai()?)
+            .workspace(&workspace)
+            .session_id(test_session_id())
+            .tools(first_tools)
+            .instructions("original system instructions")
+            .execution_environment(nanocodex_agent::ExecutionEnvironment::new(
+                "2026-09-03",
+                "Etc/UTC",
+            ))
+            .durability(state.clone())
+            .await?;
+        let (agent, events) = builder.build()?;
 
-    let first = agent
-        .prompt(PromptRequest::new("call the recorded tool once").request_id("turn-1"))
-        .await?
-        .result()
-        .await
-        .expect_err("the injected crash boundary must stop before the next model call");
-    assert!(first.to_string().contains("injected replacement failure"));
-    agent.shutdown().await?;
-    drop((agent, events));
+        let first = agent
+            .prompt(PromptRequest::new("call the recorded tool once").request_id("turn-1"))
+            .await?
+            .result()
+            .await
+            .expect_err("the injected crash boundary must stop before the next model call");
+        assert!(first.to_string().contains("injected replacement failure"));
+        let retained = state.state().await?;
+        let recorded_input = retained
+            .operation("turn-1")
+            .unwrap()
+            .steps
+            .get("model-2")
+            .map(|step| step.input.decode::<serde_json::Value>())
+            .transpose()?;
+        agent.shutdown().await?;
+        drop((agent, events));
 
-    let state = crate::DurableSession::open(store, "changed-tool-profile").await?;
-    let recovered_tools = Tools::builder().without_defaults().build()?;
-    let builder = Nanocodex::builder(openai()?)
-        .workspace(&workspace)
-        .session_id(test_session_id())
-        .tools(recovered_tools)
-        .durability(state)
-        .await?;
-    let (recovered, recovered_events) = builder.build()?;
-    let error = recovered
-        .prompt(PromptRequest::new("call the recorded tool once").request_id("turn-1"))
-        .await?
-        .result()
-        .await
-        .expect_err("a changed model-visible tool profile must block recovery");
-    assert!(error.to_string().contains("changed definition"));
-    assert_eq!(tool_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert_eq!(generations.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let state = crate::DurableSession::open(store, "changed-tool-profile").await?;
+        let recovered_tools = Tools::builder().without_defaults().build()?;
+        let builder = Nanocodex::builder(openai()?)
+            .workspace(&workspace)
+            .session_id(test_session_id())
+            .tools(recovered_tools)
+            .instructions("updated system instructions")
+            .execution_environment(nanocodex_agent::ExecutionEnvironment::new(
+                "2026-09-04",
+                "Europe/Athens",
+            ))
+            .durability(state)
+            .await?;
+        let (recovered, recovered_events) = builder.build()?;
+        let result = recovered
+            .prompt(PromptRequest::new("call the recorded tool once").request_id("turn-1"))
+            .await?
+            .result()
+            .await?;
+        assert_eq!(
+            result.final_message(),
+            "recovered with the recorded tool output"
+        );
+        assert_eq!(
+            tool_calls.load(Ordering::SeqCst),
+            1,
+            "completed tools must not rerun"
+        );
+        assert_eq!(
+            generations.load(Ordering::SeqCst),
+            if pending { 3 } else { 2 }
+        );
+        if let Some(input) = recorded_input {
+            let mut expected = input["request_prefix"].as_array().unwrap().clone();
+            expected.extend(input["prompt_history"].as_array().unwrap().iter().cloned());
+            assert_eq!(
+                requests.lock().unwrap().last().unwrap(),
+                &json!(expected),
+                "an unfinished model call must resend its original instructions, tools, and history"
+            );
+        }
+        recovered
+            .prompt(PromptRequest::new("continue").request_id("turn-2"))
+            .await?
+            .result()
+            .await?;
+        let next = requests.lock().unwrap().last().unwrap().to_string();
+        let checkpoint = serde_json::to_value(result.snapshot().unwrap())?;
+        assert!(
+            checkpoint["request_prefix"]
+                .to_string()
+                .contains("updated system instructions")
+        );
+        assert!(next.contains("2026-09-04"));
+        assert!(next.contains("Europe/Athens"));
 
-    recovered.shutdown().await?;
-    drop((recovered, recovered_events));
-    std::fs::remove_dir_all(workspace)?;
+        recovered.shutdown().await?;
+        drop((recovered, recovered_events));
+        std::fs::remove_dir_all(workspace)?;
+    }
     Ok(())
 }
 

@@ -15,6 +15,14 @@ pub struct RequestProfile {
     prompt_cache_key: String,
     prefix: Arc<[ResponseItem]>,
     code_mode_tool_names: Arc<BTreeMap<String, CodeModeToolName>>,
+    retained_config: Option<RetainedRequestConfig>,
+}
+
+#[derive(Clone)]
+struct RetainedRequestConfig {
+    model_id_prefix: Option<String>,
+    reasoning_mode: crate::ReasoningMode,
+    store_responses: bool,
 }
 
 impl RequestProfile {
@@ -32,6 +40,7 @@ impl RequestProfile {
             prompt_cache_key: prompt_cache_key.into(),
             prefix,
             code_mode_tool_names: Arc::default(),
+            retained_config: None,
         }
     }
 
@@ -71,6 +80,24 @@ impl RequestProfile {
     #[must_use]
     pub fn shared_prefix(&self) -> Arc<[ResponseItem]> {
         Arc::clone(&self.prefix)
+    }
+
+    pub(crate) fn with_request_content(
+        mut self,
+        prompt_cache_key: String,
+        prefix: Arc<[ResponseItem]>,
+        model_id_prefix: Option<String>,
+        reasoning_mode: crate::ReasoningMode,
+        store_responses: bool,
+    ) -> Self {
+        self.prompt_cache_key = prompt_cache_key;
+        self.prefix = prefix;
+        self.retained_config = Some(RetainedRequestConfig {
+            model_id_prefix,
+            reasoning_mode,
+            store_responses,
+        });
+        self
     }
 
     pub(crate) fn with_code_mode_tool_names(
@@ -607,9 +634,23 @@ impl<'a> ResponseCreate<'a> {
         turn_state: Option<&'a str>,
     ) -> Self {
         let websocket = matches!(policy.transport, crate::ResponsesTransport::WebSocket);
+        let retained = profile.retained_config.as_ref();
+        let model = retained.map_or_else(
+            || config.wire_model_id(policy.model),
+            |retained| {
+                retained.model_id_prefix.as_ref().map_or_else(
+                    || Cow::Borrowed(policy.model.as_str()),
+                    |prefix| Cow::Owned(format!("{prefix}/{}", policy.model.as_str())),
+                )
+            },
+        );
+        let reasoning_mode =
+            retained.map_or(config.reasoning_mode, |retained| retained.reasoning_mode);
+        let store_responses =
+            retained.map_or(config.store_responses, |retained| retained.store_responses);
         Self {
             kind: websocket.then_some("response.create"),
-            model: config.wire_model_id(policy.model),
+            model,
             previous_response_id,
             input: RequestInput { input },
             tool_choice: "auto",
@@ -622,13 +663,13 @@ impl<'a> ResponseCreate<'a> {
                 // already serializes as absent; keep this model guard as a
                 // final wire-level invariant for custom service factories.
                 mode: (policy.model != crate::Model::Astra)
-                    .then(|| config.reasoning_mode.request_value())
+                    .then(|| reasoning_mode.request_value())
                     .flatten(),
                 effort: policy.thinking.as_str(),
                 summary: (policy.model != crate::Model::Astra).then_some("auto"),
                 context: "all_turns",
             },
-            store: config.store_responses,
+            store: store_responses,
             stream: true,
             include: ["reasoning.encrypted_content"],
             prompt_cache_key: profile.prompt_cache_key(),
@@ -939,6 +980,43 @@ mod tests {
         .expect("request should serialize");
 
         assert_eq!(request["model"], json!("openai/gpt-5.6-terra"));
+    }
+
+    #[test]
+    fn retained_requests_keep_provider_settings_on_a_new_transport() {
+        let config = ModelConfig {
+            model_id_prefix: Some(Arc::from("updated")),
+            responses_transport: crate::ResponsesTransport::Https,
+            ..ModelConfig::default()
+        };
+        let profile = RequestProfile::new("current-session", "current-cache", Arc::from([]))
+            .with_request_content(
+                "original-cache".to_owned(),
+                Arc::from([]),
+                Some("original".to_owned()),
+                ReasoningMode::Pro,
+                true,
+            );
+        let request = serde_json::to_value(ResponseCreate::warmup(
+            &config,
+            Model::Terra,
+            Thinking::Max,
+            true,
+            &profile,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(request["model"], "original/gpt-5.6-terra");
+        assert_eq!(request["reasoning"]["mode"], "pro");
+        assert_eq!(request["reasoning"]["effort"], "max");
+        assert_eq!(request["service_tier"], "priority");
+        assert_eq!(request["store"], true);
+        assert_eq!(request["prompt_cache_key"], "original-cache");
+        assert_eq!(request["client_metadata"]["session_id"], "current-session");
+        assert!(
+            request.get("type").is_none(),
+            "transport belongs to the current owner"
+        );
     }
 
     #[test]
