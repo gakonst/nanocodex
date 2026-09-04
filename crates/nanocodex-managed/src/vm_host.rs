@@ -745,6 +745,10 @@ impl VmHostConnection {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the private connector keeps endpoint and lease boundary fields explicit"
+)]
 async fn connect_vm_host(
     mut origin: Url,
     path: String,
