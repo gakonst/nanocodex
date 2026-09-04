@@ -3145,17 +3145,18 @@ mod supported {
 
             recovered.complete_startup_releases().await.unwrap();
 
-            let startup_events = events.lock().unwrap();
-            assert_eq!(startup_events.len(), 2);
-            assert!(startup_events.contains(&format!(
-                "release-recovered:{}",
-                safe.identity.allocation_id
-            )));
-            assert!(startup_events.contains(&format!(
-                "release-recovered:{}",
-                unsafe_allocation.identity.allocation_id
-            )));
-            drop(startup_events);
+            {
+                let startup_events = events.lock().unwrap();
+                assert_eq!(startup_events.len(), 2);
+                assert!(startup_events.contains(&format!(
+                    "release-recovered:{}",
+                    safe.identity.allocation_id
+                )));
+                assert!(startup_events.contains(&format!(
+                    "release-recovered:{}",
+                    unsafe_allocation.identity.allocation_id
+                )));
+            }
             assert_eq!(
                 recovered.release(&safe.identity).await.unwrap(),
                 VmAllocationChange::Unchanged
