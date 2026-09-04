@@ -962,7 +962,7 @@ async fn run_inner(
     let initial_settings = if matches!(attach, Some(Some(_))) {
         AgentSettings::default()
     } else {
-        account_default_settings(client).await
+        new_agent_settings()
     };
     let initial_effort = effort_from_thinking(initial_settings.thinking);
     let initial_reasoning_mode = reasoning_mode_from_managed(initial_settings.reasoning_mode);
@@ -1827,15 +1827,12 @@ async fn run_inner(
     }
 }
 
-async fn account_default_settings(client: &ManagedClient) -> AgentSettings {
-    match client.model_capabilities().await {
-        Ok(capabilities) if capabilities.astra_entitled => AgentSettings {
-            model: Model::Astra,
-            thinking: Thinking::High,
-            reasoning_mode: ManagedReasoningMode::Standard,
-            fast_mode: false,
-        },
-        Ok(_) | Err(_) => AgentSettings::default(),
+fn new_agent_settings() -> AgentSettings {
+    AgentSettings {
+        model: Model::Astra,
+        thinking: Thinking::High,
+        reasoning_mode: ManagedReasoningMode::Standard,
+        fast_mode: false,
     }
 }
 
@@ -2479,13 +2476,15 @@ mod tests {
         HistoryPrefetch, HistoryWindow, ManagedActiveTurns, SteerResolution, SteerTarget,
         cursor_at_or_before, decimal_successor, history_projection,
         history_projection_with_sequences, history_replay_matches, live_managed_projection,
-        prepare_history_replay, session_summaries, take_waiting_steer_failures,
+        new_agent_settings, prepare_history_replay, session_summaries, take_waiting_steer_failures,
     };
     use crate::config::ReasoningEffort;
     use crate::tui::{components::QueueId, pane::PaneId, prompt::Submission, transcript::TurnId};
+    use nanocodex::Model;
     use nanocodex_managed::{
         AgentList, AgentSettings, AgentSummary, EventHistoryPage, ManagedApiKey, ManagedClient,
-        ManagedEvent, ManagedEventData, PromptInput,
+        ManagedEvent, ManagedEventData, PromptInput, ReasoningMode as ManagedReasoningMode,
+        Thinking,
     };
     use serde_json::{json, value::to_raw_value};
     use std::{
@@ -2493,6 +2492,19 @@ mod tests {
         path::Path,
     };
     use tokio::task::JoinSet;
+
+    #[test]
+    fn new_agents_select_astra_without_an_entitlement_probe() {
+        assert_eq!(
+            new_agent_settings(),
+            AgentSettings {
+                model: Model::Astra,
+                thinking: Thinking::High,
+                reasoning_mode: ManagedReasoningMode::Standard,
+                fast_mode: false,
+            }
+        );
+    }
 
     fn history_runtime(history: HistoryWindow) -> DriverRuntime {
         let mut history_sequences = HashMap::new();
