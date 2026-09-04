@@ -16,6 +16,7 @@ import {
   hostPrincipalExchangeFromResources,
   mcpConnectionApprovalDisposition,
   mcpConnectionsFromWire,
+  mppConsentDetails,
   parseConnectPolicy,
   productionConnectApiOrigin,
   registeredApp,
@@ -77,6 +78,7 @@ test("canonical Nanocodex localhost dialogs use the portable server ceremony", (
 });
 
 const playground = "https://nanocodex-connect-playground.gakonst.workers.dev";
+const astraDemo = "https://nanocodex-astra-mpp-trial.gakonst.workers.dev";
 const chromeExtension = "chrome-extension://jpkimkgbgbpcaldbnhlhbkbadmpeffle";
 const productionDialog = "https://nanocodex.gakonst.workers.dev/connect-dialog/?mode=iframe";
 const cli = "https://cli.nanocodex.xyz";
@@ -221,6 +223,15 @@ test("production Connect policy pins the API and registered embedding app", () =
     name: "Atlas Workspace",
     origin: playground,
   });
+  assert.deepEqual(registeredApp(astraDemo, "astra-one-shot", productionDialog, false), {
+    id: "astra-one-shot",
+    name: "Astra One-Shot",
+    origin: astraDemo,
+  });
+  assert.throws(
+    () => registeredApp(astraDemo, "astra-one-shot-local", productionDialog, false),
+    /does not match/,
+  );
   assert.deepEqual(registeredApp(chromeExtension, "nanocodex-chrome", productionDialog, false), {
     id: "nanocodex-chrome",
     name: "Nanocodex for Chrome",
@@ -231,6 +242,26 @@ test("production Connect policy pins the API and registered embedding app", () =
     name: "Nanocodex CLI",
     origin: cli,
   });
+});
+
+test("Astra consent exposes its exact 50 MACH recipient-bound authority", () => {
+  const token = "0x20c000000000000000000000f37de3740adec032";
+  const recipient = "0x1234567890abcdef1234567890abcdef12345678";
+  assert.deepEqual(mppConsentDetails("astra-one-shot", token, 50_000_000n, [{
+    address: token,
+    selector: "0x95777d59",
+    recipients: [recipient],
+  }]), { maxPerRequest: 50_000_000n, recipient });
+  assert.deepEqual(mppConsentDetails("another-app", token, 10_000_000n, [{
+    address: token,
+    selector: "0x95777d59",
+    recipients: [recipient],
+  }]), { maxPerRequest: 250_000n, recipient });
+  assert.deepEqual(mppConsentDetails("astra-one-shot", token, 50_000_000n, [{
+    address: token,
+    selector: "0xa9059cbb",
+    recipients: [recipient],
+  }]), { maxPerRequest: 50_000_000n });
 });
 
 test("only top-level popup dialogs admit unknown secure app origins", () => {

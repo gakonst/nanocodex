@@ -210,6 +210,11 @@ const signedAppVisibility = Object.freeze([
 ] satisfies readonly Readonly<VisibilityPermission & { name: string }>[]);
 
 const productionApps = new Map<string, RegisteredApp>([
+  ["https://nanocodex-astra-mpp-trial.gakonst.workers.dev", Object.freeze({
+    id: "astra-one-shot",
+    name: "Astra One-Shot",
+    origin: "https://nanocodex-astra-mpp-trial.gakonst.workers.dev",
+  })],
   ["https://nanocodex-connect-playground.gakonst.workers.dev", Object.freeze({
     id: "atlas-workspace",
     name: "Atlas Workspace",
@@ -249,6 +254,28 @@ export function registeredApp(
     return Object.freeze({ id: appId, name: url.hostname, origin: embeddingOrigin });
   }
   throw new Error("This application is not registered with Nanocodex Connect.");
+}
+
+export function mppConsentDetails(
+  appId: string,
+  token: string,
+  limit: bigint,
+  scopes: readonly Readonly<{
+    address: string;
+    selector?: string | undefined;
+    recipients?: readonly string[] | undefined;
+  }>[],
+): Readonly<{ maxPerRequest: bigint; recipient?: `0x${string}` | undefined }> {
+  const recipients = [...new Set(scopes
+    .filter((scope) => scope.address.toLowerCase() === token.toLowerCase()
+      && scope.selector?.toLowerCase() === "0x95777d59")
+    .flatMap((scope) => scope.recipients ?? [])
+    .filter((recipient) => /^0x[0-9a-fA-F]{40}$/.test(recipient))
+    .map((recipient) => recipient.toLowerCase() as `0x${string}`))];
+  return Object.freeze({
+    maxPerRequest: appId === "astra-one-shot" ? limit : 250_000n,
+    ...(recipients.length === 1 ? { recipient: recipients[0] } : {}),
+  });
 }
 
 export function isPopupPresentation(dialogUrl: string, isTopLevel: boolean): boolean {

@@ -266,20 +266,23 @@ jobs:
           name: nanocodex-web-wasm
           path: js/nanocodex/pkg-web
       - name: Install JavaScript workspace
-        run: pnpm install --frozen-lockfile
+        run: |
+          pnpm install --frozen-lockfile
+          npm ci --prefix examples/astra-mpp-trial
       - name: Build account Worker dependencies
         run: pnpm exec turbo run build --filter nanocodex-connect-protocol
       - name: Test the account Worker
         run: pnpm --filter nanocodex-web run test:web
       - name: Build JavaScript apps
-        run: >-
-          pnpm exec turbo run build --only
-          --filter nanocodex-tools
-          --filter nanocodex-connect-ui
-          --filter nanocodex-terminal
-          --filter @nanocodex/connect-dialog
-          --filter @nanocodex/connect-playground
-          --filter nanocodex-web
+        run: |
+          pnpm exec turbo run build --only \
+            --filter nanocodex-tools \
+            --filter nanocodex-connect-ui \
+            --filter nanocodex-terminal \
+            --filter @nanocodex/connect-dialog \
+            --filter @nanocodex/connect-playground \
+            --filter nanocodex-web
+          npm run check --prefix examples/astra-mpp-trial
   codeql:
     name: CodeQL actions
     runs-on: ubuntu-latest

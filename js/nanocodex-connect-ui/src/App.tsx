@@ -59,6 +59,7 @@ import {
   isLocalDevelopmentOrigin,
   mcpConnectionApprovalDisposition,
   mcpConnectionsFromWire,
+  mppConsentDetails,
   parseConnectPolicy,
   registeredApp,
   restoreMcpCallbackContinuation,
@@ -1774,7 +1775,7 @@ function WizardRequestSummary({ appVisibility, request }: Readonly<{
             <span>✓</span>
             <div>
               <strong>MACH spend</strong>
-              <small>{formatToken(request.mpp.maxPerRequest, request.mpp.symbol)} per request · {formatToken(request.mpp.limit, request.mpp.symbol)} per day</small>
+              <small>{formatToken(request.mpp.maxPerRequest, request.mpp.symbol)} per request · {formatToken(request.mpp.limit, request.mpp.symbol)} per day{request.mpp.recipient ? ` · to ${shortAddress(request.mpp.recipient)}` : ""}</small>
             </div>
           </div>
         ) : null}
@@ -1784,6 +1785,7 @@ function WizardRequestSummary({ appVisibility, request }: Readonly<{
         <dl className="key-details">
           <Detail label="App" value={request.app.origin} />
           {request.mpp ? <Detail label="Spend" value={`${formatToken(request.mpp.maxPerRequest, request.mpp.symbol)} / request · ${formatToken(request.mpp.limit, request.mpp.symbol)} / day`} /> : null}
+          {request.mpp?.recipient ? <Detail label="Recipient" value={request.mpp.recipient} /> : null}
           {hostedAuthorization ? (
             <Detail label="Key" value="None — no spending or contract authority" />
           ) : request.accessKey ? (
@@ -2203,6 +2205,7 @@ function walletView(request: WalletRequest): ConnectionView {
     limit: 10_000_000n,
     period: 86_400,
   };
+  const mppConsent = mppConsentDetails(app.id, primary.token, primary.limit, scopes);
   const preparedAccessKey = typeof access.address === "string" && typeof access.publicKey === "string"
     ? {
         address: hex(access.address),
@@ -2242,7 +2245,7 @@ function walletView(request: WalletRequest): ConnectionView {
         symbol: "MACH",
         limit: primary.limit,
         period: primary.period ?? 86_400,
-        maxPerRequest: 250_000n,
+        ...mppConsent,
       },
     } : {}),
   };
