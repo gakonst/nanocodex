@@ -177,7 +177,7 @@ pub enum TaskLoadError {
     },
 
     /// The manifest declares an unsupported schema revision.
-    #[error("unsupported task schema version {found:?}; expected \"1.1\" or \"1.3\"")]
+    #[error("unsupported task schema version {found:?}; expected \"1.0\", \"1.1\", or \"1.3\"")]
     UnsupportedSchema {
         /// Unsupported revision read from the manifest.
         found: String,
@@ -255,11 +255,29 @@ impl Task {
             path: config_path.clone(),
             source,
         })?;
-        if !matches!(raw.schema_version.as_str(), "1.1" | "1.3") {
+        let schema_version = match (&raw.schema_version, &raw.version) {
+            (Some(schema), None) | (None, Some(schema)) => schema.as_str(),
+            (Some(schema), Some(version)) if schema == version => schema.as_str(),
+            (Some(schema), Some(version)) => {
+                return Err(TaskLoadError::Invalid {
+                    path: config_path,
+                    message: format!(
+                        "schema_version {schema:?} conflicts with version {version:?}"
+                    ),
+                });
+            }
+            (None, None) => {
+                return Err(TaskLoadError::UnsupportedSchema {
+                    found: "<missing>".to_owned(),
+                });
+            }
+        };
+        if !matches!(schema_version, "1.0" | "1.1" | "1.3") {
             return Err(TaskLoadError::UnsupportedSchema {
-                found: raw.schema_version,
+                found: schema_version.to_owned(),
             });
         }
+        let legacy_schema = schema_version == "1.0";
 
         let instruction_path = root.join(TASK_INSTRUCTION);
         let prompt = strip_leading_canary(&read_package_file(&package, &root, TASK_INSTRUCTION)?);
@@ -304,15 +322,36 @@ impl Task {
         }
 
         let (network, verifier_network) = raw.network_policies(&config_path)?;
-        let name = required_string(&config_path, "task.name", raw.task.name)?;
-        if raw.task.benchmark_prompt_chars == Some(0) {
+        let task_info = match raw.task {
+            Some(task) => task,
+            None if legacy_schema => RawTaskInfo {
+                name: root
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .ok_or_else(|| TaskLoadError::Invalid {
+                        path: config_path.clone(),
+                        message: "version 1.0 task directory name must be valid UTF-8".to_owned(),
+                    })?
+                    .to_owned(),
+                description: String::new(),
+                benchmark_prompt_chars: None,
+                benchmark_case_type: None,
+            },
+            None => {
+                return Err(TaskLoadError::Invalid {
+                    path: config_path,
+                    message: "task table is required by this schema version".to_owned(),
+                });
+            }
+        };
+        let name = required_string(&config_path, "task.name", task_info.name)?;
+        if task_info.benchmark_prompt_chars == Some(0) {
             return Err(TaskLoadError::Invalid {
                 path: config_path,
                 message: "task.benchmark_prompt_chars must be positive when present".to_owned(),
             });
         }
-        let benchmark_case_type = raw
-            .task
+        let benchmark_case_type = task_info
             .benchmark_case_type
             .map(|value| required_string(&config_path, "task.benchmark_case_type", value))
             .transpose()?
@@ -331,7 +370,7 @@ impl Task {
             dataset: None,
             dataset_revision: None,
             name: name.into_boxed_str(),
-            description: raw.task.description.into_boxed_str(),
+            description: task_info.description.into_boxed_str(),
             prompt_chars: u64::try_from(
                 transcript
                     .iter()
@@ -340,7 +379,7 @@ impl Task {
                     .saturating_add(prompt.chars().count()),
             )
             .unwrap_or(u64::MAX),
-            benchmark_prompt_chars: raw.task.benchmark_prompt_chars,
+            benchmark_prompt_chars: task_info.benchmark_prompt_chars,
             benchmark_case_type,
             prompt: prompt.into_boxed_str(),
             transcript,
@@ -834,12 +873,16 @@ impl VerifierEnvironmentMode {
 
 #[derive(Deserialize)]
 struct RawTask {
-    schema_version: String,
+    #[serde(default)]
+    schema_version: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
     #[serde(default)]
     artifacts: Vec<RawTaskArtifact>,
     #[serde(default)]
     output: TaskOutput,
-    task: RawTaskInfo,
+    #[serde(default)]
+    task: Option<RawTaskInfo>,
     #[serde(default)]
     metadata: RawMetadata,
     agent: RawPhase,
@@ -1243,6 +1286,47 @@ MODE = "test"
     }
 
     #[test]
+    fn loads_harbor_1_0_task_name_from_its_directory() {
+        let parent = tempdir().unwrap();
+        let directory = parent.path().join("frontier-task");
+        fs::create_dir(&directory).unwrap();
+        fs::create_dir(directory.join("tests")).unwrap();
+        fs::create_dir(directory.join("environment")).unwrap();
+        fs::write(
+            directory.join("task.toml"),
+            r#"
+version = "1.0"
+
+[agent]
+timeout_sec = 72000.0
+
+[verifier]
+timeout_sec = 86400.0
+
+[environment]
+docker_image = "example/frontier-task:v1"
+cpus = 8
+memory_mb = 32768
+storage_mb = 51200
+gpus = 0
+allow_internet = false
+"#,
+        )
+        .unwrap();
+        fs::write(directory.join("instruction.md"), "Optimize it.").unwrap();
+        fs::write(directory.join("tests/test.sh"), "#!/bin/sh\n").unwrap();
+
+        let task = Task::load(&directory).unwrap();
+
+        assert_eq!(task.name(), "frontier-task");
+        assert_eq!(task.agent_timeout(), std::time::Duration::from_secs(72_000));
+        assert_eq!(
+            task.verifier().timeout(),
+            std::time::Duration::from_secs(86_400)
+        );
+    }
+
+    #[test]
     fn loads_and_fingerprints_a_synthetic_transcript() {
         let directory = tempdir().unwrap();
         fs::create_dir(directory.path().join("tests")).unwrap();
@@ -1373,7 +1457,7 @@ storage_mb = 1
 
     #[cfg(unix)]
     #[test]
-    fn rejects_symlinks_in_execution_inputs() {
+    fn rejects_symlinks_that_escape_execution_inputs() {
         let directory = tempdir().unwrap();
         fs::create_dir(directory.path().join("tests")).unwrap();
         fs::create_dir(directory.path().join("environment")).unwrap();
@@ -1403,8 +1487,60 @@ storage_mb = 1
         let error = Task::load(directory.path()).unwrap_err();
 
         assert!(matches!(error, super::TaskLoadError::Fingerprint { .. }));
-        assert!(error.to_string().contains("symlinks are unsupported"));
+        assert!(
+            error
+                .to_string()
+                .contains("symlink target must be relative")
+        );
         assert!(error.to_string().contains("/etc/passwd"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_relative_symlinks_within_execution_inputs() {
+        let directory = tempdir().unwrap();
+        fs::create_dir(directory.path().join("tests")).unwrap();
+        fs::create_dir_all(directory.path().join("environment/docs")).unwrap();
+        fs::write(
+            directory.path().join("task.toml"),
+            r#"
+schema_version = "1.1"
+[task]
+name = "terminal-bench/symlink"
+[agent]
+timeout_sec = 1.0
+[verifier]
+timeout_sec = 1.0
+[environment]
+docker_image = "example/task:latest"
+cpus = 1
+memory_mb = 1
+storage_mb = 1
+"#,
+        )
+        .unwrap();
+        fs::write(directory.path().join("instruction.md"), "Do it.").unwrap();
+        fs::write(directory.path().join("tests/test.sh"), "exit 0\n").unwrap();
+        fs::write(
+            directory.path().join("environment/docs/target"),
+            "contents\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("docs/target", directory.path().join("environment/link"))
+            .unwrap();
+
+        let task = Task::load(directory.path()).unwrap();
+        let materialized = tempdir().unwrap();
+        task.materialize_environment(materialized.path()).unwrap();
+
+        assert_eq!(
+            fs::read_link(materialized.path().join("link")).unwrap(),
+            PathBuf::from("docs/target")
+        );
+        assert_eq!(
+            fs::read_to_string(materialized.path().join("link")).unwrap(),
+            "contents\n"
+        );
     }
 
     #[test]
