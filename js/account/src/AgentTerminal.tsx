@@ -40,6 +40,12 @@ export { AgentTerminalView } from "nanocodex-terminal";
 
 type Model = ManagedCreateSettings["model"];
 type Thinking = ManagedCreateSettings["thinking"];
+const MODELS: readonly Model[] = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-6-astra",
+];
 
 /** Authenticated website policy around the headless Agent SDK and shared transcript view. */
 type AgentTerminalProps = Readonly<{
@@ -196,7 +202,6 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       controls={source === "brokered" ? ({ agentReady }) => (
         <TerminalSettingsControls
           agentReady={agentReady}
-          astraEntitled={authStatus?.state === "ready" && authStatus.astraEntitled}
           modelLocked={conversationStarted}
           settings={settings}
           onFastMode={updateFastMode}
@@ -320,7 +325,6 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       controls={({ agentReady }) => (
         <TerminalSettingsControls
           agentReady={agentReady && settingsReady}
-          astraEntitled={authStatus?.state === "ready" && authStatus.astraEntitled}
           modelLocked={conversationStarted}
           settings={settings}
           onFastMode={(fastMode) => updateManagedSettings({ fastMode })}
@@ -364,7 +368,6 @@ function terminalDefaultSettings(
 
 function TerminalSettingsControls({
   agentReady,
-  astraEntitled,
   modelLocked,
   settings,
   onFastMode,
@@ -372,7 +375,6 @@ function TerminalSettingsControls({
   onThinking,
 }: Readonly<{
   agentReady: boolean;
-  astraEntitled: boolean;
   modelLocked: boolean;
   settings: ManagedCreateSettings;
   onFastMode(enabled: boolean): Promise<unknown>;
@@ -384,9 +386,6 @@ function TerminalSettingsControls({
     setError(undefined);
     void operation.catch((cause) => setError(errorMessage(cause)));
   };
-  const models: readonly Model[] = settings.model === "gpt-6-astra" || astraEntitled
-    ? ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]
-    : ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
   const thinking: readonly Thinking[] = ["none", "low", "medium", "high", "xhigh", "max"];
   return <div className="agent-runtime-controls" title={error}>
     <select
@@ -395,7 +394,7 @@ function TerminalSettingsControls({
       value={settings.model}
       onChange={(event) => run(onModel(event.currentTarget.value as Model))}
     >
-      {models.map((model) => <option key={model} value={model}>{model.replace("gpt-5.6-", "").replace("gpt-6-", "")}</option>)}
+      {MODELS.map((model) => <option key={model} value={model}>{model.replace("gpt-5.6-", "").replace("gpt-6-", "")}</option>)}
     </select>
     <select
       aria-label="Thinking"
