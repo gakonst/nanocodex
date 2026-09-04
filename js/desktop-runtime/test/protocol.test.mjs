@@ -84,6 +84,44 @@ test("credential-store failure preserves the verified current account", async t 
   await assert.rejects(runtime.connect({ baseUrl, apiKey: secondKey, remember: true }), /Keychain unavailable/);
   assert.equal(runtime.state().connected, true);
 });
+test("concurrent refreshes share one request and unchanged results do not repeat state events", async t => {
+  const requested = deferred(), release = deferred();
+  let requests = 0, stateEvents = 0;
+  const baseUrl = await service(t, async (_request, response) => {
+    requests++; requested.resolve(); await release.promise;
+    response.end(JSON.stringify({ data: [] }));
+  });
+  const runtime = new DesktopRuntime({ baseUrl, apiKey: key });
+  t.after(() => runtime.close());
+  runtime.on("event", event => { if (event.type === "state") stateEvents++; });
+  const first = runtime.refresh(), second = runtime.refresh();
+  await requested.promise;
+  assert.equal(requests, 1);
+  release.resolve();
+  assert.deepEqual(await first, await second);
+  assert.equal(stateEvents, 1);
+  await runtime.refresh();
+  assert.equal(requests, 2);
+  assert.equal(stateEvents, 1);
+});
+test("a pending refresh never blocks a new account or publishes its old response", async t => {
+  const requested = deferred(), release = deferred();
+  const baseUrl = await service(t, async (request, response) => {
+    if (request.headers.authorization === `Bearer ${key}`) {
+      requested.resolve(); await release.promise;
+      response.end(JSON.stringify({ data: ["019a65fe-a456-7000-8000-000000000001"] }));
+    } else response.end(JSON.stringify({ data: [] }));
+  });
+  const runtime = new DesktopRuntime({ baseUrl, apiKey: key });
+  t.after(() => runtime.close());
+  const old = runtime.refresh();
+  await requested.promise;
+  await runtime.connect({ baseUrl, apiKey: secondKey });
+  await runtime.refresh();
+  release.resolve(); await old;
+  assert.deepEqual(runtime.state().threads, []);
+  assert.equal(runtime.state().connected, true);
+});
 test("a late preference failure does not turn a committed sign-in into a revoked credential", async t => {
   const baseUrl = await service(t);
   let saved;
@@ -169,6 +207,38 @@ test("immutable SDK history can receive subsequent streamed turn events", { time
   assert.equal(snapshot.events[1].data.final_message, "world");
   assert.deepEqual(snapshot.activeTurns, []);
   assert.equal(snapshot.error, undefined);
+});
+test("stream snapshots protect nested history and stay stable while new events arrive", { timeout: 5_000 }, async t => {
+  const agentId = "019a65fe-a456-7000-8000-000000000004";
+  const stream = deferred(), updated = deferred();
+  const first = { cursor: "1", created_at: 1, turn_id: "turn-1", type: "event", event: { type: "assistant.delta", payload: { text: "hello" } } };
+  const baseUrl = await service(t, (request, response) => {
+    if (request.url.includes("/events/history")) response.end(JSON.stringify({ data: [first], latest_cursor: "1", has_more: false }));
+    else if (request.url.includes("/events?")) {
+      response.setHeader("content-type", "text/event-stream");
+      response.flushHeaders(); stream.resolve(response);
+    } else if (request.url === `/v1/agents/${agentId}`) response.end(JSON.stringify({ active_turns: ["turn-1"] }));
+    else response.end(JSON.stringify({ data: [] }));
+  });
+  const runtime = new DesktopRuntime({ baseUrl, apiKey: key });
+  t.after(() => runtime.close());
+  runtime.on("event", event => { if (event.type === "thread" && event.thread.events.length === 2) updated.resolve(event.thread); });
+  await runtime.refresh();
+  const snapshot = await runtime.openThread(agentId);
+  assert.throws(() => { snapshot.events[0].data.event.payload.text = "corrupted"; }, TypeError);
+  assert.throws(() => { snapshot.events.push({}); }, TypeError);
+  assert.throws(() => { snapshot.activeTurns.push("another"); }, TypeError);
+  assert.throws(() => { snapshot.settings.thinking = "none"; }, TypeError);
+  const response = await stream.promise;
+  const next = { ...first, cursor: "2", event: { type: "assistant.delta", payload: { text: " world" } } };
+  response.write(`id: 2\nevent: message\ndata: ${JSON.stringify(next)}\n\n`);
+  const latest = await updated.promise;
+  assert.equal(snapshot.events.length, 1);
+  assert.equal(snapshot.events[0].data.event.payload.text, "hello");
+  assert.equal(latest.events[0], snapshot.events[0]);
+  assert.notEqual(latest.events, snapshot.events);
+  assert.equal(latest.events[1].data.event.payload.text, " world");
+  assert.equal((await runtime.openThread(agentId)).events[0].data.event.payload.text, "hello");
 });
 test("saved drafts and Hand grants are private and account scoped", async t => {
   const path = await directory(t);

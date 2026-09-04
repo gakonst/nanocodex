@@ -163,6 +163,18 @@ test("tabs preserve drafts, placement and theme with native shortcuts", async ({
     await expect(page.getByRole("tab").first()).toContainText("Review");
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(composer).toHaveValue("A separate draft for Review.");
+    await composer.press("Meta+,");
+    await page.screenshot({ path: testInfo.outputPath("settings-dark.png") });
+    await page.getByRole("button", { name: "Hands", exact: true }).click();
+    await page.screenshot({ path: testInfo.outputPath("hands-dark.png") });
+    await page.keyboard.press("Meta+,");
+    await page.getByRole("button", { name: "Light", exact: true }).click();
+    await page.screenshot({ path: testInfo.outputPath("settings-light.png") });
+    await page.getByRole("button", { name: "Hands", exact: true }).click();
+    await page.screenshot({ path: testInfo.outputPath("hands-light.png") });
+    await page.getByRole("tab").first().click();
+    await page.locator(".model-trigger").click();
+    await page.screenshot({ path: testInfo.outputPath("composer-models.png") });
     expect(errors).toEqual([]);
     expect(startupMs).toBeLessThan(8_000);
     expect(inputMs).toBeLessThan(500);

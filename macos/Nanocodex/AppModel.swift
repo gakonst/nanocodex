@@ -78,11 +78,11 @@ final class AppModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
         isStarting = false
     }
-    private func receive(_ event: JSONValue) {
-        switch event["type"].string {
-        case "state": if let next = try? event["state"].decode(DesktopState.self) { apply(next) }
-        case "thread": if let thread = try? event["thread"].decode(ThreadSnapshot.self) { apply(thread) }
-        default: break
+    private func receive(_ event: RuntimeEvent) {
+        switch event {
+        case .state(let next): apply(next)
+        case .thread(let thread): apply(thread)
+        case .ignored: break
         }
     }
     private func apply(_ next: DesktopState) {
@@ -95,8 +95,13 @@ final class AppModel: ObservableObject {
         if !wasConnected, next.connected { Task { await restoreObservers() } }
     }
     private func apply(_ thread: ThreadSnapshot) {
+        let previous = snapshots[thread.id]
+        let eventsChanged = previous?.events != thread.events
+        if !eventsChanged, previous?.hasMore == thread.hasMore, previous?.connected == thread.connected,
+           previous?.activeTurns == thread.activeTurns, previous?.settings == thread.settings,
+           previous?.error == thread.error, previous?.acceptedTurns == thread.acceptedTurns { return }
         snapshots[thread.id] = thread
-        messages[thread.id] = projectTimeline(thread.events)
+        if eventsChanged { messages[thread.id] = projectTimeline(thread.events) }
         for tab in tabs where tab.threadId == thread.id {
             let accepted = thread.events.filter { $0.data["type"].string == "turn_accepted" }
             if let submitted = pending[tab.id], accepted.contains(where: { $0.turnId == submitted.id || $0.data["id"].string == submitted.id }) { pending.removeValue(forKey: tab.id) }
@@ -105,7 +110,7 @@ final class AppModel: ObservableObject {
                 retries.removeValue(forKey: tab.id)
             }
         }
-        if activeTab?.threadId == thread.id { settings = thread.settings }
+        if activeTab?.threadId == thread.id, settings != thread.settings { settings = thread.settings }
     }
     private func restoreObservers() async {
         for id in Set(tabs.compactMap(\.threadId)) { await observe(id) }

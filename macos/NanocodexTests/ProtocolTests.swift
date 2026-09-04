@@ -3,6 +3,72 @@ import XCTest
 
 final class ProtocolTests: XCTestCase {
     @MainActor
+    func testNativeWorkspaceRenderingAndInteractionLatency() async throws {
+        let phase = "before"
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-visual")
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.runtime.requestOverride = { _, _ in .null }
+        model.tabs = [WorkspaceTab(title: "Build something"), WorkspaceTab(title: "Explore my code")]
+        model.activeTabID = model.tabs[0].id
+        model.state.hands = [
+            Hand(id: "studio", name: "Studio workspace", kind: "local", workspace: "/Users/you/Code/Studio", status: "connected", calls: 12, activeCalls: 0),
+            Hand(id: "vm", name: "Private Linux VM", kind: "vm", workspace: "/workspace", status: "stopped", calls: 3, activeCalls: 0)
+        ]
+        let content = NSHostingView(rootView: AnyView(ContentView().environmentObject(model).preferredColorScheme(.dark).frame(width: 1200, height: 840)))
+        content.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 840), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let began = CFAbsoluteTimeGetCurrent()
+        window.contentView = content; window.setContentSize(NSSize(width: 1200, height: 840)); window.makeKeyAndOrderFront(nil)
+        content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+        let firstLayoutMs = (CFAbsoluteTimeGetCurrent() - began) * 1000
+        defer { model.shutdown(); window.close() }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let evidence = root.appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        func capture(_ name: String) throws {
+            content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            let rep = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+            content.cacheDisplay(in: content.bounds, to: rep)
+            try XCTUnwrap(rep.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent("native-\(name)-\(phase).png"))
+        }
+        func editor(in view: NSView) -> NSTextView? { if let found = view as? ComposerTextView { return found }; return view.subviews.lazy.compactMap { editor(in: $0) }.first }
+        try await Task.sleep(for: .milliseconds(100))
+        try capture("chat")
+        let input = try XCTUnwrap(editor(in: content)); window.makeFirstResponder(input)
+        let typing = CFAbsoluteTimeGetCurrent()
+        input.insertText("Build a beautiful native app", replacementRange: NSRange(location: NSNotFound, length: 0))
+        content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+        let inputMs = (CFAbsoluteTimeGetCurrent() - typing) * 1000
+        XCTAssertEqual(model.activeTab?.draft, "Build a beautiful native app")
+        var tabMs: [Double] = []
+        for index in 0..<20 {
+            let started = CFAbsoluteTimeGetCurrent()
+            model.select(model.tabs[index % 2].id); content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            tabMs.append((CFAbsoluteTimeGetCurrent() - started) * 1000)
+        }
+        model.screen = .hands
+        try await Task.sleep(for: .milliseconds(100)); try capture("hands")
+        content.rootView = AnyView(ContentView().environmentObject(model).preferredColorScheme(.dark).frame(width: 820, height: 700))
+        window.setContentSize(NSSize(width: 820, height: 700))
+        try await Task.sleep(for: .milliseconds(100)); try capture("hands-narrow")
+        content.rootView = AnyView(SettingsView().environmentObject(model).preferredColorScheme(.light))
+        window.setContentSize(NSSize(width: 575, height: 560))
+        try await Task.sleep(for: .milliseconds(100)); try capture("settings")
+        let history: [ManagedEvent] = (0..<800).map { index in
+            .init(cursor: "\(index)", turnId: "benchmark", data: .object(["type": .string("event"), "event": .object(["type": .string("assistant.delta"), "payload": .object(["text": .string("A streamed response with durable history. ")])])]))
+        }
+        let snapshot: JSONValue = .object(["id": .string("benchmark"), "events": try .encoded(history), "hasMore": .bool(false), "connected": .bool(true), "activeTurns": .array([]), "settings": try .encoded(AgentSettings())])
+        let event: JSONValue = .object(["event": .object(["type": .string("thread"), "thread": snapshot])])
+        var wire = try JSONEncoder().encode(event); wire.append(10)
+        model.runtime.receiveForTesting(wire)
+        let repeated = CFAbsoluteTimeGetCurrent()
+        for _ in 0..<40 { model.runtime.receiveForTesting(wire) }
+        let snapshotMs = (CFAbsoluteTimeGetCurrent() - repeated) * 1000 / 40
+        let metrics: [String: Any] = ["phase": phase, "firstNativeViewLayoutMs": firstLayoutMs, "nativeEditorInputMs": inputMs, "tabSwitchMedianMs": tabMs.sorted()[10], "tabSwitchP95Ms": tabMs.sorted()[18], "unchanged800EventSnapshotMs": snapshotMs, "network": "none; isolated native view and protocol evidence"]
+        try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]).write(to: evidence.appendingPathComponent("native-performance-\(phase).json"))
+    }
+    @MainActor
     func testNativePhoneAndCodeScreensRenderWithoutNetwork() async throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-protocol")
         model.isStarting = false
