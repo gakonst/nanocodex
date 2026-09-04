@@ -6,7 +6,7 @@ use std::{
 
 use fs2::FileExt as _;
 use nanocodex_managed::ManagedError;
-use nanocodex_tools::{Tools, attachment::AttachmentMachine};
+use nanocodex_tools::ToolsBuilder;
 use nanocodex_vm::{
     VmWorkspace, VmWorkspaceError,
     host::VmProcessConfig,
@@ -22,8 +22,6 @@ const CAPABILITY_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
 
 pub(crate) struct VmHand {
     workspace: VmWorkspace,
-    tools: Tools,
-    machine: AttachmentMachine,
     _root_lock: Option<File>,
 }
 
@@ -35,31 +33,14 @@ impl VmHand {
                 config.vm_workspace
             )));
         }
-        let mut capabilities = vec![
-            "filesystem".to_owned(),
-            "linux".to_owned(),
-            "process".to_owned(),
-            "pty".to_owned(),
-            "shell".to_owned(),
-            "vm".to_owned(),
-            format!("cpu:{}", config.vm_cpus),
-            format!("memory-mib:{}", config.vm_memory_mib),
-        ];
-        if !config.vm_no_network {
-            capabilities.push("network".to_owned());
-        }
-        capabilities.sort_unstable();
-        let machine = AttachmentMachine::new(
-            &config.machine_id,
-            &config.machine_name,
-            &config.vm_workspace,
-            capabilities,
-        )
-        .map_err(|error| configuration(error.to_string()))?;
-        let rootfs = config.rootfs.canonicalize().map_err(|error| {
+        let rootfs = config
+            .rootfs
+            .as_ref()
+            .ok_or_else(|| configuration("VM hand construction requires a --vm root"))?;
+        let rootfs = rootfs.canonicalize().map_err(|error| {
             configuration(format!(
                 "failed to resolve VM rootfs {}: {error}",
-                config.rootfs.display()
+                rootfs.display()
             ))
         })?;
         let ext4 = rootfs.is_file();
@@ -108,36 +89,17 @@ impl VmHand {
                 "failed to start VM hand and reach guest readiness: {error}"
             ))
         })?;
-        let tools = match workspace.attachment_tools_builder().build() {
-            Ok(tools) => tools,
-            Err(error) => {
-                let message = format!("failed to prepare VM hand tools: {error}");
-                return match workspace.shutdown().await {
-                    Ok(()) => Err(configuration(message)),
-                    Err(shutdown) => Err(configuration(format!(
-                        "{message}; VM shutdown also failed: {shutdown}"
-                    ))),
-                };
-            }
-        };
         Ok(Self {
             workspace,
-            tools,
-            machine,
             _root_lock: root_lock,
         })
     }
 
-    pub(crate) const fn machine(&self) -> &AttachmentMachine {
-        &self.machine
-    }
-
-    pub(crate) fn tools(&self) -> Tools {
-        self.tools.clone()
+    pub(crate) fn tools_builder(&self) -> ToolsBuilder {
+        self.workspace.attachment_tools_builder()
     }
 
     pub(crate) async fn shutdown(self) -> Result<(), ManagedError> {
-        drop(self.tools);
         let started_at = Instant::now();
         loop {
             match self.workspace.shutdown().await {

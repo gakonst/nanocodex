@@ -6101,6 +6101,7 @@ dependencies = [
  "image",
  "nanocodex",
  "nanocodex-agent",
+ "nanocodex-browser",
  "nanocodex-managed",
  "nanocodex-observability",
  "nanocodex-subagents",
