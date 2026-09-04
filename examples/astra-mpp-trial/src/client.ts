@@ -243,29 +243,37 @@ async function submitPrompt(event: SubmitEvent): Promise<void> {
   setBusy(true, configuration.amount === "0" ? "Requesting wallet proof…" : "Authorizing 50 MACH…");
   const requestKey = crypto.randomUUID();
   try {
-    const wallet = createWalletClient({
-      account: connection.accountAddress,
-      chain: tempoChain,
-      transport: custom(client.provider),
-    });
-    const payments = Mppx.create({
-      methods: [mppTempo.charge({
+    let response: Response;
+    try {
+      // Popup Connect intentionally closes after login. Reopen it for the
+      // delegated access-key signature, then close it as soon as MPP settles.
+      client.dialog.showWallet?.();
+      const wallet = createWalletClient({
         account: connection.accountAddress,
-        expectedChainId: TEMPO_CHAIN_ID,
-        expectedRecipients: [configuration.recipient],
-        getClient: () => wallet,
-        mode: "pull",
-      })],
-      polyfill: false,
-    });
-    const response = await payments.fetch("/api/prompt", {
-      method: "POST",
-      headers: authenticatedHeaders({
-        "content-type": "application/json",
-        "idempotency-key": requestKey,
-      }),
-      body: JSON.stringify({ prompt }),
-    });
+        chain: tempoChain,
+        transport: custom(client.provider),
+      });
+      const payments = Mppx.create({
+        methods: [mppTempo.charge({
+          account: connection.accountAddress,
+          expectedChainId: TEMPO_CHAIN_ID,
+          expectedRecipients: [configuration.recipient],
+          getClient: () => wallet,
+          mode: "pull",
+        })],
+        polyfill: false,
+      });
+      response = await payments.fetch("/api/prompt", {
+        method: "POST",
+        headers: authenticatedHeaders({
+          "content-type": "application/json",
+          "idempotency-key": requestKey,
+        }),
+        body: JSON.stringify({ prompt }),
+      });
+    } finally {
+      client.dialog.hideWallet?.();
+    }
     const view = await response.json() as TrialView & { error?: string };
     if (!response.ok) throw new Error(humanError(view.error));
     presentTrial(view);
