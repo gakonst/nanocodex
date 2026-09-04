@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@microsoft/dev-tunnels-ssh': 3.12.40
+
 importers:
 
   .:
