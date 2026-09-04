@@ -43,6 +43,16 @@ import {
 } from "./components";
 
 const bridge = window.nanocodex;
+const modelLabels: Record<string, string> = {
+  "gpt-6-astra": "Astra",
+  "gpt-5.6-sol": "Sol",
+  "gpt-5.6-terra": "Terra",
+  "gpt-5.6-luna": "Luna",
+};
+const effortLabel = (effort: string) =>
+  effort === "xhigh"
+    ? "Extra high"
+    : effort.charAt(0).toUpperCase() + effort.slice(1);
 const defaultSettings: Settings = {
   model: "gpt-5.6-sol",
   thinking: "high",
@@ -1242,15 +1252,12 @@ export function App() {
                         <button
                           type="button"
                           className="model-trigger"
+                          title={settings.model}
                           aria-expanded={modelOpen}
                           onClick={() => setModelOpen((value) => !value)}
                         >
-                          {settings.model.replace("gpt-", "GPT-")}
-                          <span>
-                            {settings.thinking === "xhigh"
-                              ? "Extra high"
-                              : settings.thinking}
-                          </span>
+                          {modelLabels[settings.model] ?? settings.model}
+                          <span>{effortLabel(settings.thinking)}</span>
                           <ChevronDown size={12} />
                         </button>
                         {modelOpen && (
@@ -1279,7 +1286,9 @@ export function App() {
                                   "gpt-5.6-luna",
                                   "gpt-6-astra",
                                 ].map((model) => (
-                                  <option key={model}>{model}</option>
+                                  <option key={model} value={model}>
+                                    {modelLabels[model] ?? model}
+                                  </option>
                                 ))}
                               </select>
                             </label>
@@ -1305,12 +1314,13 @@ export function App() {
                                 ].map((effort) => (
                                   <option
                                     key={effort}
+                                    value={effort}
                                     disabled={
                                       settings.model === "gpt-6-astra" &&
                                       effort === "none"
                                     }
                                   >
-                                    {effort}
+                                    {effortLabel(effort)}
                                   </option>
                                 ))}
                               </select>

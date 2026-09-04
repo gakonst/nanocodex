@@ -75,11 +75,12 @@ or sent to native Hand subprocesses.
 
 Current evidence (2026-09-04):
 
-- **Eleven native protocol and rendering tests pass:** durable event replay, tool-result projection,
+- **Thirteen native protocol and rendering tests pass:** durable event replay, tool-result projection,
   separate subagent streams, the shared state/tab contract, and Astra settings
   compatibility, including supported reasoning efforts and unchanged defaults;
   SMS challenge timing, sign-in commit/retry, account-switch cancellation, model
-  locking, and native phone/code screen rendering. SMS tests use isolated
+  locking, typed JSONL frame decoding, native screen rendering, and preserving
+  manual scroll position during streaming. SMS tests use isolated
   protocol responses; no production SMS was sent.
 - The hosted native test verified the actual `NSTextView` editor, Return and
   Shift Return, draft switching, top tabs, an automatically scoped folder Hand,
@@ -96,6 +97,16 @@ that it can verify the complete journey after that API fix. It requires the
 development `.env`, uses isolated preferences, and removes its own managed
 thread. Native view PNGs are under `macos/build/evidence`; full-journey timing
 metrics are written only when the whole journey succeeds.
+
+The isolated native rendering benchmark captures before/after chat, Hands,
+Settings, and narrow-window screenshots, plus editor and tab timings in
+`native-performance-before.json` and `native-performance-after.json`. It measures
+actual AppKit editing and SwiftUI layout in a Debug test host, not process launch
+or network latency. Typed event decoding and unchanged-event replay suppression
+cut the 800-event JSONL snapshot benchmark from 111 ms to about 47 ms. Draft
+serialization is deferred until the save debounce expires. Streaming follows
+growing messages at a bounded cadence, pauses during manual scrolling, and offers
+a **Latest** button to resume.
 
 ```sh
 xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath macos/build -only-testing:NanocodexTests -parallel-testing-enabled NO test

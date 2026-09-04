@@ -27,8 +27,9 @@ struct SidebarView: View {
                 Spacer()
             }
             Spacer(minLength: 12)
+            Divider().opacity(0.5).padding(.horizontal, 9).padding(.bottom, 7)
             HStack(spacing: 9) {
-                ZStack { RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.07)); Text("N").font(.system(size: 16, weight: .semibold)) }.frame(width: 30, height: 30)
+                Image(nsImage: NSImage(named: "icon") ?? NSImage()).resizable().frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Nanocodex").font(.system(size: 12, weight: .medium))
                     HStack(spacing: 5) {
@@ -39,7 +40,7 @@ struct SidebarView: View {
                 Spacer()
                 Button { model.showingSettings = true } label: { Image(systemName: "gearshape").foregroundStyle(.secondary) }.buttonStyle(.plain).help("Settings (⌘,)").accessibilityIdentifier("settings-navigation")
             }.padding(9)
-        }.padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 8)
+        }.padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 8).background(Color.primary.opacity(0.018))
     }
     private func navButton(_ title: String, symbol: String, shortcut: String = "", selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {

@@ -31,7 +31,7 @@ struct WelcomeView: View {
         VStack(alignment: .leading, spacing: 13) {
             Spacer()
             Text("Let’s build").font(.system(size: 43, weight: .semibold, design: .default)).tracking(-1.3)
-            Text("Something great.").font(.system(size: 25, weight: .medium)).foregroundStyle(.tertiary)
+            Text("Something great.").font(.system(size: 25, weight: .medium)).foregroundStyle(.secondary)
             if !model.state.connected && !model.isStarting {
                 Button { model.showingSettings = true } label: { Label("Connect your account", systemImage: "person.crop.circle.badge.checkmark") }
                     .buttonStyle(.borderedProminent).tint(.primary).padding(.top, 12)
@@ -64,6 +64,7 @@ struct WelcomeView: View {
 struct TranscriptView: View {
     @EnvironmentObject private var model: AppModel
     @State private var followOutput = true
+    @State private var pendingScroll: Task<Void, Never>?
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -78,15 +79,78 @@ struct TranscriptView: View {
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }.frame(maxWidth: 728, alignment: .leading).padding(.horizontal, 26).padding(.top, 20).padding(.bottom, 12).frame(maxWidth: .infinity)
+                    .background(ScrollFollowObserver(follows: followOutput) { nearBottom in followOutput = nearBottom })
             }
             .defaultScrollAnchor(.bottom)
-            .onChange(of: model.activeTabID) { proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: model.activeMessages.last?.id) { if followOutput { proxy.scrollTo("bottom", anchor: .bottom) } }
-            .onChange(of: model.pending[model.activeTabID]?.id) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: model.activeTabID) { pendingScroll?.cancel(); pendingScroll = nil; followOutput = true; scrollToLatest(proxy) }
+            .onChange(of: model.activeMessages.last) { scrollToLatest(proxy) }
+            .onChange(of: model.pending[model.activeTabID]?.id) { scrollToLatest(proxy) }
+            .onDisappear { pendingScroll?.cancel() }
             .overlay(alignment: .bottomTrailing) {
-                Toggle(isOn: $followOutput) { Image(systemName: followOutput ? "arrow.down.to.line.compact" : "pause") }.toggleStyle(.button).controlSize(.mini).help("Follow new messages").padding(12).opacity(model.isRunning ? 1 : 0)
+                if !followOutput {
+                    Button { followOutput = true; proxy.scrollTo("bottom", anchor: .bottom) } label: {
+                        Label("Latest", systemImage: "arrow.down").font(.system(size: 12, weight: .medium)).padding(.horizontal, 12).padding(.vertical, 8)
+                    }.buttonStyle(.plain).background(.regularMaterial, in: Capsule()).overlay(Capsule().strokeBorder(Color.primary.opacity(0.08))).padding(15).help("Jump to the latest response")
+                }
             }
         }.accessibilityIdentifier("transcript")
+    }
+    private func scrollToLatest(_ proxy: ScrollViewProxy) {
+        guard followOutput, pendingScroll == nil else { return }
+        pendingScroll = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(45)) } catch { return }
+            pendingScroll = nil
+            guard !Task.isCancelled, followOutput else { return }
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
+    }
+}
+
+/// Live-scroll notifications distinguish the user's gesture from programmatic stream following.
+struct ScrollFollowObserver: NSViewRepresentable {
+    var follows: Bool
+    var changed: (Bool) -> Void
+    func makeNSView(context: Context) -> ObserverView { let view = ObserverView(); view.changed = changed; view.follows = follows; return view }
+    func updateNSView(_ view: ObserverView, context: Context) { view.changed = changed; view.follows = follows; view.scheduleFollow() }
+    final class ObserverView: NSView {
+        var changed: ((Bool) -> Void)?
+        var follows = true
+        private var correctionScheduled = false
+        private weak var observed: NSScrollView?
+        private var tokens: [NSObjectProtocol] = []
+        override func layout() {
+            super.layout()
+            guard let scroll = enclosingScrollView, observed !== scroll else { return }
+            tokens.forEach(NotificationCenter.default.removeObserver); tokens = []; observed = scroll
+            scroll.documentView?.postsFrameChangedNotifications = true
+            if let document = scroll.documentView {
+                tokens.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: document, queue: .main) { [weak self] _ in self?.scheduleFollow() })
+            }
+            for name in [NSScrollView.didLiveScrollNotification, NSScrollView.didEndLiveScrollNotification] {
+                tokens.append(NotificationCenter.default.addObserver(forName: name, object: scroll, queue: .main) { [weak self, weak scroll] _ in
+                    guard let scroll, let document = scroll.documentView else { return }
+                    let visible = scroll.documentVisibleRect
+                    let remaining = document.isFlipped ? document.bounds.maxY - visible.maxY : visible.minY - document.bounds.minY
+                    self?.follows = remaining < 32
+                    self?.changed?(remaining < 32)
+                })
+            }
+        }
+        func scheduleFollow() {
+            guard follows, !correctionScheduled else { return }
+            correctionScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.correctionScheduled = false
+                guard self.follows, let scroll = self.observed, let document = scroll.documentView else { return }
+                // Correct the estimate after lazy rows finish laying out, without animation or a timer loop.
+                let clip = scroll.contentView
+                let y = document.isFlipped ? max(document.bounds.minY, document.bounds.maxY - clip.bounds.height) : document.bounds.minY
+                guard abs(clip.bounds.minY - y) > 1 else { return }
+                clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y)); scroll.reflectScrolledClipView(clip)
+            }
+        }
+        deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
     }
 }
 
@@ -165,6 +229,7 @@ struct NativeMarkdown: View {
 struct ComposerView: View {
     @EnvironmentObject private var model: AppModel
     @State private var editorHeight: CGFloat = 72
+    @State private var editorFocused = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let folder = model.activeTab?.folder, !folder.isEmpty {
@@ -172,7 +237,7 @@ struct ComposerView: View {
             }
             ZStack(alignment: .topLeading) {
                 if model.activeTab?.draft.isEmpty ?? true { Text(model.isRunning ? "Add a follow-up, or steer the current turn…" : "Ask Nanocodex to build anything").font(.system(size: 14)).foregroundStyle(.tertiary).padding(.horizontal, 17).padding(.top, 18).allowsHitTesting(false) }
-                NativeComposer(text: Binding(get: { model.activeTab?.draft ?? "" }, set: model.updateDraft), height: $editorHeight, onSubmit: { Task { await model.send() } }).frame(height: editorHeight).padding(.horizontal, 8).padding(.top, 8)
+                NativeComposer(text: Binding(get: { model.activeTab?.draft ?? "" }, set: model.updateDraft), height: $editorHeight, onSubmit: { Task { await model.send() } }, onFocusChange: { editorFocused = $0 }).frame(height: editorHeight).padding(.horizontal, 8).padding(.top, 8)
             }
             HStack(spacing: 13) {
                 Menu {
@@ -201,8 +266,8 @@ struct ComposerView: View {
             }.padding(.horizontal, 16).padding(.bottom, 12).padding(.top, 3)
         }
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 22))
-        .overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.primary.opacity(0.13), lineWidth: 1))
-        .shadow(color: Color.black.opacity(0.025), radius: 4, y: 2)
+        .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(Color.primary.opacity(editorFocused ? 0.27 : 0.14), lineWidth: 1))
+        .shadow(color: Color.black.opacity(editorFocused ? 0.045 : 0.025), radius: 8, y: 3)
     }
 }
 
@@ -233,7 +298,7 @@ struct ModelMenu: View {
                 Text("Start a new thread to change the model or Pro.")
             }
         } label: {
-            HStack(spacing: 5) { Text(model.settings.modelName); if model.settings.fast_mode { Image(systemName: "bolt.fill") }; Text(model.settings.thinking.capitalized).foregroundStyle(.tertiary) }.font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack(spacing: 5) { Text("\(model.settings.modelName) · \(model.settings.thinking.capitalized)"); if model.settings.fast_mode { Image(systemName: "bolt.fill") } }.font(.system(size: 11)).foregroundStyle(.secondary)
         }.menuStyle(.borderlessButton).fixedSize()
     }
 }
@@ -242,6 +307,7 @@ struct NativeComposer: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
     var onSubmit: () -> Void
+    var onFocusChange: (Bool) -> Void = { _ in }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(), editor = ComposerTextView()
         scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
@@ -252,14 +318,14 @@ struct NativeComposer: NSViewRepresentable {
         editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true
         editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticDashSubstitutionEnabled = false
         editor.isContinuousSpellCheckingEnabled = true
-        editor.delegate = context.coordinator; editor.submit = onSubmit
+        editor.delegate = context.coordinator; editor.submit = onSubmit; editor.focusChanged = onFocusChange
         editor.setAccessibilityIdentifier("message-input"); editor.setAccessibilityLabel("Message Nanocodex")
         scroll.documentView = editor
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let editor = scroll.documentView as? ComposerTextView else { return }
-        context.coordinator.parent = self; editor.submit = onSubmit
+        context.coordinator.parent = self; editor.submit = onSubmit; editor.focusChanged = onFocusChange
         if editor.string != text { editor.string = text; context.coordinator.measure(editor) }
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -277,6 +343,17 @@ struct NativeComposer: NSViewRepresentable {
 }
 final class ComposerTextView: NSTextView {
     var submit: (() -> Void)?
+    var focusChanged: ((Bool) -> Void)?
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { DispatchQueue.main.async { [weak self] in self?.focusChanged?(true) } }
+        return accepted
+    }
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { DispatchQueue.main.async { [weak self] in self?.focusChanged?(false) } }
+        return accepted
+    }
     override func keyDown(with event: NSEvent) {
         if [36, 76].contains(event.keyCode), !event.modifierFlags.contains(.shift), !hasMarkedText() { submit?(); return }
         super.keyDown(with: event)

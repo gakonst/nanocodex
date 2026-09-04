@@ -103,6 +103,8 @@ export class DesktopRuntime extends EventEmitter {
   #dataDirectory;
   #folderPreparations = new Map();
   #helperPreparations = new Map();
+  #refreshPending;
+  #eventSnapshots = new WeakMap();
 
   constructor({ baseUrl = DEFAULT_ORIGIN, apiKey, saved = {}, defaults = {}, dataDirectory = join(homedir(), "Library", "Application Support", "Nanocodex", "Runtime"), persist = async () => {}, saveConnection = async () => {} } = {}) {
     super();
@@ -135,7 +137,19 @@ export class DesktopRuntime extends EventEmitter {
   }
   #snapshot(thread) {
     const { id, events, hasMore, connected, activeTurns, acceptedTurns, settings, error } = thread;
-    return structuredClone({ id, events, hasMore, connected, activeTurns, acceptedTurns, settings, error });
+    const snapshot = structuredClone({ id, events: undefined, hasMore, connected, activeTurns, acceptedTurns, settings, error });
+    // Durable envelopes never change. Clone/freeze each once instead of copying
+    // the complete historical payload on every streamed frame. The new array
+    // and header keep older snapshots stable as the live transcript advances.
+    snapshot.events = Object.freeze(events.map(event => {
+      let retained = this.#eventSnapshots.get(event);
+      if (!retained) {
+        retained = immutableSnapshot(structuredClone(event));
+        this.#eventSnapshots.set(event, retained);
+      }
+      return retained;
+    }));
+    return immutableSnapshot(snapshot);
   }
   #requireConnection() { if (this.#closed || !this.#options.apiKey || !this.#state.connected) throw new Error("Connect your Nanocodex account in Settings first."); }
   #safeError(error) { return String(error?.message ?? error).replaceAll(this.#options.apiKey || "\u0000", "[redacted]").replace(/ncx_live_[A-Za-z0-9_-]+/g, "[redacted]").slice(0, 500); }
@@ -170,19 +184,32 @@ export class DesktopRuntime extends EventEmitter {
   async refresh() {
     if (this.#closed || !this.#options.apiKey) return this.state();
     const generation = this.#generation;
-    try {
-      const agents = await Agent.list(this.#options);
-      if (generation !== this.#generation) return this.state();
-      this.#state.threads = agents.map(agent => ({ id: agent.id, title: agent.summary?.title || "New thread", updatedAt: agent.summary?.updatedAt ?? 0, turnCount: agent.summary?.turnCount ?? 0 })).sort((a, b) => b.updatedAt - a.updatedAt);
-      this.#state.connected = true;
-      delete this.#state.error;
-    } catch (error) {
-      if (generation !== this.#generation) return this.state();
-      this.#state.error = this.#safeError(error);
-      if (error.status === 401 || error.status === 403) this.#state.connected = false;
-    }
-    this.#emit();
-    return this.state();
+    if (this.#refreshPending?.generation === generation) return this.#refreshPending.promise;
+    const pending = { generation };
+    pending.promise = (async () => {
+      let changed;
+      try {
+        const agents = await Agent.list(this.#options);
+        if (generation !== this.#generation) return this.state();
+        const threads = agents.map(agent => ({ id: agent.id, title: agent.summary?.title || "New thread", updatedAt: agent.summary?.updatedAt ?? 0, turnCount: agent.summary?.turnCount ?? 0 })).sort((a, b) => b.updatedAt - a.updatedAt);
+        changed = !this.#state.connected || this.#state.error !== undefined
+          || JSON.stringify(threads) !== JSON.stringify(this.#state.threads);
+        this.#state.threads = threads;
+        this.#state.connected = true;
+        delete this.#state.error;
+      } catch (error) {
+        if (generation !== this.#generation) return this.state();
+        const message = this.#safeError(error);
+        const disconnected = error.status === 401 || error.status === 403;
+        changed = this.#state.error !== message || (disconnected && this.#state.connected);
+        this.#state.error = message;
+        if (disconnected) this.#state.connected = false;
+      }
+      if (changed) this.#emit();
+      return this.state();
+    })().finally(() => { if (this.#refreshPending === pending) this.#refreshPending = undefined; });
+    this.#refreshPending = pending;
+    return pending.promise;
   }
 
   async connect({ baseUrl, apiKey, remember = false }) {
@@ -680,6 +707,14 @@ export class DesktopRuntime extends EventEmitter {
     await Promise.all(this.#state.hands.map(hand => this.stopHand(hand.id)));
     await this.#accountTransition.catch(() => {});
   }
+}
+
+function immutableSnapshot(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) immutableSnapshot(child);
+  }
+  return value;
 }
 
 export function compareCursor(a, b) { return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0); }

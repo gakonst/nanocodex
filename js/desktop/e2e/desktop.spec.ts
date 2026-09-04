@@ -100,8 +100,10 @@ async function renameTab(page: Page, name: string) {
 }
 
 test("tabs preserve drafts, placement and theme with native shortcuts", async ({}, testInfo) => {
+  const account = await credentials();
+  test.skip(!account.apiKey, "A managed test account is required for the signed-in workspace.");
   const directory = await mkdtemp(join(tmpdir(), "nanocodex-desktop-tabs-"));
-  const { application, page, errors, startupMs } = await launch(directory);
+  const { application, page, errors, startupMs } = await launch(directory, account.apiKey, { env: { NANOCODEX_MANAGED_URL: account.baseUrl } });
   try {
     await expect(page).toHaveTitle("Nanocodex");
     await expect(page.getByRole("tab")).toHaveCount(1);
@@ -163,6 +165,18 @@ test("tabs preserve drafts, placement and theme with native shortcuts", async ({
     await expect(page.getByRole("tab").first()).toContainText("Review");
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(composer).toHaveValue("A separate draft for Review.");
+    await composer.press("Meta+,");
+    await page.screenshot({ path: testInfo.outputPath("settings-dark.png") });
+    await page.getByRole("button", { name: "Hands", exact: true }).click();
+    await page.screenshot({ path: testInfo.outputPath("hands-dark.png") });
+    await page.keyboard.press("Meta+,");
+    await page.getByRole("button", { name: "Light", exact: true }).click();
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-light.png") });
+    await page.getByRole("button", { name: "Hands", exact: true }).click();
+    await page.screenshot({ path: testInfo.outputPath("hands-light.png") });
+    await page.getByRole("tab").first().click();
+    await page.locator(".model-trigger").click();
+    await page.screenshot({ path: testInfo.outputPath("composer-models.png") });
     expect(errors).toEqual([]);
     expect(startupMs).toBeLessThan(8_000);
     expect(inputMs).toBeLessThan(500);
@@ -432,10 +446,10 @@ test("Astra normalizes unsupported settings and its real response survives reloa
     await model.selectOption("gpt-6-astra");
     await expect(thinking).toHaveValue("high");
     await expect(
-      thinking.getByRole("option", { name: "none", exact: true })
+      thinking.getByRole("option", { name: "None", exact: true })
     ).toHaveJSProperty("disabled", true);
     await expect(
-      thinking.getByRole("option", { name: "max", exact: true })
+      thinking.getByRole("option", { name: "Max", exact: true })
     ).toHaveJSProperty("disabled", false);
     await expect(pro).not.toBeChecked();
     await expect(pro).toBeDisabled();
@@ -486,7 +500,7 @@ test("Astra normalizes unsupported settings and its real response survives reloa
     await expect(thinking).toHaveValue("high");
     await expect(pro).toBeEnabled();
     await expect(
-      thinking.getByRole("option", { name: "none", exact: true })
+      thinking.getByRole("option", { name: "None", exact: true })
     ).toHaveJSProperty("disabled", false);
     expect(await page.locator("body").innerText()).not.toContain(apiKey!);
     expect(errors).toEqual([]);
