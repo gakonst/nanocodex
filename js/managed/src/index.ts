@@ -925,12 +925,39 @@ export function applyManagedSubagentLifecycle(
   const type = event.type;
   if ((type !== "bind" && type !== "reconstruct" && type !== "release")
     || typeof event.rootSessionId !== "string" || !SESSION_ID.test(event.rootSessionId)
-    || typeof event.sessionId !== "string" || !SESSION_ID.test(event.sessionId)
-    || typeof event.hostContextRef !== "string" || !TURN_ID.test(event.hostContextRef)) {
+    || typeof event.sessionId !== "string" || !SESSION_ID.test(event.sessionId)) {
     throw new TypeError("invalid managed subagent lifecycle event");
   }
   const rootSessionId = event.rootSessionId;
   const sessionId = event.sessionId;
+  if (event.hostContextRef === undefined && (type === "reconstruct" || type === "release")) {
+    const allowedKeys = type === "release"
+      ? ["type", "rootSessionId", "sessionId", "hostContextRef"]
+      : ["type", "rootSessionId", "sessionId", "descriptor", "hostContextRef"];
+    if (Object.keys(event).some((key) => !allowedKeys.includes(key))) {
+      throw new TypeError("invalid managed subagent lifecycle event");
+    }
+    if (type === "reconstruct") {
+      const descriptor = managedSubagentDescriptor(event.descriptor);
+      if (descriptor.sessionId !== sessionId) {
+        throw new Error("managed subagent session does not match its descriptor");
+      }
+    }
+    // Rows created before private host provenance cannot inherit authority.
+    // Revoke any divergent retained snapshot while allowing the Cloudflare
+    // adapter to reconstruct or release the child itself. This is idempotent,
+    // and the absent managed row makes every capability lookup fail closed.
+    storage.sql.exec(
+      `DELETE FROM managed_subagent_authorizations
+       WHERE session_id = ? AND root_session_id = ?`,
+      sessionId,
+      rootSessionId,
+    );
+    return;
+  }
+  if (typeof event.hostContextRef !== "string" || !TURN_ID.test(event.hostContextRef)) {
+    throw new TypeError("invalid managed subagent lifecycle event");
+  }
   const hostContextRef = event.hostContextRef;
   const retained = storage.sql.exec<ManagedSubagentAuthorizationRow>(
     `SELECT root_session_id, session_id AS sessionId, agent_id AS agentId,
@@ -2621,8 +2648,8 @@ export class DurableAgentSession extends DurableComputerSession {
       Date.now(),
     );
     this.#hostedTools = new HostedToolsBroker(this.ctx, {
-      entryAllowed: (entry, connectGrantId, appToolCatalogDigest) => (
-        this.#activeTurnHostedToolAllowed(entry, connectGrantId, appToolCatalogDigest)
+      entryAllowed: (entry, connectGrantId, appToolCatalogDigest, context) => (
+        this.#hostedToolAllowed(entry, connectGrantId, appToolCatalogDigest, context)
       ),
       renewLeasedAttachment: (renewal) => this.#renewVmHostAttachment(renewal),
     });
@@ -6075,7 +6102,7 @@ export class DurableAgentSession extends DurableComputerSession {
             ? {}
             : accountConnectionProjection(authorization),
           enabled: !multiplayer,
-          machines: this.#accountMachines(authorization),
+          machines: this.#accountMachines(authorization, context),
           signal: context.signal,
         },
       );
@@ -6126,7 +6153,7 @@ export class DurableAgentSession extends DurableComputerSession {
             : "/workspace",
         })),
         ...(this.#hasFullAccountAuthority(authorization)
-          ? this.#userHandMachines()
+          ? this.#userHandMachines(context)
           : []).map((machine) => ({
             id: `user:${machine.id}`,
             root: machineMountRoot(machine.id),
@@ -6149,6 +6176,7 @@ export class DurableAgentSession extends DurableComputerSession {
               allocation.route_id,
               allocation.machine_id,
               name,
+              context,
             );
         }
         if (mount.provider !== "cloudflare") return undefined;
@@ -6172,9 +6200,9 @@ export class DurableAgentSession extends DurableComputerSession {
         return undefined;
       }
       const id = machineId.slice("user:".length);
-      if (!this.#userHandMachines().some((machine) => machine.id === id)) return undefined;
-      return this.#hostedTools.machineTool(id, name)
-        ?? this.#accountHostedTools?.machineTool(id, name);
+      if (!this.#userHandMachines(context).some((machine) => machine.id === id)) return undefined;
+      return this.#hostedTools.machineTool(id, name, context)
+        ?? this.#accountHostedTools?.machineTool(id, name, context);
     };
     const namespaceRuntime = multiplayer ? undefined : createManagedNamespaceRuntime(
       (context) => this.#canUseExecutionNamespace(this.#authorizationForToolContext(context)),
@@ -6250,7 +6278,10 @@ export class DurableAgentSession extends DurableComputerSession {
             default_cwd: "/brain",
             native_cross_mounts: false,
             cloudflare_native_cross_mounts: this.env.NANOCODEX_SANDBOX_LOCAL !== "true",
-            mounts: this.#accountMachines(this.#authorizationForToolContext(context)).map(({ id, mount }) => ({
+            mounts: this.#accountMachines(
+              this.#authorizationForToolContext(context),
+              context,
+            ).map(({ id, mount }) => ({
               id,
               mount,
             })),
@@ -6591,7 +6622,7 @@ export class DurableAgentSession extends DurableComputerSession {
           `an agent may retain at most ${MAX_MANAGED_MOUNTS} mounts`,
         );
       }
-      if (count + this.#userHandMachines().length >= MAX_NAMESPACE_MOUNTS - 1) {
+      if (count + this.#userHandMachines(context).length >= MAX_NAMESPACE_MOUNTS - 1) {
         throw new ManagedRequestError(
           409,
           "namespace_mount_limit_reached",
@@ -7097,7 +7128,10 @@ export class DurableAgentSession extends DurableComputerSession {
     return slots;
   }
 
-  #accountMachines(authorization: TurnAuthorization | undefined): readonly AccountMachine[] {
+  #accountMachines(
+    authorization: TurnAuthorization | undefined,
+    context?: Pick<ToolContext, "sessionId" | "subagent">,
+  ): readonly AccountMachine[] {
     if (!this.#canUseExecutionNamespace(authorization)) return [];
     return Object.freeze([
       ...this.#availableManagedMounts().map((mount) => {
@@ -7113,7 +7147,7 @@ export class DurableAgentSession extends DurableComputerSession {
         });
       }),
       ...(this.#hasFullAccountAuthority(authorization)
-        ? this.#userHandMachines()
+        ? this.#userHandMachines(context)
         : []).map((machine) => {
           const mount = machineMountRoot(machine.id);
           return Object.freeze({
@@ -7140,14 +7174,16 @@ export class DurableAgentSession extends DurableComputerSession {
     return authorization !== undefined && authorization.connectGrant === undefined;
   }
 
-  #userHandMachines(): readonly HostedMachine[] {
+  #userHandMachines(
+    context?: Pick<ToolContext, "sessionId" | "subagent">,
+  ): readonly HostedMachine[] {
     const leasedMachineIds = new Set(this.#managedMounts().flatMap((mount) => {
       const allocation = vmHostMountAllocation(mount);
       return allocation === undefined ? [] : [allocation.machine_id];
     }));
     const machines = [
       ...this.#hostedTools.machines(),
-      ...(this.#accountHostedTools?.machines() ?? []),
+      ...(this.#accountHostedTools?.machines(context) ?? []),
     ];
     const counts = new Map<string, number>();
     for (const machine of machines) counts.set(machine.id, (counts.get(machine.id) ?? 0) + 1);
@@ -7183,12 +7219,15 @@ export class DurableAgentSession extends DurableComputerSession {
     return this.#hasFullAccountAuthority();
   }
 
-  #activeTurnHostedToolAllowed(
+  #hostedToolAllowed(
     entry: HostedToolCatalogEntry,
     hostConnectGrantId?: string,
     hostAppToolCatalogDigest?: string,
+    context?: Pick<ToolContext, "sessionId" | "subagent">,
   ): boolean {
-    const authorization = this.#activeTurnAuthorization();
+    const authorization = context === undefined
+      ? this.#activeTurnAuthorization()
+      : this.#authorizationForToolContext(context);
     if (!authorization) return false;
     return hostedToolCatalogEntryAllowed(
       authorization.connectGrant,

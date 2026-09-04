@@ -19,6 +19,7 @@ import {
   PREVIEW_OUTPUT_SCHEMA,
   WRITE_STDIN_PARAMETERS,
 } from "../../tools/execution-contract.mjs";
+import type { ToolContext } from "../../tools/types.mjs";
 
 const SOCKET_TAG = "hosted-tools";
 const INVALID_CONNECT_GRANT_ID = "invalid-connect-grant";
@@ -179,9 +180,16 @@ export type HostedToolsCodeTool = Readonly<{
   routeToken?: string;
   handler(
     input: unknown,
-    context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
+    context: HostedToolsInvocationContext,
   ): Promise<unknown>;
 }>;
+
+export type HostedToolsInvocationContext = Readonly<
+  Pick<ToolContext, "sessionId" | "callId">
+  & Partial<Pick<ToolContext, "parentCallId" | "model" | "signal" | "subagent">>
+>;
+
+export type HostedToolsAuthorizationContext = Pick<ToolContext, "sessionId" | "subagent">;
 
 export type HostedMachineToolName = (typeof HOSTED_MACHINE_TOOL_NAMES)[number];
 
@@ -232,6 +240,7 @@ export type HostedToolsBrokerCoreOptions = Readonly<{
     entry: HostedToolCatalogEntry,
     connectGrantId?: string,
     appToolCatalogDigest?: string,
+    context?: HostedToolsAuthorizationContext,
   ) => boolean;
   renewLeasedAttachment?: (
     renewal: HostedToolsLeasedAttachmentRenewal,
@@ -265,6 +274,7 @@ export class HostedToolsBrokerCore {
     entry: HostedToolCatalogEntry,
     connectGrantId?: string,
     appToolCatalogDigest?: string,
+    context?: HostedToolsAuthorizationContext,
   ) => boolean;
   readonly #renewLeasedAttachment:
     | ((renewal: HostedToolsLeasedAttachmentRenewal) => Promise<number | undefined>)
@@ -393,7 +403,11 @@ export class HostedToolsBrokerCore {
   provider(): HostedToolsDynamicProvider { return this.#provider; }
 
   /** Resolves one canonical machine primitive against its exact admitted attachment generation. */
-  machineTool(machineId: string, name: HostedMachineToolName): HostedToolsCodeTool | undefined {
+  machineTool(
+    machineId: string,
+    name: HostedMachineToolName,
+    context?: HostedToolsAuthorizationContext,
+  ): HostedToolsCodeTool | undefined {
     if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
     const binding = this.#catalogBindings().find((candidate) => (
       candidate.machine?.id === machineId && candidate.wireName === name
@@ -404,6 +418,7 @@ export class HostedToolsBrokerCore {
       prepared.entry,
       prepared.connectGrantId,
       prepared.appToolCatalogDigest,
+      context,
     )) return undefined;
     return this.#codeTool(name, prepared);
   }
@@ -413,6 +428,7 @@ export class HostedToolsBrokerCore {
     routeId: string,
     machineId: string,
     name: HostedMachineToolName,
+    context?: HostedToolsAuthorizationContext,
   ): HostedToolsCodeTool | undefined {
     if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
     const binding = this.#catalogBindings(undefined, true).find((candidate) => (
@@ -426,6 +442,7 @@ export class HostedToolsBrokerCore {
       prepared.entry,
       prepared.connectGrantId,
       prepared.appToolCatalogDigest,
+      context,
     )) return undefined;
     return this.#codeTool(name, prepared);
   }
@@ -979,12 +996,13 @@ export class HostedToolsBrokerCore {
       timeoutMs: prepared.entry.timeout_ms,
       handler: async (
         input: unknown,
-        context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
+        context: HostedToolsInvocationContext,
       ) => {
         if (!this.#entryAllowed(
           prepared.entry,
           prepared.connectGrantId,
           prepared.appToolCatalogDigest,
+          context,
         )) {
           return toolResult("Hosted tool is outside the active grant", {
             status: "unavailable",

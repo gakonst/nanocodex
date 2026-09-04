@@ -73,6 +73,8 @@ type InvocationContext = Readonly<{
   subagent?: SubagentToolContext;
 }>;
 
+type AuthorizationContext = Pick<InvocationContext, "sessionId" | "subagent">;
+
 /** One account-owned reverse attachment shared by every managed agent in that account. */
 export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
   readonly #broker: HostedToolsBroker;
@@ -201,7 +203,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   readonly sourceId = "account-hands";
   readonly #stub: DurableObjectStub<AccountHostedTools>;
   readonly #ownerId: string;
-  readonly #allowed: (context?: InvocationContext) => boolean;
+  readonly #allowed: (context?: AuthorizationContext) => boolean;
   #definitions: readonly HostedToolsCodeDefinition[] = [];
   #candidates: readonly HostedToolsCatalogCandidate[] = [];
   #machines: readonly HostedMachine[] = [];
@@ -214,7 +216,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   constructor(
     namespace: DurableObjectNamespace<AccountHostedTools>,
     ownerId: string,
-    allowed: (context?: InvocationContext) => boolean,
+    allowed: (context?: AuthorizationContext) => boolean,
   ) {
     this.#stub = namespace.getByName(ownerId);
     this.#ownerId = ownerId;
@@ -229,12 +231,16 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     return this.#allowed() ? this.#tools.get(name) : undefined;
   }
 
-  machines(): readonly HostedMachine[] {
-    return this.#allowed() ? this.#machines : [];
+  machines(context?: AuthorizationContext): readonly HostedMachine[] {
+    return this.#allowed(context) ? this.#machines : [];
   }
 
-  machineTool(machineId: string, name: HostedMachineToolName): HostedToolsCodeTool | undefined {
-    return this.#allowed() ? this.#machineTools.get(machineToolKey(machineId, name)) : undefined;
+  machineTool(
+    machineId: string,
+    name: HostedMachineToolName,
+    context?: AuthorizationContext,
+  ): HostedToolsCodeTool | undefined {
+    return this.#allowed(context) ? this.#machineTools.get(machineToolKey(machineId, name)) : undefined;
   }
 
   settled(): Promise<void> {

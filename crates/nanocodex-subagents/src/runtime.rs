@@ -1040,12 +1040,31 @@ impl Registry {
         descriptors: Vec<AgentDescriptor>,
         mut host_contexts: HashMap<String, Arc<str>>,
     ) -> std::io::Result<()> {
+        if !host_contexts.is_empty()
+            && (host_contexts.len() != descriptors.len()
+                || descriptors
+                    .iter()
+                    .any(|descriptor| !host_contexts.contains_key(&descriptor.session_id)))
+        {
+            return Err(std::io::Error::other(
+                "restored subagent host contexts must exactly match restored sessions",
+            ));
+        }
         let mut state = self.state.lock().await;
         let restored = state.restore(root_session_id, descriptors)?;
-        if let Some(scope) = state.scopes.get_mut(root_session_id) {
-            for session in scope.sessions.values_mut() {
-                session.host_context = host_contexts.remove(&session.descriptor.session_id);
-            }
+        if restored.is_empty() {
+            return Ok(());
+        }
+        let scope = state
+            .scopes
+            .get_mut(root_session_id)
+            .expect("a non-empty successful restore creates its scope");
+        for descriptor in &restored {
+            scope
+                .sessions
+                .get_mut(&descriptor.id)
+                .expect("a restored descriptor has a retained session")
+                .host_context = host_contexts.remove(&descriptor.session_id);
         }
         drop(state);
         for descriptor in restored {
@@ -2215,6 +2234,61 @@ mod tests {
             2,
             "private context must not change the public directory projection"
         );
+
+        registry.restore("root", Vec::new()).await.unwrap();
+        assert_eq!(
+            registry.host_context("root", first.id).await.as_deref(),
+            Some("opaque-first-turn"),
+            "an empty compatibility restore must not clear a live context"
+        );
+        assert_eq!(
+            registry.host_context("root", second.id).await.as_deref(),
+            Some("opaque-second-turn")
+        );
+    }
+
+    #[tokio::test]
+    async fn restored_host_context_keys_are_validated_before_registry_mutation() {
+        let first = AgentDescriptor {
+            id: AgentId::new(1),
+            session_id: "first-session".to_owned(),
+            role: "worker".to_owned(),
+            task: "inspect".to_owned(),
+            parent: None,
+        };
+        let second = AgentDescriptor {
+            id: AgentId::new(2),
+            session_id: "second-session".to_owned(),
+            role: "reviewer".to_owned(),
+            task: "review".to_owned(),
+            parent: None,
+        };
+
+        for host_contexts in [
+            HashMap::from([(first.session_id.clone(), Arc::<str>::from("opaque-turn"))]),
+            HashMap::from([
+                (first.session_id.clone(), Arc::<str>::from("opaque-turn")),
+                (second.session_id.clone(), Arc::<str>::from("second-turn")),
+                ("unknown-session".to_owned(), Arc::<str>::from("other-turn")),
+            ]),
+        ] {
+            let (updates, _receiver) = mpsc::unbounded_channel();
+            let registry = Registry::new(updates, 3);
+            let error = registry
+                .restore_with_host_contexts(
+                    "root",
+                    vec![first.clone(), second.clone()],
+                    host_contexts,
+                )
+                .await
+                .unwrap_err();
+
+            assert!(error.to_string().contains("must exactly match"));
+            assert!(registry.directory("root", true, false).await.is_empty());
+            for descriptor in [&first, &second] {
+                assert!(registry.is_root_session(&descriptor.session_id).await);
+            }
+        }
     }
 
     #[tokio::test]

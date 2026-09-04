@@ -66,6 +66,41 @@ describe("managed subagent authorization ownership", () => {
       expect(authorization(state.storage, child, account)).toBeUndefined();
     });
   });
+
+  it("reconstructs legacy ref-less children fail-closed and releases them idempotently", async () => {
+    await withSession(async (state) => {
+      insertTurn(state.storage, "account-turn", account);
+      const child = descriptor("legacy", null, ACCOUNT_SESSION, "legacy child");
+      bind(state.storage, "bind", child, "account-turn");
+      expect(authorization(state.storage, child, connect)).toEqual(account);
+
+      const lifecycle = (event: unknown) => state.storage.transactionSync(() => (
+        applyManagedSubagentLifecycle(state.storage, event)
+      ));
+      const reconstruct = {
+        type: "reconstruct",
+        rootSessionId: ROOT_SESSION,
+        sessionId: child.sessionId,
+        descriptor: child,
+        hostContextRef: undefined,
+      };
+      expect(() => lifecycle(reconstruct)).not.toThrow();
+      expect(() => lifecycle(reconstruct)).not.toThrow();
+      expect(authorization(state.storage, child, account)).toBeUndefined();
+
+      const release = {
+        type: "release",
+        rootSessionId: ROOT_SESSION,
+        sessionId: child.sessionId,
+        hostContextRef: undefined,
+      };
+      expect(() => lifecycle(release)).not.toThrow();
+      expect(() => lifecycle(release)).not.toThrow();
+      expect(() => lifecycle({ ...reconstruct, type: "bind" })).toThrow(
+        "invalid managed subagent lifecycle event",
+      );
+    });
+  });
 });
 
 async function withSession(

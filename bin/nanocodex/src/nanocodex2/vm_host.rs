@@ -15,6 +15,7 @@ mod supported {
         fs::{self, File, OpenOptions},
         future::Future,
         io::Write as _,
+        os::fd::AsRawFd as _,
         os::unix::fs::{MetadataExt as _, PermissionsExt as _},
         path::{Path, PathBuf},
         pin::Pin,
@@ -42,6 +43,9 @@ mod supported {
 
     type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
     const ATTACHMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+    const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(250);
+    const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+    const HEALTHY_CONNECTION_DURATION: Duration = Duration::from_secs(20);
 
     /// Immutable control-plane identity for one VM allocation.
     #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -158,6 +162,7 @@ mod supported {
             let lock_path = directory.join("host.lock");
             let lock = OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .read(true)
                 .write(true)
                 .open(&lock_path)
@@ -376,6 +381,18 @@ mod supported {
             })?;
             sync_directory(&self.directory)?;
             Ok(())
+        }
+
+        fn remove(&self, allocation_id: Uuid) -> Result<(), VmHostError> {
+            let path = self.record_path(allocation_id);
+            match fs::remove_file(&path) {
+                Ok(()) => sync_directory(&self.directory),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(VmHostError::State(format!(
+                    "failed to remove acknowledged allocation record {}: {error}",
+                    path.display()
+                ))),
+            }
         }
 
         fn load(&self, capacity: u16) -> Result<LoadedAllocations, VmHostError> {
@@ -1147,6 +1164,28 @@ mod supported {
             first_error.map_or(Ok(()), Err)
         }
 
+        fn acknowledge_released(
+            &mut self,
+            identity: &VmAllocationIdentity,
+        ) -> Result<(), VmHostError> {
+            let retired = self.retired.get(&identity.allocation_id).ok_or_else(|| {
+                VmHostError::State(format!(
+                    "acknowledged allocation {} has no released journal record",
+                    identity.allocation_id
+                ))
+            })?;
+            if &retired.identity != identity || retired.release_pending {
+                return Err(VmHostError::ImmutableConflict {
+                    allocation_id: identity.allocation_id,
+                });
+            }
+            if let Some(store) = &self.store {
+                store.remove(identity.allocation_id)?;
+            }
+            self.retired.remove(&identity.allocation_id);
+            Ok(())
+        }
+
         fn reconcile(&self) -> Vec<VmAllocationIdentity> {
             self.active
                 .values()
@@ -1236,9 +1275,7 @@ mod supported {
                 config.machine_name = spec.identity.machine_id;
                 let hand = vm_hand::VmHand::start_config(&config)
                     .await
-                    .map_err(|error| {
-                        ProvisionFailure::unproven(VmHostError::Resource(error.to_string()))
-                    })?;
+                    .map_err(vm_hand_start_failure)?;
                 if cancellation.is_cancelled() {
                     let shutdown = hand
                         .shutdown()
@@ -1310,6 +1347,13 @@ mod supported {
                     .join(format!("{}.ext4", identity.allocation_id)),
             ))
         }
+    }
+
+    fn vm_hand_start_failure(error: ManagedError) -> ProvisionFailure {
+        // VmHand startup validates before spawning and VmWorkspace forcibly
+        // terminates a session on every bounded launch failure. No live VMM
+        // escapes an Err, so durable redrive may safely reuse the root.
+        ProvisionFailure::stopped(VmHostError::Resource(error.to_string()))
     }
 
     struct VmAllocation {
@@ -1572,6 +1616,7 @@ mod supported {
                     template_root.display()
                 ))
             })?;
+            let locked_template_root = locked_file_path(&template_lock);
             let hand_template = vm_hand::VmHandConfig {
                 rootfs: config.vm_template.clone(),
                 vm_guest_runtime: Some(config.vm_guest_runtime.clone()),
@@ -1585,8 +1630,13 @@ mod supported {
                 machine_id: "unprovisioned".to_owned(),
                 machine_name: "Unprovisioned VM".to_owned(),
             };
+            vm_hand::VmHand::preflight_host_config(&hand_template)
+                .map_err(|error| VmHostError::Configuration(error.to_string()))?;
             let factory = VmAllocationFactory {
-                template_root,
+                // Clone through the descriptor which owns the shared lock.
+                // Replacing the configured pathname cannot redirect a later
+                // allocation to a different inode.
+                template_root: locked_template_root,
                 allocation_directory: state.directory.join("allocations"),
                 hand_template,
             };
@@ -1629,6 +1679,13 @@ mod supported {
             self.supervisor.complete_startup_releases().await
         }
 
+        fn acknowledge_released(
+            &mut self,
+            identity: &VmAllocationIdentity,
+        ) -> Result<(), VmHostError> {
+            self.supervisor.acknowledge_released(identity)
+        }
+
         pub(crate) fn reconcile(&self) -> Vec<VmAllocationIdentity> {
             self.supervisor.reconcile()
         }
@@ -1636,6 +1693,14 @@ mod supported {
         pub(crate) async fn shutdown(&mut self) -> Result<(), VmHostError> {
             self.supervisor.shutdown().await
         }
+    }
+
+    fn locked_file_path(file: &File) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        let directory = "/proc/self/fd";
+        #[cfg(target_os = "macos")]
+        let directory = "/dev/fd";
+        PathBuf::from(directory).join(file.as_raw_fd().to_string())
     }
 
     enum ControlAuth {
@@ -1679,8 +1744,94 @@ mod supported {
     }
 
     enum ConnectionOutcome {
-        Reconnect,
+        Reconnect { made_progress: bool },
         Shutdown,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PendingCommandKind {
+        Provision,
+        Release,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct PendingCommandIdentity {
+        allocation_id: Uuid,
+        kind: PendingCommandKind,
+    }
+
+    trait PendingLifecycleCommand {
+        fn pending_identity(&self) -> PendingCommandIdentity;
+    }
+
+    impl PendingLifecycleCommand for VmHostCommand {
+        fn pending_identity(&self) -> PendingCommandIdentity {
+            match self {
+                Self::Provision(command) => PendingCommandIdentity {
+                    allocation_id: command.allocation_id(),
+                    kind: PendingCommandKind::Provision,
+                },
+                Self::Release(command) => PendingCommandIdentity {
+                    allocation_id: command.allocation_id(),
+                    kind: PendingCommandKind::Release,
+                },
+                Self::Fenced(_) => unreachable!("fencing is never queued"),
+            }
+        }
+    }
+
+    struct PendingCommandQueue<T> {
+        limit: usize,
+        commands: VecDeque<T>,
+    }
+
+    impl<T: PendingLifecycleCommand> PendingCommandQueue<T> {
+        fn new(max_vms: u16) -> Self {
+            Self {
+                // Reconciliation can release up to one old host snapshot while
+                // a disjoint desired snapshot is being provisioned.
+                limit: usize::from(max_vms).saturating_mul(2),
+                commands: VecDeque::new(),
+            }
+        }
+
+        fn push(&mut self, command: T, active: PendingCommandIdentity) -> Result<(), VmHostError> {
+            let incoming = command.pending_identity();
+            if incoming.allocation_id == active.allocation_id
+                && (active.kind == PendingCommandKind::Release || incoming.kind == active.kind)
+            {
+                return Ok(());
+            }
+            if let Some(position) = self.commands.iter().position(|queued| {
+                queued.pending_identity().allocation_id == incoming.allocation_id
+            }) {
+                let queued = self.commands[position].pending_identity();
+                if queued.kind == PendingCommandKind::Release || queued.kind == incoming.kind {
+                    return Ok(());
+                }
+                // A release supersedes the queued provision for the same
+                // allocation. The inverse is never allowed.
+                self.commands.remove(position);
+            }
+            if self.commands.len() >= self.limit {
+                return Err(VmHostError::State(format!(
+                    "pending VM host command queue exceeded its {}-allocation bound",
+                    self.limit
+                )));
+            }
+            self.commands.push_back(command);
+            Ok(())
+        }
+
+        fn pop(&mut self) -> Option<T> {
+            let release = self
+                .commands
+                .iter()
+                .position(|command| command.pending_identity().kind == PendingCommandKind::Release);
+            release
+                .and_then(|position| self.commands.remove(position))
+                .or_else(|| self.commands.pop_front())
+        }
     }
 
     enum ControlledOperationOutcome<T> {
@@ -1729,9 +1880,10 @@ mod supported {
     async fn drive_controlled_operation<O>(
         operation: O,
         cancellation: &OperationCancellation,
+        active: PendingCommandIdentity,
         connection: &mut VmHostConnection,
         heartbeat: &mut tokio::time::Interval,
-        pending: &mut VecDeque<VmHostCommand>,
+        pending: &mut PendingCommandQueue<VmHostCommand>,
     ) -> Result<ControlledOperationOutcome<O::Output>, ManagedError>
     where
         O: Future,
@@ -1777,7 +1929,14 @@ mod supported {
                 ControlledOperationEvent::Control(Ok(Some(
                     command @ (VmHostCommand::Provision(_) | VmHostCommand::Release(_)),
                 ))) => {
-                    pending.push_back(command);
+                    if let Err(error) = pending.push(command, active) {
+                        return Ok(finish_terminal_operation(
+                            operation.as_mut(),
+                            cancellation,
+                            DeferredControlOutcome::Error(error.into()),
+                        )
+                        .await);
+                    }
                 }
                 ControlledOperationEvent::Control(Ok(Some(command @ VmHostCommand::Fenced(_)))) => {
                     return Ok(finish_terminal_operation(
@@ -1838,6 +1997,7 @@ mod supported {
         operation: &'static str,
         result: Result<VmAllocationChange, VmHostError>,
         terminal: DeferredControlOutcome,
+        made_progress: bool,
     ) -> Result<ConnectionOutcome, ManagedError> {
         if let Err(error) = result {
             tracing::error!(
@@ -1848,7 +2008,7 @@ mod supported {
             );
         }
         match terminal {
-            DeferredControlOutcome::Reconnect => Ok(ConnectionOutcome::Reconnect),
+            DeferredControlOutcome::Reconnect => Ok(ConnectionOutcome::Reconnect { made_progress }),
             DeferredControlOutcome::Shutdown => {
                 host.shutdown().await?;
                 Ok(ConnectionOutcome::Shutdown)
@@ -1918,16 +2078,13 @@ mod supported {
             "VM host is ready for managed allocations"
         );
 
-        let mut retry = Duration::from_millis(250);
+        let mut retry = INITIAL_RECONNECT_DELAY;
         loop {
             let connection = auth
                 .connect(host.host_id(), &config.factory_name, host.capacity(), shape)
                 .await;
             let mut connection = match connection {
-                Ok(connection) => {
-                    retry = Duration::from_millis(250);
-                    connection
-                }
+                Ok(connection) => connection,
                 Err(error @ ManagedError::Configuration(_)) => return Err(error),
                 Err(error) => {
                     tracing::warn!(
@@ -1935,20 +2092,27 @@ mod supported {
                         error = %error,
                         "VM host control connection failed; retrying"
                     );
-                    if wait_to_reconnect_or_shutdown(host, retry).await? {
+                    let delay = next_reconnect_delay(&mut retry, false);
+                    if wait_to_reconnect_or_shutdown(host, delay).await? {
                         return Ok(());
                     }
-                    retry = retry.saturating_mul(2).min(Duration::from_secs(5));
                     continue;
                 }
             };
+            let connected_at = tokio::time::Instant::now();
             match serve_connection(host, &mut connection).await? {
                 ConnectionOutcome::Shutdown => return Ok(()),
-                ConnectionOutcome::Reconnect => {
+                ConnectionOutcome::Reconnect { made_progress } => {
                     tracing::warn!(
                         target: "nanocodex2",
                         "VM host control connection closed; reconciling on reconnect"
                     );
+                    let healthy =
+                        made_progress || connected_at.elapsed() >= HEALTHY_CONNECTION_DURATION;
+                    let delay = next_reconnect_delay(&mut retry, healthy);
+                    if wait_to_reconnect_or_shutdown(host, delay).await? {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -1971,15 +2135,18 @@ mod supported {
             .collect::<Result<Vec<_>, _>>()?;
         if let Err(error) = connection.reconcile(&allocations).await {
             tracing::warn!(target: "nanocodex2", error = %error, "VM host reconciliation failed");
-            return Ok(ConnectionOutcome::Reconnect);
+            return Ok(ConnectionOutcome::Reconnect {
+                made_progress: false,
+            });
         }
 
         let first_heartbeat = tokio::time::Instant::now() + Duration::from_secs(20);
         let mut heartbeat = tokio::time::interval_at(first_heartbeat, Duration::from_secs(20));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut pending_commands = VecDeque::new();
+        let mut pending_commands = PendingCommandQueue::new(host.capacity());
+        let mut made_progress = false;
         loop {
-            let command = if let Some(command) = pending_commands.pop_front() {
+            let command = if let Some(command) = pending_commands.pop() {
                 command
             } else {
                 tokio::select! {
@@ -1992,17 +2159,17 @@ mod supported {
                     }
                     command = connection.next() => match command {
                         Ok(Some(command)) => command,
-                        Ok(None) => return Ok(ConnectionOutcome::Reconnect),
+                        Ok(None) => return Ok(ConnectionOutcome::Reconnect { made_progress }),
                         Err(error @ ManagedError::Configuration(_)) => return Err(error),
                         Err(error) => {
                             tracing::warn!(target: "nanocodex2", error = %error, "VM host control receive failed");
-                            return Ok(ConnectionOutcome::Reconnect);
+                            return Ok(ConnectionOutcome::Reconnect { made_progress });
                         }
                     },
                     _ = heartbeat.tick() => {
                         if let Err(error) = connection.ping(None).await {
                             tracing::warn!(target: "nanocodex2", error = %error, "VM host heartbeat failed");
-                            return Ok(ConnectionOutcome::Reconnect);
+                            return Ok(ConnectionOutcome::Reconnect { made_progress });
                         }
                         continue;
                     }
@@ -2020,9 +2187,14 @@ mod supported {
                         provision.into_attachment(),
                     );
                     let cancellation = OperationCancellation::default();
+                    let active = PendingCommandIdentity {
+                        allocation_id: acknowledgement.allocation_id(),
+                        kind: PendingCommandKind::Provision,
+                    };
                     match drive_controlled_operation(
                         host.provision_controlled(spec, cancellation.clone()),
                         &cancellation,
+                        active,
                         connection,
                         &mut heartbeat,
                         &mut pending_commands,
@@ -2032,7 +2204,7 @@ mod supported {
                         ControlledOperationOutcome::Completed(Ok(_)) => {}
                         ControlledOperationOutcome::Completed(Err(error)) => {
                             tracing::error!(target: "nanocodex2", error = %error, "VM host provision failed; reconnecting for durable redrive");
-                            return Ok(ConnectionOutcome::Reconnect);
+                            return Ok(ConnectionOutcome::Reconnect { made_progress });
                         }
                         ControlledOperationOutcome::Terminal { result, terminal } => {
                             return finish_deferred_control_outcome(
@@ -2040,14 +2212,16 @@ mod supported {
                                 "provision",
                                 result,
                                 terminal,
+                                made_progress,
                             )
                             .await;
                         }
                     }
                     if let Err(error) = connection.provisioned(&acknowledgement).await {
                         tracing::warn!(target: "nanocodex2", error = %error, "VM host provision acknowledgement failed");
-                        return Ok(ConnectionOutcome::Reconnect);
+                        return Ok(ConnectionOutcome::Reconnect { made_progress });
                     }
+                    made_progress = true;
                 }
                 VmHostCommand::Release(release) => {
                     let identity = VmAllocationIdentity {
@@ -2056,9 +2230,14 @@ mod supported {
                         machine_id: release.machine_id().to_owned(),
                     };
                     let cancellation = OperationCancellation::default();
+                    let active = PendingCommandIdentity {
+                        allocation_id: identity.allocation_id,
+                        kind: PendingCommandKind::Release,
+                    };
                     match drive_controlled_operation(
                         host.release(&identity),
                         &cancellation,
+                        active,
                         connection,
                         &mut heartbeat,
                         &mut pending_commands,
@@ -2068,19 +2247,25 @@ mod supported {
                         ControlledOperationOutcome::Completed(Ok(_)) => {}
                         ControlledOperationOutcome::Completed(Err(error)) => {
                             tracing::error!(target: "nanocodex2", error = %error, "VM host release failed; reconnecting for durable redrive");
-                            return Ok(ConnectionOutcome::Reconnect);
+                            return Ok(ConnectionOutcome::Reconnect { made_progress });
                         }
                         ControlledOperationOutcome::Terminal { result, terminal } => {
                             return finish_deferred_control_outcome(
-                                host, "release", result, terminal,
+                                host,
+                                "release",
+                                result,
+                                terminal,
+                                made_progress,
                             )
                             .await;
                         }
                     }
                     if let Err(error) = connection.released(&release).await {
                         tracing::warn!(target: "nanocodex2", error = %error, "VM host release acknowledgement failed");
-                        return Ok(ConnectionOutcome::Reconnect);
+                        return Ok(ConnectionOutcome::Reconnect { made_progress });
                     }
+                    host.acknowledge_released(&identity)?;
+                    made_progress = true;
                 }
                 VmHostCommand::Fenced(fence) => {
                     return Err(ManagedError::VmHost(format!(
@@ -2109,6 +2294,15 @@ mod supported {
         }
     }
 
+    fn next_reconnect_delay(retry: &mut Duration, healthy: bool) -> Duration {
+        if healthy {
+            *retry = INITIAL_RECONNECT_DELAY;
+        }
+        let delay = *retry;
+        *retry = retry.saturating_mul(2).min(MAX_RECONNECT_DELAY);
+        delay
+    }
+
     fn system_host_token_from_environment() -> Result<String, ManagedError> {
         match env::var(SYSTEM_HOST_TOKEN_ENV) {
             Ok(value) if !value.trim().is_empty() => Ok(value),
@@ -2132,6 +2326,22 @@ mod supported {
         };
 
         use super::*;
+
+        #[derive(Debug, Eq, PartialEq)]
+        struct TestPendingCommand {
+            allocation_id: Uuid,
+            kind: PendingCommandKind,
+            sequence: u8,
+        }
+
+        impl PendingLifecycleCommand for TestPendingCommand {
+            fn pending_identity(&self) -> PendingCommandIdentity {
+                PendingCommandIdentity {
+                    allocation_id: self.allocation_id,
+                    kind: self.kind,
+                }
+            }
+        }
 
         #[derive(Clone)]
         struct FakeFactory {
@@ -2432,44 +2642,126 @@ mod supported {
             assert!(matches!(event, ControlledOperationEvent::Completed(7)));
         }
 
-        #[tokio::test]
-        async fn back_to_back_provisions_queue_fifo_while_operation_is_pending() {
-            #[derive(Debug, Eq, PartialEq)]
-            enum TestCommand {
-                Provision(u8),
+        #[test]
+        fn pending_commands_are_bounded_coalesced_and_release_first() {
+            let active_id = Uuid::new_v4();
+            let first = Uuid::new_v4();
+            let second = Uuid::new_v4();
+            let third = Uuid::new_v4();
+            let active = PendingCommandIdentity {
+                allocation_id: active_id,
+                kind: PendingCommandKind::Provision,
+            };
+            let mut queued = PendingCommandQueue::new(1);
+
+            for sequence in [1, 2] {
+                queued
+                    .push(
+                        TestPendingCommand {
+                            allocation_id: first,
+                            kind: PendingCommandKind::Provision,
+                            sequence,
+                        },
+                        active,
+                    )
+                    .unwrap();
             }
-
-            let (complete, operation) = tokio::sync::oneshot::channel::<()>();
-            let operation = async { operation.await.unwrap() };
-            tokio::pin!(operation);
-            let mut queued = VecDeque::new();
-
-            for slot in [0, 1] {
-                let event = next_controlled_operation_event(
-                    operation.as_mut(),
-                    pending::<()>(),
-                    pending::<()>(),
-                    ready(TestCommand::Provision(slot)),
+            assert_eq!(queued.commands.len(), 1, "duplicate provision coalesced");
+            queued
+                .push(
+                    TestPendingCommand {
+                        allocation_id: second,
+                        kind: PendingCommandKind::Provision,
+                        sequence: 3,
+                    },
+                    active,
                 )
-                .await;
-                match event {
-                    ControlledOperationEvent::Control(command) => queued.push_back(command),
-                    _ => panic!("pending operation must accept the queued provision"),
-                }
-            }
+                .unwrap();
+            assert!(
+                queued
+                    .push(
+                        TestPendingCommand {
+                            allocation_id: third,
+                            kind: PendingCommandKind::Provision,
+                            sequence: 4,
+                        },
+                        active,
+                    )
+                    .is_err(),
+                "a third unique identity exceeds twice max_vms"
+            );
+            queued
+                .push(
+                    TestPendingCommand {
+                        allocation_id: second,
+                        kind: PendingCommandKind::Release,
+                        sequence: 5,
+                    },
+                    active,
+                )
+                .unwrap();
 
-            complete.send(()).unwrap();
-            let event = next_controlled_operation_event(
-                operation.as_mut(),
-                pending::<()>(),
-                pending::<()>(),
-                pending::<()>(),
-            )
-            .await;
-            assert!(matches!(event, ControlledOperationEvent::Completed(())));
+            assert_eq!(queued.pop().unwrap().sequence, 5, "release has priority");
             assert_eq!(
-                queued.into_iter().collect::<Vec<_>>(),
-                [TestCommand::Provision(0), TestCommand::Provision(1)]
+                queued.pop().unwrap().sequence,
+                1,
+                "first provision retained"
+            );
+            assert!(queued.pop().is_none());
+
+            let active_release = PendingCommandIdentity {
+                allocation_id: active_id,
+                kind: PendingCommandKind::Release,
+            };
+            queued
+                .push(
+                    TestPendingCommand {
+                        allocation_id: active_id,
+                        kind: PendingCommandKind::Release,
+                        sequence: 6,
+                    },
+                    active_release,
+                )
+                .unwrap();
+            assert!(
+                queued.pop().is_none(),
+                "duplicate in-flight release coalesced"
+            );
+        }
+
+        #[test]
+        fn reconnect_backoff_resets_only_after_meaningful_health() {
+            let mut retry = INITIAL_RECONNECT_DELAY;
+            assert_eq!(
+                next_reconnect_delay(&mut retry, false),
+                Duration::from_millis(250)
+            );
+            assert_eq!(
+                next_reconnect_delay(&mut retry, false),
+                Duration::from_millis(500)
+            );
+            assert_eq!(
+                next_reconnect_delay(&mut retry, false),
+                Duration::from_secs(1)
+            );
+            assert_eq!(
+                next_reconnect_delay(&mut retry, true),
+                INITIAL_RECONNECT_DELAY
+            );
+            assert_eq!(retry, Duration::from_millis(500));
+        }
+
+        #[test]
+        fn vm_hand_start_failures_are_safe_for_same_process_redrive() {
+            let failure = vm_hand_start_failure(ManagedError::Configuration(
+                "pre-launch validation failed".to_owned(),
+            ));
+            assert!(failure.cleanup_safe);
+            assert!(
+                failure
+                    .error
+                    .to_string()
+                    .contains("pre-launch validation failed")
             );
         }
 
@@ -2499,6 +2791,25 @@ mod supported {
             clone_private_root_blocking(&template, &clone).unwrap();
             assert_eq!(fs::read(&template).unwrap(), b"template");
             assert_eq!(fs::read(&clone).unwrap(), b"private");
+        }
+
+        #[test]
+        fn locked_template_descriptor_survives_path_replacement() {
+            let directory = tempfile::tempdir().unwrap();
+            let template = directory.path().join("template.ext4");
+            let replacement = directory.path().join("replacement.ext4");
+            let clone = directory.path().join("allocations/allocation.ext4");
+            fs::write(&template, b"locked-template").unwrap();
+            let locked = File::open(&template).unwrap();
+            fs2::FileExt::try_lock_shared(&locked).unwrap();
+            let locked_path = locked_file_path(&locked);
+
+            fs::write(&replacement, b"replacement-template").unwrap();
+            fs::rename(&replacement, &template).unwrap();
+            clone_private_root_blocking(&locked_path, &clone).unwrap();
+
+            assert_eq!(fs::read(&template).unwrap(), b"replacement-template");
+            assert_eq!(fs::read(&clone).unwrap(), b"locked-template");
         }
 
         #[test]
@@ -2591,6 +2902,47 @@ mod supported {
                     format!("release-recovered:{}", request.identity.allocation_id),
                 ]
             );
+        }
+
+        #[tokio::test]
+        async fn acknowledged_release_compacts_tombstone_and_redrive_recreates_it_safely() {
+            let directory = tempfile::tempdir().unwrap();
+            let state = open_test_state(&directory);
+            let allocation_id = Uuid::new_v4();
+            let identity = VmAllocationIdentity {
+                allocation_id,
+                generation: 1,
+                machine_id: "machine-0".to_owned(),
+            };
+            let record = state
+                .directory
+                .join("allocations")
+                .join(format!("{allocation_id}.json"));
+            let mut supervisor = AllocationSupervisor::with_store(
+                1,
+                FakeFactory {
+                    events: Arc::new(Mutex::new(Vec::new())),
+                },
+                test_store(&state),
+                &state,
+            )
+            .unwrap();
+
+            supervisor.release(&identity).await.unwrap();
+            assert_eq!(
+                read_record(&state, allocation_id).state,
+                AllocationRecordState::Released
+            );
+            supervisor.acknowledge_released(&identity).unwrap();
+            assert!(!record.exists());
+            assert!(!supervisor.retired.contains_key(&allocation_id));
+
+            // If the process dies after the WebSocket send but before the
+            // service commits it, the repeated release is still idempotent.
+            supervisor.release(&identity).await.unwrap();
+            assert!(record.exists());
+            supervisor.acknowledge_released(&identity).unwrap();
+            assert!(!record.exists());
         }
 
         #[tokio::test]

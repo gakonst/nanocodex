@@ -527,63 +527,83 @@ impl VmHostConnection {
             return Ok(None);
         }
         loop {
-            let Some(encoded) = read_text(&mut self.socket).await? else {
-                self.terminal = true;
-                return Ok(None);
+            let encoded = match read_text(&mut self.socket).await {
+                Ok(Some(encoded)) => encoded,
+                Ok(None) => {
+                    self.terminal = true;
+                    return Ok(None);
+                }
+                Err(error) => {
+                    self.terminal = true;
+                    return Err(error);
+                }
             };
-            let frame = decode_server_message(&encoded).map_err(|error| {
+            let frame = decode_server_message(&encoded).inspect_err(|_| {
                 self.terminal = true;
-                error
             })?;
-            match frame {
-                ServerMessage::Lease(_) => {
-                    return self.fail("VM host sent a second lease on one connection");
-                }
-                ServerMessage::Pong(pong) => {
-                    self.validate_pins(&pong.lease_id, pong.epoch)?;
-                    validate_timestamp(pong.expires_at)?;
-                    let expected = self
-                        .pending_ping
-                        .take()
-                        .ok_or_else(|| protocol("VM host sent an unsolicited pong"))?;
-                    if pong.nonce.as_deref().unwrap_or_default() != expected {
-                        return self.fail("VM host pong nonce does not match the outstanding ping");
-                    }
-                    self.expires_at = pong.expires_at;
-                }
-                ServerMessage::Provision(raw) => {
-                    self.require_reconciled()?;
-                    self.validate_pins(&raw.lease_id, raw.epoch)?;
-                    let provision = self.accept_provision(raw)?;
-                    return Ok(Some(VmHostCommand::Provision(provision)));
-                }
-                ServerMessage::Release(raw) => {
-                    self.require_reconciled()?;
-                    self.validate_pins(&raw.lease_id, raw.epoch)?;
-                    let release = self.accept_release(raw)?;
-                    return Ok(Some(VmHostCommand::Release(release)));
-                }
-                ServerMessage::Fenced(fenced) => {
-                    validate_generation(fenced.epoch)?;
-                    validate_bounded_text("fencing reason", &fenced.reason, MAX_REASON_BYTES)?;
-                    if fenced.epoch < self.epoch {
-                        return self.fail("VM host fencing epoch is stale");
-                    }
+            match self.accept_frame(frame) {
+                Ok(Some(command)) => return Ok(Some(command)),
+                Ok(None) => {}
+                Err(error) => {
                     self.terminal = true;
-                    return Ok(Some(VmHostCommand::Fenced(VmHostFence {
-                        epoch: fenced.epoch,
-                        reason: fenced.reason,
-                    })));
+                    return Err(error);
                 }
-                ServerMessage::Error(error) => {
-                    validate_machine_id_like("error code", &error.code)?;
-                    validate_bounded_text("error message", &error.message, MAX_REASON_BYTES)?;
-                    self.terminal = true;
-                    return Err(configuration(format!(
-                        "server rejected VM host control: {}: {}",
-                        error.code, error.message
-                    )));
+            }
+        }
+    }
+
+    fn accept_frame(
+        &mut self,
+        frame: ServerMessage,
+    ) -> Result<Option<VmHostCommand>, ManagedError> {
+        match frame {
+            ServerMessage::Lease(_) => self.fail("VM host sent a second lease on one connection"),
+            ServerMessage::Pong(pong) => {
+                self.validate_pins(&pong.lease_id, pong.epoch)?;
+                validate_timestamp(pong.expires_at)?;
+                let expected = self
+                    .pending_ping
+                    .as_deref()
+                    .ok_or_else(|| protocol("VM host sent an unsolicited pong"))?;
+                if pong.nonce.as_deref().unwrap_or_default() != expected {
+                    return self.fail("VM host pong nonce does not match the outstanding ping");
                 }
+                self.pending_ping = None;
+                self.expires_at = pong.expires_at;
+                Ok(None)
+            }
+            ServerMessage::Provision(raw) => {
+                self.require_reconciled()?;
+                self.validate_pins(&raw.lease_id, raw.epoch)?;
+                let provision = self.accept_provision(raw)?;
+                Ok(Some(VmHostCommand::Provision(provision)))
+            }
+            ServerMessage::Release(raw) => {
+                self.require_reconciled()?;
+                self.validate_pins(&raw.lease_id, raw.epoch)?;
+                let release = self.accept_release(raw)?;
+                Ok(Some(VmHostCommand::Release(release)))
+            }
+            ServerMessage::Fenced(fenced) => {
+                validate_generation(fenced.epoch)?;
+                validate_bounded_text("fencing reason", &fenced.reason, MAX_REASON_BYTES)?;
+                if fenced.epoch < self.epoch {
+                    return self.fail("VM host fencing epoch is stale");
+                }
+                self.terminal = true;
+                Ok(Some(VmHostCommand::Fenced(VmHostFence {
+                    epoch: fenced.epoch,
+                    reason: fenced.reason,
+                })))
+            }
+            ServerMessage::Error(error) => {
+                validate_machine_id_like("error code", &error.code)?;
+                validate_bounded_text("error message", &error.message, MAX_REASON_BYTES)?;
+                self.terminal = true;
+                Err(configuration(format!(
+                    "server rejected VM host control: {}: {}",
+                    error.code, error.message
+                )))
             }
         }
     }
@@ -595,6 +615,7 @@ impl VmHostConnection {
             return self.fail("VM host provision slot is outside max_vms");
         }
         validate_machine_id(&raw.machine_id)?;
+        let attachment = attachment_target(raw.tool_attachment.clone())?;
         let fingerprint = ProvisionFingerprint {
             generation: raw.generation,
             slot: raw.slot,
@@ -625,7 +646,6 @@ impl VmHostConnection {
                 },
             );
         }
-        let attachment = attachment_target(raw.tool_attachment)?;
         Ok(VmHostProvision {
             allocation_id,
             generation: raw.generation,
@@ -639,26 +659,28 @@ impl VmHostConnection {
         let allocation_id = parse_v4_uuid("allocation", &raw.allocation_id)?;
         validate_generation(raw.generation)?;
         validate_machine_id(&raw.machine_id)?;
-        if self.allocations.contains_key(&allocation_id) {
-            self.require_known(allocation_id, raw.generation, &raw.machine_id, false)?;
-            self.allocations
-                .get_mut(&allocation_id)
-                .expect("known allocation was just validated")
-                .releasing = true;
-        } else {
-            // A release may be replayed after its acknowledgement was lost, or
-            // after a replacement lease reconciled no ready copy. Keep the
-            // identity long enough for the local supervisor to apply its
-            // idempotent release/tombstone and acknowledge it again.
-            self.allocations.insert(
-                allocation_id,
-                KnownAllocation {
+        match self.allocations.entry(allocation_id) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let existing = entry.get();
+                if existing.generation != raw.generation || existing.machine_id != raw.machine_id {
+                    return Err(protocol(
+                        "VM host release changed immutable allocation identity",
+                    ));
+                }
+                entry.get_mut().releasing = true;
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                // A release may be replayed after its acknowledgement was lost, or
+                // after a replacement lease reconciled no ready copy. Keep the
+                // identity long enough for the local supervisor to apply its
+                // idempotent release/tombstone and acknowledge it again.
+                entry.insert(KnownAllocation {
                     generation: raw.generation,
                     machine_id: raw.machine_id.clone(),
                     provision: None,
                     releasing: true,
-                },
-            );
+                });
+            }
         }
         Ok(VmHostRelease {
             allocation_id,
@@ -1298,6 +1320,37 @@ mod tests {
         }
     }
 
+    async fn connection_pair() -> (VmHostConnection, WebSocketStream<tokio::net::TcpStream>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let peer = server.await.unwrap();
+        let lease_id = parse_v4_uuid("lease", LEASE_ID).unwrap();
+        (
+            VmHostConnection {
+                socket,
+                scope: VmHostScope::User,
+                host_id: Uuid::new_v4(),
+                max_vms: 2,
+                vm: VmShape::new(2, 1_024).unwrap(),
+                lease_id,
+                epoch: 1,
+                expires_at: 10,
+                reconciled: true,
+                pending_ping: None,
+                allocations: HashMap::new(),
+                terminal: false,
+            },
+            peer,
+        )
+    }
+
     #[test]
     fn strict_frames_reject_unknown_fields_and_noncanonical_identities() {
         let valid = json!({
@@ -1449,6 +1502,64 @@ mod tests {
             matching,
         ));
         assert!(allocations[&allocation_id].provision.is_none());
+    }
+
+    #[tokio::test]
+    async fn duplicate_release_is_an_idempotent_redrive() {
+        let (mut connection, mut peer) = connection_pair().await;
+        let allocation_id = parse_v4_uuid("allocation", ALLOCATION_ID).unwrap();
+        connection
+            .allocations
+            .insert(allocation_id, reconciled_allocation("machine-1"));
+        let release = json!({
+            "type":"release", "lease_id":LEASE_ID, "epoch":1,
+            "allocation_id":ALLOCATION_ID, "generation":1,
+            "machine_id":"machine-1"
+        })
+        .to_string();
+
+        peer.send(Message::Text(release.clone().into()))
+            .await
+            .unwrap();
+        peer.send(Message::Text(release.into())).await.unwrap();
+
+        for _ in 0..2 {
+            let Some(VmHostCommand::Release(command)) = connection.next().await.unwrap() else {
+                panic!("expected an idempotent release command");
+            };
+            assert_eq!(command.allocation_id(), allocation_id);
+        }
+        assert!(connection.allocations[&allocation_id].releasing);
+        assert!(!connection.terminal);
+    }
+
+    #[tokio::test]
+    async fn invalid_provision_is_terminal_without_publishing_partial_state() {
+        let (mut connection, mut peer) = connection_pair().await;
+        let allocation_id = parse_v4_uuid("allocation", ALLOCATION_ID).unwrap();
+        connection
+            .allocations
+            .insert(allocation_id, reconciled_allocation("machine-1"));
+        peer.send(Message::Text(
+            json!({
+                "type":"provision", "lease_id":LEASE_ID, "epoch":1,
+                "allocation_id":ALLOCATION_ID, "generation":1, "slot":0,
+                "machine_id":"machine-1",
+                "tool_attachment":{
+                    "url":"wss://tools.example/attach",
+                    "bearer":"invalid"
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+        assert!(connection.next().await.is_err());
+        assert!(connection.terminal);
+        assert!(connection.allocations[&allocation_id].provision.is_none());
+        assert!(connection.next().await.unwrap().is_none());
     }
 
     #[test]

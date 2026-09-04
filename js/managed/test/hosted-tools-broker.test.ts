@@ -11,6 +11,7 @@ import {
 import {
   HostedToolsBroker,
   HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE,
+  type HostedToolsAuthorizationContext,
   type HostedToolsBrokerContext,
   type HostedToolsBrokerPersistence,
 } from "../src/hosted-tools-broker";
@@ -252,6 +253,60 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.machines()).toEqual([expect.objectContaining({ name: "Impostor" })]);
     expect(fixture.broker.machineOnRoute(route, "vm:mount")).toBeUndefined();
     expect(fixture.broker.machineToolOnRoute(route, "vm:mount", "exec_command")).toBeUndefined();
+  });
+
+  it.each([
+    ["after its root turn ends", undefined],
+    ["while a differently authorized root is active", "connect"],
+  ] as const)("uses retained child authority for a leased VM %s", async (_label, rootAuthority) => {
+    const childSessionId = "01995555-5555-7555-8555-555555555555";
+    const fixture = createFixture((_entry, _grantId, _digest, context) => {
+      const authority = context?.subagent?.sessionId === childSessionId
+        ? "account"
+        : rootAuthority;
+      return authority === "account";
+    });
+    const route = "vm-host:44444444-4444-4444-8444-444444444444:10";
+    const leased = fixture.socket(undefined, undefined, undefined, "vm:retained", NOW + 20, route);
+    await fixture.broker.message(leased.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "vm:retained",
+      tools: [machineEntry("exec_command")],
+      machines: [{
+        id: "vm:retained",
+        name: "Retained child VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+    const context = {
+      sessionId: childSessionId,
+      callId: `source:${rootAuthority ?? "ended"}`,
+      subagent: {
+        agentId: "child-agent",
+        parentAgentId: null,
+        sessionId: childSessionId,
+        role: "worker",
+        task: "continue after the root turn",
+      },
+    };
+
+    expect(fixture.broker.machineToolOnRoute(
+      route,
+      "vm:retained",
+      "exec_command",
+    )).toBeUndefined();
+    const selected = fixture.broker.machineToolOnRoute(
+      route,
+      "vm:retained",
+      "exec_command",
+      context,
+    );
+    expect(selected).toBeDefined();
+    const pending = selected!.handler({ cmd: "pwd" }, context);
+    const call = leased.sent.find((frame) => frame.type === "call")!;
+    await fixture.broker.message(leased.webSocket, result(call.call_id as string, "retained"));
+    await expect(pending).resolves.toMatchObject({ output: "retained" });
   });
 
   it("rejects non-machine tools from leased attachments", async () => {
@@ -949,6 +1004,7 @@ function createFixture(
     entry: HostedToolCatalogEntry,
     connectGrantId?: string,
     appToolCatalogDigest?: string,
+    context?: HostedToolsAuthorizationContext,
   ) => boolean,
   options?: Readonly<{
     now?: () => number;
