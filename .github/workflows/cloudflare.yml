@@ -169,6 +169,30 @@ jobs:
       - name: Deploy Astra trial application
         working-directory: examples/astra-mpp-trial
         run: npx wrangler deploy --env="" --message "$DEPLOY_MESSAGE"
+      - name: Configure Astra trial secrets
+        working-directory: examples/astra-mpp-trial
+        env:
+          ASTRA_MANAGED_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
+          ASTRA_MPP_SECRET: ${{ secrets.NANOCODEX_ASTRA_MPP_SECRET }}
+          TEMPO_API_KEY: ${{ secrets.TEMPO_MPP_API_KEY }}
+        run: |
+          missing=()
+          [ -n "$ASTRA_MANAGED_API_KEY" ] || missing+=(NANOCODEX_ASTRA_MANAGED_API_KEY)
+          [ -n "$ASTRA_MPP_SECRET" ] || missing+=(NANOCODEX_ASTRA_MPP_SECRET)
+          [ -n "$TEMPO_API_KEY" ] || missing+=(TEMPO_MPP_API_KEY)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice::Astra trial remains fail-closed; missing repository secrets: ${missing[*]}"
+          fi
+          if [ "${#missing[@]}" -lt 3 ]; then
+            node --input-type=module -e '
+              const entries = [
+                ["NANOCODEX_ASTRA_MANAGED_API_KEY", process.env.ASTRA_MANAGED_API_KEY],
+                ["NANOCODEX_ASTRA_MPP_SECRET", process.env.ASTRA_MPP_SECRET],
+                ["TEMPO_MPP_API_KEY", process.env.TEMPO_API_KEY],
+              ].filter(([, value]) => value);
+              process.stdout.write(JSON.stringify(Object.fromEntries(entries)));
+            ' | npx wrangler secret bulk --env=""
+          fi
       - name: Deploy Chief of Staff integration
         working-directory: js/chief-of-staff
         run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
