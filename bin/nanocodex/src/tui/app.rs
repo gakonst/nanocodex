@@ -63,6 +63,13 @@ pub(super) const STANDARD_THINKING_OPTIONS: [(Thinking, &str, &str); 4] = [
     ),
 ];
 
+pub(super) const MODEL_OPTIONS: [(Model, &str); 4] = [
+    (Model::Luna, "Luna"),
+    (Model::Terra, "Terra"),
+    (Model::Sol, "Sol"),
+    (Model::Astra, "Astra"),
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ReasoningPicker {
     Standard { selected: usize },
@@ -73,6 +80,11 @@ pub(super) enum ReasoningPicker {
 pub(super) enum ReasoningPickerAction {
     OpenedAdvanced,
     Selected(Thinking),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ModelPickerAction {
+    Selected(Model),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1198,6 +1210,7 @@ pub(super) struct App {
     fast_mode: bool,
     model: Model,
     thinking: Thinking,
+    model_picker: Option<usize>,
     reasoning_picker: Option<ReasoningPicker>,
 }
 
@@ -1251,6 +1264,7 @@ impl App {
             fast_mode: false,
             model: Model::default(),
             thinking: Thinking::default(),
+            model_picker: None,
             reasoning_picker: None,
         }
     }
@@ -2815,6 +2829,36 @@ impl App {
     pub(super) fn model_change_failed(&mut self, error: &str) {
         self.push_active_error(format!("Could not change model: {error}"));
         self.set_active_status("Model unchanged");
+    }
+
+    pub(super) const fn model_picker(&self) -> Option<usize> {
+        self.model_picker
+    }
+
+    pub(super) fn open_model_picker(&mut self) {
+        let selected = MODEL_OPTIONS
+            .iter()
+            .position(|(model, _)| *model == self.model)
+            .unwrap_or(0);
+        self.model_picker = Some(selected);
+    }
+
+    pub(super) fn move_model_picker(&mut self, direction: isize) {
+        let Some(selected) = &mut self.model_picker else {
+            return;
+        };
+        *selected = selected
+            .saturating_add_signed(direction)
+            .min(MODEL_OPTIONS.len().saturating_sub(1));
+    }
+
+    pub(super) fn confirm_model_picker(&mut self) -> Option<ModelPickerAction> {
+        let selected = self.model_picker.take()?;
+        Some(ModelPickerAction::Selected(MODEL_OPTIONS[selected].0))
+    }
+
+    pub(super) const fn close_model_picker(&mut self) {
+        self.model_picker = None;
     }
 
     pub(super) const fn reasoning_picker(&self) -> Option<ReasoningPicker> {

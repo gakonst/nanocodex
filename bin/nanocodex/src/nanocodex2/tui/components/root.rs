@@ -5,7 +5,10 @@
 
 use super::{
     actions::{Action, ActionAvailability, ActionsEffect, ActionsEvent, ActionsMenu},
-    composer::{Composer, ComposerChromeTarget, ComposerDraft, ComposerEffect, ComposerEvent},
+    composer::{
+        Composer, ComposerChromeTarget, ComposerDraft, ComposerEffect, ComposerEvent,
+        SettingsCommand,
+    },
     context_diagnostics::{
         ContextDiagnosticsEffect, ContextDiagnosticsEvent, ContextDiagnosticsPanel,
     },
@@ -594,6 +597,7 @@ impl RootNode {
         let preserve_active_submission = self.has_active_turns()
             || !self.queue.component().is_empty()
             || self.queue.component().has_pending_steer();
+        let started = preserve_active_submission || !projection.recent_prompts.is_empty();
         if preserve_active_submission {
             self.workspace = workspace.to_path_buf();
             let _ = self
@@ -629,7 +633,11 @@ impl RootNode {
                 .component_mut()
                 .update(ComposerEvent::ContextTokens(tokens));
         }
-        self.thread = ThreadState::Started;
+        self.thread = if started {
+            ThreadState::Started
+        } else {
+            ThreadState::New
+        };
     }
 
     pub(crate) const fn composer(&self) -> &Composer {
@@ -1481,6 +1489,10 @@ impl RootNode {
         let update = actions.update(ActionsEvent::Terminal(event));
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
+            Some(ActionsEffect::Settings(command)) => {
+                self.overlay = None;
+                return self.apply_settings_command(command);
+            }
             Some(ActionsEffect::Trigger(Action::Effort)) => {
                 return self.open_effort();
             }
@@ -1628,7 +1640,11 @@ impl RootNode {
 
     fn open_model(&mut self) -> ComponentUpdate<RootEffect> {
         if self.thread != ThreadState::New {
-            return ComponentUpdate::none();
+            self.notification = Some(Notification::plain(
+                "The model can only be changed before the first prompt".to_owned(),
+                Color::Red,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
         }
         self.overlay = Some(Overlay::Model(Node::new(ModelSelector::new(
             self.composer.component().model(),
@@ -1945,38 +1961,40 @@ impl RootNode {
         self.overlay = None;
         match effect {
             EffortEffect::Dismiss => ComponentUpdate::render(RenderRequest::Immediate),
-            EffortEffect::Apply(effort, pro) => {
-                let reasoning_mode = if pro {
-                    ReasoningMode::Pro
-                } else {
-                    ReasoningMode::Standard
-                };
-                let previous_reasoning_mode = self.preferred_reasoning_mode;
-                self.preferred_reasoning_mode = reasoning_mode;
-                if reasoning_mode != previous_reasoning_mode {
-                    let state = if pro { "enabled" } else { "disabled" };
-                    let suffix = if self.composer.component().reasoning_mode() != reasoning_mode {
-                        " · start a new session to apply."
-                    } else {
-                        "."
-                    };
-                    let message = format!("Pro {state} for new sessions{suffix}");
-                    self.notification = Some(Notification::plain(message, Color::Green));
-                }
-                self.transcript.component_mut().set_effort(effort);
-                self.subagents.set_effort(effort);
-                let _ = self
-                    .composer
-                    .component_mut()
-                    .update(ComposerEvent::SetEffort(effort));
-                ComponentUpdate {
-                    effects: vec![RootEffect::SetEffort {
-                        effort,
-                        reasoning_mode,
-                    }],
-                    render: RenderRequest::Immediate,
-                }
-            }
+            EffortEffect::Apply(effort, pro) => self.apply_effort(effort, pro),
+        }
+    }
+
+    fn apply_effort(&mut self, effort: ReasoningEffort, pro: bool) -> ComponentUpdate<RootEffect> {
+        let reasoning_mode = if pro {
+            ReasoningMode::Pro
+        } else {
+            ReasoningMode::Standard
+        };
+        let previous_reasoning_mode = self.preferred_reasoning_mode;
+        self.preferred_reasoning_mode = reasoning_mode;
+        if reasoning_mode != previous_reasoning_mode {
+            let state = if pro { "enabled" } else { "disabled" };
+            let suffix = if self.composer.component().reasoning_mode() != reasoning_mode {
+                " · start a new session to apply."
+            } else {
+                "."
+            };
+            let message = format!("Pro {state} for new sessions{suffix}");
+            self.notification = Some(Notification::plain(message, Color::Green));
+        }
+        self.transcript.component_mut().set_effort(effort);
+        self.subagents.set_effort(effort);
+        let _ = self
+            .composer
+            .component_mut()
+            .update(ComposerEvent::SetEffort(effort));
+        ComponentUpdate {
+            effects: vec![RootEffect::SetEffort {
+                effort,
+                reasoning_mode,
+            }],
+            render: RenderRequest::Immediate,
         }
     }
 
@@ -1998,24 +2016,33 @@ impl RootNode {
         }
         match effect {
             ModelSelectorEffect::Dismiss => ComponentUpdate::render(RenderRequest::Immediate),
-            ModelSelectorEffect::Apply(model) if model == self.composer.component().model() => {
-                ComponentUpdate::render(RenderRequest::Immediate)
-            }
-            ModelSelectorEffect::Apply(model) => {
-                self.interactive = false;
-                let _ = self
-                    .composer
-                    .component_mut()
-                    .update(ComposerEvent::Activity {
-                        active: true,
-                        status: Some(format!("Starting {} session…", model_name(model))),
-                        now: Instant::now(),
-                    });
-                ComponentUpdate {
-                    effects: vec![RootEffect::SetModel(model)],
-                    render: RenderRequest::Immediate,
-                }
-            }
+            ModelSelectorEffect::Apply(model) => self.apply_model(model),
+        }
+    }
+
+    fn apply_model(&mut self, model: Model) -> ComponentUpdate<RootEffect> {
+        if self.thread != ThreadState::New {
+            self.notification = Some(Notification::plain(
+                "The model can only be changed before the first prompt".to_owned(),
+                Color::Red,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if model == self.composer.component().model() {
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        self.interactive = false;
+        let _ = self
+            .composer
+            .component_mut()
+            .update(ComposerEvent::Activity {
+                active: true,
+                status: Some(format!("Starting {} session…", model_name(model))),
+                now: Instant::now(),
+            });
+        ComponentUpdate {
+            effects: vec![RootEffect::SetModel(model)],
+            render: RenderRequest::Immediate,
         }
     }
 
@@ -2120,6 +2147,9 @@ impl RootNode {
         priority: RenderRequest,
     ) -> ComponentUpdate<RootEffect> {
         let update = self.composer.component_mut().update(event);
+        if let Some(ComposerEffect::Settings(command)) = &update.effect {
+            return self.apply_settings_command(command.clone());
+        }
         let delivered = matches!(
             &update.effect,
             Some(ComposerEffect::Submit(_) | ComposerEffect::Queue(_))
@@ -2159,6 +2189,9 @@ impl RootNode {
                 vec![RootEffect::RunShell(command)]
             }
             Some(ComposerEffect::OpenDraftEditor) => vec![RootEffect::OpenDraftEditor],
+            Some(ComposerEffect::Settings(_)) => {
+                unreachable!("settings commands return before prompt delivery")
+            }
             None => Vec::new(),
         };
 
@@ -2179,6 +2212,21 @@ impl RootNode {
         render = render.max(controls);
 
         ComponentUpdate { effects, render }
+    }
+
+    fn apply_settings_command(&mut self, command: SettingsCommand) -> ComponentUpdate<RootEffect> {
+        match command {
+            SettingsCommand::OpenEffort => self.open_effort(),
+            SettingsCommand::SetEffort(effort) => {
+                self.apply_effort(effort, self.preferred_reasoning_mode == ReasoningMode::Pro)
+            }
+            SettingsCommand::OpenModel => self.open_model(),
+            SettingsCommand::SetModel(model) => self.apply_model(model),
+            SettingsCommand::Invalid(message) => {
+                self.notification = Some(Notification::plain(message, Color::Red));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+        }
     }
 
     fn submit_reflection(&mut self) -> ComponentUpdate<RootEffect> {
@@ -3342,10 +3390,13 @@ mod history_tests {
 #[cfg(test)]
 mod live_control_tests {
     use super::{Component, RootEffect, RootEvent, RootNode};
-    use crate::config::ReasoningEffort;
+    use crate::config::{ReasoningEffort, ReasoningMode};
     use crate::tui::transcript::TranscriptRecord;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use nanocodex::agent::events::{AgentEvent, AgentEventKind};
+    use nanocodex::{
+        Model,
+        agent::events::{AgentEvent, AgentEventKind},
+    };
     use serde_json::{json, value::to_raw_value};
     use std::{path::Path, sync::Arc};
 
@@ -3372,6 +3423,81 @@ mod live_control_tests {
         );
         assert_eq!(root.in_flight_turns, 1);
         assert!(root.queue.component().is_empty());
+    }
+
+    #[test]
+    fn slash_model_command_routes_as_a_hosted_setting_instead_of_a_prompt() {
+        let mut root = root_with_draft("/model astra");
+
+        let update = root.update(key(KeyCode::Enter));
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::SetModel(Model::Astra)]
+        ));
+        assert!(matches!(root.thread, super::ThreadState::New));
+        assert!(root.composer.component().draft().is_empty());
+        assert_eq!(root.in_flight_turns, 0);
+    }
+
+    #[test]
+    fn slash_action_overlay_routes_direct_model_command() {
+        let mut root = root_with_draft("");
+        let _ = root.update(key(KeyCode::Char('/')));
+        for character in "model astra".chars() {
+            let _ = root.update(key(KeyCode::Char(character)));
+        }
+
+        let update = root.update(key(KeyCode::Enter));
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::SetModel(Model::Astra)]
+        ));
+        assert!(matches!(root.thread, super::ThreadState::New));
+        assert_eq!(root.in_flight_turns, 0);
+    }
+
+    #[test]
+    fn empty_attached_agent_keeps_model_selection_unlocked() {
+        let mut root = root_with_draft("");
+        let projection = RootNode::project_open_session(ReasoningEffort::Medium, Vec::new());
+        root.install_session_projection(
+            Path::new("/workspace"),
+            ReasoningEffort::Medium,
+            ReasoningMode::Standard,
+            ReasoningMode::Standard,
+            false,
+            projection,
+        );
+        let _ = root.update(key(KeyCode::Char('/')));
+        for character in "model astra".chars() {
+            let _ = root.update(key(KeyCode::Char(character)));
+        }
+
+        let update = root.update(key(KeyCode::Enter));
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::SetModel(Model::Astra)]
+        ));
+    }
+
+    #[test]
+    fn slash_thinking_alias_routes_as_a_durable_effort_setting() {
+        let mut root = root_with_draft("/reasoning high");
+
+        let update = root.update(key(KeyCode::Enter));
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::SetEffort {
+                effort: ReasoningEffort::High,
+                ..
+            }]
+        ));
+        assert_eq!(root.composer.component().effort(), ReasoningEffort::High);
+        assert_eq!(root.in_flight_turns, 0);
     }
 
     #[test]

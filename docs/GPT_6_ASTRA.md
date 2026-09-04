@@ -195,6 +195,14 @@ Catalog failures fail closed to the existing model default; API-key and sponsore
 connections never infer Astra access. The selector is available only before the
 first accepted turn, while thinking and Fast remain live settings.
 
+Both native terminal clients expose the complete Sol, Terra, Luna, and Astra
+roster through `/model`; `/model astra` applies the same selection directly.
+`/effort`, `/reasoning`, and `/thinking` are aliases for the reasoning picker and
+accept a direct `low`, `medium`, `high`, `xhigh`, or `max` value. In the managed
+client these commands update the hosted agent's retained settings and are never
+submitted or recorded as model prompts. The hosted service continues to enforce
+the first-accepted-turn model lock and validates incompatible Astra settings.
+
 On September 4, 2026, a local subscription-authenticated smoke test reached
 `gpt-6-astra` over the Responses WebSocket with max thinking and standard service
 tier. It ran a workspace `pwd`, spawned and joined a low-thinking child agent,
