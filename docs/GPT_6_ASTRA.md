@@ -209,10 +209,10 @@ provider steering protocol.
 
 ## Rollout and live evidence
 
-New brokered ChatGPT conversations use Astra only after the authenticated Codex
-model catalog lists the exact `gpt-6-astra` slug with `visibility: "list"`.
-Catalog failures fail closed to the existing model default; API-key and sponsored
-connections never infer Astra access. The selector is available only before the
+The managed `nanocodex2` terminal selects Astra directly for new conversations;
+an explicit provider rejection is its availability signal. The account app still
+uses the authenticated Codex model catalog to choose its default and fails closed
+when that projection is unavailable. The selector is available only before the
 first accepted turn, while thinking and Fast remain live settings.
 
 Both native terminal clients expose the complete Sol, Terra, Luna, and Astra
