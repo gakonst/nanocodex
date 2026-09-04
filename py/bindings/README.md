@@ -149,13 +149,16 @@ agent, events = Nanocodex(auth_file="/path/to/.codex/auth.json")
 agent.shutdown()
 ```
 
-GPT-5.6 Pro is an execution mode, not a model slug:
+Pro is an execution mode, not a model slug. GPT-6 Astra is selected with
+`model="gpt-6-astra"`, requires `thinking="low"` or greater, and currently
+supports only standard reasoning mode:
 
 ```python
 agent, events = Nanocodex(
     api_key,
-    reasoning_mode="pro",
-    thinking="xhigh",  # none, low, medium, high, xhigh, or max
+    model="gpt-6-astra",
+    reasoning_mode="standard",
+    thinking="xhigh",
     fast_mode=True,
 )
 agent.shutdown()

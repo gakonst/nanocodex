@@ -322,6 +322,14 @@ pub struct AgentSettings {
     pub fast_mode: bool,
 }
 
+/// Account-scoped model availability resolved by the managed credential broker.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelCapabilities {
+    /// Whether the connected ChatGPT account exposes GPT-6 Astra in its picker catalog.
+    pub astra_entitled: bool,
+}
+
 impl Default for AgentSettings {
     fn default() -> Self {
         Self {
@@ -335,17 +343,22 @@ impl Default for AgentSettings {
 
 impl AgentSettings {
     pub(crate) fn validate(self) -> Result<Self, ManagedError> {
-        if self.is_valid() {
-            Ok(self)
-        } else {
-            Err(ManagedError::Configuration(
+        if !self.model.supports_thinking(self.thinking) {
+            return Err(ManagedError::Configuration(
                 "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort".to_owned(),
-            ))
+            ));
         }
+        if !self.model.supports_reasoning_mode(self.reasoning_mode) {
+            return Err(ManagedError::Configuration(
+                "GPT-6 Astra does not support pro reasoning mode".to_owned(),
+            ));
+        }
+        Ok(self)
     }
 
     pub(crate) const fn is_valid(&self) -> bool {
         self.model.supports_thinking(self.thinking)
+            && self.model.supports_reasoning_mode(self.reasoning_mode)
     }
 }
 
@@ -693,6 +706,20 @@ mod settings_tests {
         .expect_err("Astra must reject none reasoning");
 
         assert!(error.to_string().contains("GPT-6 Astra requires"));
+    }
+
+    #[test]
+    fn astra_settings_reject_pro_reasoning_before_transport() {
+        let error = AgentSettings {
+            model: Model::Astra,
+            thinking: Thinking::Max,
+            reasoning_mode: ReasoningMode::Pro,
+            fast_mode: false,
+        }
+        .validate()
+        .expect_err("Astra must reject pro reasoning mode");
+
+        assert!(error.to_string().contains("does not support pro"));
     }
 }
 

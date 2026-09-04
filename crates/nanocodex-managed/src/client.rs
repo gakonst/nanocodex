@@ -13,9 +13,9 @@ use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
     EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse, ManagedApiKey,
-    ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord, PromptInput,
-    ReadSessionBody, ReadSessionRequest, ReadSessionResponse, TurnAction, TurnSteer,
-    TurnSubmission, TurnView,
+    ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord,
+    ModelCapabilities, PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse,
+    TurnAction, TurnSteer, TurnSubmission, TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;
@@ -145,6 +145,19 @@ impl ManagedClient {
     pub async fn create(&self) -> Result<AgentReceipt, ManagedError> {
         let receipt = self.json(Method::POST, "v1/agents", None, None).await?;
         validate_agent_receipt(receipt)
+    }
+
+    /// Resolves the model availability advertised by the connected account.
+    ///
+    /// This is an authoritative, fail-closed server projection; provider
+    /// credentials and the raw remote model catalog never cross this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport, HTTP, size, or response-schema failure.
+    pub async fn model_capabilities(&self) -> Result<ModelCapabilities, ManagedError> {
+        self.json(Method::GET, "v1/model-capabilities", None, None)
+            .await
     }
 
     pub(crate) async fn create_with_settings(

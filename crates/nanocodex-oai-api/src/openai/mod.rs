@@ -565,6 +565,11 @@ fn validate(config: &ModelConfig) -> Result<(), OpenAiError> {
             detail: "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort",
         });
     }
+    if !config.model.supports_reasoning_mode(config.reasoning_mode) {
+        return Err(OpenAiError::InvalidConfiguration {
+            detail: "GPT-6 Astra does not support pro reasoning mode",
+        });
+    }
     if config.context_window_tokens == 0 {
         return Err(OpenAiError::InvalidConfiguration {
             detail: "the model context window must be greater than zero",
@@ -736,6 +741,19 @@ mod tests {
             .expect("Astra none reasoning should fail validation");
 
         assert!(error.to_string().contains("GPT-6 Astra requires low"));
+    }
+
+    #[test]
+    fn astra_rejects_unsupported_pro_reasoning_mode() {
+        let error = OpenAi::builder("test-key")
+            .model(crate::Model::Astra)
+            .reasoning_mode(crate::ReasoningMode::Pro)
+            .service(|| NeverCalled)
+            .build()
+            .err()
+            .expect("Astra pro reasoning mode should fail validation");
+
+        assert!(error.to_string().contains("does not support pro"));
     }
 
     #[test]

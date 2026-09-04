@@ -374,7 +374,7 @@ fn spawn_agent_parameters() -> Value {
             },
             "model": {
                 "type": "string",
-                "enum": ["sol", "terra", "luna"],
+                "enum": ["sol", "terra", "luna", "astra"],
                 "description": "Model override for the new agent. Omit to inherit the parent's current model."
             },
             "thinking": {
@@ -835,7 +835,7 @@ mod tests {
 
         assert_eq!(
             parameters["properties"]["model"]["enum"],
-            json!(["sol", "terra", "luna"])
+            json!(["sol", "terra", "luna", "astra"])
         );
         assert_eq!(
             parameters["properties"]["thinking"]["enum"],
@@ -874,6 +874,17 @@ mod tests {
         assert_eq!(inherited.thinking, None);
         let (_, options) = inherited.into_parts();
         assert_eq!(options, SpawnOptions::new());
+
+        let astra: SpawnAgentTask = serde_json::from_value(json!({
+            "role": "researcher",
+            "task": "inspect the implementation",
+            "model": "astra",
+            "thinking": "max",
+            "output_schema": { "type": "object" }
+        }))
+        .unwrap();
+        assert_eq!(astra.model, Some(Model::Astra));
+        assert_eq!(astra.thinking, Some(Thinking::Max));
     }
 
     #[test]

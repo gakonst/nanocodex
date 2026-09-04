@@ -466,6 +466,7 @@ test("session, branching, realtime, and graceful lifecycle remain DefaultAgent-s
   const worker = new LoopbackWorker(fixture.createAgent);
   const root = await createWorkerAgent({ sessionId: "root", harness: false }, { worker });
 
+  await root.session.setModel("gpt-6-astra");
   await root.session.setThinking("high");
   await root.session.setFastMode(true);
   await root.session.compact();
@@ -480,6 +481,12 @@ test("session, branching, realtime, and graceful lifecycle remain DefaultAgent-s
   assert.equal(await root.session.realtime.tailDelegation([]), undefined);
   assert.equal(
     fixture.log.some(([kind]) => kind === "realtime-delegation"),
+    true,
+  );
+  assert.equal(
+    fixture.log.some(([kind, sessionId, model]) => (
+      kind === "model" && sessionId === "root" && model === "gpt-6-astra"
+    )),
     true,
   );
 
@@ -1753,6 +1760,7 @@ function createFixture(options = {}) {
         return JSON.stringify({ workspace: `/workspace/${sessionId}`, history: [] });
       },
       async setThinking(value) { log.push(["thinking", sessionId, value]); },
+      async setModel(value) { log.push(["model", sessionId, value]); },
       async setFastMode(value) { log.push(["fast", sessionId, value]); },
       async appendDeveloperMessage(text) {
         log.push(["developer", sessionId, text]);

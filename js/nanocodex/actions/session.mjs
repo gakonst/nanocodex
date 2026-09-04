@@ -4,6 +4,7 @@ import {
   context as agentContext,
   fork as forkAgent,
   setFastMode as setAgentFastMode,
+  setModel as setAgentModel,
   setThinking as setAgentThinking,
   shutdown as shutdownAgent,
   spawn as spawnAgent,
@@ -38,6 +39,10 @@ export function spawn(agent) {
 
 export function setThinking(agent, thinking) {
   return setAgentThinking(agent, thinking);
+}
+
+export function setModel(agent, model) {
+  return setAgentModel(agent, model);
 }
 
 export function setFastMode(agent, enabled) {

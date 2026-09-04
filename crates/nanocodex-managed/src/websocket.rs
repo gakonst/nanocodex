@@ -538,13 +538,13 @@ mod tests {
             AgentSettings {
                 model: Model::Astra,
                 thinking: Thinking::Max,
-                reasoning_mode: ReasoningMode::Pro,
+                reasoning_mode: ReasoningMode::Standard,
                 fast_mode: true,
             },
         );
         assert_eq!(
             endpoint.query(),
-            Some("model=gpt-6-astra&thinking=max&reasoning_mode=pro&fast_mode=true")
+            Some("model=gpt-6-astra&thinking=max&reasoning_mode=standard&fast_mode=true")
         );
     }
 

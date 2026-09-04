@@ -163,7 +163,7 @@ class OwnedLifecycleTests(unittest.TestCase):
             self.assertEqual(completed.usage()["cached_input_tokens"], 5)
             self.assertEqual(
                 completed.usage()["estimated_cost"]["usd"],
-                "0.0000875",
+                "0.000062",
             )
             self.assertEqual(
                 completed.usage()["cost_status"],

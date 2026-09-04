@@ -317,6 +317,7 @@ export type AgentActions = {
     compact(): Promise<void>;
     context(): Promise<AgentSessionContext>;
     fork(options?: ForkOptions): Promise<DefaultAgent>;
+    setModel(model: Model): Promise<void>;
     setFastMode(enabled: boolean): Promise<void>;
     setThinking(thinking: Thinking): Promise<void>;
     shutdown(): Promise<void>;

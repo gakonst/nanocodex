@@ -3,13 +3,14 @@ mod control;
 mod telemetry;
 
 use super::execution::{AdmittedExecution, ExecutionTurn, QueuedSteer};
-use super::spawn::validate_model_thinking;
+use super::spawn::{validate_model_reasoning_mode, validate_model_thinking};
 use super::*;
 pub(super) use branch::{AgentOrigin, BranchSpawner};
 pub(super) use control::DriverShutdown;
 use control::{
     TurnDefaults, begin_shutdown, cancel_queued_turn, handle_idle_command,
-    mark_all_queued_turns_cancelled, queued_execution_operation, queued_prompt,
+    mark_all_queued_turns_cancelled, model_change_locked, queued_execution_operation,
+    queued_prompt,
 };
 use telemetry::{ReasoningSettings, agent_compact_span, agent_turn_span, emit_replayed_terminal};
 
@@ -41,7 +42,7 @@ where
     #[allow(clippy::too_many_lines)]
     pub(super) async fn run(mut self) -> Result<()> {
         let session_id = self.events.request_id().to_owned();
-        let thread_model = self.spawner.config.model;
+        let mut thread_model = self.spawner.config.model;
         let mut default_thinking = self.spawner.config.thinking;
         let mut default_fast_mode = self.spawner.config.fast_mode;
         let inherited_checkpoint = self.initial_model.as_ref().map(|initial| {
@@ -309,6 +310,26 @@ where
                 result,
             } = command
             else {
+                if let Command::SetModel { model, result } = command {
+                    let outcome = if latest_fork_checkpoint.is_some()
+                        || !pending_developer_messages.is_empty()
+                    {
+                        Err(model_change_locked())
+                    } else {
+                        validate_model_thinking(model, default_thinking)
+                            .and_then(|()| {
+                                validate_model_reasoning_mode(
+                                    model,
+                                    self.spawner.config.reasoning_mode,
+                                )
+                            })
+                            .map(|()| {
+                                thread_model = model;
+                            })
+                    };
+                    drop(result.send(outcome));
+                    continue;
+                }
                 if let Command::SetThinking { thinking, result } = command {
                     let outcome = validate_model_thinking(thread_model, thinking).map(|()| {
                         default_thinking = thinking;
@@ -685,6 +706,9 @@ where
                                     Some(Command::SetFastMode { enabled, result }) => {
                                         default_fast_mode = enabled;
                                         drop(result.send(Ok(())));
+                                    }
+                                    Some(Command::SetModel { result, .. }) => {
+                                        drop(result.send(Err(model_change_locked())));
                                     }
                                     Some(Command::AppendDeveloperMessage { text, result }) => {
                                         pending_developer_messages.push((text, result));
@@ -1255,6 +1279,9 @@ where
                             Some(Command::SetFastMode { enabled, result }) => {
                                 default_fast_mode = enabled;
                                 drop(result.send(Ok(())));
+                            }
+                            Some(Command::SetModel { result, .. }) => {
+                                drop(result.send(Err(model_change_locked())));
                             }
                             Some(Command::AppendDeveloperMessage { text, result }) => {
                                 pending_developer_messages.push((text, result));

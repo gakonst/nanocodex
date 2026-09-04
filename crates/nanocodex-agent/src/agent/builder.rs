@@ -1,4 +1,4 @@
-use super::spawn::validate_model_thinking;
+use super::spawn::{validate_model_reasoning_mode, validate_model_thinking};
 use super::*;
 
 #[cfg(not(target_family = "wasm"))]
@@ -346,6 +346,7 @@ where
 {
     if builder.resume.is_none() {
         validate_model_thinking(builder.config.model, builder.config.thinking)?;
+        validate_model_reasoning_mode(builder.config.model, builder.config.reasoning_mode)?;
     }
     validate(&builder.config, builder.prompt_cache.key.as_deref())?;
     validate_execution_environment(builder.codex.context.execution_environment())?;

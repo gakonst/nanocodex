@@ -29,6 +29,10 @@ test("the account Worker projects opaque sandbox preview capabilities", () => {
   assert.equal(isManagedRoutePath("/sandbox-preview/"), false);
 });
 
+test("the account Worker projects model capabilities through the managed service", () => {
+  assert.equal(isManagedRoutePath("/v1/model-capabilities"), true);
+});
+
 test("the account hand WebSocket stays on the managed service boundary", async () => {
   assert.equal(isManagedRoutePath("/v1/account/tool-host"), true);
   const request = new Request("https://nanocodex.localhost/v1/account/tool-host", {

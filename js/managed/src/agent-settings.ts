@@ -133,6 +133,9 @@ export function validateAgentSettings(
   if (settings.model === "gpt-6-astra" && settings.thinking === "none") {
     throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
   }
+  if (settings.model === "gpt-6-astra" && settings.reasoning_mode === "pro") {
+    throw new TypeError("GPT-6 Astra does not support pro reasoning mode");
+  }
   return settings;
 }
 

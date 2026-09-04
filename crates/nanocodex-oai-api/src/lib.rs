@@ -175,6 +175,12 @@ impl Model {
         !matches!((self, thinking), (Self::Astra, Thinking::None))
     }
 
+    /// Returns whether the model accepts the requested reasoning execution mode.
+    #[must_use]
+    pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
+        !matches!((self, mode), (Self::Astra, ReasoningMode::Pro))
+    }
+
     /// Largest Codex-compatible prompt context for this model.
     #[must_use]
     pub const fn max_context_window_tokens(self) -> u64 {
@@ -683,6 +689,8 @@ mod tests {
         assert_eq!(Model::default().as_str(), "gpt-5.6-sol");
         assert!(Model::Astra.supports_thinking(Thinking::Low));
         assert!(!Model::Astra.supports_thinking(Thinking::None));
+        assert!(Model::Astra.supports_reasoning_mode(ReasoningMode::Standard));
+        assert!(!Model::Astra.supports_reasoning_mode(ReasoningMode::Pro));
         assert_eq!(
             Model::Astra.max_context_window_tokens(),
             MAX_CONTEXT_WINDOW_TOKENS

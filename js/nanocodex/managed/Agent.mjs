@@ -28,6 +28,7 @@ const TURN_STATE_POLL_MAX_MS = 5_000;
 const TURN_STATE_READ_TIMEOUT_MS = 2_000;
 const ALLOWED_OPTIONS = new Set(["apiKey", "baseUrl", "fetch", "toolsTransport"]);
 const CREATE_SETTINGS = new Set(["model", "thinking", "reasoningMode", "fastMode"]);
+const SETTINGS_PATCH = CREATE_SETTINGS;
 const MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]);
 const THINKING = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const REASONING_MODES = new Set(["standard", "pro"]);
@@ -88,6 +89,9 @@ function managedCreateOptions(options) {
   }
   if (settings.model === "gpt-6-astra" && settings.thinking === "none") {
     throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
+  }
+  if (settings.model === "gpt-6-astra" && settings.reasoningMode === "pro") {
+    throw new TypeError("GPT-6 Astra does not support pro reasoning mode");
   }
   return {
     clientOptions,
@@ -229,6 +233,13 @@ function agentHandle(client, id, summary) {
     turn: Object.freeze({
       prompt: (options) => managedTurn(client, id, eventStream, options),
     }),
+    settings: Object.freeze({
+      read: async () => managedSettings((await client.json(agentPath(id))).settings),
+      update: async (patch) => managedSettings((await client.json(`${agentPath(id)}/settings`, {
+        method: "PATCH",
+        body: managedSettingsPatch(patch),
+      })).settings),
+    }),
     toolsTarget: () => client.toolsTarget(id),
     state: () => client.json(agentPath(id)),
     delete: async () => {
@@ -240,6 +251,48 @@ function agentHandle(client, id, summary) {
     voiceTransport: managedVoiceTransport(client, id),
   });
   return agent;
+}
+
+function managedSettingsPatch(patch) {
+  const keys = patch && typeof patch === "object" && !Array.isArray(patch)
+    ? Object.keys(patch)
+    : [];
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)
+    || keys.length === 0 || keys.some((key) => !SETTINGS_PATCH.has(key))
+    || (Object.hasOwn(patch, "model") && !MODELS.has(patch.model))
+    || (Object.hasOwn(patch, "thinking") && !THINKING.has(patch.thinking))
+    || (Object.hasOwn(patch, "reasoningMode") && !REASONING_MODES.has(patch.reasoningMode))
+    || (Object.hasOwn(patch, "fastMode") && typeof patch.fastMode !== "boolean")) {
+    throw new TypeError("managed agent settings patch is invalid");
+  }
+  if (patch.model === "gpt-6-astra" && patch.thinking === "none") {
+    throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
+  }
+  if (patch.model === "gpt-6-astra" && patch.reasoningMode === "pro") {
+    throw new TypeError("GPT-6 Astra does not support pro reasoning mode");
+  }
+  return JSON.stringify({
+    ...(Object.hasOwn(patch, "model") ? { model: patch.model } : {}),
+    ...(Object.hasOwn(patch, "thinking") ? { thinking: patch.thinking } : {}),
+    ...(Object.hasOwn(patch, "reasoningMode") ? { reasoning_mode: patch.reasoningMode } : {}),
+    ...(Object.hasOwn(patch, "fastMode") ? { fast_mode: patch.fastMode } : {}),
+  });
+}
+
+function managedSettings(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || !MODELS.has(value.model) || !THINKING.has(value.thinking)
+    || !REASONING_MODES.has(value.reasoning_mode) || typeof value.fast_mode !== "boolean"
+    || (value.model === "gpt-6-astra" && value.thinking === "none")
+    || (value.model === "gpt-6-astra" && value.reasoning_mode === "pro")) {
+    throw new ManagedError("invalid_response", "managed agent settings are malformed");
+  }
+  return Object.freeze({
+    model: value.model,
+    thinking: value.thinking,
+    reasoningMode: value.reasoning_mode,
+    fastMode: value.fast_mode,
+  });
 }
 
 function managedVoiceTransport(client, agentId) {

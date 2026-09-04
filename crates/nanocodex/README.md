@@ -40,17 +40,18 @@ not wait for the turn's optional event stream to be consumed. Follow-on prompts
 reuse the same retained context and transport without asking the caller to
 manage response IDs or history.
 
-`gpt-5.6-sol` is the default; `.model(Model::Terra)` and `.model(Model::Luna)`
-select the other supported models when creating the agent. The selected model
-remains fixed for the thread so follow-on turns can continue from the provider
+`gpt-5.6-sol` is the SDK default; `.model(Model::Terra)`, `.model(Model::Luna)`,
+and `.model(Model::Astra)` select the other supported models when creating the
+agent. Astra requires low or greater reasoning. A caller may change the model
+before the first turn is accepted; it then remains fixed for the thread so follow-on turns can continue from the provider
 checkpoint without replaying the complete retained context.
 
 ## Usage and USD estimates
 
 When the provider reports aggregate usage for a completed turn, cost remains
 explicit: Nanocodex automatically applies the selected model's published
-standard or priority rates. Terra and Luna use their documented rates rather
-than Sol's higher rates.
+standard or priority rates. Every supported model, including Astra, uses its
+own published rates and long-context multipliers.
 
 ```rust,no_run
 use nanocodex::{Nanocodex, OpenAi};

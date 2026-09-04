@@ -1,10 +1,10 @@
 # GPT-6 Astra readiness
 
 Nanocodex recognizes the provider model ID `gpt-6-astra`. Callers can explicitly
-create Astra agents after their account is entitled; the account app keeps its
-existing default until an authoritative entitlement signal is available. Existing
-managed agents keep their immutable model settings, and sponsored Luna traffic
-remains pinned to Luna.
+create Astra agents after their account is entitled. Brokered ChatGPT connections
+query the authenticated Codex model catalog and default new conversations to Astra
+only when the exact model is listed. Existing managed agents keep their retained
+settings, while API-key and sponsored Luna traffic retain their existing defaults.
 
 This support is based on OpenAI's current contracts:
 
@@ -25,7 +25,7 @@ This support is based on OpenAI's current contracts:
 | Contract | Nanocodex behavior |
 | --- | --- |
 | Model ID | Accepts and serializes `gpt-6-astra` across Rust, WASM, JS, managed settings, and retained Durable Object state. |
-| Reasoning | Accepts `low`, `medium`, `high`, `xhigh`, and `max`. Rejects Astra with `none` before dispatch, including dynamic settings and subagent overrides. |
+| Reasoning | Accepts `low`, `medium`, `high`, `xhigh`, and `max`. Rejects Astra with `none` or Pro mode before dispatch, including dynamic settings and subagent overrides. Astra requests omit the unsupported `reasoning.mode` field. |
 | Context | OpenAI documents a 1,050,000-token API context window. Nanocodex follows the current Codex catalog: 272,000 by default, configurable to 872,000, with explicit provider compaction at 90% of the configured prompt budget. |
 | Output | The provider documents a 128,000-token maximum. Nanocodex does not raise its own output limit beyond caller/provider limits. |
 | Knowledge cutoff | April 30, 2026; this is documentation only and does not affect request encoding. |
@@ -141,7 +141,8 @@ an API key with `api.safety.alerts.read` for the same project.
 Astra inherits the GPT-5.6 contracts Nanocodex already uses: Responses streaming,
 Structured Outputs, direct and programmatic tool calling, computer-use-compatible
 tool transport, multi-agent orchestration, prompt caching, persisted encrypted
-reasoning, explicit compaction, and pro reasoning mode. Nanocodex does not send the
+reasoning and explicit compaction. Astra rejects the legacy Pro execution-mode
+field, so Nanocodex validates that combination locally and does not send it. Nanocodex does not send the
 unsupported sampling parameters `temperature`, `top_p`, or `top_logprobs`, nor the
 superseded `prompt_cache_retention` field.
 
@@ -160,8 +161,8 @@ instructions before enabling the model.
 
 ## Current Codex compatibility signals
 
-The inspected upstream Codex revision `1f7b999` adds Astra to its Amazon Bedrock
-catalog as `openai.gpt-6-astra`, including global and US cross-region routing.
+The inspected upstream Codex revision `03467026f2` includes Astra in its Amazon
+Bedrock catalog as `openai.gpt-6-astra`, including global and US cross-region routing.
 Its bundled Astra metadata uses a 272,000-token default and 872,000-token maximum,
 which Nanocodex mirrors. That internal catalog also advertises an `ultra` reasoning
 choice tied to automatic delegation. The public Astra API contract currently lists
@@ -188,10 +189,21 @@ provider steering protocol.
 
 ## Rollout and live evidence
 
-Do not change the account-app default until the target ChatGPT/OpenAI account is
-entitled to `gpt-6-astra` and an authoritative entitlement signal is available.
-After entitlement, explicitly create an Astra agent and verify the exact affected
-journey against the real managed service and Workers:
+New brokered ChatGPT conversations use Astra only after the authenticated Codex
+model catalog lists the exact `gpt-6-astra` slug with `visibility: "list"`.
+Catalog failures fail closed to the existing model default; API-key and sponsored
+connections never infer Astra access. The selector is available only before the
+first accepted turn, while thinking and Fast remain live settings.
+
+On September 4, 2026, a local subscription-authenticated smoke test reached
+`gpt-6-astra` over the Responses WebSocket with max thinking and standard service
+tier. It ran a workspace `pwd`, spawned and joined a low-thinking child agent,
+completed three model calls and five tool calls, and required no response retry or
+WebSocket reconnect. The provider rejected an earlier request carrying
+`reasoning.mode: "pro"`; Nanocodex now rejects that combination locally and omits
+the field from every Astra request.
+
+Production rollout should additionally verify the exact managed and Worker journey:
 
 1. Create a new managed conversation and confirm the outgoing model is
    `gpt-6-astra` with high reasoning, standard mode, and fast mode off.

@@ -2,6 +2,7 @@ export type DeploymentCredentialSource = "brokered" | "sponsored" | null;
 
 export type DeploymentHealth = Readonly<{
   agentConfigured: boolean;
+  astraEntitled: boolean;
   credentialSource: DeploymentCredentialSource;
   deploymentSha: string | undefined;
   freePromptsRemaining: number | null;
@@ -10,6 +11,7 @@ export type DeploymentHealth = Readonly<{
 
 type HealthPayload = {
   agent_configured?: unknown;
+  astra_entitled?: unknown;
   credential_source?: unknown;
   deployment_sha?: unknown;
   free_prompts_remaining?: unknown;
@@ -49,6 +51,7 @@ export function createDeploymentHealthResource(
             : payload.credential_source === "user" ? "brokered" : null;
       return Object.freeze({
         agentConfigured: credentialSource !== null,
+        astraEntitled: credentialSource === "brokered" && payload.astra_entitled === true,
         credentialSource,
         deploymentSha: typeof payload.deployment_sha === "string"
           ? payload.deployment_sha

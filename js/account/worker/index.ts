@@ -180,6 +180,7 @@ export default {
         const model = await managedModelStatus(managed);
         return json({
           agent_configured: model.ready,
+          astra_entitled: model.astraEntitled,
           credential_source: model.source === "sponsored"
             ? "sponsored"
             : model.ready ? "brokered" : null,
@@ -204,6 +205,7 @@ export default {
       }
       return json({
         agent_configured: Boolean(credential),
+        astra_entitled: false,
         credential_source: credential?.source ?? null,
         voice_enabled: credential?.kind === "chatgpt",
         deployment_sha: GIT_SHA_PATTERN.test(env.DEPLOYMENT_SHA ?? "")

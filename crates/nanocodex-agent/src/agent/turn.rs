@@ -410,6 +410,10 @@ pub(super) enum Command {
         observer: Option<Arc<SpawnObserver>>,
         result: oneshot::Sender<Result<Vec<(Nanocodex, AgentEvents)>>>,
     },
+    SetModel {
+        model: Model,
+        result: oneshot::Sender<Result<()>>,
+    },
     SetThinking {
         thinking: Thinking,
         result: oneshot::Sender<Result<()>>,

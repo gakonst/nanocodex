@@ -30,7 +30,7 @@ use crossterm::event::{
 use eyre::{Result, WrapErr};
 use futures_util::StreamExt;
 use nanocodex::{
-    AgentEvents, Nanocodex, NanocodexError, OpenAi, Thinking, TurnControl, TurnResult,
+    AgentEvents, Model, Nanocodex, NanocodexError, OpenAi, Thinking, TurnControl, TurnResult,
     agent::{
         events::{AgentEvent, TimedAgentEvent},
         rollout::DurableSession,
@@ -185,6 +185,9 @@ enum WorkerCommand {
     SetFastMode {
         enabled: bool,
     },
+    SetModel {
+        model: Model,
+    },
     SetThinking {
         thinking: Thinking,
     },
@@ -306,6 +309,12 @@ enum WorkerEvent {
         enabled: bool,
     },
     FastModeChangeFailed {
+        error: String,
+    },
+    ModelChanged {
+        model: Model,
+    },
+    ModelChangeFailed {
         error: String,
     },
     ThinkingChanged {
@@ -650,6 +659,7 @@ enum Submission {
     Cancel,
     Trace,
     Fast(Option<bool>),
+    Model(Model),
     ReasoningPicker,
     Voice(VoiceControl),
     McpLogin(String),
@@ -675,9 +685,7 @@ pub(crate) async fn run(
     initial_prompt: Option<InitialPrompt>,
     resume: Option<DurableSession>,
 ) -> Result<()> {
-    let initial_model = resume
-        .as_ref()
-        .map_or_else(|| config.model(), DurableSession::model);
+    let resumed_model = resume.as_ref().map(DurableSession::model);
     let initial_thinking = config.thinking();
     let initial_fast_mode = config.fast_mode();
     let restored_transcript = resume
@@ -693,6 +701,7 @@ pub(crate) async fn run(
     } else {
         config.build_tui(vm).await?
     };
+    let initial_model = resumed_model.unwrap_or(configured.model);
     let agent = configured.handle;
     let mut agent_events = configured.events;
     let realtime = configured.realtime;
@@ -1232,6 +1241,8 @@ fn handle_worker_update(
         }
         WorkerEvent::FastModeChanged { enabled } => app.fast_mode_changed(enabled),
         WorkerEvent::FastModeChangeFailed { error } => app.fast_mode_change_failed(&error),
+        WorkerEvent::ModelChanged { model } => app.model_changed(model),
+        WorkerEvent::ModelChangeFailed { error } => app.model_change_failed(&error),
         WorkerEvent::ThinkingChanged { thinking } => app.thinking_changed(thinking),
         WorkerEvent::ThinkingChangeFailed { error } => app.thinking_change_failed(&error),
         WorkerEvent::McpLoginStarted { name } => {
@@ -1422,6 +1433,7 @@ impl AgentWorker {
             }
             WorkerCommand::SwitchMainBranch { id } => self.switch_main_branch(id),
             WorkerCommand::SetFastMode { enabled } => self.set_fast_mode(enabled).await,
+            WorkerCommand::SetModel { model } => self.set_model(model).await,
             WorkerCommand::SetThinking { thinking } => self.set_thinking(thinking).await,
             WorkerCommand::McpLogin { name } => self.mcp_login(name),
             WorkerCommand::McpReload { name } => self.mcp_reload(name),
@@ -1617,6 +1629,16 @@ impl AgentWorker {
         let update = match result {
             Ok(()) => WorkerEvent::FastModeChanged { enabled },
             Err(error) => WorkerEvent::FastModeChangeFailed {
+                error: error.to_string(),
+            },
+        };
+        drop(self.updates.send(update));
+    }
+
+    async fn set_model(&mut self, model: Model) {
+        let update = match self.main.agent.set_model(model).await {
+            Ok(()) => WorkerEvent::ModelChanged { model },
+            Err(error) => WorkerEvent::ModelChangeFailed {
                 error: error.to_string(),
             },
         };
@@ -3157,6 +3179,13 @@ fn submit(
             let enabled = enabled.unwrap_or(!app.fast_mode());
             send_command(commands, WorkerCommand::SetFastMode { enabled })?;
         }
+        Submission::Model(model) => {
+            if !app.can_change_start_settings() {
+                app.push_active_error("The model can only be changed before the first prompt");
+                return Ok(());
+            }
+            send_command(commands, WorkerCommand::SetModel { model })?;
+        }
         Submission::ReasoningPicker => app.open_reasoning_picker(),
         Submission::Voice(control) => {
             send_command(commands, WorkerCommand::Voice(control))?;
@@ -3276,11 +3305,20 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
             _ => Submission::InvalidCommand("Usage: /fast [on|off]".to_owned()),
         };
     }
-    if matches!(trimmed, "/model" | "/thinking") {
+    if trimmed == "/thinking" {
         return Submission::ReasoningPicker;
     }
-    if trimmed.starts_with("/model ") || trimmed.starts_with("/thinking ") {
-        return Submission::InvalidCommand("Usage: /model or /thinking".to_owned());
+    if let Some(argument) = trimmed.strip_prefix("/model ") {
+        return match argument.trim().parse() {
+            Ok(model) => Submission::Model(model),
+            Err(error) => Submission::InvalidCommand(error),
+        };
+    }
+    if trimmed == "/model" {
+        return Submission::InvalidCommand("Usage: /model <sol|terra|luna|astra>".to_owned());
+    }
+    if trimmed.starts_with("/thinking ") {
+        return Submission::InvalidCommand("Usage: /thinking".to_owned());
     }
     if let Some(name) = trimmed.strip_prefix("/mcp login ") {
         let name = name.trim();
@@ -3393,7 +3431,7 @@ mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use futures_util::{SinkExt, StreamExt};
     use nanocodex::{
-        Nanocodex, OpenAi, Thinking,
+        Model, Nanocodex, OpenAi, Thinking,
         agent::events::AgentEventKind,
         oai::{__private::EventSink, PromptInput},
     };
@@ -3662,14 +3700,21 @@ mod tests {
             classify_submission("/fast turbo"),
             Submission::InvalidCommand("Usage: /fast [on|off]".to_owned())
         );
-        assert_eq!(classify_submission("/model"), Submission::ReasoningPicker);
+        assert_eq!(
+            classify_submission("/model"),
+            Submission::InvalidCommand("Usage: /model <sol|terra|luna|astra>".to_owned())
+        );
+        assert_eq!(
+            classify_submission("/model astra"),
+            Submission::Model(Model::Astra)
+        );
         assert_eq!(
             classify_submission(" /thinking "),
             Submission::ReasoningPicker
         );
         assert_eq!(
             classify_submission("/thinking high"),
-            Submission::InvalidCommand("Usage: /model or /thinking".to_owned())
+            Submission::InvalidCommand("Usage: /thinking".to_owned())
         );
         assert_eq!(
             classify_submission(" /mcp login centaur-tempo "),

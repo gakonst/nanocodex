@@ -7,7 +7,7 @@ use std::{
 };
 
 use nanocodex_agent::{
-    AgentSessionContext, NanocodexError, Thinking, TurnResult, TurnUsage,
+    AgentSessionContext, Model, NanocodexError, Thinking, TurnResult, TurnUsage,
     backend::{
         BackendFuture, BackendPrompt, BackendPromptRoute, BackendTurn, BackendTurnKey,
         LifecycleBackend,
@@ -42,6 +42,10 @@ pub(crate) enum Command {
     ),
     Cancel(
         BackendTurnKey,
+        tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
+    ),
+    SetModel(
+        Model,
         tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
     ),
     SetThinking(
@@ -203,6 +207,13 @@ impl LifecycleBackend for ManagedAgent {
         })
     }
 
+    fn set_model(&self, model: Model) -> BackendFuture<nanocodex_agent::Result<()>> {
+        let commands = self.commands.clone();
+        Box::pin(
+            async move { Self::request(commands, |result| Command::SetModel(model, result)).await },
+        )
+    }
+
     fn set_fast_mode(&self, enabled: bool) -> BackendFuture<nanocodex_agent::Result<()>> {
         let commands = self.commands.clone();
         Box::pin(async move {
@@ -352,6 +363,9 @@ where
                     }
                     Some(Command::Cancel(key, result)) => {
                         drop(result.send(self.cancel(key).await));
+                    }
+                    Some(Command::SetModel(model, result)) => {
+                        drop(result.send(self.set_model(model).await));
                     }
                     Some(Command::SetThinking(thinking, result)) => {
                         drop(result.send(self.set_thinking(thinking).await));
@@ -526,6 +540,29 @@ where
             ManagedResponse::Settings(settings) if settings.thinking == thinking => Ok(()),
             ManagedResponse::Settings(_) => Err(NanocodexError::BackendContract {
                 detail: "managed thinking update acknowledged a different setting",
+            }),
+            _ => Err(unexpected_response()),
+        }
+    }
+
+    async fn set_model(&mut self, model: Model) -> nanocodex_agent::Result<()> {
+        match call(
+            &mut self.service,
+            ManagedRequest::SetModel {
+                agent_id: self.agent_id.clone(),
+                model,
+            },
+        )
+        .await?
+        {
+            ManagedResponse::Settings(settings) if !settings.is_valid() => {
+                Err(NanocodexError::BackendContract {
+                    detail: "managed model update acknowledged incompatible settings",
+                })
+            }
+            ManagedResponse::Settings(settings) if settings.model == model => Ok(()),
+            ManagedResponse::Settings(_) => Err(NanocodexError::BackendContract {
+                detail: "managed model update acknowledged a different setting",
             }),
             _ => Err(unexpected_response()),
         }

@@ -294,6 +294,7 @@ pub(super) async fn begin_shutdown(
             }
             Command::Steer { result, .. }
             | Command::Cancel { result, .. }
+            | Command::SetModel { result, .. }
             | Command::SetThinking { result, .. }
             | Command::SetFastMode { result, .. }
             | Command::Compact { result, .. } => {
@@ -379,6 +380,9 @@ pub(super) fn handle_idle_command<S>(
         Command::SetThinking { result, .. } | Command::SetFastMode { result, .. } => {
             drop(result.send(Ok(())));
         }
+        Command::SetModel { result, .. } => {
+            drop(result.send(Err(model_change_locked())));
+        }
         Command::Shutdown => {}
         Command::Compact { result, .. } => {
             drop(result.send(Err(NanocodexError::AgentStopped)));
@@ -395,6 +399,12 @@ pub(super) fn handle_idle_command<S>(
         }
         Command::Prompt { .. } => {}
     }
+}
+
+pub(super) fn model_change_locked() -> NanocodexError {
+    NanocodexError::InvalidRequest(
+        "the model can only be changed before the first turn is accepted".to_owned(),
+    )
 }
 
 #[cfg(test)]

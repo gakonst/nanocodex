@@ -12,7 +12,7 @@ depend on orchestration policy:
 - `interrupt_agent`
 - `close_agent`
 
-`spawn_agent` accepts optional `model` (`sol`, `terra`, or `luna`) and
+`spawn_agent` accepts optional `model` (`sol`, `terra`, `luna`, or `astra`) and
 `thinking` (`none` through `max`) overrides. Omitted values inherit the
 invoking agent's current settings; an override configures only the new child.
 

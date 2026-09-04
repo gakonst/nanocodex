@@ -292,7 +292,7 @@ test("managed Agent covers account-scoped create, list, get, and delete", async 
     settings: {
       model: "gpt-6-astra",
       thinking: "max",
-      reasoningMode: "pro",
+      reasoningMode: "standard",
       fastMode: false,
     },
   };
@@ -308,7 +308,7 @@ test("managed Agent covers account-scoped create, list, get, and delete", async 
     settings: {
       model: "gpt-6-astra",
       thinking: "max",
-      reasoning_mode: "pro",
+      reasoning_mode: "standard",
       fast_mode: false,
     },
   });
@@ -407,6 +407,52 @@ test("managed Agent rejects incomplete and unsupported Astra creation policy", a
       fastMode: false,
     },
   }), /GPT-6 Astra requires low/);
+  await assert.rejects(Agent.create({
+    ...options,
+    settings: {
+      model: "gpt-6-astra",
+      thinking: "max",
+      reasoningMode: "pro",
+      fastMode: false,
+    },
+  }), /does not support pro/);
+});
+
+test("managed Agent reads and updates model, thinking, and Fast settings", async () => {
+  const requests = [];
+  const settings = {
+    model: "gpt-6-astra",
+    thinking: "max",
+    reasoning_mode: "standard",
+    fast_mode: true,
+  };
+  const agent = Agent.open(agentId, {
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.method === "PATCH") {
+        assert.deepEqual(await request.json(), {
+          model: "gpt-6-astra",
+          thinking: "max",
+          fast_mode: true,
+        });
+        return Response.json({ settings });
+      }
+      return Response.json({ settings });
+    },
+  });
+
+  assert.deepEqual(await agent.settings.read(), {
+    model: "gpt-6-astra", thinking: "max", reasoningMode: "standard", fastMode: true,
+  });
+  assert.deepEqual(await agent.settings.update({
+    model: "gpt-6-astra", thinking: "max", fastMode: true,
+  }), {
+    model: "gpt-6-astra", thinking: "max", reasoningMode: "standard", fastMode: true,
+  });
+  assert.equal(new URL(requests[1].url).pathname, `/v1/agents/${agentId}/settings`);
+  await assert.rejects(agent.settings.update({ model: "unknown" }), /settings patch is invalid/);
 });
 
 test("managed server authentication sends only an ncx_live bearer and omits cookies", async () => {

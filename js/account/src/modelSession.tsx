@@ -9,7 +9,7 @@ import { invalidateModelHealthForAccountTransition } from "./modelHealthAccount"
 export type CredentialSource = "brokered" | "sponsored" | null;
 export type ModelSessionStatus =
   | { state: "signed_out" }
-  | { state: "ready"; freePromptsRemaining: number | null; ready: boolean; voiceEnabled: boolean }
+  | { state: "ready"; astraEntitled: boolean; freePromptsRemaining: number | null; ready: boolean; voiceEnabled: boolean }
   | { state: "error"; error: string };
 
 export type SessionPresentation = {
@@ -164,6 +164,7 @@ export function useModelSession({
         if (generation.current !== current) return;
         publish({
           state: "ready",
+          astraEntitled: health.astraEntitled,
           freePromptsRemaining: health.freePromptsRemaining,
           ready: health.agentConfigured,
           voiceEnabled: health.voiceEnabled,

@@ -618,7 +618,12 @@ impl<'a> ResponseCreate<'a> {
             // scheduler still accepts multi-call responses and replays.
             parallel_tool_calls: false,
             reasoning: ReasoningControls {
-                mode: config.reasoning_mode.request_value(),
+                // Astra rejects the legacy `reasoning.mode` field. Standard
+                // already serializes as absent; keep this model guard as a
+                // final wire-level invariant for custom service factories.
+                mode: (policy.model != crate::Model::Astra)
+                    .then(|| config.reasoning_mode.request_value())
+                    .flatten(),
                 effort: policy.thinking.as_str(),
                 summary: Some("auto"),
                 context: "all_turns",
@@ -974,6 +979,27 @@ mod tests {
             assert_eq!(request["reasoning"]["effort"], json!(expected));
             assert_eq!(request["reasoning"]["context"], json!("all_turns"));
         }
+    }
+
+    #[test]
+    fn astra_never_serializes_reasoning_mode() {
+        let config = ModelConfig {
+            reasoning_mode: ReasoningMode::Pro,
+            ..ModelConfig::default()
+        };
+        let profile = RequestProfile::new("astra-agent", "astra-lineage", Arc::from([]));
+        let request = serde_json::to_value(ResponseCreate::warmup(
+            &config,
+            Model::Astra,
+            Thinking::Max,
+            false,
+            &profile,
+            None,
+        ))
+        .expect("request should serialize");
+
+        assert!(request["reasoning"].get("mode").is_none());
+        assert_eq!(request["reasoning"]["effort"], json!("max"));
     }
 
     #[test]

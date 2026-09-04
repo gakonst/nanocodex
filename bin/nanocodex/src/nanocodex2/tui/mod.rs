@@ -959,7 +959,11 @@ async fn run_inner(
         .map_err(|error| ManagedError::Configuration(error.to_string()))?
         .workspace()
         .to_path_buf();
-    let initial_settings = AgentSettings::default();
+    let initial_settings = if matches!(attach, Some(Some(_))) {
+        AgentSettings::default()
+    } else {
+        account_default_settings(client).await
+    };
     let initial_effort = effort_from_thinking(initial_settings.thinking);
     let initial_reasoning_mode = reasoning_mode_from_managed(initial_settings.reasoning_mode);
     let mut root = RootNode::new(&workspace, initial_effort);
@@ -1043,7 +1047,7 @@ async fn run_inner(
         None => {
             runtime.spawn_connection(
                 ConnectionPurpose::Startup,
-                RetryTarget::Create(AgentSettings::default()),
+                RetryTarget::Create(initial_settings),
             );
         }
     }
@@ -1820,6 +1824,18 @@ async fn run_inner(
         agent.shutdown().await.map_err(super::agent_error)
     } else {
         agent.disconnect().await.map_err(super::agent_error)
+    }
+}
+
+async fn account_default_settings(client: &ManagedClient) -> AgentSettings {
+    match client.model_capabilities().await {
+        Ok(capabilities) if capabilities.astra_entitled => AgentSettings {
+            model: Model::Astra,
+            thinking: Thinking::High,
+            reasoning_mode: ReasoningMode::Standard,
+            fast_mode: false,
+        },
+        Ok(_) | Err(_) => AgentSettings::default(),
     }
 }
 

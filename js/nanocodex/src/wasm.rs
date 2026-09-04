@@ -1601,6 +1601,20 @@ impl WasmNanocodex {
             .map_err(js_error)
     }
 
+    /// Changes the model before the first turn is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid model, an incompatible thinking level, conversation
+    /// activity, or a stopped driver.
+    #[wasm_bindgen(js_name = setModel)]
+    pub async fn set_model(&self, model: &str) -> Result<(), JsValue> {
+        self.inner
+            .set_model(model.parse::<Model>().map_err(js_error)?)
+            .await
+            .map_err(js_error)
+    }
+
     /// Enables or disables priority processing for subsequently accepted turns.
     ///
     /// # Errors
