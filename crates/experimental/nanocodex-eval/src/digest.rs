@@ -36,6 +36,7 @@ struct TaskPackageEntry {
 enum TaskPackageEntryKind {
     Directory,
     File { bytes: u64, digest: [u8; 32] },
+    Symlink { target: PathBuf },
 }
 
 impl TaskPackage {
@@ -89,7 +90,7 @@ impl TaskPackage {
             .iter()
             .filter_map(|entry| match &entry.kind {
                 TaskPackageEntryKind::File { bytes, .. } => Some(*bytes),
-                TaskPackageEntryKind::Directory => None,
+                TaskPackageEntryKind::Directory | TaskPackageEntryKind::Symlink { .. } => None,
             })
             .fold(0_u64, u64::saturating_add)
     }
@@ -101,7 +102,7 @@ impl TaskPackage {
             .find(|entry| entry.relative == relative)
             .and_then(|entry| match &entry.kind {
                 TaskPackageEntryKind::File { bytes, digest } => Some((*bytes, *digest)),
-                TaskPackageEntryKind::Directory => None,
+                TaskPackageEntryKind::Directory | TaskPackageEntryKind::Symlink { .. } => None,
             })
         else {
             return Ok(None);
@@ -156,6 +157,9 @@ impl TaskPackage {
                     set_mode(&target, entry.mode)?;
                     normalize_times(&target)?;
                 }
+                TaskPackageEntryKind::Symlink {
+                    target: link_target,
+                } => std::os::unix::fs::symlink(link_target, &target)?,
             }
         }
         if !found {
@@ -198,6 +202,9 @@ impl TaskPackage {
                     set_mode(&target, entry.mode)?;
                     normalize_times(&target)?;
                 }
+                TaskPackageEntryKind::Symlink {
+                    target: link_target,
+                } => std::os::unix::fs::symlink(link_target, &target)?,
             }
         }
         for (directory, mode) in directory_modes.into_iter().rev() {
@@ -222,14 +229,8 @@ fn collect_package_entry(
     let mode = metadata_mode(&metadata);
     let kind = if metadata.file_type().is_symlink() {
         let target = fs::read_link(path)?;
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "task package symlinks are unsupported: {} -> {}",
-                path.display(),
-                target.display()
-            ),
-        ));
+        validate_symlink_target(root, path, &target)?;
+        TaskPackageEntryKind::Symlink { target }
     } else if metadata.is_dir() {
         TaskPackageEntryKind::Directory
     } else if metadata.is_file() {
@@ -264,6 +265,10 @@ fn package_digest(entries: &[TaskPackageEntry]) -> String {
         digest.update(entry.mode.to_le_bytes());
         match &entry.kind {
             TaskPackageEntryKind::Directory => digest.update(b"d"),
+            TaskPackageEntryKind::Symlink { target } => {
+                digest.update(b"l");
+                update_field(&mut digest, target.as_os_str().as_encoded_bytes());
+            }
             TaskPackageEntryKind::File {
                 bytes,
                 digest: file,
@@ -275,6 +280,47 @@ fn package_digest(entries: &[TaskPackageEntry]) -> String {
         }
     }
     hex::encode(digest.finalize())
+}
+
+fn validate_symlink_target(root: &Path, path: &Path, target: &Path) -> io::Result<()> {
+    if target.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "task package symlink target must be relative: {} -> {}",
+                path.display(),
+                target.display()
+            ),
+        ));
+    }
+    let resolved = fs::canonicalize(path)?;
+    let source_relative = path.strip_prefix(root).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("task package symlink is outside its root: {error}"),
+        )
+    })?;
+    let resolved_relative = resolved.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "task package symlink escapes its root: {} -> {}",
+                path.display(),
+                target.display()
+            ),
+        )
+    })?;
+    if source_relative.components().next() != resolved_relative.components().next() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "task package symlink crosses execution-input boundaries: {} -> {}",
+                path.display(),
+                target.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn update_field(digest: &mut Sha256, bytes: &[u8]) {
@@ -451,7 +497,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn rejects_symlinks_in_the_task_package() {
+    fn rejects_absolute_symlinks_in_the_task_package() {
         let task = package();
         let link = task.path().join("environment/current");
         std::os::unix::fs::symlink("/etc/passwd", &link).unwrap();
@@ -459,7 +505,11 @@ mod tests {
         let error = TaskPackage::load(task.path()).unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("symlinks are unsupported"));
+        assert!(
+            error
+                .to_string()
+                .contains("symlink target must be relative")
+        );
         assert!(error.to_string().contains("/etc/passwd"));
     }
 

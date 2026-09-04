@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    CoordinateClaim, Evaluation, EvaluationClaim, EvaluationSelector, EvaluationTreatment,
+    CoordinateClaim, Evaluation, EvaluationClaim, EvaluationSelector, EvaluationTreatment, Task,
     api::EvalApi, cluster::HostSampler,
 };
 use axum::{
@@ -169,6 +169,11 @@ struct ClaimRequest {
     worker: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct TaskPackageQuery {
+    key: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct WireTreatment {
     harness: String,
@@ -311,7 +316,9 @@ impl CoordinatorServer {
                 get(eval_task_outcomes),
             )
             .route("/v1/evals/cases/{id}", get(eval_case))
+            .route("/v1/task-package", get(task_package))
             .route("/v1/claims", post(claim))
+            .route("/v1/claims/{token}/heartbeat", post(heartbeat))
             .route("/v1/claims/{token}/artifacts", put(upload_artifacts))
             .route("/v1/claims/{token}/finish", post(finish))
             .route("/v1/workers/exited", post(worker_exited))
@@ -848,6 +855,34 @@ async fn eval_task_outcomes(
         .ok_or_else(|| ApiError::not_found("evaluation task was not found"))
 }
 
+async fn task_package(
+    State(state): State<CoordinatorState>,
+    Query(query): Query<TaskPackageQuery>,
+) -> Result<Response, ApiError> {
+    let task = {
+        let active = state.active.lock().await;
+        active
+            .get(&query.key)
+            .map(|active| active.claim.task().clone())
+            .ok_or_else(|| ApiError::not_found("active task package was not found"))?
+    };
+    let (writer, reader) = tokio::io::duplex(ARCHIVE_BUFFER_BYTES);
+    let archive = tokio::task::spawn_blocking(move || {
+        write_task_package_archive(&task, SyncIoBridge::new(writer))
+    });
+    tokio::spawn(async move {
+        match archive.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "task package archive stream failed"),
+            Err(error) => tracing::warn!(%error, "task package archive task failed"),
+        }
+    });
+    Response::builder()
+        .header(reqwest::header::CONTENT_TYPE, ARCHIVE_CONTENT_TYPE)
+        .body(Body::from_stream(ReaderStream::new(reader)))
+        .map_err(ApiError::internal)
+}
+
 async fn claim(
     State(state): State<CoordinatorState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -891,17 +926,16 @@ async fn claim(
             let repetition = claim.repetition();
             let family_key = claim.family_key().to_owned();
             let task = claim.task_selector().to_owned();
-            let task_root = claim.task().root().to_path_buf();
             let task_digest = claim.task().package_digest().to_owned();
             let treatment = WireTreatment::from(claim.treatment());
             let claim = insert_claim(&state, claim, host).await;
             ClaimResponse::Run {
+                task_package: Some(claim.clone()),
                 claim,
                 repetition,
                 family_key,
                 task,
-                task_root: Some(task_root),
-                task_package: None,
+                task_root: None,
                 task_digest,
                 treatment,
             }
@@ -979,6 +1013,16 @@ async fn upload_artifacts(
         claim.claim.output_directory().to_path_buf()
     };
     receive_archive(body, &output, &token).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn heartbeat(
+    State(state): State<CoordinatorState>,
+    AxumPath(token): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    if !state.active.lock().await.contains_key(&token) {
+        return Err(ApiError::not_found("claim is absent or expired"));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1195,7 +1239,14 @@ fn extract_task_package_archive(
                 .components()
                 .all(|component| matches!(component, Component::Normal(_)));
         let entry_type = entry.header().entry_type();
-        if !safe_path || !(entry_type.is_file() || entry_type.is_dir()) {
+        let safe_symlink = if entry_type.is_symlink() {
+            entry
+                .link_name()?
+                .is_some_and(|target| safe_task_symlink_target(&path, &target))
+        } else {
+            false
+        };
+        if !safe_path || !(entry_type.is_file() || entry_type.is_dir() || safe_symlink) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("task archive contained an unsafe entry: {}", path.display()),
@@ -1222,6 +1273,77 @@ fn extract_task_package_archive(
         ));
     }
     std::fs::rename(staging, output)
+}
+
+fn safe_task_symlink_target(path: &Path, target: &Path) -> bool {
+    if target.as_os_str().is_empty() || target.is_absolute() {
+        return false;
+    }
+    let Some(source_boundary) = path.components().next() else {
+        return false;
+    };
+    let mut resolved = Vec::new();
+    for component in path
+        .parent()
+        .into_iter()
+        .flat_map(Path::components)
+        .chain(target.components())
+    {
+        match component {
+            Component::Normal(component) => resolved.push(component),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if resolved.pop().is_none() {
+                    return false;
+                }
+            }
+            Component::Prefix(_) | Component::RootDir => return false,
+        }
+    }
+    resolved
+        .first()
+        .is_some_and(|resolved_boundary| source_boundary.as_os_str() == *resolved_boundary)
+}
+
+fn write_task_package_archive<W: Write>(task: &Task, writer: W) -> std::io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let package = directory.path().join("package");
+    task.materialize_package(&package)
+        .map_err(std::io::Error::other)?;
+    let encoder = zstd::Encoder::new(writer, 3)?;
+    let mut archive = tar::Builder::new(encoder);
+    archive.follow_symlinks(false);
+    append_task_package(&mut archive, &package, &package)?;
+    let encoder = archive.into_inner()?;
+    encoder.finish()?.flush()
+}
+
+fn append_task_package<W: Write>(
+    archive: &mut tar::Builder<W>,
+    root: &Path,
+    directory: &Path,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| std::io::Error::other("task package escaped its archive root"))?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            archive.append_dir(relative, &path)?;
+            append_task_package(archive, root, &path)?;
+        } else if file_type.is_file() || file_type.is_symlink() {
+            archive.append_path_with_name(&path, relative)?;
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unsupported task package entry: {}", path.display()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn write_evidence_archive<W: Write>(directory: &Path, writer: W) -> std::io::Result<()> {
@@ -1459,6 +1581,7 @@ allow_internet = false
         .unwrap();
         fs::write(task.join("instruction.md"), "do it").unwrap();
         fs::write(task.join("environment/Dockerfile"), "FROM scratch").unwrap();
+        std::os::unix::fs::symlink("Dockerfile", task.join("environment/Dockerfile.link")).unwrap();
         fs::write(task.join("tests/test.sh"), "#!/bin/sh\n").unwrap();
     }
 
@@ -1534,16 +1657,27 @@ thinking = ["high"]
             panic!("second worker should run");
         };
         assert_ne!(first_repetition, second_repetition);
-        let RemoteTaskSource::Filesystem {
-            root: first_task_root,
-            ..
+        first_client.heartbeat(&first_claim).await.unwrap();
+        second_client.heartbeat(&second_claim).await.unwrap();
+        let RemoteTaskSource::Package {
+            key: first_task_package,
+            digest: first_task_digest,
         } = first_task_source
         else {
-            panic!("loopback coordinator should retain a filesystem task source");
+            panic!("coordinator should retain a downloadable task package");
         };
+        let first_task_root = directory.path().join("materialized-task");
+        first_client
+            .materialize_task_package(&first_task_package, &first_task_root)
+            .await
+            .unwrap();
         assert_eq!(
-            first_task_root,
-            fs::canonicalize(directory.path().join("one")).unwrap()
+            Task::load(&first_task_root).unwrap().package_digest(),
+            first_task_digest
+        );
+        assert_eq!(
+            fs::read_link(first_task_root.join("environment/Dockerfile.link")).unwrap(),
+            Path::new("Dockerfile")
         );
 
         let status = client.status().await.unwrap();
@@ -1589,6 +1723,13 @@ thinking = ["high"]
             fs::write(output.join("vm/config.json"), "{}\n").unwrap();
             client.succeed(claim, &output, &evidence).await.unwrap();
         }
+        assert!(matches!(
+            first_client.heartbeat(&first_claim).await.unwrap_err(),
+            CoordinatorError::Rejected {
+                status: StatusCode::NOT_FOUND,
+                ..
+            }
+        ));
         assert!(
             stale_marker.exists(),
             "one attempt must not erase sibling evidence"
@@ -1962,6 +2103,7 @@ thinking = ["high"]
         let file = fs::File::create(&archive_path).unwrap();
         let encoder = zstd::Encoder::new(file, 3).unwrap();
         let mut archive = tar::Builder::new(encoder);
+        archive.follow_symlinks(false);
         archive
             .append_path_with_name(source.join("task.toml"), "task.toml")
             .unwrap();
@@ -1975,6 +2117,12 @@ thinking = ["high"]
             .append_path_with_name(
                 source.join("environment/Dockerfile"),
                 "environment/Dockerfile",
+            )
+            .unwrap();
+        archive
+            .append_path_with_name(
+                source.join("environment/Dockerfile.link"),
+                "environment/Dockerfile.link",
             )
             .unwrap();
         archive.append_dir("tests", source.join("tests")).unwrap();

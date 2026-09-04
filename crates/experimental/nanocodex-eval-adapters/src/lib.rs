@@ -115,7 +115,7 @@ struct AdapterManifest {
 const INSTALLED_ADAPTERS: &[InstalledAdapter] = &[
     InstalledAdapter {
         kind: "harbor",
-        names: &["terminal-bench-2.1", "deep-swe-v1.1"],
+        names: &["terminal-bench-2.1", "deep-swe-v1.1", "frontier-swe-v2"],
         import: import_harbor,
         matches: matches_harbor_task,
     },
@@ -207,6 +207,7 @@ const INSTALLED_ADAPTERS: &[InstalledAdapter] = &[
 
 const TERMINAL_BENCH_REVISION: &str = "5c8eadf1f393183288fa08b8f73ca9a469cc5e00";
 const DEEP_SWE_REVISION: &str = "e016041a6ccf8da29906afc9a3f5a8df940a1f78";
+const FRONTIER_SWE_V2_REVISION: &str = "8ba3afe785a0f99a78d1017127b97eef60e63b3b";
 const ARENA_HARD_REVISION: &str = "196f6b826783b3da7310e361a805fa36f0be83f3";
 const SWE_VERIFIED_ROW_RESPONSE_SHA256: &str =
     "7c62220a467830a3a330dda51211ab4c1ba099124dffc8371fbec057933c47b8";
@@ -294,6 +295,16 @@ fn import_harbor(
                 )?
                 .join("tasks"),
             format!("datacurve-ai/deep-swe@{DEEP_SWE_REVISION}"),
+        ),
+        "frontier-swe-v2" => (
+            sources
+                .git_checkout(
+                    "frontier-swe-v2",
+                    "https://github.com/Proximal-Labs/frontier-swe.git",
+                    FRONTIER_SWE_V2_REVISION,
+                )?
+                .join("tasks"),
+            format!("Proximal-Labs/frontier-swe@{FRONTIER_SWE_V2_REVISION}"),
         ),
         _ => return Err(AdapterError::UnknownBenchmark(request.name.clone())),
     };

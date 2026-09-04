@@ -28,6 +28,69 @@ trials = 1
 model = ["sol"]
 thinking = ["high"]
 
+# Exact public task set from FrontierHarness Eval v1:
+# https://github.com/runta-dev/frontier-harness-eval
+[profiles.frontier-harness-v1]
+benchmarks = [
+  "terminal-bench-2.1/build-cython-ext",
+  "terminal-bench-2.1/chess-best-move",
+  "terminal-bench-2.1/code-from-image",
+  "terminal-bench-2.1/constraints-scheduling",
+  "terminal-bench-2.1/db-wal-recovery",
+  "terminal-bench-2.1/dna-insert",
+  "terminal-bench-2.1/extract-elf",
+  "terminal-bench-2.1/gcode-to-text",
+  "terminal-bench-2.1/git-leak-recovery",
+  "terminal-bench-2.1/kv-store-grpc",
+  "terminal-bench-2.1/largest-eigenval",
+  "terminal-bench-2.1/log-summary-date-ranges",
+  "terminal-bench-2.1/merge-diff-arc-agi-task",
+  "terminal-bench-2.1/modernize-scientific-stack",
+  "terminal-bench-2.1/multi-source-data-merger",
+  "terminal-bench-2.1/openssl-selfsigned-cert",
+  "terminal-bench-2.1/polyglot-c-py",
+  "terminal-bench-2.1/regex-log",
+  "terminal-bench-2.1/sanitize-git-repo",
+  "terminal-bench-2.1/sqlite-db-truncate",
+  "terminal-bench-2.1/vulnerable-secret",
+  "deep-swe-v1.1/anko-typed-variable-bindings",
+  "deep-swe-v1.1/arktype-json-schema-refs-dependencies",
+  "deep-swe-v1.1/expr-try-catch-errors",
+  "deep-swe-v1.1/fastapi-deprecation-response-headers",
+  "deep-swe-v1.1/httpx-multipart-response-parsing",
+  "deep-swe-v1.1/katex-multicolumn-array-spans",
+  "deep-swe-v1.1/meriyah-explicit-resource-declarations",
+  "deep-swe-v1.1/python-statemachine-state-data-scoping",
+  "deep-swe-v1.1/scc-bounded-memory-spilling",
+]
+trials = 1
+model = ["sol"]
+thinking = ["high"]
+
+[profiles.frontier-swe-v2]
+benchmarks = [
+  "frontier-swe-v2/cranelift-codegen-opt",
+  "frontier-swe-v2/dart-style-haskell",
+  "frontier-swe-v2/dependent-type-checker",
+  "frontier-swe-v2/ffmpeg-swscale-rewrite",
+  "frontier-swe-v2/frogsgame-rl",
+  "frontier-swe-v2/git-to-zig",
+  "frontier-swe-v2/granite-mamba2-inference-optimization",
+  "frontier-swe-v2/inference-system-optimization",
+  "frontier-swe-v2/libexpat-to-x86asm",
+  "frontier-swe-v2/lua-native-compiler",
+  "frontier-swe-v2/modular-stack-wan21",
+  "frontier-swe-v2/notebook-compression",
+  "frontier-swe-v2/optimizer-design",
+  "frontier-swe-v2/pcqm4mv2-autoresearch",
+  "frontier-swe-v2/postgres-sqlite-wire-adapter",
+  "frontier-swe-v2/pyright-type-checking-optimization",
+  "frontier-swe-v2/revideo-perf-opt",
+]
+trials = 1
+model = ["sol"]
+thinking = ["high"]
+
 [profiles.arena-hard-smoke]
 benchmarks = ["arena-hard-v2/2edbb5f36f5b42be"]
 trials = 1
