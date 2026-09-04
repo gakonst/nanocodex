@@ -9,7 +9,6 @@ export type ManagedModelAccess = Readonly<{
 }>;
 
 export type ManagedModelStatus = Readonly<{
-  astraEntitled: boolean;
   freePromptsRemaining: number | null;
   ready: boolean;
   source: "brokered" | "sponsored" | null;
@@ -69,11 +68,11 @@ export async function managedModelStatus(access: ManagedModelAccess): Promise<Ma
       || response.headers.get("cache-control") !== "no-store"
       || !response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
       await response.body?.cancel();
-      return { astraEntitled: false, freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
+      return { freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
     }
     const encoded = await response.text();
     if (encoded.length > 1_024) {
-      return { astraEntitled: false, freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
+      return { freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
     }
     const value = JSON.parse(encoded) as Record<string, unknown>;
     const ready = value !== null
@@ -89,16 +88,13 @@ export async function managedModelStatus(access: ManagedModelAccess): Promise<Ma
       ? "sponsored"
       : ready && value.source === "user" ? "brokered" : null;
     return {
-      astraEntitled: source === "brokered"
-        && value.active === "chatgpt"
-        && value.astra_entitled === true,
       freePromptsRemaining: source === "sponsored" ? sponsoredRemaining : null,
       ready: source !== null,
       source,
       voiceEnabled: source === "brokered" && value.active === "chatgpt",
     };
   } catch {
-    return { astraEntitled: false, freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
+    return { freePromptsRemaining: null, ready: false, source: null, voiceEnabled: false };
   }
 }
 

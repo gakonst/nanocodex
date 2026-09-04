@@ -1,10 +1,10 @@
 # GPT-6 Astra readiness
 
 Nanocodex recognizes the provider model ID `gpt-6-astra`. Callers can explicitly
-create Astra agents after their account is entitled. Brokered ChatGPT connections
-query the authenticated Codex model catalog and default new conversations to Astra
-only when the exact model is listed. Existing managed agents keep their retained
-settings, while API-key and sponsored Luna traffic retain their existing defaults.
+create Astra agents. New native ChatGPT, `nanocodex2`, and account-app conversations
+select Astra directly and treat an explicit provider rejection as the availability
+signal. Existing managed agents keep their retained settings, native API-key and
+generic SDK defaults remain Sol, and sponsored homepage sessions remain Luna.
 
 This support is based on OpenAI's current contracts:
 
@@ -31,7 +31,7 @@ This support is based on OpenAI's current contracts:
 | Knowledge cutoff | April 30, 2026; this is documentation only and does not affect request encoding. |
 | Base token rates | Estimates $10 input, $1 cached input, $12.50 cache write, and $50 output per million tokens. |
 | Long-context rates | For more than 272,000 input tokens, estimates 2x input/cache rates and 1.5x output rates for the whole request. |
-| Fast mode | Keeps the account-app Astra default off. Astra standard requests explicitly send `service_tier: "default"` so a project Fast default cannot change their accounting. Fast requests use Codex's accepted compatibility value `priority`; requested-tier cost estimates label Astra fast mode as `fast`, while GPT-5.6 retains `priority`. Deployments using EU data residency must not enable Astra fast mode. |
+| Fast mode | Keeps Astra fast mode off by default. Astra standard requests explicitly send `service_tier: "default"` so a project Fast default cannot change their accounting. Fast requests use Codex's accepted compatibility value `priority`; requested-tier cost estimates label Astra fast mode as `fast`, while GPT-5.6 retains `priority`. Deployments using EU data residency must not enable Astra fast mode. |
 
 OpenAI currently describes Astra as rolling out first through its Trusted Access
 Program, with API and Plus, Pro, Business, and Enterprise access following in the
@@ -209,10 +209,9 @@ provider steering protocol.
 
 ## Rollout and live evidence
 
-The managed `nanocodex2` terminal selects Astra directly for new conversations;
-an explicit provider rejection is its availability signal. The account app still
-uses the authenticated Codex model catalog to choose its default and fails closed
-when that projection is unavailable. The selector is available only before the
+The native CLI with ChatGPT authentication, managed `nanocodex2` terminal, and
+account app select Astra directly for new conversations; an explicit provider
+rejection is the availability signal. The selector is available only before the
 first accepted turn, while thinking and Fast remain live settings.
 
 Both native terminal clients expose the complete Sol, Terra, Luna, and Astra

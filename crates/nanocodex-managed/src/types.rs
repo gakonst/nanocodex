@@ -322,14 +322,6 @@ pub struct AgentSettings {
     pub fast_mode: bool,
 }
 
-/// Account-scoped model availability resolved by the managed credential broker.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ModelCapabilities {
-    /// Whether the connected ChatGPT account exposes GPT-6 Astra in its picker catalog.
-    pub astra_entitled: bool,
-}
-
 impl Default for AgentSettings {
     fn default() -> Self {
         Self {
