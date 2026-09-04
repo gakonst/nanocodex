@@ -12,7 +12,7 @@ test("durable events deduplicate cursors and reconcile streamed messages", () =>
     envelope("1", { type: "turn_accepted", id: "turn", input: "hello" }),
     envelope("2", {
       type: "event",
-      event: { type: "assistant.delta", payload: { text: "hel" } },
+      event: { type: "assistant.delta", payload: { text: "he" } },
     }),
     envelope("3", {
       type: "event",

@@ -8,6 +8,11 @@ extend-exclude = [
     "js/account/worker-configuration.d.ts",
 ]
 
+# Xcode object identifiers are hexadecimal, not prose.
+[type.pbxproj]
+extend-glob = ["*.pbxproj"]
+extend-ignore-re = ['\b[0-9A-F]{24}\b']
+
 [default.extend-words]
 ratatui = "ratatui"
 serde = "serde"
