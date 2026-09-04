@@ -52,3 +52,23 @@ test("the account hand WebSocket stays on the managed service boundary", async (
   assert.equal(response?.status, 204);
   assert.equal(forwarded, request);
 });
+
+test("VM host WebSockets stay on their exact managed service boundaries", () => {
+  for (const path of [
+    "/v1/account/vm-host",
+    "/v1/agents/agent-1/vm-host",
+    "/v1/system/vm-host",
+    `/v1/vm-host-attachments/${"p".repeat(43)}/11111111-1111-4111-8111-111111111111/tool-host`,
+  ]) {
+    assert.equal(isManagedRoutePath(path), true, path);
+  }
+
+  for (const path of [
+    "/v1/account/vm-host/",
+    "/v1/system/vm-host/",
+    "/v1/system/vm-host/extra",
+    `/v1/vm-host-attachments/${"p".repeat(43)}/11111111-1111-4111-8111-111111111111/tool-host/extra`,
+  ]) {
+    assert.equal(isManagedRoutePath(path), false, path);
+  }
+});

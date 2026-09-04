@@ -1,10 +1,14 @@
 import type { NamedTool, ToolContext } from "nanocodex";
+import {
+  CF_SANDBOX_PROVIDER,
+  isVmFactoryName,
+} from "./vm-factory-name";
 
 const MOUNT_NAME = /^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$/;
 
-export const MANAGED_MOUNT_PROVIDERS = Object.freeze(["cloudflare"] as const);
+export const MANAGED_CLOUDFLARE_PROVIDER = CF_SANDBOX_PROVIDER;
 
-export type ManagedMountProvider = (typeof MANAGED_MOUNT_PROVIDERS)[number];
+export type ManagedMountProvider = string;
 
 export type ManagedMountRequest = Readonly<{
   provider: ManagedMountProvider;
@@ -25,8 +29,8 @@ export const MANAGED_MOUNT_PARAMETERS = Object.freeze({
   properties: {
     provider: {
       type: "string",
-      enum: MANAGED_MOUNT_PROVIDERS,
-      description: "Sandbox provider to mount. Cloudflare is the built-in managed provider.",
+      pattern: MOUNT_NAME.source,
+      description: "Execution provider to mount: cf_sandbox or the exact name of a connected VM factory.",
     },
     name: {
       type: "string",
@@ -76,23 +80,37 @@ export function parseManagedMountRequest(input: unknown): ManagedMountRequest {
   const value = input as Record<string, unknown>;
   const unsupported = Object.keys(value).find((key) => key !== "provider" && key !== "name");
   if (unsupported !== undefined) throw new TypeError(`mount input contains unsupported field ${unsupported}`);
-  if (value.provider !== "cloudflare") {
-    throw new TypeError("mount provider must be cloudflare");
-  }
-  if (typeof value.name !== "string" || !MOUNT_NAME.test(value.name)) {
-    throw new TypeError(
-      "mount name must be a lowercase portable identifier of 1-63 characters",
-    );
-  }
-  return Object.freeze({ provider: value.provider, name: value.name });
+  const provider = managedMountProvider(value.provider);
+  const name = portableName(value.name, "mount name");
+  return Object.freeze({ provider, name });
 }
 
 export function managedMountRoot(name: string, id: string): string {
-  const parsed = parseManagedMountRequest({ provider: "cloudflare", name });
+  const parsedName = portableName(name, "mount name");
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new TypeError("mount id must be a lowercase UUID");
   const suffix = id.replaceAll("-", "").slice(-8);
-  const stem = parsed.name.slice(0, 49).replace(/[._-]+$/, "") || "hand";
+  const stem = parsedName.slice(0, 49).replace(/[._-]+$/, "") || "hand";
   return `/mnt-${stem}-${suffix}`;
+}
+
+function managedMountProvider(value: unknown): ManagedMountProvider {
+  const provider = portableName(value, "mount provider");
+  if (provider === "cloudflare") return MANAGED_CLOUDFLARE_PROVIDER;
+  if (!isVmFactoryName(provider) && provider !== MANAGED_CLOUDFLARE_PROVIDER) {
+    throw new TypeError(
+      "mount provider must be cf_sandbox or an exact non-reserved VM factory name",
+    );
+  }
+  return provider;
+}
+
+function portableName(value: unknown, name: string): string {
+  if (typeof value !== "string" || !MOUNT_NAME.test(value)) {
+    throw new TypeError(
+      `${name} must be a lowercase portable identifier of 1-63 characters`,
+    );
+  }
+  return value;
 }
 
 export function managedMountProviderResourceId(

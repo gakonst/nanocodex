@@ -7,6 +7,7 @@ import {
   type HostedToolsBrokerPersistence,
   type HostedToolsCallRow,
   type HostedToolsCallState,
+  type HostedToolsLeasedAttachmentPolicy,
   type HostedToolsStateRow,
 } from "nanocodex-tools/hosted";
 
@@ -43,10 +44,18 @@ export class HostedToolsBroker extends HostedToolsBrokerCore {
     allowedMcpIds?: readonly string[],
     appToolCatalogDigest?: `0x${string}`,
     connectGrantId?: string,
+    leasedAttachment?: HostedToolsLeasedAttachmentPolicy,
   ): Response {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    this.accept(server, sessionId, allowedMcpIds, appToolCatalogDigest, connectGrantId);
+    this.accept(
+      server,
+      sessionId,
+      allowedMcpIds,
+      appToolCatalogDigest,
+      connectGrantId,
+      leasedAttachment,
+    );
     return new Response(null, { status: 101, webSocket: client });
   }
 }

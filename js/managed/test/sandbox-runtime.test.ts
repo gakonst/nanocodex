@@ -163,6 +163,88 @@ describe("managed sandbox preview wiring", () => {
     expect(sourceHandler).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes an epoch-bound retained route once before a new subagent namespace snapshot", async () => {
+    const oldRoute = "vm-host:33333333-3333-4333-8333-333333333333:1";
+    const newRoute = "vm-host:33333333-3333-4333-8333-333333333333:2";
+    let currentRoute = oldRoute;
+    let retainedRoute = oldRoute;
+    const oldExec = vi.fn(async () => ({ route: oldRoute }));
+    const newExec = vi.fn(async () => ({ route: newRoute }));
+    const refresh = vi.fn(async () => { retainedRoute = currentRoute; });
+    const tools = createManagedNamespaceTools(
+      () => true,
+      () => [{ id: "sandbox:retained", root: "/repo", workspace: "/workspace" }],
+      (_machineId, name) => name === "exec_command"
+        ? { handler: retainedRoute === oldRoute ? oldExec : newExec }
+        : undefined,
+      refresh,
+    );
+    const exec = tools.find(({ name }) => name === "exec_command")!;
+    const original = toolContext();
+
+    await expect(exec.handler({ cmd: "pwd", workdir: "/repo" }, original))
+      .resolves.toEqual({ route: oldRoute });
+    currentRoute = newRoute;
+    await expect(exec.handler({ cmd: "still pinned", workdir: "/repo" }, {
+      ...original,
+      callId: "same-cell",
+    })).resolves.toEqual({ route: oldRoute });
+
+    const subagent = {
+      ...original,
+      callId: "subagent-call",
+      parentCallId: "subagent-cell",
+      sessionId: "subagent-session",
+      subagent: {
+        agentId: "2",
+        parentAgentId: null,
+        sessionId: "subagent-session",
+        role: "builder",
+        task: "continue in retained cwd",
+      },
+    };
+    await expect(Promise.all([
+      exec.handler({ cmd: "one", workdir: "/repo" }, subagent),
+      exec.handler({ cmd: "two", workdir: "/repo" }, { ...subagent, callId: "parallel" }),
+    ])).resolves.toEqual([{ route: newRoute }, { route: newRoute }]);
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(oldExec).toHaveBeenCalledTimes(2);
+    expect(newExec).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks child authorization before dispatching through a cached namespace binding", async () => {
+    const sourceHandler = vi.fn(async () => ({ ok: true }));
+    const authorized = new Set(["subagent-session"]);
+    const tools = createManagedNamespaceTools(
+      (context) => authorized.has(context.sessionId),
+      () => [{ id: "sandbox:retained", root: "/repo", workspace: "/workspace" }],
+      (_machineId, name) => name === "exec_command" ? { handler: sourceHandler } : undefined,
+    );
+    const exec = tools.find(({ name }) => name === "exec_command")!;
+    const child = {
+      ...toolContext(),
+      sessionId: "subagent-session",
+      parentCallId: "cached-cell",
+      subagent: {
+        agentId: "2",
+        parentAgentId: null,
+        sessionId: "subagent-session",
+        role: "builder",
+        task: "use retained cwd",
+      },
+    };
+
+    await expect(exec.handler({ cmd: "pwd", workdir: "/repo" }, child))
+      .resolves.toEqual({ ok: true });
+    authorized.clear();
+    await expect(exec.handler({ cmd: "pwd", workdir: "/repo" }, {
+      ...child,
+      callId: "later-call",
+    })).rejects.toMatchObject({ status: 403, code: "namespace_forbidden" });
+    expect(sourceHandler).toHaveBeenCalledTimes(1);
+  });
+
   it("opens a bearer capability and strips only its route prefix before proxying", async () => {
     const namespace = {} as DurableObjectNamespace<Sandbox>;
     const secret = "server-only-preview-secret";

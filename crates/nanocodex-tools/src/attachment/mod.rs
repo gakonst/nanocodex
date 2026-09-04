@@ -193,7 +193,7 @@ fn valid_capability(value: &str) -> bool {
 }
 
 /// Transport-only destination for an attached tool executor.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AttachmentTarget {
     endpoint: Url,
     bearer: Arc<str>,

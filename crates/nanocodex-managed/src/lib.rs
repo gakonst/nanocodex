@@ -15,6 +15,9 @@ mod types;
 mod websocket;
 
 #[cfg(feature = "tools")]
+mod vm_host;
+
+#[cfg(feature = "tools")]
 mod attachment;
 
 pub use auth::ManagedApiKey;
@@ -27,3 +30,10 @@ pub use sse::{
     EventCursor, ManagedEventFuture, ManagedEventSource, ManagedEventStream, ManagedEvents,
 };
 pub use types::*;
+
+#[cfg(feature = "tools")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tools")))]
+pub use vm_host::{
+    VmHostAllocationState, VmHostCommand, VmHostConnection, VmHostFence, VmHostProvision,
+    VmHostRelease, VmHostScope, VmShape, connect_system_vm_host, validate_vm_factory_name,
+};

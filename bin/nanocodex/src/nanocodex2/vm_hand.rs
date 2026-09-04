@@ -15,6 +15,7 @@ use nanocodex_vm::{
 use tokio::time::sleep;
 
 use super::Hand;
+pub(crate) use super::vm_hand_config::VmHandConfig;
 
 const DEFAULT_KRUNFW_DIRECTORY: &str = ".cache/libkrunfw/libkrunfw";
 const CAPABILITY_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -29,33 +30,12 @@ pub(crate) struct VmHand {
 
 impl VmHand {
     pub(crate) async fn start(config: &Hand) -> Result<Self, ManagedError> {
-        if !Path::new(&config.vm_workspace).is_absolute() {
-            return Err(configuration(format!(
-                "--vm-workspace must be an absolute guest path, got {:?}",
-                config.vm_workspace
-            )));
-        }
-        let mut capabilities = vec![
-            "filesystem".to_owned(),
-            "linux".to_owned(),
-            "process".to_owned(),
-            "pty".to_owned(),
-            "shell".to_owned(),
-            "vm".to_owned(),
-            format!("cpu:{}", config.vm_cpus),
-            format!("memory-mib:{}", config.vm_memory_mib),
-        ];
-        if !config.vm_no_network {
-            capabilities.push("network".to_owned());
-        }
-        capabilities.sort_unstable();
-        let machine = AttachmentMachine::new(
-            &config.machine_id,
-            &config.machine_name,
-            &config.vm_workspace,
-            capabilities,
-        )
-        .map_err(|error| configuration(error.to_string()))?;
+        Self::start_config(&VmHandConfig::from(config)).await
+    }
+
+    pub(crate) async fn start_config(config: &VmHandConfig) -> Result<Self, ManagedError> {
+        validate_common_config(config)?;
+        let machine = attachment_machine(config)?;
         let rootfs = config.rootfs.canonicalize().map_err(|error| {
             configuration(format!(
                 "failed to resolve VM rootfs {}: {error}",
@@ -80,17 +60,7 @@ impl VmHand {
             .cpus(config.vm_cpus)
             .memory_mib(config.vm_memory_mib);
         if ext4 {
-            let runtime = config.vm_guest_runtime.as_ref().ok_or_else(|| {
-                configuration(
-                    "raw ext4 VM roots require --vm-guest-runtime ELF; build it with `just build-vm-guest` or set NANOCODEX_VM_GUEST_RUNTIME",
-                )
-            })?;
-            let runtime =
-                GuestRuntimeDisk::prepare(runtime, &config.vm_cache).map_err(|error| {
-                    configuration(format!(
-                        "failed to prepare the read-only VM guest runtime disk: {error}"
-                    ))
-                })?;
+            let runtime = prepare_guest_runtime(config)?;
             builder = builder.guest_runtime_disk(runtime.path().to_path_buf());
         } else if config.vm_guest_runtime.is_some() {
             return Err(configuration(
@@ -128,6 +98,35 @@ impl VmHand {
         })
     }
 
+    /// Validates and prepares every host-wide input which does not depend on
+    /// an allocation root. Running this before the control lease is acquired
+    /// keeps deterministic guest/runtime failures out of the redrive loop.
+    pub(crate) fn preflight_host_config(config: &VmHandConfig) -> Result<(), ManagedError> {
+        validate_common_config(config)?;
+        attachment_machine(config)?;
+        prepare_guest_runtime(config)?;
+        if let Some(firmware) = &config.vm_firmware {
+            let firmware = firmware.canonicalize().map_err(|error| {
+                configuration(format!(
+                    "failed to resolve VM firmware directory {}: {error}",
+                    firmware.display()
+                ))
+            })?;
+            let library = if cfg!(target_os = "macos") {
+                firmware.join("libkrunfw.5.dylib")
+            } else {
+                firmware.join("libkrunfw.so.5")
+            };
+            if !library.is_file() {
+                return Err(configuration(format!(
+                    "VM firmware library is missing: {}",
+                    library.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) const fn machine(&self) -> &AttachmentMachine {
         &self.machine
     }
@@ -158,6 +157,53 @@ impl VmHand {
     }
 }
 
+fn validate_common_config(config: &VmHandConfig) -> Result<(), ManagedError> {
+    if !Path::new(&config.vm_workspace).is_absolute() {
+        return Err(configuration(format!(
+            "--vm-workspace must be an absolute guest path, got {:?}",
+            config.vm_workspace
+        )));
+    }
+    Ok(())
+}
+
+fn attachment_machine(config: &VmHandConfig) -> Result<AttachmentMachine, ManagedError> {
+    let mut capabilities = vec![
+        "filesystem".to_owned(),
+        "linux".to_owned(),
+        "process".to_owned(),
+        "pty".to_owned(),
+        "shell".to_owned(),
+        "vm".to_owned(),
+        format!("cpu:{}", config.vm_cpus),
+        format!("memory-mib:{}", config.vm_memory_mib),
+    ];
+    if !config.vm_no_network {
+        capabilities.push("network".to_owned());
+    }
+    capabilities.sort_unstable();
+    AttachmentMachine::new(
+        &config.machine_id,
+        &config.machine_name,
+        &config.vm_workspace,
+        capabilities,
+    )
+    .map_err(|error| configuration(error.to_string()))
+}
+
+fn prepare_guest_runtime(config: &VmHandConfig) -> Result<GuestRuntimeDisk, ManagedError> {
+    let runtime = config.vm_guest_runtime.as_ref().ok_or_else(|| {
+        configuration(
+            "raw ext4 VM roots require --vm-guest-runtime ELF; build it with `just build-vm-guest` or set NANOCODEX_VM_GUEST_RUNTIME",
+        )
+    })?;
+    GuestRuntimeDisk::prepare(runtime, &config.vm_cache).map_err(|error| {
+        configuration(format!(
+            "failed to prepare the read-only VM guest runtime disk: {error}"
+        ))
+    })
+}
+
 pub(crate) fn run_config(path: &Path) -> Result<(), ManagedError> {
     let config = VmProcessConfig::read(path)
         .map_err(|error| configuration(format!("failed to read VM launch record: {error}")))?;
@@ -166,7 +212,7 @@ pub(crate) fn run_config(path: &Path) -> Result<(), ManagedError> {
         .map_err(|error| configuration(format!("VM process failed: {error}")))
 }
 
-fn firmware_directory(config: &Hand) -> Option<PathBuf> {
+fn firmware_directory(config: &VmHandConfig) -> Option<PathBuf> {
     if let Some(directory) = &config.vm_firmware {
         return Some(directory.clone());
     }

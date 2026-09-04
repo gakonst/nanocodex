@@ -19,7 +19,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   let nextSourceId = 1;
   let nextCallId = 1;
   const toolByName = new Map();
-  const subagentsBySession = new Map();
+  const subagentBindingsBySession = new Map();
   const subagentSessions = extras.subagentSessions;
 
   function addTools(configuration = {}) {
@@ -64,7 +64,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         callId,
         model,
         signal: controller.signal,
-        subagent: subagentsBySession.get(sessionId),
+        subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
       });
       return encodeToolOutput(
         outputBody(result),
@@ -162,7 +162,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             callId,
             model,
             signal: controller.signal,
-            subagent: subagentsBySession.get(sessionId),
+            subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
           });
         } catch (error) {
           const message = errorMessage(error);
@@ -344,9 +344,12 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   }
 
   function releaseSession(sessionId) {
-    if (subagentsBySession.has(sessionId)) subagentSessions?.release?.(sessionId);
+    const binding = subagentBindingsBySession.get(sessionId);
+    if (binding !== undefined) {
+      subagentSessions?.release?.(sessionId, binding.hostContextRef);
+    }
     stores.delete(sessionId);
-    subagentsBySession.delete(sessionId);
+    subagentBindingsBySession.delete(sessionId);
     router.releaseSession(sessionId);
     closeCodeObservations(sessionId);
   }
@@ -356,7 +359,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       execution.controller.abort(new Error(CANCELLATION_MESSAGE));
     }
     stores.clear();
-    subagentsBySession.clear();
+    subagentBindingsBySession.clear();
     closeCodeObservations();
     return ownsRouter ? router.reset() : undefined;
   }
@@ -390,11 +393,25 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     executeCode,
     executeCodeObserved,
     executeTool,
-    bindSubagentSession(sessionId, context) {
-      const descriptor = Object.freeze({ ...context });
-      if (sameSubagentDescriptor(subagentsBySession.get(sessionId), descriptor)) return;
-      subagentSessions?.bind?.(sessionId, descriptor);
-      subagentsBySession.set(sessionId, descriptor);
+    bindSubagentSession(sessionId, context, hostContextRef) {
+      if (hostContextRef !== undefined
+        && (typeof hostContextRef !== "string" || hostContextRef.length === 0)) {
+        throw new TypeError("subagent host context ref must be a non-empty string when supplied");
+      }
+      const descriptor = Object.freeze({
+        agentId: context.agentId,
+        parentAgentId: context.parentAgentId,
+        sessionId: context.sessionId,
+        role: context.role,
+        task: context.task,
+      });
+      const existing = subagentBindingsBySession.get(sessionId);
+      if (sameSubagentBinding(existing, descriptor, hostContextRef)) return;
+      subagentSessions?.bind?.(sessionId, descriptor, hostContextRef);
+      subagentBindingsBySession.set(sessionId, Object.freeze({
+        descriptor,
+        hostContextRef,
+      }));
     },
     nextCodeUpdate,
     cancel,
@@ -404,13 +421,15 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   });
 }
 
-function sameSubagentDescriptor(left, right) {
+function sameSubagentBinding(binding, descriptor, hostContextRef) {
+  const left = binding?.descriptor;
   return left !== undefined
-    && left.agentId === right.agentId
-    && left.parentAgentId === right.parentAgentId
-    && left.sessionId === right.sessionId
-    && left.role === right.role
-    && left.task === right.task;
+    && left.agentId === descriptor.agentId
+    && left.parentAgentId === descriptor.parentAgentId
+    && left.sessionId === descriptor.sessionId
+    && left.role === descriptor.role
+    && left.task === descriptor.task
+    && binding.hostContextRef === hostContextRef;
 }
 
 async function evaluateNative(source, environment) {

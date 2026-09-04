@@ -24,6 +24,10 @@
         "class_name": "AccountHostedTools"
       },
       {
+        "name": "NANOCODEX_VM_HOST_POOLS",
+        "class_name": "VmHostPool"
+      },
+      {
         "name": "NANOCODEX_SESSIONS",
         "class_name": "DurableAgentSession"
       }
@@ -41,6 +45,10 @@
     {
       "tag": "managed-session-v1",
       "new_sqlite_classes": ["DurableAgentSession"]
+    },
+    {
+      "tag": "vm-host-pool-v1",
+      "new_sqlite_classes": ["VmHostPool"]
     }
   ]
 }

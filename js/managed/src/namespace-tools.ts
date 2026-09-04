@@ -30,6 +30,7 @@ export type NamespaceMachine = Readonly<{
 export type MachineToolResolver = (
   machineId: string,
   name: HostedMachineToolName,
+  context: ToolContext,
 ) => RoutedTool | undefined;
 
 type MountedHand = Readonly<{
@@ -64,7 +65,7 @@ export type NamespaceExecutionRuntime = Readonly<{
  * so a disconnect or reconnect cannot retarget an admitted command.
  */
 export function createNamespaceExecutionRuntime(
-  machines: () => readonly NamespaceMachine[],
+  machines: (context: ToolContext) => readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver = () => undefined,
 ): NamespaceExecutionRuntime {
   const brain = Object.freeze({
@@ -81,7 +82,7 @@ export function createNamespaceExecutionRuntime(
     const key = `${context.sessionId}\u0000${context.parentCallId || context.callId}`;
     const retained = cells.get(key);
     if (retained !== undefined) return retained;
-    const created = createCellBinding(brain, machines(), resolveMachineTool, key);
+    const created = createCellBinding(brain, machines(context), resolveMachineTool, context, key);
     cells.set(key, created);
     return created;
   };
@@ -207,7 +208,7 @@ export function createNamespaceExecutionRuntime(
 }
 
 export function createNamespaceExecutionTools(
-  machines: () => readonly NamespaceMachine[],
+  machines: (context: ToolContext) => readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver = () => undefined,
 ): ToolMap {
   return createNamespaceExecutionRuntime(machines, resolveMachineTool).tools;
@@ -219,6 +220,7 @@ function createCellBinding(
   brain: MountedHand,
   sourceMachines: readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver,
+  context: ToolContext,
   key: string,
 ): CellBinding {
   const hands: MountedHand[] = [brain];
@@ -233,9 +235,9 @@ function createCellBinding(
       machineId: machine.id,
       root,
       workspace: machine.workspace,
-      exec: resolveMachineTool(machine.id, "exec_command"),
-      writeStdin: resolveMachineTool(machine.id, "write_stdin"),
-      preview: resolveMachineTool(machine.id, "preview"),
+      exec: resolveMachineTool(machine.id, "exec_command", context),
+      writeStdin: resolveMachineTool(machine.id, "write_stdin", context),
+      preview: resolveMachineTool(machine.id, "preview", context),
     }));
   }
   const manifest = createNamespaceManifest({

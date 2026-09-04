@@ -38,6 +38,52 @@ The immutable attachment snapshot publishes the guest workspace plus `vm`,
 attachment generation under the existing lease/fencing rules. Ctrl-C drains
 admitted calls, syncs the guest filesystem, and stops the VM.
 
+## On-demand VM hosts
+
+`nanocodex2 host` advertises bounded capacity instead of attaching one VM. The
+command registers a named VM factory. The managed control plane asks that exact
+factory to create a private VM when an agent uses its name as the `/mount`
+provider, and releases that VM when the durable agent is deleted.
+Every allocation gets its own cloned root image, Hosted Tools attachment, and
+machine identity. One host process can run up to `--max-vms` allocations.
+
+```bash
+NANOCODEX_API_KEY=ncx_live_... \
+nanocodex2 host \
+  --scope user \
+  --factory-name garage-mac \
+  --vm-template /srv/nanocodex/template.ext4 \
+  --state-dir /srv/nanocodex/host-state \
+  --vm-guest-runtime target/x86_64-unknown-linux-musl/debug/nanocodex-vm-guest \
+  --max-vms 10 \
+  --vm-cpus 8 \
+  --vm-memory-mib 16384
+```
+
+The scope chooses who may consume the advertised capacity:
+
+- `--scope user` is the default. Any agent owned by the API-key account may
+  request a VM.
+- `--scope agent --agent AGENT_ID` reserves the host for one durable agent.
+- `--scope system` contributes capacity to the whole managed system. It uses
+  `NANOCODEX_SYSTEM_HOST_TOKEN`, not an account API key.
+
+Several factories may be connected at once. `--factory-name` is the exact
+lowercase portable selector agents pass to `/mount`; it is unique within its
+scope and remains bound to the persisted host identity. `cf_sandbox` names the
+built-in Cloudflare factory and cannot be registered by a device. If the same
+factory name is visible in several scopes, agent scope shadows user scope,
+which shadows system scope; an unavailable higher-priority factory is never
+silently replaced by a different lower-priority machine.
+
+Regardless of pool scope, an allocated VM and its tool connection are leased
+only to the durable agent that requested them. When multiple scopes have free
+capacity for the requested name, lookup prefers the exact-agent pool, then the
+user's pool, then the system pool. The host identity is generated once under `--state-dir`; that
+directory is process-locked and also retains allocation roots across host
+restarts. Graceful host shutdown stops VMs without deleting those roots so the
+next control lease can reconcile them.
+
 The command emits structured lifecycle and call traces to stderr by default.
 They include the machine ID, configured CPU/memory and root-image size,
 connection and catalog state, and each call's ID, tool name, outcome, and

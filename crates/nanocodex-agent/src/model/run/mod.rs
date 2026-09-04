@@ -89,6 +89,7 @@ pub(crate) struct ModelRun<S> {
     tools: Tools,
     prompt_cache: ModelPromptCache,
     context_source: ContextSource,
+    host_context: Option<Arc<str>>,
     global_instructions: Option<Arc<str>>,
     force_compaction: bool,
     pending_developer_messages: Vec<ResponseItem>,
@@ -229,6 +230,7 @@ impl<S> ModelRun<S> {
         tools: Tools,
         prompt_cache: ModelPromptCache,
         context_source: ContextSource,
+        host_context: Option<Arc<str>>,
     ) -> Self {
         let model = config.model;
         let thinking = config.thinking;
@@ -253,6 +255,7 @@ impl<S> ModelRun<S> {
             tools,
             prompt_cache,
             context_source,
+            host_context,
             global_instructions,
             force_compaction: false,
             pending_developer_messages: Vec::new(),
@@ -260,6 +263,10 @@ impl<S> ModelRun<S> {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the private run owns each injected lifecycle component directly"
+    )]
     pub(crate) fn from_checkpoint(
         events: EventSink,
         config: Arc<ModelConfig>,
@@ -268,6 +275,7 @@ impl<S> ModelRun<S> {
         tools: Tools,
         prompt_cache: ModelPromptCache,
         prepared: PreparedCheckpoint,
+        host_context: Option<Arc<str>>,
     ) -> Self {
         let PreparedCheckpoint {
             checkpoint,
@@ -323,11 +331,16 @@ impl<S> ModelRun<S> {
             tools,
             prompt_cache,
             context_source,
+            host_context,
             global_instructions,
             force_compaction: false,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
         }
+    }
+
+    pub(crate) fn set_host_context(&mut self, host_context: Option<Arc<str>>) {
+        self.host_context = host_context;
     }
 
     pub(crate) fn set_events(&mut self, events: EventSink) {

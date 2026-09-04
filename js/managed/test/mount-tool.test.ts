@@ -32,32 +32,45 @@ describe("managed mount protocol", () => {
     expect(tool.parameters).toMatchObject({
       required: ["provider", "name"],
       additionalProperties: false,
-      properties: { provider: { enum: ["cloudflare"] } },
+      properties: { provider: { type: "string", pattern: expect.any(String) } },
     });
+    expect((tool.parameters as { properties: { provider: object } }).properties.provider)
+      .not.toHaveProperty("enum");
     expect(tool.outputSchema).toMatchObject({
       required: ["id", "name", "provider", "mount", "status", "created"],
       additionalProperties: false,
     });
     await expect(tool.handler(
-      { provider: "cloudflare", name: "repo-test" },
+      { provider: "cf_sandbox", name: "repo-test" },
       context(),
     )).resolves.toMatchObject({
-      provider: "cloudflare",
+      provider: "cf_sandbox",
       mount: "/mnt-repo-test-01234567",
       status: "mounted",
     });
     expect(handler).toHaveBeenCalledWith(
-      { provider: "cloudflare", name: "repo-test" },
+      { provider: "cf_sandbox", name: "repo-test" },
+      expect.objectContaining({ callId: "call" }),
+    );
+    await expect(tool.handler(
+      { provider: "garage-mac", name: "vm-build" },
+      context(),
+    )).resolves.toMatchObject({ provider: "garage-mac", status: "mounted" });
+    await tool.handler({ provider: "cloudflare", name: "legacy" }, context());
+    expect(handler).toHaveBeenLastCalledWith(
+      { provider: "cf_sandbox", name: "legacy" },
       expect.objectContaining({ callId: "call" }),
     );
   });
 
-  it("rejects unknown providers, unsafe names, and extra fields", () => {
-    expect(() => parseManagedMountRequest({ provider: "future", name: "build" }))
-      .toThrow("provider must be cloudflare");
-    expect(() => parseManagedMountRequest({ provider: "cloudflare", name: "Build Box" }))
+  it("rejects reserved generic hosts, unsafe names, and extra fields", () => {
+    expect(() => parseManagedMountRequest({ provider: "host", name: "build" }))
+      .toThrow("exact non-reserved VM factory name");
+    expect(() => parseManagedMountRequest({ provider: "Build Box", name: "build" }))
       .toThrow("lowercase portable identifier");
-    expect(() => parseManagedMountRequest({ provider: "cloudflare", name: "build", region: "auto" }))
+    expect(() => parseManagedMountRequest({ provider: "cf_sandbox", name: "Build Box" }))
+      .toThrow("lowercase portable identifier");
+    expect(() => parseManagedMountRequest({ provider: "cf_sandbox", name: "build", region: "auto" }))
       .toThrow("unsupported field region");
   });
 
@@ -72,6 +85,10 @@ describe("managed mount protocol", () => {
       "a".repeat(63),
       "01234567-89ab-7def-8123-456789abcdef",
     ).length).toBeLessThanOrEqual(64);
+    expect(() => managedMountRoot(
+      "Build Box",
+      "01234567-89ab-7def-8123-456789abcdef",
+    )).toThrow("mount name must be a lowercase portable identifier");
   });
 
   it("keeps additional Cloudflare sandbox IDs within the provider limit", () => {

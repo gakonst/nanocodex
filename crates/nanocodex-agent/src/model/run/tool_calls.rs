@@ -156,8 +156,7 @@ async fn execute_code_call(
     tools: &ToolRuntime,
     call: &CodeCall,
     owned_context: Option<OwnedToolContext>,
-    session_id: &str,
-    model: Model,
+    context: ToolContext<'_>,
     observer: &mut dyn CodeModeObserver,
     tool_span: &tracing::Span,
 ) -> CodeModeExecution {
@@ -167,13 +166,6 @@ async fn execute_code_call(
             .instrument(tool_span.clone())
             .await
     } else {
-        let context = ToolContext::new(
-            model.as_str(),
-            session_id,
-            &call.call_id,
-            &[],
-            DEFAULT_TOOL_OUTPUT_TOKENS,
-        );
         tools
             .wait_for_code_with_updates(&call.input, context, observer)
             .instrument(tool_span.clone())
@@ -208,6 +200,7 @@ where
         let tool_call_indices = self.tool_call_indices.clone();
         let session_id = events.request_id().to_owned();
         let model = self.model;
+        let host_context = self.host_context.clone();
         let execution_steps = self.execution_steps.clone();
         let mut executions = prepared
             .into_iter()
@@ -217,6 +210,7 @@ where
                 let events = events.clone();
                 let tool_call_indices = tool_call_indices.clone();
                 let session_id = session_id.clone();
+                let host_context = host_context.clone();
                 let execution_steps = execution_steps.clone();
                 async move {
                     let started_at = active.started_at;
@@ -252,6 +246,7 @@ where
                                     history,
                                     &session_id,
                                     model,
+                                    host_context.as_deref(),
                                     started_at,
                                     &active.progress,
                                     &active.span,
@@ -273,6 +268,7 @@ where
                                     history,
                                     &session_id,
                                     model,
+                                    host_context.as_deref(),
                                     started_at,
                                     &active.progress,
                                     &active.span,
@@ -522,6 +518,7 @@ where
         history: Option<Arc<Vec<ResponseItem>>>,
         session_id: &str,
         model: Model,
+        host_context: Option<&str>,
         started_at: Instant,
         progress: &Mutex<ActiveToolProgress>,
         tool_span: &tracing::Span,
@@ -561,7 +558,8 @@ where
                 &call.call_id,
                 &[],
                 DEFAULT_TOOL_OUTPUT_TOKENS,
-            );
+            )
+            .with_host_context(host_context);
             let mut execution = match call.kind {
                 CodeCallKind::Function => match RawValue::from_string(call.input.clone()) {
                     Ok(input) => {
@@ -627,7 +625,8 @@ where
                 &call.call_id,
                 search_history,
                 DEFAULT_TOOL_OUTPUT_TOKENS,
-            );
+            )
+            .with_host_context(host_context);
             let execution = match RawValue::from_string(call.input.clone()) {
                 Ok(input) => {
                     tools
@@ -667,7 +666,15 @@ where
                 metadata: execution.metadata,
             });
         }
-        let owned_context = owned_code_context(&call, history, session_id, model)?;
+        let owned_context = owned_code_context(&call, history, session_id, model, host_context)?;
+        let context = ToolContext::new(
+            model.as_str(),
+            session_id,
+            &call.call_id,
+            &[],
+            DEFAULT_TOOL_OUTPUT_TOKENS,
+        )
+        .with_host_context(host_context);
         let mut observer = NestedToolEventObserver {
             events,
             tool_call_indices,
@@ -680,8 +687,7 @@ where
             tools,
             &call,
             owned_context,
-            session_id,
-            model,
+            context,
             &mut observer,
             tool_span,
         )
