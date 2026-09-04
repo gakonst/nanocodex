@@ -6,11 +6,11 @@ struct HandsView: View {
     @State private var enablingMac = false
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 25) {
+            VStack(alignment: .leading, spacing: 28) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Hands").font(.system(size: 29, weight: .semibold)).tracking(-0.6)
-                        Text("Your agents think in the cloud. Give them a place to work.").font(.system(size: 14)).foregroundStyle(.secondary)
+                        Text("Give your agents a place to work.").font(.system(size: 14)).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Menu {
@@ -20,11 +20,11 @@ struct HandsView: View {
                     } label: { Label("Add Hand", systemImage: "plus") }.menuStyle(.borderedButton).disabled(!model.state.connected)
                 }
                 HStack(spacing: 14) {
-                    Image(systemName: "brain").font(.system(size: 26)).frame(width: 44)
+                    Image(systemName: "brain").font(.system(size: 22)).frame(width: 42, height: 42).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
                     VStack(alignment: .leading, spacing: 5) { Text("Managed agents").font(.system(size: 14, weight: .medium)); Text("Durable threads, models, and connected tools. Always available.").font(.system(size: 12)).foregroundStyle(.secondary) }
                     Spacer()
-                    Label(model.state.connected ? "Connected" : "Sign in", systemImage: "circle.fill").font(.system(size: 11)).foregroundStyle(model.state.connected ? .green : .secondary)
-                }.padding(20).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 13))
+                    HStack(spacing: 5) { Circle().fill(model.state.connected ? .green : .secondary).frame(width: 5, height: 5); Text(model.state.connected ? "Connected" : "Sign in") }.font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
+                }.padding(18).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 13))
                 if !model.state.hands.contains(where: { $0.kind == "local" }) {
                     VStack(alignment: .leading, spacing: 15) {
                         Label("Use this Mac", systemImage: "laptopcomputer").font(.system(size: 18, weight: .medium))
@@ -41,24 +41,27 @@ struct HandsView: View {
                 }
                 if !model.state.hands.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("YOUR COMPUTE").font(.system(size: 10, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
+                        Text("Your compute").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).padding(.bottom, 3)
                         ForEach(model.state.hands) { hand in HandCard(hand: hand) }
                     }
                 }
                 VStack(alignment: .leading, spacing: 14) {
                     Text("More places to work").font(.system(size: 16, weight: .medium))
-                    HStack(spacing: 14) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 205), spacing: 12)], spacing: 12) {
                         option("Cloud Hand", subtitle: "A workspace hosted for you.", icon: "cloud", action: model.createCloudHand)
                         option("Another computer", subtitle: "Connect your server or laptop.", icon: "desktopcomputer", action: { model.showingRemoteSetup = true })
                     }
                     Button { model.discoverHands() } label: { Label("Find Hands already connected to my account", systemImage: "arrow.clockwise") }.buttonStyle(.link).font(.system(size: 12)).disabled(!model.state.connected)
                 }.padding(.top, 9)
-            }.frame(maxWidth: 780, alignment: .leading).padding(35).frame(maxWidth: .infinity)
+            }.frame(maxWidth: 780, alignment: .leading).padding(.horizontal, 30).padding(.vertical, 32).frame(maxWidth: .infinity)
         }.accessibilityIdentifier("hands-page")
     }
     private func option(_ title: String, subtitle: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 13) { Image(systemName: icon).font(.system(size: 20)); VStack(alignment: .leading, spacing: 6) { Text(title).font(.system(size: 13, weight: .medium)); Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary) }; Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 11)).foregroundStyle(.tertiary) }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 11))
+            VStack(alignment: .leading, spacing: 15) {
+                HStack { Image(systemName: icon).font(.system(size: 21)); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 11)).foregroundStyle(.tertiary) }
+                VStack(alignment: .leading, spacing: 5) { Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1); Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2) }
+            }.padding(18).frame(maxWidth: .infinity, minHeight: 100, alignment: .leading).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.035)))
         }.buttonStyle(.plain).disabled(!model.state.connected)
     }
 }
@@ -69,15 +72,13 @@ struct HandCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(spacing: 12) {
-                Image(systemName: hand.kind == "vm" ? "shippingbox" : "laptopcomputer").font(.system(size: 22)).frame(width: 35)
+                Image(systemName: hand.kind == "vm" ? "shippingbox" : "laptopcomputer").font(.system(size: 21)).frame(width: 42, height: 42).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) { Text(hand.name).font(.system(size: 14, weight: .medium)); status }
+                    Text(hand.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                     Text(hand.workspace).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(hand.workspace)
-                }
+                }.layoutPriority(1)
                 Spacer()
-                if hand.status == "connected" { Button("Use in a tab") { Task { await model.useHand(hand) } }.buttonStyle(.bordered).controlSize(.small).accessibilityIdentifier("use-hand-\(hand.id)") }
-                Button(hand.isRunning ? "Stop" : hand.status == "error" ? "Retry" : "Start") { Task { if hand.isRunning { await model.stopHand(hand.id) } else { await model.startHand(hand.id) } } }
-                    .buttonStyle(.bordered).controlSize(.small).disabled(model.busyHands.contains(hand.id)).accessibilityIdentifier("toggle-hand-\(hand.id)")
+                status
                 Menu {
                     Button("Show Activity") { model.selectedHandForLogs = hand }
                     Button("Show Folder in Finder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: hand.workspace) }
@@ -86,16 +87,25 @@ struct HandCard: View {
                     Button("Remove Hand", role: .destructive) { Task { await model.removeHand(hand.id) } }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
             }
-            HStack(spacing: 14) {
-                Label(hand.agentId == nil ? "Available to all your threads" : "Available to one thread", systemImage: hand.agentId == nil ? "square.stack" : "bubble.left")
-                if let calls = hand.calls, calls > 0 { Text("\(calls) command\(calls == 1 ? "" : "s")") }
-                if let active = hand.activeCalls, active > 0 { Text("\(active) running").foregroundStyle(.green) }
-            }.font(.system(size: 11)).foregroundStyle(.secondary)
+            Divider().opacity(0.45)
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(hand.agentId == nil ? "All your threads" : "This thread", systemImage: hand.agentId == nil ? "square.stack" : "bubble.left")
+                    if let active = hand.activeCalls, active > 0 { Text("\(active) command\(active == 1 ? "" : "s") running").foregroundStyle(.green) }
+                    else if let calls = hand.calls, calls > 0 { Text("\(calls) command\(calls == 1 ? "" : "s")").foregroundStyle(.tertiary) }
+                }.font(.system(size: 11)).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                if hand.status == "connected" { Button("Use in a tab") { Task { await model.useHand(hand) } }.buttonStyle(.bordered).controlSize(.small).disabled(model.busyHands.contains(hand.id)).accessibilityIdentifier("use-hand-\(hand.id)") }
+                Button { Task { if hand.isRunning { await model.stopHand(hand.id) } else { await model.startHand(hand.id) } } } label: {
+                    if model.busyHands.contains(hand.id) { ProgressView().controlSize(.mini).frame(width: 33) }
+                    else { Text(hand.isRunning ? "Stop" : hand.status == "error" ? "Retry" : "Start").frame(minWidth: 33) }
+                }.buttonStyle(.bordered).controlSize(.small).disabled(model.busyHands.contains(hand.id)).accessibilityIdentifier("toggle-hand-\(hand.id)")
+            }
             if let error = hand.error { Text(error).font(.system(size: 12)).foregroundStyle(.orange).textSelection(.enabled) }
-        }.padding(18).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.1))).accessibilityElement(children: .contain).accessibilityIdentifier("hand-\(hand.id)")
+        }.padding(18).background(Color.primary.opacity(0.012), in: RoundedRectangle(cornerRadius: 13)).overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(Color.primary.opacity(0.085))).accessibilityElement(children: .contain).accessibilityIdentifier("hand-\(hand.id)")
     }
     private var status: some View {
-        HStack(spacing: 4) { Circle().fill(hand.status == "connected" ? .green : hand.status == "error" ? .orange : .secondary.opacity(0.5)).frame(width: 5, height: 5); Text(hand.status == "connecting" ? "Connecting…" : (hand.status ?? "stopped").capitalized).font(.system(size: 10)) }.foregroundStyle(.secondary)
+        HStack(spacing: 5) { Circle().fill(hand.status == "connected" ? .green : hand.status == "error" ? .orange : .secondary.opacity(0.5)).frame(width: 5, height: 5); Text(hand.status == "connecting" ? "Connecting…" : (hand.status ?? "stopped").capitalized).font(.system(size: 11)) }.foregroundStyle(.secondary).padding(.horizontal, 8).padding(.vertical, 5).background(Color.primary.opacity(0.035), in: Capsule()).fixedSize()
     }
 }
 

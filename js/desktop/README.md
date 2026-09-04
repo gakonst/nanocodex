@@ -117,3 +117,9 @@ The onboarding check runs against an isolated HTTP SMS fixture and verifies
 wrong-code recovery, successful sign-in, encrypted persistence, and relaunch.
 Shared protocol tests also exercise resend/cancel/retry and private JSONL
 credential boundaries. Real phone delivery requires a user-supplied number.
+
+The tab test records startup, editing, and tab-switch timings. The separate
+`performance.spec.ts` uses an isolated HTTP/SSE fixture with 100 completed turns
+and one streaming turn to measure editing under load. These timings include
+Playwright overhead and are saved as test attachments. Streaming snapshots reuse
+immutable event copies, and concurrent account refreshes share one request.

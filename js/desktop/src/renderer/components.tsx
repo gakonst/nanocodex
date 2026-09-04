@@ -9,7 +9,6 @@ import {
 } from "react";
 import {
   Activity,
-  ArrowDown,
   ArrowUpRight,
   Check,
   ChevronDown,
@@ -89,12 +88,31 @@ function MessageView({ entry }: { entry: Entry }) {
         <Streamdown>{entry.text}</Streamdown>
       </details>
     );
-  if (entry.kind === "error")
+  if (entry.kind === "error") {
+    const astraUnavailable =
+      entry.text.includes("gpt-6-astra") &&
+      entry.text.includes("not supported") &&
+      entry.text.includes("ChatGPT");
     return (
       <div className="inline-error" role="status">
-        {entry.text}
+        {astraUnavailable ? (
+          <>
+            <strong>Astra isn’t available on this ChatGPT account.</strong>
+            <p>
+              Start a new tab and choose another model, or update your model
+              connection in Settings.
+            </p>
+            <details className="service-error-details">
+              <summary>Service details</summary>
+              <pre>{entry.text}</pre>
+            </details>
+          </>
+        ) : (
+          entry.text
+        )}
       </div>
     );
+  }
   if (entry.kind === "status")
     return (
       <div className="direction-update" role="status">
@@ -170,6 +188,9 @@ export function HandsPage({
   onCloud(): void;
   onUse(id: string): void;
 }) {
+  const connectedCount = hands.filter(
+    (hand) => hand.status === "connected"
+  ).length;
   return (
     <div className="settings-scroll">
       <div className="hands-page">
@@ -201,18 +222,13 @@ export function HandsPage({
               <Cloud size={20} />
             </span>
             <div>
-              <strong>Managed brain</strong>
-              <small>Your threads and agent state live in the cloud</small>
+              <strong>Managed agents</strong>
+              <small>Your threads stay in sync</small>
             </div>
             <span className={`status-badge ${connected ? "online" : ""}`}>
               <i />
               {connected ? "Connected" : "Not connected"}
             </span>
-          </div>
-          <div className="compute-connection">
-            <span />
-            <ArrowDown size={14} />
-            <span />
           </div>
           <div>
             <span className="overview-icon">
@@ -220,12 +236,11 @@ export function HandsPage({
             </span>
             <div>
               <strong>
-                {hands.filter((hand) => hand.status === "connected").length}{" "}
-                local Hands connected
+                {connectedCount} {connectedCount === 1 ? "Hand" : "Hands"}{" "}
+                online
               </strong>
-              <small>Files and commands stay on the Hand you choose</small>
+              <small>Your files stay on the Hand you choose</small>
             </div>
-            <span className="muted-text">Shared with your agents</span>
           </div>
         </div>
         <div className="subsection-heading">
@@ -275,7 +290,9 @@ export function HandsPage({
                 </span>
               </div>
               <h3>{hand.name}</h3>
-              <p className="hand-workspace">{hand.workspace}</p>
+              <p className="hand-workspace" title={hand.workspace}>
+                {hand.workspace}
+              </p>
               <div className="hand-facts">
                 <span>
                   {hand.kind === "vm"
@@ -406,9 +423,8 @@ export function HandsPage({
         </div>
         <p className="compute-note">
           <CircleHelp size={15} />
-          Local Hands run with your OS user’s permissions. Use a VM when you
-          need isolation. Keep the app running to provide compute; quitting
-          stops its Hands.
+          Local Hands use your computer’s permissions. Choose a VM for
+          isolation. Keep Nanocodex open to keep your Hands available.
         </p>
       </div>
     </div>
@@ -451,6 +467,7 @@ export function SettingsPage({
                 <button
                   key={value}
                   className={layout.tabPosition === value ? "active" : ""}
+                  aria-pressed={layout.tabPosition === value}
                   onClick={() => onLayout({ ...layout, tabPosition: value })}
                 >
                   {label}
@@ -465,6 +482,7 @@ export function SettingsPage({
                 <button
                   key={value}
                   className={layout.theme === value ? "active" : ""}
+                  aria-pressed={layout.theme === value}
                   onClick={() => onLayout({ ...layout, theme: value })}
                 >
                   {capitalize(value)}
@@ -502,29 +520,31 @@ export function SettingsPage({
               onCancel={() => setSigningIn(false)}
             />
           ) : (
-            <button
-              className="secondary-button"
-              onClick={() => setSigningIn(true)}
-            >
-              {state.connected ? "Switch account" : "Sign in with your phone"}
-            </button>
-          )}
-          {state.connected && (
-            <button
-              className="text-button"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                void bridge
-                  .disconnect()
-                  .then(onState)
-                  .catch(report)
-                  .finally(() => setBusy(false));
-              }}
-            >
-              <Unplug size={14} />
-              Disconnect account
-            </button>
+            <div className="account-actions">
+              <button
+                className="secondary-button"
+                onClick={() => setSigningIn(true)}
+              >
+                {state.connected ? "Switch account" : "Sign in with your phone"}
+              </button>
+              {state.connected && (
+                <button
+                  className="text-button"
+                  disabled={busy}
+                  onClick={() => {
+                    setBusy(true);
+                    void bridge
+                      .disconnect()
+                      .then(onState)
+                      .catch(report)
+                      .finally(() => setBusy(false));
+                  }}
+                >
+                  <Unplug size={14} />
+                  Sign out
+                </button>
+              )}
+            </div>
           )}
         </section>
         <section className="settings-section">

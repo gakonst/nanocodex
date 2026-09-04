@@ -6,9 +6,28 @@ struct RuntimeFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+enum RuntimeEvent: Decodable {
+    case state(DesktopState), thread(ThreadSnapshot), ignored
+    private enum CodingKeys: String, CodingKey { case type, state, thread }
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        switch try fields.decode(String.self, forKey: .type) {
+        case "state": self = .state(try fields.decode(DesktopState.self, forKey: .state))
+        case "thread": self = .thread(try fields.decode(ThreadSnapshot.self, forKey: .thread))
+        default: self = .ignored
+        }
+    }
+}
+private struct RuntimeFrame: Decodable {
+    var id: JSONValue?
+    var event: RuntimeEvent?
+    var result: JSONValue?
+    var error: String?
+}
+
 @MainActor
 final class RuntimeClient {
-    var onEvent: ((JSONValue) -> Void)?
+    var onEvent: ((RuntimeEvent) -> Void)?
     var onFailure: ((String) -> Void)?
     private var process: Process?
     private var input: FileHandle?
@@ -22,6 +41,7 @@ final class RuntimeClient {
     private let dataDirectory: String?
     #if DEBUG
     var requestOverride: ((String, [JSONValue]) async throws -> JSONValue)?
+    func receiveForTesting(_ data: Data) { receive(data) }
     #endif
 
     init(dataDirectory: String? = nil) { self.dataDirectory = dataDirectory }
@@ -94,13 +114,13 @@ final class RuntimeClient {
         buffer.append(data)
         while let newline = buffer.firstIndex(of: 0x0a) {
             let line = buffer.prefix(upTo: newline); buffer.removeSubrange(...newline)
-            guard let value = try? JSONDecoder().decode(JSONValue.self, from: line) else { continue }
-            if value["event"] != .null { onEvent?(value["event"]); continue }
-            let id = value["id"].string
+            guard let value = try? JSONDecoder().decode(RuntimeFrame.self, from: line) else { continue }
+            if let event = value.event { onEvent?(event); continue }
+            let id = value.id?.string ?? ""
             guard let continuation = pending.removeValue(forKey: id) else { continue }
             deadlines.removeValue(forKey: id)?.cancel()
-            if value["error"] != .null { continuation.resume(throwing: RuntimeFailure(message: value["error"].string)) }
-            else { continuation.resume(returning: value["result"]) }
+            if let error = value.error { continuation.resume(throwing: RuntimeFailure(message: error)) }
+            else { continuation.resume(returning: value.result ?? .null) }
         }
     }
     private func terminated() {

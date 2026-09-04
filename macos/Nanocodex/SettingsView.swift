@@ -7,6 +7,7 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
+                Image(nsImage: NSImage(named: "icon") ?? NSImage()).resizable().frame(width: 34, height: 34)
                 Text("Settings").font(.system(size: 23, weight: .semibold))
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -28,19 +29,22 @@ struct SettingsView: View {
                     Picker("Tabs", selection: $model.tabPosition) { Text("Sidebar").tag("left"); Text("Top").tag("top") }.pickerStyle(.segmented).onChange(of: model.tabPosition) { model.persistLayout() }
                     Picker("Theme", selection: $model.theme) { Text("System").tag("system"); Text("Light").tag("light"); Text("Dark").tag("dark") }.onChange(of: model.theme) { model.persistLayout() }
                 }
-                Section("Nanocodex") {
-                    LabeledContent("Version", value: "\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0") · Native macOS")
-                    LabeledContent("New tab", value: "⌘T")
-                    LabeledContent("Find a thread", value: "⌘K")
-                    LabeledContent("Send / New line", value: "Return / Shift Return")
-                    LabeledContent("Reopen closed tab", value: "⌘⇧T")
+                Section("Keyboard shortcuts") {
+                    shortcut("New tab", keys: "⌘ T")
+                    shortcut("Find a thread", keys: "⌘ K")
+                    shortcut("Send / New line", keys: "↩ / ⇧ ↩")
+                    shortcut("Reopen closed tab", keys: "⌘ ⇧ T")
                 }
             }.formStyle(.grouped)
-        }.padding(24).frame(width: 575, height: 560)
+            HStack { Text("Nanocodex \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0")"); Spacer(); Text("Made for macOS") }.font(.system(size: 11)).foregroundStyle(.tertiary)
+        }.padding(24).frame(width: 575, height: 560).background(Color(nsColor: .windowBackgroundColor))
             .sheet(isPresented: $switchingAccount) {
                 SignInView(isSwitchingAccount: model.state.connected, onClose: { switchingAccount = false })
                     .padding(36).frame(width: 480, height: 640)
             }
+    }
+    private func shortcut(_ title: String, keys: String) -> some View {
+        LabeledContent(title) { Text(keys).font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(.secondary).padding(.horizontal, 7).padding(.vertical, 4).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 5)) }
     }
 }
 
