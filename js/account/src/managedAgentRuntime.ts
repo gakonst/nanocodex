@@ -13,6 +13,12 @@ const MANAGED_HISTORY_INITIAL_ATTEMPTS = 3;
 const MANAGED_HISTORY_ATTEMPT_TIMEOUT_MS = 10_000;
 const MANAGED_HISTORY_RETRY_INITIAL_MS = 1_000;
 const MANAGED_HISTORY_RETRY_MAX_MS = 30_000;
+const DEFAULT_MANAGED_CREATE_SETTINGS: ManagedCreateSettings = Object.freeze({
+  model: "gpt-6-astra",
+  thinking: "high",
+  reasoningMode: "standard",
+  fastMode: false,
+});
 export const MAX_MANAGED_RETAINED_ENVELOPES = MANAGED_HISTORY_PAGE_SIZE * 2;
 const managedAgents = new Map<string, ManagedAgent>();
 const managedLists = new Map<string, Promise<readonly ManagedConversation[]>>();
@@ -92,12 +98,12 @@ export async function loadManagedConversationSelection(options: Readonly<{
 
 export function createManagedConversation(
   accountId = "default",
-  settings?: ManagedCreateSettings,
+  settings: ManagedCreateSettings = DEFAULT_MANAGED_CREATE_SETTINGS,
 ): Promise<ManagedConversation> {
-  const creationKey = `${accountId}:${settings === undefined ? "default" : JSON.stringify(settings)}`;
+  const creationKey = `${accountId}:${JSON.stringify(settings)}`;
   const retained = managedCreates.get(creationKey);
   if (retained) return retained;
-  const creating = Agent.create(settings === undefined ? {} : { settings }).then((agent) => {
+  const creating = Agent.create({ settings }).then((agent) => {
     managedAgents.set(agent.id, agent);
     managedLists.delete(accountId);
     return Object.freeze({

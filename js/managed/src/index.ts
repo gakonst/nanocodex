@@ -186,7 +186,6 @@ import {
 import { initializeManagedAgentSettingsSchema } from "./agent-settings-schema";
 import {
   bindAgentCredential,
-  browserModelSubject,
   routeCredentialRequest,
   unbindAgentCredential,
 } from "./credentials";
@@ -1258,33 +1257,6 @@ async function managedFetch(
     }
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ service: "nanocodex", runtime: "cloudflare-durable-objects", status: "ok" });
-    }
-    if (request.method === "GET" && url.pathname === "/v1/model-capabilities") {
-      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
-      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
-      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
-      if (!principal.capabilities.includes("agents:read")) {
-        return json({ error: "forbidden" }, { status: 403 });
-      }
-      if (principal.connectGrant
-        && !principal.connectGrant.connectors.includes("chatgpt")) {
-        return json({ error: "connector_forbidden" }, { status: 403 });
-      }
-      try {
-        const subject = await browserModelSubject(principal.userId);
-        await bindAgentCredential(env.NANOCODEX, subject, principal.userId);
-        const response = await env.NANOCODEX.fetch(
-          "https://broker.internal/.well-known/nanocodex/model-status",
-          { headers: { "x-nanocodex-subject": subject } },
-        );
-        const value = response.ok
-          ? await response.json<{ astra_entitled?: unknown }>()
-          : undefined;
-        await response.body?.cancel().catch(() => {});
-        return json({ astra_entitled: value?.astra_entitled === true });
-      } catch {
-        return json({ astra_entitled: false });
-      }
     }
     const leasedVmHost = url.pathname.match(
       /^\/v1\/vm-host-attachments\/([A-Za-z0-9_-]{43})\/([0-9a-f-]{36})\/tool-host$/,

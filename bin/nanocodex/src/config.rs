@@ -369,7 +369,7 @@ impl AgentArgs {
         };
         let model = match self.model {
             Some(model) => model,
-            None => connected_account_default_model(&auth).await,
+            None => connected_account_default_model(auth.mode()),
         };
         let direct_websocket_url = direct_websocket_url(self.websocket_url, auth.mode());
         let mpp_adapter = self.mpp.start().await?;
@@ -695,95 +695,10 @@ fn direct_websocket_url(explicit: Option<String>, auth_mode: OpenAiAuthMode) -> 
     explicit.unwrap_or_else(|| auth_mode.default_websocket_url().to_owned())
 }
 
-async fn connected_account_default_model(auth: &OpenAiAuth) -> Model {
-    const MAX_CATALOG_BYTES: usize = 2 * 1024 * 1024;
-    if auth.mode() != OpenAiAuthMode::ChatGpt {
-        return Model::Sol;
-    }
-    let client = match reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return Model::Sol,
-    };
-    let mut snapshot = match auth.snapshot().await {
-        Ok(snapshot) => snapshot,
-        Err(_) => return Model::Sol,
-    };
-    for attempt in 0..2 {
-        let mut request = client
-            .get("https://chatgpt.com/backend-api/codex/models?client_version=0.5.0")
-            .bearer_auth(snapshot.bearer())
-            .header(
-                "chatgpt-account-id",
-                snapshot.account_id().unwrap_or_default(),
-            )
-            .header("originator", "codex_cli_rs")
-            .header("user-agent", "nanocodex/0.5.0");
-        if snapshot.is_fedramp() {
-            request = request.header("x-openai-fedramp", "true");
-        }
-        let Ok(mut response) = request.send().await else {
-            return Model::Sol;
-        };
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-            if auth.recover_unauthorized(&snapshot).await.is_err() {
-                return Model::Sol;
-            }
-            let Ok(refreshed) = auth.snapshot().await else {
-                return Model::Sol;
-            };
-            snapshot = refreshed;
-            continue;
-        }
-        if !response.status().is_success()
-            || response
-                .content_length()
-                .is_some_and(|length| length > u64::try_from(MAX_CATALOG_BYTES).unwrap_or(u64::MAX))
-        {
-            return Model::Sol;
-        }
-        let mut encoded = Vec::new();
-        loop {
-            match response.chunk().await {
-                Ok(Some(chunk))
-                    if encoded.len().saturating_add(chunk.len()) <= MAX_CATALOG_BYTES =>
-                {
-                    encoded.extend_from_slice(&chunk);
-                }
-                Ok(Some(_)) | Err(_) => return Model::Sol,
-                Ok(None) => break,
-            }
-        }
-        return account_catalog_default_model(&encoded);
-    }
-    Model::Sol
-}
-
-#[derive(serde::Deserialize)]
-struct AccountModelCatalog {
-    models: Vec<AccountModelAvailability>,
-}
-
-#[derive(serde::Deserialize)]
-struct AccountModelAvailability {
-    slug: String,
-    visibility: String,
-}
-
-fn account_catalog_default_model(encoded: &[u8]) -> Model {
-    let Ok(catalog) = serde_json::from_slice::<AccountModelCatalog>(encoded) else {
-        return Model::Sol;
-    };
-    if catalog
-        .models
-        .iter()
-        .any(|model| model.slug == Model::Astra.as_str() && model.visibility == "list")
-    {
-        Model::Astra
-    } else {
-        Model::Sol
+const fn connected_account_default_model(auth_mode: OpenAiAuthMode) -> Model {
+    match auth_mode {
+        OpenAiAuthMode::ChatGpt => Model::Astra,
+        OpenAiAuthMode::ApiKey => Model::Sol,
     }
 }
 
@@ -933,24 +848,19 @@ mod tests {
     use nanocodex::{Model, oai::auth::OpenAiAuthMode};
 
     #[test]
-    fn account_catalog_defaults_to_only_picker_visible_astra() {
+    fn default_model_follows_the_selected_auth_mode() {
         assert_eq!(
-            account_catalog_default_model(
-                br#"{"models":[{"slug":"gpt-6-astra","visibility":"list"}]}"#,
-            ),
+            connected_account_default_model(OpenAiAuthMode::ChatGpt),
             Model::Astra
         );
         assert_eq!(
-            account_catalog_default_model(
-                br#"{"models":[{"slug":"gpt-6-astra","visibility":"hide"}]}"#,
-            ),
+            connected_account_default_model(OpenAiAuthMode::ApiKey),
             Model::Sol
         );
-        assert_eq!(account_catalog_default_model(b"not-json"), Model::Sol);
     }
 
     use super::{
-        SUBAGENT_INSTRUCTIONS, account_catalog_default_model, direct_websocket_url, select_auth,
+        SUBAGENT_INSTRUCTIONS, connected_account_default_model, direct_websocket_url, select_auth,
         select_auth_with_default, selected_api_base_url, selected_subagent_tools,
         session_instructions,
     };

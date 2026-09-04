@@ -88,7 +88,7 @@ test("an exact agent route survives a successful list cached before another clie
   assert.deepEqual(exactCalls, [SECOND_AGENT_ID, FORBIDDEN_AGENT_ID]);
 });
 
-test("an entitled empty account creates its first durable conversation with Astra settings", async (t) => {
+test("an empty account creates its first durable conversation with Astra settings", async (t) => {
   const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
   const originalFetch = globalThis.fetch;
   Object.defineProperty(globalThis, "location", {
@@ -114,16 +114,9 @@ test("an entitled empty account creates its first durable conversation with Astr
     else Reflect.deleteProperty(globalThis, "location");
   });
 
-  const settings = {
-    model: "gpt-6-astra" as const,
-    thinking: "high" as const,
-    reasoningMode: "standard" as const,
-    fastMode: false,
-  };
   const selected = await loadManagedConversationSelection({
     accountId: "astra-empty-account",
     hasCredential: true,
-    createSettings: settings,
   });
 
   assert.equal(selected.selectedId, FIRST_AGENT_ID);

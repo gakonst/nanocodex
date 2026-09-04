@@ -120,10 +120,10 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
 }: AgentTerminalProps & {
   accountMcpConnections: readonly BrowserAccountMcpConnection[];
 }) {
-  const defaultSettings = terminalDefaultSettings(source, authStatus);
+  const defaultSettings = terminalDefaultSettings(source);
   const [settings, setSettings] = useState(defaultSettings);
   const [conversationStarted, setConversationStarted] = useState(false);
-  const settingsIdentity = `${threadId}:${source ?? "none"}:${authStatus?.state === "ready" && authStatus.astraEntitled}`;
+  const settingsIdentity = `${threadId}:${source ?? "none"}`;
   useEffect(() => {
     setSettings(defaultSettings);
     setConversationStarted(false);
@@ -138,14 +138,14 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
         thinking: "none" as const,
         reasoningMode: "standard" as const,
         fastMode: false,
-      } : source === "brokered" && authStatus?.state === "ready" && authStatus.astraEntitled ? {
+      } : {
         model: "gpt-6-astra" as const,
         thinking: "high" as const,
         reasoningMode: "standard" as const,
         fastMode: false,
-      } : {}),
+      }),
     },
-  }), [accountMcpConnections, authStatus, source, threadId]);
+  }), [accountMcpConnections, source, threadId]);
   const {
     data: agent,
     error,
@@ -239,7 +239,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   const managed = useMemo(() => openManagedAgent(agentId), [agentId]);
   const agent = useMemo(() => managedTerminalAgent(managed), [managed]);
   const [settings, setSettings] = useState<ManagedCreateSettings>(() => (
-    terminalDefaultSettings(source, authStatus)
+    terminalDefaultSettings(source)
   ));
   const [settingsReady, setSettingsReady] = useState(false);
   const [conversationStarted, setConversationStarted] = useState(true);
@@ -349,17 +349,12 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   );
 });
 
-function terminalDefaultSettings(
-  source: CredentialSource | undefined,
-  authStatus: ModelSessionStatus | undefined,
-): ManagedCreateSettings {
+function terminalDefaultSettings(source: CredentialSource | undefined): ManagedCreateSettings {
   if (source === "sponsored") {
     return { model: "gpt-5.6-luna", thinking: "none", reasoningMode: "standard", fastMode: false };
   }
   return {
-    model: authStatus?.state === "ready" && authStatus.astraEntitled
-      ? "gpt-6-astra"
-      : "gpt-5.6-sol",
+    model: "gpt-6-astra",
     thinking: "high",
     reasoningMode: "standard",
     fastMode: false,

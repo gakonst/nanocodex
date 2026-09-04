@@ -29,8 +29,8 @@ test("the account Worker projects opaque sandbox preview capabilities", () => {
   assert.equal(isManagedRoutePath("/sandbox-preview/"), false);
 });
 
-test("the account Worker projects model capabilities through the managed service", () => {
-  assert.equal(isManagedRoutePath("/v1/model-capabilities"), true);
+test("the removed model capabilities route is not projected", () => {
+  assert.equal(isManagedRoutePath("/v1/model-capabilities"), false);
 });
 
 test("the account hand WebSocket stays on the managed service boundary", async () => {
