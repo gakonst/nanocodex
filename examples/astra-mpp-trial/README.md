@@ -66,18 +66,20 @@ browser origin before connecting.
 
 ## Production configuration
 
-Set these Worker secrets:
+The Cloudflare production workflow syncs these GitHub repository secrets to the
+Worker after each deployment:
 
 ```sh
-npx wrangler secret put NANOCODEX_ASTRA_MANAGED_API_KEY
-npx wrangler secret put NANOCODEX_ASTRA_MPP_SECRET
-npx wrangler secret put TEMPO_MPP_API_KEY
+NANOCODEX_ASTRA_MANAGED_API_KEY
+NANOCODEX_ASTRA_MPP_SECRET
+TEMPO_MPP_API_KEY
 ```
 
-Set `NANOCODEX_ASTRA_MACH_RECIPIENT` to the sponsor's intended Tempo recipient.
-Confirm that `NANOCODEX_CONNECT_APP_ORIGIN` exactly matches the deployed HTTPS
-origin. The app fails closed when any sponsor, payment, origin, or Connect
-configuration is absent or malformed.
+`TEMPO_MPP_API_KEY` must have the `mpp:write` scope. The MACH policy settlement
+address is committed as `NANOCODEX_ASTRA_MACH_RECIPIENT`. Confirm that
+`NANOCODEX_CONNECT_APP_ORIGIN` exactly matches the deployed HTTPS origin. The
+app fails closed when any sponsor, payment, origin, or Connect configuration is
+absent or malformed.
 
 `Add $50 MACH` invokes Connect's existing MACH funding dialog for the connected
 account. The prompt submission itself uses MPP; its fee-payer transaction is

@@ -23,7 +23,8 @@
     "NANOCODEX_CONNECT_APP_ID": "astra-one-shot",
     "NANOCODEX_CONNECT_APP_ORIGIN": "https://nanocodex-astra-mpp-trial.gakonst.workers.dev",
     "NANOCODEX_CONNECT_DIALOG_URL": "https://nanocodex.gakonst.workers.dev/connect-dialog/",
-    "NANOCODEX_MANAGED_URL": "https://nanocodex.gakonst.workers.dev"
+    "NANOCODEX_MANAGED_URL": "https://nanocodex.gakonst.workers.dev",
+    "NANOCODEX_ASTRA_MACH_RECIPIENT": "0xa295c42fbcc026a62304a7701f25b4c91799b0da"
   },
   "env": {
     "development": {
