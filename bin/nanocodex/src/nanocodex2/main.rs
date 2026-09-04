@@ -8,6 +8,7 @@
 
 #[allow(dead_code)]
 mod config;
+mod hand;
 mod hand_observability;
 mod host;
 #[allow(dead_code)]
@@ -71,7 +72,7 @@ struct Cli {
 enum Command {
     /// Attach this machine's workspace to an existing managed agent.
     Attach(Attach),
-    /// Register one retained libkrun VM as a compute hand for the account.
+    /// Register VM and browser capabilities as an account-owned hand.
     Hand(Hand),
     /// Create a managed agent and print its receipt as JSON.
     New,
@@ -112,13 +113,32 @@ struct AgentReference {
 }
 
 #[derive(Args)]
+#[command(group(
+    clap::ArgGroup::new("hand-capability")
+        .required(true)
+        .multiple(true)
+        .args(["rootfs", "browser"])
+))]
 struct Hand {
     #[command(flatten)]
     observability: HandObservabilityArgs,
 
     /// Writable raw ext4 image or development directory used as the retained VM root.
     #[arg(long = "vm", visible_alias = "vm-rootfs", value_name = "ROOTFS")]
-    rootfs: PathBuf,
+    rootfs: Option<PathBuf>,
+
+    /// Expose an isolated Chromium browser whose requests leave through this machine.
+    #[arg(long)]
+    browser: bool,
+
+    /// Exact Chrome or Chromium executable used by the attached browser.
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "NANOCODEX_BROWSER_EXECUTABLE",
+        requires = "browser"
+    )]
+    browser_executable: Option<PathBuf>,
 
     /// Statically linked Linux guest executable used with a raw ext4 root.
     #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
@@ -157,7 +177,7 @@ struct Hand {
     machine_id: String,
 
     /// Human-readable name shown in accountInfo().machines.
-    #[arg(long, default_value = "Nanocodex VM")]
+    #[arg(long, default_value = "Nanocodex Hand")]
     machine_name: String,
 }
 
@@ -265,7 +285,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
                 .observability
                 .install()
                 .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-            serve_vm_hand(&client, command).await
+            serve_hand(&client, command).await
         }
         Some(Command::New) => write_json(&client.create().await?),
         Some(Command::List) => write_json(&client.list().await?),
@@ -300,19 +320,22 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
     }
 }
 
-async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError> {
-    let (root_kind, root_bytes) = match std::fs::metadata(&command.rootfs) {
-        Ok(metadata) if metadata.is_file() => ("file", metadata.len()),
-        Ok(metadata) if metadata.is_dir() => ("directory", 0),
-        Ok(_) => ("other", 0),
-        Err(_) => ("missing", 0),
+async fn launch_hand(command: &Hand) -> Result<hand::HandRuntime, ManagedError> {
+    let (root_kind, root_bytes) = match command.rootfs.as_ref().map(std::fs::metadata) {
+        None => ("none", 0),
+        Some(Ok(metadata)) if metadata.is_file() => ("file", metadata.len()),
+        Some(Ok(metadata)) if metadata.is_dir() => ("directory", 0),
+        Some(Ok(_)) => ("other", 0),
+        Some(Err(_)) => ("missing", 0),
     };
     let span = tracing::info_span!(
         target: "nanocodex2",
-        "vm.launch",
+        "hand.launch",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
         machine.id = command.machine_id.as_str(),
+        vm.enabled = command.rootfs.is_some(),
+        browser.enabled = command.browser,
         vm.cpu.count = command.vm_cpus,
         vm.memory.limit_mib = command.vm_memory_mib,
         vm.root.kind = root_kind,
@@ -325,10 +348,10 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
     async {
         tracing::info!(
             target: "nanocodex2",
-            stage = "vm.launch.starting",
-            "starting VM hand"
+            stage = "hand.launch.starting",
+            "starting hand capabilities"
         );
-        let result = vm_hand::VmHand::start(command).await;
+        let result = hand::HandRuntime::start(command).await;
         span.record(
             "duration_ns",
             u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
@@ -339,8 +362,8 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
                 span.record("otel.status_code", "OK");
                 tracing::info!(
                     target: "nanocodex2",
-                    stage = "vm.launch.ready",
-                    "VM guest is ready"
+                    stage = "hand.launch.ready",
+                    "hand capabilities are ready"
                 );
             }
             Err(_) => {
@@ -348,8 +371,8 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
                 span.record("otel.status_code", "ERROR");
                 tracing::error!(
                     target: "nanocodex2",
-                    stage = "vm.launch.failed",
-                    "VM guest failed to start"
+                    stage = "hand.launch.failed",
+                    "hand capabilities failed to start"
                 );
             }
         }
@@ -359,30 +382,30 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
     .await
 }
 
-async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
+async fn serve_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
     let target = client.account_attachment_target()?;
-    let hand = launch_vm_hand(&command).await?;
+    let hand = launch_hand(&command).await?;
     drop(command);
-    let connected = connect_vm_hand(&hand, target).await;
+    let connected = connect_hand(&hand, target).await;
     let attachment = match connected {
         Ok(Some(attachment)) => attachment,
         Ok(None) => {
-            shutdown_vm_hand(hand).await?;
+            shutdown_hand(hand).await?;
             return Ok(());
         }
         Err(error) => {
-            return match shutdown_vm_hand(hand).await {
+            return match shutdown_hand(hand).await {
                 Ok(()) => Err(error),
                 Err(shutdown) => Err(ManagedError::Configuration(format!(
-                    "{error}; VM shutdown also failed: {shutdown}"
+                    "{error}; hand shutdown also failed: {shutdown}"
                 ))),
             };
         }
     };
     tracing::info!(
         target: "nanocodex2",
-        stage = "vm.hand.ready",
-        "VM hand is ready; press Ctrl-C to detach"
+        stage = "hand.ready",
+        "hand is ready; press Ctrl-C to detach"
     );
     let closed = attachment.clone();
     let attachment_result = tokio::select! {
@@ -396,21 +419,21 @@ async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), Mana
     };
     drop(attachment);
     drop(closed);
-    let shutdown = shutdown_vm_hand(hand).await;
+    let shutdown = shutdown_hand(hand).await;
     match (attachment_result, shutdown) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(ManagedError::Configuration(error.to_string())),
         (Ok(()), Err(error)) => Err(error),
         (Err(error), Err(shutdown)) => Err(ManagedError::Configuration(format!(
-            "{error}; VM shutdown also failed: {shutdown}"
+            "{error}; hand shutdown also failed: {shutdown}"
         ))),
     }
 }
 
-async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
+async fn shutdown_hand(hand: hand::HandRuntime) -> Result<(), ManagedError> {
     let span = tracing::info_span!(
         target: "nanocodex2",
-        "vm.shutdown",
+        "hand.shutdown",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
         status = tracing::field::Empty,
@@ -420,8 +443,8 @@ async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
     async {
         tracing::info!(
             target: "nanocodex2",
-            stage = "vm.shutdown.starting",
-            "stopping VM guest"
+            stage = "hand.shutdown.starting",
+            "stopping hand capabilities"
         );
         let result = hand.shutdown().await;
         span.record(
@@ -433,16 +456,16 @@ async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
             span.record("otel.status_code", "OK");
             tracing::info!(
                 target: "nanocodex2",
-                stage = "vm.shutdown.completed",
-                "VM guest stopped"
+                stage = "hand.shutdown.completed",
+                "hand capabilities stopped"
             );
         } else {
             span.record("status", "failed");
             span.record("otel.status_code", "ERROR");
             tracing::error!(
                 target: "nanocodex2",
-                stage = "vm.shutdown.failed",
-                "VM guest failed to stop cleanly"
+                stage = "hand.shutdown.failed",
+                "hand capabilities failed to stop cleanly"
             );
         }
         result
@@ -451,8 +474,8 @@ async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
     .await
 }
 
-async fn connect_vm_hand(
-    hand: &vm_hand::VmHand,
+async fn connect_hand(
+    hand: &hand::HandRuntime,
     target: AttachmentTarget,
 ) -> Result<Option<Attachment>, ManagedError> {
     let connector = hand

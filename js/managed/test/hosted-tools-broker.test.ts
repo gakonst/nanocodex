@@ -82,6 +82,54 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.machines()).toEqual([]);
   });
 
+  it("routes a browser capability through the exact attached machine", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "home-browser",
+      tools: [entry("browser")],
+      machines: [{
+        id: "home-browser",
+        name: "Home browser",
+        workspace: "/",
+        capabilities: ["browser", "browser-egress"],
+      }],
+    }));
+
+    expect(fixture.broker.provider().definitions()).toEqual([
+      expect.objectContaining({
+        name: "user_home-browser_browser",
+        description: expect.stringContaining("user:home-browser:browser"),
+      }),
+    ]);
+    const browser = fixture.broker.provider().resolve("user_home-browser_browser")!;
+    const pending = browser.handler({
+      action: "open",
+      url: "https://api.ipify.org?format=json",
+    }, {
+      sessionId: "session:1",
+      callId: "source:ip",
+    });
+    const call = host.sent.find((frame) => frame.type === "call")!;
+    expect(call).toMatchObject({
+      name: "browser",
+      input: {
+        action: "open",
+        url: "https://api.ipify.org?format=json",
+      },
+    });
+    await fixture.broker.message(host.webSocket, result(call.call_id as string, "203.0.113.7"));
+    await expect(pending).resolves.toMatchObject({
+      output: "203.0.113.7",
+      metadata: {
+        machine_id: "home-browser",
+        machine_name: "Home browser",
+        tool_name: "browser",
+      },
+    });
+  });
+
   it("replaces the live machine snapshot without rebuilding its broker", async () => {
     const fixture = createFixture();
     const first = fixture.socket();

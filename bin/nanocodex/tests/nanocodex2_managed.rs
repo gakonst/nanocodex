@@ -27,7 +27,7 @@ const CLOUD_TURN_ID: &str = "019fc927-b283-7a11-8445-1b9996ad2fb0";
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[tokio::test]
-async fn hand_help_exposes_the_vm_and_machine_contract() {
+async fn hand_help_exposes_the_capability_and_machine_contract() {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
         .args(["hand", "--help"])
         .output()
@@ -36,12 +36,14 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("Usage: nanocodex2 hand [OPTIONS] --vm <ROOTFS>"),
+        stdout.contains("Usage: nanocodex2 hand [OPTIONS]"),
         "{stdout}"
     );
     assert!(!stdout.contains("AGENT_ID"), "{stdout}");
     for expected in [
         "--vm <ROOTFS>",
+        "--browser",
+        "--browser-executable <PATH>",
         "--vm-guest-runtime <ELF>",
         "--vm-workspace <PATH>",
         "--vm-cpus <COUNT>",
@@ -105,7 +107,7 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
         .collect::<Vec<_>>();
     assert!(!traces.is_empty(), "{stderr}");
     let encoded = serde_json::to_string(&traces).unwrap();
-    assert!(encoded.contains("vm.launch"), "{encoded}");
+    assert!(encoded.contains("hand.launch"), "{encoded}");
     assert!(encoded.contains("failed"), "{encoded}");
     for expected in ["trace-hand", "24", "98304", "missing"] {
         assert!(
@@ -124,6 +126,233 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
             "trace leaked {secret:?}: {encoded}"
         );
     }
+}
+
+#[derive(Clone)]
+struct BrowserHandState {
+    authorization: String,
+    live_ip_check: bool,
+    catalogs: Arc<Mutex<Vec<serde_json::Value>>>,
+    public_ip: Arc<Mutex<Option<std::net::IpAddr>>>,
+    completed: Arc<tokio::sync::Notify>,
+}
+
+#[tokio::test]
+async fn browser_only_hand_publishes_residential_egress_capability() {
+    let api_key = format!("ncx_live_{}_{}", "5".repeat(12), "6".repeat(43));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let state = BrowserHandState {
+        authorization: format!("Bearer {api_key}"),
+        live_ip_check: false,
+        catalogs: Arc::new(Mutex::new(Vec::new())),
+        public_ip: Arc::new(Mutex::new(None)),
+        completed: Arc::new(tokio::sync::Notify::new()),
+    };
+    let app = Router::new()
+        .route("/v1/account/tool-host", get(browser_hand_host))
+        .with_state(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut child = spawn_browser_hand(&api_key, address);
+
+    tokio::time::timeout(PROCESS_TIMEOUT, state.completed.notified())
+        .await
+        .expect("browser hand did not publish its catalog");
+    child.kill().await.unwrap();
+    let _ = child.wait().await;
+
+    let catalogs = state.catalogs.lock().unwrap();
+    assert_eq!(catalogs.len(), 1);
+    let catalog = &catalogs[0];
+    assert_eq!(catalog["attachment_id"], "home-browser");
+    assert_eq!(catalog["machines"][0]["id"], "home-browser");
+    assert_eq!(catalog["machines"][0]["workspace"], "/");
+    assert_eq!(
+        catalog["machines"][0]["capabilities"],
+        serde_json::json!(["browser", "browser-egress"])
+    );
+    let tools = catalog["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["definition"]["name"], "browser");
+    assert!(tools[0]["definition"].get("output_schema").is_none());
+    assert!(
+        serde_json::to_vec(&tools[0]["definition"]["parameters"])
+            .unwrap()
+            .len()
+            <= 128 * 1024
+    );
+    drop(catalogs);
+    server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires Chrome/Chromium and public internet; set NANOCODEX_TEST_CHROME"]
+async fn browser_only_hand_routes_whatsmyip_through_its_egress() {
+    let executable = std::env::var("NANOCODEX_TEST_CHROME")
+        .expect("NANOCODEX_TEST_CHROME must point to Chrome or Chromium");
+    let api_key = format!("ncx_live_{}_{}", "9".repeat(12), "0".repeat(43));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let state = BrowserHandState {
+        authorization: format!("Bearer {api_key}"),
+        live_ip_check: true,
+        catalogs: Arc::new(Mutex::new(Vec::new())),
+        public_ip: Arc::new(Mutex::new(None)),
+        completed: Arc::new(tokio::sync::Notify::new()),
+    };
+    let app = Router::new()
+        .route("/v1/account/tool-host", get(browser_hand_host))
+        .with_state(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut child = spawn_browser_hand_with_executable(&api_key, address, &executable);
+
+    tokio::time::timeout(PROCESS_TIMEOUT, state.completed.notified())
+        .await
+        .expect("browser hand did not complete the public IP proof");
+    child.kill().await.unwrap();
+    let _ = child.wait().await;
+
+    assert!(state.public_ip.lock().unwrap().is_some());
+    server.abort();
+}
+
+fn spawn_browser_hand(api_key: &str, address: std::net::SocketAddr) -> tokio::process::Child {
+    spawn_browser_hand_with_executable(api_key, address, env!("CARGO_BIN_EXE_nanocodex2"))
+}
+
+fn spawn_browser_hand_with_executable(
+    api_key: &str,
+    address: std::net::SocketAddr,
+    executable: &str,
+) -> tokio::process::Child {
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .args([
+            "hand",
+            "--browser",
+            "--browser-executable",
+            executable,
+            "--machine-id",
+            "home-browser",
+            "--machine-name",
+            "Home browser",
+        ])
+        .env("NANOCODEX_MANAGED_URL", format!("http://{address}"))
+        .env("NC_API_KEY", api_key)
+        .env_remove("NANOCODEX_API_KEY")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap()
+}
+
+async fn browser_hand_host(
+    State(state): State<BrowserHandState>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> impl IntoResponse {
+    if headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        != Some(state.authorization.as_str())
+    {
+        return unauthorized();
+    }
+    upgrade
+        .on_upgrade(move |socket| serve_browser_hand(socket, state))
+        .into_response()
+}
+
+async fn serve_browser_hand(mut socket: WebSocket, state: BrowserHandState) {
+    let Some(Ok(Message::Text(catalog))) = socket.recv().await else {
+        return;
+    };
+    let catalog: serde_json::Value = serde_json::from_str(&catalog).unwrap();
+    assert_eq!(catalog["type"], "catalog");
+    state.catalogs.lock().unwrap().push(catalog);
+    socket
+        .send(Message::Text(
+            serde_json::json!({"type":"ready"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+
+    if !state.live_ip_check {
+        state.completed.notify_one();
+        serve_until_drain(&mut socket).await;
+        return;
+    }
+
+    call_attached_browser(
+        &mut socket,
+        "call-ip-open",
+        serde_json::json!({
+            "action": "open",
+            "url": "https://api.ipify.org?format=json"
+        }),
+    )
+    .await;
+    let evaluated = call_attached_browser(
+        &mut socket,
+        "call-ip-read",
+        serde_json::json!({
+            "action": "evaluate",
+            "expression": "document.body.innerText"
+        }),
+    )
+    .await;
+    let text = evaluated["outcome"]["output"]["structured_result"]["value"]
+        .as_str()
+        .expect("IP echo page evaluation did not return text");
+    let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    let ip = value["ip"]
+        .as_str()
+        .unwrap()
+        .parse::<std::net::IpAddr>()
+        .unwrap();
+    *state.public_ip.lock().unwrap() = Some(ip);
+    state.completed.notify_one();
+    serve_until_drain(&mut socket).await;
+}
+
+async fn call_attached_browser(
+    socket: &mut WebSocket,
+    call_id: &str,
+    input: serde_json::Value,
+) -> serde_json::Value {
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "call",
+                "session_id": AGENT_ID,
+                "call_id": call_id,
+                "model": "gpt-5.6-sol",
+                "name": "browser",
+                "input": input,
+                "output_token_budget": 4096,
+                "output_byte_budget": 131072,
+                "deadline_at": 9_000_000_000_000_u64
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let Some(Ok(Message::Text(result))) = socket.recv().await else {
+        panic!("browser hand disconnected before {call_id}");
+    };
+    let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(result["type"], "result");
+    assert_eq!(result["call_id"], call_id);
+    assert_eq!(result["outcome"]["status"], "completed", "{result}");
+    assert_eq!(result["outcome"]["output"]["success"], true, "{result}");
+    socket
+        .send(Message::Text(
+            serde_json::json!({"type":"ack", "call_id":call_id})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    result
 }
 
 #[cfg(any(

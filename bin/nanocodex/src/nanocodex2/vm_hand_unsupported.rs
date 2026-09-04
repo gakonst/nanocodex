@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use nanocodex_managed::ManagedError;
-use nanocodex_tools::{Tools, attachment::AttachmentMachine};
+use nanocodex_tools::ToolsBuilder;
 
 use super::Hand;
 
@@ -12,11 +12,7 @@ impl VmHand {
         Err(unsupported())
     }
 
-    pub(crate) fn machine(&self) -> &AttachmentMachine {
-        unreachable!("unsupported VM hand cannot be constructed")
-    }
-
-    pub(crate) fn tools(&self) -> Tools {
+    pub(crate) fn tools_builder(&self) -> ToolsBuilder {
         unreachable!("unsupported VM hand cannot be constructed")
     }
 
