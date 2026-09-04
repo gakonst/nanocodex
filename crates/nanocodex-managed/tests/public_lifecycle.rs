@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(feature = "tools")]
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::{
     Json, Router,
@@ -62,6 +61,8 @@ struct FixtureInner {
     operations: Mutex<Vec<&'static str>>,
     catalogs: Mutex<Vec<Value>>,
     changed: Notify,
+    steer_entered: Notify,
+    steer_release: Mutex<Option<Arc<Notify>>>,
 }
 
 #[derive(Debug)]
@@ -94,6 +95,8 @@ impl Fixture {
                 operations: Mutex::new(Vec::new()),
                 catalogs: Mutex::new(Vec::new()),
                 changed: Notify::new(),
+                steer_entered: Notify::new(),
+                steer_release: Mutex::new(None),
             }),
         }
     }
@@ -146,6 +149,206 @@ impl Fixture {
             changed.await;
         }
     }
+}
+
+#[tokio::test]
+async fn live_open_survives_delayed_ready_large_replay_and_lost_admission_ack() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let api_key = format!("ncx_live_{}_{}", "e".repeat(12), "f".repeat(43));
+        let fixture = Fixture::new(&api_key);
+        let release = Arc::new(Notify::new());
+        *lock(&fixture.inner.steer_release) = Some(release.clone());
+        let app = Router::new()
+            .route("/v1/agents/{agent_id}", get(agent_state))
+            .route("/v1/agents/{agent_id}/ws", get(reconnecting_socket))
+            .with_state(fixture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(api_key).unwrap(),
+        )
+        .unwrap();
+        let (agent, mut events): (Nanocodex, AgentEvents) =
+            Nanocodex::builder(Managed::open_live(client, AGENT_ID))
+                .build()
+                .await
+                .expect("retained state should open before the socket is ready");
+        let prompting =
+            agent.prompt(PromptRequest::new("live prompt").request_id(ACTIVE_REQUEST_ID));
+        tokio::pin!(prompting);
+        assert!((&mut prompting).now_or_never().is_none());
+        release.notify_one();
+        let turn = prompting
+            .await
+            .expect("submission must consume a replay larger than the socket buffer");
+        assert_result(
+            &turn.result().await.unwrap(),
+            ACTIVE_REQUEST_ID,
+            "reconnected answer",
+        );
+        for sequence in 1..=401 {
+            let event = events.recv().await.unwrap();
+            assert_eq!(event.seq, sequence);
+        }
+        assert_eq!(*lock(&fixture.inner.event_cursors), ["40", "240", "440"]);
+        {
+            let submissions = lock(&fixture.inner.submissions);
+            assert_eq!(submissions.len(), 2);
+            assert_eq!(submissions[0].body, submissions[1].body);
+        }
+        agent.disconnect().await.unwrap();
+        server.abort();
+    })
+    .await
+    .expect("live reconnect and replay must remain bounded");
+}
+
+async fn reconnecting_socket(
+    State(fixture): State<Fixture>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> impl IntoResponse {
+    authorize(&fixture, &headers);
+    let cursor = query["cursor"].parse::<u64>().unwrap();
+    lock(&fixture.inner.event_cursors).push(cursor.to_string());
+    let release = lock(&fixture.inner.steer_release).take();
+    upgrade.on_upgrade(move |mut socket| async move {
+        if let Some(release) = release {
+            release.notified().await;
+        }
+        let mut ready = agent_state_json(AGENT_ID, "440");
+        ready["type"] = json!("ready");
+        ready["session_id"] = json!(AGENT_ID);
+        ready["restored"] = json!(true);
+        socket
+            .send(Message::Text(ready.to_string().into()))
+            .await
+            .unwrap();
+        let end = if cursor == 40 { 240 } else { 440 };
+        for next in cursor + 1..=end {
+            let event = nested_event(
+                next,
+                ROOT_SOURCE_REQUEST_ID,
+                None,
+                "assistant.message",
+                json!({"text": format!("event {next}")}),
+            );
+            socket
+                .send(Message::Text(wire_event(event).into()))
+                .await
+                .unwrap();
+        }
+        if cursor == 40 {
+            socket.send(Message::Close(None)).await.unwrap();
+            return;
+        }
+        while let Some(Ok(Message::Text(frame))) = socket.recv().await {
+            let command: Value = serde_json::from_str(&frame).unwrap();
+            if command["type"] == "ping" {
+                socket
+                    .send(Message::Text(r#"{"type":"pong"}"#.into()))
+                    .await
+                    .unwrap();
+                continue;
+            }
+            assert_eq!(command["type"], "prompt");
+            assert_eq!(command["id"], ACTIVE_REQUEST_ID);
+            lock(&fixture.inner.submissions).push(Submission {
+                idempotency_key: ACTIVE_REQUEST_ID.to_owned(),
+                body: command,
+            });
+            if cursor == 240 {
+                // Lose only the admission response. The socket keeps answering
+                // heartbeats, so a heartbeat timeout cannot rescue this wait.
+                continue;
+            }
+            for event in [
+                accepted_event(441, ACTIVE_REQUEST_ID, "live prompt"),
+                nested_event(
+                    442,
+                    ROOT_SOURCE_REQUEST_ID,
+                    None,
+                    "run.completed",
+                    json!({"status": "completed"}),
+                ),
+                completed_event(443, ACTIVE_REQUEST_ID, "reconnected answer"),
+            ] {
+                socket
+                    .send(Message::Text(wire_event(event).into()))
+                    .await
+                    .unwrap();
+            }
+            // Keep the stream alive until the caller explicitly detaches.
+            while socket.recv().await.is_some() {}
+            return;
+        }
+    })
+}
+
+fn wire_event(event: Bytes) -> String {
+    std::str::from_utf8(&event)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn detach_does_not_wait_for_an_unavailable_live_admission() {
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        let api_key = format!("ncx_live_{}_{}", "g".repeat(12), "h".repeat(43));
+        let fixture = Fixture::new(&api_key);
+        let entered = Arc::new(Notify::new());
+        let connected = entered.clone();
+        let app = Router::new()
+            .route("/v1/agents/{agent_id}", get(agent_state))
+            .route(
+                "/v1/agents/{agent_id}/ws",
+                get(move |upgrade: WebSocketUpgrade| {
+                    let connected = connected.clone();
+                    async move {
+                        upgrade.on_upgrade(move |mut socket| async move {
+                            connected.notify_one();
+                            // The connection exists but never sends its ready frame.
+                            while socket.recv().await.is_some() {}
+                        })
+                    }
+                }),
+            )
+            .with_state(fixture);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(api_key).unwrap(),
+        )
+        .unwrap();
+        let (agent, _): (Nanocodex, AgentEvents) =
+            Nanocodex::builder(Managed::open_live(client, AGENT_ID))
+                .build()
+                .await
+                .unwrap();
+        let prompting_agent = agent.clone();
+        let prompting = tokio::spawn(async move {
+            prompting_agent
+                .prompt(PromptRequest::new("still owned remotely").request_id(ACTIVE_REQUEST_ID))
+                .await
+        });
+        entered.notified().await;
+        tokio::time::timeout(Duration::from_secs(1), agent.disconnect())
+            .await
+            .expect("detach must not wait for transport recovery")
+            .unwrap();
+        assert!(prompting.await.unwrap().is_err());
+        server.abort();
+    })
+    .await
+    .expect("detachment should remain bounded");
 }
 
 #[cfg(feature = "tools")]
@@ -293,14 +496,29 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
             .expect("live prompt should be accepted");
         assert_eq!(turn.request_id(), Some(ACTIVE_REQUEST_ID));
         let control: TurnControl = turn.control();
-        control
-            .steer("follow-up steering")
+        let steer_release = Arc::new(Notify::new());
+        *lock(&fixture.inner.steer_release) = Some(steer_release.clone());
+        let steering_control = control.clone();
+        let steering =
+            tokio::spawn(async move { steering_control.steer("follow-up steering").await });
+        fixture.inner.steer_entered.notified().await;
+        fixture
+            .send_event(accepted_event(41, ACTIVE_REQUEST_ID, "live prompt"))
+            .await;
+        let first_observed = observed_events
+            .recv()
             .await
-            .expect("public turn control should steer");
+            .expect("durable events must continue while steering waits");
+        assert_eq!(first_observed.cursor.as_str(), "41");
         control
             .cancel()
             .await
             .expect("public turn control should cancel");
+        steer_release.notify_one();
+        steering
+            .await
+            .unwrap()
+            .expect("public turn control should steer");
         let shutdown_agent = agent.clone();
         let shutdown = shutdown_agent.shutdown();
         tokio::pin!(shutdown);
@@ -309,9 +527,6 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
             "shutdown must wait for the durable turn terminal"
         );
 
-        fixture
-            .send_event(accepted_event(41, ACTIVE_REQUEST_ID, "live prompt"))
-            .await;
         fixture
             .send_event(completed_event_with_usage(
                 42,
@@ -415,8 +630,8 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
             .expect("live terminal should complete the result");
         assert_result(&result, ACTIVE_REQUEST_ID, "live answer");
 
-        let mut observed = Vec::new();
-        for _ in 0..8 {
+        let mut observed = vec![first_observed];
+        for _ in 0..7 {
             observed.push(
                 observed_events
                     .recv()
@@ -897,6 +1112,11 @@ async fn steer_turn(
         turn_id: turn_id.clone(),
         body: Some(body),
     });
+    let release = lock(&fixture.inner.steer_release).take();
+    if let Some(release) = release {
+        fixture.inner.steer_entered.notify_one();
+        release.notified().await;
+    }
     Json(json!({"turn_id": turn_id, "state": "cancelling"}))
 }
 

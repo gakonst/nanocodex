@@ -1,11 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use nanocodex_agent::{
     AgentSessionContext, Model, NanocodexError, Thinking, TurnResult, TurnUsage,
     backend::{
@@ -16,12 +17,12 @@ use nanocodex_agent::{
 };
 use nanocodex_oai_api::events::{AgentEvent, AgentEventPublisher};
 use tokio::sync::{mpsc, watch};
-use tower::Service;
+use tower::{Service, ServiceExt};
 
 use crate::{
     EventCursor, ManagedError, ManagedEvent, ManagedEventData, ManagedEvents, PromptContent,
     PromptInput, TurnState,
-    builder::{ManagedRequest, ManagedResponse, backend_error, call, unexpected_response},
+    builder::{ManagedRequest, ManagedResponse, backend_error, unexpected_response},
 };
 
 #[cfg(feature = "tools")]
@@ -56,21 +57,23 @@ pub(crate) enum Command {
         bool,
         tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
     ),
-    Disconnect,
     Shutdown,
 }
 
 #[derive(Clone)]
 pub(crate) struct Shutdown {
     requested: Arc<AtomicBool>,
+    disconnect: watch::Sender<bool>,
     outcome: watch::Sender<Option<Result<(), Arc<NanocodexError>>>>,
 }
 
 impl Shutdown {
     fn new() -> Self {
         let (outcome, _) = watch::channel(None);
+        let (disconnect, _) = watch::channel(false);
         Self {
             requested: Arc::new(AtomicBool::new(false)),
+            disconnect,
             outcome,
         }
     }
@@ -259,16 +262,14 @@ impl LifecycleBackend for ManagedAgent {
     }
 
     fn disconnect(&self) -> BackendFuture<nanocodex_agent::Result<()>> {
-        let commands = self.commands.clone();
         let shutdown = self.shutdown.clone();
         Box::pin(async move {
             if shutdown
                 .requested
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
-                && commands.send(Command::Disconnect).await.is_err()
             {
-                shutdown.complete(Err(NanocodexError::AgentStopped));
+                shutdown.disconnect.send_replace(true);
             }
             shutdown.wait().await
         })
@@ -309,6 +310,8 @@ pub(crate) struct ManagedDriver<S> {
     pending: HashMap<String, PendingTurn>,
     turns_by_key: HashMap<BackendTurnKey, String>,
     next_event_seq: u64,
+    controls: FuturesUnordered<BackendFuture<()>>,
+    steers: VecDeque<BackendFuture<()>>,
     #[cfg(feature = "tools")]
     attachment: Option<AttachmentSupervisor>,
 }
@@ -316,6 +319,7 @@ pub(crate) struct ManagedDriver<S> {
 enum DriverInput {
     Command(Option<Command>),
     Event(Result<ManagedEvent, ManagedError>),
+    ControlCompleted,
 }
 
 impl<S> ManagedDriver<S>
@@ -346,23 +350,65 @@ where
             pending: HashMap::new(),
             turns_by_key: HashMap::new(),
             next_event_seq: 1,
+            controls: FuturesUnordered::new(),
+            steers: VecDeque::new(),
             #[cfg(feature = "tools")]
             attachment,
         }
     }
 
     pub(crate) async fn run(mut self) {
-        let outcome = loop {
+        let mut disconnected = self.shutdown.disconnect.subscribe();
+        // Detachment must work even during an unacknowledged admission or an
+        // unavailable transport. It stops only this local driver; the durable
+        // operation remains owned by the service under its original ID.
+        let outcome = tokio::select! {
+            _ = disconnected.wait_for(|disconnected| *disconnected) => Ok(()),
+            outcome = self.drive() => outcome,
+        };
+        #[cfg(feature = "tools")]
+        if let Some(attachment) = self.attachment.take() {
+            // Local placement is optional. A fenced or unavailable attachment
+            // must not turn an already-durable cloud result into a failed
+            // lifecycle shutdown.
+            drop(attachment.shutdown().await);
+        }
+        self.shutdown.complete(outcome);
+    }
+
+    async fn drive(&mut self) -> nanocodex_agent::Result<()> {
+        loop {
             match self.next().await {
                 DriverInput::Command(command) => match command {
                     Some(Command::Submit(prompt, completion, result)) => {
                         drop(result.send(self.submit(prompt, completion).await));
                     }
                     Some(Command::Steer(key, prompt, result)) => {
-                        drop(result.send(self.steer(key, prompt).await));
+                        let request = self
+                            .turns_by_key
+                            .get(&key)
+                            .cloned()
+                            .ok_or(NanocodexError::TurnNotSteerable)
+                            .and_then(|turn_id| {
+                                Ok(ManagedRequest::Steer {
+                                    agent_id: self.agent_id.clone(),
+                                    turn_id,
+                                    input: managed_prompt(prompt)?,
+                                })
+                            });
+                        self.dispatch_control(request, result).await;
                     }
                     Some(Command::Cancel(key, result)) => {
-                        drop(result.send(self.cancel(key).await));
+                        let request = self
+                            .turns_by_key
+                            .get(&key)
+                            .cloned()
+                            .ok_or(NanocodexError::TurnNotCancellable)
+                            .map(|turn_id| ManagedRequest::Cancel {
+                                agent_id: self.agent_id.clone(),
+                                turn_id,
+                            });
+                        self.dispatch_control(request, result).await;
                     }
                     Some(Command::SetModel(model, result)) => {
                         drop(result.send(self.set_model(model).await));
@@ -374,7 +420,7 @@ where
                         drop(result.send(self.set_fast_mode(enabled).await));
                     }
                     Some(Command::Shutdown) => break self.shutdown_active().await,
-                    Some(Command::Disconnect) | None => break Ok(()),
+                    None => break Ok(()),
                 },
                 DriverInput::Event(event) => match event {
                     Ok(event) => {
@@ -384,33 +430,79 @@ where
                     }
                     Err(error) => break Err(backend_error(error)),
                 },
+                DriverInput::ControlCompleted => {}
             }
-        };
-
-        #[cfg(feature = "tools")]
-        if let Some(attachment) = self.attachment.take() {
-            // Local placement is optional. A fenced or unavailable attachment
-            // must not turn an already-durable cloud result into a failed
-            // lifecycle shutdown.
-            drop(attachment.shutdown().await);
         }
-        self.shutdown.complete(outcome);
     }
 
     async fn next(&mut self) -> DriverInput {
-        #[cfg(feature = "tools")]
-        {
-            tokio::select! {
-                command = self.commands.recv() => DriverInput::Command(command),
-                event = self.stream.next() => DriverInput::Event(event),
-            }
+        tokio::select! {
+            command = self.commands.recv() => DriverInput::Command(command),
+            event = self.stream.next() => DriverInput::Event(event),
+            _ = self.controls.next(), if !self.controls.is_empty() => DriverInput::ControlCompleted,
+            () = complete_next_steer(&mut self.steers), if !self.steers.is_empty() => DriverInput::ControlCompleted,
         }
-        #[cfg(not(feature = "tools"))]
-        {
-            tokio::select! {
-                command = self.commands.recv() => DriverInput::Command(command),
-                event = self.stream.next() => DriverInput::Event(event),
+    }
+
+    async fn dispatch_control(
+        &mut self,
+        request: nanocodex_agent::Result<ManagedRequest>,
+        result: tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
+    ) {
+        let request = match request {
+            Ok(request) => request,
+            Err(error) => {
+                drop(result.send(Err(error)));
+                return;
             }
+        };
+        let (turn_id, steering) = match &request {
+            ManagedRequest::Steer { turn_id, .. } => (turn_id.clone(), true),
+            ManagedRequest::Cancel { turn_id, .. } => (turn_id.clone(), false),
+            _ => unreachable!("only turn controls are dispatched concurrently"),
+        };
+        let service = match self.service.ready().await {
+            Ok(service) => service,
+            Err(error) => {
+                drop(result.send(Err(backend_error(error))));
+                return;
+            }
+        };
+        let response = service.call(request);
+        // A control response can arrive after its terminal event, or wait for
+        // runtime recovery. Neither may stop durable event delivery or prevent
+        // another control (in particular cancellation) from being sent.
+        let control: BackendFuture<()> = Box::pin(async move {
+            let outcome = match response.await.map_err(backend_error) {
+                Ok(ManagedResponse::Steered(action)) if steering && action.turn_id == turn_id => {
+                    Ok(())
+                }
+                Ok(ManagedResponse::Cancelled(action))
+                    if !steering && action.turn_id == turn_id =>
+                {
+                    Ok(())
+                }
+                Ok(ManagedResponse::Steered(_)) if steering => {
+                    Err(NanocodexError::BackendContract {
+                        detail: "managed steer acknowledged a different turn",
+                    })
+                }
+                Ok(ManagedResponse::Cancelled(_)) if !steering => {
+                    Err(NanocodexError::BackendContract {
+                        detail: "managed cancel acknowledged a different turn",
+                    })
+                }
+                Ok(_) => Err(unexpected_response()),
+                Err(error) => Err(error),
+            };
+            drop(result.send(outcome));
+        });
+        if steering {
+            // Preserve instruction order while still allowing cancellation
+            // and durable events to progress during recovery.
+            self.steers.push_back(control);
+        } else {
+            self.controls.push(control);
         }
     }
 
@@ -427,20 +519,80 @@ where
         if cancel_on_admission {
             self.cancel_turn(request_id.clone()).await?;
         }
-        let turn = match call(
-            &mut self.service,
-            ManagedRequest::Submit {
-                agent_id: self.agent_id.clone(),
-                turn_id: Some(request_id.clone()),
-                idempotency_key: request_id.clone(),
-                input,
+        let expected_turn_id = crate::websocket::websocket_turn_id(&request_id);
+        if self.pending.contains_key(&expected_turn_id) {
+            return Err(NanocodexError::BackendContract {
+                detail: "managed service returned a duplicate active turn id",
+            });
+        }
+        self.turns_by_key
+            .insert(prompt.key, expected_turn_id.clone());
+        self.pending.insert(
+            expected_turn_id.clone(),
+            PendingTurn {
+                key: prompt.key,
+                request_id: request_id.clone(),
+                events: prompt.events,
+                completion,
             },
-        )
-        .await?
+        );
+        let admitted = self
+            .finish_admission(&request_id, &expected_turn_id, input)
+            .await;
+        if admitted.is_err() {
+            self.pending.remove(&expected_turn_id);
+            self.turns_by_key.remove(&prompt.key);
+        }
+        admitted.map(|()| request_id)
+    }
+
+    async fn call_with_events(
+        &mut self,
+        request: ManagedRequest,
+    ) -> nanocodex_agent::Result<ManagedResponse> {
+        let response = self
+            .service
+            .ready()
+            .await
+            .map_err(backend_error)?
+            .call(request);
+        tokio::pin!(response);
+        loop {
+            tokio::select! {
+                response = &mut response => return response.map_err(backend_error),
+                event = self.stream.next() => self.event(event.map_err(backend_error)?)?,
+                _ = self.controls.next(), if !self.controls.is_empty() => {},
+                () = complete_next_steer(&mut self.steers), if !self.steers.is_empty() => {},
+            }
+        }
+    }
+
+    async fn finish_admission(
+        &mut self,
+        request_id: &str,
+        expected_turn_id: &str,
+        input: PromptInput,
+    ) -> nanocodex_agent::Result<()> {
+        // Register the publisher before awaiting admission. A reconnect may
+        // replay more than the socket event buffer before it can acknowledge
+        // this submission; consuming those events prevents a circular wait.
+        let turn = match self
+            .call_with_events(ManagedRequest::Submit {
+                agent_id: self.agent_id.clone(),
+                turn_id: Some(request_id.to_owned()),
+                idempotency_key: request_id.to_owned(),
+                input,
+            })
+            .await?
         {
             ManagedResponse::Submitted(turn) => turn,
             _ => return Err(unexpected_response()),
         };
+        if turn.turn_id != expected_turn_id {
+            return Err(NanocodexError::BackendContract {
+                detail: "managed submission acknowledged a different turn",
+            });
+        }
         let terminal = matches!(
             turn.state,
             TurnState::Completed | TurnState::Cancelled | TurnState::Failed
@@ -466,71 +618,22 @@ where
             false
         };
         if retained {
-            let outcome = retained_result(turn.terminal, &turn_id, &request_id)?;
-            drop(completion.send(outcome));
-            return Ok(request_id);
+            let outcome = retained_result(turn.terminal, &turn_id, request_id)?;
+            if let Some(pending) = self.pending.remove(&turn_id) {
+                self.turns_by_key.remove(&pending.key);
+                drop(pending.completion.send(outcome));
+            }
         }
-        if self.pending.contains_key(&turn_id) {
-            return Err(NanocodexError::BackendContract {
-                detail: "managed service returned a duplicate active turn id",
-            });
-        }
-        self.turns_by_key.insert(prompt.key, turn_id.clone());
-        self.pending.insert(
-            turn_id,
-            PendingTurn {
-                key: prompt.key,
-                request_id: request_id.clone(),
-                events: prompt.events,
-                completion,
-            },
-        );
-        Ok(request_id)
-    }
-
-    async fn steer(&mut self, key: BackendTurnKey, prompt: Prompt) -> nanocodex_agent::Result<()> {
-        let turn_id = self
-            .turns_by_key
-            .get(&key)
-            .cloned()
-            .ok_or(NanocodexError::TurnNotSteerable)?;
-        let input = managed_prompt(prompt)?;
-        match call(
-            &mut self.service,
-            ManagedRequest::Steer {
-                agent_id: self.agent_id.clone(),
-                turn_id: turn_id.clone(),
-                input,
-            },
-        )
-        .await?
-        {
-            ManagedResponse::Steered(action) if action.turn_id == turn_id => Ok(()),
-            ManagedResponse::Steered(_) => Err(NanocodexError::BackendContract {
-                detail: "managed steer acknowledged a different turn",
-            }),
-            _ => Err(unexpected_response()),
-        }
-    }
-
-    async fn cancel(&mut self, key: BackendTurnKey) -> nanocodex_agent::Result<()> {
-        let turn_id = self
-            .turns_by_key
-            .get(&key)
-            .cloned()
-            .ok_or(NanocodexError::TurnNotCancellable)?;
-        self.cancel_turn(turn_id).await
+        Ok(())
     }
 
     async fn set_thinking(&mut self, thinking: Thinking) -> nanocodex_agent::Result<()> {
-        match call(
-            &mut self.service,
-            ManagedRequest::SetThinking {
+        match self
+            .call_with_events(ManagedRequest::SetThinking {
                 agent_id: self.agent_id.clone(),
                 thinking,
-            },
-        )
-        .await?
+            })
+            .await?
         {
             ManagedResponse::Settings(settings) if !settings.is_valid() => {
                 Err(NanocodexError::BackendContract {
@@ -546,14 +649,12 @@ where
     }
 
     async fn set_model(&mut self, model: Model) -> nanocodex_agent::Result<()> {
-        match call(
-            &mut self.service,
-            ManagedRequest::SetModel {
+        match self
+            .call_with_events(ManagedRequest::SetModel {
                 agent_id: self.agent_id.clone(),
                 model,
-            },
-        )
-        .await?
+            })
+            .await?
         {
             ManagedResponse::Settings(settings) if !settings.is_valid() => {
                 Err(NanocodexError::BackendContract {
@@ -569,14 +670,12 @@ where
     }
 
     async fn set_fast_mode(&mut self, enabled: bool) -> nanocodex_agent::Result<()> {
-        match call(
-            &mut self.service,
-            ManagedRequest::SetFastMode {
+        match self
+            .call_with_events(ManagedRequest::SetFastMode {
                 agent_id: self.agent_id.clone(),
                 enabled,
-            },
-        )
-        .await?
+            })
+            .await?
         {
             ManagedResponse::Settings(settings) if !settings.is_valid() => {
                 Err(NanocodexError::BackendContract {
@@ -601,9 +700,12 @@ where
                 first_error = Some(error);
             }
         }
-        while !self.pending.is_empty() {
-            let event = self.stream.next().await.map_err(backend_error)?;
-            self.event(event)?;
+        while !self.pending.is_empty() || !self.controls.is_empty() || !self.steers.is_empty() {
+            tokio::select! {
+                event = self.stream.next() => self.event(event.map_err(backend_error)?)?,
+                _ = self.controls.next(), if !self.controls.is_empty() => {},
+                () = complete_next_steer(&mut self.steers), if !self.steers.is_empty() => {},
+            }
         }
         match first_error {
             Some(error) => Err(error),
@@ -612,14 +714,12 @@ where
     }
 
     async fn cancel_turn(&mut self, turn_id: String) -> nanocodex_agent::Result<()> {
-        match call(
-            &mut self.service,
-            ManagedRequest::Cancel {
+        match self
+            .call_with_events(ManagedRequest::Cancel {
                 agent_id: self.agent_id.clone(),
                 turn_id: turn_id.clone(),
-            },
-        )
-        .await?
+            })
+            .await?
         {
             ManagedResponse::Cancelled(action) if action.turn_id == turn_id => Ok(()),
             ManagedResponse::Cancelled(_) => Err(NanocodexError::BackendContract {
@@ -741,6 +841,13 @@ where
             };
             drop(pending.completion.send(outcome));
         }
+    }
+}
+
+async fn complete_next_steer(steers: &mut VecDeque<BackendFuture<()>>) {
+    if let Some(steer) = steers.front_mut() {
+        steer.await;
+        drop(steers.pop_front());
     }
 }
 

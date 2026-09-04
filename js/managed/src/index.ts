@@ -3383,6 +3383,17 @@ export class DurableAgentSession extends DurableComputerSession {
           console.warn({ type: "managed.browser_sweep_failed", error_kind: errorKind(error) });
         });
     }
+    // Archive and browser cleanup above yield to incoming requests. An
+    // admission during that I/O owns the runtime now, even if this alarm
+    // originally observed an idle session.
+    if (this.#recoverableTurnCount() > 0 || this.#agentPromise
+      || this.#hasLiveSocket()
+      || Math.max(this.#session()?.last_active ?? 0, this.#runtimePrewarmTouchedAt ?? 0)
+        + this.#idleTimeoutMs() > Date.now()) {
+      this.#scheduleRecovery();
+      await this.#scheduleNextAlarm();
+      return;
+    }
     await this.#shutdownAgent();
     if (this.#recoverableTurnCount() > 0) this.#scheduleRecovery();
     else await this.#scheduleNextAlarm();
@@ -4031,31 +4042,11 @@ export class DurableAgentSession extends DurableComputerSession {
       return;
     }
     if (command.type === "steer") {
-      const turn = this.#turns.get(command.id);
-      if (!turn) {
-        this.#send(socket, { type: "error", code: "turn_not_active", message: `turn ${command.id} is not active` });
-        return;
-      }
       try {
         const attachment = socket.deserializeAttachment() as SessionSocketAttachment | null;
-        const row = this.#managedTurn(command.id);
-        if (row === undefined
-          || !turnControlAuthorizationMatches(
-            parseTurnAuthorization(row.authorization_json),
-            attachment?.authorization ?? { capabilities: [] },
-          )) {
-          throw new ManagedRequestError(
-            403,
-            "turn_authority_mismatch",
-            "this authorization cannot control the active turn",
-          );
-        }
-        await this.#settingsMutationTail;
-        this.#assertDurabilityAdmissionActive();
-        if (this.#turns.get(command.id) !== turn) {
-          throw retryableError("the active turn changed while applying settings; retry the request");
-        }
-        await turn.steer({ input: command.input });
+        await this.#steerManagedTurn(
+          command.id, command.input, attachment?.authorization ?? { capabilities: [] },
+        );
       } catch (error) {
         const failure = managedHttpError(error, "steer_failed");
         this.#send(socket, { type: "error", code: failure.code, message: failure.message });
@@ -4683,31 +4674,6 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#durabilityExported || this.#durabilityImportState === "pending") {
       return json({ error: "durability_transfer_pending" }, { status: 409 });
     }
-    let row: ManagedTurnRow | undefined;
-    try { row = await this.#findManagedTurn(id); }
-    catch (error) { return managedErrorResponse(error, "turn_archive_unavailable"); }
-    if (!row) return json({ error: "turn_not_found" }, { status: 404 });
-    let retainedAuthorization: TurnAuthorization;
-    try { retainedAuthorization = parseTurnAuthorization(row.authorization_json); }
-    catch { return json({ error: "turn_authorization_invalid" }, { status: 409 }); }
-    if (!turnControlAuthorizationMatches(retainedAuthorization, authorization)) {
-      return json({
-        error: "turn_authority_mismatch",
-        message: "this authorization cannot control the active turn",
-      }, { status: 403 });
-    }
-    if (row.state !== "accepted") {
-      return json(
-        { error: "turn_not_steerable", state: row.state },
-        { status: 409 },
-      );
-    }
-    const turn = this.#turns.get(id);
-    if (!turn)
-      return json(
-        { error: "turn_not_active", state: row.state },
-        { status: 409 },
-      );
     try {
       const encoded = await readBoundedRequestText(
         request,
@@ -4721,12 +4687,7 @@ export class DurableAgentSession extends DurableComputerSession {
         );
       }
       validatePromptInput(value.input);
-      await this.#settingsMutationTail;
-      this.#assertDurabilityAdmissionActive();
-      if (this.#turns.get(id) !== turn) {
-        throw retryableError("the active turn changed while applying settings; retry the request");
-      }
-      await turn.steer({ input: value.input as PromptInput });
+      await this.#steerManagedTurn(id, value.input as PromptInput, authorization);
       return json({ turn_id: id, state: "steering" }, { status: 202 });
     } catch (error) {
       if (error instanceof SyntaxError)
@@ -4737,8 +4698,59 @@ export class DurableAgentSession extends DurableComputerSession {
           { status: 400 },
         );
       }
+      if (error instanceof ManagedRequestError && error.state !== undefined) {
+        return json({ error: error.code, message: error.message, state: error.state }, { status: error.status });
+      }
       return managedErrorResponse(error, "steer_failed");
     }
+  }
+
+  async #steerManagedTurn(
+    id: string,
+    input: PromptInput,
+    authorization: TurnAuthorization,
+  ): Promise<void> {
+    let row = await this.#findManagedTurn(id);
+    if (!row) throw new ManagedRequestError(404, "turn_not_found", `turn ${id} does not exist`);
+    let retainedAuthorization: TurnAuthorization;
+    try { retainedAuthorization = parseTurnAuthorization(row.authorization_json); }
+    catch { throw new ManagedRequestError(409, "turn_authorization_invalid", "the retained turn authorization is invalid"); }
+    if (!turnControlAuthorizationMatches(retainedAuthorization, authorization)) {
+      throw new ManagedRequestError(403, "turn_authority_mismatch", "this authorization cannot control the active turn");
+    }
+    try {
+      await withHardDeadline("turn settings", 10_000, () => this.#settingsMutationTail);
+    } catch {
+      throw new ManagedRequestError(503, "turn_recovering", "the durable turn is applying settings; retry steering");
+    }
+    this.#assertDurabilityAdmissionActive();
+    row = this.#managedTurn(id) ?? row;
+    if (row.state !== "accepted") {
+      throw new ManagedRequestError(409, "turn_not_steerable", `turn ${id} is ${row.state}`, row.state);
+    }
+    if (!this.#turns.has(id) || this.#pendingTurnIds.has(id)) {
+      // A retained turn remains active while its runtime is reconstructed.
+      // Join ordered recovery rather than treating a missing JS handle as
+      // evidence that the durable turn no longer exists.
+      this.#scheduleRecovery();
+      try {
+        await withHardDeadline("turn recovery", 10_000, async () => {
+          await (this.#admissionTasks.get(id) ?? this.#recoveryTask);
+        });
+      } catch {
+        throw new ManagedRequestError(503, "turn_recovering", "the durable turn is recovering; retry steering");
+      }
+    }
+    this.#assertDurabilityAdmissionActive();
+    row = this.#managedTurn(id) ?? row;
+    if (row.state !== "accepted") {
+      throw new ManagedRequestError(409, "turn_not_steerable", `turn ${id} is ${row.state}`, row.state);
+    }
+    const turn = this.#turns.get(id);
+    if (!turn || this.#pendingTurnIds.has(id)) {
+      throw new ManagedRequestError(503, "turn_recovering", "the durable turn is recovering; retry steering");
+    }
+    await turn.steer({ input });
   }
 
   async #cancelHttpTurn(id: string): Promise<Response> {
@@ -8359,7 +8371,12 @@ export class DurableAgentSession extends DurableComputerSession {
       || this.#realtimeArchive.needsSeal()) {
       targets.push(now + 1);
     }
-    if ((this.#agent || this.#agentPromise || this.#turns.size > 0 || this.#pendingTurnIds.size > 0)
+    const unfinished = this.#recoverableTurnCount() > 0;
+    // Keep a durable wakeup while in-memory work is owned, including when a
+    // hibernatable socket is connected. Losing the isolate also loses those
+    // handles; the alarm must still reconstruct the accepted work.
+    if (unfinished) targets.push(now + MAX_RETRY_DELAY_MS);
+    if (!unfinished && (this.#agent || this.#agentPromise)
       && !this.#hasLiveSocket()) {
       const session = this.#session();
       const lastActive = Math.max(
@@ -8427,14 +8444,15 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #activeTurnIds(): string[] {
-    return [...this.#pendingTurnIds, ...this.#turns.keys()];
+    return this.ctx.storage.sql.exec<{ id: string }>(
+      "SELECT id FROM managed_turns WHERE state IN ('accepted', 'cancelling') ORDER BY created_at, rowid",
+    ).toArray().map(({ id }) => id);
   }
 
   #activeTurnDetails(): ActiveTurn[] {
-    return this.#activeTurnIds().flatMap((id) => {
-      const input = this.#turnInputs.get(id);
-      return input === undefined ? [] : [{ id, input }];
-    });
+    return this.ctx.storage.sql.exec<{ id: string; input_json: string }>(
+      "SELECT id, input_json FROM managed_turns WHERE state IN ('accepted', 'cancelling') ORDER BY created_at, rowid",
+    ).toArray().map(({ id, input_json }) => ({ id, input: JSON.parse(input_json) as PromptInput }));
   }
 
   #idleTimeoutMs(): number {
@@ -8538,6 +8556,7 @@ class ManagedRequestError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly state?: ManagedTurnRow["state"],
   ) {
     super(message);
   }

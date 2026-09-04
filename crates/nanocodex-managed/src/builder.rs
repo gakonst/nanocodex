@@ -201,8 +201,10 @@ impl Service<ManagedRequest> for ManagedService {
                 }
                 ManagedRequest::Events { agent_id, cursor } => match transport {
                     ManagedTransport::Http => {
-                        let mut events = client.events(&agent_id, cursor)?;
-                        events.open().await?;
+                        // Reading retained state must not wait for the live
+                        // stream to become available. The driver reconnects
+                        // from this cursor while the caller renders history.
+                        let events = client.events(&agent_id, cursor)?;
                         Ok(ManagedResponse::Events(ManagedEvents::new(events)))
                     }
                     ManagedTransport::WebSocket => {

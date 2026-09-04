@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Duration};
 
 use reqwest::{
     Method, Response,
@@ -20,6 +20,7 @@ use crate::{
 
 const MAX_HISTORY_PAGE: u16 = 256;
 const SUBMIT_ATTEMPTS: usize = 3;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Builder for a cloneable native managed HTTP client.
 ///
@@ -67,7 +68,8 @@ impl ManagedClientBuilder {
 /// Cloneable authenticated client for the account-managed control plane.
 ///
 /// Clones share one redirect-disabled HTTP pool and immutable authorization
-/// policy. Turn submission is the only ordinary request that retries.
+/// policy. Turn submission retries with its durable identity; steering retries
+/// only an explicit recovery rejection that guarantees no input was delivered.
 #[derive(Clone)]
 pub struct ManagedClient {
     pub(crate) http: reqwest::Client,
@@ -126,6 +128,10 @@ impl ManagedClient {
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            // SSE sends keepalives every 15 seconds. Bound a dead connection
+            // without limiting the lifetime of a healthy event stream.
+            .read_timeout(Duration::from_secs(45))
             .build()
             .map_err(ManagedError::Transport)?;
         drop(builder.api_key);
@@ -410,6 +416,7 @@ impl ManagedClient {
         let response = self
             .http
             .delete(url)
+            .timeout(REQUEST_TIMEOUT)
             .send()
             .await
             .map_err(ManagedError::Transport)?;
@@ -459,6 +466,7 @@ impl ManagedClient {
         let response = self
             .http
             .get(url)
+            .timeout(REQUEST_TIMEOUT)
             .send()
             .await
             .map_err(ManagedError::Transport)?;
@@ -563,8 +571,21 @@ impl ManagedClient {
         turn_id: &str,
         input: &PromptInput,
     ) -> Result<TurnAction, ManagedError> {
-        self.turn_action(agent_id, turn_id, "steer", Some(input))
-            .await
+        loop {
+            let result = self
+                .turn_action(agent_id, turn_id, "steer", Some(input))
+                .await;
+            if matches!(&result, Err(ManagedError::Http { status, code, .. })
+                if *status == reqwest::StatusCode::SERVICE_UNAVAILABLE && code == "turn_recovering")
+            {
+                // The service returns this only before calling turn.steer.
+                // A transport failure is ambiguous and must never be retried
+                // here because steering has no durable idempotency key.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            return result;
+        }
     }
 
     /// Requests cancellation of an active managed turn.
@@ -693,7 +714,10 @@ impl ManagedClient {
         body: Option<&[u8]>,
         idempotency_key: Option<&str>,
     ) -> Result<Response, ManagedError> {
-        let mut request = self.http.request(method, self.url(path)?);
+        let mut request = self
+            .http
+            .request(method, self.url(path)?)
+            .timeout(REQUEST_TIMEOUT);
         if let Some(body) = body {
             request = request
                 .header(CONTENT_TYPE, "application/json")
@@ -848,6 +872,66 @@ mod tests {
 
     fn key() -> String {
         format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43))
+    }
+
+    #[tokio::test]
+    async fn steering_retries_only_explicit_pre_delivery_recovery_rejections() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for (status, code, expected_attempts) in [
+            (StatusCode::SERVICE_UNAVAILABLE, "turn_recovering", 2),
+            (StatusCode::SERVICE_UNAVAILABLE, "retryable", 1),
+            (StatusCode::CONFLICT, "turn_not_steerable", 1),
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let observed = attempts.clone();
+            let app = Router::new().route(
+                "/v1/agents/agent-1/turns/turn-1/steer",
+                axum::routing::post(move |body: axum::body::Bytes| {
+                    let observed = observed.clone();
+                    async move {
+                        assert_eq!(
+                            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                            serde_json::json!({"input": "once"})
+                        );
+                        if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                            (
+                                status,
+                                axum::Json(
+                                    serde_json::json!({"error": code, "message": "fixture"}),
+                                ),
+                            )
+                        } else {
+                            (
+                                StatusCode::ACCEPTED,
+                                axum::Json(
+                                    serde_json::json!({"turn_id": "turn-1", "state": "steering"}),
+                                ),
+                            )
+                        }
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = ManagedClient::new(
+                format!("http://{address}"),
+                ManagedApiKey::parse(key()).unwrap(),
+            )
+            .unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                client.steer("agent-1", "turn-1", &PromptInput::Text("once".to_owned())),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.is_ok(), expected_attempts == 2);
+            assert_eq!(attempts.load(Ordering::SeqCst), expected_attempts);
+            server.abort();
+        }
     }
 
     #[test]

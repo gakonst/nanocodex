@@ -176,13 +176,6 @@ impl ManagedEventStream {
         &self.cursor
     }
 
-    pub(crate) async fn open(&mut self) -> Result<(), ManagedError> {
-        if self.response.is_none() {
-            self.connect().await?;
-        }
-        Ok(())
-    }
-
     /// Waits for and returns the next strictly newer durable event.
     ///
     /// Duplicate and stale cursors are discarded. A response-local partial
