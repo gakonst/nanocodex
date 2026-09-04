@@ -1,0 +1,25 @@
+{
+  "name": "@nanocodex/desktop-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared managed-agent and compute lifecycle for Nanocodex desktop applications",
+  "type": "module",
+  "exports": {
+    ".": "./src/runtime.mjs",
+    "./auth": "./src/auth.mjs",
+    "./configuration": "./src/configuration.mjs",
+    "./host": "./dist/host.mjs"
+  },
+  "scripts": {
+    "build": "vite build",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "nanocodex": "workspace:*",
+    "nanocodex-tools": "workspace:*",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "vite": "8.2.1"
+  }
+}

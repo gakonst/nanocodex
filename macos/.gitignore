@@ -1,0 +1,5 @@
+build/
+Resources/runtime/node
+Resources/runtime/NODE-LICENSE.txt
+*.xcuserstate
+xcuserdata/
