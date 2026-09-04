@@ -95,7 +95,7 @@ Current evidence (2026-09-04):
 The hosted service test includes the second file read and explicit Hand stop so
 that it can verify the complete journey after that API fix. It requires the
 development `.env`, uses isolated preferences, and removes its own managed
-thread. Native view PNGs are under `macos/build/evidence`; full-journey timing
+thread. Native screenshots are under `macos/build/evidence`; full-journey timing
 metrics are written only when the whole journey succeeds.
 
 The isolated native rendering benchmark captures before/after chat, Hands,
