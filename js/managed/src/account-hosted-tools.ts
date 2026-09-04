@@ -13,6 +13,7 @@ import {
 import type { SubagentToolContext } from "nanocodex-tools";
 
 import { isUserId } from "./account-auth";
+import { fetchResponseWithDeadline } from "./deadline";
 import { HostedToolsBroker } from "./hosted-tools-broker";
 
 const OWNER_ASSERTION = "x-nanocodex-owner-id";
@@ -267,25 +268,21 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   }
 
   async #load(): Promise<void> {
-    let response: Response;
-    try {
-      response = await this.#stub.fetch("https://account-tools.internal/snapshot", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ owner_id: this.#ownerId }),
-      });
-    } catch {
-      this.#publish({ tools: [], machines: [] });
-      return;
-    }
-    if (!response.ok) {
-      await response.body?.cancel();
-      this.#publish({ tools: [], machines: [] });
-      return;
-    }
     let snapshot: unknown;
-    try { snapshot = await response.json<unknown>(); }
-    catch {
+    try {
+      snapshot = await fetchResponseWithDeadline(
+        this.#stub,
+        "https://account-tools.internal/snapshot",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ owner_id: this.#ownerId }),
+        },
+        10_000,
+        "account hand discovery",
+        async (response) => response.ok ? await response.json<unknown>() : undefined,
+      );
+    } catch {
       this.#publish({ tools: [], machines: [] });
       return;
     }

@@ -18,6 +18,9 @@ use crate::{
 const EVENT_CAPACITY: usize = 256;
 const RECONNECT_MIN: Duration = Duration::from_millis(100);
 const RECONNECT_MAX: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -49,7 +52,7 @@ struct PendingSubmit {
     id: String,
     input: PromptInput,
     result: oneshot::Sender<Result<TurnView, ManagedError>>,
-    sent: bool,
+    sent_at: Option<tokio::time::Instant>,
 }
 
 #[derive(Serialize)]
@@ -123,7 +126,7 @@ impl ManagedSocket {
                 stream_error: None,
             }),
         };
-        let (socket, events) = Self::start(client, agent_id, cursor, connected);
+        let (socket, events) = Self::start(client, agent_id, cursor, Some(connected));
         Ok((receipt, socket, events))
     }
 
@@ -133,15 +136,16 @@ impl ManagedSocket {
         cursor: EventCursor,
     ) -> Result<(Self, ManagedSocketEvents), ManagedError> {
         validate_id("agent", &agent_id)?;
-        let connected = connect(&client, &agent_id, cursor.as_str()).await?;
-        Ok(Self::start(client, agent_id, cursor, connected))
+        // The durable state and history remain usable while the live socket
+        // reconnects. Connection establishment belongs to the background loop.
+        Ok(Self::start(client, agent_id, cursor, None))
     }
 
     fn start(
         client: ManagedClient,
         agent_id: String,
         cursor: EventCursor,
-        connected: ConnectedSocket,
+        connected: Option<ConnectedSocket>,
     ) -> (Self, ManagedSocketEvents) {
         let (commands, command_rx) = mpsc::channel(1);
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
@@ -216,21 +220,42 @@ async fn run(
     client: ManagedClient,
     agent_id: String,
     mut cursor: String,
-    mut connected: ConnectedSocket,
+    mut connected: Option<ConnectedSocket>,
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Result<ManagedEvent, ManagedError>>,
 ) {
-    let mut pending = None;
+    let mut pending: Option<PendingSubmit> = None;
     let mut backoff = RECONNECT_MIN;
     loop {
+        if connected.is_none() {
+            let attempt = tokio::select! {
+                attempt = connect(&client, &agent_id, &cursor) => attempt,
+                () = events.closed() => return,
+            };
+            match attempt {
+                Ok(socket) => connected = Some(socket),
+                Err(_) => {
+                    tokio::select! {
+                        () = tokio::time::sleep(backoff) => {},
+                        () = events.closed() => return,
+                    }
+                    backoff = (backoff * 2).min(RECONNECT_MAX);
+                    continue;
+                }
+            }
+        }
+        let mut live = connected.take().expect("socket was connected above");
+        if let Some(pending) = pending.as_mut() {
+            pending.sent_at = None;
+        }
         let connected_at = tokio::time::Instant::now();
         let disconnected = connection(
-            &mut connected.socket,
+            &mut live.socket,
             &mut commands,
             &events,
             &mut pending,
             &mut cursor,
-            &connected.replay_through,
+            &live.replay_through,
         )
         .await;
         if !disconnected || events.is_closed() {
@@ -244,24 +269,6 @@ async fn run(
             () = events.closed() => return,
         }
         backoff = (backoff * 2).min(RECONNECT_MAX);
-        loop {
-            match connect(&client, &agent_id, &cursor).await {
-                Ok(connected_socket) => {
-                    connected = connected_socket;
-                    if let Some(pending) = pending.as_mut() {
-                        pending.sent = false;
-                    }
-                    break;
-                }
-                Err(_) => {
-                    tokio::select! {
-                        () = tokio::time::sleep(backoff) => {}
-                        () = events.closed() => return,
-                    }
-                    backoff = (backoff * 2).min(RECONNECT_MAX);
-                }
-            }
-        }
     }
 }
 
@@ -273,31 +280,62 @@ async fn connection(
     cursor: &mut String,
     replay_through: &str,
 ) -> bool {
+    let mut last_received = tokio::time::Instant::now();
+    let mut heartbeat =
+        tokio::time::interval_at(last_received + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         if let Some(submission) = pending.as_mut()
-            && !submission.sent
+            && submission.sent_at.is_none()
             && !crate::sse::cursor_before(cursor, replay_through)
         {
-            if send_prompt(socket, submission).await.is_err() {
+            if !matches!(
+                tokio::time::timeout(CONNECT_TIMEOUT, send_prompt(socket, submission)).await,
+                Ok(Ok(()))
+            ) {
                 return true;
             }
-            submission.sent = true;
+            submission.sent_at = Some(tokio::time::Instant::now());
         }
+        let admission_deadline = pending
+            .as_ref()
+            .and_then(|pending| pending.sent_at)
+            .map(|sent| sent + Duration::from_secs(30));
         tokio::select! {
+            () = tokio::time::sleep_until(admission_deadline.unwrap_or_else(tokio::time::Instant::now)), if admission_deadline.is_some() => {
+                // Prompt IDs are durable idempotency keys. A lost admission
+                // acknowledgement is recovered by reconnecting and replaying
+                // the same ID, even when heartbeat traffic still succeeds.
+                return true;
+            },
+            () = events.closed() => return false,
+            _ = heartbeat.tick() => {
+                if last_received.elapsed() >= HEARTBEAT_TIMEOUT {
+                    return true;
+                }
+                // Application-level ping also verifies that the Worker can
+                // process messages, rather than just its WebSocket proxy.
+                if !matches!(tokio::time::timeout(CONNECT_TIMEOUT,
+                    socket.send(Message::Text(r#"{"type":"ping"}"#.into()))).await, Ok(Ok(()))) {
+                    return true;
+                }
+            },
             command = commands.recv(), if pending.is_none() => match command {
                 Some(Command::Submit { id, input, result }) => {
-                    *pending = Some(PendingSubmit { id, input, result, sent: false });
+                    *pending = Some(PendingSubmit { id, input, result, sent_at: None });
                 }
                 None => return false,
             },
             message = socket.next() => match message {
                 Some(Ok(Message::Text(encoded))) => {
+                    last_received = tokio::time::Instant::now();
                     if handle_message(encoded.as_str(), events, pending, cursor).await.is_err() {
                         return false;
                     }
                 }
                 Some(Ok(Message::Ping(payload))) => {
-                    if socket.send(Message::Pong(payload)).await.is_err() {
+                    last_received = tokio::time::Instant::now();
+                    if !matches!(tokio::time::timeout(CONNECT_TIMEOUT, socket.send(Message::Pong(payload))).await, Ok(Ok(()))) {
                         return true;
                     }
                 }
@@ -420,7 +458,7 @@ fn turn_view(event: &ManagedEvent, input: PromptInput) -> TurnView {
     }
 }
 
-fn websocket_turn_id(request_id: &str) -> String {
+pub(crate) fn websocket_turn_id(request_id: &str) -> String {
     if validate_id("turn", request_id).is_ok() {
         return request_id.to_owned();
     }
@@ -479,10 +517,14 @@ async fn connect_endpoint(
         tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
         authorization,
     );
-    let (mut socket, _) = connect_async(request)
+    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
         .await
+        .map_err(|_| live_error("managed WebSocket handshake timed out"))?
         .map_err(|error| live_error(format!("managed WebSocket handshake failed: {error}")))?;
-    match socket.next().await {
+    match tokio::time::timeout(CONNECT_TIMEOUT, socket.next())
+        .await
+        .map_err(|_| live_error("managed WebSocket ready timed out"))?
+    {
         Some(Ok(Message::Text(encoded))) => {
             let ready: ReadyMessage = serde_json::from_str(encoded.as_str())
                 .map_err(|_| live_error("managed WebSocket ready frame is malformed"))?;

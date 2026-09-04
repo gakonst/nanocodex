@@ -66,7 +66,7 @@ type SteerCompletion = (
     components::QueueId,
     u64,
     SteerTarget,
-    Result<(), String>,
+    Result<(), SteerFailure>,
 );
 type WaitingSteer = (PaneId, components::QueueId, Submission);
 enum CancelTarget {
@@ -107,6 +107,39 @@ enum SteerTarget {
 enum SteerResolution {
     Admitted,
     Failed(Option<String>),
+    Stale,
+}
+
+enum SteerFailure {
+    Inactive,
+    Other(String),
+}
+
+impl SteerFailure {
+    fn managed(error: ManagedError) -> Self {
+        if matches!(&error, ManagedError::Http { status, code, .. }
+            if status.as_u16() == 409 && matches!(code.as_str(), "turn_not_active" | "turn_not_steerable"))
+        {
+            Self::Inactive
+        } else {
+            Self::Other(error.to_string())
+        }
+    }
+
+    fn backend(error: NanocodexError) -> Self {
+        if matches!(error, NanocodexError::TurnNotSteerable) {
+            return Self::Inactive;
+        }
+        if let NanocodexError::Backend { source, .. } = &error
+            && let Some(ManagedError::Http { status, code, .. }) =
+                source.downcast_ref::<ManagedError>()
+            && status.as_u16() == 409
+            && matches!(code.as_str(), "turn_not_active" | "turn_not_steerable")
+        {
+            return Self::Inactive;
+        }
+        Self::Other(error.to_string())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,6 +184,7 @@ type ConnectedAgent = (
 #[derive(Clone, Debug, Default)]
 struct ManagedActiveTurns {
     ids: HashSet<String>,
+    order: Vec<String>,
     live_steer: bool,
     live_cancel: bool,
 }
@@ -328,6 +362,7 @@ impl ManagedActiveTurns {
     fn from_state(state: &AgentState) -> Self {
         Self {
             ids: state.active_turns.iter().cloned().collect(),
+            order: state.active_turns.clone(),
             live_steer: state.capabilities.live_steer,
             live_cancel: state.capabilities.live_cancel,
         }
@@ -346,12 +381,14 @@ impl ManagedActiveTurns {
             ManagedEventData::TurnAccepted { id, .. }
                 if !local_ids.values().any(|local_id| local_id == id) =>
             {
-                self.ids.insert(id.clone());
+                if self.ids.insert(id.clone()) {
+                    self.order.push(id.clone());
+                }
             }
             ManagedEventData::TurnCompleted { id, .. }
             | ManagedEventData::TurnCancelled { id }
             | ManagedEventData::TurnFailed { id, .. } => {
-                self.ids.remove(id);
+                self.remove(id);
             }
             _ => {}
         }
@@ -362,6 +399,7 @@ impl ManagedActiveTurns {
     }
 
     fn remove(&mut self, id: &str) -> bool {
+        self.order.retain(|retained| retained != id);
         self.ids.remove(id)
     }
 
@@ -372,7 +410,14 @@ impl ManagedActiveTurns {
         match self.ids.len() {
             1 => Ok(self.ids.iter().next().expect("one active managed turn")),
             0 => Err("no attached managed turn is active"),
-            _ => Err("more than one attached managed turn is active; steering is ambiguous"),
+            // Durable state and turn_accepted events carry admission order.
+            // Later accepted turns may still be queued behind this one.
+            _ => self
+                .order
+                .iter()
+                .find(|id| self.ids.contains(*id))
+                .map(String::as_str)
+                .ok_or("managed turn admission order is unavailable"),
         }
     }
 }
@@ -548,19 +593,23 @@ impl DriverRuntime {
         &self,
         generation: u64,
         target: &SteerTarget,
-        outcome: Result<(), String>,
+        outcome: Result<(), SteerFailure>,
     ) -> SteerResolution {
-        let current = generation == self.connection_generation
-            && match target {
-                SteerTarget::Local(id) => self.controls.contains_key(id),
-                SteerTarget::Managed { agent_id, turn_id } => {
-                    agent_id == &self.agent_id && self.managed_active_turns.ids.contains(turn_id)
-                }
-            };
+        if generation != self.connection_generation {
+            return SteerResolution::Stale;
+        }
+        let current = match target {
+            SteerTarget::Local(id) => self.controls.contains_key(id),
+            SteerTarget::Managed { agent_id, turn_id } => {
+                agent_id == &self.agent_id && self.managed_active_turns.ids.contains(turn_id)
+            }
+        };
         match outcome {
-            Ok(()) if current => SteerResolution::Admitted,
-            Ok(()) => SteerResolution::Failed(None),
-            Err(error) if current => SteerResolution::Failed(Some(error)),
+            // An acknowledgement means the input was accepted even if the
+            // terminal event won the race with the control response. Requeueing
+            // it here would submit the same instruction a second time.
+            Ok(()) => SteerResolution::Admitted,
+            Err(SteerFailure::Other(error)) if current => SteerResolution::Failed(Some(error)),
             Err(_) => SteerResolution::Failed(None),
         }
     }
@@ -1616,7 +1665,7 @@ async fn run_inner(
                                         let result = control
                                             .steer(prompt.agent_prompt())
                                             .await
-                                            .map_err(|error| error.to_string());
+                                            .map_err(SteerFailure::backend);
                                         (pane, id, generation, target, result)
                                     });
                                 }
@@ -1682,6 +1731,7 @@ async fn run_inner(
                             app.update(AppEvent::SteerFailed { pane, id })
                         }
                         SteerResolution::Failed(None) => app.update(AppEvent::SteerFailed { pane, id }),
+                        SteerResolution::Stale => continue,
                     };
                     stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                 }
@@ -1905,7 +1955,7 @@ async fn apply_update(
                                 let result = control
                                     .steer(prompt.agent_prompt())
                                     .await
-                                    .map_err(|error| error.to_string());
+                                    .map_err(SteerFailure::backend);
                                 (pane, id, generation, target, result)
                             });
                         } else if !runtime.managed_active_turns.ids.is_empty() {
@@ -1927,12 +1977,11 @@ async fn apply_update(
                                         let result = client
                                             .steer(&agent_id, &turn_id, &input)
                                             .await
-                                            .map_err(|error| error.to_string())
+                                            .map_err(SteerFailure::managed)
                                             .and_then(|action| {
                                                 (action.turn_id == turn_id).then_some(()).ok_or_else(
                                                     || {
-                                                        "managed steer acknowledged a different turn"
-                                                            .to_owned()
+                                                        SteerFailure::Other("managed steer acknowledged a different turn".to_owned())
                                                     },
                                                 )
                                             });
@@ -2656,7 +2705,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_target_fences_late_successful_steer() {
+    fn terminal_target_preserves_acknowledged_steer() {
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime.managed_active_turns.ids.insert("turn-7".to_owned());
         let target = SteerTarget::Managed {
@@ -2668,10 +2717,19 @@ mod tests {
             runtime.resolve_steer(1, &target, Ok(())),
             SteerResolution::Admitted
         );
+        assert_eq!(
+            runtime.resolve_steer(1, &target, Err(super::SteerFailure::Inactive)),
+            SteerResolution::Failed(None)
+        );
         runtime.managed_active_turns.ids.remove("turn-7");
         assert_eq!(
             runtime.resolve_steer(1, &target, Ok(())),
-            SteerResolution::Failed(None)
+            SteerResolution::Admitted
+        );
+        runtime.connection_generation += 1;
+        assert_eq!(
+            runtime.resolve_steer(1, &target, Ok(())),
+            SteerResolution::Stale
         );
     }
 
@@ -2753,6 +2811,7 @@ mod tests {
     fn managed_active_turns_reconcile_cursor_order_idempotently() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
+            order: vec!["attached-1".to_owned()],
             live_steer: true,
             live_cancel: true,
         };
@@ -2782,6 +2841,7 @@ mod tests {
     fn managed_active_turns_do_not_claim_known_local_admissions() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::new(),
+            order: Vec::new(),
             live_steer: true,
             live_cancel: true,
         };
@@ -2797,6 +2857,7 @@ mod tests {
     fn local_request_fence_survives_terminal_event_before_admission_returns() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::new(),
+            order: Vec::new(),
             live_steer: true,
             live_cancel: true,
         };
@@ -2823,6 +2884,7 @@ mod tests {
     fn external_ownership_is_captured_before_turn_failed_removes_active_id() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
+            order: vec!["attached-1".to_owned()],
             live_steer: true,
             live_cancel: true,
         };
@@ -2843,20 +2905,20 @@ mod tests {
     }
 
     #[test]
-    fn attached_steering_requires_one_capable_target() {
+    fn attached_steering_uses_durable_admission_order() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
+            order: vec!["attached-1".to_owned()],
             live_steer: true,
             live_cancel: true,
         };
         assert_eq!(active.steer_target().unwrap(), "attached-1");
 
         active.ids.insert("attached-2".to_owned());
-        assert_eq!(
-            active.steer_target().unwrap_err(),
-            "more than one attached managed turn is active; steering is ambiguous"
-        );
-        active.ids.remove("attached-2");
+        active.order.push("attached-2".to_owned());
+        assert_eq!(active.steer_target().unwrap(), "attached-1");
+        active.remove("attached-1");
+        assert_eq!(active.steer_target().unwrap(), "attached-2");
         active.live_steer = false;
         assert_eq!(
             active.steer_target().unwrap_err(),

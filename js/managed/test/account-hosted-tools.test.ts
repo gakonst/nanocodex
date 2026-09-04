@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   EXEC_COMMAND_PARAMETERS,
   EXECUTION_OUTPUT_SCHEMA,
@@ -47,6 +47,33 @@ const snapshot = {
 };
 
 describe("account Hosted Tools provider", () => {
+  it("releases stalled discovery and fences its late response from the next refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const stalled = Promise.withResolvers<Response>();
+      let attempts = 0;
+      const provider = new AccountHostedToolsProvider({
+        getByName: () => ({
+          fetch: () => ++attempts === 1 ? stalled.promise : Promise.resolve(Response.json(snapshot)),
+        }),
+      } as unknown as DurableObjectNamespace<AccountHostedTools>, ACCOUNT_A, () => true);
+
+      const initial = provider.refresh();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await initial;
+      expect(provider.machines()).toEqual([]);
+      await provider.refresh();
+      expect(provider.machines()).toEqual(snapshot.machines.map(({ machine }) => machine));
+
+      stalled.resolve(Response.json({ tools: [], machines: [] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toBe(2);
+      expect(provider.machines()).toEqual(snapshot.machines.map(({ machine }) => machine));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("routes ten simultaneous account hands by machine identity", async () => {
     const namespace = (env as unknown as {
       NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
