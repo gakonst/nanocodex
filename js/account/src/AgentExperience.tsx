@@ -37,6 +37,7 @@ import "./Home.css";
 import { formatDollars } from "./walletFunding";
 import { useWalletFunding } from "./useWalletFunding";
 import { homeTerminalWelcome } from "./homeTerminalWelcome";
+import type { ManagedCreateSettings } from "nanocodex/managed";
 
 /** Ephemeral homepage consumer and managed-durable Agent demo. */
 export const AgentExperience = memo(function AgentExperience({
@@ -68,6 +69,16 @@ export const AgentExperience = memo(function AgentExperience({
   const [sponsoredExhausted, setSponsoredExhausted] = useState(false);
   const hasCredential = credentialSource === "brokered" || credentialSource === "sponsored";
   const hasDurableCredential = credentialSource === "brokered";
+  const managedCreateSettings = useMemo<ManagedCreateSettings | undefined>(() => (
+    authStatus?.state === "ready" && authStatus.astraEntitled
+      ? Object.freeze({
+          model: "gpt-6-astra",
+          thinking: "high",
+          reasoningMode: "standard",
+          fastMode: false,
+        })
+      : undefined
+  ), [authStatus]);
   const showHomepageSms = landing
     && account.status !== "checking"
     && account.account?.persistent !== true;
@@ -98,7 +109,8 @@ export const AgentExperience = memo(function AgentExperience({
     setSponsoredExhausted(remaining === 0);
   }, [account.account?.id, authStatus, credentialSource]);
   useEffect(() => {
-    if (landing || account.status !== "ready" || !account.account || !hasDurableCredential) return;
+    if (landing || account.status !== "ready" || !account.account || !hasDurableCredential
+      || authStatus?.state !== "ready") return;
     let cancelled = false;
     const accountId = account.account.id;
     const refresh = refreshManagedList.current;
@@ -114,6 +126,7 @@ export const AgentExperience = memo(function AgentExperience({
       routeAgentId: agentId,
       retainedAgentId: safeGet(managedSelectionKey(accountId)) ?? undefined,
       hasCredential,
+      createSettings: managedCreateSettings,
       refresh,
     }).then((selection) => {
       if (cancelled) return;
@@ -132,9 +145,11 @@ export const AgentExperience = memo(function AgentExperience({
   }, [
     account.account?.id,
     account.status,
+    authStatus,
     agentId,
     hasDurableCredential,
     landing,
+    managedCreateSettings,
     managedAttempt,
     onAgentChange,
   ]);
@@ -175,7 +190,7 @@ export const AgentExperience = memo(function AgentExperience({
     if (conversationPending || !account.account) return;
     setConversationPending(true);
     setManagedError(undefined);
-    void createManagedConversation(account.account.id).then((conversation) => {
+    void createManagedConversation(account.account.id, managedCreateSettings).then((conversation) => {
       setManagedConversations((current) => [conversation, ...current]);
       setManagedConversationId(conversation.id);
       safeSet(managedSelectionKey(account.account!.id), conversation.id);
@@ -184,7 +199,7 @@ export const AgentExperience = memo(function AgentExperience({
       onAgentChange?.(conversation.id);
     }).catch((error) => setManagedError(errorMessage(error)))
       .finally(() => setConversationPending(false));
-  }, [account.account, conversationPending, onAgentChange]);
+  }, [account.account, conversationPending, managedCreateSettings, onAgentChange]);
   const retryManagedConversations = useCallback(() => {
     setManagedError(undefined);
     refreshManagedList.current = true;

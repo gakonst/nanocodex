@@ -42,6 +42,20 @@ class BindingTests(unittest.TestCase):
         drain(events)
 
     def test_configuration_errors_cross_the_boundary(self) -> None:
+        astra, astra_events = Nanocodex(
+            "test-key", model="gpt-6-astra", thinking="low"
+        )
+        astra.shutdown()
+        drain(astra_events)
+
+        with self.assertRaisesRegex(ValueError, "GPT-6 Astra requires"):
+            Nanocodex("test-key", model="gpt-6-astra", thinking="none")
+
+        with self.assertRaisesRegex(ValueError, "does not support pro"):
+            Nanocodex(
+                "test-key", model="gpt-6-astra", reasoning_mode="pro"
+            )
+
         with self.assertRaisesRegex(ValueError, "expected none"):
             Nanocodex("test-key", thinking="impossible")
 
@@ -56,7 +70,7 @@ class BindingTests(unittest.TestCase):
             agent.set_thinking("impossible")
         agent.shutdown()
 
-        with self.assertRaisesRegex(RuntimeError, "OpenAI credentials are empty"):
+        with self.assertRaisesRegex(ValueError, "OpenAI credentials are empty"):
             Nanocodex("")
 
         with self.assertRaises(ValueError):

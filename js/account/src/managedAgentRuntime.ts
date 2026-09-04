@@ -2,6 +2,7 @@ import type { AgentEvent } from "nanocodex";
 import {
   Agent,
   type ManagedAgent,
+  type ManagedCreateSettings,
   type ManagedEvent,
   type ManagedTurn,
 } from "nanocodex/managed";
@@ -58,6 +59,7 @@ export async function loadManagedConversationSelection(options: Readonly<{
   routeAgentId?: string;
   retainedAgentId?: string;
   hasCredential: boolean;
+  createSettings?: ManagedCreateSettings;
   refresh?: boolean;
 }>): Promise<ManagedConversationSelection> {
   const accountId = options.accountId ?? "default";
@@ -78,7 +80,7 @@ export async function loadManagedConversationSelection(options: Readonly<{
   const listed = await listing;
   const conversations = listed.length || !options.hasCredential
     ? listed
-    : Object.freeze([await createManagedConversation(accountId)]);
+    : Object.freeze([await createManagedConversation(accountId, options.createSettings)]);
   const selectedId = conversations.find(({ id }) => id === options.retainedAgentId)?.id
     ?? conversations[0]?.id;
   return Object.freeze({
@@ -88,10 +90,14 @@ export async function loadManagedConversationSelection(options: Readonly<{
   });
 }
 
-export function createManagedConversation(accountId = "default"): Promise<ManagedConversation> {
-  const retained = managedCreates.get(accountId);
+export function createManagedConversation(
+  accountId = "default",
+  settings?: ManagedCreateSettings,
+): Promise<ManagedConversation> {
+  const creationKey = `${accountId}:${settings === undefined ? "default" : JSON.stringify(settings)}`;
+  const retained = managedCreates.get(creationKey);
   if (retained) return retained;
-  const creating = Agent.create().then((agent) => {
+  const creating = Agent.create(settings === undefined ? {} : { settings }).then((agent) => {
     managedAgents.set(agent.id, agent);
     managedLists.delete(accountId);
     return Object.freeze({
@@ -101,9 +107,9 @@ export function createManagedConversation(accountId = "default"): Promise<Manage
       turnCount: 0,
     });
   }).finally(() => {
-    if (managedCreates.get(accountId) === creating) managedCreates.delete(accountId);
+    if (managedCreates.get(creationKey) === creating) managedCreates.delete(creationKey);
   });
-  managedCreates.set(accountId, creating);
+  managedCreates.set(creationKey, creating);
   return creating;
 }
 

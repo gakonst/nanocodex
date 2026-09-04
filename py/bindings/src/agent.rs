@@ -88,7 +88,9 @@ impl Nanocodex {
         if let Some(api_base_url) = api_base_url {
             openai = openai.api_base_url(api_base_url);
         }
-        let openai = openai.build().map_err(runtime_error)?;
+        let openai = openai
+            .build()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let runtime = runtime()?;
         let runtime_for_build = Arc::clone(&runtime);
         let (agent, events) = py
@@ -139,6 +141,15 @@ impl Nanocodex {
         let runtime = Arc::clone(&self.runtime);
         let agent = self.agent()?;
         py.detach(move || runtime.block_on(agent.set_thinking(thinking)))
+            .map_err(runtime_error)
+    }
+
+    /// Change the model before the first turn is accepted.
+    fn set_model(&self, py: Python<'_>, model: &str) -> PyResult<()> {
+        let model = parse_model(model)?;
+        let runtime = Arc::clone(&self.runtime);
+        let agent = self.agent()?;
+        py.detach(move || runtime.block_on(agent.set_model(model)))
             .map_err(runtime_error)
     }
 

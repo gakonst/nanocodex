@@ -1,4 +1,4 @@
-import type { PromptInput, TurnUsage } from "../types.mjs";
+import type { Model, PromptInput, ReasoningMode, Thinking, TurnUsage } from "../types.mjs";
 import type { AgentId } from "../runtime/subagents.mjs";
 
 export type HistorySource = Readonly<{ turn_id: string; cursor: string }>;
@@ -124,6 +124,20 @@ export type Options = Readonly<{
   }> | undefined;
 }>;
 
+export type CreateSettings = Readonly<{
+  model: Model;
+  thinking: Thinking;
+  reasoningMode: ReasoningMode;
+  fastMode: boolean;
+}>;
+
+export type SettingsPatch = Readonly<Partial<CreateSettings>>;
+
+export type CreateOptions = Options & Readonly<{
+  /** Complete immutable starting policy. GPT-6 Astra requires at least low reasoning. */
+  settings?: CreateSettings | undefined;
+}>;
+
 export type Capabilities = Readonly<{
   durable_turns: true;
   resumable_events: true;
@@ -143,6 +157,7 @@ export type State = Readonly<{
   session_id: string;
   has_snapshot: boolean;
   completed_turns: number;
+  accepted_turns: number;
   last_active: number;
   active_turns: readonly string[];
   active_turn_details: readonly Readonly<{ id: string; input: PromptInput }>[];
@@ -151,6 +166,12 @@ export type State = Readonly<{
   capabilities: Capabilities;
   latest_event_cursor: string;
   stream_error: string | null;
+  settings: Readonly<{
+    model: Model;
+    thinking: Thinking;
+    reasoning_mode: ReasoningMode;
+    fast_mode: boolean;
+  }>;
 }>;
 
 export type Summary = Readonly<{
@@ -280,6 +301,10 @@ export type Agent = Readonly<{
   /** Account-owned list metadata, present on handles returned by `list()`. */
   summary?: Summary | undefined;
   turn: Readonly<{ prompt(options: PromptOptions): Turn }>;
+  settings: Readonly<{
+    read(): Promise<CreateSettings>;
+    update(patch: SettingsPatch): Promise<CreateSettings>;
+  }>;
   /** Reverse-tool endpoint with cookie/bearer transport retained in a private closure. */
   toolsTarget(): import("../tools/Tools.mjs").AttachmentTarget;
   events: Readonly<{
@@ -294,7 +319,7 @@ export type Agent = Readonly<{
   delete(): Promise<void>;
 }>;
 
-export function create(options?: Options): Promise<Agent>;
+export function create(options?: CreateOptions): Promise<Agent>;
 export function list(options?: Options): Promise<readonly Agent[]>;
 export function get(id: string, options?: Options): Promise<Agent>;
 /** Open a handle immediately; each subsequent operation verifies ownership server-side. */

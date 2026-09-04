@@ -294,6 +294,7 @@ pub(super) async fn begin_shutdown(
             }
             Command::Steer { result, .. }
             | Command::Cancel { result, .. }
+            | Command::SetModel { result, .. }
             | Command::SetThinking { result, .. }
             | Command::SetFastMode { result, .. }
             | Command::Compact { result, .. } => {
@@ -343,8 +344,9 @@ pub(super) fn handle_idle_command<S>(
         Command::Spawn { options, result } => {
             let model = options.model.unwrap_or(defaults.model);
             let thinking = options.thinking.unwrap_or(defaults.thinking);
-            let outcome =
-                spawner.spawn_clean(workspace, session_id, model, thinking, defaults.fast_mode);
+            let outcome = validate_model_thinking(model, thinking).and_then(|()| {
+                spawner.spawn_clean(workspace, session_id, model, thinking, defaults.fast_mode)
+            });
             drop(result.send(outcome));
         }
         Command::SpawnBatch {
@@ -378,6 +380,9 @@ pub(super) fn handle_idle_command<S>(
         Command::SetThinking { result, .. } | Command::SetFastMode { result, .. } => {
             drop(result.send(Ok(())));
         }
+        Command::SetModel { result, .. } => {
+            drop(result.send(Err(model_change_locked())));
+        }
         Command::Shutdown => {}
         Command::Compact { result, .. } => {
             drop(result.send(Err(NanocodexError::AgentStopped)));
@@ -394,6 +399,12 @@ pub(super) fn handle_idle_command<S>(
         }
         Command::Prompt { .. } => {}
     }
+}
+
+pub(super) fn model_change_locked() -> NanocodexError {
+    NanocodexError::InvalidRequest(
+        "the model can only be changed before the first turn is accepted".to_owned(),
+    )
 }
 
 #[cfg(test)]

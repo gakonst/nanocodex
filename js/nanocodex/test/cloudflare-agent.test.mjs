@@ -274,16 +274,16 @@ test("Cloudflare Agent accepts complete hosted policy only through its internal 
   });
   const agent = await configured.create(owner, {
     [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
-      model: "gpt-5.6-terra",
+      model: "gpt-6-astra",
       thinking: "xhigh",
-      reasoning_mode: "pro",
+      reasoning_mode: "standard",
       fast_mode: true,
     },
   });
 
-  assert.equal(captured.model, "gpt-5.6-terra");
+  assert.equal(captured.model, "gpt-6-astra");
   assert.equal(captured.thinking, "xhigh");
-  assert.equal(captured.reasoningMode, "pro");
+  assert.equal(captured.reasoningMode, "standard");
   assert.equal(captured.fastMode, true);
   await agent.session.shutdown();
 

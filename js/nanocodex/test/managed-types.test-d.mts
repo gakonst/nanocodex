@@ -31,7 +31,24 @@ async function checkManaged() {
   // @ts-expect-error thread terminology was replaced by sessions.
   Agent.readThread;
   const created: ManagedAgent = await Agent.create();
+  await Agent.create({
+    settings: {
+      model: "gpt-6-astra",
+      thinking: "max",
+      reasoningMode: "pro",
+      fastMode: false,
+    },
+  });
+  await Agent.create({
+    // @ts-expect-error managed creation settings must be complete.
+    settings: { model: "gpt-6-astra", thinking: "high" },
+  });
   const opened: ManagedAgent = Agent.open("0198d3f0-8844-7000-8000-000000000001");
+  const settings = await opened.settings.read();
+  await opened.settings.update({ model: "gpt-6-astra" });
+  await opened.settings.update({ thinking: settings.thinking, fastMode: true });
+  // @ts-expect-error model names are a closed roster.
+  await opened.settings.update({ model: "unknown" });
   const serverAgent = await Agent.get("0198d3f0-8844-7000-8000-000000000001", {
     baseUrl: "https://managed.example",
     apiKey,

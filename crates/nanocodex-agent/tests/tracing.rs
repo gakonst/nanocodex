@@ -426,7 +426,7 @@ fn luna_model_call_span_uses_luna_rates() {
         call.fields.get("model").map(String::as_str),
         Some("gpt-5.6-luna")
     );
-    assert_eq!(call.fields.get("cost.usd").map(String::as_str), Some("1.4"));
+    assert_eq!(call.fields.get("cost.usd").map(String::as_str), Some("2.2"));
 }
 
 #[test]

@@ -501,6 +501,23 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
                 .to_string()
                 .contains("agent state latest event cursor is invalid")
         );
+        let mut invalid_settings_state = state.clone();
+        invalid_settings_state.settings.model = Model::Astra;
+        invalid_settings_state.settings.thinking = Thinking::None;
+        let invalid_open: nanocodex_agent::Result<(Nanocodex, AgentEvents)> = Nanocodex::builder(
+            Managed::open_from_state(client.clone(), AGENT_ID, invalid_settings_state),
+        )
+        .build()
+        .await;
+        let error = match invalid_open {
+            Ok(_) => panic!("state-fenced open must reject incompatible settings"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("incompatible model and reasoning settings")
+        );
         let (from_state, _): (Nanocodex, AgentEvents) =
             Nanocodex::builder(Managed::open_from_state(client.clone(), AGENT_ID, state))
                 .build()

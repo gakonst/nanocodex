@@ -821,11 +821,13 @@ export function estimatedCostUsd(
   } | undefined,
 ): number | null {
   const rates = model === "sol" || model === "gpt-5.6-sol"
-    ? { input: 5, cached: 0.5, output: 30 }
+    ? { input: 4, cached: 0.4, output: 20 }
     : model === "terra" || model === "gpt-5.6-terra"
       ? { input: 2, cached: 0.2, output: 12 }
       : model === "luna" || model === "gpt-5.6-luna"
         ? { input: 0.2, cached: 0.02, output: 1.2 }
+        : model === "astra" || model === "gpt-6-astra"
+          ? { input: 10, cached: 1, output: 50 }
         : null;
   const input = usage?.inputTokens;
   const output = usage?.outputTokens;

@@ -5,7 +5,7 @@ Status: implemented.
 ## Ownership and public composition
 
 `OpenAi::new(auth)` creates the standard client recipe with `gpt-5.6-sol`.
-`OpenAi::builder(auth)` exposes the closed Sol/Terra/Luna model choice plus
+`OpenAi::builder(auth)` exposes the closed Sol/Terra/Luna/Astra model choice plus
 transport, storage, history, reasoning, wire namespace, and Tower policy. The
 optional wire namespace applies only to API-key HTTPS OpenAI routing gateways;
 it changes no provider or model semantics and never expands the typed model
@@ -23,7 +23,8 @@ history, code-mode runtime, shell sessions, and prompt-cache identity across
 follow-on turns. A WebSocket policy also reuses its connection. The caller does
 not replay earlier results.
 
-The selected Sol, Terra, or Luna model is fixed when the thread is created. Upstream
+The selected Sol, Terra, Luna, or Astra model may be changed only before the
+first turn is accepted and is fixed after conversation activity begins. Upstream
 Codex permits model changes on later turns at commit
 [`acd540f1`](https://github.com/openai/codex/commit/acd540f1581bf30f963fccbcce43ac494102242c):
 

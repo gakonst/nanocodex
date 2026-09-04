@@ -326,6 +326,17 @@ impl Nanocodex {
         self.backend.set_thinking(thinking).await
     }
 
+    /// Changes the model before the first turn is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after conversation activity begins, when the selected
+    /// model is incompatible with the current thinking level, or if the
+    /// backend has stopped.
+    pub async fn set_model(&self, model: Model) -> Result<()> {
+        self.backend.set_model(model).await
+    }
+
     /// Enables or disables priority processing for subsequently accepted turns.
     ///
     /// An active turn and prompts already queued by the driver retain the mode

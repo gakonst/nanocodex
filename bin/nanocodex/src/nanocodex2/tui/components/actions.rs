@@ -460,12 +460,14 @@ mod tests {
     }
 
     #[test]
-    fn model_action_is_disabled_after_session_starts() {
+    fn only_model_action_is_disabled_after_session_starts() {
         let menu = ActionsMenu::new(availability(false, false));
         assert_eq!(
             menu.display_label(Action::Model),
             "Select model · start a new session first"
         );
         assert!(!menu.is_enabled(Action::Model));
+        assert!(menu.is_enabled(Action::Effort));
+        assert!(menu.is_enabled(Action::FastMode));
     }
 }

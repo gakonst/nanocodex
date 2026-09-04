@@ -1993,6 +1993,9 @@ impl RootNode {
         };
 
         self.overlay = None;
+        if self.thread != ThreadState::New {
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
         match effect {
             ModelSelectorEffect::Dismiss => ComponentUpdate::render(RenderRequest::Immediate),
             ModelSelectorEffect::Apply(model) if model == self.composer.component().model() => {
@@ -3097,7 +3100,8 @@ fn model_name(model: Model) -> &'static str {
         Model::Luna => "Luna",
         Model::Terra => "Terra",
         Model::Sol => "Sol",
-        _ => "Sol",
+        Model::Astra => "Astra",
+        _ => model.as_str(),
     }
 }
 

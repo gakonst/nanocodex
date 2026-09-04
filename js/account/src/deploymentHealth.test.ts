@@ -13,6 +13,7 @@ test("projects sponsored homepage access without enabling voice", async () => {
 
   assert.deepEqual(health, {
     agentConfigured: true,
+    astraEntitled: false,
     credentialSource: "sponsored",
     deploymentSha: undefined,
     freePromptsRemaining: 3,
@@ -32,9 +33,27 @@ test("retains user-owned and brokered credential projections", async () => {
       voice_enabled: true,
     })).read();
     assert.equal(health.credentialSource, expected);
+    assert.equal(health.astraEntitled, false);
     assert.equal(health.freePromptsRemaining, null);
     assert.equal(health.voiceEnabled, true);
   }
+});
+
+test("projects Astra only for an entitled brokered account", async () => {
+  const entitled = await createDeploymentHealthResource(async () => Response.json({
+    agent_configured: true,
+    astra_entitled: true,
+    credential_source: "brokered",
+  })).read();
+  const sponsored = await createDeploymentHealthResource(async () => Response.json({
+    agent_configured: true,
+    astra_entitled: true,
+    credential_source: "sponsored",
+    free_prompts_remaining: 1,
+  })).read();
+
+  assert.equal(entitled.astraEntitled, true);
+  assert.equal(sponsored.astraEntitled, false);
 });
 
 test("fails closed for sponsored access without a valid remaining prompt count", async () => {
@@ -43,5 +62,6 @@ test("fails closed for sponsored access without a valid remaining prompt count",
     credential_source: "sponsored",
   })).read();
   assert.equal(health.agentConfigured, false);
+  assert.equal(health.astraEntitled, false);
   assert.equal(health.credentialSource, null);
 });

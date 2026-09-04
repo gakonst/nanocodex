@@ -127,7 +127,7 @@ where
         let message = error.to_string();
         self.events
             .emit(AgentEventKind::RunError, RunError { message: &message })?;
-        let usage = self.stats.turn_usage(self.model, self.fast_mode);
+        let usage = self.stats.turn_usage();
         record_turn_usage(&tracing::Span::current(), &usage);
         self.events.emit(
             AgentEventKind::RunFailed,
@@ -228,7 +228,7 @@ where
             Ok(ModelTaskOutcome::Completed(message)) => {
                 self.stats
                     .apply_transport(self.transport_stats.since(transport_before));
-                let usage = self.stats.turn_usage(self.model, self.fast_mode);
+                let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);
                 let checkpoint = self.commit_checkpoint()?;
                 Ok(ModelTurnOutcome::Completed(CompletedModelTurn {
@@ -248,7 +248,7 @@ where
                     .emit(AgentEventKind::RunError, RunError { message: &message })?;
                 self.stats
                     .apply_transport(self.transport_stats.since(transport_before));
-                let usage = self.stats.turn_usage(self.model, self.fast_mode);
+                let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);
                 Ok(ModelTurnOutcome::Cancelled(checkpoint))
             }
@@ -299,7 +299,7 @@ where
                     .emit(AgentEventKind::RunError, RunError { message: &message })?;
                 self.stats
                     .apply_transport(self.transport_stats.since(transport_before));
-                let usage = self.stats.turn_usage(self.model, self.fast_mode);
+                let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);
                 match checkpoint {
                     Some(checkpoint) => Ok(ModelTurnOutcome::Failed { error, checkpoint }),
@@ -310,7 +310,7 @@ where
     }
 
     pub(crate) fn emit_terminal(&self, status: &'static str) -> Result<()> {
-        let usage = self.stats.turn_usage(self.model, self.fast_mode);
+        let usage = self.stats.turn_usage();
         let kind = if status == "completed" {
             AgentEventKind::RunCompleted
         } else {
@@ -501,6 +501,14 @@ where
                         session.conversation.reset_for_full_request();
                         self.stats.last_response_id = None;
                     }
+                }
+                Err(error)
+                    if error
+                        .responses_error()
+                        .is_some_and(|source| source.is_misalignment_policy_violation()) =>
+                {
+                    self.session = Some(session);
+                    return Err(error);
                 }
                 Err(error) if error.responses_error().is_some() => {
                     session.conversation.reset_for_full_request();

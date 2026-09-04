@@ -141,7 +141,7 @@ pub mod __private {
 /// The default Responses model used by this SDK.
 pub const MODEL: &str = Model::Sol.as_str();
 
-/// Supported models in the GPT-5.6 coding-model family.
+/// Supported OpenAI coding models.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -153,6 +153,8 @@ pub enum Model {
     Terra,
     /// GPT-5.6 Luna.
     Luna,
+    /// GPT-6 Astra.
+    Astra,
 }
 
 impl Model {
@@ -163,7 +165,26 @@ impl Model {
             Self::Sol => "gpt-5.6-sol",
             Self::Terra => "gpt-5.6-terra",
             Self::Luna => "gpt-5.6-luna",
+            Self::Astra => "gpt-6-astra",
         }
+    }
+
+    /// Returns whether the model accepts the requested reasoning effort.
+    #[must_use]
+    pub const fn supports_thinking(self, thinking: Thinking) -> bool {
+        !matches!((self, thinking), (Self::Astra, Thinking::None))
+    }
+
+    /// Returns whether the model accepts the requested reasoning execution mode.
+    #[must_use]
+    pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
+        !matches!((self, mode), (Self::Astra, ReasoningMode::Pro))
+    }
+
+    /// Largest Codex-compatible prompt context for this model.
+    #[must_use]
+    pub const fn max_context_window_tokens(self) -> u64 {
+        MAX_CONTEXT_WINDOW_TOKENS
     }
 }
 
@@ -181,8 +202,9 @@ impl FromStr for Model {
             "gpt-5.6-sol" | "sol" => Ok(Self::Sol),
             "gpt-5.6-terra" | "terra" => Ok(Self::Terra),
             "gpt-5.6-luna" | "luna" => Ok(Self::Luna),
+            "gpt-6-astra" | "astra" => Ok(Self::Astra),
             _ => Err(format!(
-                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, or gpt-5.6-luna"
+                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, or gpt-6-astra"
             )),
         }
     }
@@ -190,7 +212,10 @@ impl FromStr for Model {
 
 /// Default GPT-5.6 context window used for accounting and automatic compaction.
 pub const CONTEXT_WINDOW_TOKENS: u64 = 272_000;
-/// Largest context window currently advertised by the supported GPT-5.6 family.
+/// Largest Codex-compatible prompt context currently accepted by supported models.
+///
+/// This intentionally follows the current Codex model catalog rather than the
+/// Responses API's larger advertised total context window.
 pub const MAX_CONTEXT_WINDOW_TOKENS: u64 = 872_000;
 
 /// User input for one agent turn.
@@ -531,7 +556,7 @@ impl UserInput {
     }
 }
 
-/// Responses reasoning execution mode for the supported GPT-5.6 model family.
+/// Responses reasoning execution mode for the supported model family.
 ///
 /// Standard mode preserves the default request behavior. Pro mode performs
 /// additional model work before returning one final answer and can increase
@@ -646,7 +671,10 @@ impl FromStr for Thinking {
 mod tests {
     use serde_json::json;
 
-    use super::{Model, Prompt, PromptMessage, PromptValidationError, ReasoningMode, Thinking};
+    use super::{
+        MAX_CONTEXT_WINDOW_TOKENS, Model, Prompt, PromptMessage, PromptValidationError,
+        ReasoningMode, Thinking,
+    };
 
     #[test]
     fn model_parses_short_and_api_names() {
@@ -656,7 +684,21 @@ mod tests {
         assert_eq!("gpt-5.6-terra".parse(), Ok(Model::Terra));
         assert_eq!("luna".parse(), Ok(Model::Luna));
         assert_eq!("gpt-5.6-luna".parse(), Ok(Model::Luna));
+        assert_eq!("astra".parse(), Ok(Model::Astra));
+        assert_eq!("gpt-6-astra".parse(), Ok(Model::Astra));
         assert_eq!(Model::default().as_str(), "gpt-5.6-sol");
+        assert!(Model::Astra.supports_thinking(Thinking::Low));
+        assert!(!Model::Astra.supports_thinking(Thinking::None));
+        assert!(Model::Astra.supports_reasoning_mode(ReasoningMode::Standard));
+        assert!(!Model::Astra.supports_reasoning_mode(ReasoningMode::Pro));
+        assert_eq!(
+            Model::Astra.max_context_window_tokens(),
+            MAX_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(
+            Model::Sol.max_context_window_tokens(),
+            MAX_CONTEXT_WINDOW_TOKENS
+        );
     }
 
     #[test]

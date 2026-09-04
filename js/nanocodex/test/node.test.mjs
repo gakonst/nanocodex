@@ -327,11 +327,11 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     reasoning_output_tokens: 2,
     total_tokens: 24,
     estimated_cost: {
-      usd: "0.000175",
-      input_usd: "0.00005",
-      cached_input_usd: "0.000005",
+      usd: "0.000124",
+      input_usd: "0.00004",
+      cached_input_usd: "0.000004",
       cache_write_input_usd: "0",
-      output_usd: "0.00012",
+      output_usd: "0.00008",
       service_tier: "standard",
     },
     cost_status: "estimated_from_usage",
@@ -350,7 +350,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
   assert.equal(events.filter((event) => event.type === "run.completed").length, 2);
   assert.equal(
     events.find((event) => event.type === "run.completed")?.payload.estimated_cost.usd,
-    "0.000175",
+    "0.000124",
   );
   assert.ok(events.some((event) => event.type === "tool.call" && event.payload.tool === "multiply"));
   watch.off();

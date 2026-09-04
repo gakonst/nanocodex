@@ -1802,6 +1802,7 @@ mod tests {
             (Model::Luna, Color::White),
             (Model::Terra, Color::Green),
             (Model::Sol, Color::Yellow),
+            (Model::Astra, Color::LightMagenta),
         ] {
             let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
             composer.update(ComposerEvent::SetModel(model));

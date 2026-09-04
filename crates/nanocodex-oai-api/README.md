@@ -36,8 +36,8 @@ if let Some(cost) = completed.estimated_cost() {
 # }
 ```
 
-This crate supports `gpt-5.6-sol` (the default), `gpt-5.6-terra`, and
-`gpt-5.6-luna`. Select a client default with
+This crate supports `gpt-5.6-sol` (the default), `gpt-5.6-terra`,
+`gpt-5.6-luna`, and `gpt-6-astra`. Select a client default with
 `OpenAi::builder(auth).model(Model::Terra)`. A session keeps that model for its
 lifetime, and each replayable attempt retains it across retries. Changing
 models would invalidate the provider checkpoint and require an inefficient
@@ -50,10 +50,11 @@ and snapshots continue to use the typed [`Model`] value. It does not add an
 alternate provider or arbitrary-model surface.
 
 USD estimates require no pricing configuration. Each model applies its
-published standard rates, or its priority rates when
-[`OpenAiBuilder::fast_mode`] is enabled. Terra and Luna usage receive the same
-complete estimate and status treatment as Sol. Provider-omitted usage remains
-distinguishable as `usage_not_reported`.
+published standard or long-context rates and its model-specific fast rates when
+[`OpenAiBuilder::fast_mode`] is enabled. GPT-5.6 reports that tier as
+`priority`; Astra reports it as `fast`. Terra, Luna, and Astra usage receive the
+same complete estimate and status treatment as Sol. Provider-omitted usage
+remains distinguishable as `usage_not_reported`.
 
 ## ChatGPT subscription login
 

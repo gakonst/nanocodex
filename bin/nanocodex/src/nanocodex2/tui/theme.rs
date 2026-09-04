@@ -178,7 +178,8 @@ impl Theme {
             Model::Luna => Color::White,
             Model::Terra => Color::Green,
             Model::Sol => Color::Yellow,
-            _ => Color::Yellow,
+            Model::Astra => Color::LightMagenta,
+            _ => Color::White,
         }
     }
 
@@ -396,6 +397,7 @@ mod tests {
         assert_eq!(theme.model(Model::Luna), Color::White);
         assert_eq!(theme.model(Model::Terra), Color::Green);
         assert_eq!(theme.model(Model::Sol), Color::Yellow);
+        assert_eq!(theme.model(Model::Astra), Color::LightMagenta);
     }
 
     #[test]

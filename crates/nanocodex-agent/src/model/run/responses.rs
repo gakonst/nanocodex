@@ -180,7 +180,7 @@ where
         }
         self.stats.model_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
-            self.stats.usage.add(usage);
+            self.stats.usage.add(usage, self.model, self.fast_mode);
         }
         self.stats.last_response_id = transport_continuation_valid.then(|| response.id.clone());
         self.events.emit(
@@ -488,15 +488,7 @@ pub(super) fn record_usage(span: &tracing::Span, usage: &Usage, model: Model, fa
     span.record("output_tokens", usage.output_tokens);
     span.record("reasoning_output_tokens", reasoning_output_tokens);
     span.record("total_tokens", usage.total_tokens);
-    let estimate = estimate_for_model(
-        usage,
-        model,
-        if fast_mode {
-            ServiceTier::Priority
-        } else {
-            ServiceTier::Standard
-        },
-    );
+    let estimate = estimate_for_model(usage, model, ServiceTier::for_model(model, fast_mode));
     let amount = estimate.amount().decimal();
     span.record("cost.usd", amount.as_str());
     span.record("cost.service_tier", estimate.service_tier().as_str());

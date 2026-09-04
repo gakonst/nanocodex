@@ -193,6 +193,7 @@ const MERCATOR_SETTLEMENT = "0xa295C42FBCC026a62304A7701f25B4c91799B0dA";
 const MPP_LIMIT = 10_000_000n;
 const MPP_PERIOD = 86_400;
 const MPP_MAX_PER_REQUEST = 250_000n;
+const AGENT_MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]);
 const CONNECTOR_IDS = connectorCapabilities;
 const OAUTH_CONNECTOR_IDS = oauthConnectorProviders;
 const BASE_APPROVAL_RESOURCES = [
@@ -3442,12 +3443,14 @@ function projectedPublicHeaders(source: Headers): Headers {
 
 async function grantWebSearch(request: Request, env: Env, grant: GrantRecord): Promise<Response> {
   const value = await boundedJson(request, 64 * 1024, "web search");
-  if (!isRecord(value.commands) || typeof value.session_id !== "string" || !value.session_id) {
+  if (!isRecord(value.commands) || typeof value.session_id !== "string" || !value.session_id
+    || (value.model !== undefined
+      && (typeof value.model !== "string" || !AGENT_MODELS.has(value.model)))) {
     throw new ApiFailure(400, "invalid_web_request", "The web search request is invalid.");
   }
   return fetchGrantModelTool(env, grant, "/v1/search", {
     id: value.session_id,
-    model: "gpt-5.6-sol",
+    model: typeof value.model === "string" ? value.model : "gpt-5.6-sol",
     commands: value.commands,
     settings: { allowed_callers: ["direct"], external_web_access: true },
     max_output_tokens: 10_000,

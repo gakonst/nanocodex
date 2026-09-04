@@ -2,6 +2,7 @@ export const AGENT_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
+  "gpt-6-astra",
 ] as const;
 
 export const AGENT_THINKING = [
@@ -66,14 +67,14 @@ export function parseAgentSettingsQuery(
       && encodedFastMode !== "false")) {
     throw new TypeError("invalid agent settings query");
   }
-  return {
+  return validateAgentSettings({
     model,
     thinking,
     reasoning_mode: reasoningMode,
     fast_mode: encodedFastMode === null
       ? DEFAULT_AGENT_SETTINGS.fast_mode
       : encodedFastMode === "true",
-  };
+  });
 }
 
 export function agentSettingsQuery(settings: ManagedAgentSettings): URLSearchParams {
@@ -123,7 +124,19 @@ export function parseCompleteAgentSettings(value: unknown): ManagedAgentSettings
   if (Object.keys(settings).length !== 4) {
     throw new TypeError("agent settings must contain all four fields");
   }
-  return settings as ManagedAgentSettings;
+  return validateAgentSettings(settings as ManagedAgentSettings);
+}
+
+export function validateAgentSettings(
+  settings: ManagedAgentSettings,
+): ManagedAgentSettings {
+  if (settings.model === "gpt-6-astra" && settings.thinking === "none") {
+    throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
+  }
+  if (settings.model === "gpt-6-astra" && settings.reasoning_mode === "pro") {
+    throw new TypeError("GPT-6 Astra does not support pro reasoning mode");
+  }
+  return settings;
 }
 
 export function parseAgentCreateBody(encoded: string): ManagedAgentCreateBody {

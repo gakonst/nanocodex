@@ -20,6 +20,24 @@ const result = await turn.result();
 console.log(result.finalMessage);
 ```
 
+New managed agents may be created with an atomic settings object. Existing
+agents retain their model and reasoning mode after their first accepted turn.
+
+```js
+const astra = await Agent.create({
+  settings: {
+    model: "gpt-6-astra",
+    thinking: "high",
+    reasoningMode: "standard",
+    fastMode: false,
+  },
+});
+```
+
+GPT-6 Astra accepts `low`, `medium`, `high`, `xhigh`, or `max` thinking; it
+rejects `none`. Fast mode is deliberately opt-in and is unavailable for Astra
+when the OpenAI project uses EU data residency.
+
 On a server, provide the managed origin and an `ncx_live_...` account API key:
 
 ```js

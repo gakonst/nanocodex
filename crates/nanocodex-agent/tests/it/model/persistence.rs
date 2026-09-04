@@ -289,6 +289,27 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
             if message.contains("unsupported format version")
     ));
 
+    let mut astra_snapshot: Value = serde_json::from_slice(&encoded)?;
+    astra_snapshot["model"] = json!("gpt-6-astra");
+    let astra_snapshot: SessionSnapshot = serde_json::from_value(astra_snapshot)?;
+    let incompatible = Nanocodex::builder(openai()?)
+        .thinking(Thinking::None)
+        .resume(astra_snapshot)
+        .build();
+    assert!(matches!(
+        incompatible,
+        Err(NanocodexError::InvalidRequest(message))
+            if message.contains("GPT-6 Astra requires")
+    ));
+
+    let (compatible, compatible_events) = Nanocodex::builder(openai()?)
+        .model(Model::Astra)
+        .thinking(Thinking::None)
+        .resume(snapshot.clone())
+        .build()?;
+    compatible.shutdown().await?;
+    drop((compatible, compatible_events));
+
     let other_workspace = temporary_workspace("serialized-resume-other")?;
     let incompatible = Nanocodex::builder(openai()?)
         .instructions("durable instructions")

@@ -10,6 +10,14 @@ use super::{
     JsonValue, LocalShellAction, LocalShellStatus, MessagePhase, MessageRole, ReasoningContent,
     ReasoningSummary, ToolCaller, ToolDefinition, WebSearchAction,
 };
+use crate::Thinking;
+
+/// Reasoning controls carried by a Responses `configuration_update` item.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct ConfigurationUpdateReasoning {
+    /// Reasoning effort that applies until a later configuration update overrides it.
+    pub effort: Thinking,
+}
 
 /// A stable Responses API item identifier.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -148,6 +156,8 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<Box<str>>,
         arguments: Box<str>,
+        #[serde(default, rename = "async", skip_serializing_if = "is_false")]
+        asynchronous: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         encrypted_function_args: Option<Vec<Box<str>>>,
         call_id: Box<str>,
@@ -196,6 +206,8 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<Box<str>>,
         input: Box<str>,
+        #[serde(default, rename = "async", skip_serializing_if = "is_false")]
+        asynchronous: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller: Option<ToolCaller>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,8 +281,15 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         internal_chat_message_metadata_passthrough: Option<InternalMessageMetadata>,
     },
+    ConfigurationUpdate {
+        reasoning: ConfigurationUpdateReasoning,
+    },
     #[serde(untagged)]
     Other(JsonValue),
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl ResponseItem {
@@ -336,6 +355,14 @@ impl ResponseItem {
         Self::CompactionTrigger {}
     }
 
+    /// Creates an Astra reasoning-effort update for insertion before the next user message.
+    #[must_use]
+    pub const fn configuration_update(effort: Thinking) -> Self {
+        Self::ConfigurationUpdate {
+            reasoning: ConfigurationUpdateReasoning { effort },
+        }
+    }
+
     /// Returns whether this item is a user-role message.
     #[must_use]
     pub const fn is_user_message(&self) -> bool {
@@ -367,7 +394,7 @@ impl ResponseItem {
             | Self::ImageGenerationCall { id, .. }
             | Self::Compaction { id, .. }
             | Self::ContextCompaction { id, .. } => id.as_ref(),
-            Self::CompactionTrigger {} | Self::Other(_) => None,
+            Self::CompactionTrigger {} | Self::ConfigurationUpdate { .. } | Self::Other(_) => None,
         }
     }
 
@@ -389,7 +416,7 @@ impl ResponseItem {
             | Self::ImageGenerationCall { id, .. }
             | Self::Compaction { id, .. }
             | Self::ContextCompaction { id, .. } => *id = new_id,
-            Self::CompactionTrigger {} | Self::Other(_) => {}
+            Self::CompactionTrigger {} | Self::ConfigurationUpdate { .. } | Self::Other(_) => {}
         }
     }
 
@@ -411,7 +438,7 @@ impl ResponseItem {
             Self::WebSearchCall { .. } => Some("ws"),
             Self::ImageGenerationCall { .. } => Some("ig"),
             Self::Compaction { .. } | Self::ContextCompaction { .. } => Some("cmp"),
-            Self::CompactionTrigger {} | Self::Other(_) => None,
+            Self::CompactionTrigger {} | Self::ConfigurationUpdate { .. } | Self::Other(_) => None,
         }
     }
 
@@ -563,5 +590,39 @@ mod tests {
         ]);
         let items: Vec<ResponseItem> = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(items).unwrap(), value);
+    }
+
+    #[test]
+    fn astra_protocol_items_preserve_async_calls_and_reasoning_updates() {
+        let value = serde_json::json!([
+            {
+                "type": "function_call",
+                "name": "lookup",
+                "arguments": "{}",
+                "async": true,
+                "call_id": "call-function"
+            },
+            {
+                "type": "custom_tool_call",
+                "name": "compile",
+                "input": "compile",
+                "async": true,
+                "call_id": "call-custom"
+            },
+            {
+                "type": "configuration_update",
+                "reasoning": {"effort": "high"}
+            }
+        ]);
+        let items: Vec<ResponseItem> = serde_json::from_value(value.clone()).unwrap();
+
+        assert_eq!(serde_json::to_value(items).unwrap(), value);
+        assert_eq!(
+            serde_json::to_value(ResponseItem::configuration_update(Thinking::Low)).unwrap(),
+            serde_json::json!({
+                "type": "configuration_update",
+                "reasoning": {"effort": "low"}
+            })
+        );
     }
 }

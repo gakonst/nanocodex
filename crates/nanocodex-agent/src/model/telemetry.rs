@@ -137,10 +137,12 @@ pub(super) struct UsageTotals {
     pub(super) total_tokens: u64,
     #[serde(skip)]
     pub(super) reported: bool,
+    #[serde(skip)]
+    pub(super) estimated_cost: Option<nanocodex_oai_api::pricing::EstimatedUsdCost>,
 }
 
 impl UsageTotals {
-    pub(super) fn add(&mut self, usage: &Usage) {
+    pub(super) fn add(&mut self, usage: &Usage, model: nanocodex_oai_api::Model, fast_mode: bool) {
         self.reported = true;
         self.input_tokens += usage.input_tokens;
         self.cached_input_tokens += usage
@@ -157,6 +159,42 @@ impl UsageTotals {
             .as_ref()
             .map_or(0, |details| details.reasoning_tokens);
         self.total_tokens += usage.total_tokens;
+        let estimate = nanocodex_oai_api::pricing::estimate_for_model(
+            usage,
+            model,
+            nanocodex_oai_api::pricing::ServiceTier::for_model(model, fast_mode),
+        );
+        self.estimated_cost = Some(
+            self.estimated_cost
+                .take()
+                .map_or(estimate.clone(), |total| total.saturating_add(estimate)),
+        );
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::RunStats;
+    use nanocodex_oai_api::{Model, responses::Usage};
+
+    #[test]
+    fn turn_cost_preserves_per_request_long_context_thresholds() {
+        let mut stats = RunStats::default();
+        let usage = Usage {
+            input_tokens: 150_000,
+            total_tokens: 150_000,
+            ..Usage::default()
+        };
+
+        stats.usage.add(&usage, Model::Astra, false);
+        stats.usage.add(&usage, Model::Astra, false);
+
+        let turn = stats.turn_usage();
+        assert_eq!(turn.input_tokens(), 300_000);
+        assert_eq!(
+            turn.estimated_cost().map(|cost| cost.amount().decimal()),
+            Some("3".to_owned())
+        );
     }
 }
 
@@ -192,23 +230,29 @@ impl RunStats {
         self.retry_backoff_duration_ns = delta.retry_backoff_duration_ns;
     }
 
-    pub(super) fn turn_usage(&self, model: nanocodex_oai_api::Model, fast_mode: bool) -> TurnUsage {
-        TurnUsage::from_counts(
-            crate::usage::TurnUsageCounts {
-                input_tokens: self.usage.input_tokens + self.warmup_usage.input_tokens,
-                cached_input_tokens: self.usage.cached_input_tokens
-                    + self.warmup_usage.cached_input_tokens,
-                cache_write_input_tokens: self.usage.cache_write_input_tokens
-                    + self.warmup_usage.cache_write_input_tokens,
-                output_tokens: self.usage.output_tokens + self.warmup_usage.output_tokens,
-                reasoning_output_tokens: self.usage.reasoning_output_tokens
-                    + self.warmup_usage.reasoning_output_tokens,
-                total_tokens: self.usage.total_tokens + self.warmup_usage.total_tokens,
-                reported: self.usage.reported || self.warmup_usage.reported,
-            },
-            model,
-            fast_mode,
-        )
+    pub(super) fn turn_usage(&self) -> TurnUsage {
+        let estimated_cost = match (
+            self.usage.estimated_cost.clone(),
+            self.warmup_usage.estimated_cost.clone(),
+        ) {
+            (Some(usage), Some(warmup)) => Some(usage.saturating_add(warmup)),
+            (Some(usage), None) => Some(usage),
+            (None, Some(warmup)) => Some(warmup),
+            (None, None) => None,
+        };
+        TurnUsage::from_counts(crate::usage::TurnUsageCounts {
+            input_tokens: self.usage.input_tokens + self.warmup_usage.input_tokens,
+            cached_input_tokens: self.usage.cached_input_tokens
+                + self.warmup_usage.cached_input_tokens,
+            cache_write_input_tokens: self.usage.cache_write_input_tokens
+                + self.warmup_usage.cache_write_input_tokens,
+            output_tokens: self.usage.output_tokens + self.warmup_usage.output_tokens,
+            reasoning_output_tokens: self.usage.reasoning_output_tokens
+                + self.warmup_usage.reasoning_output_tokens,
+            total_tokens: self.usage.total_tokens + self.warmup_usage.total_tokens,
+            reported: self.usage.reported || self.warmup_usage.reported,
+            estimated_cost,
+        })
     }
 }
 

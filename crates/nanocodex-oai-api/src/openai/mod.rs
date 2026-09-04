@@ -6,9 +6,8 @@ mod config;
 mod platform;
 
 use crate::{
-    DefaultResponsesService, MAX_CONTEXT_WINDOW_TOKENS, Model, OpenAiAuth, OpenAiAuthError,
-    OpenAiAuthMode, ReasoningMode, ResponsesHistory, ResponsesRetryPolicy, ResponsesTransport,
-    Thinking, session::SessionBuilder,
+    DefaultResponsesService, Model, OpenAiAuth, OpenAiAuthError, OpenAiAuthMode, ReasoningMode,
+    ResponsesHistory, ResponsesRetryPolicy, ResponsesTransport, Thinking, session::SessionBuilder,
 };
 
 #[doc(hidden)]
@@ -146,6 +145,9 @@ impl<F> OpenAiBuilder<F> {
     #[must_use]
     pub const fn model(mut self, model: Model) -> Self {
         self.config.model = model;
+        if self.config.context_window_tokens > model.max_context_window_tokens() {
+            self.config.context_window_tokens = model.max_context_window_tokens();
+        }
         self
     }
 
@@ -252,17 +254,14 @@ impl<F> OpenAiBuilder<F> {
         self
     }
 
-    /// Sets the GPT-5.6 context window used for accounting and compaction.
+    /// Sets the selected model's context window used for accounting and compaction.
     ///
-    /// The supported family defaults to 272,000 tokens and currently advertises
-    /// a maximum of 872,000. Values above that maximum are clamped.
+    /// Nanocodex defaults to 272,000 tokens to stay below long-context pricing.
+    /// Values above the selected model's advertised maximum are clamped.
     #[must_use]
     pub const fn context_window_tokens(mut self, tokens: u64) -> Self {
-        self.config.context_window_tokens = if tokens > MAX_CONTEXT_WINDOW_TOKENS {
-            MAX_CONTEXT_WINDOW_TOKENS
-        } else {
-            tokens
-        };
+        let maximum = self.config.model.max_context_window_tokens();
+        self.config.context_window_tokens = if tokens > maximum { maximum } else { tokens };
         self
     }
 
@@ -561,6 +560,16 @@ fn apply_mode_defaults(config: &mut ModelConfig, mode: OpenAiAuthMode) {
 
 fn validate(config: &ModelConfig) -> Result<(), OpenAiError> {
     config.auth.validate()?;
+    if !config.model.supports_thinking(config.thinking) {
+        return Err(OpenAiError::InvalidConfiguration {
+            detail: "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort",
+        });
+    }
+    if !config.model.supports_reasoning_mode(config.reasoning_mode) {
+        return Err(OpenAiError::InvalidConfiguration {
+            detail: "GPT-6 Astra does not support pro reasoning mode",
+        });
+    }
     if config.context_window_tokens == 0 {
         return Err(OpenAiError::InvalidConfiguration {
             detail: "the model context window must be greater than zero",
@@ -628,7 +637,7 @@ mod tests {
     use ::tower::{Service, service_fn, timeout::TimeoutLayer};
 
     use crate::{
-        ModelConfig, OpenAiAuthMode, ResponseError, ResponsesAttempt, ResponsesHistory,
+        Model, ModelConfig, OpenAiAuthMode, ResponseError, ResponsesAttempt, ResponsesHistory,
         ResponsesServiceResponse, ResponsesTransport,
     };
 
@@ -698,6 +707,17 @@ mod tests {
             .unwrap();
         assert_eq!(
             maximum.config.context_window_tokens,
+            Model::default().max_context_window_tokens()
+        );
+
+        let astra_maximum = OpenAi::builder("test-key")
+            .model(Model::Astra)
+            .context_window_tokens(u64::MAX)
+            .service(|| NeverCalled)
+            .build()
+            .unwrap();
+        assert_eq!(
+            astra_maximum.config.context_window_tokens,
             crate::MAX_CONTEXT_WINDOW_TOKENS
         );
 
@@ -708,6 +728,32 @@ mod tests {
             .err()
             .expect("zero context window should fail validation");
         assert!(error.to_string().contains("greater than zero"));
+    }
+
+    #[test]
+    fn astra_rejects_unsupported_none_reasoning() {
+        let error = OpenAi::builder("test-key")
+            .model(crate::Model::Astra)
+            .thinking(crate::Thinking::None)
+            .service(|| NeverCalled)
+            .build()
+            .err()
+            .expect("Astra none reasoning should fail validation");
+
+        assert!(error.to_string().contains("GPT-6 Astra requires low"));
+    }
+
+    #[test]
+    fn astra_rejects_unsupported_pro_reasoning_mode() {
+        let error = OpenAi::builder("test-key")
+            .model(crate::Model::Astra)
+            .reasoning_mode(crate::ReasoningMode::Pro)
+            .service(|| NeverCalled)
+            .build()
+            .err()
+            .expect("Astra pro reasoning mode should fail validation");
+
+        assert!(error.to_string().contains("does not support pro"));
     }
 
     #[test]

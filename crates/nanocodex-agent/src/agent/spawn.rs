@@ -35,6 +35,11 @@ where
             checkpoint,
         } = snapshot.into_resume()?;
         Arc::make_mut(&mut config).model = model;
+        validate_model_thinking(config.model, config.thinking)?;
+        validate_model_reasoning_mode(config.model, config.reasoning_mode)?;
+        if config.context_window_tokens > model.max_context_window_tokens() {
+            Arc::make_mut(&mut config).context_window_tokens = model.max_context_window_tokens();
+        }
         if key
             .as_deref()
             .is_some_and(|key| key != restored_cache_key.as_ref())
@@ -270,4 +275,27 @@ pub(super) fn validate(config: &ModelConfig, prompt_cache_key: Option<&str>) -> 
         ));
     }
     Ok(())
+}
+
+pub(super) fn validate_model_thinking(model: Model, thinking: Thinking) -> Result<()> {
+    if model.supports_thinking(thinking) {
+        Ok(())
+    } else {
+        Err(NanocodexError::InvalidRequest(
+            "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort".to_owned(),
+        ))
+    }
+}
+
+pub(super) fn validate_model_reasoning_mode(
+    model: Model,
+    reasoning_mode: ReasoningMode,
+) -> Result<()> {
+    if model.supports_reasoning_mode(reasoning_mode) {
+        Ok(())
+    } else {
+        Err(NanocodexError::InvalidRequest(
+            "GPT-6 Astra does not support pro reasoning mode".to_owned(),
+        ))
+    }
 }

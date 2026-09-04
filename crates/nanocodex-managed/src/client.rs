@@ -13,9 +13,9 @@ use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
     EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse, ManagedApiKey,
-    ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord, PromptInput,
-    ReadSessionBody, ReadSessionRequest, ReadSessionResponse, TurnAction, TurnSteer,
-    TurnSubmission, TurnView,
+    ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord,
+    ModelCapabilities, PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse,
+    TurnAction, TurnSteer, TurnSubmission, TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;
@@ -143,17 +143,34 @@ impl ManagedClient {
     ///
     /// Returns a transport, HTTP, size, or response-schema failure.
     pub async fn create(&self) -> Result<AgentReceipt, ManagedError> {
-        self.json(Method::POST, "v1/agents", None, None).await
+        let receipt = self.json(Method::POST, "v1/agents", None, None).await?;
+        validate_agent_receipt(receipt)
+    }
+
+    /// Resolves the model availability advertised by the connected account.
+    ///
+    /// This is an authoritative, fail-closed server projection; provider
+    /// credentials and the raw remote model catalog never cross this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport, HTTP, size, or response-schema failure.
+    pub async fn model_capabilities(&self) -> Result<ModelCapabilities, ManagedError> {
+        self.json(Method::GET, "v1/model-capabilities", None, None)
+            .await
     }
 
     pub(crate) async fn create_with_settings(
         &self,
         settings: AgentSettings,
     ) -> Result<AgentReceipt, ManagedError> {
+        let settings = settings.validate()?;
         let body = serde_json::to_vec(&serde_json::json!({ "settings": settings }))
             .map_err(|_| ManagedError::InvalidResponse("failed to encode agent settings"))?;
-        self.json(Method::POST, "v1/agents", Some(&body), None)
-            .await
+        let receipt = self
+            .json(Method::POST, "v1/agents", Some(&body), None)
+            .await?;
+        validate_agent_receipt(receipt)
     }
 
     /// Lists account-owned managed agents.
@@ -176,6 +193,11 @@ impl ManagedClient {
         let state: AgentState = self
             .json(Method::GET, &agent_path(agent_id), None, None)
             .await?;
+        if !state.settings.is_valid() {
+            return Err(ManagedError::InvalidResponse(
+                "agent state contains incompatible model and reasoning settings",
+            ));
+        }
         crate::sse::validate_numeric_cursor(&state.latest_event_cursor).map_err(|_| {
             ManagedError::InvalidResponse("agent state latest event cursor is invalid")
         })?;
@@ -198,7 +220,7 @@ impl ManagedClient {
         agent_id: &str,
         settings: AgentSettings,
     ) -> Result<AgentSettings, ManagedError> {
-        self.patch_settings(agent_id, AgentSettingsPatch::from(settings))
+        self.patch_settings(agent_id, AgentSettingsPatch::from(settings.validate()?))
             .await
     }
 
@@ -267,7 +289,7 @@ impl ManagedClient {
         .await
     }
 
-    /// Enables or disables priority processing for subsequently accepted turns.
+    /// Enables or disables model-specific fast processing for subsequent turns.
     ///
     /// # Errors
     ///
@@ -304,6 +326,11 @@ impl ManagedClient {
                 None,
             )
             .await?;
+        if !response.settings.is_valid() {
+            return Err(ManagedError::InvalidResponse(
+                "settings response contains incompatible model and reasoning settings",
+            ));
+        }
         Ok(response.settings)
     }
 
@@ -804,6 +831,19 @@ pub(crate) fn validate_idempotency_key(value: &str) -> Result<(), ManagedError> 
 
 pub(crate) fn agent_path(agent_id: &str) -> String {
     format!("v1/agents/{agent_id}")
+}
+
+fn validate_agent_receipt(receipt: AgentReceipt) -> Result<AgentReceipt, ManagedError> {
+    if receipt
+        .initial_state
+        .as_ref()
+        .is_some_and(|state| !state.settings.is_valid())
+    {
+        return Err(ManagedError::InvalidResponse(
+            "created agent state contains incompatible model and reasoning settings",
+        ));
+    }
+    Ok(receipt)
 }
 
 #[cfg(test)]

@@ -61,6 +61,7 @@ const MAX_CHATGPT_IMPORT_BODY_BYTES = 64 * 1024;
 const MAX_VAULT_BODY_BYTES = 12 * 1024;
 const MAX_BROKER_RESPONSE_BYTES = 4 * 1024;
 const MAX_MODEL_BODY_BYTES = 32 * 1024 * 1024;
+const MAX_MODEL_CATALOG_BYTES = 2 * 1024 * 1024;
 const MAX_SSH_BODY_BYTES = 72 * 1024;
 const MAX_VAULT_EGRESS_ENVELOPE_BYTES = 96 * 1024;
 const MAX_VAULT_EGRESS_TARGET_BYTES = 8 * 1024;
@@ -93,6 +94,7 @@ const VAULT_PROVIDER_HOSTS = new Set([
 const RELAY_CAPABILITY_PATH = /^\/v1\/[A-Za-z0-9_-]{43,}$/;
 const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefined>> = {
   responses: undefined,
+  models: undefined,
   search: "codex-web-search",
   "image-generation": "codex-image-generation",
   "image-edit": "codex-image-edit",
@@ -218,7 +220,7 @@ export class ChiefOfStaffEgress extends WorkerEntrypoint<EgressEnv> {
 }
 
 type ModelOperation = Readonly<{
-  id: "responses" | "search" | "image-generation" | "image-edit"
+  id: "responses" | "models" | "search" | "image-generation" | "image-edit"
     | "realtime-call" | "realtime-sideband";
   method: "GET" | "POST";
   path: `/v1/${string}`;
@@ -282,6 +284,16 @@ const OPERATIONS: readonly ModelOperation[] = [
     directChatGpt: true,
   },
 ];
+
+const MODELS_OPERATION: ModelOperation = Object.freeze({
+  id: "models",
+  method: "GET",
+  path: "/v1/models",
+  websocket: false,
+  openai: "https://api.openai.com/v1/models",
+  chatgpt: "https://chatgpt.com/backend-api/codex/models?client_version=0.5.0",
+  chatGptOnly: true,
+});
 
 export default {
   fetch(request: Request, env: EgressEnv, ctx: ExecutionContext): Promise<Response> {
@@ -2009,15 +2021,76 @@ async function handleModelStatus(request: Request, env: EgressEnv): Promise<Resp
     const sponsoredPrompts = credential.source === "sponsored"
       ? await sponsoredPromptStatus(env, userId)
       : undefined;
+    const astraEntitled = credential.source === "user" && credential.kind === "chatgpt"
+      ? await accountHasVisibleAstra(env, userId, credential)
+      : false;
     return json({
       ready: true,
       active: credential.kind,
       source: credential.source,
+      astra_entitled: astraEntitled,
       ...(sponsoredPrompts
         ? { free_prompts_remaining: sponsoredPrompts.remaining }
         : {}),
     }, 200);
   } catch { return jsonError(503, "broker_not_ready"); }
+}
+
+async function accountHasVisibleAstra(
+  env: EgressEnv,
+  userId: string,
+  initial: ResolvedModelCredential,
+): Promise<boolean> {
+  let credential = initial;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const request = buildUpstreamRequest(
+        new Request("https://nanocodex.internal/v1/models", {
+          headers: { "user-agent": "nanocodex/0.5.0" },
+        }),
+        env,
+        MODELS_OPERATION,
+        credential,
+        null,
+      );
+      const response = await fetchUpstream(
+        env,
+        userId,
+        credential,
+        MODELS_OPERATION,
+        request,
+        fetch,
+      );
+      if (response.status === 401 && attempt === 0) {
+        await cancelResponseBody(response);
+        const refreshed = await resolveCredential(env, userId, true, credential.revision);
+        if (refreshed.kind !== "chatgpt" || refreshed.source !== "user") return false;
+        credential = refreshed;
+        continue;
+      }
+      if (!response.ok || REDIRECT_STATUS.has(response.status)) {
+        await cancelResponseBody(response);
+        return false;
+      }
+      const encoded = await readBoundedText(response, MAX_MODEL_CATALOG_BYTES);
+      return catalogHasVisibleAstra(JSON.parse(encoded));
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+export function catalogHasVisibleAstra(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const models = (value as { models?: unknown }).models;
+  return Array.isArray(models) && models.some((model) => (
+    model !== null
+    && typeof model === "object"
+    && !Array.isArray(model)
+    && (model as { slug?: unknown }).slug === "gpt-6-astra"
+    && (model as { visibility?: unknown }).visibility === "list"
+  ));
 }
 
 async function handleSponsoredTrialReset(request: Request, env: EgressEnv): Promise<Response> {

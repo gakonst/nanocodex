@@ -16,7 +16,7 @@ const SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
 /// [`ResponsesServiceFactory`]: super::ResponsesServiceFactory
 #[derive(Clone)]
 pub struct ModelConfig {
-    /// Selected GPT-5.6 coding model.
+    /// Selected OpenAI coding model.
     pub model: Model,
     /// Optional namespace prepended to the model identifier on the wire.
     ///

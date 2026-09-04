@@ -1067,6 +1067,27 @@ html[data-theme="dark"] .button--medium:focus-visible {
   font: inherit;
 }
 
+.agent-runtime-controls {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.agent-runtime-controls select,
+.agent-runtime-controls button {
+  min-height: 26px;
+  padding: 3px 6px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-small);
+}
+
+.agent-runtime-controls button.is-active {
+  color: var(--surface);
+  background: var(--blue);
+}
+
 .agent-terminal-header {
   display: grid;
   grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr);

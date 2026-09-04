@@ -159,16 +159,20 @@ import {
 } from "./turn-completion";
 import {
   DEFAULT_AGENT_SETTINGS,
+  isAgentModel,
   agentSettingsQuery,
   parseAgentCreateBody,
   parseAgentSettingsPatch,
   parseAgentSettingsQuery,
   parseCompleteAgentSettings,
+  validateAgentSettings,
   type ManagedAgentSettings,
   type ManagedAgentSettingsPatch,
 } from "./agent-settings";
+import { initializeManagedAgentSettingsSchema } from "./agent-settings-schema";
 import {
   bindAgentCredential,
+  browserModelSubject,
   routeCredentialRequest,
   unbindAgentCredential,
 } from "./credentials";
@@ -393,6 +397,7 @@ type SessionInitializationOwnership = {
 type SessionStatusRow = {
   session_id: string;
   has_snapshot: number;
+  accepted_turns: number;
   completed_turns: number;
   last_active: number;
   stream_error: string | null;
@@ -925,6 +930,33 @@ async function managedFetch(
     }
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ service: "nanocodex", runtime: "cloudflare-durable-objects", status: "ok" });
+    }
+    if (request.method === "GET" && url.pathname === "/v1/model-capabilities") {
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
+      if (!principal.capabilities.includes("agents:read")) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      if (principal.connectGrant
+        && !principal.connectGrant.connectors.includes("chatgpt")) {
+        return json({ error: "connector_forbidden" }, { status: 403 });
+      }
+      try {
+        const subject = await browserModelSubject(principal.userId);
+        await bindAgentCredential(env.NANOCODEX, subject, principal.userId);
+        const response = await env.NANOCODEX.fetch(
+          "https://broker.internal/.well-known/nanocodex/model-status",
+          { headers: { "x-nanocodex-subject": subject } },
+        );
+        const value = response.ok
+          ? await response.json<{ astra_entitled?: unknown }>()
+          : undefined;
+        await response.body?.cancel().catch(() => {});
+        return json({ astra_entitled: value?.astra_entitled === true });
+      } catch {
+        return json({ astra_entitled: false });
+      }
     }
     if (url.pathname === "/v1/account/tool-host") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
@@ -1873,16 +1905,6 @@ export class DurableAgentSession extends DurableComputerSession {
         runtime_profile TEXT CHECK (runtime_profile IN ('managed', 'multiplayer')),
         state TEXT NOT NULL CHECK (state IN ('active', 'deleted'))
       );
-      CREATE TABLE IF NOT EXISTS managed_agent_settings (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        model TEXT NOT NULL CHECK (model IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')),
-        thinking TEXT NOT NULL CHECK (thinking IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
-        reasoning_mode TEXT NOT NULL CHECK (reasoning_mode IN ('standard', 'pro')),
-        fast_mode INTEGER NOT NULL CHECK (fast_mode IN (0, 1))
-      );
-      INSERT OR IGNORE INTO managed_agent_settings
-        (singleton, model, thinking, reasoning_mode, fast_mode)
-      VALUES (1, 'gpt-5.6-sol', 'high', 'standard', 0);
       CREATE TABLE IF NOT EXISTS managed_mounts (
         id TEXT PRIMARY KEY,
         provider TEXT NOT NULL,
@@ -1999,6 +2021,7 @@ export class DurableAgentSession extends DurableComputerSession {
         citations_json TEXT NOT NULL
       );
     `);
+    initializeManagedAgentSettingsSchema(this.ctx.storage);
     // A pending realtime mutation belonged to the previous in-memory owner.
     // Its external outcome is unknown, so cold construction must not replay it.
     this.ctx.storage.sql.exec(
@@ -2562,6 +2585,7 @@ export class DurableAgentSession extends DurableComputerSession {
         agent_id: session.session_id,
         session_id: session.session_id,
         has_snapshot: session.has_snapshot !== 0,
+        accepted_turns: session.accepted_turns,
         completed_turns: session.completed_turns,
         first_prompt: this.#firstPrompt(),
         last_active: session.last_active,
@@ -6981,7 +7005,12 @@ export class DurableAgentSession extends DurableComputerSession {
     const session = this.#session();
     if (!session) throw new ManagedRequestError(404, "not_found", "agent is not initialized");
     const current = this.#settings();
-    const settings = { ...current, ...patch };
+    let settings: ManagedAgentSettings;
+    try {
+      settings = validateAgentSettings({ ...current, ...patch });
+    } catch (error) {
+      throw new ManagedRequestError(400, "invalid_request", errorMessage(error));
+    }
     const immutableRequested = Object.hasOwn(patch, "model")
       || Object.hasOwn(patch, "reasoning_mode");
     if (immutableRequested && session.accepted_turns !== 0) {
@@ -7115,7 +7144,7 @@ export class DurableAgentSession extends DurableComputerSession {
   #sessionStatus(): SessionStatusRow | undefined {
     return this.ctx.storage.sql
       .exec<SessionStatusRow>(
-        `SELECT session_id, completed_turns > 0 AS has_snapshot, completed_turns,
+        `SELECT session_id, completed_turns > 0 AS has_snapshot, accepted_turns, completed_turns,
               last_active, stream_error
        FROM session_state WHERE singleton = 1`,
       )
@@ -7904,7 +7933,8 @@ function validAgentSettings(value: unknown): value is ManagedAgentSettings {
     "fast_mode", "model", "reasoning_mode", "thinking",
   ])) return false;
   try {
-    return Object.keys(parseAgentSettingsPatch(value)).length === 4;
+    parseCompleteAgentSettings(value);
+    return true;
   } catch {
     return false;
   }
@@ -8266,15 +8296,17 @@ function managedWebFetch(env: Env, subject: string): typeof fetch {
     const incoming = new Request(input, init);
     const value = await incoming.json<{
       commands?: unknown;
+      model?: unknown;
       session_id?: unknown;
     }>();
     if (!value.commands || typeof value.commands !== "object" || Array.isArray(value.commands)
-      || typeof value.session_id !== "string" || !value.session_id) {
+      || typeof value.session_id !== "string" || !value.session_id
+      || (value.model !== undefined && !isAgentModel(value.model))) {
       return json({ error: "invalid managed web request" }, { status: 400 });
     }
     return fetchManagedTool(env, subject, "/v1/search", {
       id: value.session_id,
-      model: "gpt-5.6-sol",
+      model: value.model ?? DEFAULT_AGENT_SETTINGS.model,
       commands: value.commands,
       settings: { allowed_callers: ["direct"], external_web_access: true },
       max_output_tokens: 10_000,

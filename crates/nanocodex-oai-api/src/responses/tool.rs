@@ -18,6 +18,9 @@ pub enum ToolDefinition {
         /// Whether this definition is returned for deferred provider loading.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         defer_loading: Option<bool>,
+        /// Whether the model may continue while the application executes this tool.
+        #[serde(default, rename = "async", skip_serializing_if = "is_false")]
+        asynchronous: bool,
         /// JSON Schema accepted as function arguments.
         parameters: JsonSchema,
         #[serde(default, skip_serializing)]
@@ -46,6 +49,9 @@ pub enum ToolDefinition {
         /// Whether this definition is returned for deferred provider loading.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         defer_loading: Option<bool>,
+        /// Whether the model may continue while the application executes this tool.
+        #[serde(default, rename = "async", skip_serializing_if = "is_false")]
+        asynchronous: bool,
         /// Free-form input grammar.
         format: CustomToolFormat,
     },
@@ -58,6 +64,10 @@ pub enum ToolDefinition {
         /// JSON Schema accepted as search arguments.
         parameters: JsonSchema,
     },
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn serialize_namespace_tools<S>(tools: &[ToolDefinition], serializer: S) -> Result<S::Ok, S::Error>
@@ -111,6 +121,7 @@ impl ToolDefinition {
             description: description.into(),
             strict: false,
             defer_loading: None,
+            asynchronous: false,
             parameters: parameters.into(),
             output_schema: None,
         }
@@ -127,6 +138,7 @@ impl ToolDefinition {
             name: name.into(),
             description: description.into(),
             defer_loading: None,
+            asynchronous: false,
             format,
         }
     }
@@ -212,6 +224,37 @@ impl ToolDefinition {
             Self::Namespace { .. } | Self::ToolSearch { .. } => {}
         }
         self
+    }
+
+    /// Marks a function or custom tool for provider-native asynchronous execution.
+    ///
+    /// The application still owns execution and must return the result on the
+    /// original call ID. Namespace and provider-hosted definitions are returned
+    /// unchanged.
+    #[must_use]
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "ToolDefinition owns drop types that const evaluation rejects"
+    )]
+    pub fn with_async_execution(mut self) -> Self {
+        match &mut self {
+            Self::Function { asynchronous, .. } | Self::Custom { asynchronous, .. } => {
+                *asynchronous = true;
+            }
+            Self::Namespace { .. } | Self::ToolSearch { .. } => {}
+        }
+        self
+    }
+
+    /// Returns whether this function or custom tool opts into asynchronous execution.
+    #[must_use]
+    pub const fn is_async(&self) -> bool {
+        match self {
+            Self::Function { asynchronous, .. } | Self::Custom { asynchronous, .. } => {
+                *asynchronous
+            }
+            Self::Namespace { .. } | Self::ToolSearch { .. } => false,
+        }
     }
 
     /// Returns the model-visible tool name.
@@ -341,6 +384,37 @@ mod tests {
         assert_eq!(
             serde_json::to_value(namespace).unwrap()["tools"][0]["type"],
             "custom"
+        );
+    }
+
+    #[test]
+    fn function_and_custom_tools_opt_into_async_execution() {
+        let function = ToolDefinition::function(
+            "lookup",
+            "Run a background lookup.",
+            json!({"type": "object"}),
+        )
+        .with_async_execution();
+        let custom = ToolDefinition::custom(
+            "compile",
+            "Run a background compiler.",
+            CustomToolFormat::grammar("lark", "start: \"compile\""),
+        )
+        .with_async_execution();
+
+        assert!(function.is_async());
+        assert!(custom.is_async());
+        assert_eq!(serde_json::to_value(function).unwrap()["async"], true);
+        assert_eq!(serde_json::to_value(custom).unwrap()["async"], true);
+        assert!(
+            serde_json::to_value(ToolDefinition::function(
+                "sync",
+                "Run synchronously.",
+                json!({"type": "object"}),
+            ))
+            .unwrap()
+            .get("async")
+            .is_none()
         );
     }
 

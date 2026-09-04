@@ -78,6 +78,9 @@ pub trait LifecycleBackend: Send + Sync + 'static {
     /// Cancels one exact unfinished turn.
     fn cancel(&self, key: BackendTurnKey) -> BackendFuture<Result<()>>;
 
+    /// Changes the model before the first turn is accepted.
+    fn set_model(&self, model: Model) -> BackendFuture<Result<()>>;
+
     /// Changes reasoning policy for later turns.
     fn set_thinking(&self, thinking: Thinking) -> BackendFuture<Result<()>>;
 
@@ -350,6 +353,18 @@ impl LifecycleBackend for LocalLifecycle {
         Box::pin(async move {
             request_command(&commands, &shutdown, |result| Command::Cancel {
                 key: TurnKey(key.0),
+                result,
+            })
+            .await
+        })
+    }
+
+    fn set_model(&self, model: Model) -> BackendFuture<Result<()>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| Command::SetModel {
+                model,
                 result,
             })
             .await

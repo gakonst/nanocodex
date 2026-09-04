@@ -241,11 +241,19 @@ impl ResponsesError {
             Self::InvalidPayload { .. } => "invalid_payload",
             Self::Closed { .. } => "closed",
             Self::Api { event } if api_error_is_checkpoint_missing(event) => "checkpoint_missing",
+            Self::Api { event } if api_error_has_code(event, "misalignment_policy_violation") => {
+                "misalignment_policy_violation"
+            }
             Self::Api { .. } => "api",
             Self::ContextWindowExceeded { .. } => "context_window_exceeded",
             Self::InvalidImageRequest { .. } => "invalid_image_request",
             Self::HttpRequest { timeout: true, .. } => "https_timeout",
             Self::HttpRequest { .. } => "https_transport",
+            Self::HttpRejected { body, .. }
+                if api_error_has_code(body, "misalignment_policy_violation") =>
+            {
+                "misalignment_policy_violation"
+            }
             Self::HttpRejected { status: 429, .. } => "https_rate_limit",
             Self::HttpRejected { status, .. } if (500..=599).contains(status) => "https_server",
             Self::HttpRejected { .. } => "https_rejected",
@@ -263,6 +271,18 @@ impl ResponsesError {
     #[must_use]
     pub const fn is_context_window_exceeded(&self) -> bool {
         matches!(self, Self::ContextWindowExceeded { .. })
+    }
+
+    /// Returns whether Astra's misalignment monitor stopped the conversation.
+    #[must_use]
+    pub fn is_misalignment_policy_violation(&self) -> bool {
+        match self {
+            Self::Api { event } => api_error_has_code(event, "misalignment_policy_violation"),
+            Self::HttpRejected { body, .. } => {
+                api_error_has_code(body, "misalignment_policy_violation")
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn api_event(event: String) -> Self {
@@ -387,5 +407,31 @@ mod tests {
         }"#;
 
         assert!(retryable_api_error(event).is_none());
+    }
+
+    #[test]
+    fn classifies_misalignment_stops_without_retrying() {
+        let event = r#"{
+            "type": "response.failed",
+            "response": {
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "misalignment_policy_violation",
+                    "message": "conversation stopped"
+                }
+            }
+        }"#;
+        let socket = ResponsesError::api_event(event.to_owned());
+        let http = ResponsesError::HttpRejected {
+            status: 403,
+            body: event.to_owned(),
+            retry_after: None,
+        };
+
+        for error in [socket, http] {
+            assert!(error.is_misalignment_policy_violation());
+            assert_eq!(error.class(), "misalignment_policy_violation");
+            assert!(error.retry_advice().is_none());
+        }
     }
 }
