@@ -76,7 +76,9 @@ export function createNamespaceExecutionRuntime(
   const sessions = new Map<number, ProcessBinding>();
 
   const cell = (context: ToolContext): CellBinding => {
-    const key = `${context.sessionId}\u0000${context.parentCallId}`;
+    // Direct tools have an empty parentCallId. Pin those to their own call,
+    // while nested Code Mode tools keep sharing their parent's captured lease.
+    const key = `${context.sessionId}\u0000${context.parentCallId || context.callId}`;
     const retained = cells.get(key);
     if (retained !== undefined) return retained;
     const created = createCellBinding(brain, machines(), resolveMachineTool, key);

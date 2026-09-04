@@ -141,6 +141,28 @@ describe("cwd-root namespace execution", () => {
     expect(newExec.mock.calls[0]![0]).toMatchObject({ workdir: "/new" });
   });
 
+  it("captures a fresh binding for each top-level call while retaining the same call on replay", async () => {
+    const oldExec = vi.fn(async () => ({ output: "old", wall_time_seconds: 0, exit_code: 0 }));
+    const newExec = vi.fn(async () => ({ output: "new", wall_time_seconds: 0, exit_code: 0 }));
+    let currentExec = oldExec;
+    const tools = createRuntimeNamespaceExecutionTools(
+      () => [{ id: "laptop", workspace: "/workspace" }],
+      (_id, name) => name === "exec_command" ? { handler: currentExec } : undefined,
+    );
+    const firstCall = context({ parentCallId: "", callId: "first-call" });
+    const secondCall = context({ parentCallId: "", callId: "second-call" });
+
+    await expect(tools.exec_command!.handler({ cmd: "pwd", workdir: "/laptop" }, firstCall))
+      .resolves.toMatchObject({ output: "old" });
+    currentExec = newExec; // The same machine reconnects with a new attachment lease.
+    await expect(tools.exec_command!.handler({ cmd: "pwd", workdir: "/laptop" }, secondCall))
+      .resolves.toMatchObject({ output: "new" });
+    await expect(tools.exec_command!.handler({ cmd: "pwd", workdir: "/laptop" }, firstCall))
+      .resolves.toMatchObject({ output: "old" });
+    expect(oldExec).toHaveBeenCalledTimes(2);
+    expect(newExec).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a mount created after capture out of the calling cell", async () => {
     let machines: readonly { id: string; root: string; workspace: string }[] = [];
     const exec = vi.fn(async () => ({ output: "mounted", wall_time_seconds: 0, exit_code: 0 }));
