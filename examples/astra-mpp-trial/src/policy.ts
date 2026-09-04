@@ -30,9 +30,9 @@ export type TrialState = Readonly<{
   updatedAt: number;
 }>;
 
-export function paymentAmount(environment: string | undefined): "0" | "50" {
+export function paymentAmount(environment: string | undefined): "0" | "0.1" {
   const value = environment?.trim().toLowerCase();
-  return value === "development" || value === "local" || value === "test" ? "0" : "50";
+  return value === "development" || value === "local" || value === "test" ? "0" : "0.1";
 }
 
 export function reservePrompt(

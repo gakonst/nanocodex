@@ -5,7 +5,7 @@ import { tempo as tempoChain } from "viem/chains";
 import { MACH, TEMPO_CHAIN_ID, TIP20_CHANNEL_ESCROW, USDC_E } from "./policy";
 
 type AppConfiguration = Readonly<{
-  amount: "0" | "50";
+  amount: "0" | "0.1";
   chain_id: number;
   connect: Readonly<{
     api_url: string;
@@ -34,7 +34,7 @@ const CONNECT_RESOURCES = [
 ] as const;
 const MERCATOR_SETTLEMENT = "0xa295c42fbcc026a62304a7701f25b4c91799b0da" as const;
 const DEFAULT_ACCESS_KEY_LIMIT = 10_000_000n;
-const ASTRA_ACCESS_KEY_LIMIT = 50_000_000n;
+const ASTRA_ACCESS_KEY_LIMIT = 100_000n;
 const ACCESS_KEY_PERIOD = 86_400;
 
 const elements = {
@@ -71,7 +71,7 @@ async function initialize(): Promise<void> {
 
   elements.payment.textContent = configuration.amount === "0"
     ? "Local proof mode: your wallet signs, but no MACH moves."
-    : "$50 in MACH · one prompt · gas sponsored";
+    : "$0.10 in MACH · one prompt · gas sponsored";
   elements.connect.addEventListener("click", () => void connectAccount(storage));
   elements.logout.addEventListener("click", () => void disconnectAccount());
   elements.fund.addEventListener("click", () => void fundAccount());
@@ -124,7 +124,7 @@ function createAppClient(
 }
 
 function accessKeyPolicy(app: AppConfiguration) {
-  if (app.amount === "50") {
+  if (app.amount === "0.1") {
     if (!app.payment_enabled || !app.recipient) {
       throw new Error("The Astra trial payment recipient is not configured.");
     }
@@ -215,12 +215,12 @@ async function disconnectAccount(): Promise<void> {
 
 async function fundAccount(): Promise<void> {
   if (!connection || busy) return;
-  setBusy(true, "Opening the $50 MACH onramp…");
+  setBusy(true, "Opening the $5 MACH onramp…");
   try {
     await client.machineUsd.fund({
       accountAddress: connection.accountAddress,
       grantId: connection.grant.id,
-      usdAmountCents: 5_000,
+      usdAmountCents: 500,
     });
     elements.status.textContent = "MACH funded. Your one Astra prompt is ready.";
   } catch (error) {
@@ -240,7 +240,7 @@ async function submitPrompt(event: SubmitEvent): Promise<void> {
     showError(new Error("The trial payment or sponsor account is not configured."));
     return;
   }
-  setBusy(true, configuration.amount === "0" ? "Requesting wallet proof…" : "Authorizing 50 MACH…");
+  setBusy(true, configuration.amount === "0" ? "Requesting wallet proof…" : "Authorizing 0.1 MACH…");
   const requestKey = crypto.randomUUID();
   try {
     let response: Response;

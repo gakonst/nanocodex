@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authenticate,
   ensureAccount,
+  ensureAccountWallet,
   resolveChiefOfStaffPrincipal,
   routeAccountRequest,
   type AccountAuthEnv,
@@ -467,6 +468,15 @@ describe("SMS OTP authentication", () => {
 });
 
 describe("managed wallet bridge", () => {
+  it("bounds broker wallet provisioning so OTP verification cannot hang forever", async () => {
+    const local = portableEnv();
+    local.env.NANOCODEX = {
+      fetch: () => new Promise<Response>(() => {}),
+    } as unknown as Fetcher;
+
+    await expect(ensureAccountWallet(local.env, USER_ID, 1)).rejects.toThrow("wallet unavailable");
+  });
+
   it("includes the broker wallet address in OTP success and leaves a failed wallet provision retryable", async () => {
     const local = portableEnv();
     local.env.NANOCODEX_OTP_HMAC_KEY = "test-sms-otp-hmac-key-with-at-least-thirty-two-bytes";

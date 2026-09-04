@@ -13,13 +13,13 @@ rate limits remain owned by Nanocodex Connect rather than a parallel Twilio
 identity system in this app.
 
 The payment route is an MPP `tempo/charge` endpoint. Production challenges ask
-for 50 MACH, require the paying address to match the connected Nanocodex account,
+for 0.1 MACH, require the paying address to match the connected Nanocodex account,
 accept pull mode only, and request fee sponsorship from the Tempo relay. The
 development environment issues a zero-value proof challenge: the same wallet
 must sign, but no token transfer occurs.
 
 Connect registers the production app ID and origin as one high-value OAuth
-client. Its delegated key is limited to 50 MACH per day and one
+client. Its delegated key is limited to 0.1 MACH per day and one
 `transferWithMemo` scope whose sole recipient is displayed in the consent UI.
 That grant cannot use Connect's generic MPP route. Every other Connect client
 keeps the existing 0.25-MACH request and 10-MACH daily policy. Local proof mode
@@ -81,7 +81,7 @@ address is committed as `NANOCODEX_ASTRA_MACH_RECIPIENT`. Confirm that
 app fails closed when any sponsor, payment, origin, or Connect configuration is
 absent or malformed.
 
-`Add $50 MACH` invokes Connect's existing MACH funding dialog for the connected
-account. The prompt submission itself uses MPP; its fee-payer transaction is
-relayed server-side and the MPP receipt reference is retained with the one-shot
-state.
+`Add $5 MACH` invokes Connect's existing MACH funding dialog at its minimum
+funding amount for the connected account. The prompt itself costs 0.1 MACH and
+uses MPP; its fee-payer transaction is relayed server-side and the MPP receipt
+reference is retained with the one-shot state.
