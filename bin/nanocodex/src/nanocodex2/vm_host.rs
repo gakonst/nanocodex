@@ -1697,10 +1697,12 @@ mod supported {
 
     fn locked_file_path(file: &File) -> PathBuf {
         #[cfg(target_os = "linux")]
-        let directory = "/proc/self/fd";
+        let directory = PathBuf::from("/proc")
+            .join(std::process::id().to_string())
+            .join("fd");
         #[cfg(target_os = "macos")]
-        let directory = "/dev/fd";
-        PathBuf::from(directory).join(file.as_raw_fd().to_string())
+        let directory = PathBuf::from("/dev/fd");
+        directory.join(file.as_raw_fd().to_string())
     }
 
     enum ControlAuth {
