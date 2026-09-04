@@ -44,6 +44,8 @@ export type ConnectionRequest = Readonly<{
     limit: bigint;
     period: number;
     maxPerRequest: bigint;
+    /** Exact recipient when the delegated payment authority is recipient-bound. */
+    recipient?: `0x${string}` | undefined;
   }> | undefined;
 }>;
 

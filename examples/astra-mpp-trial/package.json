@@ -1,0 +1,33 @@
+{
+  "name": "nanocodex-astra-mpp-trial",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build:client": "esbuild src/client.ts --bundle --format=esm --minify --outfile=public/client.js",
+    "build": "npm run build:client && wrangler deploy --dry-run --env=\"\" --outdir dist",
+    "dev": "npm run build:client && wrangler dev --env development --local-protocol https --port 8787",
+    "deploy": "npm run build:client && wrangler deploy --env=\"\"",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "mppx": "0.9.1",
+    "nanocodex": "file:../../js/nanocodex",
+    "viem": "2.54.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260831.1",
+    "@types/node": "22.20.1",
+    "esbuild": "0.28.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.127.1"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  }
+}

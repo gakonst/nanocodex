@@ -3,6 +3,13 @@ import { custom } from "viem";
 import { KeyAuthorization } from "ox/tempo";
 
 import {
+  astraTrialAppId as ASTRA_TRIAL_APP_ID,
+  astraTrialMppLimit as ASTRA_TRIAL_MPP_LIMIT,
+  hasConsistentAstraTrialIdentity,
+  hasAstraTrialSpendPolicy,
+} from "./astraTrialPolicy.mts";
+
+import {
   chatGptCredentialImportDigest,
   credentialImportDigestFromResources,
   parseChatGptCredentialImport,
@@ -2409,6 +2416,17 @@ function validateGrantAccessKey(
     }
     return;
   }
+  if (appId === ASTRA_TRIAL_APP_ID) {
+    if (!resources.includes("urn:nanocodex:mpp:machusd:spend")
+      || !hasAstraTrialSpendPolicy(accessKey.limits, accessKey.scopes)) {
+      throw new ApiFailure(
+        403,
+        "invalid_access_key_policy",
+        "The Astra trial key must contain only its one-shot MACH payment authority.",
+      );
+    }
+    return;
+  }
   const limits = new Map<string, { limit: string; period?: number }>();
   for (const value of accessKey.limits) {
     if (!isRecord(value) || typeof value.limit !== "string") {
@@ -3173,6 +3191,7 @@ function grantAuthorization(grant: GrantRecord) {
   const accessKey = grant.accessKey;
   const limits = accessKey && Array.isArray(accessKey.limits) ? accessKey.limits : [];
   const scopes = accessKey && Array.isArray(accessKey.scopes) ? accessKey.scopes : [];
+  const mppPolicy = grantMppPolicy(grant);
   return {
     appId: grant.appId,
     permission: grant.permission,
@@ -3214,9 +3233,9 @@ function grantAuthorization(grant: GrantRecord) {
       token: MACHINE_USD,
       symbol: "MACH",
       spent: grant.spentAtomics,
-      limit: MPP_LIMIT.toString(),
+      limit: mppPolicy.limit.toString(),
       period: MPP_PERIOD,
-      maxPerRequest: MPP_MAX_PER_REQUEST.toString(),
+      maxPerRequest: mppPolicy.maxPerRequest.toString(),
     } } : { authority: "hosted" }),
   };
 }
@@ -4234,6 +4253,13 @@ async function chargeGrant(
   body: Record<string, unknown>,
 ) {
   if (grant.status !== "active") throw new ApiFailure(409, "grant_inactive", "The grant is not active.");
+  if (grant.appId === ASTRA_TRIAL_APP_ID) {
+    throw new ApiFailure(
+      403,
+      "mpp_route_unavailable",
+      "The Astra trial authority is usable only by its recipient-bound payment challenge.",
+    );
+  }
   if (!grant.capabilities.includes("mpp.mach") || !grant.accessKey || !grant.accountAddress) {
     throw new ApiFailure(403, "mpp_not_granted", "This connection has no MPP authority.");
   }
@@ -5810,6 +5836,7 @@ function connectionWire(grant: GrantRecord, grantToken: string) {
   }
   const balancesReady = grant.balanceAtomics !== undefined
     && grant.settlementBalanceAtomics !== undefined;
+  const mppPolicy = grantMppPolicy(grant);
   return {
     grant_token: grantToken,
     account_id: grant.brokerUserId,
@@ -5832,12 +5859,18 @@ function connectionWire(grant: GrantRecord, grantToken: string) {
         settlement_symbol: "USDC.e",
         settlement_balance_atomics: grant.settlementBalanceAtomics ?? "0",
         spent_atomics: grant.spentAtomics,
-        limit_atomics: MPP_LIMIT.toString(),
+        limit_atomics: mppPolicy.limit.toString(),
         period: MPP_PERIOD,
-        max_per_request_atomics: MPP_MAX_PER_REQUEST.toString(),
+        max_per_request_atomics: mppPolicy.maxPerRequest.toString(),
       },
     } : {}),
   };
+}
+
+function grantMppPolicy(grant: Pick<GrantRecord, "appId">) {
+  return grant.appId === ASTRA_TRIAL_APP_ID
+    ? { limit: ASTRA_TRIAL_MPP_LIMIT, maxPerRequest: ASTRA_TRIAL_MPP_LIMIT }
+    : { limit: MPP_LIMIT, maxPerRequest: MPP_MAX_PER_REQUEST };
 }
 
 function grantWire(grant: GrantRecord) {
@@ -6151,6 +6184,9 @@ function validateCallerApp(appId: unknown, origin: unknown): CallerApp {
   }
   if (origin === CLI_APP_ORIGIN && appId !== CLI_APP_ID) {
     throw new ApiFailure(403, "app_identity_mismatch", "The registered app id does not match this origin.");
+  }
+  if (!hasConsistentAstraTrialIdentity(appId, origin)) {
+    throw new ApiFailure(403, "app_identity_mismatch", "The Astra trial app id and origin must match.");
   }
   if (appId === REGISTERED_APP_ID
     && origin !== PLAYGROUND_ORIGIN
