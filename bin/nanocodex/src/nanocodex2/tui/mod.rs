@@ -606,7 +606,7 @@ impl DriverRuntime {
         };
         match outcome {
             // An acknowledgement means the input was accepted even if the
-            // terminal event won the race with the control response. Requeueing
+            // terminal event won the race with the control response. Requeuing
             // it here would submit the same instruction a second time.
             Ok(()) => SteerResolution::Admitted,
             Err(SteerFailure::Other(error)) if current => SteerResolution::Failed(Some(error)),
