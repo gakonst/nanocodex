@@ -44,6 +44,23 @@ impl ReasoningEffort {
     }
 }
 
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            _ => Err(format!(
+                "invalid thinking level {value:?}; expected low, medium, high, xhigh, or max"
+            )),
+        }
+    }
+}
+
 /// Reasoning mode displayed by the Tact composer.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]

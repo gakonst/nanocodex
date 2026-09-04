@@ -8,7 +8,7 @@ use ratatui::{
 use std::time::Instant;
 
 use super::{
-    app::{App, Conversation, PaneId, ReasoningPicker, STANDARD_THINKING_OPTIONS},
+    app::{App, Conversation, MODEL_OPTIONS, PaneId, ReasoningPicker, STANDARD_THINKING_OPTIONS},
     composer::ComposerLayout,
     transcript::InlineEdit,
 };
@@ -28,6 +28,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
     ));
     render_footer(frame, app, layout.footer);
     app.render_mouse_selection(frame.buffer_mut(), selectable_areas.as_slice());
+    render_model_picker(frame, app);
     render_reasoning_picker(frame, app);
 }
 
@@ -35,7 +36,51 @@ pub(super) fn render_animation(frame: &mut Frame<'_>, app: &mut App) {
     let layout = view_layout(frame.area(), app);
     render_composer(frame, app, layout.composer, &layout.composer_layout);
     render_footer(frame, app, layout.footer);
+    render_model_picker(frame, app);
     render_reasoning_picker(frame, app);
+}
+
+fn render_model_picker(frame: &mut Frame<'_>, app: &App) {
+    let Some(selected) = app.model_picker() else {
+        return;
+    };
+    let area = frame.area();
+    let popup_height = 9.min(area.height);
+    let popup_width = area.width.min(64);
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(popup_width) / 2,
+        area.y + area.height.saturating_sub(popup_height),
+        popup_width,
+        popup_height,
+    );
+    frame.render_widget(Clear, popup);
+
+    let mut lines = vec![
+        Line::styled(
+            "  Select Model",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::default(),
+    ];
+    for (index, (model, label)) in MODEL_OPTIONS.iter().enumerate() {
+        let current = if *model == app.model() {
+            " (current)"
+        } else {
+            ""
+        };
+        lines.push(reasoning_option_line(
+            index == selected,
+            index + 1,
+            &format!("{label}{current}"),
+            model.as_str(),
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled(
+        "  Press enter to confirm or esc to cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+    frame.render_widget(Paragraph::new(lines), popup);
 }
 
 struct ViewLayout {
@@ -813,6 +858,20 @@ mod tests {
         let rendered = terminal.backend().to_string();
         assert!(rendered.contains("Working (1m 05s)"));
         assert!(!rendered.contains("Running exec_command"));
+    }
+
+    #[test]
+    fn model_picker_renders_astra_as_a_selectable_option() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.open_model_picker();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal.backend().to_string();
+
+        assert!(rendered.contains("Select Model"));
+        assert!(rendered.contains("Astra"));
+        assert!(rendered.contains("gpt-6-astra"));
     }
 
     #[test]

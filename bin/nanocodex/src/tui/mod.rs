@@ -49,7 +49,7 @@ use tokio::{
 use tracing::{Instrument, info_span};
 
 use self::{
-    app::{App, EscapeAction, PaneId, ReasoningPickerAction, SubmittedPrompt},
+    app::{App, EscapeAction, ModelPickerAction, PaneId, ReasoningPickerAction, SubmittedPrompt},
     notification::Notifier,
     scheduler::{ANIMATION_TICK_INTERVAL, RenderScheduler, RenderScope, STREAM_FRAME_INTERVAL},
     telemetry::{StreamTelemetry, ViewTelemetry},
@@ -659,8 +659,10 @@ enum Submission {
     Cancel,
     Trace,
     Fast(Option<bool>),
+    ModelPicker,
     Model(Model),
     ReasoningPicker,
+    Thinking(Thinking),
     Voice(VoiceControl),
     McpLogin(String),
     McpReload(String),
@@ -2647,6 +2649,10 @@ fn handle_key(
         return Ok(TerminalAction::Redraw);
     }
 
+    if let Some(action) = handle_model_picker_key(key, app, commands)? {
+        return Ok(action);
+    }
+
     if let Some(action) = handle_reasoning_picker_key(key, app, commands)? {
         return Ok(action);
     }
@@ -2745,6 +2751,37 @@ fn handle_key(
         | KeyCode::Modifier(_) => {}
     }
     Ok(TerminalAction::Redraw)
+}
+
+fn handle_model_picker_key(
+    key: KeyEvent,
+    app: &mut App,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<Option<TerminalAction>> {
+    if app.model_picker().is_none() {
+        return Ok(None);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Ok(Some(TerminalAction::Quit));
+    }
+    if key.modifiers.is_empty() {
+        match key.code {
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => {
+                app.move_model_picker(-1);
+            }
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
+                app.move_model_picker(1);
+            }
+            KeyCode::Enter => {
+                if let Some(ModelPickerAction::Selected(model)) = app.confirm_model_picker() {
+                    send_command(commands, WorkerCommand::SetModel { model })?;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => app.close_model_picker(),
+            _ => {}
+        }
+    }
+    Ok(Some(TerminalAction::Redraw))
 }
 
 fn handle_reasoning_picker_key(
@@ -3179,6 +3216,13 @@ fn submit(
             let enabled = enabled.unwrap_or(!app.fast_mode());
             send_command(commands, WorkerCommand::SetFastMode { enabled })?;
         }
+        Submission::ModelPicker => {
+            if !app.can_change_start_settings() {
+                app.push_active_error("The model can only be changed before the first prompt");
+                return Ok(());
+            }
+            app.open_model_picker();
+        }
         Submission::Model(model) => {
             if !app.can_change_start_settings() {
                 app.push_active_error("The model can only be changed before the first prompt");
@@ -3187,6 +3231,9 @@ fn submit(
             send_command(commands, WorkerCommand::SetModel { model })?;
         }
         Submission::ReasoningPicker => app.open_reasoning_picker(),
+        Submission::Thinking(thinking) => {
+            send_command(commands, WorkerCommand::SetThinking { thinking })?;
+        }
         Submission::Voice(control) => {
             send_command(commands, WorkerCommand::Voice(control))?;
         }
@@ -3305,20 +3352,37 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
             _ => Submission::InvalidCommand("Usage: /fast [on|off]".to_owned()),
         };
     }
-    if trimmed == "/thinking" {
-        return Submission::ReasoningPicker;
-    }
-    if let Some(argument) = trimmed.strip_prefix("/model ") {
-        return match argument.trim().parse() {
-            Ok(model) => Submission::Model(model),
-            Err(error) => Submission::InvalidCommand(error),
-        };
-    }
-    if trimmed == "/model" {
-        return Submission::InvalidCommand("Usage: /model <sol|terra|luna|astra>".to_owned());
-    }
-    if trimmed.starts_with("/thinking ") {
-        return Submission::InvalidCommand("Usage: /thinking".to_owned());
+    let mut settings = trimmed.split_whitespace();
+    match settings.next() {
+        Some("/model") => {
+            let Some(argument) = settings.next() else {
+                return Submission::ModelPicker;
+            };
+            if settings.next().is_some() {
+                return Submission::InvalidCommand(
+                    "Usage: /model [sol|terra|luna|astra]".to_owned(),
+                );
+            }
+            return match argument.parse() {
+                Ok(model) => Submission::Model(model),
+                Err(error) => Submission::InvalidCommand(error),
+            };
+        }
+        Some("/effort" | "/reasoning" | "/thinking") => {
+            let Some(argument) = settings.next() else {
+                return Submission::ReasoningPicker;
+            };
+            if settings.next().is_some() {
+                return Submission::InvalidCommand(
+                    "Usage: /thinking [none|low|medium|high|xhigh|max]".to_owned(),
+                );
+            }
+            return match argument.parse() {
+                Ok(thinking) => Submission::Thinking(thinking),
+                Err(error) => Submission::InvalidCommand(error),
+            };
+        }
+        _ => {}
     }
     if let Some(name) = trimmed.strip_prefix("/mcp login ") {
         let name = name.trim();
@@ -3700,22 +3764,18 @@ mod tests {
             classify_submission("/fast turbo"),
             Submission::InvalidCommand("Usage: /fast [on|off]".to_owned())
         );
-        assert_eq!(
-            classify_submission("/model"),
-            Submission::InvalidCommand("Usage: /model <sol|terra|luna|astra>".to_owned())
-        );
+        assert_eq!(classify_submission("/model"), Submission::ModelPicker);
         assert_eq!(
             classify_submission("/model astra"),
             Submission::Model(Model::Astra)
         );
-        assert_eq!(
-            classify_submission(" /thinking "),
-            Submission::ReasoningPicker
-        );
-        assert_eq!(
-            classify_submission("/thinking high"),
-            Submission::InvalidCommand("Usage: /thinking".to_owned())
-        );
+        for alias in ["/effort", "/reasoning", "/thinking"] {
+            assert_eq!(classify_submission(alias), Submission::ReasoningPicker);
+            assert_eq!(
+                classify_submission(format!("{alias} high")),
+                Submission::Thinking(Thinking::High)
+            );
+        }
         assert_eq!(
             classify_submission(" /mcp login centaur-tempo "),
             Submission::McpLogin("centaur-tempo".to_owned())
@@ -3955,6 +4015,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.thinking(), Thinking::Medium);
+    }
+
+    #[test]
+    fn model_picker_exposes_and_applies_astra_before_the_first_prompt() {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.open_model_picker();
+
+        handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut app,
+            "main-session",
+            &commands,
+        )
+        .unwrap();
+        handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+            "main-session",
+            &commands,
+        )
+        .unwrap();
+
+        assert!(app.model_picker().is_none());
+        assert!(matches!(
+            worker.try_recv(),
+            Ok(WorkerCommand::SetModel {
+                model: Model::Astra
+            })
+        ));
     }
 
     #[test]
