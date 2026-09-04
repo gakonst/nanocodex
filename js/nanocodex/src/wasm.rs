@@ -1078,7 +1078,7 @@ impl WasmSubagents {
         &self,
         root_session_id: &str,
         descriptors: Vec<AgentDescriptor>,
-        host_contexts: HashMap<String, Arc<str>>,
+        host_contexts: HashMap<String, Option<Arc<str>>>,
     ) -> Result<(), JsValue> {
         self.registry
             .restore_with_host_contexts(root_session_id, descriptors.clone(), host_contexts.clone())
@@ -1092,7 +1092,7 @@ impl WasmSubagents {
                 descriptor,
                 host_contexts
                     .get(&descriptor.session_id)
-                    .map(AsRef::<str>::as_ref),
+                    .and_then(|host_context| host_context.as_deref()),
             )?;
         }
         Ok(())
@@ -1279,14 +1279,14 @@ impl WasmNanocodex {
             .collect::<Result<Vec<_>, _>>()?;
         let host_contexts = host_contexts_json
             .map(|encoded| {
-                serde_json::from_str::<HashMap<String, String>>(&encoded).map_err(|error| {
+                serde_json::from_str::<HashMap<String, Option<String>>>(&encoded).map_err(|error| {
                     js_error(format!("invalid restored subagent host contexts: {error}"))
                 })
             })
             .transpose()?
             .unwrap_or_default();
         for (session_id, host_context) in &host_contexts {
-            if host_context.is_empty() {
+            if host_context.as_ref().is_some_and(String::is_empty) {
                 return Err(js_error(format!(
                     "restored subagent host context for {session_id} must not be empty"
                 )));
@@ -1302,7 +1302,7 @@ impl WasmNanocodex {
         }
         let host_contexts = host_contexts
             .into_iter()
-            .map(|(session_id, host_context)| (session_id, Arc::<str>::from(host_context)))
+            .map(|(session_id, host_context)| (session_id, host_context.map(Arc::<str>::from)))
             .collect();
         let subagents = self
             .subagents

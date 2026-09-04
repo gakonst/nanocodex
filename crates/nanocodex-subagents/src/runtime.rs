@@ -1038,7 +1038,7 @@ impl Registry {
         &self,
         root_session_id: &str,
         descriptors: Vec<AgentDescriptor>,
-        mut host_contexts: HashMap<String, Arc<str>>,
+        mut host_contexts: HashMap<String, Option<Arc<str>>>,
     ) -> std::io::Result<()> {
         if !host_contexts.is_empty()
             && (host_contexts.len() != descriptors.len()
@@ -1064,7 +1064,7 @@ impl Registry {
                 .sessions
                 .get_mut(&descriptor.id)
                 .expect("a restored descriptor has a retained session")
-                .host_context = host_contexts.remove(&descriptor.session_id);
+                .host_context = host_contexts.remove(&descriptor.session_id).flatten();
         }
         drop(state);
         for descriptor in restored {
@@ -2202,11 +2202,11 @@ mod tests {
                 HashMap::from([
                     (
                         first.session_id.clone(),
-                        Arc::<str>::from("opaque-first-turn"),
+                        Some(Arc::<str>::from("opaque-first-turn")),
                     ),
                     (
                         second.session_id.clone(),
-                        Arc::<str>::from("opaque-second-turn"),
+                        Some(Arc::<str>::from("opaque-second-turn")),
                     ),
                 ]),
             )
@@ -2265,11 +2265,23 @@ mod tests {
         };
 
         for host_contexts in [
-            HashMap::from([(first.session_id.clone(), Arc::<str>::from("opaque-turn"))]),
+            HashMap::from([(
+                first.session_id.clone(),
+                Some(Arc::<str>::from("opaque-turn")),
+            )]),
             HashMap::from([
-                (first.session_id.clone(), Arc::<str>::from("opaque-turn")),
-                (second.session_id.clone(), Arc::<str>::from("second-turn")),
-                ("unknown-session".to_owned(), Arc::<str>::from("other-turn")),
+                (
+                    first.session_id.clone(),
+                    Some(Arc::<str>::from("opaque-turn")),
+                ),
+                (
+                    second.session_id.clone(),
+                    Some(Arc::<str>::from("second-turn")),
+                ),
+                (
+                    "unknown-session".to_owned(),
+                    Some(Arc::<str>::from("other-turn")),
+                ),
             ]),
         ] {
             let (updates, _receiver) = mpsc::unbounded_channel();

@@ -155,11 +155,9 @@ export async function create(options = {}) {
           const restoredSubagents = subagentSessions?.restore?.() ?? [];
           if (restoredSubagents.length > 0) {
             const restoredHostContextRefs = Object.fromEntries(
-              restoredSubagents.flatMap((descriptor) => {
+              restoredSubagents.map((descriptor) => {
                 const hostContextRef = subagentSessions?.hostContextRef?.(descriptor.sessionId);
-                return hostContextRef === undefined
-                  ? []
-                  : [[descriptor.sessionId, hostContextRef]];
+                return [descriptor.sessionId, hostContextRef ?? null];
               }),
             );
             await raw.restoreSubagents(
