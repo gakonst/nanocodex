@@ -97,6 +97,8 @@ export declare namespace create {
      */
     eventPersistence?: "durable" | "caller" | undefined;
     instructions?: string | undefined;
+    /** Appends host instructions while retaining the selected model's prompt. */
+    additionalInstructions?: string | undefined;
     /**
      * Bounds terminal receipts retained in the hot Rust state checkpoint.
      * The caller must preserve older exact-ID results before selecting this.

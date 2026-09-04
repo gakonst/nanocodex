@@ -625,7 +625,7 @@ impl<'a> ResponseCreate<'a> {
                     .then(|| config.reasoning_mode.request_value())
                     .flatten(),
                 effort: policy.thinking.as_str(),
-                summary: Some("auto"),
+                summary: (policy.model != crate::Model::Astra).then_some("auto"),
                 context: "all_turns",
             },
             store: config.store_responses,
@@ -982,7 +982,7 @@ mod tests {
     }
 
     #[test]
-    fn astra_never_serializes_reasoning_mode() {
+    fn astra_omits_reasoning_mode_and_default_summary() {
         let config = ModelConfig {
             reasoning_mode: ReasoningMode::Pro,
             ..ModelConfig::default()
@@ -999,6 +999,7 @@ mod tests {
         .expect("request should serialize");
 
         assert!(request["reasoning"].get("mode").is_none());
+        assert!(request["reasoning"].get("summary").is_none());
         assert_eq!(request["reasoning"]["effort"], json!("max"));
     }
 

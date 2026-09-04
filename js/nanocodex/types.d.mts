@@ -18,7 +18,10 @@ export type AgentEvent = {
 };
 
 export type AgentOptions = {
+  /** Replaces the selected model's built-in instructions. */
   instructions?: string | undefined;
+  /** Appends host instructions while retaining the selected model's prompt. */
+  additionalInstructions?: string | undefined;
   model?: Model | undefined;
   reasoningMode?: ReasoningMode | undefined;
   fastMode?: boolean | undefined;

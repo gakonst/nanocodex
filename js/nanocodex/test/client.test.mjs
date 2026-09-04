@@ -517,6 +517,20 @@ test("the WASM config pairs a durability route with its state", () => {
   });
 });
 
+test("the WASM config distinguishes prompt replacement from host additions", () => {
+  assert.deepEqual(toWasmConfig({
+    apiKey: "test-key",
+    model: "gpt-6-astra",
+    instructions: "caller replacement",
+    additionalInstructions: "host additions",
+  }), {
+    api_key: "test-key",
+    model: "gpt-6-astra",
+    instructions: "caller replacement",
+    additional_instructions: "host additions",
+  });
+});
+
 test("the WASM host bridge routes owner-fenced durability per Agent binding", async () => {
   let state = { revision: "0", payload: null };
   let owner;

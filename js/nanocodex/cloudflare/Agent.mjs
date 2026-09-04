@@ -33,6 +33,7 @@ const STARTUP_TIMEOUT_MS = 10_000;
 const INTERNAL_RUNTIME = Symbol.for("nanocodex.cloudflare.internalRuntime");
 const INTERNAL_CONFIGURATION = Symbol.for("nanocodex.cloudflare.internalConfiguration");
 const EPHEMERAL_APPLICATION_OPTIONS = new Set([
+  "additionalInstructions",
   "fastMode",
   "instructions",
   "model",
@@ -44,6 +45,7 @@ const EPHEMERAL_APPLICATION_OPTIONS = new Set([
   "workspace",
 ]);
 const APPLICATION_OPTIONS = new Set([
+  "additionalInstructions",
   "durabilityId",
   "eventPersistence",
   "instructions",
@@ -523,7 +525,7 @@ function applicationOptions(options) {
   for (const name of Object.keys(options)) {
     if (!APPLICATION_OPTIONS.has(name)) {
       throw new TypeError(
-        `Cloudflare Agent.create does not accept ${name}; only durabilityId, eventPersistence, instructions, terminalReceiptRetention, and tools are configurable`,
+        `Cloudflare Agent.create does not accept ${name}; only durabilityId, eventPersistence, instructions, additionalInstructions, terminalReceiptRetention, and tools are configurable`,
       );
     }
   }

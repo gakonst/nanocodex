@@ -161,7 +161,7 @@ where
         &session_id_text,
         prompt_cache_key,
         workspace.as_deref(),
-        spawner.config.system_prompt(),
+        &spawner.config.system_prompt(),
         origin.kind,
         origin.parent_session_id.as_deref(),
         initial_resume.as_ref().map(InitialResume::history_len),

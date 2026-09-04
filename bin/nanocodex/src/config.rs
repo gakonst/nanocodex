@@ -19,7 +19,6 @@ use nanocodex::{
     },
     oai::{
         auth::{OpenAiAuth, OpenAiAuthMode},
-        tower::ResponsesServiceConfig,
         transport::ResponsesTransport,
     },
     tools::mcp::McpHandle,
@@ -475,13 +474,18 @@ impl AgentArgs {
         } else {
             builder.tools(tools)
         };
-        let instructions = session_instructions(
-            self.instructions,
+        let additional_instructions = session_instructions(
+            self.instructions.as_deref(),
             generic_subagents,
             managed_memory.is_some(),
         );
-        let builder = if let Some(instructions) = instructions {
+        let builder = if let Some(instructions) = self.instructions {
             builder.instructions(instructions)
+        } else {
+            builder
+        };
+        let builder = if let Some(instructions) = additional_instructions {
+            builder.additional_instructions(instructions)
         } else {
             builder
         };
@@ -563,24 +567,19 @@ const SUBAGENT_INSTRUCTIONS: &str = concat!(
 );
 
 fn session_instructions(
-    custom: Option<String>,
+    custom: Option<&str>,
     subagents_enabled: bool,
     memory_enabled: bool,
 ) -> Option<String> {
-    if !subagents_enabled && !memory_enabled {
-        return custom;
+    let custom = custom.unwrap_or_default();
+    let mut instructions = Vec::new();
+    if subagents_enabled && !custom.contains(SUBAGENT_INSTRUCTIONS) {
+        instructions.push(SUBAGENT_INSTRUCTIONS);
     }
-    let mut instructions =
-        custom.unwrap_or_else(|| ResponsesServiceConfig::default().system_prompt.to_string());
-    if !instructions.contains(SUBAGENT_INSTRUCTIONS) && subagents_enabled {
-        instructions.push_str("\n\n");
-        instructions.push_str(SUBAGENT_INSTRUCTIONS);
+    if memory_enabled && !custom.contains(MEMORY_INSTRUCTIONS) {
+        instructions.push(MEMORY_INSTRUCTIONS);
     }
-    if memory_enabled && !instructions.contains(MEMORY_INSTRUCTIONS) {
-        instructions.push_str("\n\n");
-        instructions.push_str(MEMORY_INSTRUCTIONS);
-    }
-    Some(instructions)
+    (!instructions.is_empty()).then(|| instructions.join("\n\n"))
 }
 
 impl AuthArgs {
@@ -1048,28 +1047,24 @@ mod tests {
 
     #[test]
     fn subagent_instructions_follow_the_enable_switch() {
-        let custom = "custom instructions".to_owned();
+        assert_eq!(session_instructions(None, false, false), None);
         assert_eq!(
-            session_instructions(Some(custom.clone()), false, false),
-            Some(custom.clone())
+            session_instructions(Some(SUBAGENT_INSTRUCTIONS), true, false),
+            None
         );
-
-        let enabled = session_instructions(Some(custom), true, false).unwrap();
-        assert!(enabled.starts_with("custom instructions\n\n"));
+        let enabled = session_instructions(None, true, false).unwrap();
         assert!(enabled.ends_with(SUBAGENT_INSTRUCTIONS));
         assert_eq!(enabled.matches(SUBAGENT_INSTRUCTIONS).count(), 1);
     }
 
     #[test]
     fn memory_instructions_follow_the_enable_switch() {
-        let custom = "custom instructions".to_owned();
+        assert_eq!(session_instructions(None, false, false), None);
         assert_eq!(
-            session_instructions(Some(custom.clone()), false, false),
-            Some(custom.clone())
+            session_instructions(Some(MEMORY_INSTRUCTIONS), false, true),
+            None
         );
-
-        let enabled = session_instructions(Some(custom), false, true).unwrap();
-        assert!(enabled.starts_with("custom instructions\n\n"));
+        let enabled = session_instructions(None, false, true).unwrap();
         assert!(enabled.ends_with(MEMORY_INSTRUCTIONS));
         assert_eq!(enabled.matches(MEMORY_INSTRUCTIONS).count(), 1);
     }

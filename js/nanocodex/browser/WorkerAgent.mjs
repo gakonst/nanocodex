@@ -1369,11 +1369,18 @@ async function hydrateConfig(config, createDurabilityStore) {
     options.durabilityId = workerDurabilityId;
   }
   if (harnessRuntime) {
+    if (options.model === "gpt-6-astra" && options.instructions === undefined) {
+      options.additionalInstructions = [
+        harnessRuntime.instructions,
+        options.additionalInstructions,
+      ].filter((instructions) => instructions !== undefined && instructions !== "").join("\n\n");
+    } else {
+      options.instructions ??= harnessRuntime.instructions;
+    }
     Object.assign(options, {
       codeEvaluator: harnessRuntime.codeEvaluator,
       filesystem: harnessRuntime.filesystem,
       filesystemTools: false,
-      instructions: options.instructions ?? harnessRuntime.instructions,
       tools: harnessRuntime.tools,
       executionEnvironment: options.executionEnvironment ?? harnessRuntime.executionEnvironment,
     });

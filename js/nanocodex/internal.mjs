@@ -313,6 +313,7 @@ export function toWasmConfig(options = {}) {
   copy(config, "websocket_url", options.websocketUrl);
   copy(config, "api_base_url", options.apiBaseUrl);
   copy(config, "instructions", options.instructions);
+  copy(config, "additional_instructions", options.additionalInstructions);
   copy(config, "session_id", options.sessionId);
   copy(config, "workspace", options.workspace);
   if (options.executionEnvironment !== undefined) {

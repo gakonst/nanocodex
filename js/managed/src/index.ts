@@ -5654,7 +5654,8 @@ export class DurableAgentSession extends DurableComputerSession {
         durabilityId,
         eventPersistence: "caller",
         terminalReceiptRetention: MANAGED_TERMINAL_RECEIPT_RETENTION,
-        instructions: multiplayer
+        // Astra's model prompt owns general behavior; these rules describe its host.
+        [this.#settings().model === "gpt-6-astra" ? "additionalInstructions" : "instructions"]: multiplayer
           ? [
             "You are the shared Nanocodex participant in a short-lived Multiplayer chat room.",
             "Reply conversationally and concisely to the room message. Use the normal Nanocodex tools when they materially help answer the room.",

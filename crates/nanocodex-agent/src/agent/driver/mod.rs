@@ -310,23 +310,36 @@ where
                 result,
             } = command
             else {
-                if let Command::SetModel { model, result } = command {
+                if let Command::SetModel {
+                    model: requested_model,
+                    result,
+                } = command
+                {
                     let outcome = if latest_fork_checkpoint.is_some()
                         || !pending_developer_messages.is_empty()
                     {
                         Err(model_change_locked())
                     } else {
-                        validate_model_thinking(model, default_thinking)
-                            .and_then(|()| {
-                                validate_model_reasoning_mode(
-                                    model,
-                                    self.spawner.config.reasoning_mode,
-                                )
-                            })
-                            .map(|()| {
-                                thread_model = model;
-                            })
+                        validate_model_thinking(requested_model, default_thinking).and_then(|()| {
+                            validate_model_reasoning_mode(
+                                requested_model,
+                                self.spawner.config.reasoning_mode,
+                            )
+                        })
                     };
+                    if outcome.is_ok() && requested_model != thread_model {
+                        model.shutdown().await;
+                        Arc::make_mut(&mut self.spawner.config).model = requested_model;
+                        model = model_from_checkpoint(
+                            &self.events,
+                            &self.transport_stats,
+                            &self.tools,
+                            &self.spawner,
+                            &prompt_cache,
+                            None,
+                        );
+                        thread_model = requested_model;
+                    }
                     drop(result.send(outcome));
                     continue;
                 }

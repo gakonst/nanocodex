@@ -204,7 +204,7 @@ test("Cloudflare Agent owns credentials, transport, and durability options", asy
   await assert.rejects(create(module), /requires a Durable Object instance/);
   await assert.rejects(
     create(module, durableOwner(new MemoryStorage()), { apiKey: "managed-secret" }),
-    /does not accept apiKey; only durabilityId, eventPersistence, instructions, terminalReceiptRetention, and tools are configurable/,
+    /does not accept apiKey; only durabilityId, eventPersistence, instructions, additionalInstructions, terminalReceiptRetention, and tools are configurable/,
   );
   await assert.rejects(
     create(module, durableOwner(new MemoryStorage()), { CODEX_OAUTH_BOOTSTRAP: "managed-secret" }),
@@ -273,6 +273,7 @@ test("Cloudflare Agent accepts complete hosted policy only through its internal 
     },
   });
   const agent = await configured.create(owner, {
+    additionalInstructions: "Keep the host's account boundaries.",
     [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
       model: "gpt-6-astra",
       thinking: "xhigh",
@@ -282,6 +283,8 @@ test("Cloudflare Agent accepts complete hosted policy only through its internal 
   });
 
   assert.equal(captured.model, "gpt-6-astra");
+  assert.equal(captured.instructions, undefined);
+  assert.equal(captured.additionalInstructions, "Keep the host's account boundaries.");
   assert.equal(captured.thinking, "xhigh");
   assert.equal(captured.reasoningMode, "standard");
   assert.equal(captured.fastMode, true);

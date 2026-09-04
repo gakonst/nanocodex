@@ -424,7 +424,7 @@ impl<S> ModelRun<S> {
             &self.provider_session_id,
             self.prompt_cache.key(),
             tools,
-            self.config.system_prompt(),
+            &self.config.system_prompt(),
         )
     }
 
@@ -477,7 +477,7 @@ pub(crate) fn prepare_resumed_checkpoint(
             checkpoint.prompt_cache_key(),
             tool_specs,
             code_mode_tool_names,
-            config.system_prompt(),
+            &config.system_prompt(),
         )?
         .prefix()
         .to_vec(),
@@ -518,7 +518,7 @@ pub(crate) fn prepare_history_checkpoint(
         prompt_cache_key.as_ref(),
         tool_specs,
         code_mode_tool_names,
-        config.system_prompt(),
+        &config.system_prompt(),
     )?
     .prefix()
     .to_vec();

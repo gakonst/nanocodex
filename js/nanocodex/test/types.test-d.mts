@@ -257,7 +257,9 @@ async function check() {
     // @ts-expect-error broker subjects are derived privately from the Durable Object identity.
     subject: "caller-selected",
   });
-  const cloudflareAgent: CloudflareAgent.Agent = await CloudflareAgent.create(cloudflareOwner);
+  const cloudflareAgent: CloudflareAgent.Agent = await CloudflareAgent.create(cloudflareOwner, {
+    additionalInstructions: "Use the account's workspace.",
+  });
   cloudflareAgent.turn.prompt({ input: "hello" });
   cloudflareAgent.events.connect(new Request("https://agent.internal/events"));
   const extendedCloudflareAgent = cloudflareAgent.extend(() => ({ application: true as const }));
@@ -272,6 +274,7 @@ async function check() {
     cloudflareOwner,
     {
       instructions: "Search the caller's account history.",
+      additionalInstructions: "Cite the matching thread.",
       model: "gpt-5.6-sol",
       tools: [{
         name: "search",
@@ -335,6 +338,7 @@ async function check() {
     filesystem: nodeWorkspace,
     model: "gpt-6-astra",
     thinking: "high",
+    additionalInstructions: "Use the caller's workspace.",
     fastMode: false,
     workspace: nodeWorkspace.root,
     tools: [...Subagents.create({ maxConcurrency: 8 })],

@@ -729,6 +729,8 @@ struct WasmConfig {
     #[serde(default)]
     instructions: Option<String>,
     #[serde(default)]
+    additional_instructions: Option<String>,
+    #[serde(default)]
     session_id: Option<String>,
     #[serde(default)]
     workspace: Option<String>,
@@ -1198,6 +1200,9 @@ impl WasmNanocodex {
         };
         if let Some(instructions) = config.instructions {
             builder = builder.instructions(instructions);
+        }
+        if let Some(instructions) = config.additional_instructions {
+            builder = builder.additional_instructions(instructions);
         }
         if let Some(session_id) = config.session_id {
             builder = builder.session_id(session_id.parse::<SessionId>().map_err(js_error)?);

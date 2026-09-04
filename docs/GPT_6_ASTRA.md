@@ -25,7 +25,7 @@ This support is based on OpenAI's current contracts:
 | Contract | Nanocodex behavior |
 | --- | --- |
 | Model ID | Accepts and serializes `gpt-6-astra` across Rust, WASM, JS, managed settings, and retained Durable Object state. |
-| Reasoning | Accepts `low`, `medium`, `high`, `xhigh`, and `max`. Rejects Astra with `none` or Pro mode before dispatch, including dynamic settings and subagent overrides. Astra requests omit the unsupported `reasoning.mode` field. |
+| Reasoning | Accepts `low`, `medium`, `high`, `xhigh`, and `max`. Rejects Astra with `none` or Pro mode before dispatch, including dynamic settings and subagent overrides. Astra requests omit `reasoning.mode` and the default reasoning summary, matching the Codex Astra request policy. Nanocodex retains its existing `high` effort default; Codex's bundled Astra catalog defaults to `low`. |
 | Context | OpenAI documents a 1,050,000-token API context window. Nanocodex follows the current Codex catalog: 272,000 by default, configurable to 872,000, with explicit provider compaction at 90% of the configured prompt budget. |
 | Output | The provider documents a 128,000-token maximum. Nanocodex does not raise its own output limit beyond caller/provider limits. |
 | Knowledge cutoff | April 30, 2026; this is documentation only and does not affect request encoding. |
@@ -159,6 +159,26 @@ test coverage. Applications should explicitly state their desired autonomy,
 writing style, delegation, and verification scope and audit all model-visible
 instructions before enabling the model.
 
+## Astra instructions
+
+Astra uses [its own built-in prompt](../crates/nanocodex-oai-api/prompts/astra.md),
+adapted from the `gpt-6-astra` `model_messages.instructions_template` in the
+[Codex catalog at `8e6a44b428`](https://github.com/openai/codex/blob/8e6a44b428e31f91b21edc97904fcdf4f0931ade/codex-rs/models-manager/models.json).
+The adaptation retains upstream's autonomy, permission, steering, writing,
+verification, and skill guidance. It uses Nanocodex's identity and describes
+async questions, skills, connectors, and plugins in terms of capabilities actually
+supplied by the host, without claiming Codex's orchestrator or approval reviewer
+is installed. Other models retain their existing prompt.
+
+The prompt is resolved from the selected model at agent creation, before-first-turn
+model changes, subagent creation, and resume. Rust `instructions(...)` and JS
+`instructions` remain complete caller replacements. Rust `additional_instructions(...)`
+and JS `additionalInstructions` append host rules to either the model prompt or
+the caller's replacement. The native CLI uses this additive path for enabled
+subagent and memory guidance; Astra's managed and built-in browser harnesses use
+it for their runtime instructions. Retained sessions rebuild the prefix using the
+retained model and the host's current instructions.
+
 ## Current Codex compatibility signals
 
 The inspected upstream Codex revision `03467026f2` includes Astra in its Amazon
@@ -210,6 +230,13 @@ completed three model calls and five tool calls, and required no response retry 
 WebSocket reconnect. The provider rejected an earlier request carrying
 `reasoning.mode: "pro"`; Nanocodex now rejects that combination locally and omits
 the field from every Astra request.
+
+A separate September 4 prompt check sent the exact built-in Astra prompt with
+high thinking, `service_tier: "default"`, and no reasoning summary. It completed
+a shell command, shut down, then restored the SQLite-backed conversation in a
+fresh CLI process and recalled the prior turn's marker. Both turns completed
+without retries or WebSocket reconnects. This verifies the native prompt and
+portable resume path; it does not substitute for the managed browser journey below.
 
 Production rollout should additionally verify the exact managed and Worker journey:
 

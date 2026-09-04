@@ -575,7 +575,9 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    model: "gpt-6-astra",
+    thinking: "low",
+    additionalInstructions: "Use the caller's memory tools.",
     sessionId: "018f1f9a-7b3c-7a09-8000-000000000009",
     tools: [{
       name: "find_threads",
@@ -600,7 +602,10 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
     });
     const childSocket = await bounded(server.connection, "child connection");
     const childReader = messageReader(childSocket);
-    await bounded(childReader.next(), "child warmup");
+    const childWarmup = await bounded(childReader.next(), "child warmup");
+    assert.equal(childWarmup.model, "gpt-5.6-luna");
+    assert.doesNotMatch(childWarmup.input[1].content[0].text, /GPT-6 Astra/);
+    assert.match(childWarmup.input[1].content[0].text, /Use the caller's memory tools\.$/);
     sendWarmup(childSocket, "direct-child-warmup");
     const started = await bounded(startedPromise, "direct spawn");
     assert.deepEqual(started, {
@@ -897,6 +902,44 @@ test("Node can load an application-owned web module and resume Codex rollout his
   await scenario;
   agent.dispose();
   await server.close();
+});
+
+test("Node Astra sends its model prompt with additive host rules and preserves replacements", async () => {
+  const astraPrompt = await readFile(
+    new URL("../../../crates/nanocodex-oai-api/prompts/astra.md", import.meta.url),
+    "utf8",
+  );
+  for (const instructions of [undefined, "Caller-owned base instructions."]) {
+    const server = await startServer();
+    const agent = await createWarmAgent({
+      apiKey: "test-key",
+      websocketUrl: server.url,
+      model: "gpt-6-astra",
+      thinking: "low",
+      instructions,
+      additionalInstructions: "Use the caller's workspace.",
+    });
+    try {
+      const scenario = (async () => {
+        const socket = await bounded(server.connection, "Astra connection");
+        const reader = messageReader(socket);
+        const warmup = await bounded(reader.next(), "Astra warmup");
+        assert.equal(warmup.model, "gpt-6-astra");
+        assert.equal(warmup.reasoning.summary, undefined);
+        assert.equal(warmup.input[1].content[0].text,
+          `${instructions ?? astraPrompt}\n\nUse the caller's workspace.`);
+        sendWarmup(socket, "astra-warmup");
+        await bounded(reader.next(), "Astra turn");
+        sendFinal(socket, "astra-final", "done");
+      })();
+      const result = await bounded(agent.turn.prompt({ input: "hello" }).result(), "Astra result");
+      assert.equal(result.finalMessage, "done");
+      await scenario;
+    } finally {
+      await agent.session.shutdown();
+      await server.close();
+    }
+  }
 });
 
 test("independent agents keep their host connections isolated", async () => {

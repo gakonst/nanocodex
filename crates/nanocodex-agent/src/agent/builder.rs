@@ -67,7 +67,15 @@ impl<F> NanocodexBuilder<F> {
     /// Replaces the stable system/developer instructions.
     #[must_use]
     pub fn instructions(mut self, instructions: impl Into<Arc<str>>) -> Self {
-        self.config.system_prompt = instructions.into();
+        self.config.system_prompt = Some(instructions.into());
+        self
+    }
+
+    /// Adds host instructions after the selected model's built-in instructions
+    /// or the explicit replacement supplied with [`Self::instructions`].
+    #[must_use]
+    pub fn additional_instructions(mut self, instructions: impl Into<Arc<str>>) -> Self {
+        self.config.additional_instructions = Some(instructions.into());
         self
     }
 
