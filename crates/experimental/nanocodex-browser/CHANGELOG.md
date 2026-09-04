@@ -5,6 +5,13 @@ All notable changes to Nanocodex Browser are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Features
+
+- Record constant-rate WebM video at 30 fps by default and up to 60 fps, with
+  high-frame-rate encoder tuning and separate captured/written frame counts.
+
 ## [0.3.0](https://github.com/gakonst/nanocodex/releases/tag/v0.3.0) - 2026-07-26
 
 ### Changed

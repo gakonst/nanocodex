@@ -678,7 +678,7 @@ pub enum BrowserAction {
     },
     /// Begin an optional `WebM` recording of the active page.
     VideoStart {
-        /// Output frame rate. Defaults to 25 and is capped at 30.
+        /// Output frame rate. Defaults to 30 and accepts values from 1 through 60.
         frames_per_second: Option<u8>,
         /// JPEG source-frame quality. Defaults to 80 and is capped at 95.
         quality: Option<u8>,
@@ -3141,9 +3141,11 @@ fn recording_result(
             video: BrowserVideoArtifact {
                 path: std::path::PathBuf::new(),
                 frame_count: 0,
+                captured_frame_count: 0,
                 duration_ms: 0,
                 width: 0,
                 height: 0,
+                frames_per_second: 0,
             },
         },
         BrowserAction::ListFrames => BrowserActionResult::Frames {
