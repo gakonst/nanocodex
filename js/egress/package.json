@@ -1,0 +1,29 @@
+{
+  "name": "nanocodex-egress-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dry-run:agent": "wrangler deploy --dry-run --config wrangler.agent.jsonc",
+    "deploy:agent": "wrangler deploy --config wrangler.agent.jsonc",
+    "dry-run:broker": "wrangler deploy --dry-run --config wrangler.broker.jsonc",
+    "deploy:broker": "wrangler deploy --env=\"\" --config wrangler.broker.jsonc"
+  },
+  "dependencies": {
+    "accounts": "0.17.0",
+    "nanocodex": "workspace:*",
+    "viem": "^2.54.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260730.1",
+    "typescript": "5.9.3",
+    "vitest": "^4.0.18",
+    "wrangler": "4.127.1"
+  }
+}

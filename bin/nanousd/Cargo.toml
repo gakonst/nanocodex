@@ -1,0 +1,23 @@
+[package]
+name = "nanousd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Private shared NanoUSD protocol for the Tempo-facing binaries"
+
+[dependencies]
+alloy-primitives.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

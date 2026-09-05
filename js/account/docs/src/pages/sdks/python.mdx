@@ -1,0 +1,73 @@
+---
+title: Python SDK
+description: A thin PyO3 binding over the native owned Rust lifecycle.
+---
+
+# Python SDK
+
+The `nanocodex` wheel embeds the Rust driver. Python 3.11 or newer receives a
+cheap command handle and optional independent event receiver.
+
+```python
+import os
+from nanocodex import Nanocodex
+
+agent, events = Nanocodex(
+    os.environ["OPENAI_API_KEY"],
+    instructions="Inspect before editing and preserve unrelated work.",
+)
+
+try:
+    turn = agent.prompt("Explain why the parser test fails.")
+    result = turn.result()
+    print(result.final_message)
+finally:
+    agent.shutdown()
+```
+
+`prompt()` blocks only until acceptance. `Turn.result()` releases the GIL while
+waiting. Results complete without event consumption. A second prompt on the
+same agent automatically reuses history, response chain, tools, cache identity,
+and persistent WebSocket.
+
+## Events and lifecycle
+
+Drain `events.recv()` on another thread when your application needs live state.
+Each event provides protocol version, request/session ID, monotonic sequence,
+kind, and a native Python payload. `recv_json()` is available for an application
+that already owns a JSONL boundary.
+
+Turns support `steer`, `cancel`, and `result`. Agents support `fork`,
+`fork_from(result)`, clean `spawn`, `snapshot`, compaction, thinking and fast
+mode updates, and explicit shutdown. The application owns persistence for
+snapshot bytes.
+
+The binding deliberately does not implement a Python-side agent loop. Read the
+[Python API guide](https://github.com/gakonst/nanocodex/blob/master/py/bindings/README.md)
+and run the [follow-on](https://github.com/gakonst/nanocodex/blob/master/examples/python/follow_on.py),
+[events](https://github.com/gakonst/nanocodex/blob/master/examples/python/events.py),
+or [lifecycle](https://github.com/gakonst/nanocodex/blob/master/examples/python/lifecycle.py)
+example.
+
+## Threading and ownership
+
+The Rust runtime lives behind the Python objects; applications do not need to
+run an asyncio loop for the blocking API. A dedicated event thread can call
+`recv()` while the main thread waits for results because result completion and
+event delivery are independent. Shut the agent down before joining a receiver
+thread so the stream closes deterministically.
+
+Forks and spawns return their own event receivers and must be shut down
+individually. A contextual fork sees committed parent history at a safe
+boundary; a clean spawn sees only its own new prompts. Snapshots are serializable
+state, but Python applications still need to version and store the instructions,
+workspace, tools, and other policy used to rebuild the session.
+
+## Scope
+
+The wheel is a thin native consumer, not a Python provider adapter or plugin
+system. Model calls, typed history, retries, tools, and cleanup remain in Rust.
+That keeps behavior aligned with the Rust and WASM SDKs while offering Pythonic
+properties for final messages, usage, session IDs, events, and lifecycle
+control. Use an application thread pool or service boundary for many independent
+agents rather than sharing mutable Python conversation state between them.

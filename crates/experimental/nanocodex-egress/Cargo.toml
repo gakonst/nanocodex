@@ -1,0 +1,40 @@
+[package]
+name = "nanocodex-egress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Composable authenticated HTTP egress proxy with host-owned secrets"
+readme = "README.md"
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+hudsucker.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+reqwest-middleware.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "net", "rt", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+criterion.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[[bench]]
+name = "proxy_round_trip"
+harness = false
+
+[lints]
+workspace = true

@@ -1,0 +1,54 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-durable-agent-test",
+  "main": "test/memory-scope-worker.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "alias": {
+    "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
+  },
+  "r2_buckets": [
+    {
+      "binding": "NANOCODEX_HISTORY",
+      "bucket_name": "nanocodex-managed-history-test"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NANOCODEX_MEMORY",
+        "class_name": "MemoryScope"
+      },
+      {
+        "name": "NANOCODEX_ACCOUNT_TOOLS",
+        "class_name": "AccountHostedTools"
+      },
+      {
+        "name": "NANOCODEX_VM_HOST_POOLS",
+        "class_name": "VmHostPool"
+      },
+      {
+        "name": "NANOCODEX_SESSIONS",
+        "class_name": "DurableAgentSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "memory-scope-v1",
+      "new_sqlite_classes": ["MemoryScope"]
+    },
+    {
+      "tag": "account-hosted-tools-v1",
+      "new_sqlite_classes": ["AccountHostedTools"]
+    },
+    {
+      "tag": "managed-session-v1",
+      "new_sqlite_classes": ["DurableAgentSession"]
+    },
+    {
+      "tag": "vm-host-pool-v1",
+      "new_sqlite_classes": ["VmHostPool"]
+    }
+  ]
+}

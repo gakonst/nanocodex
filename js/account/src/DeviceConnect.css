@@ -1,0 +1,1984 @@
+.device-connect-route {
+  min-height: calc(100dvh - var(--header-height));
+  background: var(--surface);
+}
+
+.device-connect-route .connect-wizard {
+  display: flex;
+  min-height: calc(100dvh - var(--header-height));
+  flex-direction: column;
+  font: 11px/1.45 var(--font-mono);
+}
+
+.device-connect-route .connect-wizard button,
+.device-connect-route .connect-wizard input {
+  font: inherit;
+}
+
+.connect-wizard .wizard-content {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.connect-wizard .wizard-page,
+.connect-wizard .wizard-actions,
+.connect-wizard .dialog-error {
+  width: min(1000px, calc(100% - (2 * var(--page-margin))));
+  margin-right: auto;
+  margin-left: var(--page-margin);
+}
+
+.connect-wizard .wizard-page {
+  padding: 42px 0 0;
+}
+
+.connect-wizard .wizard-account-page {
+  width: min(500px, calc(100% - (2 * var(--page-margin))));
+  margin-right: auto;
+  margin-left: auto;
+  padding: clamp(40px, 8vh, 88px) 0 64px;
+}
+
+.connect-wizard .sms-auth-panel {
+  overflow: hidden;
+  padding: 32px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-medium);
+  background: color-mix(in srgb, var(--surface-raised) 88%, var(--surface));
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.22);
+}
+
+.connect-wizard .wizard-review-page {
+  width: min(820px, calc(100% - (2 * var(--page-margin))));
+}
+
+.connect-wizard .wizard-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-bottom: 20px;
+  gap: 32px;
+}
+
+.connect-wizard .sms-auth-panel .wizard-intro {
+  display: block;
+  padding-bottom: 26px;
+}
+
+.connect-wizard .wizard-app {
+  display: grid;
+  gap: 8px;
+}
+
+.connect-wizard .sms-auth-panel .wizard-app {
+  gap: 10px;
+}
+
+.connect-wizard .wizard-app > span,
+.connect-wizard .wizard-section-title span {
+  color: var(--faint);
+  font-size: 8px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.connect-wizard .wizard-app h1 {
+  font-size: clamp(28px, 3.2vw, 36px);
+  font-weight: 500;
+  line-height: 1.08;
+  letter-spacing: -0.045em;
+}
+
+.connect-wizard .sms-auth-panel .wizard-app h1 {
+  margin-top: 2px;
+  font-size: clamp(27px, 4vw, 34px);
+  line-height: 1.12;
+}
+
+.connect-wizard .wizard-app p {
+  max-width: 620px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.connect-wizard .sms-auth-panel .wizard-app p {
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-form {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: 9px;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-form > label {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-form > p {
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-input-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  margin: 5px 0 3px;
+  gap: 10px;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-input-row input,
+.connect-wizard .sms-auth-panel .sms-otp-input-row button {
+  width: 100%;
+  min-height: 50px;
+  border-radius: var(--radius-small);
+  font-size: 14px;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-input-row input {
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-input-row button {
+  border: 1px solid var(--text);
+  background: var(--text);
+  color: var(--text-inverse);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-input-row button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-input-row button:hover:not(:disabled),
+.connect-wizard .sms-auth-panel .sms-otp-input-row button:focus-visible {
+  opacity: 0.88;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-input-row button:focus-visible,
+.connect-wizard .sms-auth-panel .sms-otp-input-row input:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.connect-wizard .sms-auth-panel .account-failure {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--negative) 34%, var(--border-soft));
+  border-radius: var(--radius-small);
+}
+
+.connect-wizard .sms-auth-panel .account-failure p {
+  font-size: 11px;
+}
+
+.connect-wizard .sms-auth-panel .sms-otp-change {
+  justify-self: start;
+  min-height: 34px;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.connect-wizard .sms-auth-security {
+  display: flex;
+  align-items: center;
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  gap: 9px;
+}
+
+.connect-wizard .sms-auth-security span {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--positive) 55%, var(--border-soft));
+  border-radius: 50%;
+  color: var(--positive);
+  font-size: 10px;
+}
+
+.connect-wizard .sms-auth-security p {
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.connect-wizard .wizard-account-chooser {
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+}
+
+.connect-wizard .wizard-account-choice {
+  display: grid;
+  width: 100%;
+  min-height: 78px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 14px;
+}
+
+.connect-wizard .wizard-account-choice:last-child {
+  border-bottom: 0;
+}
+
+.connect-wizard .wizard-account-choice:hover:not(:disabled),
+.connect-wizard .wizard-account-choice:focus-visible {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  outline: none;
+}
+
+.connect-wizard .wizard-account-choice:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.connect-wizard .wizard-account-choice.is-current {
+  box-shadow: inset 2px 0 var(--positive);
+}
+
+.connect-wizard .wizard-account-avatar {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.connect-wizard .wizard-passkey-avatar {
+  font-size: 20px;
+}
+
+.connect-wizard .wizard-account-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.connect-wizard .wizard-account-copy strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connect-wizard .wizard-account-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connect-wizard .wizard-account-arrow {
+  color: var(--faint);
+  font-size: 15px;
+}
+
+.connect-wizard .wizard-account-choice.is-current .wizard-account-arrow {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.connect-wizard .wizard-new-account {
+  background: color-mix(in srgb, var(--text) 1.5%, transparent);
+}
+
+.connect-wizard .wizard-account-create-form {
+  cursor: default;
+  grid-template-columns: 44px minmax(0, 1fr) 36px auto;
+}
+
+.connect-wizard .wizard-account-create-form input {
+  width: 100%;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-strong);
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.connect-wizard .wizard-account-create-form input:focus {
+  border-color: var(--text);
+}
+
+.connect-wizard .wizard-account-create-form button {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.connect-wizard .wizard-account-create-form button:last-child {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--surface);
+}
+
+.connect-wizard .wizard-cancel {
+  min-height: 36px;
+  margin-top: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.connect-wizard .wizard-cancel:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.connect-wizard .wizard-terminal-code {
+  display: grid;
+  flex: 0 0 auto;
+  padding-left: 14px;
+  border-left: 1px solid var(--border-strong);
+  gap: 3px;
+}
+
+.connect-wizard .wizard-terminal-code span {
+  color: var(--faint);
+  font-size: 8px;
+}
+
+.connect-wizard .wizard-terminal-code strong {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+}
+
+.connect-wizard .wizard-sections {
+  border-top: 1px solid var(--border-soft);
+}
+
+.connect-wizard .wizard-section {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.connect-wizard .wizard-section-title {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.connect-wizard .wizard-section-title > div {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.connect-wizard .wizard-section-title h2 {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.connect-wizard .wizard-section-title small,
+.connect-wizard .wizard-section-title > strong {
+  color: var(--faint);
+  font-size: 8px;
+  font-weight: 400;
+}
+
+.connect-wizard .wizard-section-title .wizard-connected {
+  color: var(--positive);
+}
+
+.connect-wizard .wizard-account-options {
+  display: grid;
+  margin-top: 8px;
+  border-top: 1px solid var(--border-soft);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.connect-wizard .wizard-account-options button {
+  position: relative;
+  display: grid;
+  min-height: 58px;
+  padding: 10px 34px 10px 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  gap: 2px;
+}
+
+.connect-wizard .wizard-account-options button:first-child {
+  margin-right: 18px;
+}
+
+.connect-wizard .wizard-account-options button::after {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--faint);
+  border-radius: 50%;
+  content: "";
+  transform: translateY(-50%);
+}
+
+.connect-wizard .wizard-account-options button[aria-pressed="true"]::after {
+  border-color: var(--positive);
+  background: var(--positive);
+  box-shadow: inset 0 0 0 2px var(--surface);
+}
+
+.connect-wizard .wizard-account-options button > span {
+  color: var(--faint);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.connect-wizard .wizard-account-options button > strong {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.connect-wizard .wizard-account-options button > small,
+.connect-wizard .wizard-account-ready {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.account-inline-panel {
+  border-top: 1px solid var(--border-soft);
+}
+
+.account-inline-panel button {
+  color: var(--text);
+  cursor: pointer;
+}
+
+.account-inline-panel button:disabled {
+  cursor: default;
+  opacity: 0.44;
+}
+
+.account-inline .account-summary {
+  min-height: 58px;
+  padding: 12px 0;
+  font-size: 10px;
+}
+
+.account-inline .account-summary button,
+.account-inline .account-auth-actions button,
+.account-inline .account-failure button,
+.account-inline .api-key-create button,
+.account-inline .new-api-key button,
+.account-inline .api-key-list button,
+.account-inline .ssh-identity-form button,
+.account-inline .ssh-identity-list button {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  font-size: 9px;
+}
+
+.account-inline .account-auth-actions {
+  justify-items: start;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.account-inline .account-auth-actions p {
+  margin: 0;
+  max-width: 620px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-inline .account-auth-buttons {
+  justify-content: flex-start;
+}
+
+.account-inline .account-auth-buttons button {
+  min-width: 180px;
+  min-height: 44px;
+  padding: 0 18px;
+  font-size: 10px;
+}
+
+.account-inline .account-auth-actions .account-primary-action {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--surface);
+}
+
+.account-inline .account-profile-content {
+  padding: 0;
+  gap: 0;
+}
+
+.account-inline .account-profile-content > .api-key-heading {
+  padding: 24px 0 15px;
+}
+
+.account-inline .api-key-heading h2 {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+
+.account-inline .api-key-heading p {
+  max-width: 620px;
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.account-inline .connection-grid {
+  display: grid;
+  padding-bottom: 24px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-inline .connection-setup {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--border-soft);
+}
+
+.account-inline .connection-card {
+  display: grid;
+  min-width: 0;
+  min-height: 158px;
+  align-content: start;
+  padding: 18px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  text-align: left;
+  gap: 13px;
+}
+
+.account-inline .connection-card:hover:not(:disabled),
+.account-inline .connection-card:focus-visible {
+  border-color: var(--text);
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+  outline: none;
+}
+
+.account-inline .connection-card.is-connected {
+  border-color: color-mix(in srgb, var(--positive) 55%, var(--border-soft));
+}
+
+.account-inline .connection-card.is-unavailable {
+  opacity: 0.58;
+}
+
+.account-inline .connection-card:disabled:not(.is-connected),
+.account-inline .connection-card.is-locked {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.account-inline .connector-logo {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-soft);
+}
+
+.account-inline .connector-logo svg {
+  width: 28px;
+  height: 28px;
+  overflow: visible;
+  fill: currentColor;
+}
+
+.account-inline .connector-logo-openai svg {
+  width: 29px;
+  height: 29px;
+}
+
+.account-inline .connector-logo-x {
+  font-size: 21px;
+  font-weight: 600;
+}
+
+.account-inline .connection-card-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.account-inline .connection-card-copy strong {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.account-inline .connection-card-copy > span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-inline .connection-card-action {
+  align-self: end;
+  color: var(--faint);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.account-inline .connection-card.is-connected .connection-card-action {
+  color: var(--positive);
+}
+
+.account-inline .mcp-connection-actions,
+.connect-wizard .mcp-connection-actions {
+  display: flex;
+  align-self: end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.account-inline .mcp-connection-actions button,
+.connect-wizard .mcp-connection-actions button {
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.account-inline .mcp-connection-actions button:hover:not(:disabled),
+.account-inline .mcp-connection-actions button:focus-visible,
+.connect-wizard .mcp-connection-actions button:hover:not(:disabled),
+.connect-wizard .mcp-connection-actions button:focus-visible {
+  border-color: var(--text);
+  outline: none;
+}
+
+.account-inline .mcp-connection-actions button:disabled,
+.connect-wizard .mcp-connection-actions button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.account-inline .profile-connectors--locked .connector-row {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.account-inline .connector-result,
+.account-inline .profile-connectors > .account-failure {
+  grid-column: 1 / -1;
+}
+
+.account-inline .account-api-keys {
+  padding: 24px 0 48px;
+  gap: 14px;
+}
+
+.account-inline .ssh-identity-manager {
+  gap: 16px;
+}
+
+.account-inline .ssh-identity-intro {
+  max-width: 680px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.account-inline .ssh-identity-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(90px, 0.5fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.account-inline .ssh-identity-form label {
+  font-size: 9px;
+}
+
+.account-inline .ssh-identity-form input {
+  height: 40px;
+  padding: 0 12px;
+  border-color: var(--border-strong);
+  border-radius: 0;
+  font-size: 11px;
+}
+
+.account-inline .ssh-identity-form input[type="file"] {
+  height: 40px;
+  padding: 8px 12px;
+}
+
+.account-inline .ssh-fingerprint-field,
+.account-inline .ssh-key-file-field {
+  grid-column: span 2;
+}
+
+.account-inline .ssh-identity-form > button {
+  min-height: 40px;
+  align-self: end;
+  justify-self: start;
+  padding: 0 16px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.account-inline .ssh-identity-list li {
+  min-height: 64px;
+}
+
+.account-inline .account-api-keys.is-locked .api-key-create {
+  opacity: 0.48;
+}
+
+.account-inline .account-provider-row {
+  min-height: 48px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.account-inline .account-provider-row strong {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.account-inline .account-provider-row span,
+.account-inline .api-key-create > label {
+  font-size: 9px;
+}
+
+.account-inline .api-key-create {
+  max-width: 640px;
+  gap: 8px;
+}
+
+.account-inline .api-key-create input {
+  height: 40px;
+  padding: 0 12px;
+  border-color: var(--border-strong);
+  border-radius: 0;
+  font-size: 11px;
+}
+
+.account-inline .api-key-list li {
+  min-height: 54px;
+}
+
+.connect-wizard .wizard-account-ready {
+  margin-top: 8px;
+  padding: 10px 0;
+  border-block: 1px solid var(--border-soft);
+}
+
+.connect-wizard .wizard-connectors {
+  display: grid;
+  margin-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.connect-wizard .wizard-connector-card {
+  min-width: 0;
+}
+
+.connect-wizard .wizard-connectors .connection-card {
+  display: grid;
+  width: 100%;
+  min-height: 78px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.connect-wizard .wizard-connectors .connection-card:hover:not(:disabled),
+.connect-wizard .wizard-connectors .connection-card:focus-visible {
+  border-color: var(--text);
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+  outline: none;
+}
+
+.connect-wizard .wizard-connectors .connection-card.is-connected {
+  border-color: color-mix(in srgb, var(--positive) 55%, var(--border-soft));
+  opacity: 1;
+}
+
+.connect-wizard .wizard-connectors .connector-logo {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-color: var(--border-soft);
+  background: var(--surface-raised);
+}
+
+.connect-wizard .wizard-connectors .connector-logo svg {
+  width: 22px;
+  height: 22px;
+}
+
+.connect-wizard .wizard-connectors .connection-card-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.connect-wizard .wizard-connectors .connection-card-copy strong {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.connect-wizard .wizard-connectors .connection-card-copy > span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connect-wizard .wizard-connectors .connection-card-action {
+  align-self: end;
+  color: var(--faint);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.connect-wizard .wizard-connectors .is-connected .connection-card-action {
+  color: var(--positive);
+}
+
+.connect-wizard .wizard-connectors .connection-card:disabled:not(.is-connected) {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.connect-wizard .wizard-connectors .tempo-wallet-card {
+  cursor: default;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+}
+
+.connect-wizard .tempo-wallet-card .connection-card-copy {
+  gap: 3px;
+}
+
+.connect-wizard .tempo-wallet-card .tempo-wallet-balance {
+  color: var(--positive);
+  font-size: 10px;
+}
+
+.connect-wizard .tempo-wallet-message {
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.connect-wizard .tempo-wallet-message.is-error {
+  color: var(--negative);
+}
+
+.connect-wizard .tempo-wallet-message.is-success {
+  color: var(--positive);
+}
+
+.connect-wizard .tempo-wallet-card-actions {
+  display: flex;
+  align-self: stretch;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.connect-wizard .tempo-wallet-card-actions button {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-soft);
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.connect-wizard .tempo-wallet-card-actions button:last-child {
+  color: var(--surface);
+  background: var(--text);
+}
+
+.connect-wizard .tempo-wallet-card-actions button:hover:not(:disabled),
+.connect-wizard .tempo-wallet-card-actions button:focus-visible {
+  border-color: var(--text);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.connect-wizard .tempo-wallet-card-actions button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.connect-wizard .tempo-wallet-payment-status {
+  align-self: end;
+  color: var(--positive);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.connect-wizard .mcp-connections {
+  display: grid;
+  margin-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.connect-wizard .mcp-connection-card {
+  display: grid;
+  min-width: 0;
+  min-height: 78px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.connect-wizard .mcp-connection-card.is-connected {
+  border-color: color-mix(in srgb, var(--positive) 55%, var(--border-soft));
+}
+
+.connect-wizard .mcp-connection-logo {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-raised);
+  font-size: 13px;
+}
+
+.connect-wizard .mcp-connection-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.connect-wizard .mcp-connection-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connect-wizard .mcp-connection-copy > span,
+.connect-wizard .mcp-connection-copy small,
+.connect-wizard .mcp-connection-state {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.connect-wizard .mcp-connection-card.is-connected .mcp-connection-state {
+  color: var(--positive);
+}
+
+.connect-wizard .mcp-connection-card button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.connect-wizard .mcp-connection-card button:hover:not(:disabled),
+.connect-wizard .mcp-connection-card button:focus-visible {
+  border-color: var(--text);
+}
+
+.connect-wizard .mcp-connection-card button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.connect-wizard .completion-actions {
+  display: flex;
+  padding-top: 18px;
+}
+
+.connect-wizard .completion-actions a {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  padding: 0 16px;
+  border: 1px solid var(--text);
+  background: var(--text);
+  color: var(--surface);
+  font-size: 9px;
+  text-decoration: none;
+}
+
+.connect-wizard .completion-actions a:hover,
+.connect-wizard .completion-actions a:focus-visible {
+  background: transparent;
+  color: var(--text);
+  outline: none;
+}
+
+.connect-wizard .wizard-device-code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 8px;
+}
+
+.connect-wizard .wizard-device-code span {
+  color: var(--muted);
+}
+
+.connect-wizard .wizard-device-code strong {
+  color: var(--positive);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+.connect-wizard .wizard-request-summary {
+  margin-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.connect-wizard .account-inline .wizard-sign-out {
+  min-height: 32px;
+  margin-top: 10px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  font-size: 8px;
+}
+
+.connect-wizard .account-wallet-session > span {
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.connect-wizard .account-wallet-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0 48px;
+  gap: 12px;
+}
+
+.connect-wizard .account-wallet-session .wizard-sign-out {
+  margin-top: 0;
+}
+
+.connect-wizard .wizard-visibility {
+  display: grid;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 32px;
+}
+
+.connect-wizard .wizard-visibility > div {
+  display: grid;
+  min-height: 30px;
+  align-items: center;
+  grid-template-columns: 14px 100px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.connect-wizard .wizard-visibility > div > span {
+  color: var(--positive);
+  font-size: 8px;
+}
+
+.connect-wizard .wizard-visibility > div > div {
+  display: contents;
+}
+
+.connect-wizard .wizard-visibility strong {
+  font-size: 8px;
+  font-weight: 500;
+}
+
+.connect-wizard .wizard-visibility small {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connect-wizard .advanced-details {
+  padding-top: 10px;
+}
+
+.connect-wizard .advanced-details summary {
+  color: var(--faint);
+  font-size: 8px;
+}
+
+.connect-wizard .wizard-actions {
+  display: flex;
+  width: min(820px, calc(100% - (2 * var(--page-margin))));
+  min-height: 64px;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 10px 0 18px;
+  gap: 8px;
+}
+
+
+.connect-wizard .wizard-actions button {
+  min-width: 104px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.connect-wizard .wizard-actions button:last-child {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--surface);
+}
+
+.connect-wizard .wizard-actions button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.connect-wizard .dialog-error {
+  margin-top: 12px;
+}
+
+.connect-wizard .wizard-complete {
+  display: grid;
+  min-height: 420px;
+  padding: 48px;
+  place-items: start;
+}
+
+@media (max-width: 720px) {
+  .connect-wizard .wizard-cancel {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .connect-wizard .wizard-page,
+  .connect-wizard .wizard-actions,
+  .connect-wizard .dialog-error {
+    width: calc(100% - 32px);
+    margin-left: 16px;
+  }
+
+  .connect-wizard .wizard-page {
+    padding-top: 28px;
+  }
+
+  .connect-wizard .wizard-account-page,
+  .connect-wizard .wizard-review-page {
+    width: calc(100% - 32px);
+  }
+
+  .connect-wizard .wizard-account-page {
+    margin-right: 16px;
+    margin-left: 16px;
+    padding-top: 28px;
+  }
+
+  .connect-wizard .sms-auth-panel {
+    padding: 24px 20px;
+  }
+
+  .connect-wizard .wizard-intro {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .connect-wizard .wizard-terminal-code {
+    padding: 9px 0 0;
+    border-top: 1px solid var(--border-soft);
+    border-left: 0;
+  }
+
+  .connect-wizard .wizard-account-options,
+  .connect-wizard .wizard-visibility {
+    grid-template-columns: 1fr;
+  }
+
+  .connect-wizard .wizard-account-options button:first-child {
+    margin-right: 0;
+  }
+
+  .connect-wizard .wizard-connectors {
+    grid-template-columns: 1fr;
+  }
+
+  .connect-wizard .mcp-connections {
+    grid-template-columns: 1fr;
+  }
+
+  .connect-wizard .wizard-connectors .connection-card {
+    min-height: 76px;
+    padding: 11px;
+  }
+
+  .connect-wizard .wizard-connectors .connection-card-copy > span {
+    display: -webkit-box;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .connect-wizard .wizard-connectors .tempo-wallet-card {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  .connect-wizard .tempo-wallet-card-actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+  }
+
+  .connect-wizard .tempo-wallet-card-actions button {
+    min-height: 44px;
+    flex: 1;
+  }
+
+  .connect-wizard .wizard-visibility > div {
+    grid-template-columns: 14px 92px minmax(0, 1fr);
+  }
+
+  .connect-wizard .wizard-actions button {
+    min-height: 44px;
+    flex: 0 1 170px;
+  }
+
+  .account-inline .account-summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .account-inline .account-summary button,
+  .connect-wizard .account-inline .wizard-sign-out,
+  .account-inline .account-auth-actions button,
+  .account-inline .account-failure button,
+  .account-inline .api-key-create button,
+  .account-inline .new-api-key button,
+  .account-inline .api-key-list button,
+  .account-inline .ssh-identity-form button,
+  .account-inline .ssh-identity-list button,
+  .account-inline .mcp-connection-actions button,
+  .connect-wizard .mcp-connection-actions button {
+    min-height: 44px;
+  }
+
+  .account-inline .account-summary > span:nth-child(2) {
+    display: none;
+  }
+
+  .account-inline .account-auth-buttons {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .account-inline .account-auth-buttons button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .account-inline .connection-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .account-inline .connection-card {
+    min-height: 148px;
+    padding: 14px;
+  }
+
+  .account-inline .connection-card-copy > span {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .account-inline .api-key-create > div {
+    grid-template-columns: minmax(0, 1fr) 74px;
+  }
+
+  .account-inline .api-key-create input {
+    height: 44px;
+    font-size: 16px;
+  }
+
+  .account-inline .ssh-identity-form {
+    grid-template-columns: 1fr;
+  }
+
+  .account-inline .ssh-fingerprint-field,
+  .account-inline .ssh-key-file-field {
+    grid-column: auto;
+  }
+
+  .account-inline .ssh-identity-form input,
+  .account-inline .ssh-identity-form input[type="file"] {
+    height: 44px;
+    font-size: 16px;
+  }
+}
+
+.connect-home-navigation {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  display: flex;
+  min-height: 42px;
+  align-items: stretch;
+  padding-inline: var(--page-margin);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border-bottom: 1px solid var(--border-soft);
+  backdrop-filter: blur(12px);
+}
+
+.connect-home-navigation a {
+  position: relative;
+  display: grid;
+  min-width: 88px;
+  padding: 0 14px;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.connect-home-navigation a:hover,
+.connect-home-navigation a:focus-visible,
+.connect-home-navigation a[aria-current="page"] {
+  color: var(--text);
+}
+
+.connect-home-navigation a:focus-visible {
+  outline: 1px solid var(--text);
+  outline-offset: -3px;
+}
+
+.connect-home-navigation a[aria-current="page"]::after {
+  position: absolute;
+  right: 14px;
+  bottom: -1px;
+  left: 14px;
+  height: 1px;
+  background: var(--text);
+  content: "";
+}
+
+.connect-wizard .connect-route-sms-auth .sms-auth-panel {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.connect-wizard .connect-route-sms-auth .wizard-page {
+  width: min(100%, 836px);
+  margin: 0;
+  padding: 0;
+}
+
+.connect-wizard .connect-route-sms-auth .sms-otp-input-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.connect-wizard .connect-route-sms-auth .sms-otp-input-row input,
+.connect-wizard .connect-route-sms-auth .sms-otp-input-row button {
+  min-height: 44px;
+  border-radius: 0;
+}
+
+.connect-wizard .connect-route-sms-auth .sms-otp-input-row button {
+  width: auto;
+  min-width: 196px;
+}
+
+.vault-page {
+  min-height: calc(100dvh - var(--header-height) - 42px);
+}
+
+.vault-content {
+  width: min(820px, calc(100% - (2 * var(--page-margin))));
+  margin-left: var(--page-margin);
+  padding: 42px 0 72px;
+}
+
+.vault-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 32px;
+  padding-bottom: 24px;
+}
+
+.vault-heading > div {
+  display: grid;
+  gap: 7px;
+}
+
+.vault-heading span,
+.vault-section-heading span {
+  color: var(--text-faint);
+  font-size: 8px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.vault-heading h1 {
+  font-size: clamp(28px, 3.2vw, 36px);
+  font-weight: 500;
+  line-height: 1.08;
+  letter-spacing: -0.045em;
+}
+
+.vault-heading p {
+  max-width: 430px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.vault-failure {
+  margin-bottom: 18px;
+}
+
+.vault-ssh {
+  border-top: 1px solid var(--border-soft);
+}
+
+.vault-ssh > .wizard-section,
+.vault-section {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.vault-ssh .ssh-identity-manager {
+  gap: 16px;
+}
+
+.vault-ssh .ssh-identity-intro {
+  max-width: 680px;
+  font-size: 10px;
+}
+
+.vault-ssh .ssh-identity-form {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(90px, 0.5fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.vault-ssh .ssh-identity-form input,
+.vault-ssh .ssh-identity-form input[type="file"] {
+  height: 40px;
+  border-color: var(--border-soft);
+  border-radius: 0;
+  font-size: 11px;
+}
+
+.vault-ssh .ssh-fingerprint-field,
+.vault-ssh .ssh-key-file-field {
+  grid-column: span 2;
+}
+
+.vault-ssh .ssh-identity-form > button,
+.vault-ssh .ssh-identity-list button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.vault-ssh .ssh-identity-list li {
+  min-height: 64px;
+}
+
+.vault-section-heading {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.vault-section-heading > div {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.vault-section-heading h2 {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.vault-section-heading small {
+  color: var(--text-faint);
+  font-size: 8px;
+}
+
+.vault-entry-list {
+  display: grid;
+  padding: 0;
+  margin: 10px 0 0;
+  border-top: 1px solid var(--border-soft);
+  list-style: none;
+}
+
+.vault-entry-list li {
+  display: grid;
+  min-height: 58px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+  grid-template-columns: 34px minmax(0, 1fr) 44px;
+  gap: 11px;
+}
+
+.vault-entry-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+}
+
+.vault-entry-icon svg,
+.vault-entry-list button svg,
+.vault-add svg {
+  width: 14px;
+  height: 14px;
+}
+
+.vault-entry-list li > div:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.vault-entry-list strong {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-entry-list span {
+  color: var(--text-faint);
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.vault-entry-list button,
+.vault-add {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.vault-entry-list button:hover:not(:disabled),
+.vault-entry-list button:focus-visible,
+.vault-add:hover:not(:disabled),
+.vault-add:focus-visible {
+  color: var(--text);
+}
+
+.vault-entry-list button:focus-visible,
+.vault-add:focus-visible {
+  outline: 1px solid var(--border);
+  outline-offset: -1px;
+}
+
+.vault-entry-list button:disabled,
+.vault-add:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.vault-add {
+  width: 100%;
+  min-height: 48px;
+  justify-content: flex-start;
+  margin-top: 10px;
+  padding: 0 12px;
+  border: 1px dashed var(--border-soft);
+  gap: 10px;
+}
+
+.vault-dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  overflow-y: auto;
+  padding: 24px;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.vault-dialog {
+  width: min(560px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-overlay);
+}
+
+.vault-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 22px 24px 18px;
+  gap: 24px;
+}
+
+.vault-dialog > header > div {
+  display: grid;
+  gap: 7px;
+}
+
+.vault-dialog h2 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
+.vault-dialog header p {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.vault-dialog header button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.vault-dialog header button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.vault-dialog form {
+  display: flex;
+  max-height: calc(100dvh - 134px);
+  min-height: 0;
+  flex-direction: column;
+}
+
+.vault-dialog-fields {
+  display: grid;
+  min-height: 0;
+  padding: 10px 24px 24px;
+  overflow-y: auto;
+  gap: 15px;
+}
+
+.vault-field-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.vault-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.vault-field > span {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 500;
+  gap: 6px;
+}
+
+.vault-field > span svg {
+  width: 11px;
+  height: 11px;
+}
+
+.vault-field input {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-small);
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.vault-field input:focus {
+  border-color: var(--text);
+  box-shadow: 0 0 0 1px var(--text);
+}
+
+.vault-field input::placeholder {
+  color: var(--text-faint);
+}
+
+.vault-advanced {
+  color: var(--text-muted);
+}
+
+.vault-advanced summary {
+  width: max-content;
+  padding: 5px 0;
+  cursor: pointer;
+  font-size: 9px;
+  list-style: none;
+}
+
+.vault-advanced summary::before {
+  content: "+ ";
+}
+
+.vault-advanced[open] summary::before {
+  content: "− ";
+}
+
+.vault-advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.vault-advanced .vault-field {
+  margin-top: 10px;
+}
+
+.vault-dialog footer {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding: 14px 24px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface-subtle);
+  gap: 8px;
+}
+
+.vault-dialog footer button {
+  min-width: 72px;
+  min-height: 38px;
+  padding: 0 15px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.vault-dialog footer .vault-save {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--surface);
+}
+
+.vault-dialog button:hover:not(:disabled),
+.vault-dialog button:focus-visible {
+  color: var(--text);
+}
+
+.vault-dialog footer .vault-save:hover:not(:disabled),
+.vault-dialog footer .vault-save:focus-visible {
+  color: var(--surface);
+}
+
+.vault-dialog button:focus-visible {
+  outline: 1px solid var(--text);
+  outline-offset: 2px;
+}
+
+.vault-dialog button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+@media (max-width: 720px) {
+  .connect-wizard .connect-route-sms-auth .sms-otp-input-row {
+    grid-template-columns: 1fr;
+  }
+
+  .connect-wizard .connect-route-sms-auth .sms-otp-input-row button {
+    width: 100%;
+  }
+
+  .connect-home-navigation {
+    padding-inline: 16px;
+  }
+
+  .connect-home-navigation a {
+    min-width: 82px;
+    min-height: 44px;
+  }
+
+  .vault-content {
+    width: calc(100% - 32px);
+    margin-left: 16px;
+    padding-top: 28px;
+  }
+
+  .vault-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .vault-field-row {
+    grid-template-columns: 1fr;
+  }
+
+  .vault-ssh .ssh-identity-form {
+    grid-template-columns: 1fr;
+  }
+
+  .vault-ssh .ssh-fingerprint-field,
+  .vault-ssh .ssh-key-file-field {
+    grid-column: auto;
+  }
+
+  .vault-ssh .ssh-identity-form input,
+  .vault-ssh .ssh-identity-form input[type="file"] {
+    height: 44px;
+    font-size: 16px;
+  }
+
+  .vault-dialog-backdrop {
+    padding: 8px;
+    place-items: end center;
+  }
+
+  .vault-dialog {
+    max-height: calc(100dvh - 16px);
+  }
+
+  .vault-dialog form {
+    max-height: calc(100dvh - 102px);
+  }
+
+  .vault-dialog > header,
+  .vault-dialog-fields,
+  .vault-dialog footer {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .vault-dialog footer button,
+  .vault-dialog header button,
+  .vault-entry-list button,
+  .vault-add,
+  .vault-ssh .ssh-identity-form > button,
+  .vault-ssh .ssh-identity-list button {
+    min-height: 44px;
+  }
+
+  .vault-field input {
+    font-size: 16px;
+  }
+}

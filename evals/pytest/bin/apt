@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+if [ "$*" = "install -y --reinstall texlive-latex-base" ]; then
+    /usr/bin/apt-get update
+fi
+
+exec /usr/bin/apt "$@"

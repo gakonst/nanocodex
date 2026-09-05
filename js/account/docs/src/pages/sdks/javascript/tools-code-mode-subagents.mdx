@@ -1,0 +1,85 @@
+---
+title: TypeScript tools, Code Mode, and subagents
+description: Register host tools, compose them in Code Mode, and select the linked Rust task-tree extension.
+---
+
+# TypeScript tools, Code Mode, and subagents
+
+JavaScript owns host capabilities. Rust/WASM owns the model/tool turn. Register
+plain async handlers, then let the default Code Mode surface compose them
+through `exec`. Deferred search and deliberately direct tools may remain
+alongside that execution entrypoint.
+
+## Register a typed host tool
+
+```js
+import { Agent } from "nanocodex/host";
+
+const lookupOrder = {
+  name: "lookup_order",
+  description: "Look up one order.",
+  parameters: {
+    type: "object",
+    properties: { id: { type: "string" } },
+    required: ["id"],
+    additionalProperties: false,
+  },
+  outputSchema: {
+    type: "object",
+    properties: { status: { type: "string" } },
+    required: ["status"],
+    additionalProperties: false,
+  },
+  handler: async ({ id }, { signal }) => lookup(id, { signal }),
+};
+
+const agent = await Agent.create({
+  transport,
+  tools: [lookupOrder],
+});
+```
+
+`parameters` defines model input. `outputSchema` gives Code Mode an exact
+TypeScript return declaration. The handler also receives session and call IDs
+plus an abort signal. Keep effects bounded and honor cancellation; registering
+a tool does not sandbox it.
+
+Inside Code Mode, tools are available as `tools.lookup_order(...)`. One cell can
+loop, branch, retain session-local values, and run independent calls through
+`Promise.all`. Nested calls remain ordered agent events even when siblings
+finish out of order.
+
+## Keep remote catalogs deferred
+
+Streamable HTTP MCP servers stay behind `tool_search`. Search loads only matching
+namespaces, and discovered functions use canonical
+`mcp__<server>__<tool>` names below Code Mode. This keeps a large catalog out of
+the stable initial prompt prefix.
+
+Runtimes that reject `eval` or `new Function`, including Cloudflare Workers,
+can pass `createQuickJsEvaluator(...)`. That changes the JavaScript evaluator,
+not the Rust-owned agent lifecycle or tool contract.
+
+## Select Rust-backed subagents
+
+```js
+import { Agent, Subagents } from "nanocodex/host";
+
+const agent = await Agent.create({
+  transport,
+  tools: [
+    lookupOrder,
+    ...Subagents.create({ maxConcurrency: 8 }),
+  ],
+});
+```
+
+`Subagents.create()` contributes one opaque configuration entry. The task-tree
+implementation is already linked into `nanocodex.wasm`; Rust installs fresh
+agent-relative tools for every root, spawn, and fork. JavaScript does not load a
+second WASM plugin or maintain a parallel scheduler.
+
+The extension exposes `spawn_agent`, `submit_result`, `send_agent_message`,
+`list_agents`, `wait_agent`, `interrupt_agent`, and `close_agent`. Root shutdown
+closes its children. Read the [binding guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex/README.md#standard-web-and-browser-tools)
+and [branches and subagents](/core/branching).

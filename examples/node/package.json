@@ -1,0 +1,22 @@
+{
+  "name": "nanocodex-node-example",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=../../.env index.mjs",
+    "subagents": "node --env-file-if-exists=../../.env subagents.mjs",
+    "smoke:mpp": "node mpp.mjs",
+    "test": "node --test *.test.mjs"
+  },
+  "dependencies": {
+    "accounts": "^0.15.5",
+    "mppx": "^0.8.14",
+    "nanocodex": "workspace:*",
+    "viem": "^2.55.8",
+    "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

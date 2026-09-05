@@ -1,0 +1,75 @@
+---
+title: Web agent
+description: Run the Codex lifecycle and common coding tools locally in a browser Worker.
+---
+
+# Web agent
+
+Run the Rust/WASM Codex lifecycle in a module Worker and keep common coding work
+inside the tab. The browser package provides a persistent browser-native
+workspace. A remote host keeps API-key or managed ChatGPT routing off the page
+and serves hosted web/image tools; a caller-owned MPP session can connect
+directly. None of those routes is needed for the filesystem, Git, shell, Python,
+or compiler tools.
+
+## Work locally first
+
+`browser({ threadId })` composes:
+
+- persistent origin-private filesystem (OPFS), reusable across Worker and page
+  restarts;
+- Git and project instructions prepared with the Agent, while the larger
+  just-bash interpreter loads only on the first `exec_command`; Python through
+  Pyodide and C/C++-to-WASI compilation through wasm-clang stay lazy too;
+- Rust/WASM `apply_patch` using the canonical tool contract;
+- bounded browser Git and `gh` commands, with real Git-backed file and commit
+  views;
+- upload/download and bounded workspace operations;
+- web search, image generation, `update_plan`, and application tools;
+- public HTTPS Parquet, JSONL, and Hugging Face dataset inspection with bounded
+  cursor continuation; and
+- persistent live React source artifacts rendered in an isolated iframe.
+
+These run from browser capabilities without requiring a Vercel, Cloudflare,
+Rivet, exe.dev, or libkrun sandbox. A hosted sandbox remains useful when work
+needs arbitrary native Linux packages or stronger isolation.
+
+```js
+import { Agent, Transport } from "nanocodex/browser";
+
+const agent = await Agent.create({
+  threadId: "a7f9c210-5a3e-4b16-9d82-7b57cbb0845a",
+  transport: Transport.hostManaged({
+    websocketUrl: "/api/responses",
+  }),
+});
+```
+
+Vite applications install `nanocodex()` once; it generates WASM and owns both
+plugin graphs. See the [binding browser-tool guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex/README.md#standard-web-and-browser-tools)
+and [web architecture](https://github.com/gakonst/nanocodex/blob/master/js/account/README.md).
+
+## Current web application
+
+The production web application splits presentation, UI lifecycle, Worker
+hosting, SDK adaptation, and authenticated Worker routes. Rust/WASM still owns
+history and the tool loop. Code, commits, requests, and evals remain separate
+application surfaces. Use the [browser workspace guide](/sdks/javascript/browser-workspace)
+to compose those boundaries in your product.
+
+The web app and browser composition are experimental consumers, not the stable
+core library contract. Treat storage quotas, cross-origin isolation, CORS,
+hosted credential routing, and generated-code policy as application concerns.
+
+## Data and artifact boundaries
+
+Dataset queries execute in the caller and return bounded pages with opaque
+cursors; direct URLs need CORS, and Parquet continuation needs HTTP byte ranges.
+Artifact tools write source documents into the workspace and validate syntax,
+but do not dynamically evaluate code inside the tool handler. The embedding app
+chooses iframe headers, source capacity, persistence, and preview policy.
+
+OPFS is origin-private durable storage, not a cross-device sync system. Give
+each product thread a stable name, expose upload/download deliberately, and
+decide when a user can delete or export it. Hosted search and image endpoints
+must independently enforce authentication and request/output bounds.

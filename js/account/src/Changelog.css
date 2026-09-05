@@ -1,0 +1,140 @@
+.changelog-page {
+  width: min(100%, 740px);
+  min-height: calc(100svh - var(--shell-header-height));
+  padding: 36px var(--page-margin) 96px;
+  margin-inline: auto;
+}
+
+.changelog-title {
+  padding-bottom: 20px;
+}
+
+.changelog-title h1,
+.changelog-nightly h2,
+.changelog-nightly h3 {
+  font: inherit;
+  font-weight: 700;
+}
+
+.changelog-title h1 {
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.changelog-nightly {
+  padding-top: 24px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.changelog-nightly > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+  margin-bottom: 30px;
+}
+
+.changelog-nightly h2 {
+  font-size: 12px;
+}
+
+.changelog-nightly time,
+.changelog-nightly > header a {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.changelog-nightly > header a {
+  margin-left: auto;
+}
+
+.changelog-categories {
+  display: grid;
+  gap: 30px;
+}
+
+.changelog-categories h3 {
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.changelog-categories ul {
+  display: grid;
+  gap: 9px;
+  padding-left: 17px;
+  margin: 0;
+  list-style: none;
+}
+
+.changelog-categories li {
+  position: relative;
+  line-height: 1.6;
+}
+
+.changelog-categories li::before {
+  position: absolute;
+  left: -13px;
+  color: var(--text-muted);
+  content: "-";
+}
+
+.changelog-categories p {
+  margin: 0;
+  color: color-mix(in srgb, var(--text) 90%, transparent);
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.changelog-categories a {
+  color: var(--text);
+}
+
+.changelog-empty {
+  color: var(--text-faint) !important;
+  font-size: 11px;
+}
+
+.changelog-error {
+  display: grid;
+  gap: 14px;
+  align-content: center;
+  width: min(100%, 700px);
+  min-height: calc(100svh - var(--shell-header-height));
+  padding: var(--page-margin);
+  margin-inline: auto;
+}
+
+.changelog-error h1,
+.changelog-error p {
+  margin: 0;
+}
+
+.changelog-error p {
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.changelog-error button {
+  justify-self: start;
+  min-height: 44px;
+  padding: 0 12px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  cursor: pointer;
+  font: inherit;
+}
+
+@media (max-width: 640px) {
+  .changelog-page {
+    padding-top: 30px;
+  }
+
+  .changelog-nightly > header a {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+}

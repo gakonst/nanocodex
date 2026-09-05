@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "task": "transport_control",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "low",
+  "text_verbosity": "low",
+  "base_instructions": "You are a deterministic conversation benchmark. Do not use tools. Follow each user instruction exactly and reply only with the requested token.",
+  "fact_count": 600,
+  "chain_turns": 10,
+  "fork_turns": [3, 6, 9],
+  "first_prompt_prefix": "Memorize these deterministic facts for later turns. Do not use tools.",
+  "mainline_prompt": "Reply only MAIN_11.",
+  "prompt_fnv1a64": "7d12d275e9076ba3"
+}

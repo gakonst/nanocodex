@@ -1,0 +1,32 @@
+{
+  "name": "nanocodex-cloudflare-fetch-mcp-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "prepare:wasm": "node scripts/prepare-wasm.mjs",
+    "prebuild": "npm run prepare:wasm",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "check": "npm run typecheck && npm test && npm run build",
+    "dev": "npm run prepare:wasm && wrangler dev",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "minisearch": "7.2.0",
+    "mppx": "0.8.17",
+    "nanocodex": "file:../../js/nanocodex",
+    "quickjs-emscripten-core": "0.32.0",
+    "viem": "2.55.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260730.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.115.0"
+  }
+}

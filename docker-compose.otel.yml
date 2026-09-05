@@ -1,0 +1,11 @@
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: nanocodex-jaeger
+    command:
+      - --query.ui-config=/etc/jaeger/ui-config.json
+    volumes:
+      - ./jaeger-ui-config.json:/etc/jaeger/ui-config.json:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:16686:16686"

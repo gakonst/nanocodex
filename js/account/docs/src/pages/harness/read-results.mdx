@@ -1,0 +1,56 @@
+---
+title: Read a harness result
+description: Separate verifier outcomes, infrastructure health, harness behavior, and cost.
+---
+
+# Read a harness result
+
+Start with the row. End with the trajectory. A pass rate without its exact
+workset and evidence is not a useful harness decision.
+
+## 1. Check terminal state
+
+- `success`: the canonical verifier completed and passed.
+- `failed`: the canonical verifier completed and failed.
+- `unclaimed` after an attempt: infrastructure failed and the row was released.
+- `running`: one current claim owns the row.
+
+Read recent infrastructure failures before blaming the harness. Look for lost
+workers, provider errors, preparation failures, OOMs, and fenced late writes.
+
+## 2. Read the verifier
+
+Open the retained reward and verifier stdout/stderr. Confirm that the verifier
+actually measured the task contract. Do not edit a benchmark task or verifier
+to make a treatment pass.
+
+## 3. Read the trajectory
+
+Inspect `agent/trajectory.json` and the raw event JSONL. Check:
+
+- what the agent believed the task required;
+- which tools ran and in what order;
+- whether tool results support the final answer;
+- whether cancellation, retry, or compaction changed the path; and
+- whether the final workspace matches the verifier outcome.
+
+Use `agent/api-exchanges.jsonl` for model traffic, usage, cache, and retry
+questions. Treat it as sensitive conversation data.
+
+## 4. Compare like with like
+
+Bind every published comparison to the workset digest, task digests, harness
+and candidate versions, model, thinking level, instructions, tool policy,
+environment, verifier, resources, timeouts, and retained row IDs. External
+harnesses are independent coordinates. Join matching coordinates offline; do
+not infer a pair from similar names.
+
+## 5. Decide
+
+Use verifier pass/fail for task quality. Use duration, tokens, cost, cache, and
+tool counts to explain the path. Use attempt history, throughput, stale claims,
+OOMs, and recovery to judge operations. High CPU, memory, swap, or load alone
+is not a failed wave.
+
+For the full ledger and isolation model, read the
+[evaluation contract](/evals).

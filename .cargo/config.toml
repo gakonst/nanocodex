@@ -1,0 +1,24 @@
+[env]
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = { value = "scripts/aarch64-unknown-linux-musl-linker", relative = true, force = true }
+CC_aarch64_unknown_linux_musl = { value = "scripts/aarch64-unknown-linux-musl-linker", relative = true, force = true }
+AR_aarch64_unknown_linux_musl = { value = "scripts/aarch64-unknown-linux-musl-ar", relative = true, force = true }
+
+[target.aarch64-apple-darwin]
+linker = "/usr/bin/clang"
+
+[target.aarch64-unknown-linux-musl]
+linker = "scripts/aarch64-unknown-linux-musl-linker"
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+# libc 0.2.189 requires an explicit ABI floor before exposing statx on musl.
+# Nanocodex's supported Linux VM host requires musl >= 1.2.3.
+# The guest runtime is a standalone release artifact and must have no interpreter.
+rustflags = [
+  "--cfg=libc_unstable_musl_v1_2_3",
+  "-C",
+  "link-arg=-static",
+]
+
+[target.x86_64-apple-darwin]
+linker = "/usr/bin/clang"

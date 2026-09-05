@@ -1,0 +1,16 @@
+{
+  "fresh_import_ms_p50": 100.0,
+  "fresh_import_ms_p95": 150.0,
+  "warm_agent_construction_ms_p50": 5.0,
+  "warm_agent_construction_ms_p95": 10.0,
+  "shared_runtime_thread_growth_after_first_agent": 3,
+  "additional_agent_construction_thread_growth": 1,
+  "retained_shared_thread_growth_after_shutdown": 5,
+  "prompt_acceptance_ms_p50": 2.0,
+  "prompt_acceptance_ms_p95": 5.0,
+  "mock_turn_result_ms_p50": 50.0,
+  "mock_turn_result_ms_p95": 100.0,
+  "event_delivery_us_per_event": 1000.0,
+  "event_payload_decode_us_per_event": 1000.0,
+  "eight_agent_wall_ms": 1000.0
+}

@@ -1,0 +1,60 @@
+---
+title: Quick start
+description: Install Nanocodex, authenticate, and run your first coding-agent turn.
+---
+
+# Quick start
+
+Nanocodex is a Rust agents SDK with native, Node, browser/WASM, and Python
+consumers. It owns the OpenAI Responses session, retained history, tool loop,
+typed results, and cleanup. Your application owns the interface and product
+policy.
+
+## Try the CLI
+
+Install the release binary on Apple Silicon macOS or x86-64 glibc Linux:
+
+```sh
+curl -fsSL https://nanocodex.paradigm.xyz | bash
+nanocodex auth login
+nanocodex
+```
+
+`auth login` uses your ChatGPT subscription. For an API-key session instead:
+
+```sh
+export OPENAI_API_KEY="..."
+nanocodex run "Inspect this workspace and summarize it."
+```
+
+The interactive command opens the TUI. `nanocodex run` emits flushed JSONL for
+one prompt. Local tools run with the authority of the process, so start in a
+workspace the agent may change.
+
+## Embed the agent
+
+For Node.js 22.13 or newer:
+
+```sh
+npm install nanocodex
+```
+
+Start with the [JavaScript / TypeScript walkthrough](/sdks/javascript). It
+covers the retained `Agent` lifecycle, Node and browser entrypoints, browser
+WASM, React, and concrete Cloudflare and Vercel deployments.
+
+For Rust:
+
+```sh
+cargo add nanocodex tokio --features tokio/full
+```
+
+The Rust facade returns `(Nanocodex, AgentEvents)`. Prompts are accepted in
+order and produce independently awaitable typed results. Follow-on prompts
+reuse committed history, the connection, tools, shell sessions, and cache
+identity without replaying prior messages.
+
+Continue with [installation and authentication](/getting-started),
+[embedding Nanocodex in JavaScript](/sdks/javascript), or the
+[Rust SDK](/sdks/rust). To review retained benchmark results, go straight to
+[Evals](/evals).

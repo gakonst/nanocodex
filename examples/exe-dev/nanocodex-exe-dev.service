@@ -1,0 +1,22 @@
+[Unit]
+Description=Nanocodex private project agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=exedev
+Group=exedev
+WorkingDirectory=/home/exedev/workspace
+Environment=OPENAI_API_KEY=exe-integration-placeholder
+Environment=NANOCODEX_EXE_API_BASE=https://nanocodex-subscription.int.exe.xyz/v1
+Environment=NANOCODEX_EXE_TRANSPORT=https
+Environment=NANOCODEX_EXE_LISTEN=0.0.0.0:9998
+Environment=NANOCODEX_EXE_WORKSPACE=/home/exedev/workspace
+Environment=NANOCODEX_EXE_STATE_FILE=/home/exedev/.local/state/nanocodex/session.json
+ExecStart=/usr/local/bin/nanocodex-exe-dev
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

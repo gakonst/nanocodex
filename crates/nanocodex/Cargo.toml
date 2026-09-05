@@ -1,0 +1,49 @@
+[package]
+name = "nanocodex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "Alloy-style facade for the Nanocodex agents SDK"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["-D", "warnings"]
+
+[features]
+default = ["durability", "openai", "tools"]
+durability = ["dep:nanocodex-durability", "openai"]
+managed = ["dep:nanocodex-managed"]
+observability = ["dep:nanocodex-observability"]
+openai = ["nanocodex-agent/openai", "nanocodex-oai-api/client"]
+realtime = ["openai", "nanocodex-oai-api/realtime"]
+tools = [
+    "dep:nanocodex-tools",
+    "nanocodex-managed?/tools",
+    "nanocodex-tools/attachment",
+]
+workspace-tools = ["tools", "nanocodex-tools/workspace-runtime"]
+
+[dependencies]
+nanocodex-agent = { path = "../nanocodex-agent", version = "0.5.0", default-features = false }
+nanocodex-durability = { workspace = true, optional = true }
+nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.5.0", default-features = false, features = ["events"] }
+nanocodex-tools = { path = "../nanocodex-tools", version = "0.5.0", default-features = false, optional = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocodex-managed = { workspace = true, optional = true }
+nanocodex-observability = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

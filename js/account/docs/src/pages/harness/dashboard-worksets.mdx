@@ -1,0 +1,41 @@
+---
+title: Dashboard and worksets
+description: Browse retained public worksets or observe a complete local eval ledger.
+---
+
+# Dashboard and worksets
+
+A workset is one content-addressed generation of task, harness, model, thinking,
+and repetition rows. Its digest is the stable identity for links and reports;
+the profile name is only a mutable label for its newest generation.
+
+## Public dashboard
+
+Open the [retained Nanocodex eval dashboard](/evals)
+to browse published worksets. Select a workset, then a task, to see its treatment
+matrix, individual outcomes, durations, token use, cost, and pass data.
+
+The dashboard is read-only. It reflects retained coordinator data and does not
+start runs from your browser. A chart or aggregate is useful only when its
+workset digest and underlying outcomes remain available.
+
+## Local observer
+
+If you have a complete eval distribution and a local ledger, read exact counts:
+
+```sh
+nanocodex eval status focused-run --json
+```
+
+Or watch that ledger in the read-only TUI:
+
+```sh
+nanocodex eval attach focused-run
+```
+
+`attach` does not add rows, launch workers, or own retry policy. By default both
+commands read `~/.nanocodex/evals`; pass `--state-dir` only when your distribution
+uses another explicit location.
+
+Next: understand [retained evidence](/harness/evidence), then
+[interpret the result](/harness/read-results).

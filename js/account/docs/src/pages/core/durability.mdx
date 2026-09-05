@@ -1,0 +1,88 @@
+---
+title: Durable execution
+description: Resume accepted work with Rust-owned journaling over a tiny host store contract.
+---
+
+# Durable execution
+
+Use `nanocodex-durability` when an accepted prompt must survive a process or
+platform restart. The optional layer journals operations and their internal
+steps so a host can deduplicate prompts, reconstruct checkpoints, replay
+committed step outputs, and classify interrupted work without moving recovery
+policy into a framework adapter.
+
+```text
+nanocodex-oai-api <- nanocodex-tools <- nanocodex-agent
+                                             ^
+                                             |
+                                  nanocodex-durability
+```
+
+The dependency direction matters: the agent exposes a neutral execution-policy
+seam, while durability depends on and implements that seam. Building an agent
+without `.durability(...)` keeps the ordinary non-durable lifecycle.
+
+## Attach a journal
+
+```rust
+use nanocodex::{DurableAgentExt, Nanocodex, OpenAi, Tools};
+use nanocodex::durability::{DurableSession, MemoryStore};
+
+let openai = OpenAi::new(std::env::var("OPENAI_API_KEY")?)?;
+let tools = Tools::builder().without_defaults().build()?;
+let store = MemoryStore::new()?;
+let journal = DurableSession::open(store, "agent-123").await?;
+
+let (agent, _events) = Nanocodex::builder(openai)
+    .tools(tools)
+    .durability(journal)
+    .await?
+    .build()?;
+
+let turn = agent.prompt("Inspect the repository.").await?;
+println!("{}", turn.request_id().unwrap_or("generated at admission"));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+This smallest composition example is process-local; `MemoryStore` does not
+survive restart. Use the optional SQLite or Postgres store, or implement the
+host store contract, for durable recovery.
+
+Callers may provide a stable request ID for end-to-end idempotency or let
+durable admission generate one. The selected identity is exposed on both the
+`Turn` and completed `TurnResult`.
+
+## What Rust owns
+
+- the append-only journal format and typed state reduction;
+- optimistic revisions and operation-input conflict detection;
+- model-call, tool-call, and committed-session step boundaries;
+- operation deduplication and completed-output replay;
+- checkpoint selection and reconstruction; and
+- retry classification, including an explicit ambiguous result for an unsafe
+  step that may have produced an external side effect before interruption.
+
+An unfinished retry-safe step may begin another attempt. An unfinished unsafe
+step is never silently repeated. That distinction is the reason durability is
+part of the agent execution boundary rather than prompt text or a platform
+Workflow retry wrapper.
+
+## What the host owns
+
+The host store contract has only two operations:
+
+1. `load(journal_id)` returns ordered opaque batches and the current revision.
+2. `append(journal_id, expected_revision, payload)` atomically compares the
+   revision and appends an opaque payload.
+
+Hosts do not deserialize model outputs, tool results, journal entries, or
+snapshots. `MemoryStore` is process-local and useful for tests or ephemeral
+sessions. For restart recovery, enable the native `sqlite` or `postgres`
+feature, or implement the same compare-and-append contract through the
+JavaScript/WASM host bridge.
+
+`DurableSession` is independently useful below the agent adapter: an
+application can define its own operation, step, checkpoint, and output types
+while retaining the same journal owner and store contract. See the
+[crate guide](https://github.com/gakonst/nanocodex/tree/master/crates/nanocodex-durability)
+and [runnable example](https://github.com/gakonst/nanocodex/blob/master/examples/durable.rs).

@@ -1,0 +1,74 @@
+[package]
+name = "nanocodex-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "Owned OpenAI agent lifecycle for Nanocodex"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["-D", "warnings"]
+
+[features]
+default = ["openai"]
+openai = [
+    "dep:chrono",
+    "dep:iana-time-zone",
+    "dep:nanocodex-tools",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:tower",
+    "dep:tracing",
+    "dep:web-time",
+    "dep:uuid",
+    "dep:wasm-bindgen-futures",
+    "nanocodex-oai-api/client",
+]
+
+[dependencies]
+chrono = { workspace = true, optional = true }
+futures-util.workspace = true
+iana-time-zone = { workspace = true, optional = true }
+nanocodex-oai-api = { version = "0.5.0", path = "../nanocodex-oai-api", default-features = false, features = ["events"] }
+nanocodex-tools = { workspace = true, optional = true }
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "sync"] }
+tower = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+web-time = { workspace = true, optional = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+uuid = { workspace = true, optional = true }
+
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+wasm-bindgen-futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+async-trait.workspace = true
+criterion.workspace = true
+eyre.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
+tracing-subscriber.workspace = true
+
+[[bench]]
+name = "agent_lifecycle"
+harness = false
+required-features = ["openai"]
+
+[lints]
+workspace = true

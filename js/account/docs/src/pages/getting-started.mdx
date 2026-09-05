@@ -1,0 +1,75 @@
+---
+title: Installation and authentication
+description: Install a published Nanocodex artifact and choose an explicit user-facing auth path.
+---
+
+# Installation and authentication
+
+Choose the artifact for the product you are building. All supported entrypoints
+run the same Rust-owned agent lifecycle.
+
+## Native CLI
+
+The public installer supports Apple Silicon macOS and x86-64 glibc Linux:
+
+```sh
+curl -fsSL https://nanocodex.paradigm.xyz | bash
+nanocodex --help
+```
+
+Restart your shell if the installer added `~/.nanocodex/bin` to `PATH`. Later,
+`nanocodex update` installs and activates the latest release.
+
+Use ChatGPT subscription login:
+
+```sh
+nanocodex auth login
+nanocodex auth status
+nanocodex
+```
+
+Or provide an OpenAI API key to the process:
+
+```sh
+export OPENAI_API_KEY="..."
+nanocodex run "Summarize the current workspace."
+```
+
+Direct API-key and ChatGPT login are the supported user-facing paths.
+
+## Rust
+
+Create an application from registry packages:
+
+```sh
+cargo new my-agent
+cd my-agent
+cargo add nanocodex tokio --features tokio/full
+```
+
+Continue with the [Rust SDK](/sdks/rust). Native local tools are unsandboxed;
+use a dedicated workspace or an application-owned isolation boundary when code
+must not share the embedding process's authority.
+
+## JavaScript and the browser
+
+Install the published core package on Node.js 22.13 or newer:
+
+```sh
+npm install nanocodex
+```
+
+The package exports `nanocodex/node`, the package-owned
+`nanocodex/browser` Worker, the current-isolate `nanocodex/host`, shared
+durability helpers, browser workspaces, tools, and the compiled WASM module.
+Pick the execution owner in [Install from npm](/sdks/javascript/install-entrypoints).
+
+## What to run next
+
+- `nanocodex` starts an interactive retained session.
+- `nanocodex run "..."` runs one prompt and streams JSONL.
+- `nanocodex resume` selects a discovered Codex or Nanocodex thread.
+- `nanocodex auth logout` removes the saved ChatGPT login.
+
+Use [Evals](/evals) for the separate evaluation surface. The installer-only
+eval availability is documented there rather than hidden behind build steps.

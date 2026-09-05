@@ -1,0 +1,38 @@
+{
+  "categories": [
+    {
+      "title": "## Breaking changes",
+      "labels": ["breaking-change"]
+    },
+    {
+      "title": "## Features",
+      "labels": ["feature", "enhancement"]
+    },
+    {
+      "title": "## Fixes",
+      "labels": ["fix", "bug"]
+    },
+    {
+      "title": "## Performance improvements",
+      "labels": ["performance"]
+    },
+    {
+      "title": "## Documentation",
+      "labels": ["documentation"]
+    },
+    {
+      "title": "## Dependencies",
+      "labels": ["dependencies"]
+    },
+    {
+      "title": "## Internal changes",
+      "labels": ["internal"]
+    }
+  ],
+  "ignore_labels": ["ignore-for-release"],
+  "template": "${{CHANGELOG}}\n## Other\n\n${{UNCATEGORIZED}}\n## Full Changelog:\n ${{RELEASE_DIFF}}",
+  "pr_template": "- ${{TITLE}} (#${{NUMBER}}) by @${{AUTHOR}}",
+  "empty_template": "- No changes",
+  "max_pull_requests": 500,
+  "max_back_track_time_days": 3650
+}

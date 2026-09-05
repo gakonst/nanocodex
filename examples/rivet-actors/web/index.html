@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nanocodex · Rivet Actor</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="eyebrow">NANOCODEX / RIVET ACTORS</p><h1>Inference outlives the tab.</h1></div>
+      <span id="status" class="pill">disconnected</span>
+    </header>
+    <section class="setup">
+      <label>Rivet endpoint <input id="endpoint" inputmode="url" value="http://127.0.0.1:6420"></label>
+      <label>Actor key <input id="actor-key" maxlength="128"></label>
+      <button id="connect" type="button">Connect</button>
+      <button id="new-actor" type="button" class="secondary">New actor</button>
+      <button id="detach" type="button" class="secondary">Detach</button>
+    </section>
+    <p class="meta">Actor <code id="actor">not resolved</code>. Open the same actor key in another tab to synchronize prompts, streaming output, and durable results. This page never stores model credentials or agent state.</p>
+    <section id="transcript" class="transcript" aria-live="polite"></section>
+    <form id="prompt-form">
+      <textarea id="prompt" rows="3" maxlength="1048576" placeholder="Ask the durable actor…" required></textarea>
+      <button id="send" type="submit">Run durably</button>
+    </form>
+    <footer><span id="activity">idle</span><span>Rust/WASM · RivetKit · SQLite actor state</span></footer>
+  </main>
+  <script type="module" src="/dist/app.js"></script>
+</body>
+</html>

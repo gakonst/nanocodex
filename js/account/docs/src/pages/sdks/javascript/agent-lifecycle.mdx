@@ -1,0 +1,86 @@
+---
+title: TypeScript agent lifecycle
+description: Submit retained turns, watch events independently, and release every JavaScript and Rust owner.
+---
+
+# TypeScript agent lifecycle
+
+Retain one `Agent` for each application conversation. A turn starts immediately,
+its result completes without an event watcher, and follow-on turns reuse the
+same Rust-owned history and connection.
+
+```js
+const watch = agent.events.watch();
+const unwatch = watch.onEvent((event) => {
+  if (event.type === "tool.call") console.error(event.payload.tool);
+});
+
+const turns = [];
+try {
+  const first = agent.turn.prompt({ input: "Remember identifier COBALT_7." });
+  turns.push(first);
+  const firstResult = await first.result();
+  try {
+    console.log(firstResult.finalMessage);
+  } finally {
+    firstResult.dispose();
+  }
+
+  const second = agent.turn.prompt({ input: "Return the identifier." });
+  turns.push(second);
+  const secondResult = await second.result();
+  try {
+    console.log(secondResult.finalMessage);
+  } finally {
+    secondResult.dispose();
+  }
+} finally {
+  for (const turn of turns) turn.dispose();
+  unwatch();
+  watch.off();
+  await agent.session.shutdown();
+}
+```
+
+`turn.dispose()` releases the JavaScript/WASM wrapper. It does not cancel work
+that Rust already accepted. Await `turn.cancel()` when unfinished work must stop,
+then dispose the wrapper.
+
+## Control one turn
+
+`turn.steer(instruction)` adds input at the next safe model boundary.
+`turn.cancel()` targets that exact active or queued turn. `turn.result()` returns
+an opaque committed result handle. Its final message is eager; await `usage()`
+or `snapshot()` to materialize those immutable values, then call
+`result.dispose()` after its last materialization or historical fork.
+
+Use `agent.session.fork({ at: result })` for an independent session at a
+completed historical boundary, and keep the result alive until that asynchronous
+fork resolves. A branch owns its own event watcher and must be shut down. The
+root session shuts down Rust-backed subagent children it owns; applications
+should not maintain a parallel JavaScript scheduler.
+
+## Use decorated or standalone actions
+
+The decorated API keeps related actions discoverable on `agent`, `turn`, and
+`result`. The standalone `Actions` namespace exposes the same operations for
+functional composition:
+
+```js
+const turn = Actions.turn.prompt(agent, { input: "Explain the current state." });
+try {
+  const result = await Actions.turn.getResult(turn);
+  try {
+    const usage = await Actions.turn.getUsage(result);
+    console.log(result.finalMessage, usage);
+  } finally {
+    result.dispose();
+  }
+} finally {
+  turn.dispose();
+}
+```
+
+Read the complete
+[owned Node session](https://github.com/gakonst/nanocodex/blob/master/examples/node/session.mjs)
+for cancellation and cleanup around partial failure.

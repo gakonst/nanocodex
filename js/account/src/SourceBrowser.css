@@ -1,0 +1,260 @@
+.source-browser {
+  position: relative;
+  grid-template-columns: 288px minmax(0, 1fr);
+  overscroll-behavior: contain;
+  contain: strict;
+}
+
+.source-browser .code-tree-panel {
+  display: flex;
+  grid-column: 1;
+  grid-row: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: transparent;
+  border-right-color: var(--border-soft);
+  box-shadow: none;
+}
+
+.source-browser .source-tree-toolbar {
+  display: flex;
+  flex: 0 0 44px;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 8px 0 12px;
+  background: transparent;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.source-browser .source-tree-toolbar > div {
+  display: flex;
+  min-width: 0;
+}
+
+.source-browser .source-tree-identity {
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  justify-content: center;
+}
+
+.source-browser .source-tree-identity strong {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.source-browser .source-tree-identity span {
+  gap: 4px;
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 12px;
+}
+
+.source-browser .source-tree-actions {
+  flex: 0 0 auto;
+  flex-direction: row;
+  gap: 4px;
+  align-items: center;
+}
+
+.source-browser .source-file-count {
+  min-width: 2ch;
+  justify-content: end;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.source-browser .source-tree-toolbar button {
+  display: grid;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+  place-items: center;
+}
+
+.source-browser .source-tree-toolbar .tree-search-trigger {
+  display: inline-flex;
+  gap: 5px;
+  width: auto;
+  padding-inline: 8px;
+  font-size: 9px;
+  border: 1px solid var(--border-soft);
+}
+
+.source-browser .source-tree-toolbar button:hover,
+.source-browser .source-tree-toolbar button:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.source-browser .source-tree-toolbar .tree-close-button {
+  display: none;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.source-browser .pierre-file-tree {
+  flex: 1 1 auto;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  --trees-bg-override: transparent;
+  --trees-bg-muted-override: var(--surface-hover);
+  --trees-border-color-override: var(--border-soft);
+  --trees-border-radius-override: 2px;
+  --trees-density-override: 0.9;
+  --trees-fg-override: var(--text-secondary);
+  --trees-fg-muted-override: var(--text-faint);
+  --trees-focus-ring-color-override: var(--text-muted);
+  --trees-focus-ring-width-override: 1px;
+  --trees-font-family-override: var(--font-mono);
+  --trees-font-size-override: 11px;
+  --trees-input-bg-override: var(--surface);
+  --trees-padding-inline-override: 6px;
+  --trees-search-bg-override: var(--surface);
+  --trees-search-fg-override: var(--text);
+  --trees-selected-bg-override: color-mix(in srgb, var(--text) 5%, transparent);
+  --trees-selected-fg-override: var(--text);
+  --trees-selected-focused-border-color-override: var(--text-muted);
+}
+
+.source-browser .code-file {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.source-browser .code-file-header {
+  flex: 0 0 44px;
+  min-height: 44px;
+}
+
+.source-browser .code-file-tail-error {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 6px 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.source-browser .code-file-tail-error span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-browser .code-file-tail-error button,
+.source-browser .code-file-message button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 32px;
+  padding-inline: 10px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+
+.source-browser .code-file-tail-error button svg,
+.source-browser .code-file-message button svg {
+  width: 12px;
+  height: 12px;
+}
+
+.source-browser .code-file-message {
+  gap: 10px;
+}
+
+.source-browser .code-file-message p {
+  margin: 0;
+}
+
+.source-browser > .workspace-backdrop {
+  touch-action: none;
+}
+
+@media (max-width: 740px), (pointer: coarse) and (orientation: landscape) and (max-width: 950px) {
+  .source-browser {
+    display: block;
+  }
+
+  .source-browser .code-tree-panel {
+    display: flex;
+    width: min(340px, 90vw);
+    background: var(--surface);
+    box-shadow: none;
+    overscroll-behavior: contain;
+  }
+
+  .source-browser .source-tree-toolbar {
+    padding-left: 12px;
+  }
+
+  .source-browser .source-tree-toolbar button,
+  .source-browser .source-tree-toolbar .tree-close-button {
+    display: grid;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+
+  .source-browser .source-tree-toolbar .tree-search-trigger {
+    display: inline-flex;
+    width: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .source-browser .source-tree-toolbar .tree-search-trigger kbd,
+  .source-browser .source-file-count {
+    display: none;
+  }
+
+  .source-browser .code-file {
+    width: 100%;
+    height: 100%;
+  }
+
+  .source-browser .code-file-tail-error {
+    min-height: 44px;
+    padding-block: 4px;
+  }
+
+  .source-browser .code-file-tail-error button,
+  .source-browser .code-file-message button {
+    min-height: 44px;
+  }
+}
+
+@media (pointer: coarse), (any-pointer: coarse) {
+  .source-browser .source-tree-toolbar button {
+    min-width: 44px;
+    min-height: 44px;
+    height: 44px;
+  }
+
+  .source-browser .code-file-tail-error button,
+  .source-browser .code-file-message button {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-browser .code-tree-panel {
+    transition: none;
+  }
+}

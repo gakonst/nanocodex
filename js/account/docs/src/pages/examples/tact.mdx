@@ -1,0 +1,85 @@
+---
+title: "Built with Nanocodex: Tact"
+description: Nanocodex owns the agent lifecycle; Tact owns application policy.
+---
+
+# Built with Nanocodex: Tact
+
+[Tact v0.6.3](https://github.com/clabby/tact/releases/tag/v0.6.3) is a complete
+terminal coding-agent product built on Nanocodex. Its `0.6.3` workspace
+depends on `nanocodex = "0.5.0"`; see the
+[primary manifest](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/Cargo.toml#L1-L59).
+
+The important lesson is the ownership boundary:
+
+```text
+Nanocodex lifecycle and typed tools
+        ↓
+Tact session envelope and application extensions
+        ↓
+typed event/update reducers
+        ↓
+Tact terminal and browser-review UI
+```
+
+## What Nanocodex supplies
+
+Tact composes the ordinary builder, retained follow-on session, independent
+events and results, tools and MCP, snapshots, forks and clean spawns, steering,
+and typed tool contracts. Current Nanocodex also includes task-tree subagents
+as the optional `nanocodex-subagents` extension; it is not a
+generic scheduler in core.
+
+Tact's [agent composition](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/bin/tact/src/core/mod.rs#L129-L316)
+builds OpenAI policy, tools, memory choice, subagent updates, a
+`tools_factory`, and optional restored snapshot, then receives the root agent
+and event stream. Its [headless lifecycle](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/bin/tact/src/core/mod.rs#L325-L452)
+drains events and child updates, coordinates cancellation, closes descendants,
+and shuts down the root.
+
+## What Tact owns
+
+Tact—not Nanocodex core—owns:
+
+- the terminal UI, prompt queue, action palette, task-tree presentation, and
+  loopback browser review UI;
+- a SQLite session index and transcript journal;
+- an application-versioned resume envelope around `SessionSnapshot`, original
+  instructions, and skill-catalog policy;
+- skill discovery and on-demand skill reading;
+- reflection, handoff, and review workflows; and
+- explicit opt-in `tact-memory` policy.
+
+Current code stores sessions in `sessions/v2.sqlite3`, with sessions, events,
+and compressed resume state. The resume envelope is visible in
+[session.rs](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/bin/tact/src/tui/session.rs#L20-L71),
+the [SQLite schema](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/bin/tact/src/tui/storage.rs#L622-L686),
+and the [atomic journal commit](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/bin/tact/src/tui/transcript/journal.rs#L228-L284).
+This is an application persistence recipe, not a Nanocodex database API.
+
+## Memory with explicit authority
+
+`tact-memory` is an application-selected extension and is disabled unless the
+user opts in. The corpus is not automatically injected. Its tool requires a
+scan before put, uses exact versioned keys, and applies application-supplied
+mutation authority; roots can mutate while children may be read-only. Local and
+remote stores are selected explicitly, and remote failure does not silently
+fall back. See the [tool authority boundary](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/crates/memory/src/tool.rs#L95-L223)
+and [memory contract](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/docs/memory.md#L1-L91).
+
+Reflection likewise remains Tact policy: it searches bounded historical
+sessions, reads selected evidence, compares it with current instructions and
+memory, and returns recommendations without implicit mutation. Skills and the
+[token-scoped loopback review server](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/bin/tact/src/review/server.rs#L447-L505)
+are product features layered over Nanocodex primitives.
+
+## Run with the right trust model
+
+Tact's normal local execution is **unsandboxed** and can modify files or run
+commands with the user's authority. Its README states that warning and provides
+install, Cargo, source, and isolated development-container paths:
+[Tact README](https://github.com/clabby/tact/blob/75382b9e0861f6c60bf52bff7e7250a5015675d0/README.md#L8-L103).
+
+Tact demonstrates the intended product thesis: Nanocodex owns the difficult
+agent lifecycle, while a focused application remains free to own persistence,
+memory governance, skills, review, UI, and distribution.

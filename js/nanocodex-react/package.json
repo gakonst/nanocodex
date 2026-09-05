@@ -1,0 +1,57 @@
+{
+  "name": "nanocodex-react",
+  "version": "0.1.0",
+  "description": "React state management for browser-embedded Nanocodex agents",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.mts",
+      "import": "./index.mjs"
+    },
+    "./connect": {
+      "types": "./cloud/index.d.mts",
+      "import": "./cloud/index.mjs"
+    },
+    "./agent": {
+      "types": "./agent/index.d.mts",
+      "import": "./agent/index.mjs"
+    }
+  },
+  "files": [
+    "agent",
+    "cloud",
+    "index.d.mts",
+    "index.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "check:pack": "node scripts/check-pack.mjs",
+    "check:package": "node scripts/check-package.mjs",
+    "prepack": "npm run check:package",
+    "test": "node --test test/*.test.mjs && npm run test:typecheck && npm run check:package && npm run check:pack",
+    "test:typecheck": "tsc -p test/tsconfig.json"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": ">=5",
+    "nanocodex": "^0.5.0",
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.101.4",
+    "@types/react": "^19.2.14",
+    "nanocodex": "workspace:*",
+    "react": "19.2.6",
+    "react-test-renderer": "19.2.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gakonst/nanocodex.git",
+    "directory": "js/nanocodex-react"
+  }
+}

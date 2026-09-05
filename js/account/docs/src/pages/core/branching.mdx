@@ -1,0 +1,90 @@
+---
+title: Branches and subagents
+description: Clone cheap handles, fork retained context, or delegate through an optional task tree.
+---
+
+# Branches and subagents
+
+Choose the cheapest topology that preserves the context a task needs.
+
+- `clone()` creates another cheap command handle to the same owned driver.
+- `spawn()` creates a clean sibling with the configured model and tools but no
+  parent conversation.
+- `fork()` branches from the latest safe committed checkpoint.
+- `fork_from(&result)` branches from one exact historical `TurnResult`.
+- `snapshot()` provides application-storable conversation state after a
+  completed turn.
+
+Each child is an independent owned driver with its own history, response chain,
+WebSocket, results, and event stream. A `tools_factory` creates fresh
+agent-relative handlers so a fork never inherits a tool bound to its parent.
+The factory receives a cheap, weak `AgentHandle`: a tool can spawn or fork a
+child without keeping the parent driver alive or gaining access to its mutable
+state.
+
+## Snapshots and resume
+
+```rust
+let completed = agent.prompt("Remember codename cobalt.").await?.await?;
+let bytes = serde_json::to_vec(&completed.snapshot())?;
+
+let snapshot = serde_json::from_slice(&bytes)?;
+let (resumed, _events) = Nanocodex::builder(openai)
+    .instructions("Remember explicit release facts only.")
+    .resume(snapshot)
+    .build()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The caller owns storage, retention, indexing, encryption, and an application
+envelope for instructions, tools, skills, workspace, and lineage. A snapshot is
+conversation state, not a database or complete product configuration. See the
+[resume example](https://github.com/gakonst/nanocodex/blob/master/examples/resume.rs).
+
+## Optional structured subagents
+
+`nanocodex-subagents` installs seven canonical tools: `spawn_agent`,
+`submit_result`, `send_agent_message`, `list_agents`, `wait_agent`,
+`interrupt_agent`, and `close_agent`. It adds a shared task tree, capacity,
+typed updates, schema-validated results, and directed coordination without
+putting a scheduler into core.
+
+```rust
+use std::sync::Arc;
+use nanocodex_subagents::{channel, install_tools, DEFAULT_MAX_SUBAGENTS};
+
+let (registry, control, mut updates) = channel(DEFAULT_MAX_SUBAGENTS);
+let tools_registry = Arc::clone(&registry);
+let (agent, _events) = Nanocodex::builder(openai)
+    .tools_factory(move |handle| {
+        install_tools(base_tools.clone(), handle, Arc::clone(&tools_registry))
+    })
+    .build()?;
+
+// Reduce `updates` into application state. Before root shutdown:
+control.close_all(&agent.session_id().to_string()).await?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Children are clean by default, submit exactly one JSON-Schema-valid result, and
+can coordinate through the runtime. The root owns tree shutdown. JavaScript
+selects the same Rust/WASM extension with `...Subagents.create()`.
+
+Read the [subagents crate guide](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex-subagents/README.md),
+[native example](https://github.com/gakonst/nanocodex/blob/master/examples/subagents.rs),
+and [Node example](https://github.com/gakonst/nanocodex/blob/master/examples/node/subagents.mjs).
+
+## Branching is not shared mutation
+
+A fork receives committed conversation context, not shared mutable run state.
+New turns, compaction, provider checkpoints, and results diverge independently.
+Workspace policy is separate: two branches may deliberately share one host
+directory or retained VM, so the application must decide whether concurrent
+filesystem effects are safe. A clean spawn is preferable when the task should
+not inherit conclusions from the parent.
+
+Subagent updates are also observations, not a second result channel. Reduce
+them into a task tree, capacity display, or audit log, but require children to
+finish through `submit_result`. Interrupt keeps a reusable agent; close is
+terminal and closes its descendants. Process-local child trees are not part of
+a resumed root snapshot.

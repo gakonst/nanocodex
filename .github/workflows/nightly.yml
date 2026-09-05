@@ -1,0 +1,280 @@
+name: Nightly Release
+run-name: "${{ inputs.pr && format('PR #{0} artifacts', inputs.pr) || 'Nightly Release' }}"
+
+permissions: {}
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to build without publishing a release
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ inputs.pr && format('pr-artifacts-{0}', inputs.pr) || 'nightly-release' }}
+  cancel-in-progress: ${{ inputs.pr != '' }}
+
+jobs:
+  build:
+    if: github.repository == 'gakonst/nanocodex'
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: nanocodex-x86_64-unknown-linux-gnu
+            companion: nanocodex2-x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: nanocodex-aarch64-apple-darwin
+            companion: nanocodex2-aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || github.sha }}
+          persist-credentials: false
+      - name: Record exact source revision
+        shell: bash
+        run: echo "BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - name: Enforce ring-only Rustls provider
+        shell: bash
+        run: ./scripts/check-rustls-provider.sh
+      - name: Build nightly binary
+        shell: bash
+        env:
+          TAG_NAME: ${{ inputs.pr && format('pr-{0}', inputs.pr) || 'nightly' }}
+        run: |
+          VERGEN_GIT_SHA="$BUILD_SHA" \
+            cargo build --locked --profile nightly \
+              --package nanocodex-bin --bin nanocodex --features tempo \
+              --target ${{ matrix.target }}
+          VERGEN_GIT_SHA="$BUILD_SHA" \
+            cargo build --locked --profile nightly \
+              --package nanocodex2-bin --bin nanocodex2 \
+              --target ${{ matrix.target }}
+      - name: Sign macOS VM hand host
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          codesign --force --sign - \
+            --entitlements nanocodex-vm.entitlements \
+            "target/${{ matrix.target }}/nightly/nanocodex2"
+          codesign --verify --strict "target/${{ matrix.target }}/nightly/nanocodex2"
+      - name: Stage artifact
+        shell: bash
+        env:
+          PR_NUMBER: ${{ inputs.pr }}
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/nightly/nanocodex" "dist/${{ matrix.artifact }}"
+          cp "target/${{ matrix.target }}/nightly/nanocodex2" "dist/${{ matrix.companion }}"
+          if [[ -z "$PR_NUMBER" ]]; then
+            gzip -n -9 -c "dist/${{ matrix.artifact }}" \
+              > "dist/${{ matrix.artifact }}.gz"
+            gzip -n -9 -c "dist/${{ matrix.companion }}" \
+              > "dist/${{ matrix.companion }}.gz"
+          fi
+      - name: Smoke nightly binaries
+        shell: bash
+        run: |
+          "dist/${{ matrix.artifact }}" --help >/dev/null
+          "dist/${{ matrix.companion }}" --help >/dev/null
+      - name: Stage PR provenance and checksum
+        if: github.event_name == 'workflow_dispatch' && inputs.pr != ''
+        shell: bash
+        env:
+          ARTIFACT: ${{ matrix.artifact }}
+          COMPANION: ${{ matrix.companion }}
+          PR_NUMBER: ${{ inputs.pr }}
+        run: |
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARTIFACT" "$COMPANION" > "$ARTIFACT.sha256"
+          else
+            shasum -a 256 "$ARTIFACT" "$COMPANION" > "$ARTIFACT.sha256"
+          fi
+          printf '{"repository":"%s","pr":%s,"sha":"%s","artifact":"%s","run_id":%s}\n' \
+            "$GITHUB_REPOSITORY" "$PR_NUMBER" "$BUILD_SHA" "$ARTIFACT" \
+            "$GITHUB_RUN_ID" > PR_BUILD.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: ${{ inputs.pr && 7 || 1 }}
+
+  build-vm-guest:
+    if: >-
+      github.repository == 'gakonst/nanocodex' &&
+      (github.event_name != 'workflow_dispatch' || inputs.pr == '')
+    name: build x86_64 Linux VM guest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Build nightly VM guest
+        shell: bash
+        run: >-
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          cargo build --locked --profile nightly --package nanocodex-vm
+          --bin nanocodex-vm-guest --no-default-features
+          --features guest-runtime --target x86_64-unknown-linux-musl
+      - name: Verify VM guest is static
+        shell: bash
+        run: |
+          guest=target/x86_64-unknown-linux-musl/nightly/nanocodex-vm-guest
+          LC_ALL=C readelf -lW "$guest" > guest-program-headers.txt
+          if grep -q '[[:space:]]INTERP[[:space:]]' guest-program-headers.txt; then
+            cat guest-program-headers.txt >&2
+            echo "VM guest has a dynamic program interpreter" >&2
+            exit 1
+          fi
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/x86_64-unknown-linux-musl/nightly/nanocodex-vm-guest \
+            dist/nanocodex-vm-guest-x86_64-unknown-linux-musl
+          gzip -n -9 -c dist/nanocodex-vm-guest-x86_64-unknown-linux-musl \
+            > dist/nanocodex-vm-guest-x86_64-unknown-linux-musl.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nanocodex-vm-guest-x86_64-unknown-linux-musl
+          path: dist/*
+          if-no-files-found: error
+          retention-days: ${{ inputs.pr && 7 || 1 }}
+
+  publish:
+    if: >-
+      github.repository == 'gakonst/nanocodex' &&
+      (github.event_name != 'workflow_dispatch' || inputs.pr == '')
+    name: publish immutable and rolling nightlies
+    needs: [build, build-vm-guest]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum nanocodex-*.gz nanocodex2-*.gz > SHA256SUMS
+      - name: Publish immutable and rolling releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          immutable_tag="nightly-${GITHUB_SHA}"
+          short_sha="${GITHUB_SHA:0:10}"
+          release_name="Nanocodex Nightly ($(date -u +%Y-%m-%d), ${short_sha})"
+          notes_file=$(mktemp)
+          {
+            printf "Automated nightly build from [\`%s\`](https://github.com/%s/commit/%s).\n\n" "$short_sha" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+            printf "Install it with \`nanocodex update --nightly\`.\n"
+          } > "$notes_file"
+
+          if gh release view "$immutable_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
+              --title "$release_name" --notes-file "$notes_file" --prerelease
+          else
+            gh release create "$immutable_tag" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "$release_name" \
+              --notes-file "$notes_file" --prerelease
+          fi
+          gh release upload "$immutable_tag" dist/*.gz dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          # Rolling releases retain raw binaries for updaters shipped before
+          # gzip support. Their checksum manifest covers both representations.
+          (cd dist && sha256sum nanocodex-* nanocodex2-* > SHA256SUMS)
+
+          # SHA256SUMS is the commit marker for clients that still read rolling assets.
+          rolling_exists=false
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            rolling_exists=true
+            checksum_asset_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" \
+              --jq '[.assets[] | select(.name == "SHA256SUMS") | .id][0] // empty')
+            if [ -n "$checksum_asset_id" ]; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/releases/assets/${checksum_asset_id}"
+            fi
+            gh release upload nightly dist/nanocodex-* dist/nanocodex2-* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+
+            while IFS=$'\t' read -r asset_id asset_name; do
+              case "$asset_name" in
+                nanocodex-aarch64-apple-darwin|nanocodex-aarch64-apple-darwin.gz|\
+                nanocodex-x86_64-unknown-linux-gnu|nanocodex-x86_64-unknown-linux-gnu.gz|\
+                nanocodex2-aarch64-apple-darwin|nanocodex2-aarch64-apple-darwin.gz|\
+                nanocodex2-x86_64-unknown-linux-gnu|nanocodex2-x86_64-unknown-linux-gnu.gz|\
+                nanocodex-vm-guest-x86_64-unknown-linux-musl|nanocodex-vm-guest-x86_64-unknown-linux-musl.gz)
+                  ;;
+                *)
+                  gh api --method DELETE \
+                    "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+                  ;;
+              esac
+            done < <(
+              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" \
+                --jq '.assets[] | [.id, .name] | @tsv'
+            )
+          fi
+
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref='refs/tags/nightly' -f sha="$GITHUB_SHA" >/dev/null
+          fi
+
+          if [ "$rolling_exists" = true ]; then
+            gh release edit nightly --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "Nanocodex Nightly" \
+              --notes-file "$notes_file" --prerelease
+          else
+            gh release create nightly --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "Nanocodex Nightly" \
+              --notes-file "$notes_file" --prerelease
+            gh release upload nightly dist/nanocodex-* dist/nanocodex2-* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          fi
+          gh release upload nightly dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber

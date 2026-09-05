@@ -1,0 +1,502 @@
+.docs-page {
+  min-height: calc(100svh - var(--shell-header-height));
+  color: var(--text);
+  background: var(--surface);
+}
+
+.docs-mobile-toolbar {
+  position: sticky;
+  z-index: 20;
+  top: 0;
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 0 var(--page-margin);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border-block: 1px solid var(--border-soft);
+  backdrop-filter: blur(12px);
+}
+
+.docs-mobile-toolbar > button,
+.docs-copy-markdown {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 44px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.docs-mobile-toolbar svg,
+.docs-copy-markdown svg {
+  width: 14px;
+  height: 14px;
+}
+
+.docs-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 700px) minmax(180px, 220px);
+  gap: clamp(32px, 4vw, 60px);
+  justify-content: center;
+  width: 100%;
+  padding: 40px var(--page-margin) 96px;
+}
+
+.docs-sidebar,
+.docs-on-this-page {
+  position: sticky;
+  top: 28px;
+  align-self: start;
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+}
+
+.docs-sidebar {
+  scrollbar-width: none;
+}
+
+.docs-sidebar::-webkit-scrollbar {
+  display: none;
+}
+
+.docs-sidebar nav section + section {
+  margin-top: 28px;
+}
+
+.docs-nav-group > p,
+.docs-on-this-page > p {
+  margin-bottom: 9px;
+  color: color-mix(in srgb, var(--text) 56%, transparent);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.docs-sidebar a,
+.docs-drawer nav a,
+.docs-on-this-page a {
+  display: block;
+  padding: 3px 0;
+  color: color-mix(in srgb, var(--text) 62%, transparent);
+  font-size: 11px;
+  line-height: 1.25;
+  text-decoration: none;
+}
+
+.docs-nav-section-heading {
+  margin: 18px 0 7px;
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.15;
+}
+
+.docs-nav-items > .docs-nav-section-heading:first-child {
+  margin-top: 0;
+}
+
+.docs-sidebar a:hover,
+.docs-sidebar a:focus-visible,
+.docs-drawer nav a:hover,
+.docs-drawer nav a:focus-visible,
+.docs-on-this-page a:hover,
+.docs-on-this-page a:focus-visible {
+  color: var(--text);
+}
+
+.docs-sidebar a[aria-current="page"],
+.docs-drawer nav a[aria-current="page"] {
+  font-weight: 700;
+}
+
+.docs-reading-column {
+  position: relative;
+  min-width: 0;
+}
+
+.docs-reading-column > .docs-copy-markdown {
+  position: absolute;
+  top: 0;
+  right: 20px;
+  font-size: 10px;
+}
+
+.docs-article {
+  max-width: 660px;
+  margin-inline: auto;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.docs-article h1,
+.docs-article h2,
+.docs-article h3,
+.docs-not-found h1 {
+  font-family: inherit;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.docs-article h1 {
+  max-width: calc(100% - 110px);
+  margin: 0 0 42px;
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.docs-article h2 {
+  margin: 52px 0 20px;
+  padding-top: 38px;
+  font-size: 16px;
+  border-top: 1px solid var(--border-soft);
+  scroll-margin-top: 64px;
+}
+
+.docs-article h3 {
+  margin: 34px 0 16px;
+  font-size: 14px;
+  scroll-margin-top: 64px;
+}
+
+.docs-article h2 a,
+.docs-article h3 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.docs-article h2 a::after,
+.docs-article h3 a::after {
+  margin-left: 8px;
+  color: color-mix(in srgb, var(--text) 35%, transparent);
+  content: "#";
+  opacity: 0;
+}
+
+.docs-article h2 a:hover::after,
+.docs-article h2 a:focus-visible::after,
+.docs-article h3 a:hover::after,
+.docs-article h3 a:focus-visible::after {
+  opacity: 1;
+}
+
+.docs-article p + p,
+.docs-article p + ul,
+.docs-article p + ol,
+.docs-article ul + p,
+.docs-article ol + p,
+.docs-article .docs-code-block + p,
+.docs-article p + .docs-code-block,
+.docs-article .docs-table-scroll + p,
+.docs-article p + .docs-table-scroll {
+  margin-top: 20px;
+}
+
+.docs-article ul,
+.docs-article ol {
+  margin: 20px 0 0;
+  padding: 0 0 0 18px;
+}
+
+.docs-article li {
+  padding-left: 4px;
+}
+
+.docs-article li + li {
+  margin-top: 8px;
+}
+
+.docs-article a {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text) 36%, transparent);
+  text-underline-offset: 3px;
+}
+
+.docs-article a:hover,
+.docs-article a:focus-visible {
+  color: var(--blue);
+  text-decoration-color: currentColor;
+}
+
+.docs-article :not(pre) > code {
+  padding: 2px 5px;
+  background: var(--surface-subtle);
+  border-radius: 2px;
+  font-size: 0.94em;
+}
+
+.docs-code-block {
+  position: relative;
+  margin-top: 22px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface-subtle) 72%, var(--surface));
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+
+.docs-code-block > span {
+  position: absolute;
+  top: 9px;
+  left: 12px;
+  color: color-mix(in srgb, var(--text) 68%, transparent);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.docs-code-block > button {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  place-items: center;
+}
+
+.docs-code-block > button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.docs-code-block pre {
+  margin: 0;
+  padding: 38px 16px 17px;
+  overflow-x: auto;
+  font: inherit;
+  line-height: 1.6;
+}
+
+.docs-code-block code {
+  font: inherit;
+  white-space: pre;
+}
+
+.docs-code-token {
+  color: color-mix(in srgb, var(--shiki-light, var(--text)) 70%, var(--text));
+}
+
+html[data-theme="dark"] .docs-code-token {
+  color: color-mix(in srgb, var(--shiki-dark, var(--text)) 70%, var(--text));
+}
+
+.docs-table-scroll {
+  margin-top: 22px;
+  overflow-x: auto;
+}
+
+.docs-table-scroll table {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.docs-table-scroll th,
+.docs-table-scroll td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+
+.docs-table-scroll th:first-child,
+.docs-table-scroll td:first-child {
+  padding-left: 0;
+}
+
+.docs-table-scroll th {
+  color: color-mix(in srgb, var(--text) 58%, transparent);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.docs-on-this-page a {
+  font-size: 10px;
+}
+
+.docs-pagination {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 72px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.docs-pagination > a {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-height: 44px;
+}
+
+.docs-pagination > a:last-child {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.docs-pagination svg {
+  width: 13px;
+  height: 13px;
+}
+
+.docs-pagination small {
+  display: block;
+  margin-bottom: 4px;
+  color: color-mix(in srgb, var(--text) 68%, transparent);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.docs-drawer-layer {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+}
+
+.docs-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  background: color-mix(in srgb, var(--black) 35%, transparent);
+}
+
+.docs-drawer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: min(340px, 88vw);
+  padding: max(16px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+  color: var(--text);
+  background: var(--surface);
+  border-right: 1px solid var(--border-soft);
+}
+
+.docs-drawer header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.docs-drawer header button {
+  display: grid;
+  font-size: 24px;
+  line-height: 1;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  place-items: center;
+}
+
+.docs-drawer header svg {
+  width: 16px;
+  height: 16px;
+}
+
+.docs-drawer nav section + section {
+  margin-top: 26px;
+}
+
+.docs-drawer nav a {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+}
+
+.docs-not-found button {
+  min-height: 44px;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.docs-not-found {
+  min-height: calc(100svh - var(--shell-header-height));
+  padding: 80px max(24px, 8vw);
+}
+
+.docs-not-found h1 {
+  max-width: 600px;
+  margin: 20px 0;
+  font-size: 28px;
+}
+
+.docs-not-found a {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+@media (max-width: 1160px) {
+  .docs-layout {
+    grid-template-columns: minmax(190px, 230px) minmax(0, 700px);
+    justify-content: center;
+  }
+  .docs-on-this-page { display: none; }
+}
+
+@media (max-width: 900px) {
+  .docs-mobile-toolbar { display: flex; }
+  .docs-layout {
+    display: block;
+    width: min(calc(100% - (var(--page-margin) * 2)), 700px);
+    margin-inline: auto;
+    padding-top: 40px;
+  }
+  .docs-sidebar { display: none; }
+}
+
+@media (max-width: 740px) {
+  .docs-page { min-height: calc(100svh - var(--shell-header-height)); }
+  .docs-mobile-toolbar { padding-inline: var(--page-margin); }
+  .docs-mobile-toolbar > button,
+  .docs-copy-markdown { min-height: 44px; font-size: 12px; }
+  .docs-layout { width: calc(100% - (var(--page-margin) * 2)); padding: 34px 0 max(72px, calc(48px + env(safe-area-inset-bottom))); }
+  .docs-reading-column > .docs-copy-markdown { display: none; }
+  .docs-article { font-size: 14px; line-height: 1.7; }
+  .docs-article h1 { max-width: none; margin-bottom: 34px; font-size: 24px; }
+  .docs-article h2 { margin-top: 42px; padding-top: 32px; font-size: 18px; }
+  .docs-article h3 { font-size: 15px; }
+  .docs-code-block { margin-inline: -4px; border-radius: 6px; }
+  .docs-code-block > button { width: 44px; height: 44px; top: 0; right: 0; }
+  .docs-code-block pre { padding: 42px 14px 16px; font-size: 12px; }
+  .docs-pagination { grid-template-columns: 1fr; }
+  .docs-pagination > a:last-child { justify-content: flex-start; text-align: left; }
+  .docs-pagination > a:last-child svg { order: -1; }
+}
+
+@media (pointer: coarse), (any-pointer: coarse) {
+  .docs-sidebar a,
+  .docs-on-this-page a {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .docs-mobile-toolbar > button,
+  .docs-copy-markdown,
+  .docs-code-block > button,
+  .docs-pagination > a {
+    min-height: 44px;
+  }
+
+  .docs-code-block > button {
+    width: 44px;
+    height: 44px;
+  }
+}

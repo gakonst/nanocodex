@@ -1,0 +1,63 @@
+---
+title: Deployment patterns
+description: Run one owned agent in a CLI, browser, server isolate, durable actor, or cloud sandbox.
+---
+
+# Deployment patterns
+
+Choose the host that already owns your application lifecycle. The same Rust
+agent runs natively in a CLI, through WASM in a browser or server isolate, and
+inside durable serverless actors. Nanocodex does not impose an app server. Your
+application keeps credentials, durable state, clients, and sandbox policy.
+
+## CLI, browser, and Node
+
+- The `nanocodex` CLI is a thin native consumer of the same library lifecycle.
+- [React/Vite](https://github.com/gakonst/nanocodex/tree/master/examples/react-vite)
+  runs the browser WASM agent in a module Worker and renders ordered events.
+- [Browser CDN](https://github.com/gakonst/nanocodex/tree/master/examples/browser-cdn)
+  is one static HTML file with no install or build step.
+- [Node](https://github.com/gakonst/nanocodex/tree/master/examples/node) uses a
+  Node WebSocket host and local guarded workspace.
+
+## Durable platform owners
+
+- [Vercel Workflows](/deployments/vercel) retains the opaque Rust journal and
+  replayable event stream in Workflow state, reconstructs the WASM agent in
+  Function steps, and keeps files in a named persistent Vercel Sandbox.
+- [Cloudflare Workers](/deployments/cloudflare) uses a SQLite-backed Durable
+  Object for the agent journal and hibernatable client sockets, plus a Sandbox
+  container with an R2-backed workspace.
+- [Cloudflare fetch + MCP](https://github.com/gakonst/nanocodex/tree/master/examples/cloudflare-fetch-mcp)
+  demonstrates an authenticated Rust/WASM fetch endpoint, QuickJS Code Mode,
+  deferred MCP, and a serialized Durable Object payment owner.
+- [Rivet Actors](https://github.com/gakonst/nanocodex/tree/master/examples/rivet-actors)
+  keeps the harness in a durable SQLite-backed Actor with an actor-owned AgentOS
+  sandbox.
+- [exe.dev](https://github.com/gakonst/nanocodex/tree/master/examples/exe-dev)
+  demonstrates both a private retained agent inside a persistent VM and an
+  external agent that treats the VM as a caller-owned tool.
+
+## Design checklist
+
+1. Give one durable platform owner exclusive access to each live agent.
+2. Attach [`nanocodex-durability`](/core/durability) when prompts and internal
+   model/tool steps need journaled deduplication and recovery.
+3. Back that journal with a platform store that provides atomic
+   compare-and-append at the recovery granularity the deployment requires.
+4. If using snapshots instead, persist them only after completed turns in an
+   application-versioned envelope containing reconstruction policy.
+5. Keep event delivery independent from result completion; clients may reconnect
+   without becoming owners of conversation history.
+6. Create fresh agent-relative tools for spawns and forks.
+7. Make sandbox lifecycle, workspace durability, egress, secrets, and cleanup
+   explicit.
+8. Close descendant task trees and tool processes before stopping the root.
+
+These examples are runnable integration proofs, not portability guarantees for
+platform APIs. Pin versions and test the recovery semantics that matter to your
+product.
+
+The deep guides show the two different durable boundaries:
+[Cloudflare Durable Objects](/deployments/cloudflare) and
+[Vercel Workflows](/deployments/vercel).

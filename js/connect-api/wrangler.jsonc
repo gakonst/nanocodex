@@ -1,0 +1,59 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-connect-api",
+  "main": "./src/index.ts",
+  "upload_source_maps": true,
+  "compatibility_date": "2026-08-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "services": [
+    { "binding": "ACCOUNTS", "service": "nanocodex-durable-agent" },
+    { "binding": "EGRESS", "service": "nanocodex-egress" },
+    { "binding": "NANOCODEX", "service": "nanocodex" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["NonceStorage"] },
+    {
+      "tag": "v2",
+      "renamed_classes": [
+        { "from": "NonceStorage", "to": "ConnectNonceStorage" }
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": false,
+      "persist": true
+    },
+    "traces": {
+      "enabled": false
+    }
+  },
+  "env": {
+    "development": {
+      "name": "nanocodex-connect-api",
+      "compatibility_date": "2026-08-18",
+      "services": [
+        { "binding": "ACCOUNTS", "service": "nanocodex-durable-agent", "remote": false },
+        { "binding": "EGRESS", "service": "nanocodex-egress", "remote": false },
+        { "binding": "NANOCODEX", "service": "nanocodex", "remote": false }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "CONNECT_STATE", "class_name": "ConnectNonceStorage" }
+        ]
+      },
+      "vars": {
+        "NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY": "nanocodex-local-oauth-relay-hmac-v1-only"
+      }
+    }
+  }
+}

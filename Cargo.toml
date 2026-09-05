@@ -1,0 +1,273 @@
+[workspace]
+members = [
+    "bin/nanocodex",
+    "bin/nanocodex/nanocodex2",
+    "bin/nanousd",
+    "bin/nanousd-api",
+    "crates/nanocodex",
+    "crates/nanocodex-agent",
+    "crates/nanocodex-managed",
+    "crates/nanocodex-durability",
+    "crates/experimental/nanocodex-browser",
+    "crates/experimental/nanocodex-egress",
+    "crates/experimental/nanocodex-voice",
+    "crates/experimental/nanocodex-voice-protocol",
+    "crates/experimental/nanocodex-eval",
+    "crates/experimental/nanocodex-eval-adapters",
+    "crates/experimental/nanocodex-vm",
+    "crates/nanocodex-oai-api",
+    "crates/nanocodex-observability",
+    "crates/nanocodex-subagents",
+    "crates/nanocodex-tools",
+    "crates/nanocodex-tools/macros",
+    "examples",
+    "examples/exe-dev",
+    "js/nanocodex",
+    "py/bindings",
+]
+# Root Cargo commands target the public library facade. Use `just run` or
+# `cargo run -p nanocodex-bin --bin nanocodex` for the executable consumer.
+default-members = ["crates/nanocodex"]
+resolver = "2"
+
+[workspace.package]
+version = "0.5.0"
+edition = "2024"
+rust-version = "1.97"
+authors = ["Nanocodex Contributors"]
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/gakonst/nanocodex"
+repository = "https://github.com/gakonst/nanocodex"
+readme = "README.md"
+keywords = ["ai", "agents", "openai", "sdk", "websocket"]
+categories = ["api-bindings", "asynchronous", "development-tools"]
+publish = true
+
+[workspace.dependencies]
+alloy = { version = "2.1.0", default-features = false, features = ["contract", "provider-http", "reqwest", "rpc-types", "sol-types", "std"] }
+arboard = "3"
+base64 = "0.22.1"
+async-trait = "=0.1.89"
+alloy-primitives = { version = "1.6.1", default-features = false, features = ["std"] }
+alloy-rlp = "0.3.16"
+alloy-signer = "2.4.1"
+alloy-signer-local = "2.4.1"
+arcbox-ext4 = "0.1.2"
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "query", "tokio"] }
+bm25 = { version = "2.3.2", default-features = false }
+chrono = { version = "0.4.43", default-features = false, features = ["clock", "std", "wasmbind"] }
+chromiumoxide = "0.9.1"
+landlock = "0.4.4"
+clap = { version = "4.5.54", features = ["derive", "env"] }
+cpal = "0.16.0"
+crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream"] }
+criterion = { version = "0.7.0", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
+csv = "1.4.0"
+dotenvy = "0.15.7"
+eyre = "0.6.12"
+filetime = "0.2.26"
+flate2 = "1.1"
+fs2 = "0.4"
+futures-util = { version = "0.3.31", default-features = false, features = ["async-await", "sink", "std"] }
+getrandom = "0.4.3"
+hex = "0.4.3"
+http = "1.3.1"
+http-body-util = "0.1.3"
+hmac = "0.13.0"
+hudsucker = { version = "0.25.0", git = "https://github.com/gakonst/hudsucker", rev = "9a13609adc4b37b3e7fba28a320546bf672f0f4d", default-features = false, features = ["rcgen-ca", "ring", "rustls-client"] }
+ignore = "0.4.31"
+indicatif = "0.18"
+jiff = { version = "0.2.35", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+jsonschema = { version = "0.48.5", default-features = false }
+krun = { package = "libkrun", version = "=2.0.0-dev", git = "https://github.com/containers/libkrun", rev = "df85b8b75f55e8ef1b06b5bc18f08dc6d7b5aeb0", features = ["blk", "net"] }
+mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "2e265801d216ef54a85b31acda5d0fac192e1b5e", default-features = false }
+nanocodex = { version = "0.5.0", path = "crates/nanocodex" }
+nanocodex-agent = { version = "0.5.0", path = "crates/nanocodex-agent" }
+nanocodex-managed = { version = "0.5.0", path = "crates/nanocodex-managed" }
+nanocodex-durability = { version = "0.5.0", path = "crates/nanocodex-durability" }
+nanocodex-browser = { version = "0.5.0", path = "crates/experimental/nanocodex-browser" }
+nanocodex-egress = { version = "0.5.0", path = "crates/experimental/nanocodex-egress" }
+nanocodex-voice = { version = "0.5.0", path = "crates/experimental/nanocodex-voice" }
+nanocodex-voice-protocol = { version = "0.5.0", path = "crates/experimental/nanocodex-voice-protocol" }
+nanocodex-eval = { version = "0.5.0", path = "crates/experimental/nanocodex-eval" }
+nanocodex-eval-adapters = { version = "0.5.0", path = "crates/experimental/nanocodex-eval-adapters" }
+nanocodex-vm = { version = "0.5.0", path = "crates/experimental/nanocodex-vm" }
+nanocodex-oai-api = { version = "0.5.0", path = "crates/nanocodex-oai-api" }
+nanocodex-observability = { version = "0.5.0", path = "crates/nanocodex-observability" }
+nanocodex-subagents = { version = "0.5.0", path = "crates/nanocodex-subagents" }
+nanocodex-tools = { version = "0.5.0", path = "crates/nanocodex-tools" }
+nanocodex-tools-macros = { version = "0.5.0", path = "crates/nanocodex-tools/macros" }
+nanousd = { version = "0.5.0", path = "bin/nanousd" }
+oci-client = { version = "0.17.0", git = "https://github.com/gakonst/rust-oci-client", rev = "17c22ce8842e9275ef6bc11fa4eb58101a4abd7f", default-features = false, features = ["rustls-tls-no-provider"] }
+rand = "0.9.2"
+reflink-copy = "0.1.30"
+image = { version = "0.25.9", default-features = false, features = ["bmp", "gif", "jpeg", "png", "pnm", "webp"] }
+iana-time-zone = "0.1.64"
+js-sys = "0.3.82"
+nix = { version = "0.31.3", default-features = false, features = ["process", "resource", "signal", "socket", "user"] }
+portable-pty = "0.9.0"
+pulldown-cmark = { version = "0.10", default-features = false }
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
+two-face = { version = "0.5.1", default-features = false, features = ["syntect-fancy"] }
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-client", "trace"] }
+opentelemetry-semantic-conventions = "0.32"
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio", "trace"] }
+percent-encoding = "2.3.2"
+parquet = { version = "59.1.0", default-features = false, features = ["snap"] }
+opusic-c = "1.6.1"
+pyo3 = "0.29.0"
+proc-macro-crate = "3"
+proc-macro2 = "1.0.106"
+quote = "1.0.46"
+ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
+ratatex = "0.1.0"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }
+reqwest-middleware = "0.5.2"
+rtnetlink = "0.21.0"
+rustix = { version = "1.1.4", features = ["thread"] }
+rustls = { version = "0.23.42", default-features = false, features = ["ring"] }
+regex = "1"
+rusqlite = { version = "0.38", features = ["bundled"] }
+seccompiler = "0.5.0"
+tokio-postgres = "0.7"
+rquickjs = "0.12.1"
+rmcp = { version = "=3.0.0", default-features = false, features = ["auth", "client", "reqwest-tls-no-provider", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
+oauth2 = { version = "5.0", default-features = false }
+safari-binarycookies = "1.0.0"
+schemars = "0.8.22"
+self-replace = "1.5.0"
+semver = "1.0.27"
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+serde_json = { version = "1.0.149", features = ["raw_value"] }
+serde_yaml_ng = "0.10.0"
+sha1 = "0.11.0"
+sha2 = { version = "0.11.0", default-features = false }
+shlex = "2.0.1"
+simd-json = "=0.15.1"
+smallvec = { version = "1.15.1", features = ["serde"] }
+sonic-rs = "0.5.8"
+sourcemap = "9.3.2"
+sysinfo = { version = "0.37.2", default-features = false, features = ["system"] }
+syn = { version = "2.0.119", features = ["full"] }
+thiserror = "2.0.17"
+tempfile = "3.27.0"
+tar = "0.4"
+toml = "1.1.3"
+tokio = "1.48.0"
+tokio-util = { version = "0.7", features = ["codec"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+tempo-alloy = { version = "=1.10.1", git = "https://github.com/tempoxyz/tempo", rev = "bdc5c78c155d746d4e7f16d64b41ce791ba24580" }
+tower = { version = "0.5.2", features = ["limit", "load-shed", "retry", "timeout", "util"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-appender = "0.2.4"
+tracing-opentelemetry = { version = "0.33", default-features = false }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+url = "2.5.7"
+uuid = { version = "1", features = ["js", "serde", "v4", "v5", "v7"] }
+v8-heap-parser = "1.1.0"
+vergen = { version = "8", default-features = false }
+wasm-bindgen = "0.2.105"
+wasm-bindgen-futures = "0.4.55"
+web-time = "1.1.0"
+zip = { version = "8.1.0", default-features = false, features = ["deflate"] }
+webrtc = "0.17.0"
+whoami = "1.6.1"
+yansi = { version = "1.0", features = ["detect-env", "detect-tty"] }
+zstd = "0.13"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+missing-const-for-fn = "warn"
+use-self = "warn"
+redundant-clone = "warn"
+large-enum-variant = "allow"
+result-large-err = "allow"
+
+# Match Reth and Solar's fast edit-build cycle: retain useful backtraces and
+# source locations without emitting full local-variable debug information.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+# Display math runs during interactive debug builds. Keep the small native
+# parser/layout/raster stack optimized so a cold formula is ready in one frame.
+[profile.dev.package.ratatex]
+opt-level = 1
+
+[profile.dev.package.ratex-font]
+opt-level = 3
+
+[profile.dev.package.ratex-font-loader]
+opt-level = 3
+
+[profile.dev.package.ratex-katex-fonts]
+opt-level = 3
+
+[profile.dev.package.ratex-layout]
+opt-level = 3
+
+[profile.dev.package.ratex-lexer]
+opt-level = 3
+
+[profile.dev.package.ratex-parser]
+opt-level = 3
+
+[profile.dev.package.ratex-render]
+opt-level = 3
+
+[profile.dev.package.ratex-types]
+opt-level = 3
+
+[profile.dev.package.ratex-unicode-font]
+opt-level = 3
+
+[profile.dev.package.tiny-skia]
+opt-level = 3
+
+[profile.dev.package.tiny-skia-path]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+debug = "none"
+strip = "symbols"
+panic = "unwind"
+codegen-units = 16
+
+# Nightlies favor fast feedback while retaining fully optimized portable code.
+# Stable releases continue to use the thin-LTO release profile above.
+[profile.nightly]
+inherits = "release"
+lto = false
+
+# Opt-in builds can favor maximum runtime performance over build time, matching
+# Reth's maxperf profile without raising the minimum CPU level of binaries.
+[profile.maxperf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
+# Optimized enough for representative CPU profiles while retaining full symbols.
+[profile.profiling]
+inherits = "release"
+debug = "full"
+strip = false
+
+# Keep benchmark symbols so Criterion regressions can be profiled directly.
+[profile.bench]
+inherits = "profiling"
+
+[profile.wasm]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+opt-level = "z"
+panic = "abort"
+strip = "symbols"

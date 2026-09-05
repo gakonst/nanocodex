@@ -1,0 +1,48 @@
+{
+  "name": "nanocodex-rivet-actors-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "npm run build:web && npm run build:server",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:web": "esbuild web/app.ts --bundle --format=esm --minify --outfile=web/dist/app.js",
+    "check": "npm run check:dependencies && npm run typecheck && npm test",
+    "check:dependencies": "node scripts/check-no-pi.mjs",
+    "brutalize": "node --import tsx scripts/soak.ts",
+    "predev": "npm run build:web",
+    "dev": "node scripts/run-local-server.mjs --env-file src/server.ts",
+    "predev:subscription": "npm run build:web",
+    "dev:subscription": "node scripts/run-local-server.mjs scripts/dev-subscription.ts",
+    "deploy:subscription": "node --import tsx scripts/deploy-subscription.ts",
+    "multiclient": "node --import tsx scripts/multiclient-smoke.ts",
+    "repl": "node --import tsx scripts/repl.ts",
+    "smoke": "node --import tsx scripts/live-smoke.ts",
+    "stress": "node --import tsx scripts/stress.ts",
+    "pretest": "npm run build:web",
+    "test": "node scripts/test.mjs",
+    "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@rivet-dev/agentos": "0.2.15",
+    "nanocodex": "file:../../js/nanocodex",
+    "rivetkit": "2.3.10",
+    "ws": "8.21.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.15",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.28.1",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  },
+  "overrides": {
+    "esbuild": "0.28.1",
+    "rivetkit": "2.3.10",
+    "ws": "8.21.1"
+  }
+}

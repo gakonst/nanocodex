@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository="gakonst/nanocodex"
+install_root="${NANOCODEX_DIR:-$HOME/.nanocodex}"
+bin_dir="$install_root/bin"
+versions_dir="$install_root/versions"
+updater_dir="$install_root/updater"
+
+case "$(uname -s)" in
+  Linux) platform="unknown-linux-gnu" ;;
+  Darwin) platform="apple-darwin" ;;
+  *)
+    echo "nanocodex: unsupported operating system $(uname -s)" >&2
+    echo "Download a binary from https://github.com/$repository/releases/latest" >&2
+    exit 1
+    ;;
+esac
+
+case "$(uname -m)" in
+  x86_64|amd64) architecture="x86_64" ;;
+  arm64|aarch64) architecture="aarch64" ;;
+  *)
+    echo "nanocodex: unsupported architecture $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+case "${architecture}-${platform}" in
+  x86_64-unknown-linux-gnu|aarch64-apple-darwin) ;;
+  *)
+    echo "nanocodex: no release binary is published for ${architecture}-${platform}" >&2
+    exit 1
+    ;;
+esac
+
+target="${architecture}-${platform}"
+binaries=("nanocodex-$target" "nanocodex2-$target")
+installed_names=("nanocodex" "nanocodex2")
+temporary_dir="$(mktemp -d 2>/dev/null)" || {
+  echo "nanocodex: failed to create a temporary directory" >&2
+  exit 1
+}
+trap 'rm -rf -- "$temporary_dir"' EXIT
+
+echo "Installing the latest Nanocodex release..."
+release_redirect="$(
+  curl --fail --silent --show-error --head \
+    --output /dev/null --write-out '%{redirect_url}' \
+    "https://github.com/$repository/releases/latest"
+)"
+release_tag="${release_redirect##*/}"
+version="${release_tag#v}"
+if [[ -z "$release_tag" || -z "$version" || "$version" == "$release_tag" ]]; then
+  echo "nanocodex: could not resolve the latest release version" >&2
+  exit 1
+fi
+release_url="https://github.com/$repository/releases/download/$release_tag"
+curl --fail --silent --show-error --location "$release_url/SHA256SUMS" --output "$temporary_dir/SHA256SUMS"
+
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+  echo "nanocodex: sha256sum or shasum is required to verify the download" >&2
+  exit 1
+fi
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  else
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  fi
+}
+
+binary_paths=()
+binary_checksums=()
+for binary in "${binaries[@]}"; do
+  compressed_asset="$binary.gz"
+  if awk -v asset="$compressed_asset" '$2 == asset || $2 == "*" asset { found = 1 } END { exit !found }' "$temporary_dir/SHA256SUMS"; then
+    asset="$compressed_asset"
+    compressed=true
+  elif awk -v asset="$binary" '$2 == asset || $2 == "*" asset { found = 1 } END { exit !found }' "$temporary_dir/SHA256SUMS"; then
+    asset="$binary"
+    compressed=false
+  else
+    echo "nanocodex: SHA256SUMS contains neither $compressed_asset nor $binary" >&2
+    exit 1
+  fi
+
+  if [[ "$compressed" == true ]] && ! command -v gzip >/dev/null 2>&1; then
+    echo "nanocodex: gzip is required to unpack the download" >&2
+    exit 1
+  fi
+
+  echo "Downloading $asset..."
+  curl --fail --show-error --location --progress-bar "$release_url/$asset" --output "$temporary_dir/$asset"
+
+  expected="$(awk -v asset="$asset" '$2 == asset || $2 == "*" asset { print $1; exit }' "$temporary_dir/SHA256SUMS")"
+  if [[ -z "$expected" ]]; then
+    echo "nanocodex: SHA256SUMS does not contain $asset" >&2
+    exit 1
+  fi
+  actual="$(sha256_file "$temporary_dir/$asset")"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "nanocodex: checksum mismatch for $asset" >&2
+    exit 1
+  fi
+
+  binary_path="$temporary_dir/$binary"
+  if [[ "$compressed" == true ]]; then
+    if ! gzip -dc "$temporary_dir/$asset" > "$binary_path"; then
+      echo "nanocodex: failed to unpack $asset" >&2
+      exit 1
+    fi
+  fi
+  binary_paths+=("$binary_path")
+  binary_checksums+=("$(sha256_file "$binary_path")")
+done
+
+version_dir="$versions_dir/$version"
+mkdir -p "$bin_dir" "$versions_dir" "$updater_dir"
+if [[ -e "$version_dir" || -L "$version_dir" ]]; then
+  for index in 0 1; do
+    installed_name="${installed_names[$index]}"
+    if [[ ! -f "$version_dir/$installed_name" ]] || \
+      [[ "$(sha256_file "$version_dir/$installed_name")" != "${binary_checksums[$index]}" ]]; then
+      echo "nanocodex: existing $version_dir is not the verified $version bundle" >&2
+      exit 1
+    fi
+  done
+else
+  staged_version_dir="$temporary_dir/version"
+  mkdir "$staged_version_dir"
+  for index in 0 1; do
+    installed_name="${installed_names[$index]}"
+    install -m 755 "${binary_paths[$index]}" "$staged_version_dir/$installed_name"
+    printf '%s\n' "${binary_checksums[$index]}" > "$staged_version_dir/$installed_name.sha256"
+  done
+  mv "$staged_version_dir" "$version_dir"
+fi
+install -m 755 "${binary_paths[0]}" "$updater_dir/nanocodex"
+printf '%s\n' "${binary_checksums[0]}" > "$updater_dir/nanocodex.sha256"
+
+ln -sfn "versions/$version" "$install_root/current"
+
+cat > "$temporary_dir/nanocodex-launcher" <<'EOF'
+#!/bin/sh
+set -eu
+
+case "$0" in
+    */*) launcher=$0 ;;
+    *) launcher=$(command -v "$0") ;;
+esac
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P)
+install_root=$(dirname -- "$bin_dir")
+export NANOCODEX_DIR="$install_root"
+
+if [ "${1-}" = "update" ] && [ -f "$install_root/updater/nanocodex.sha256" ]; then
+    exec "$install_root/updater/nanocodex" "$@"
+fi
+exec "$install_root/current/nanocodex" "$@"
+EOF
+install -m 755 "$temporary_dir/nanocodex-launcher" "$bin_dir/nanocodex"
+
+cat > "$temporary_dir/nanocodex2-launcher" <<'EOF'
+#!/bin/sh
+set -eu
+
+case "$0" in
+    */*) launcher=$0 ;;
+    *) launcher=$(command -v "$0") ;;
+esac
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P)
+install_root=$(dirname -- "$bin_dir")
+export NANOCODEX_DIR="$install_root"
+exec "$install_root/current/nanocodex2" "$@"
+EOF
+install -m 755 "$temporary_dir/nanocodex2-launcher" "$bin_dir/nanocodex2"
+
+shell_quote() {
+  local quoted
+  quoted="${1//\'/\'\"\'\"\'}"
+  printf "'%s'" "$quoted"
+}
+
+quoted_bin_dir="$(shell_quote "$bin_dir")"
+path_line="export PATH=\"\$PATH\":$quoted_bin_dir"
+profile=""
+case "${SHELL:-}" in
+  */zsh) profile="${ZDOTDIR:-$HOME}/.zshenv" ;;
+  */bash) profile="$HOME/.bashrc" ;;
+  */fish)
+    profile="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+    path_line="fish_add_path -a -- $quoted_bin_dir"
+    ;;
+  */ash|*/dash|*/ksh|*/sh) profile="$HOME/.profile" ;;
+esac
+
+if [[ ":$PATH:" != *":$bin_dir:"* && -n "$profile" ]]; then
+  if [[ ( -e "$profile" || -L "$profile" ) && ! -w "$profile" ]]; then
+    echo "nanocodex: cannot update $profile; add this line yourself:" >&2
+    echo "  $path_line" >&2
+  elif ! mkdir -p "$(dirname "$profile")" || ! touch "$profile"; then
+    echo "nanocodex: cannot create $profile; add this line yourself:" >&2
+    echo "  $path_line" >&2
+  elif ! grep -Fq "$bin_dir" "$profile"; then
+    if ! printf '\n# Nanocodex\n%s\n' "$path_line" >> "$profile"; then
+      echo "nanocodex: cannot update $profile; add this line yourself:" >&2
+      echo "  $path_line" >&2
+    fi
+  fi
+fi
+
+echo "Installed nanocodex $version to $version_dir/nanocodex"
+echo "Installed nanocodex2 $version to $version_dir/nanocodex2"
+echo "Activated them through $bin_dir/nanocodex and $bin_dir/nanocodex2"
+if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
+  echo "Restart your shell or add $bin_dir to PATH."
+fi
+echo "Run 'nanocodex update' whenever you want the latest release."

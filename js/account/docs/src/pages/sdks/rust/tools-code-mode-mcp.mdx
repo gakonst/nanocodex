@@ -1,0 +1,69 @@
+---
+title: Rust tools, Code Mode, and MCP
+description: Add typed application capabilities without moving the agent loop out of Rust.
+---
+
+# Rust tools, Code Mode, and MCP
+
+Register application tools on the agent you own. The `#[tool]` macro derives
+the input and output contracts from an async Rust function. `Tools::builder()`
+returns `ToolsBuilder`, which selects the compiled handlers for this runtime.
+
+```rust
+use nanocodex::{Nanocodex, OpenAi, Tools, tool};
+
+#[tool(description = "Return the production region for a service.", parallel = true)]
+async fn deployment_region(service: String) -> Result<String, std::io::Error> {
+    Ok(format!("{service}: us-west-2"))
+}
+
+let tools = Tools::builder()
+    .without_defaults()
+    .tool(deployment_region)
+    .build()?;
+let (_agent, _events) = Nanocodex::builder(openai).tools(tools).build()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Mark a tool parallel only when its local effects are safe to overlap. Implement
+the `Tool` trait directly when execution needs `ToolContext`, freeform input,
+multimodal output, or a custom definition.
+
+## Choose model-visible exposure
+
+`Tools` defaults ordinary tools to Code Mode-only exposure. The model can loop,
+branch, and call typed nested tools with `await tools.<name>(...)` through the
+Code Mode execution surface. `wait`, deferred search, and deliberately direct
+tools may remain visible beside it. Choose direct-and-Code-Mode exposure only
+when a consumer needs the same ordinary tools visible directly as well.
+
+The default native workspace set includes bounded command execution, retained
+stdin sessions, Rust-verified patch application, image viewing, planning, web
+search, and image generation. These tools run with the embedding process's
+authority. Use a private checkout, container, remote tool host, or explicit VM
+boundary when local execution is not appropriate.
+
+## Add a deferred MCP server
+
+```rust
+use nanocodex::tools::mcp::{Mcp, McpServer};
+
+let mcp = Mcp::builder()
+    .server(
+        "company_docs",
+        McpServer::stdio("company-docs-mcp").arg("--readonly"),
+    )
+    .build()?;
+let tools = Tools::builder().provider(mcp).build()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+MCP discovery starts with the owning tool runtime. Deferred schemas stay out of
+the initial model prefix, are found through `tool_search`, and become available
+under canonical server/tool names in Code Mode. Native MCP is part of
+`nanocodex-tools`; it is not another agent runtime.
+
+Run the [custom tool](https://github.com/gakonst/nanocodex/blob/master/examples/custom_tool.rs)
+and [MCP](https://github.com/gakonst/nanocodex/blob/master/examples/mcp.rs)
+examples, then read the [tools crate guide](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex-tools/README.md)
+for exposure, hosted Code Mode, and lower-level contracts.

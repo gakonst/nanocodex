@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>One prompt with Astra</title>
+    <meta name="description" content="Connect a Nanocodex account, pay once in MACH, and try one max-thinking Astra prompt.">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main>
+      <nav aria-label="Demo status">
+        <a class="brand" href="/">nanocodex<span>/astra</span></a>
+        <div class="account-row">
+          <span id="account">Not connected</span>
+          <button class="text-button" id="logout" hidden type="button">Disconnect</button>
+        </div>
+      </nav>
+
+      <section class="hero" aria-labelledby="title">
+        <p class="eyebrow">A one-shot third-party demo</p>
+        <h1 id="title">Ask Astra<br><em>one good question.</em></h1>
+        <p class="lede">
+          Sign in with Nanocodex Connect. Your payment unlocks one isolated
+          GPT-6 Astra prompt at max thinking on our hosted account.
+        </p>
+      </section>
+
+      <section class="card" aria-live="polite">
+        <div class="policy">
+          <div><span>Model</span><strong>Astra</strong></div>
+          <div><span>Thinking</span><strong>Max</strong></div>
+          <div><span>Mode</span><strong>Standard</strong></div>
+          <div><span>Allowance</span><strong>1 prompt</strong></div>
+        </div>
+
+        <div id="intro">
+          <p class="fine-print">
+            Connect authenticates your account and wallet. It does not grant this
+            site access to your conversations, cloud accounts, or model output.
+          </p>
+          <button class="primary" id="connect" type="button">Connect Nanocodex</button>
+        </div>
+
+        <form id="prompt-form" hidden>
+          <label for="prompt">Your one prompt</label>
+          <textarea
+            id="prompt"
+            maxlength="16000"
+            placeholder="Ask something worthy of max thinking…"
+            required
+            rows="7"
+          ></textarea>
+          <div class="payment-row">
+            <div>
+              <span class="payment-label">Unlock price</span>
+              <strong id="payment">Loading policy…</strong>
+            </div>
+            <button class="secondary" id="fund" type="button">Add $5 MACH</button>
+          </div>
+          <button class="primary" id="submit" type="submit">Pay &amp; ask Astra</button>
+        </form>
+
+        <p class="status" id="status">Connect to claim your one prompt.</p>
+        <p class="error" id="error" role="alert"></p>
+        <pre class="result" id="result"></pre>
+      </section>
+
+      <footer>
+        <span>Identity by Nanocodex Connect</span>
+        <span>Payment on Tempo · gas sponsored</span>
+        <span>No generic managed API proxy</span>
+      </footer>
+    </main>
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

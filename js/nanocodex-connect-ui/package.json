@@ -1,0 +1,98 @@
+{
+  "name": "nanocodex-connect-ui",
+  "version": "0.1.0",
+  "description": "Reusable React account and Connect onboarding UI for Nanocodex",
+  "type": "module",
+  "sideEffects": [
+    "./styles.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/App.d.ts",
+      "import": "./dist/App.js"
+    },
+    "./App": {
+      "types": "./dist/App.d.ts",
+      "import": "./dist/App.js"
+    },
+    "./AccountChooser": {
+      "types": "./dist/AccountChooser.d.ts",
+      "import": "./dist/AccountChooser.js"
+    },
+    "./AccountConnectionSurface": {
+      "types": "./dist/AccountConnectionSurface.d.ts",
+      "import": "./dist/AccountConnectionSurface.js"
+    },
+    "./ConnectionLogo": {
+      "types": "./dist/ConnectionLogo.d.ts",
+      "import": "./dist/ConnectionLogo.js"
+    },
+    "./browserAccountSession": {
+      "types": "./dist/browserAccountSession.d.ts",
+      "import": "./dist/browserAccountSession.js"
+    },
+    "./savedPasskeyAccounts": {
+      "types": "./dist/savedPasskeyAccounts.d.ts",
+      "import": "./dist/savedPasskeyAccounts.js"
+    },
+    "./connectorCompletion": {
+      "types": "./dist/connectorCompletion.d.ts",
+      "import": "./dist/connectorCompletion.js"
+    },
+    "./connectorPolicy.mjs": {
+      "types": "./dist/connectorPolicy.d.mts",
+      "import": "./dist/connectorPolicy.mjs"
+    },
+    "./popupCallback": {
+      "types": "./dist/popupCallback.d.ts",
+      "import": "./dist/popupCallback.js"
+    },
+    "./connectPolicy.mjs": {
+      "types": "./dist/connectPolicy.d.mts",
+      "import": "./dist/connectPolicy.mjs"
+    },
+    "./connectTypes": {
+      "types": "./dist/connectTypes.d.ts",
+      "import": "./dist/connectTypes.js"
+    },
+    "./styles.css": "./styles.css"
+  },
+  "files": [
+    "dist",
+    "styles.css",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json && cp src/connectorPolicy.mjs src/connectorPolicy.d.mts dist/",
+    "test": "npm run build && node --test test/*.test.mjs && npm run test:typecheck",
+    "test:typecheck": "tsc -p test/tsconfig.json"
+  },
+  "dependencies": {
+    "accounts": "0.17.0",
+    "nanocodex-connect-protocol": "workspace:*"
+  },
+  "peerDependencies": {
+    "nanocodex": "^0.5.0",
+    "react": ">=19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "nanocodex": "workspace:*",
+    "react": "19.2.8",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gakonst/nanocodex.git",
+    "directory": "js/nanocodex-connect-ui"
+  }
+}

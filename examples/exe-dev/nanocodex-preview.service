@@ -1,0 +1,16 @@
+[Unit]
+Description=Nanocodex workspace preview
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=exedev
+Group=exedev
+WorkingDirectory=/home/exedev/workspace
+ExecStart=/usr/bin/python3 -m http.server 8000 --bind 0.0.0.0
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

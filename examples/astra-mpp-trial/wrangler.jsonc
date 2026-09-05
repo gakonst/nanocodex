@@ -1,0 +1,48 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-astra-mpp-trial",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./public",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "TRIALS", "class_name": "AstraTrial" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AstraTrial"] }
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "NANOCODEX_CONNECT_API_URL": "https://nanocodex-connect-api.gakonst.workers.dev",
+    "NANOCODEX_CONNECT_APP_ID": "astra-one-shot",
+    "NANOCODEX_CONNECT_APP_ORIGIN": "https://nanocodex-astra-mpp-trial.gakonst.workers.dev",
+    "NANOCODEX_CONNECT_DIALOG_URL": "https://nanocodex.gakonst.workers.dev/connect-dialog/",
+    "NANOCODEX_MANAGED_URL": "https://nanocodex.gakonst.workers.dev",
+    "NANOCODEX_ASTRA_MACH_RECIPIENT": "0xa295c42fbcc026a62304a7701f25b4c91799b0da"
+  },
+  "env": {
+    "development": {
+      "name": "nanocodex-astra-mpp-trial-dev",
+      "durable_objects": {
+        "bindings": [
+          { "name": "TRIALS", "class_name": "AstraTrial" }
+        ]
+      },
+      "vars": {
+        "ENVIRONMENT": "development",
+        "NANOCODEX_CONNECT_API_URL": "https://nanocodex-connect-api.gakonst.workers.dev",
+        "NANOCODEX_CONNECT_APP_ID": "astra-one-shot-local",
+        "NANOCODEX_CONNECT_APP_ORIGIN": "https://localhost:8787",
+        "NANOCODEX_CONNECT_DIALOG_URL": "https://nanocodex.gakonst.workers.dev/connect-dialog/",
+        "NANOCODEX_MANAGED_URL": "https://nanocodex.gakonst.workers.dev",
+        "NANOCODEX_ASTRA_MACH_RECIPIENT": "0xa295c42fbcc026a62304a7701f25b4c91799b0da"
+      }
+    }
+  }
+}

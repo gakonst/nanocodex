@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+if [ "$(uname -s)" = "Darwin" ]; then
+    if command -v brew >/dev/null 2>&1; then
+        brew_bin="$(command -v brew)"
+    elif [ -x /opt/homebrew/bin/brew ]; then
+        brew_bin=/opt/homebrew/bin/brew
+    else
+        brew_bin=/usr/local/bin/brew
+    fi
+    exec "$("$brew_bin" --prefix llvm)/bin/llvm-ar" "$@"
+fi
+
+exec ar "$@"

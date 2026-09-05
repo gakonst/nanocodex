@@ -1,0 +1,28 @@
+[package]
+name = "nanocodex-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Embedded Node and browser WASM bindings for Nanocodex"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys.workspace = true
+nanocodex.workspace = true
+nanocodex-subagents.workspace = true
+nanocodex-voice-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,74 @@
+---
+title: Vercel Workflows
+description: Reconstruct Rust/WASM in Function steps from an application-owned PostgreSQL journal.
+---
+
+# Vercel Workflows
+
+The Vercel example models one agent session as one Workflow actor. Workflow
+serializes prompts and retains a replayable client stream. Each Function step
+constructs Nanocodex Rust/WASM, runs one prompt, and loads or appends the opaque
+journal in PostgreSQL. A named persistent Vercel Sandbox owns `/workspace`.
+
+```text
+clients -> WebSocket Functions -> Workflow stream
+                                  |
+                                  `-> Nanocodex Function step
+                                      |- Rust/WASM agent
+                                      |- PostgreSQL journal
+                                      `- named Vercel Sandbox
+```
+
+## Adopt the pattern
+
+```sh
+npm install nanocodex pg @vercel/functions
+```
+
+Attach a PostgreSQL integration from the Vercel Marketplace so the project has
+a pooled `DATABASE_URL`. Create the agent inside a Function step and give it the
+application-owned PostgreSQL `DurabilityStore`. The concrete
+[Vercel reference consumer](https://github.com/gakonst/nanocodex/tree/master/examples/vercel-workflows)
+shows the lazy `pg` pool registered with `attachDatabasePool`, current schema,
+atomic compare-and-append, Workflow hook, Function WebSockets, API-key and
+ChatGPT credential paths, Sandbox tools, and terminal route. Those pieces
+remain application policy; the npm package supplies the agent lifecycle.
+
+## Durable boundary
+
+Workflow owns sequential prompt delivery and the replayable output stream.
+PostgreSQL owns the opaque Rust journal. Function memory and client WebSockets
+are disposable.
+
+The store creates one pool and schema lazily per warm Function instance; import
+and build do not connect. A transaction-scoped advisory lock serializes schema
+creation across cold instances. Revisions use `NUMERIC(20,0)` and decimal
+strings, not JavaScript numbers, so the complete unsigned `u64` range survives.
+Load is one ordered PostgreSQL statement. Append conditionally advances the
+journal head and inserts the opaque batch in one transaction.
+
+If `COMMIT` rejects, its outcome is unknown. The store throws instead of claiming
+`not_committed`; Rust poisons and stops the live owner, and the next Function
+step reloads retained state. Only a failure proven to have made no durable
+change may return `not_committed`. Rust remains the sole recovery state machine.
+
+## Sandbox and terminal
+
+The named Vercel Sandbox snapshots files across VM stop/resume. Processes do
+not survive that boundary. The optional workspace terminal opens an ephemeral
+PTY against the same Sandbox and obtains a fresh short-lived controller token
+after reconnect.
+
+Keep these ownership boundaries separate:
+
+- Workflow retains Nanocodex events and serializes prompts.
+- PostgreSQL retains the opaque journal and committed conversation state.
+- Sandbox retains workspace files.
+- The terminal WebSocket carries PTY bytes only.
+
+The browser terminal does not become the agent protocol, and durable files do
+not imply durable shell processes.
+
+This adapter proves one Vercel composition. It does not promise that arbitrary
+Functions keep a resident agent or that Nanocodex is portable across every
+serverless runtime without platform code.

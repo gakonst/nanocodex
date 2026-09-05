@@ -1,0 +1,57 @@
+---
+title: Use the eval harness
+description: Add, run, and inspect one task when you have a complete Nanocodex eval distribution.
+---
+
+# Use the eval harness
+
+Start with one task, one model, one thinking level, and one trial. This workflow
+requires a complete eval distribution: the `nanocodex` host binary, its matching
+VM guest runtime, and a valid task package. The public installer currently
+supplies only the first item.
+
+## Check the surface
+
+The installed CLI exposes the real command tree:
+
+```sh
+nanocodex eval --help
+nanocodex eval add --help
+nanocodex eval run --help
+```
+
+A task package is an input to the harness, not a directory shipped by the CLI.
+It contains `task.toml`, `instruction.md`, an `environment/` directory, and
+`tests/test.sh`. Keep the task and verifier unchanged across compared arms.
+
+## Run one coordinate
+
+With a complete distribution, set the task path you were given:
+
+```sh
+export TASK_PACKAGE="/absolute/path/to/task-package"
+export EVAL_PROFILE="focused-run"
+
+nanocodex eval add "$EVAL_PROFILE" \
+  --task "$TASK_PACKAGE" --model sol --thinking low --trials 1
+nanocodex eval run "$EVAL_PROFILE" \
+  --task "$TASK_PACKAGE" --model sol --thinking low
+nanocodex eval status "$EVAL_PROFILE" --json
+```
+
+The default state directory is `~/.nanocodex/evals`. `eval add` fingerprints
+the package and materializes one immutable row. `eval run` claims the row,
+executes the agent and verifier, records the terminal state, and prints JSON
+with the evidence path.
+
+`success` means the verifier completed and passed. `failed` means it completed
+and failed. An infrastructure error is recorded as an attempt and releases the
+row; it is not an agent score.
+
+Scale only after you can explain the focused result. A supplied profile recipe
+can materialize a larger matrix with `nanocodex eval add --recipe`, and
+`nanocodex eval benchmark` can process its pre-materialized rows. Recipes and
+task corpora are distribution inputs; the CLI does not invent or download them.
+
+Next: [browse worksets](/harness/dashboard-worksets) and keep the
+[retained evidence](/harness/evidence).

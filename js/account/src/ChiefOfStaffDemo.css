@@ -1,0 +1,75 @@
+.chief-demo {
+  display: grid;
+  width: min(100%, 1120px);
+  gap: 28px;
+  padding-block: clamp(40px, 6vw, 84px) 80px;
+  margin-inline: auto;
+}
+
+.chief-hero { display: grid; max-width: 800px; gap: 14px; }
+.chief-hero .eyebrow, .chief-setup .eyebrow { color: var(--text-muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.chief-hero h1 { font-size: clamp(36px, 7vw, 72px); line-height: .94; letter-spacing: -.05em; }
+.chief-hero > p:not(.eyebrow) { max-width: 720px; color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+.chief-hero-status { display: flex; width: fit-content; gap: 9px; align-items: center; padding: 8px 10px; border: 1px solid var(--border-soft); font-size: 10px; }
+.chief-hero-status button, .chief-error button { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; padding: 5px 8px; color: var(--text); background: var(--surface-hover); border: 1px solid var(--border-soft); cursor: pointer; font: inherit; }
+.chief-hero-status svg { width: 11px; height: 11px; }
+.chief-status-dot { width: 7px; height: 7px; background: var(--text-faint); border-radius: 50%; }
+.chief-status-dot.is-ready { background: var(--positive); box-shadow: 0 0 0 3px color-mix(in srgb, var(--positive) 15%, transparent); }
+.chief-error { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px 14px; color: var(--negative); border: 1px solid color-mix(in srgb, var(--negative) 35%, var(--border-soft)); font-size: 10px; }
+
+.chief-channel-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--border-soft); }
+.chief-channel { display: grid; min-width: 0; gap: 20px; padding: 20px; }
+.chief-channel + .chief-channel { border-left: 1px solid var(--border-soft); }
+.chief-channel header { display: flex; gap: 12px; align-items: start; justify-content: space-between; }
+.chief-channel header div { display: grid; gap: 6px; }
+.chief-channel header span { font-size: 15px; }
+.chief-channel header small { color: var(--text-muted); font-size: 8px; text-transform: uppercase; }
+.chief-channel header strong { padding: 4px 6px; color: var(--text-muted); border: 1px solid var(--border-soft); font-size: 8px; font-weight: 400; text-transform: uppercase; white-space: nowrap; }
+.chief-channel.is-ready header strong, .chief-channel.is-configured header strong { color: var(--positive); border-color: color-mix(in srgb, var(--positive) 40%, var(--border-soft)); }
+.chief-channel p { min-height: 52px; color: var(--text-muted); font-size: 10px; line-height: 1.65; }
+.chief-channel a { display: inline-flex; gap: 6px; align-items: center; width: fit-content; color: var(--text); font-size: 9px; text-decoration: none; }
+.chief-channel a:hover { text-decoration: underline; }
+.chief-channel a svg { width: 10px; height: 10px; }
+
+.chief-setup { display: grid; gap: 0; border-block: 1px solid var(--border-soft); }
+.chief-setup > header { display: flex; align-items: center; justify-content: space-between; padding: 24px 0; }
+.chief-setup > header div { display: grid; gap: 7px; }
+.chief-setup h2 { font-size: clamp(20px, 3vw, 30px); font-weight: 400; }
+.chief-setup > header > svg { width: 25px; color: var(--positive); }
+.chief-install-action, .chief-installation { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 18px 0; border-top: 1px solid var(--border-soft); }
+.chief-install-action > div, .chief-installation > div { display: grid; gap: 7px; }
+.chief-install-action strong, .chief-installation strong { font-size: 11px; font-weight: 400; }
+.chief-install-action p, .chief-installation p { color: var(--text-muted); font-size: 10px; line-height: 1.6; }
+.chief-add-slack, .chief-copy-viber, .chief-installation button { display: inline-flex; flex: 0 0 auto; gap: 7px; align-items: center; padding: 9px 12px; color: var(--surface); background: var(--text); border: 1px solid var(--text); cursor: pointer; font: 10px var(--font-mono); text-decoration: none; }
+.chief-installation button { color: var(--text); background: transparent; border-color: var(--border-soft); }
+.chief-add-slack svg, .chief-copy-viber svg, .chief-installation button svg { width: 12px; height: 12px; }
+.chief-installation button:disabled { cursor: wait; opacity: .55; }
+.chief-install-unavailable { color: var(--text-muted); font-size: 9px; text-transform: uppercase; }
+.chief-setup ol { display: grid; padding: 0; margin: 0; list-style: none; }
+.chief-setup li { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 18px 0; border-top: 1px solid var(--border-soft); }
+.chief-setup li > span { color: var(--text-muted); font-size: 9px; }
+.chief-setup li div { display: grid; gap: 7px; }
+.chief-setup li strong { font-size: 11px; font-weight: 400; }
+.chief-setup li p, .chief-secret-note { color: var(--text-muted); font-size: 10px; line-height: 1.6; }
+.chief-setup code { padding: 2px 4px; color: var(--text); background: var(--surface-hover); font: inherit; }
+.chief-setup li button { display: inline-flex; gap: 6px; align-items: center; padding: 7px 9px; color: var(--text); background: transparent; border: 1px solid var(--border-soft); cursor: pointer; font: 9px var(--font-mono); }
+.chief-setup li button svg { width: 11px; height: 11px; }
+.chief-webhook { overflow: hidden; margin: 0 0 16px 54px; text-overflow: ellipsis; white-space: nowrap; }
+.chief-secret-note { padding: 14px 0; border-top: 1px solid var(--border-soft); }
+
+@media (max-width: 760px) {
+  .chief-channel-grid { grid-template-columns: 1fr; }
+  .chief-channel + .chief-channel { border-top: 1px solid var(--border-soft); border-left: 0; }
+  .chief-channel p { min-height: 0; }
+  .chief-setup li { grid-template-columns: 32px minmax(0, 1fr); }
+  .chief-setup li button { grid-column: 2; width: fit-content; }
+  .chief-webhook { margin-left: 44px; }
+  .chief-install-action, .chief-installation { align-items: start; }
+}
+
+@media (pointer: coarse) {
+  .chief-hero-status button, .chief-channel a, .chief-error button, .chief-setup li button,
+  .chief-add-slack, .chief-copy-viber, .chief-installation button {
+    min-height: var(--coarse-target-size);
+  }
+}

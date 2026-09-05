@@ -1,0 +1,17 @@
+{
+  "name": "nanocodex-browser-assets",
+  "private": true,
+  "scripts": {
+    "build": "pnpm run build:react && pnpm run build:axe",
+    "build:react": "esbuild react_diagnostics.js --bundle --format=iife --minify --platform=browser --target=chrome120 --legal-comments=none --banner:js='/* Generated from pinned React Scan and Bippy sources; React Grab-derived element context; see REACT_DIAGNOSTICS_NOTICE.md. */' --outfile=../assets/react_diagnostics.js",
+    "build:axe": "esbuild axe_bridge.js --bundle --format=iife --minify --platform=browser --target=chrome120 --legal-comments=eof --banner:js='/* Generated from pinned axe-core sources; see AXE_NOTICE.md. */' --outfile=../assets/axe.js"
+  },
+  "dependencies": {
+    "axe-core": "4.12.1",
+    "bippy": "0.5.43",
+    "react-scan": "0.5.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

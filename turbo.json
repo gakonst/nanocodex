@@ -1,0 +1,36 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "nanocodex#build": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": []
+    },
+    "@nanocodex/connect-api#build": {
+      "dependsOn": ["nanocodex-connect-protocol#build"],
+      "outputs": []
+    },
+    "nanocodex-web#build": {
+      "cache": false,
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    }
+  }
+}

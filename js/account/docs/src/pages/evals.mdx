@@ -1,0 +1,52 @@
+---
+title: Evals
+description: Understand the retained VM eval boundary and inspect published Nanocodex evidence.
+---
+
+# Evals
+
+Nanocodex evaluates task packages as immutable task, harness, model, thinking,
+and repetition rows. SQLite owns the workset. Each claimed attempt runs the
+agent and canonical verifier in fresh microVM overlays, then retains the result
+and its evidence.
+
+```text
+task package -> immutable workset -> claimed attempt -> verifier
+                    SQLite              microVM           |
+                       `------------ retained evidence <--'
+```
+
+## What is public today
+
+The release binary exposes `nanocodex eval` on supported native hosts. The curl
+installer currently ships only that host binary: it does not bundle a matching
+VM guest runtime or benchmark task packages. There is therefore no honest
+installer-only command that launches the provided VM harness end to end.
+
+You can inspect the retained public worksets in the
+[Nanocodex eval dashboard](/evals). If you receive
+a complete eval distribution with its matching guest runtime and task packages,
+use the documented [`nanocodex eval` workflow](/harness/focused-run). Do not
+substitute an arbitrary task directory or guest binary and call the result
+comparable.
+
+## Evaluation contract
+
+Rows end in `success` or `failed` only after the canonical verifier completes.
+Infrastructure failures remain in append-only attempt history and release work
+for a later claim. Claim IDs fence late writes. SQLite, not a mutable recipe,
+is authoritative after rows are added.
+
+Each completed arm can retain result JSON, raw events, trajectory, API
+exchanges, verifier output, task and candidate digests, duration, usage, and
+cost. A dashboard is a projection of those records, not a replacement for
+them.
+
+Use retained evals as an explicit milestone or release gate. Bind comparisons
+to exact workset and task digests, treatment coordinates, environment,
+verifier, resources, candidate provenance, and retained row IDs. Similar names
+are not evidence that two arms are comparable.
+
+Next: [use the harness](/harness/focused-run), browse
+[worksets](/harness/dashboard-worksets), understand
+[retained evidence](/harness/evidence), or [interpret a result](/harness/read-results).

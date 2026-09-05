@@ -1,0 +1,254 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-durable-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "alias": {
+    "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
+  },
+  "workers_dev": false,
+  "minify": true,
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "services": [
+    {
+      "binding": "NANOCODEX",
+      "service": "nanocodex-egress"
+    },
+    {
+      "binding": "NANOCODEX_CHIEF_EGRESS",
+      "service": "nanocodex-egress",
+      "entrypoint": "ChiefOfStaffEgress"
+    }
+  ],
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "NANOCODEX_HISTORY",
+      "bucket_name": "nanocodex-managed-history"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES",
+      "bucket_name": "nanocodex-sandbox-workspaces"
+    },
+    {
+      "binding": "NANOCODEX_BRAIN",
+      "bucket_name": "nanocodex-sandbox-workspaces"
+    },
+    { "binding": "NANOCODEX_WORKSPACES_0", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_1", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_2", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_3", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_4", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_5", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_6", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_7", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_8", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_9", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_10", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_11", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_12", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_13", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_14", "bucket_name": "nanocodex-sandbox-workspaces" },
+    { "binding": "NANOCODEX_WORKSPACES_15", "bucket_name": "nanocodex-sandbox-workspaces" }
+  ],
+  "ai_search": [
+    {
+      "binding": "HISTORY_AI_SEARCH",
+      "instance_name": "nanocodex-history-dev-20260824"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NANOCODEX_SESSIONS",
+        "class_name": "DurableAgentSession"
+      },
+      {
+        "name": "NANOCODEX_ACCOUNT_TOOLS",
+        "class_name": "AccountHostedTools"
+      },
+      {
+        "name": "NANOCODEX_VM_HOST_POOLS",
+        "class_name": "VmHostPool"
+      },
+      {
+        "name": "NANOCODEX_ROOMS",
+        "class_name": "MultiplayerRoom"
+      },
+      {
+        "name": "NANOCODEX_MULTIPLAYER_QUOTA",
+        "class_name": "MultiplayerQuota"
+      },
+      {
+        "name": "NANOCODEX_AUTH",
+        "class_name": "NonceStorage"
+      },
+      {
+        "name": "NANOCODEX_USERS",
+        "class_name": "UserAccount"
+      },
+      {
+        "name": "NANOCODEX_API_KEYS",
+        "class_name": "ApiKeyRecord"
+      },
+      {
+        "name": "NANOCODEX_MEMORY",
+        "class_name": "MemoryScope"
+      },
+      {
+        "name": "NANOCODEX_SANDBOXES",
+        "class_name": "Sandbox"
+      },
+      {
+        "name": "NANOCODEX_ORGANIZATIONS",
+        "class_name": "Organization"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["NanocodexSession", "MultiplayerRoom", "MultiplayerQuota"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["NonceStorage", "UserAccount", "ApiKeyRecord"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["MemoryScope"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["Organization"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["DurableAgentSession"],
+      "deleted_classes": ["NanocodexSession"]
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": ["Sandbox"]
+    },
+    {
+      "tag": "v7",
+      "new_sqlite_classes": ["AccountHostedTools"]
+    },
+    {
+      "tag": "v8",
+      "new_sqlite_classes": ["VmHostPool"]
+    }
+  ],
+  "vars": {
+    "AGENT_IDLE_TIMEOUT_MS": "30000",
+    "MANAGED_BROWSER_PROVIDER": "cloudflare"
+  },
+  "env": {
+    "development": {
+      "name": "nanocodex-durable-agent",
+      "services": [
+        { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false },
+        {
+          "binding": "NANOCODEX_CHIEF_EGRESS",
+          "service": "nanocodex-egress",
+          "entrypoint": "ChiefOfStaffEgress",
+          "remote": false
+        }
+      ],
+      "browser": {
+        "binding": "BROWSER",
+        "remote": true
+      },
+      "worker_loaders": [
+        { "binding": "LOADER" }
+      ],
+      "r2_buckets": [
+        { "binding": "NANOCODEX_HISTORY", "bucket_name": "nanocodex-managed-history" },
+        { "binding": "NANOCODEX_WORKSPACES", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_BRAIN", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_0", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_1", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_2", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_3", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_4", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_5", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_6", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_7", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_8", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_9", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_10", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_11", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_12", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_13", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_14", "bucket_name": "nanocodex-sandbox-workspaces" },
+        { "binding": "NANOCODEX_WORKSPACES_15", "bucket_name": "nanocodex-sandbox-workspaces" }
+      ],
+      "ai_search": [],
+      "durable_objects": {
+        "bindings": [
+          { "name": "NANOCODEX_SESSIONS", "class_name": "DurableAgentSession" },
+          { "name": "NANOCODEX_ACCOUNT_TOOLS", "class_name": "AccountHostedTools" },
+          { "name": "NANOCODEX_VM_HOST_POOLS", "class_name": "VmHostPool" },
+          { "name": "NANOCODEX_ROOMS", "class_name": "MultiplayerRoom" },
+          { "name": "NANOCODEX_MULTIPLAYER_QUOTA", "class_name": "MultiplayerQuota" },
+          { "name": "NANOCODEX_AUTH", "class_name": "NonceStorage" },
+          { "name": "NANOCODEX_USERS", "class_name": "UserAccount" },
+          { "name": "NANOCODEX_API_KEYS", "class_name": "ApiKeyRecord" },
+          { "name": "NANOCODEX_MEMORY", "class_name": "MemoryScope" },
+          { "name": "NANOCODEX_SANDBOXES", "class_name": "Sandbox" },
+          { "name": "NANOCODEX_ORGANIZATIONS", "class_name": "Organization" }
+        ]
+      },
+      "vars": {
+        "AGENT_IDLE_TIMEOUT_MS": "1000",
+        "ENVIRONMENT": "development",
+        "MANAGED_BROWSER_PROVIDER": "cloudflare",
+        "NANOCODEX_ADMIN_TOKEN": "nanocodex-local-room-signing-key",
+        "NANOCODEX_MOCK_TWILIO_VERIFY_CODE": "123456",
+        "NANOCODEX_OTP_HMAC_KEY": "nanocodex-local-sms-otp-hmac-key-v1-only",
+        "NANOCODEX_LOCAL_WEBAUTHN_HMAC_KEY": "nanocodex-local-passkey-portability-v1",
+        "NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY": "nanocodex-local-oauth-relay-hmac-v1-only",
+        "NANOCODEX_SYSTEM_HOST_TOKEN": "nanocodex-local-system-vm-host-token-v1-ONLY",
+        "NANOCODEX_SANDBOX_LOCAL": "true"
+      },
+      "containers": [
+        {
+          "class_name": "Sandbox",
+          "image": "./Dockerfile",
+          "instance_type": "standard-1"
+        }
+      ]
+    }
+  },
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      // Preserve active containers across the current >120s build journey during rollouts.
+      "rollout_active_grace_period": 300
+    }
+  ]
+}

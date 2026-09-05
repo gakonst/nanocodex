@@ -1,0 +1,77 @@
+---
+title: React integration
+description: Let React own a module Worker and external store without making presentation part of the agent SDK.
+---
+
+# React integration
+
+Use `nanocodex-react` to read the browser SDK's vanilla external store without
+coupling turn completion or agent ownership to a component tree.
+
+```tsx
+import { createConfig, useAgentEvents, useNanocodex } from "nanocodex-react";
+
+const config = createConfig();
+
+function App() {
+  const { data: agent, error, isError, isSuccess, refetch } = useNanocodex({
+    config,
+    threadId: "project-1",
+  });
+  useAgentEvents(agent, (event) => {
+    // Reduce typed events into application-owned transcript state.
+  });
+
+  if (isError) return <button onClick={refetch}>{String(error)}</button>;
+  if (!isSuccess) return null;
+  return <Composer agent={agent} />;
+}
+
+root.render(<App />);
+```
+
+The vanilla `createConfig` store owns the package Worker, retries, replacement,
+and graceful shutdown. Active hooks with the same thread ID share exactly one
+Agent. A disabled hook stays idle without preparing or creating an Agent.
+`useNanocodex` exposes a Wagmi-style status snapshot and
+`refetch`; `useAgentEvents` subscribes to the ordered typed event stream while
+always calling the latest committed React listener.
+
+Create exactly one explicit config. Pass Worker-safe Agent defaults when the
+application needs them:
+
+```tsx
+import { Transport } from "nanocodex/browser";
+import { createConfig, useNanocodex } from "nanocodex-react";
+
+const config = createConfig({
+  agent: { transport: Transport.hostManaged({ websocketUrl: "/api/responses" }) },
+});
+
+function App() {
+  const { data: agent } = useNanocodex({ config });
+  return agent ? <Composer agent={agent} /> : null;
+}
+```
+
+For many consumers, put the same config in `NanocodexProvider` and omit the
+`config` option from each hook. No React-specific prepare or preload step is
+required.
+
+## Keep policy in the application
+
+Credentials, health checks, transport choice, durable thread identity, and
+presentation remain application concerns. The default package Worker accepts
+only structured-clone-safe configuration. Function-valued tools, custom socket
+constructors, and caller-owned filesystems belong in a caller-owned Worker that
+imports `nanocodex/host`; they are not serialized through a compatibility
+protocol.
+
+Render the typed Agent event stream with application-owned components or a
+terminal renderer. UI frameworks and terminal renderers remain application
+code. Results remain independent from rendering, so a hidden or suspended
+component must not be required for an accepted turn to complete.
+
+The [production web consumer](https://github.com/gakonst/nanocodex/blob/master/js/account/src/AgentTerminal.tsx)
+uses these hooks without importing an SDK UI component. The [React package guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex-react/README.md)
+documents its deliberately small public surface.

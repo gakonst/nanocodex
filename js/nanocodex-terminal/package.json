@@ -1,0 +1,53 @@
+{
+  "name": "nanocodex-terminal",
+  "version": "0.1.0",
+  "description": "Reusable React terminal presentation for Nanocodex agents",
+  "type": "module",
+  "sideEffects": [
+    "./styles.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./styles.css"
+  },
+  "files": [
+    "dist",
+    "styles.css",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node --eval \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "check:pack": "node scripts/check-pack.mjs",
+    "prepack": "npm test",
+    "test": "npm run build && node --import ./test/register-peer-loader.mjs --test test/*.test.mjs && npm run check:pack"
+  },
+  "dependencies": {
+    "lucide-react": "1.24.0",
+    "streamdown": "2.5.0"
+  },
+  "peerDependencies": {
+    "nanocodex-react": "^0.1.0",
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "nanocodex-react": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-test-renderer": "19.2.8",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gakonst/nanocodex.git",
+    "directory": "js/nanocodex-terminal"
+  }
+}

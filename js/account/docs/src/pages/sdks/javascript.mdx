@@ -1,0 +1,81 @@
+---
+title: TypeScript and JavaScript SDK
+description: Run the Rust-owned headless agent lifecycle from Node, browser Workers, or React-owned Workers.
+---
+
+# TypeScript and JavaScript SDK
+
+The `nanocodex` package exposes typed Node, package-Worker, and Web API host
+entrypoints over the same Rust/WASM driver. JavaScript owns transport
+construction, application tools, workspace placement, and presentation. Rust
+still owns prompt ordering, history, model/tool turns, branches, and cleanup.
+
+```sh
+npm install nanocodex
+```
+
+```js
+import { Agent, Transport } from "nanocodex/node";
+
+const agent = await Agent.create({
+  transport: Transport.openAi({ apiKey: process.env.OPENAI_API_KEY }),
+  instructions: "Inspect before editing and preserve unrelated work.",
+  workspace: process.cwd(),
+});
+
+const turn = agent.turn.prompt({ input: "Summarize this repository." });
+try {
+  const result = await turn.result();
+  try {
+    console.log(result.finalMessage, await result.usage());
+  } finally {
+    result.dispose();
+  }
+} finally {
+  turn.dispose();
+  await agent.session.shutdown();
+}
+```
+
+`Agent.create` returns one retained session. `turn.result()` does not depend on
+an event consumer, and a second prompt automatically reuses committed history
+and transport state. The result is an opaque completed-turn handle: its final
+message is eager, while `await result.usage()` and `await result.snapshot()`
+materialize immutable values on demand. Call `result.dispose()` after its last
+materialization or historical fork.
+
+## Build in order
+
+- [Install the right entrypoint](/sdks/javascript/install-entrypoints).
+- [Own turns, events, and cleanup](/sdks/javascript/agent-lifecycle).
+- [Choose authentication and socket routing](/sdks/javascript/transports-auth).
+- [Build a browser Worker and persistent workspace](/sdks/javascript/browser-workspace).
+- [Own a browser Worker from React](/sdks/javascript/react).
+- [Add tools, Code Mode, and Rust-backed subagents](/sdks/javascript/tools-code-mode-subagents).
+- Deploy through a concrete [Cloudflare](/deployments/cloudflare) or
+  [Vercel](/deployments/vercel) owner.
+
+## One lifecycle, several hosts
+
+Use `nanocodex/node` with a real guarded directory and a Node WebSocket host.
+Use `nanocodex/browser` when the package should own a browser module Worker and
+persistent OPFS harness. Use `nanocodex/host` inside a caller-owned browser
+Worker or server isolate when capabilities contain functions. Each entrypoint
+uses the same `Agent.create(...)` lifecycle; the execution owner is explicit in
+the import instead of a compatibility option.
+
+OpenAI API keys, managed ChatGPT credentials, host-managed sockets, and MPP are
+transport and authentication choices for the same supported OpenAI Responses
+lifecycle. They are not alternate provider implementations.
+
+## Keep interfaces in application code
+
+`nanocodex-react` is the intentionally narrow Context/hooks package over a
+module Worker and typed external store. UI frameworks and terminal renderers
+consume Agent events directly and remain application code; the SDK does not
+publish a transcript reducer, TUI renderer, or terminal adapter layer.
+
+The [binding guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex/README.md)
+documents the complete API. Start with the runnable
+[Node session](https://github.com/gakonst/nanocodex/blob/master/examples/node/session.mjs)
+or [React/Vite Worker](https://github.com/gakonst/nanocodex/tree/master/examples/react-vite).

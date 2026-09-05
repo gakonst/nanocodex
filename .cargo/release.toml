@@ -1,0 +1,12 @@
+# Local stand-ins let the first synchronized release package crates that depend
+# on sibling packages before those versions exist in the crates.io index. This
+# config is passed only to the non-publishing package validation step.
+[patch.crates-io]
+nanocodex = { path = "crates/nanocodex" }
+nanocodex-agent = { path = "crates/nanocodex-agent" }
+nanocodex-durability = { path = "crates/nanocodex-durability" }
+nanocodex-oai-api = { path = "crates/nanocodex-oai-api" }
+nanocodex-observability = { path = "crates/nanocodex-observability" }
+nanocodex-subagents = { path = "crates/nanocodex-subagents" }
+nanocodex-tools = { path = "crates/nanocodex-tools" }
+nanocodex-tools-macros = { path = "crates/nanocodex-tools/macros" }

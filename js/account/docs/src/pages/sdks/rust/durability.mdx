@@ -1,0 +1,58 @@
+---
+title: Rust durability
+description: Journal accepted operations and recover them without introducing a framework-owned agent loop.
+---
+
+# Rust durability
+
+Attach `nanocodex-durability` when an application must deduplicate accepted
+operations, recover interrupted model/tool steps, replay committed step output,
+or restore a session checkpoint after process loss.
+
+```rust
+use nanocodex::{DurableAgentExt, Nanocodex, OpenAi};
+use nanocodex::durability::{DurableSession, MemoryStore};
+
+let openai = OpenAi::new(std::env::var("OPENAI_API_KEY")?)?;
+let store = MemoryStore::new()?;
+let journal = DurableSession::open(store, "agent-123").await?;
+let (agent, _events) = Nanocodex::builder(openai)
+    .durability(journal)
+    .await?
+    .build()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+This snippet demonstrates composition inside one process. `MemoryStore` does
+not survive restart; enable the durability crate's `sqlite` or `postgres`
+feature, or supply a durable host store, for process-loss recovery.
+
+Without `.durability(...)`, the ordinary agent keeps its non-durable lifecycle.
+The optional layer depends on the agent's neutral execution-policy seam; the
+core agent does not depend on the durability crate.
+
+## Keep recovery decisions in Rust
+
+The durability layer owns its append-only journal format, typed reduction,
+operation deduplication, committed step-output replay, checkpoints, and recovery
+classification.
+The host store supplies atomic load and compare-and-append. `MemoryStore` is
+process-local. Use the optional SQLite or Postgres store, or a durable host
+implementation, when recovery must survive process loss.
+
+Your application still owns operation identifiers, request admission, tenancy,
+credentials, store placement, retention, and retrying an operation after the
+library classifies it. Do not build a second JavaScript or framework state
+machine that independently decides which model or tool step completed.
+
+## Recover with the same policy
+
+A checkpoint contains committed model-visible state, not the surrounding
+application configuration. Resume with the same instructions, tools, workspace,
+execution environment, and authorization policy that created it. Protect the
+journal and snapshots like the prompts and tool output they contain.
+
+Read the [durable execution concept](/core/durability), run the
+[durable example](https://github.com/gakonst/nanocodex/blob/master/examples/durable.rs),
+and consult the [durability crate guide](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex-durability/README.md)
+for the current store and recovery APIs.

@@ -1,0 +1,13 @@
+{
+  "harbor_version": "0.18.1.dev202607150126",
+  "source": "harbor.publisher.packager.Packager.compute_content_hash",
+  "task": "tasks/write-greeting",
+  "content_hash": "e1a05661b2068b6f93e0874941d1fc930604d5c58965eacbc5cc4b4a95882d59",
+  "files": [
+    "environment/Dockerfile",
+    "environment/README.md",
+    "instruction.md",
+    "task.toml",
+    "tests/test.sh"
+  ]
+}

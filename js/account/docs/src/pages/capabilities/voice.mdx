@@ -1,0 +1,71 @@
+---
+title: Voice
+description: Realtime audio delegates coding work into one retained agent session.
+---
+
+# Voice
+
+The experimental `nanocodex-voice` crate connects GPT Realtime audio to the
+same retained coding-agent session used by text interfaces. It is a thin,
+optional modality: the agent continues to own conversation, tools, results,
+steering, and cleanup.
+
+## Default devices
+
+The voice crate is experimental and unpublished. Applications that adopt it
+must pin a coherent revision and use ChatGPT authentication for the Realtime
+session; the public CLI installer does not add voice as an embeddable package.
+
+```rust
+let (mut voice, mut voice_events) = VoiceSessionBuilder::new(openai, agent.clone())
+    .session_id(agent.session_id().to_string())
+    .spawn()?;
+```
+
+`VoiceSessionBuilder` owns the default microphone and speaker lifecycle. Events
+report connection, start, transcripts, failure, and stop. The application can
+stop or shut down voice independently and keep reducing ordinary agent events.
+
+## PCM boundary
+
+The lower device-neutral boundary reads and writes 24 kHz mono PCM16
+little-endian audio. An application may own capture and playback instead of
+using the default-device adapter.
+
+A spoken request starts a turn while idle. A follow-up during active work uses
+the agent's routing boundary to steer at the next safe model boundary. Device,
+codec, UI, wake-word, interruption, and media retention policy stay with the
+application.
+
+Voice currently uses shared Codex/ChatGPT authentication rather than the simple
+API-key quick start. It is experimental and should be pinned to a repository
+revision. See the [voice source guide](https://github.com/gakonst/nanocodex/blob/master/crates/experimental/nanocodex-voice/README.md),
+[device example](https://github.com/gakonst/nanocodex/blob/master/examples/voice.rs),
+and [pipe example](https://github.com/gakonst/nanocodex/blob/master/examples/realtime_pipe.rs).
+
+## Two coordinated lifecycles
+
+Voice and coding work are separate owned sessions joined by explicit delegation.
+Realtime produces transcript and agent-request events; the application routes
+an agent request into the retained coding agent and appends the completed output
+back to the realtime conversation. If another spoken request arrives while work
+is active, `route_prompt` can atomically steer that turn and the voice session
+updates the corresponding delegation call.
+
+This split keeps audio responsive while tools run, and prevents realtime media
+state from becoming authoritative coding history. The application should drain
+both event streams, surface failures independently, close realtime, shut down
+the coding agent, and then join observers. Cancellation can target an active
+agent turn without necessarily discarding the voice conversation.
+
+## Browser voice
+
+Browser applications can implement a thin media consumer of the same voice
+protocol. Browser permission prompts, `AudioContext`, device selection, secure
+context requirements, and page lifecycle remain JavaScript concerns. The core
+agent does not acquire media devices or define a voice UI.
+
+For production, make transcript retention, microphone indication, interruption
+behavior, and user consent explicit. Do not infer a security sandbox from the
+voice adapter: delegated coding tools still run wherever the underlying agent's
+application configured them to run.

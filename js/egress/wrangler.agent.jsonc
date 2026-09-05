@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-egress-agent-example",
+  "main": "src/agent.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true,
+  "minify": true,
+  "vars": {
+    "AGENT_SUBJECT": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "services": [
+    {
+      "binding": "EGRESS",
+      "service": "nanocodex-egress"
+    }
+  ]
+}

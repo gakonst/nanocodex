@@ -1,0 +1,47 @@
+[package]
+name = "nanocodex-managed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "Native account-managed lifecycle backend for Nanocodex"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["-D", "warnings"]
+
+[features]
+default = []
+tools = ["dep:nanocodex-tools"]
+
+[dependencies]
+futures-util.workspace = true
+nanocodex-agent = { path = "../nanocodex-agent", version = "0.5.0", default-features = false }
+nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.5.0", default-features = false, features = ["events"] }
+nanocodex-tools = { path = "../nanocodex-tools", version = "0.5.0", default-features = false, features = ["attachment"], optional = true }
+reqwest = { workspace = true, features = ["stream"] }
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio-tungstenite.workspace = true
+tower.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize = "1.8.2"
+
+[dev-dependencies]
+axum = { workspace = true, features = ["ws"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,198 @@
+.commits-workspace .commit-sidebar {
+  background: transparent;
+  border-right-color: var(--border-soft);
+  box-shadow: none;
+}
+
+.commits-workspace .commit-sidebar-header {
+  flex-basis: 44px;
+  min-height: 44px;
+  padding: 5px 10px;
+}
+
+.commits-workspace .commit-sidebar-header strong {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.commits-workspace .commit-sidebar-header .icon-button {
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  box-shadow: none;
+}
+
+.commits-workspace .commit-sidebar-header .icon-button:hover,
+.commits-workspace .commit-sidebar-header .icon-button:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.commits-workspace .commit-scope-tabs {
+  gap: 1px;
+  padding: 5px 6px;
+}
+
+.commits-workspace .commit-scope-tabs button {
+  min-height: 24px;
+  padding-inline: 6px;
+  border-radius: 2px;
+}
+
+.commits-workspace .commit-scope-tabs button:hover,
+.commits-workspace .commit-scope-tabs button:focus-visible,
+.commits-workspace .commit-scope-tabs button.is-active {
+  background: var(--surface-hover);
+}
+
+.commits-workspace .commit-scope-tabs button.is-active {
+  box-shadow: inset 0 -1px 0 var(--text-muted);
+}
+
+.commit-row {
+  height: 80px;
+  min-height: 80px;
+  gap: 3px;
+  padding: 9px 30px 9px 12px;
+  color: var(--text-secondary);
+  border-bottom-color: var(--border-soft);
+}
+
+.commit-row:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.commit-row:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+  outline: 1px solid var(--text-muted);
+  outline-offset: -2px;
+}
+
+.commit-row.is-selected {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  box-shadow: inset 1px 0 0 var(--text-muted);
+}
+
+.commit-row:hover strong,
+.commit-row:focus-visible strong {
+  text-decoration: none;
+}
+
+.commit-meta {
+  gap: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.commit-row strong {
+  display: block;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-byline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.commit-byline > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-diff-stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.commit-additions {
+  color: color-mix(in srgb, var(--positive) 70%, var(--text-muted));
+}
+
+.commit-deletions {
+  color: color-mix(in srgb, var(--negative) 70%, var(--text-muted));
+}
+
+.commit-row .commit-chevron {
+  right: 10px;
+  width: 11px;
+  height: 11px;
+  color: var(--text-faint);
+}
+
+.commit-stream-tail-error {
+  min-height: 36px;
+  margin: 10px;
+  padding: 7px 9px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-small);
+  box-shadow: none;
+}
+
+.commit-stream-tail-error span {
+  color: var(--text-muted);
+}
+
+.commit-stream-tail-error button {
+  padding: 4px 6px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-small);
+}
+
+.commits-workspace .commit-list-tail-error {
+  background: var(--surface);
+}
+
+@media (max-width: 740px), (pointer: coarse) and (orientation: landscape) and (max-width: 950px) {
+  .commit-row {
+    padding-inline: 12px 38px;
+  }
+
+  .commits-workspace .commit-sidebar {
+    background: var(--surface);
+    box-shadow: none;
+  }
+
+  .commits-workspace .commit-scope-tabs button {
+    min-height: 44px;
+  }
+
+  .commit-stream-tail-error {
+    margin: 8px;
+  }
+
+  .commit-stream-tail-error button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+@media (pointer: coarse), (any-pointer: coarse) {
+  .commits-workspace .commit-scope-tabs button,
+  .commit-stream-tail-error button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

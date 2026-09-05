@@ -1,0 +1,8 @@
+/.env*
+/.next/
+/.swc/
+/.vercel/
+/.workflow-data/
+/node_modules/
+/tsconfig.tsbuildinfo
+/workflows/nanocodex.wasm

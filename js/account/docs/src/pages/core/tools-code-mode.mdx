@@ -1,0 +1,93 @@
+---
+title: Tools and Code Mode
+description: Make Code Mode the default, then add typed Rust, hosted, or deferred MCP tools.
+---
+
+# Tools and Code Mode
+
+Code Mode is the default tool surface. The model composes typed tools through
+`exec` instead of receiving every registered schema as a direct model tool.
+`wait`, deferred search, and deliberately direct tools remain alongside it when
+configured. `nanocodex-tools` owns that runtime, typed caller tools, standard
+workspace tools, web and image tools, MCP transports, and deferred tool search
+without importing the agent crate.
+
+## Define a Rust tool
+
+```rust
+use nanocodex_tools::{Tools, tool};
+
+#[tool(
+    name = "deployment_region",
+    description = "Return the region for a service.",
+    parallel = true
+)]
+async fn deployment_region(service: String) -> Result<String, std::io::Error> {
+    Ok(format!("{service}: us-west-2"))
+}
+
+let tools = Tools::builder().tool(deployment_region).build()?;
+# Ok::<(), nanocodex_tools::ToolsBuildError>(())
+```
+
+Implement `Tool` directly when execution needs `ToolContext`, freeform input,
+multimodal output, or a handwritten schema. `ToolContext` carries output budget
+and agent-relative context; bound output while it is produced.
+
+The `#[tool]` macro compiles a typed `Tool` implementation. `Tools` selects those
+compiled handlers into the runtime registry. Hosted JavaScript handlers use the
+same registry contract when a browser or server isolate owns execution.
+
+## Compose tools in Code Mode
+
+The model writes JavaScript and invokes typed tools through `tools.*` or their
+namespaces. Nested calls can run concurrently with `Promise.all`; the host
+retains ordering, notifications, cancellation, and tool observations.
+
+Use `ToolExposure::DirectAndCodeMode` when the model should see tools both
+directly and inside cells. Ordinary per-tool exposure has four modes: Code Mode
+only, direct and Code Mode, direct only, or hidden. Exposure changes
+model-visible declarations, not registry dispatch. Deferred discovery is a
+separate provider policy used by MCP and other dynamic catalogs.
+
+Native Code Mode uses the owned runtime. Browser and other JavaScript hosts use
+the portable `embedded::CodeModeHost` boundary while preserving the same nested
+tool contract. See the [tools guide](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex-tools/README.md).
+
+## Workspace tools
+
+The canonical retained runtime supplies `exec_command`, `write_stdin`,
+`apply_patch`, and `view_image`. Native applications also get the complete
+registry, Code Mode, MCP, web/image tools, and macros. The narrower
+`workspace-runtime` feature exists for companions such as the VM guest; it is
+artifact separation, not a second implementation.
+
+## MCP without an up-front catalog
+
+```rust
+use nanocodex_tools::{Tools, mcp::{Mcp, McpServer}};
+
+let mcp = Mcp::builder()
+    .server("company_docs", McpServer::stdio("company-docs-mcp").arg("--readonly"))
+    .build()?;
+let tools = Tools::builder().provider(mcp).build()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Native targets support stdio and Streamable HTTP MCP without a feature flag.
+Discovery is bounded and deferred schemas stay out of the initial request.
+`tool_search` activates matching namespaces; Code Mode's `ALL_TOOLS` contains
+compact discoverable entries. The [MCP example](https://github.com/gakonst/nanocodex/blob/master/examples/mcp.rs)
+shows the complete lifecycle.
+
+Tools execute with their host's authority. Registration is not sandboxing;
+choose browser capabilities, a container, remote host, or VM separately.
+
+## Lifecycle rule
+
+Build shareable tools once only when their handlers are truly session-neutral.
+For tools that steer, fork, or otherwise target the current agent, use
+`NanocodexBuilder::tools_factory`. The driver invokes that factory for every
+root, spawn, and fork, preventing a child handler from accidentally addressing
+its parent. Cancellation and output bounds then remain owned at the correct
+runtime boundary.

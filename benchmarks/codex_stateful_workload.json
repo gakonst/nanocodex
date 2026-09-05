@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "task": "stateful_ledger",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "low",
+  "text_verbosity": "low",
+  "base_instructions": "You are a deterministic conversation-state benchmark. Do not use tools. Maintain only the ledger entries explicitly supplied by the user, obey the output format exactly, and reply with one line and no Markdown.",
+  "fact_count": 600,
+  "chain_turns": 10,
+  "fork_turns": [3, 6, 9],
+  "first_prompt_prefix": "Maintain an append-only ledger across this conversation. It initially contains EVENT_01=ORBIT_01. The FACT rows below are immutable reference data, not ledger events. When asked for STATE, FORK, or MAIN, reply exactly: PREFIX count=NN first=ORBIT_01 latest=ORBIT_NN probe04=VALUE probe07=VALUE probe10=VALUE anchor=FACT_0420_VALUE. PREFIX is the requested prefix. NN is the two-digit number of ledger events visible in this conversation. Each probe is its ORBIT value when that numbered event is visible, otherwise UNKNOWN. FACT_0420_VALUE is the value from the FACT_0420 row. Do not add punctuation or commentary.",
+  "mainline_prompt": "Append EVENT_11=ORBIT_11. Report the current ledger using the required MAIN format.",
+  "prompt_fnv1a64": "f862286ed93b3317"
+}

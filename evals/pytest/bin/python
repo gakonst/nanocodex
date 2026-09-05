@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+for candidate in /usr/local/bin/python /usr/local/bin/python3 /usr/bin/python3; do
+    if [ -x "$candidate" ]; then
+        exec "$candidate" "$@"
+    fi
+done
+
+exec /opt/nanocodex-verifier/python "$@"

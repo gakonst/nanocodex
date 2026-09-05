@@ -1,0 +1,57 @@
+---
+title: Rust agent lifecycle
+description: Build one owned session, send follow-on prompts, and stop every resource cleanly.
+---
+
+# Rust agent lifecycle
+
+Build one agent for each application conversation. Keep its cheap cloneable
+`Nanocodex` handle wherever commands originate, and keep `AgentEvents` only if
+your application needs a session-wide event stream.
+
+```rust
+use nanocodex::{Nanocodex, OpenAi};
+
+let openai = OpenAi::new(std::env::var("OPENAI_API_KEY")?)?;
+let (agent, _events) = Nanocodex::builder(openai)
+    .instructions("Preserve public behavior and verify focused changes.")
+    .workspace(std::env::current_dir()?)
+    .build()?;
+
+let first = agent.prompt("Remember release name cobalt.").await?.await?;
+let second = agent.prompt("Which release name did I give you?").await?.await?;
+
+println!("{}", first.final_message());
+println!("{}", second.final_message());
+agent.shutdown().await?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The second prompt does not include prior messages, tool results, or a response
+identifier. The private driver retained the committed conversation and reused
+its persistent WebSocket, tools, cache identity, and shell sessions.
+
+## Share commands, not mutable state
+
+`agent.clone()` creates another command capability to the same driver. Prompt
+admission stays ordered inside that driver even when different tasks submit and
+await turns. Callers never lock conversation history or transport state.
+
+Use `spawn()` for a clean independent agent with the same private builder
+configuration. Use `fork()` or `fork_from(&result)` when a child should begin
+from committed context. Each child owns a new prompt queue, socket, tools, and
+cancellation domain.
+
+## Shut down at the owner boundary
+
+Call `shutdown()` when your application knows the session is finished. It
+cancels unfinished work and joins model, transport, tool, and managed process
+cleanup. Dropping every command handle also stops the private driver, but an
+explicit shutdown is clearer when your application owns event tasks or child
+agents.
+
+Agent-relative tools should be created with `tools_factory` so a fork receives
+fresh handlers bound to its own driver. Stop child trees and drop their tool
+capabilities before joining an external VM or process owner.
+
+Next, [stream and control individual turns](/sdks/rust/turns-events-control).

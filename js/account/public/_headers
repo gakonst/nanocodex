@@ -1,0 +1,99 @@
+/*
+  Content-Security-Policy: object-src 'none'; base-uri 'none'; frame-ancestors 'self'
+  Cross-Origin-Opener-Policy: same-origin-allow-popups
+  Permissions-Policy: camera=(), microphone=(self), geolocation=(), usb=()
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+
+/assets/*
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=31536000, immutable
+
+# Cloudflare matches header rules by pathname, so list only the versioned
+# renderer's exact asset set rather than making every World file immutable.
+/world/my-pixel-world/tileset/tileset.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow1.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow2.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow3.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow4.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow5.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow6.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow7.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow8.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow9.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/character-overworld/ow10.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite1_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite2_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite3_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite4_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite5_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite6_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite7_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite8_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite9_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite10_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite11_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite12_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite13_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite14_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite15_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/world/my-pixel-world/sprites/sprite16_idle.png
+  Cache-Control: public, max-age=31536000, immutable
+
+/artifact-runtime*
+  Access-Control-Allow-Origin: *
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'

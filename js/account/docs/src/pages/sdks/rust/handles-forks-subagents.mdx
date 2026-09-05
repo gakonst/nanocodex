@@ -1,0 +1,102 @@
+---
+title: Rust handles, forks, and subagents
+description: Share commands cheaply, fork committed context, or give tools a weak child-agent capability.
+---
+
+# Rust handles, forks, and subagents
+
+Use the smallest capability that fits the job. A `Nanocodex` handle sends
+commands to one owned driver. An `AgentHandle` lets a tool create children
+without keeping that driver alive.
+
+## Choose the topology
+
+- `agent.clone()` sends more commands to the same conversation.
+- `agent.spawn()` creates a clean agent from the same private builder policy.
+- `agent.fork()` creates an independent agent from the latest safe committed
+  model boundary.
+- `agent.fork_from(&result)` starts at one exact historical completed turn.
+
+Spawn when a task should not inherit the parent's conclusions. Fork when prior
+context saves work. Every child receives its own queue, WebSocket, tool runtime,
+history, events, and shutdown domain. Filesystem sharing is separate: two
+children can still point at the same workspace, so the application owns write
+coordination.
+
+## Give tools a weak handle
+
+`tools_factory` runs once for every root, spawn, and fork. Its `AgentHandle`
+contains only a weak command capability with `spawn()` and `fork()`. It cannot
+prompt the parent or read its mutable state, and retaining it does not retain
+the driver.
+
+```rust
+let (agent, _events) = Nanocodex::builder(openai)
+    .tools_factory(move |handle| {
+        build_agent_relative_tools(base_tools.clone(), handle)
+    })
+    .build()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Use a shared `Tools` value only for session-neutral handlers. A handler that
+forks, steers, or addresses the current agent must be rematerialized by the
+factory so a child never calls back into its parent by mistake.
+
+## Install the task tree when needed
+
+`nanocodex-subagents` is an optional extension above the core agent. It adds a
+shared task tree and seven agent-relative tools without adding a scheduler to
+`nanocodex-agent`.
+
+```rust
+use std::sync::Arc;
+use nanocodex_subagents::{channel, install_tools, DEFAULT_MAX_SUBAGENTS};
+
+let (registry, control, mut updates) = channel(DEFAULT_MAX_SUBAGENTS);
+let tools_registry = Arc::clone(&registry);
+let (agent, _events) = Nanocodex::builder(openai)
+    .tools_factory(move |handle| {
+        install_tools(base_tools.clone(), handle, Arc::clone(&tools_registry))
+    })
+    .build()?;
+
+control.close_all(&agent.session_id().to_string()).await?;
+agent.shutdown().await?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Children submit one schema-checked result and may exchange directed messages.
+The application reduces `updates` for UI or audit state and closes the complete
+tree before root shutdown. Read the [branching contract](/core/branching) and
+[subagents crate guide](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex-subagents/README.md).
+
+## Build a smaller extension
+
+You do not need the canonical task tree to expose one application-specific
+child tool. Implement `Tool` with a weak `AgentHandle`, then materialize it for
+every driver:
+
+```rust
+let child_registry = Arc::downgrade(&child_registry);
+let (agent, _events) = Nanocodex::builder(openai)
+    .tools_factory(move |handle| {
+        Tools::builder()
+            .without_defaults()
+            .tool(ChildAgent::new(handle, child_registry.clone()))
+            .build()
+    })
+    .build()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Inside `ChildAgent::execute`, call `handle.spawn().await` for a clean child or
+`handle.fork().await` for committed parent context, prompt the returned
+`Nanocodex`, retain it only if follow-up turns are part of your product, and
+return a bounded typed result. The runnable
+[custom subagent example](https://github.com/gakonst/nanocodex/blob/master/examples/subagents.rs)
+implements clean and contextual children plus follow-up prompts.
+
+That registry and task policy belong to the application. `AgentHandle` supplies
+only weak `spawn` and `fork` capabilities; it is not a generic scheduler or
+remote-agent protocol.

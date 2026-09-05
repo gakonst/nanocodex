@@ -1,0 +1,60 @@
+---
+title: Rust turns, events, and control
+description: Accept work quickly, await typed results independently, and steer or cancel one turn.
+---
+
+# Rust turns, events, and control
+
+`prompt().await` waits for bounded command acceptance, not for a model response.
+It returns a `Turn` that can be awaited later while the driver preserves prompt
+order.
+
+```rust
+let turn = agent.prompt("Inspect the parser and propose a focused fix.").await?;
+let control = turn.control();
+let result_task = tokio::spawn(async move { turn.result().await });
+
+control.steer("Keep the public grammar unchanged.").await?;
+let result = result_task.await??;
+println!("{}", result.final_message());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Steering joins the active turn at the next safe model boundary. Cancellation
+targets that exact active or queued turn and terminates subprocess groups owned
+by it. A failed partial response never executes a tool or enters committed
+history.
+
+## Consume events only when useful
+
+The session-wide `AgentEvents` stream is independent from typed results:
+
+```rust
+let (agent, mut events) = Nanocodex::builder(openai).build()?;
+
+let event_task = tokio::spawn(async move {
+    while let Some(event) = events.recv().await {
+        eprintln!("{} {:?}", event.seq, event.kind);
+    }
+});
+
+let result = agent.prompt("Report the current branch.").await?.await?;
+println!("{}", result.final_message());
+agent.shutdown().await?;
+event_task.await?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Do not drain events merely to make results complete. Reduce them when your UI,
+storage, or telemetry needs ordered lifecycle state. JSONL belongs at a process
+adapter; Rust consumers should keep the typed stream.
+
+## Read the terminal result
+
+`TurnResult` is the immutable committed boundary. It contains the final message,
+typed response items, usage, cache behavior, estimated cost status, and a
+snapshot suitable for application storage. Use a completed result as the only
+historical boundary for `fork_from`.
+
+Continue with [typed tools and MCP](/sdks/rust/tools-code-mode-mcp) or
+[snapshots and branches](/core/branching).

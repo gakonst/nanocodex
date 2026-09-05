@@ -1,0 +1,34 @@
+{
+  "harbor_version": "0.18.1.dev202607150126",
+  "source": "harbor.publisher.packager.Packager.compute_content_hash",
+  "content_hash": "3d2ca2de36a611cd93d92e36586d31e5f7a8a36291a44fd81eaaeb857fb2422a",
+  "files": [
+    "README.md",
+    "environment/cache.pyc",
+    "environment/generated/keep.txt",
+    "environment/keep.txt",
+    "instruction.md",
+    "solution/solve.py",
+    "steps/001/instruction.md",
+    "steps/001/tests/test.sh",
+    "task.toml",
+    "tests/test.sh"
+  ],
+  "inputs": {
+    ".gitignore": "*.tmp\nenvironment/generated/*\n!environment/generated/keep.txt\n/tests/private/\n",
+    "README.md": "packager compatibility fixture\n",
+    "environment/cache.pyc": "custom ignores replace Harbor defaults\n",
+    "environment/drop.tmp": "ignored by custom pattern\n",
+    "environment/generated/drop.log": "ignored generated file\n",
+    "environment/generated/keep.txt": "re-included generated file\n",
+    "environment/keep.txt": "kept environment file\n",
+    "instruction.md": "exercise Harbor Packager selection\n",
+    "root-extra.txt": "not in Harbor's package roots\n",
+    "solution/solve.py": "print('solution')\n",
+    "steps/001/instruction.md": "step instruction\n",
+    "steps/001/tests/test.sh": "#!/bin/sh\nexit 0\n",
+    "task.toml": "schema_version = \"1.1\"\n",
+    "tests/private/secret.txt": "ignored private verifier input\n",
+    "tests/test.sh": "#!/bin/sh\nexit 0\n"
+  }
+}

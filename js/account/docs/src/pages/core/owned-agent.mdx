@@ -1,0 +1,84 @@
+---
+title: The owned agent
+description: Embed the Rust-owned Codex lifecycle behind one cheap command handle.
+---
+
+# The owned agent
+
+Embed one high-performance Codex lifecycle without adopting an app server. One
+private Rust driver owns mutable conversation, model, transport, tool-runtime,
+and process state. Your application receives a cheap cloneable `Nanocodex`
+command handle and an independent optional `AgentEvents` stream.
+
+```text
+application ── prompt/steer/cancel ──> private driver ──> OpenAI Responses
+     │                                      │
+     ├── awaits TurnResult                  ├── retained typed history
+     └── reduces AgentEvents <──────────────┴── tools and processes
+```
+
+This ownership prevents two callers from racing response IDs, history, tool
+results, or a WebSocket. The implementation is in
+[`nanocodex-agent`](https://github.com/gakonst/nanocodex/tree/master/crates/nanocodex-agent).
+
+The handle exposes deliberate policy and typed control while queue capacities,
+socket tasks, replay bookkeeping, and mutable run state stay private. Rust
+applications extend the compiled lifecycle with typed tools, concrete Tower
+layers, and optional component crates instead of loading a runtime plugin
+protocol.
+
+## Prompt, control, result
+
+```rust
+let turn = agent.prompt("Inspect the failure.").await?; // accepted and ordered
+let control = turn.control();
+let result_task = tokio::spawn(async move { turn.result().await });
+
+control.steer("Keep the public API unchanged.").await?;
+let result = result_task.await??;
+println!("{}", result.final_message());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Each accepted prompt has an exact `Turn`. Queued prompts remain FIFO.
+Cancellation targets that exact queued or active turn. Steering is delivered at
+a safe model boundary; it is not a second conversation. The
+[lifecycle example](https://github.com/gakonst/nanocodex/blob/master/examples/lifecycle.rs)
+demonstrates acceptance, steering, queued cancellation, and concurrent forks.
+
+## Events are optional
+
+Results complete whether or not anyone reads events. Use `AgentEvents` for a
+session-wide UI or recorder, or stream a single `Turn` when one consumer needs
+only that turn. Events have stable request/session identity, monotonic sequence,
+typed data, and one terminal event for every accepted prompt.
+
+## Retained context
+
+Healthy turns send only the new delta with a provider checkpoint. Typed
+client-owned history remains authoritative: after a replacement socket the
+driver drops the transport checkpoint and replays complete committed history.
+Only completed responses enter history; a failed partial response cannot run a
+tool or become conversation state.
+
+The same session also retains shell sessions, Code Mode runtime, tool state,
+cache identity, compaction bookkeeping, and project instructions. Callers never
+re-submit earlier messages or tool results.
+
+## Cleanup
+
+`agent.clone()` addresses the same driver. Dropping all handles ends it;
+`shutdown().await` makes cleanup explicit. Timeouts and cancellation terminate
+owned subprocess groups and descendants. Applications with event tasks or
+subagent trees should drain/close those consumers and then shut down the root.
+
+See [typed event documentation](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex-agent/README.md#typed-events)
+and [Responses/Tower ownership](https://github.com/gakonst/nanocodex/blob/master/docs/RESPONSES_TOWER.md).
+
+## Integration rule
+
+Keep UI reducers and persistence consumers outside the driver. A slow or absent
+event consumer must not delay the typed result, and storing a transcript must
+not make that transcript the next turn's input. This separation is what lets a
+headless worker, native TUI, React application, and JSONL adapter consume the
+same agent without acquiring its mutable state.

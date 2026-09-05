@@ -1,0 +1,19 @@
+schema_version = "1.1"
+
+[task]
+name = "nanoeval/uppercase-message"
+description = "Transform a small input file in a disposable native workspace."
+
+[agent]
+timeout_sec = 300.0
+
+[verifier]
+timeout_sec = 30.0
+
+[environment]
+docker_image = "alpine:3.21"
+cpus = 1
+memory_mb = 256
+storage_mb = 128
+gpus = 0
+allow_internet = true

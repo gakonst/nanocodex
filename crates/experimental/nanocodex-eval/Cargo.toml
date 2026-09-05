@@ -1,0 +1,53 @@
+[package]
+name = "nanocodex-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "VM-isolated profile coordinates for Nanocodex agents"
+
+[dependencies]
+axum = { workspace = true, features = ["ws"] }
+arcbox-ext4.workspace = true
+base64.workspace = true
+chrono.workspace = true
+filetime.workspace = true
+flate2.workspace = true
+futures-util.workspace = true
+fs2.workspace = true
+hex.workspace = true
+ignore.workspace = true
+jiff.workspace = true
+nanocodex-agent.workspace = true
+nanocodex-oai-api.workspace = true
+nanocodex-tools.workspace = true
+nix.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sysinfo.workspace = true
+tempfile.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-util = { workspace = true, features = ["io", "io-util"] }
+tokio-tungstenite.workspace = true
+toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+zstd.workspace = true
+
+[target.'cfg(any(all(target_os = "linux", not(target_env = "musl")), all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+nanocodex-vm.workspace = true
+
+[lints]
+workspace = true

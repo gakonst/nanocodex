@@ -1,0 +1,340 @@
+use std::time::Duration;
+
+use nanocodex_oai_api::{
+    __private::ModelConfig, Thinking, responses::Usage, transport::TransportStatsDelta,
+};
+use serde::Serialize;
+use serde_json::{Value, value::RawValue};
+use web_time::Instant;
+
+use crate::usage::TurnUsage;
+
+use nanocodex_tools::contract::ToolOutputBody;
+
+#[derive(Serialize)]
+pub(super) struct ModelCallStarted<'a> {
+    pub(super) call_index: u32,
+    pub(super) model: &'a str,
+    pub(super) reasoning_mode: &'static str,
+    pub(super) effort: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) previous_response_id: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+pub(super) struct WarmupStarted<'a> {
+    pub(super) model: &'a str,
+    pub(super) prompt_cache_key: &'a str,
+}
+
+#[derive(Serialize)]
+pub(super) struct WarmupCompleted<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) response_id: Option<&'a str>,
+    pub(super) source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) attempt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) connection_generation: Option<u32>,
+    pub(super) duration_ns: u64,
+    pub(super) usage: Option<&'a Usage>,
+}
+
+#[derive(Serialize)]
+pub(super) struct WarmupFailed<'a> {
+    pub(super) duration_ns: u64,
+    pub(super) error: &'a str,
+}
+
+#[derive(Serialize)]
+pub(super) struct ModelCallCompleted<'a> {
+    pub(super) call_index: u32,
+    pub(super) model: &'a str,
+    pub(super) response_id: &'a str,
+    pub(super) attempt: u32,
+    pub(super) connection_generation: u32,
+    pub(super) status: &'a str,
+    pub(super) duration_ns: u64,
+    pub(super) time_to_first_event_ns: u64,
+    pub(super) time_to_first_output_ns: Option<u64>,
+    pub(super) tool_calls: usize,
+    pub(super) usage: Option<&'a Usage>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ModelCallFailed<'a> {
+    pub(super) call_index: u32,
+    pub(super) model: &'a str,
+    pub(super) duration_ns: u64,
+    pub(super) error: &'a str,
+}
+
+#[derive(Serialize)]
+pub(super) struct CompactionStarted<'a> {
+    pub(super) after_model_call_index: u32,
+    pub(super) active_context_tokens: u64,
+    pub(super) auto_compact_token_limit: u64,
+    pub(super) previous_response_id: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+pub(super) struct CompactionCompleted<'a> {
+    pub(super) after_model_call_index: u32,
+    pub(super) response_id: &'a str,
+    pub(super) attempt: u32,
+    pub(super) connection_generation: u32,
+    pub(super) status: &'a str,
+    pub(super) duration_ns: u64,
+    pub(super) time_to_first_event_ns: u64,
+    pub(super) time_to_first_output_ns: Option<u64>,
+    pub(super) usage: Option<&'a Usage>,
+}
+
+#[derive(Serialize)]
+pub(super) struct CompactionFailed<'a> {
+    pub(super) after_model_call_index: u32,
+    pub(super) duration_ns: u64,
+    pub(super) error: &'a str,
+}
+
+#[derive(Serialize)]
+pub(super) struct ToolCallEvent<'a, T> {
+    pub(super) call_id: &'a str,
+    pub(super) tool: &'a str,
+    pub(super) arguments: T,
+    pub(super) model_call_index: u32,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(super) enum ToolCallArguments<'a> {
+    Raw(&'a RawValue),
+    Text(&'a str),
+}
+
+#[derive(Serialize)]
+pub(super) struct ToolResultEvent<'a> {
+    pub(super) call_id: &'a str,
+    pub(super) tool: &'a str,
+    pub(super) status: &'static str,
+    pub(super) duration_ns: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) started_after_ns: Option<u64>,
+    pub(super) result: &'a ToolOutputBody,
+    pub(super) structured_result: &'a Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) metadata: Option<&'a RawValue>,
+}
+
+#[allow(clippy::struct_field_names)]
+#[derive(Default, Serialize)]
+pub(super) struct UsageTotals {
+    pub(super) input_tokens: u64,
+    pub(super) cached_input_tokens: u64,
+    pub(super) cache_write_input_tokens: u64,
+    pub(super) output_tokens: u64,
+    pub(super) reasoning_output_tokens: u64,
+    pub(super) total_tokens: u64,
+    #[serde(skip)]
+    pub(super) reported: bool,
+    #[serde(skip)]
+    pub(super) estimated_cost: Option<nanocodex_oai_api::pricing::EstimatedUsdCost>,
+}
+
+impl UsageTotals {
+    pub(super) fn add(&mut self, usage: &Usage, model: nanocodex_oai_api::Model, fast_mode: bool) {
+        self.reported = true;
+        self.input_tokens += usage.input_tokens;
+        self.cached_input_tokens += usage
+            .input_tokens_details
+            .as_ref()
+            .map_or(0, |details| details.cached_tokens);
+        self.cache_write_input_tokens += usage
+            .input_tokens_details
+            .as_ref()
+            .map_or(0, |details| details.cache_write_tokens);
+        self.output_tokens += usage.output_tokens;
+        self.reasoning_output_tokens += usage
+            .output_tokens_details
+            .as_ref()
+            .map_or(0, |details| details.reasoning_tokens);
+        self.total_tokens += usage.total_tokens;
+        let estimate = nanocodex_oai_api::pricing::estimate_for_model(
+            usage,
+            model,
+            nanocodex_oai_api::pricing::ServiceTier::for_model(model, fast_mode),
+        );
+        self.estimated_cost = Some(
+            self.estimated_cost
+                .take()
+                .map_or(estimate.clone(), |total| total.saturating_add(estimate)),
+        );
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::RunStats;
+    use nanocodex_oai_api::{Model, responses::Usage};
+
+    #[test]
+    fn turn_cost_preserves_per_request_long_context_thresholds() {
+        let mut stats = RunStats::default();
+        let usage = Usage {
+            input_tokens: 150_000,
+            total_tokens: 150_000,
+            ..Usage::default()
+        };
+
+        stats.usage.add(&usage, Model::Astra, false);
+        stats.usage.add(&usage, Model::Astra, false);
+
+        let turn = stats.turn_usage();
+        assert_eq!(turn.input_tokens(), 300_000);
+        assert_eq!(
+            turn.estimated_cost().map(|cost| cost.amount().decimal()),
+            Some("3".to_owned())
+        );
+    }
+}
+
+#[derive(Default, Serialize)]
+pub(super) struct RunStats {
+    pub(super) model_calls: u32,
+    pub(super) steers: u32,
+    pub(super) compactions: u32,
+    pub(super) tool_calls: u32,
+    pub(super) connection_attempts: u32,
+    pub(super) websocket_reconnects: u32,
+    pub(super) response_attempts: u32,
+    pub(super) response_retries: u32,
+    pub(super) connection_duration_ns: u64,
+    pub(super) retry_backoff_duration_ns: u64,
+    pub(super) model_duration_ns: u64,
+    pub(super) compaction_duration_ns: u64,
+    pub(super) warmup_duration_ns: u64,
+    pub(super) tool_work_duration_ns: u64,
+    pub(super) tool_wall_duration_ns: u64,
+    pub(super) usage: UsageTotals,
+    pub(super) warmup_usage: UsageTotals,
+    pub(super) last_response_id: Option<String>,
+}
+
+impl RunStats {
+    pub(super) const fn apply_transport(&mut self, delta: TransportStatsDelta) {
+        self.connection_attempts = delta.connection_attempts;
+        self.websocket_reconnects = delta.websocket_reconnects;
+        self.response_attempts = delta.response_attempts;
+        self.response_retries = delta.response_retries;
+        self.connection_duration_ns = delta.connection_duration_ns;
+        self.retry_backoff_duration_ns = delta.retry_backoff_duration_ns;
+    }
+
+    pub(super) fn turn_usage(&self) -> TurnUsage {
+        let estimated_cost = match (
+            self.usage.estimated_cost.clone(),
+            self.warmup_usage.estimated_cost.clone(),
+        ) {
+            (Some(usage), Some(warmup)) => Some(usage.saturating_add(warmup)),
+            (Some(usage), None) => Some(usage),
+            (None, Some(warmup)) => Some(warmup),
+            (None, None) => None,
+        };
+        TurnUsage::from_counts(crate::usage::TurnUsageCounts {
+            input_tokens: self.usage.input_tokens + self.warmup_usage.input_tokens,
+            cached_input_tokens: self.usage.cached_input_tokens
+                + self.warmup_usage.cached_input_tokens,
+            cache_write_input_tokens: self.usage.cache_write_input_tokens
+                + self.warmup_usage.cache_write_input_tokens,
+            output_tokens: self.usage.output_tokens + self.warmup_usage.output_tokens,
+            reasoning_output_tokens: self.usage.reasoning_output_tokens
+                + self.warmup_usage.reasoning_output_tokens,
+            total_tokens: self.usage.total_tokens + self.warmup_usage.total_tokens,
+            reported: self.usage.reported || self.warmup_usage.reported,
+            estimated_cost,
+        })
+    }
+}
+
+pub(super) fn terminal_payload<'a>(
+    terminal_status: &'static str,
+    elapsed: Duration,
+    config: &'a ModelConfig,
+    model: nanocodex_oai_api::Model,
+    thinking: Thinking,
+    stats: &'a RunStats,
+    usage: &'a TurnUsage,
+) -> TerminalPayload<'a> {
+    TerminalPayload {
+        status: terminal_status,
+        model: model.as_str(),
+        reasoning_mode: config.reasoning_mode.as_str(),
+        effort: thinking.as_str(),
+        transport: config.responses_transport.as_str(),
+        orchestration: ModelConfig::orchestration(),
+        duration_ms: duration_ms(elapsed),
+        duration_ns: duration_ns(elapsed),
+        stats,
+        estimated_cost: usage.estimated_cost(),
+        cost_usd: usage.estimated_cost().map(|cost| cost.amount().as_f64()),
+        cost_status: usage.cost_status(),
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct RunStarted<'a> {
+    pub(super) mode: &'static str,
+    pub(super) model: &'a str,
+    pub(super) reasoning_mode: &'static str,
+    pub(super) effort: &'static str,
+    pub(super) transport: &'static str,
+    pub(super) orchestration: &'static str,
+    pub(super) websocket_url: &'a str,
+    pub(super) workspace: Option<&'a str>,
+    pub(super) instruction_bytes: usize,
+}
+
+#[derive(Serialize)]
+pub(super) struct RunSteered {
+    pub(super) steer_index: u32,
+    pub(super) instruction_bytes: usize,
+}
+
+#[derive(Serialize)]
+pub(super) struct RunError<'a> {
+    pub(super) message: &'a str,
+}
+
+#[derive(Serialize)]
+pub(super) struct TerminalPayload<'a> {
+    status: &'static str,
+    model: &'a str,
+    reasoning_mode: &'static str,
+    effort: &'static str,
+    transport: &'static str,
+    orchestration: &'static str,
+    duration_ms: u64,
+    duration_ns: u64,
+    #[serde(flatten)]
+    stats: &'a RunStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_cost: Option<&'a nanocodex_oai_api::pricing::EstimatedUsdCost>,
+    cost_usd: Option<f64>,
+    cost_status: nanocodex_oai_api::pricing::CostStatus,
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+pub(super) fn elapsed_ns(started_at: Instant) -> u64 {
+    duration_ns(started_at.elapsed())
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+pub(super) fn display_endpoint(endpoint: &str) -> &str {
+    endpoint.split_once('?').map_or(endpoint, |(base, _)| base)
+}

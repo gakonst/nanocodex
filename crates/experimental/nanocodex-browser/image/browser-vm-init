@@ -1,0 +1,93 @@
+#!/bin/sh
+set -eu
+
+files_tag=$1
+shift
+if [ "$files_tag" != "-" ]; then
+    mkdir -p /run/nanocodex-egress-files /tmp/nanocodex/egress
+    mount -t virtiofs -o ro "$files_tag" /run/nanocodex-egress-files
+    cp -a /run/nanocodex-egress-files/. /tmp/nanocodex/egress/
+fi
+
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -f "$SSL_CERT_FILE" ]; then
+    install -m 0644 "$SSL_CERT_FILE" \
+        /usr/local/share/ca-certificates/nanocodex-egress-ca.crt
+    update-ca-certificates
+    install -d /home/browser/.pki/nssdb
+    certutil -N --empty-password -d sql:/home/browser/.pki/nssdb
+    certutil -A \
+        -d sql:/home/browser/.pki/nssdb \
+        -i "$SSL_CERT_FILE" \
+        -n nanocodex-egress \
+        -t C,,
+fi
+
+if [ "${NANOCODEX_BROWSER_PROXY_USERNAME_B64+x}" = x ] \
+    && [ "${NANOCODEX_BROWSER_PROXY_PASSWORD_B64+x}" = x ]; then
+    export NANOCODEX_BROWSER_PROXY_EXTENSION=/run/nanocodex-proxy-auth
+    install -d "$NANOCODEX_BROWSER_PROXY_EXTENSION"
+    cat > "$NANOCODEX_BROWSER_PROXY_EXTENSION/manifest.json" <<'EOF'
+{
+  "manifest_version": 3,
+  "name": "Nanocodex proxy authentication",
+  "version": "1.0",
+  "permissions": ["webRequest", "webRequestAuthProvider"],
+  "host_permissions": ["<all_urls>"],
+  "background": {"service_worker": "background.js"}
+}
+EOF
+    cat > "$NANOCODEX_BROWSER_PROXY_EXTENSION/background.js" <<EOF
+const decode = value => new TextDecoder().decode(
+  Uint8Array.from(atob(value), character => character.charCodeAt(0))
+);
+const username = decode("$NANOCODEX_BROWSER_PROXY_USERNAME_B64");
+const password = decode("$NANOCODEX_BROWSER_PROXY_PASSWORD_B64");
+chrome.webRequest.onAuthRequired.addListener(
+  (details, callback) => callback(
+    details.isProxy ? {authCredentials: {username, password}} : {}
+  ),
+  {urls: ["<all_urls>"]},
+  ["asyncBlocking"]
+);
+EOF
+fi
+
+while [ "$#" -gt 0 ]; do
+    tag=$1
+    guest=$2
+    shift 2
+    mkdir -p -- "$guest"
+    mount -t virtiofs -o ro "$tag" "$guest"
+done
+
+rm -f /etc/resolv.conf
+printf 'nameserver 192.168.127.1\n' > /etc/resolv.conf
+mkdir -p /tmp/.X11-unix /home/browser/profile
+chown -R browser:browser /home/browser
+
+Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -ac >/var/log/xvfb.log 2>&1 &
+socat TCP-LISTEN:9223,bind=0.0.0.0,reuseaddr,fork TCP:127.0.0.1:9222 \
+    >/var/log/cdp-relay.log 2>&1 &
+
+exec su browser -s /bin/sh -c '
+    set -- \
+        --disable-dev-shm-usage \
+        --disable-features=TranslateUI \
+        --no-default-browser-check \
+        --no-first-run \
+        --remote-debugging-address=0.0.0.0 \
+        --remote-debugging-port=9222 \
+        --user-data-dir=/home/browser/profile \
+        --window-size=1920,1080
+    if [ -n "${NANOCODEX_BROWSER_PROXY_SERVER:-}" ]; then
+        set -- "$@" \
+            "--proxy-server=$NANOCODEX_BROWSER_PROXY_SERVER" \
+            "--proxy-bypass-list=<-loopback>"
+    fi
+    if [ -n "${NANOCODEX_BROWSER_PROXY_EXTENSION:-}" ]; then
+        set -- "$@" \
+            "--disable-extensions-except=$NANOCODEX_BROWSER_PROXY_EXTENSION" \
+            "--load-extension=$NANOCODEX_BROWSER_PROXY_EXTENSION"
+    fi
+    DISPLAY=:99 exec chromium-browser "$@" about:blank
+'

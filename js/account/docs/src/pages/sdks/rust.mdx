@@ -1,0 +1,60 @@
+---
+title: Rust SDK
+description: Build one retained coding-agent session with the canonical Nanocodex facade.
+---
+
+# Rust SDK
+
+Use the `nanocodex` facade when your application needs the complete owned agent
+lifecycle. It composes the OpenAI Responses client, tools, retained history,
+typed events and results, branches, and cleanup without adding an app-server
+protocol.
+
+```sh
+cargo add nanocodex tokio --features tokio/full
+```
+
+```rust
+use nanocodex::{Nanocodex, OpenAi};
+
+let openai = OpenAi::new(std::env::var("OPENAI_API_KEY")?)?;
+let (agent, _events) = Nanocodex::builder(openai)
+    .instructions("Inspect before editing. Preserve unrelated work.")
+    .workspace(std::env::current_dir()?)
+    .build()?;
+
+let result = agent.prompt("Summarize this repository.").await?.await?;
+println!("{}", result.final_message());
+
+agent.shutdown().await?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The first `await` accepts and orders the prompt. The second waits for its typed
+`TurnResult`. A follow-on prompt reuses the same history, WebSocket, tools,
+cache identity, and shell sessions automatically.
+
+## Learn by task
+
+- [Build and shut down an agent](/sdks/rust/agent-lifecycle).
+- [Stream events, steer, or cancel a turn](/sdks/rust/turns-events-control).
+- [Add tools, Code Mode, and MCP](/sdks/rust/tools-code-mode-mcp).
+- [Choose handles, fork context, or install subagents](/sdks/rust/handles-forks-subagents).
+- [Recover accepted work with a journal](/sdks/rust/durability).
+
+## Choose the lowest owner
+
+Use `nanocodex-agent` directly for the same complete lifecycle without facade
+reexports. Use `nanocodex-oai-api` for a managed typed Responses session or
+concrete Tower service without the tool loop. Use `nanocodex-tools` for tools,
+Code Mode, MCP, or a hosted tool runtime without an agent.
+
+The facade keeps common types at the crate root and detailed APIs under
+`agent`, `oai`, and `tools`. The
+[facade README](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex/README.md)
+is the canonical import map; docs.rs is the exhaustive API reference.
+
+The [public examples](https://github.com/gakonst/nanocodex/tree/master/examples)
+show complete consumers for custom tools, MCP, snapshots, forks, and subagents.
+Use them as API references; the installed crate is the starting artifact for
+your application.

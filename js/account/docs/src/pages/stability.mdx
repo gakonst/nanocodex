@@ -1,0 +1,102 @@
+---
+title: Stability and scope
+description: Adopt the supported OpenAI lifecycle without assuming provider portability.
+---
+
+# Stability and scope
+
+Nanocodex deliberately commits to one OpenAI model family and the Responses
+WebSocket lifecycle. That narrow scope keeps the Codex behavior, typed history,
+tool loop, and retry ownership coherent across native Rust and WASM instead of
+introducing a provider abstraction. Stability applies to those owned component
+boundaries, not every example application or experimental runtime in the
+repository.
+
+## Supported library surface
+
+The supported foundation is:
+
+- `nanocodex`, the thin Alloy-style facade;
+- `nanocodex-agent`, the owned session, events, results, snapshots, and branches;
+- optional `nanocodex-durability`, the Rust-owned journal, recovery policy,
+  checkpoints, and portable store boundary;
+- `nanocodex-oai-api`, the typed OpenAI Responses and Tower boundary;
+- `nanocodex-tools` and `nanocodex-tools-macros`, including native Code Mode,
+  workspace tools, MCP, web, and image tooling;
+- the optional `nanocodex-observability` integration; and
+- the optional `nanocodex-subagents` task-tree extension.
+
+The Rust release set includes the facade, agent, OpenAI, tools, macros,
+observability, durability, and subagents crates. The release script publishes
+them in dependency order. Check the selected version's registry metadata before
+depending on a newly added crate.
+
+The published Node/browser WASM package and the source-distributed Python/PyO3,
+React Context/hooks, and artifacts packages are thin consumers of that
+lifecycle. UI frameworks and terminal renderers consume Agent events directly
+and remain application code. These consumers must not reshape the underlying
+session contract. See the
+[component map](https://github.com/gakonst/nanocodex/blob/master/README.md#components)
+and [executable crate-boundary check](https://github.com/gakonst/nanocodex/blob/master/scripts/check-crate-boundaries.sh).
+
+## Experimental and opt-in
+
+The crates under `crates/experimental` are useful, working components whose
+public contracts are still maturing:
+
+- `nanocodex-vm`: libkrun VM lifecycle, images, retained guest workspace tools,
+  gvproxy, and provider-neutral egress;
+- `nanocodex-voice`: desktop realtime audio and voice-to-agent lifecycle;
+- `nanocodex-browser`: browser automation and retained diagnostics;
+- `nanocodex-eval`: VM-backed evaluation and durable evidence;
+- `nanocodex-egress`: authenticated loopback proxy and ephemeral CA.
+
+They are unpublished unless their own manifest says otherwise. Pin a Git
+revision when adopting them, expect API change, and keep the choice behind an
+application-owned boundary. The authoritative list is the
+[experimental component index](https://github.com/gakonst/nanocodex/blob/master/crates/experimental/README.md).
+
+The production web app, CLI/TUI, and platform deployments are consumers and
+evaluation boundaries. They demonstrate composition; they are not additional
+core protocols or blanket stability promises for Cloudflare, Vercel, Rivet,
+exe.dev, browser storage, or a UI framework.
+
+## Deliberate non-goals
+
+Nanocodex does not provide:
+
+- provider or arbitrary-model portability;
+- a generic app server, JSON-RPC daemon, or remote agent protocol;
+- an approval subsystem or security sandbox enabled by default;
+- a tenancy database, application session index, memory system, skill/plugin
+  framework, or application scheduler;
+- generic browser/computer use in the stable core.
+
+It supports a deliberate OpenAI model family and Responses lifecycle. API-key,
+ChatGPT, host-managed, and MPP transports are routing/authentication choices,
+not provider abstraction.
+
+## Security and execution
+
+Native workspace tools execute locally with the host process's permissions.
+The browser workspace executes inside browser capabilities but is not a
+security claim about arbitrary generated code. VM-backed tools and hosted
+sandboxes are explicit choices, not implicit defaults.
+
+Applications own credentials, tenancy, authorization, egress policy, durable
+store selection, and data retention. The optional durability crate owns its
+journal format and recovery decisions, not the surrounding product database.
+Tracing is designed as a full-fidelity copy of the
+agent lifecycle, so its backend must receive conversation-equivalent access and
+retention policy. See the [observability contract](https://github.com/gakonst/nanocodex/blob/master/docs/OBSERVABILITY.md).
+
+## Compatibility rule of thumb
+
+Depend on the facade or the lowest owning published crate. Use builders for
+policy and typed results/events for integration. Do not depend on mutable driver
+internals, raw provider response IDs, generated WASM artifacts, CLI JSON
+implementation details, or experimental SQLite schemas.
+
+For release notes and changes to published crates, follow the
+[changelog](https://github.com/gakonst/nanocodex/blob/master/CHANGELOG.md) and
+the per-crate changelogs linked from each package.

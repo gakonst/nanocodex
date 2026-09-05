@@ -1,0 +1,14 @@
+# cargo-release configuration. All publishable workspace crates share a version.
+allow-branch = ["master"]
+shared-version = true
+consolidate-commits = true
+pre-release-commit-message = "chore: release {{version}}"
+tag-prefix = "v"
+sign-commit = true
+sign-tag = true
+rate-limit.existing-packages = 50
+pre-release-hook = [
+    "bash",
+    "-c",
+    "$WORKSPACE_ROOT/scripts/changelog.sh --tag v{{version}}",
+]

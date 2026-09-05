@@ -1,0 +1,26 @@
+{
+  "linkPatterns": [
+    {
+      "type": "tags",
+      "key": "session.id",
+      "url": "/search?service=nanocodex&lookback=1w&limit=1500&tags=%7B%22session.id%22%3A%22#{session.id}%22%7D",
+      "text": "Show all turns in session #{session.id}"
+    },
+    {
+      "type": "tags",
+      "key": "parent.session.id",
+      "url": "/search?service=nanocodex&lookback=1w&limit=1500&tags=%7B%22session.id%22%3A%22#{parent.session.id}%22%7D",
+      "text": "Show parent session #{parent.session.id}"
+    }
+  ],
+  "search": {
+    "maxLimit": 1500
+  },
+  "topTagPrefixes": [
+    "session.",
+    "parent.session.",
+    "agent.",
+    "tui."
+  ],
+  "traceIdDisplayLength": 16
+}

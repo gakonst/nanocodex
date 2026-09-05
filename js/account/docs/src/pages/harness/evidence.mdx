@@ -1,0 +1,49 @@
+---
+title: Retained runs and evidence
+description: Understand generations, attempt history, and the files behind an eval result.
+---
+
+# Retained runs and evidence
+
+The ledger owns scheduling state. Retained files make a result reviewable.
+Keep both whenever a benchmark claim must remain inspectable.
+
+```text
+profile -> immutable workset rows -> attempts -> terminal result
+               state.sqlite3            |          artifacts/
+                                        `-> retry history
+```
+
+## Generations do not drift
+
+`nanocodex eval add` is idempotent against the newest generation. It may add
+new coordinates without changing existing rows. Starting a new generation is
+an explicit choice for a changed task, treatment, or comparison plan.
+
+Editing a recipe does not rewrite rows already materialized in SQLite. Editing
+a task package does not silently change its recorded digest. Those constraints
+keep a published workset identifiable after the run ends.
+
+## Follow one result
+
+A completed `nanocodex eval run` prints its evidence directory. A retained arm
+can include:
+
+- exact agent event JSONL;
+- `agent/trajectory.json`;
+- `agent/api-exchanges.jsonl`;
+- verifier reward, stdout, and stderr;
+- task, candidate, and environment identity; and
+- timing, usage, cost, and operational evidence.
+
+Treat model exchanges and trajectories as complete conversation data. Apply
+the same access and retention policy you use for user prompts and tool output.
+
+## Retry is operational evidence
+
+Rows have four states: `unclaimed`, `running`, `success`, and `failed`.
+Infrastructure failures and lost workers append an attempt, then return the row
+to `unclaimed`. Claim IDs fence late writes from old attempts. Do not convert an
+infrastructure retry into a verifier failure or count it as a model result.
+
+Next: [interpret the result](/harness/read-results).

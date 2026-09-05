@@ -1,0 +1,35 @@
+[files]
+extend-exclude = [
+    ".nanocodex/",
+    "crates/experimental/nanocodex-browser/assets/axe.js",
+    "crates/experimental/nanocodex-browser/assets/react_diagnostics.js",
+    "js/account/public/data/",
+    "js/account/src/data/harness-repository.json",
+    "js/account/worker-configuration.d.ts",
+]
+
+[default.extend-words]
+ratatui = "ratatui"
+serde = "serde"
+wasm = "wasm"
+ba = "ba"
+# Apple and Appium use UDID as the canonical device identifier name.
+udid = "udid"
+Udid = "Udid"
+# `CMO` abbreviates the differential evaluator's code-mode-only profile.
+CMO = "CMO"
+# `caf` is the hexadecimal middle of the reviewed Codex commit
+# `312caf176a8f`, not prose.
+caf = "caf"
+# These are hexadecimal fragments in the reviewed commits `0c01a18ede`
+# and `ded4eacdbd`.
+ede = "ede"
+ded = "ded"
+# These are hexadecimal fragments in reviewed Codex commit hashes, not prose.
+daed = "daed"
+abd = "abd"
+dbe = "dbe"
+daa = "daa"
+# `iz` appears inside the exact retained benchmark flag
+# `flag{gc0d3_iz_ch4LLenGiNg}`.
+iz = "iz"

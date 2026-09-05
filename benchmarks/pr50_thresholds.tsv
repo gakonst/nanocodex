@@ -1,0 +1,40 @@
+# Criterion path	reference median (ns)	maximum median (ns)	contract
+responses_request_encoding/encoded_raw_value/131072	32673.755	100000	request construction with a retained 128 KiB raw item
+responses_lite_metadata_code_mode_tool_names_64	1860.906	10000	Responses Lite Code Mode metadata construction
+timed_agent_event_delivery/emit_then_try_receive_mirrored_1024	200753.718	1000000	contractual plus diagnostic delivery of 1,024 events
+pricing_estimation/aggregate_turn_usage	1.992	25	automatic gpt-5.6-sol usage-cost aggregation
+fork_then_append/immutable_segments/10000	183.003	2000	fork and append over 10,000 shared history items
+active_boundary_snapshot_then_append/immutable_boundary/10000	214.375	5000	active-history checkpoint and append
+incremental_suffix_iteration/last_item/10000	14.447	500	one-item suffix iteration over 10,000 retained items
+code_mode_history_snapshot/flatten_into_shared_owner/10000	513541.051	2000000	Code Mode history snapshot of 10,000 items
+compaction_snapshot/shared_prefix_rewrite/10000	56.944	2000	compaction checkpoint rewrite over a shared prefix
+context_accounting_and_compaction/active_context_tokens_10000	1279722.101	5000000	context accounting over 10,000 messages
+context_accounting_and_compaction/trim_1000_items_plus_4x200k_outputs	647277.520	3000000	tool-output compaction on a representative large context
+context_accounting_and_compaction/install_history_10000_user_messages	690809.872	3000000	installing authoritative compacted history
+agent_handle_clone	71.005	500	cheap public agent handle clone
+agent_lifecycle/accepted_first_turn_to_typed_result	1703546.824	5000000	accepted prompt through typed turn result
+oai_session_build	486.690	10000	managed OpenAI session construction
+oai_session_lifecycle/first_create_to_completed_response	1843.765	100000	one complete in-memory Responses attempt
+tool_registry_dispatch_registered_function	164.380	5000	registered caller-tool dispatch
+code_mode_exec_warm_text	307949.267	2000000	warm Code Mode execution
+tool_process_output_64k_to_1k_tokens	837733.769	5000000	bounded 64 KiB subprocess output
+mcp_discovery_cold/1000_tools	53712840.583	250000000	cold MCP discovery for 1,000 tools
+mcp_tool_search_warm/1	2051.999	10000	warm deferred search over one MCP tool
+mcp_tool_search_warm/1000	95865.336	500000	warm deferred search over 1,000 MCP tools
+mcp_tool_dispatch_warm_stdio	1094306.402	10000000	warm MCP stdio dispatch
+tui_trace_render/codex_long/tail_80x24	53557.644	500000	representative retained Codex trace tail at a small terminal
+tui_trace_render/codex_long/tail_120x40	110263.207	1000000	representative retained Codex trace tail render
+tui_trace_render/codex_long/tail_200x60	237303.290	2000000	representative retained Codex trace tail at a large terminal
+tui_transcript_delta/assistant_100k	2518.750	50000	incremental 100 KiB assistant transcript update
+tui_stream_telemetry/apply_1024_and_present	83413.791	500000	1,024-event TUI state update and presentation
+tui_branch_state/codex_long/switch_branch	4337.346	250000	long-trace branch switch
+tui_markdown_syntax_fallback_oversized_line_1m	74491.185	1000000	one-megabyte syntax-highlight fallback
+tui_tool_tree_result_269k_cached_frame_120x40	88420.360	1000000	cached 269 KiB tool-result frame
+tui_code_mode_stream/apply_16_out_of_order_completions	2796.263	100000	sixteen out-of-order Code Mode completions
+tui_trace_resize/codex_long/80x24_to_200x60	241535.474	2000000	long-trace terminal resize
+tui_live_tail_first_frame/assistant_1m_single_line/120x40	23992869.958	100000000	first frame for a one-megabyte live line
+tui_smooth_follow/drain_128_row_backlog_120x40	999950.334	10000000	drain 128 rows of smooth-follow backlog
+tui_terminal_output/catch_up_frame_120x40	105373.108	1000000	catch-up terminal diff; also capped at 2,400 cells and 4,096 bytes
+tui_terminal_output/fast_mode_toggle_120x40	61606.134	500000	footer-only diff; also capped at 48 cells and 256 bytes
+tui_composer_render_multiline_100k_120x40	148036.206	2000000	render a 100 KiB multiline draft
+tui_large_paste/ingest_100k	24277.002	500000	ingest a 100 KiB paste
