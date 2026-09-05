@@ -72,7 +72,9 @@ jobs:
               text = text[end:]
               print(json.dumps({'outcome': event.get('outcome'), 'timestamp': event.get('eventTimestamp'),
                   'exceptions': [{'name': e.get('name'), 'known_causes': [s for s in
-                    ['memory', 'CPU', 'reset', 'deadlock', 'code was updated', 'canceled', 'storage', 'overloaded']
+                    ['memory', 'CPU', 'reset', 'deadlock', 'code was updated', 'canceled', 'storage', 'overloaded',
+                     'subrequest', 'Too many', 'limit', 'quota', 'recursive', 'stack', 'internal', 'hung',
+                     'I/O', 'different request', 'promise', 'script', 'SQL', 'D1', 'alarm', 'network', 'fetch']
                     if s.lower() in e.get('message', '').lower()]} for e in event.get('exceptions', [])]}))
           PY
 
