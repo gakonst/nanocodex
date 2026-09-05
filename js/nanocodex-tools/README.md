@@ -26,3 +26,7 @@ calling agent. The workspace is not an OS sandbox; hosts must make the native
 authority clear and use a VM for isolation. Closing the runtime terminates owned
 processes. This entrypoint imports Node APIs and must not be bundled into Workers
 or browser applications.
+
+Native Node Hands retain unread command output in private temporary files. Reply
+budgets control each poll, without discarding older output. Files are removed
+when fully consumed or when their owning session or Hand is closed.

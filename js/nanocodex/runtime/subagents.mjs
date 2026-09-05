@@ -17,7 +17,7 @@ export function create(options = {}) {
     throw new TypeError("Subagents.create options must be an object");
   }
   const maxConcurrency = options.maxConcurrency ?? defaultSubagentMaxConcurrency;
-  if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
+  if (maxConcurrency !== undefined && (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1)) {
     throw new TypeError("subagents maxConcurrency must be a positive safe integer");
   }
   return Object.freeze([Object.freeze({

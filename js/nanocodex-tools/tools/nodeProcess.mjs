@@ -9,6 +9,7 @@ import {
   EXECUTION_OUTPUT_SCHEMA,
 } from "./execution-contract.mjs";
 import { namedTool } from "./namedTool.mjs";
+import { createProcessOutput } from "./processOutput.mjs";
 
 /** Native, explicitly authorized host execution. The workspace is the initial cwd,
  * not an OS sandbox. Credentials from the embedding process are never inherited. */
@@ -78,6 +79,7 @@ export async function createNodeProcessTools({
       // Kill descendants too, even if the shell itself exited first.
       await stopGroup(record, "SIGKILL");
       await record.closed;
+      await record.output.close();
       sessions.delete(record.id);
       processes.delete(record);
     })());
@@ -118,13 +120,16 @@ export async function createNodeProcessTools({
         delay(wait, undefined, { signal, ref: false }),
       ]);
       if (signal?.aborted) throw signal.reason;
-      const output = record.buffer.slice(0, maxBytes);
-      record.buffer = record.buffer.slice(maxBytes);
+      if (record.outputError) throw record.outputError;
+      const output = await record.output.read(maxBytes);
+      if (record.outputError) throw record.outputError;
       const result = {
         output,
         wall_time_seconds: (performance.now() - started) / 1_000,
       };
-      if (record.done && !record.buffer) {
+      if (record.done && !record.output.unread) {
+        result.output += record.output.end();
+        await record.output.close();
         result.exit_code = record.exitCode;
         sessions.delete(record.id);
         collect();
@@ -165,22 +170,34 @@ export async function createNodeProcessTools({
         throw new Error("shell must be an absolute executable path.");
       if (disposed) throw new Error("This compute hand is stopped.");
       context.signal?.throwIfAborted();
-      const child = spawn(
-        shell,
-        [input.login === true ? "-lc" : "-c", input.cmd],
-        {
-          cwd,
-          env: environment,
-          detached: process.platform !== "win32",
-          stdio: ["pipe", "pipe", "pipe"],
-        },
-      );
+      const output = await createProcessOutput();
+      if (disposed || context.signal?.aborted) {
+        await output.close();
+        context.signal?.throwIfAborted();
+        throw new Error("This compute hand is stopped.");
+      }
+      let child;
+      try {
+        child = spawn(
+          shell,
+          [input.login === true ? "-lc" : "-c", input.cmd],
+          {
+            cwd,
+            env: environment,
+            detached: process.platform !== "win32",
+            stdio: ["pipe", "pipe", "pipe"],
+          },
+        );
+      } catch (error) {
+        await output.close();
+        throw error;
+      }
       let finish;
       const record = {
         id: ++sequence,
         owner: context.sessionId,
         child,
-        buffer: "",
+        output,
         done: false,
         exitCode: 0,
         reading: false,
@@ -195,14 +212,17 @@ export async function createNodeProcessTools({
         sessionId: context.sessionId,
         processId: record.id,
       });
-      const append = (data) => {
-        record.buffer += data.toString();
-        if (record.buffer.length > 1_048_576)
-          record.buffer =
-            record.buffer.slice(0, 1_048_500) + "\n[output truncated]\n";
+      const append = (data, stream) => {
+        stream?.pause();
+        void record.output.append(data).catch(error => {
+          record.outputError = error;
+          void stop(record).catch(() => {});
+        }).finally(() => stream?.resume());
       };
-      child.stdout.on("data", append);
-      child.stderr.on("data", append);
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", data => append(data, child.stdout));
+      child.stderr.on("data", data => append(data, child.stderr));
       child.stdin.on("error", () => {});
       child.on("error", (error) => {
         append(error.message);
@@ -233,12 +253,12 @@ export async function createNodeProcessTools({
       }
     },
     releaseSession(owner) {
-      for (const record of processes)
+      for (const record of new Set([...processes, ...sessions.values()]))
         if (record.owner === owner) void stop(record).catch(() => {});
     },
     async dispose() {
       disposed = true;
-      await Promise.all([...processes.values()].map(stop));
+      await Promise.all([...new Set([...processes, ...sessions.values()])].map(stop));
       sessions.clear();
     },
   });

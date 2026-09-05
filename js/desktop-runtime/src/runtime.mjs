@@ -66,7 +66,7 @@ export function validateHand(value) {
 export function restoredLayout(value) {
   if (!value || !Array.isArray(value.tabs)) return undefined;
   const ids = new Set();
-  const tabs = value.tabs.slice(0, 100).flatMap(tab => {
+  const tabs = value.tabs.flatMap(tab => {
     if (!tab || typeof tab.id !== "string" || !tab.id || tab.id.length > 128 || ids.has(tab.id)) return [];
     ids.add(tab.id);
     const clean = { id: tab.id, draft: "", target: "", folder: "" };
@@ -165,7 +165,7 @@ export class DesktopRuntime extends EventEmitter {
     // A UI may deliver a debounced message after the account has changed. The
     // scope belongs to the UI snapshot that created the message, not its arrival.
     if (value?.accountScope !== undefined && value.accountScope !== this.#state.accountScope) return;
-    if (!value || !Array.isArray(value.tabs) || value.tabs.length > 100 || !["left", "top"].includes(value.tabPosition) || !["system", "light", "dark"].includes(value.theme)) throw new Error("Invalid tab layout.");
+    if (!value || !Array.isArray(value.tabs) || !["left", "top"].includes(value.tabPosition) || !["system", "light", "dark"].includes(value.theme)) throw new Error("Invalid tab layout.");
     const ids = new Set();
     const tabs = value.tabs.map(tab => {
       if (typeof tab.id !== "string" || tab.id.length > 128 || ids.has(tab.id)) throw new Error("Invalid tab.");
@@ -345,11 +345,6 @@ export class DesktopRuntime extends EventEmitter {
             if (["turn_completed", "turn_failed", "turn_cancelled"].includes(event.data.type)) {
               thread.activeTurns = thread.activeTurns.filter(id => id !== event.data.id);
               void this.refresh();
-            }
-            // Drop verbose completed-turn detail first, preserving all prompts and answers.
-            if (thread.events.length > 4096) {
-              const removable = thread.events.findIndex(e => e.data.type === "event" && !thread.activeTurns.includes(e.turnId));
-              if (removable >= 0) thread.cursors.delete(thread.events.splice(removable, 1)[0].cursor);
             }
           }
           this.#emitThread(thread);
@@ -638,11 +633,10 @@ export class DesktopRuntime extends EventEmitter {
       if (child.exitCode === null && child.signalCode === null) signalChild("SIGKILL");
       await closed;
     });
-    const timeout = setTimeout(() => readyReject(new Error("The VM did not become ready within 60 seconds. Check its image and runtime.")), 60_000);
     const abort = () => readyReject(resource.abort.signal.reason);
     resource.abort.signal.addEventListener("abort", abort, { once: true });
     try { resource.abort.signal.throwIfAborted(); await ready; }
-    finally { clearTimeout(timeout); resource.abort.signal.removeEventListener("abort", abort); }
+    finally { resource.abort.signal.removeEventListener("abort", abort); }
   }
 
   async #prepareVmHelper(source) {

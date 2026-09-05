@@ -247,6 +247,14 @@ impl SubagentTree {
         self.max_subagents = limit;
     }
 
+    fn concurrency_label(&self) -> String {
+        if self.max_subagents == usize::MAX {
+            "unlimited".to_owned()
+        } else {
+            self.max_subagents.to_string()
+        }
+    }
+
     pub(super) const fn max_subagents(&self) -> usize {
         self.max_subagents
     }
@@ -339,7 +347,11 @@ impl SubagentTree {
                 None
             }
             KeyCode::Char('-') if key.modifiers.is_empty() => {
-                self.max_subagents = self.max_subagents.saturating_sub(1);
+                self.max_subagents = if self.max_subagents == usize::MAX {
+                    self.active_count().max(1)
+                } else {
+                    self.max_subagents.saturating_sub(1)
+                };
                 Some(SubagentEffect::SetMaxSubagents(self.max_subagents))
             }
             KeyCode::Char('+') | KeyCode::Char('=') if key.modifiers.is_empty() => {
@@ -409,13 +421,13 @@ impl SubagentTree {
                 format!(
                     "Concurrency: {} / {} active. No subagents have been delegated yet.",
                     self.active_count(),
-                    self.max_subagents
+                    self.concurrency_label()
                 )
             } else {
                 format!(
                     "Concurrency: {} / {} active. No subagents are currently running. Press f to show all.",
                     self.active_count(),
-                    self.max_subagents
+                    self.concurrency_label()
                 )
             };
             frame.render_widget(
@@ -699,7 +711,7 @@ impl SubagentTree {
                     format!(
                         "    Concurrency  {} / {} active",
                         self.active_count(),
-                        self.max_subagents
+                        self.concurrency_label()
                     ),
                     Style::default().fg(theme.muted()),
                 ),

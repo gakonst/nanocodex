@@ -175,6 +175,27 @@ test("native Hands retain more than 32 parallel processes until completion", { s
   } finally { await runtime.close(); await rm(workspace, { recursive: true }); }
 });
 
+test("large unread output survives completion and drains without truncation or broken UTF-8", { timeout: 10_000 }, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-output-test-"));
+  let finished;
+  const completed = new Promise(resolve => { finished = resolve; });
+  const runtime = await createNodeProcessTools({ workspace, onActivity(event) { if (event.type === "completed") finished(); } });
+  const expected = "a😀β\n".repeat(400_000) + "final-output\n";
+  await writeFile(join(workspace, "large.txt"), expected);
+  try {
+    const context = { sessionId: "owner" };
+    let result = await runtime.tools[0].handler({ cmd: "cat large.txt", yield_time_ms: 0, max_output_tokens: 7 }, context);
+    let output = result.output;
+    await completed;
+    while (result.session_id !== undefined) {
+      result = await runtime.tools[1].handler({ session_id: result.session_id, yield_time_ms: 0, max_output_tokens: 32_000 }, context);
+      output += result.output;
+    }
+    assert.equal(result.exit_code, 0);
+    assert.equal(output, expected);
+  } finally { await runtime.close(); await rm(workspace, { recursive: true }); }
+});
+
 test("Finder PATH discovers installed Node while preserving inherited executable priority", { skip: process.platform !== "darwin" }, async t => {
   const installations = await Promise.all(["/opt/homebrew/bin/node", "/usr/local/bin/node"].map(path => access(path).then(() => path, () => undefined)));
   if (!installations.some(Boolean)) { t.skip("No Homebrew or /usr/local Node installation is present."); return; }

@@ -251,12 +251,12 @@ test("saved drafts and Hand grants are private and account scoped", async t => {
   assert.deepEqual((await desktopPreferences({ directory: path, apiKey: key })).saved, preferences);
   assert.deepEqual((await desktopPreferences({ directory: path, apiKey: secondKey })).saved, {});
 });
-test("VM readiness is an observed handshake and stopping cancels pending setup", async t => {
+test("VM readiness can exceed 60 seconds and stopping cancels pending setup", { timeout: 90_000 }, async t => {
   const path = await directory(t);
   const binary = join(path, "vm-fixture");
   const image = join(path, "root.ext4");
   await writeFile(image, "fixture");
-  await writeFile(binary, `#!${process.execPath}\nsetTimeout(() => console.log(JSON.stringify({ fields: { stage: 'vm.hand.ready' } })), 100); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
+  await writeFile(binary, `#!${process.execPath}\nsetTimeout(() => console.log(JSON.stringify({ fields: { stage: 'vm.hand.ready' } })), 61_000); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
   const runtime = new DesktopRuntime({ baseUrl: await service(t), apiKey: key, dataDirectory: path });
   t.after(() => runtime.close());
   await runtime.refresh();
@@ -294,4 +294,40 @@ test("JSONL host exposes only desktop actions and shuts down on stdin EOF", asyn
   const exit = once(child, "exit");
   child.stdin.end();
   assert.equal((await exit)[0], 0);
+});
+
+
+test("layouts preserve more than 100 tabs through save and restore", async t => {
+  let saved;
+  const runtime = new DesktopRuntime({ baseUrl: await service(t), apiKey: key, persist: async value => { saved = value; } });
+  t.after(() => runtime.close());
+  const tabs = Array.from({ length: 150 }, (_, i) => ({ id: `tab-${i}`, draft: `draft-${i}` }));
+  await runtime.saveLayout({ tabs, activeTabId: "tab-149", tabPosition: "top", theme: "dark" });
+  const restored = restoredLayout(saved.layout);
+  assert.equal(restored.tabs.length, 150);
+  assert.equal(restored.activeTabId, "tab-149");
+  assert.equal(restored.tabs[149].draft, "draft-149");
+});
+
+test("streamed completed-turn detail survives beyond 4096 events", { timeout: 10_000 }, async t => {
+  const agentId = "019a65fe-a456-7000-8000-000000000005";
+  const raw = Array.from({ length: 4200 }, (_, i) => ({ cursor: String(i + 1), created_at: i + 1, turn_id: "completed-turn", type: "event", event: { type: "assistant.delta", payload: { text: `detail-${i}` } } }));
+  const baseUrl = await service(t, (request, response) => {
+    if (request.url.includes("/events/history")) response.end(JSON.stringify({ data: [], latest_cursor: "0", has_more: false }));
+    else if (request.url.includes("/events?")) {
+      response.setHeader("content-type", "text/event-stream");
+      response.write(raw.map(event => `id: ${event.cursor}\nevent: message\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+    } else if (request.url === `/v1/agents/${agentId}`) response.end(JSON.stringify({ active_turns: [] }));
+    else response.end(JSON.stringify({ data: [] }));
+  });
+  const runtime = new DesktopRuntime({ baseUrl, apiKey: key });
+  t.after(() => runtime.close());
+  const received = deferred();
+  runtime.on("event", event => { if (event.type === "thread" && event.thread.events.at(-1)?.cursor === "4200") received.resolve(event.thread); });
+  await runtime.refresh();
+  await runtime.openThread(agentId);
+  const snapshot = await received.promise;
+  assert.equal(snapshot.events.length, 4200);
+  assert.equal(snapshot.events[0].data.event.payload.text, "detail-0");
+  assert.equal(snapshot.events.at(-1).data.event.payload.text, "detail-4199");
 });
