@@ -552,12 +552,11 @@ where
                 pong_timeout.as_mut().reset(tokio::time::Instant::now() + PONG_TIMEOUT);
             }
             captured = captures.join_next(), if !captures.is_empty() => {
-                if let Some(Ok((request_id, result))) = captured {
-                    if capture_request.as_ref() == Some(&request_id) && !detaching {
-                        capture_request = None;
-                        if let Err(error) = send(&mut socket, &ExecutorFrame::Observation { request_id: &request_id, result: &result }).await {
-                            break ConnectionEnd::Failed(error);
-                        }
+                if let Some(Ok((request_id, result))) = captured
+                    && capture_request.as_ref() == Some(&request_id) && !detaching {
+                    capture_request = None;
+                    if let Err(error) = send(&mut socket, &ExecutorFrame::Observation { request_id: &request_id, result: &result }).await {
+                        break ConnectionEnd::Failed(error);
                     }
                 }
             }

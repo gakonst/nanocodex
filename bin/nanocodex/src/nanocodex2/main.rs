@@ -954,6 +954,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn screen_hand_requires_an_explicit_source_and_android_device() {
+        assert!(Cli::try_parse_from(["nanocodex2", "hand"]).is_err());
+        assert!(Cli::try_parse_from(["nanocodex2", "hand", "--screen", "android"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "nanocodex2",
+                "hand",
+                "--screen",
+                "desktop",
+                "--vm",
+                "root.ext4"
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from(["nanocodex2", "hand", "--screen", "desktop"]).unwrap();
+        let Some(Command::Hand(hand)) = cli.command else {
+            panic!("expected hand")
+        };
+        assert_eq!(hand.screen, Some(ScreenSource::Desktop));
+        assert!(hand.rootfs.is_none());
+        assert_eq!(hand.machine_id, "desktop");
+        let cli = Cli::try_parse_from([
+            "nanocodex2",
+            "hand",
+            "--screen",
+            "android",
+            "--device",
+            "SERIAL",
+        ])
+        .unwrap();
+        let Some(Command::Hand(hand)) = cli.command else {
+            panic!("expected hand")
+        };
+        assert_eq!(hand.device.as_deref(), Some("SERIAL"));
+        assert_eq!(hand.machine_id, "android");
+        assert!(Cli::try_parse_from(["nanocodex2", "hand", "--vm", "root.ext4"]).is_ok());
+    }
+
+    #[test]
     fn parses_attach_url_into_its_agent_id() {
         let cli = Cli::try_parse_from([
             "nanocodex2",

@@ -338,9 +338,11 @@ impl AttachmentConnector {
         tokio::spawn(initialize_and_run(
             prepared,
             self.target,
-            self.metadata,
-            self.observation,
-            observation_surfaces,
+            ObservationConfig {
+                metadata: self.metadata,
+                provider: self.observation,
+                surfaces: observation_surfaces,
+            },
             command_rx,
             event_tx,
             status_tx,
@@ -370,12 +372,16 @@ impl AttachmentConnector {
     }
 }
 
+struct ObservationConfig {
+    metadata: Option<AttachmentMetadata>,
+    provider: Option<Arc<dyn ObservationProvider>>,
+    surfaces: Vec<ObservationSurface>,
+}
+
 async fn initialize_and_run(
     prepared: PreparedTools,
     target: AttachmentTarget,
-    metadata: Option<AttachmentMetadata>,
-    observation: Option<Arc<dyn ObservationProvider>>,
-    observation_surfaces: Vec<ObservationSurface>,
+    config: ObservationConfig,
     mut command_rx: mpsc::Receiver<driver::Command>,
     event_tx: mpsc::Sender<AttachmentEvent>,
     status_tx: watch::Sender<AttachmentStatus>,
@@ -420,9 +426,9 @@ async fn initialize_and_run(
             endpoint: target.endpoint,
             authorization: format!("Bearer {}", target.bearer).into(),
             tools,
-            metadata,
-            observation,
-            observation_surfaces,
+            metadata: config.metadata,
+            observation: config.provider,
+            observation_surfaces: config.surfaces,
         })
     })();
     let config = match config {
