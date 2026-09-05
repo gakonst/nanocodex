@@ -283,6 +283,11 @@ terminal. An ambiguous store result requires reopening. Typed dispositions take
 precedence over diagnostic text, including text mentioning cancellation or a
 transport failure.
 
+Recovery copies retain provider item IDs whenever opaque encrypted content is
+cryptographically bound to the ID. Ordinary copied item IDs may be regenerated;
+encrypted compaction, reasoning, and function-argument IDs remain exact across
+step retry, checkpoint reload, and full-history replay.
+
 An ordering rejection carries the exact pending operation ID through WASM and
 Worker errors as `blockedBy`. If an older managed terminal projection disagrees
 with that Rust fact and its frozen dispatch is retained, managed recovery restores

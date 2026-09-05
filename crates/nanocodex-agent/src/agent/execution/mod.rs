@@ -624,7 +624,7 @@ impl Execution {
         let base_checkpoint = base_checkpoint.map(|checkpoint| {
             let mut history = checkpoint.model().snapshot_history();
             for item in &mut history {
-                item.strip_id();
+                item.strip_unbound_id();
             }
             StandaloneCompactionBase {
                 lineage_id: checkpoint.lineage_id().to_owned(),

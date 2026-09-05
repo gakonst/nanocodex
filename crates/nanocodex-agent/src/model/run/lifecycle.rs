@@ -269,7 +269,7 @@ where
                 None => {
                     let mut recorded_request_prefix = factory.profile().prefix().to_vec();
                     for item in &mut recorded_request_prefix {
-                        item.strip_id();
+                        item.strip_unbound_id();
                     }
                     let recorded = RecordedWarmupCall {
                         model: self.model.as_str(),
@@ -433,11 +433,11 @@ where
                 None => {
                     let mut recorded_prompt_history = history.iter().cloned().collect::<Vec<_>>();
                     for item in &mut recorded_prompt_history {
-                        item.strip_id();
+                        item.strip_unbound_id();
                     }
                     let mut recorded_request_prefix = factory.profile().prefix().to_vec();
                     for item in &mut recorded_request_prefix {
-                        item.strip_id();
+                        item.strip_unbound_id();
                     }
                     let step_input = RecordedCompactionCall {
                         after_model_call_index,

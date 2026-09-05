@@ -175,11 +175,11 @@ where
                     let mut recorded_prompt_history =
                         prompt_history.iter().cloned().collect::<Vec<_>>();
                     for item in &mut recorded_prompt_history {
-                        item.strip_id();
+                        item.strip_unbound_id();
                     }
                     let mut recorded_request_prefix = factory.profile().prefix().to_vec();
                     for item in &mut recorded_request_prefix {
-                        item.strip_id();
+                        item.strip_unbound_id();
                     }
                     let step_input = RecordedModelCall {
                         call_index,
