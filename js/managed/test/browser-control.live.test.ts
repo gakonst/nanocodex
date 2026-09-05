@@ -12,6 +12,8 @@ it("real cloud browser: private entry, screenshot, handoff, reconnect, and stale
     BROWSER: BrowserBinding;
     NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
   };
+  const stub = bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID());
+  await runInDurableObject(stub, async (_instance, state) => {
   const info = await createBrowserSession(bindings.BROWSER, { keepAliveMs: 60_000 });
   try {
     const cdp = await connectBrowserSession(bindings.BROWSER, info.sessionId);
@@ -24,8 +26,6 @@ it("real cloud browser: private entry, screenshot, handoff, reconnect, and stale
         <style>body{font:20px sans-serif;padding:24px}input,button{display:block;margin:16px;padding:12px}</style>
         <form onsubmit="event.preventDefault();document.getElementById('result').textContent=document.getElementById('secret').value==='synthetic-test-value'?'Signed in':'Try again'">
         <label>Test secret<input id="secret" type="password"></label><button id="submit">Continue</button></form><p id="result">Waiting</p>` });
-      const stub = bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID());
-      await runInDurableObject(stub, async (_instance, state) => {
         const sessionInfo = async () => ({ sessionId: info.sessionId, targets: await listBrowserTargets(bindings.BROWSER, info.sessionId) });
         const control = new BrowserControl(state.storage, bindings.BROWSER, sessionInfo);
         const request = (operation: string, body: unknown = {}) => control.request(new Request(`https://session.internal/browser/${operation}`, { method: "POST", body: JSON.stringify(body) }));
@@ -60,7 +60,7 @@ it("real cloud browser: private entry, screenshot, handoff, reconnect, and stale
         expect(await paused).toMatchObject({ status: "returned_to_agent" });
         expect(await waitingModel).toBe("resumed");
         expect((await request("type", { generation: taken.generation, target: target.targetId, pageUrl: "about:blank", text: "stale" })).status).toBe(409);
-      });
     } finally { cdp.clearDebugLog(); cdp.disconnect(); }
   } finally { await deleteBrowserSession(bindings.BROWSER, info.sessionId); }
+  });
 }, 120_000);
