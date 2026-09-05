@@ -14,6 +14,8 @@ it does not require that PR or a bundled Node runtime.
 Open `apple/NanocodexInbox.xcodeproj`, select the `NanocodexInbox` scheme, then
 choose an iPhone simulator or My Mac. Requires iOS 17 / macOS 14 or later.
 Choose a development team in Signing & Capabilities to run on a physical device.
+For automatic updates on your iPhone, see [TestFlight setup](TESTFLIGHT.md).
+The delivery workflow uploads internal beta builds on master pushes and releases.
 There are no third-party dependencies. Local package `InboxCore` owns the native
 protocol adapter, event projection, cursor ordering, and inbox policy.
 

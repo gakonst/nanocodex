@@ -1,7 +1,7 @@
 name: Apple Inbox
 on:
   push:
-    branches: [feat/swift-agent-inbox]
+    branches: [master, feat/swift-agent-inbox]
     paths: ['apple/**', '.github/workflows/apple-inbox.yml']
   pull_request:
     paths: ['apple/**', '.github/workflows/apple-inbox.yml']
