@@ -30,7 +30,11 @@ jobs:
       - name: Read synthetic thread metadata
         env:
           NANOCODEX_DURABILITY_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
+          timeout 75s npx --yes wrangler@4.127.1 tail nanocodex-durable-agent --status error --format json > "$RUNNER_TEMP/durability-tail.json" &
+          tail_pid=$!
           node --input-type=module <<'JS'
           const base = 'https://nanocodex.gakonst.workers.dev/v1/agents/feefdff0-7ce2-84e4-9601-330e10d1af28';
           await Promise.all(['', '/capacity', '/events/history?limit=8'].map(async (path) => {
@@ -53,6 +57,24 @@ jobs:
             } catch (error) { console.log(JSON.stringify({ path, error_kind: error.name })); }
           }));
           JS
+          wait "$tail_pid" || [ "$?" -eq 124 ]
+          python3 - <<'PY'
+          import json, os
+          text = open(os.path.join(os.environ['RUNNER_TEMP'], 'durability-tail.json')).read()
+          decoder = json.JSONDecoder()
+          while text.strip():
+              text = text.lstrip()
+              try:
+                  event, end = decoder.raw_decode(text)
+              except ValueError:
+                  text = text.partition('\n')[2]
+                  continue
+              text = text[end:]
+              print(json.dumps({'outcome': event.get('outcome'), 'timestamp': event.get('eventTimestamp'),
+                  'exceptions': [{'name': e.get('name'), 'known_causes': [s for s in
+                    ['memory', 'CPU', 'reset', 'deadlock', 'code was updated', 'canceled', 'storage', 'overloaded']
+                    if s.lower() in e.get('message', '').lower()]} for e in event.get('exceptions', [])]}))
+          PY
 
   preview:
     if: >-

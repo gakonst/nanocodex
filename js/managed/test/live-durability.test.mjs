@@ -65,10 +65,15 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     });
   };
   const diagnose = async (agentBase, turnId) => {
-    const [view, state, history, capacity] = await Promise.all([
+    const results = await Promise.allSettled([
       request(`${agentBase}/turns/${turnId}`), request(agentBase),
       request(`${agentBase}/events/history?limit=64`), request(`${agentBase}/capacity`),
     ]);
+    const [view, state, history, capacity] = results.map((result, index) => {
+      if (result.status === "fulfilled") return result.value;
+      t.diagnostic(`diagnostic ${["turn", "state", "history", "capacity"][index]} failed: ${result.reason.message}`);
+      return {};
+    });
     // Log state and event identities only. Never log prompts, provider frames,
     // reasoning, tool arguments, or tool output from retained conversations.
     t.diagnostic(JSON.stringify({
@@ -78,7 +83,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
         stream_failed: Boolean(state.stream_error) },
       durable_state: capacity.durable_state,
       archived_turns: capacity.archived_turns,
-      events: history.data.map((event) => ({ cursor: event.cursor,
+      events: history.data?.map((event) => ({ cursor: event.cursor,
         turn_id: event.turn_id, created_at: event.created_at,
         type: event.type === "event" ? event.event.type : event.type })),
     }));
@@ -168,6 +173,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
       await request(`${base}/turns/${turnId}/cancel`, "POST");
       await request(`${base}/turns`, "POST", { id: turnId, input: "Cancelled archive fixture." });
       assert.equal((await terminal(turnId)).state, "cancelled");
+      if (index % 32 === 31) t.diagnostic(`${index + 1} cancellation receipts settled`);
     }
     t.diagnostic("528 settled operations; crossed the default 512-receipt hot window");
     // Status reads do not keep the runtime warm. Observe the configured idle

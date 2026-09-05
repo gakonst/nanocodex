@@ -1864,7 +1864,7 @@ async function managedFetch(
         new Request(request, { headers: sessionHeaders }),
       );
     }
-    if (resource === "events" || resource === "events/history") {
+    if (resource === "events" || resource === "events/history" || resource === "capacity") {
       if (request.method !== "GET") return json({ error: "method_not_allowed" }, { status: 405 });
       if (!principal.capabilities.includes("agents:read")) {
         return json({ error: "forbidden" }, { status: 403 });
