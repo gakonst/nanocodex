@@ -50,9 +50,22 @@ final class InboxModel: ObservableObject {
     var focused: AgentCard? { cards.first { $0.id == deck.focusedID } }
     var attentionCount: Int { cards.filter { $0.needsAttention(seen: seenCursor($0.id)) }.count }
     var runningCount: Int { cards.filter(\.isRunning).count }
-    var focusedTurn: String { focused?.activeTurns.contains(selectedTurn) == true ? selectedTurn : focused?.activeTurns.first ?? "" }
+    var controllableTurns: [String] { (focused?.activeTurns ?? []).filter { id in !focusedPending.contains { $0.id == id } } }
+    var focusedTurn: String { controllableTurns.contains(selectedTurn) ? selectedTurn : controllableTurns.first ?? "" }
+    var hasUnconfirmedMessage: Bool { focusedPending.contains { $0.phase == .failed } }
     var focusedPending: [PendingMessage] { pending.filter { $0.agentID == focused?.id } }
-    func openThread() { pinnedThreadID = focused?.id }
+    func openThread() {
+        pinnedThreadID = focused?.id
+        if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_FINISH_IN_THREAD"] == "1",
+           let id = focused?.id, !focusedTurn.isEmpty {
+            let turn = focusedTurn, epoch = generation
+            Task {
+                try? await Task.sleep(for: .milliseconds(1000))
+                guard generation == epoch else { return }
+                demoFinish(agentID: id, turnID: turn)
+            }
+        }
+    }
     func closeThread() { pinnedThreadID = nil; reconcile() }
     var canGoBack: Bool { !navigation.isEmpty }
     var canRetry: Bool { focused.flatMap { retries[$0.id] }?.kind == .followUp }
@@ -307,7 +320,7 @@ final class InboxModel: ObservableObject {
         persist()
     }
     func send() {
-        guard let card = focused, !busy.contains(card.id) else { return }
+        guard let card = focused, !busy.contains(card.id), !hasUnconfirmedMessage else { return }
         let input = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         let predecessor = focusedPending.last?.id ?? focusedTurn
@@ -340,7 +353,7 @@ final class InboxModel: ObservableObject {
             persist()
             if isDemo {
                 demoAdmit(message)
-                notice = "Demo action · Follow-up queued"
+                notice = nil
             } else { await refresh() }
         } catch {
             guard generation == epoch else { return }
@@ -371,7 +384,7 @@ final class InboxModel: ObservableObject {
                 let receipt = try await execute(command)
                 guard generation == epoch else { return }
                 if command.turnID == message.id, ["completed", "cancelled", "failed"].contains(receipt["state"].string) {
-                    pending.removeAll { $0.id == message.id }; persist()
+                    removeCancelledPending(message.id); persist()
                 }
                 if isDemo { demoFinish(agentID: message.agentID, turnID: command.turnID) }
                 else { await refresh() }
@@ -387,8 +400,18 @@ final class InboxModel: ObservableObject {
             }
         }
     }
+    private func removeCancelledPending(_ id: String) {
+        guard let cancelled = pending.first(where: { $0.id == id }) else { return }
+        for index in pending.indices where pending[index].agentID == cancelled.agentID && pending[index].predecessor == id {
+            pending[index].predecessor = cancelled.predecessor
+        }
+        pending.removeAll { $0.id == id }
+    }
     private func reconcilePending(id: String, events: [AgentEvent], state: AgentCard? = nil) {
         let previousCount = pending.count
+        for event in events where event.type == "turn_cancelled" {
+            if pending.contains(where: { $0.agentID == id && $0.id == event.turnID }) { removeCancelledPending(event.turnID) }
+        }
         pending.removeAll { message in
             message.agentID == id && (message.hasStarted(in: events)
                 || state.map { message.hasFinished(activeTurns: $0.activeTurns, stateCursor: $0.stateCursor) } == true)
@@ -438,7 +461,10 @@ final class InboxModel: ObservableObject {
     private func demoFinish(agentID: String, turnID: String) {
         guard let index = cards.firstIndex(where: { $0.id == agentID }) else { return }
         cards[index].activeTurns.removeAll { $0 == turnID }
-        pending.removeAll { $0.agentID == agentID && $0.id == turnID }
+        // Cancelling a queued item must not start its successor while an older
+        // turn is still running. Rebase the successor onto that older turn.
+        let wasQueued = pending.contains { $0.agentID == agentID && $0.id == turnID }
+        if wasQueued { removeCancelledPending(turnID) }
         if let next = pending.first(where: { $0.agentID == agentID && $0.predecessor == turnID && $0.phase != .failed && $0.phase != .submitting }) {
             pending.removeAll { $0.id == next.id }
             var history = demoRows[agentID] ?? DemoContent.rows(agentID)

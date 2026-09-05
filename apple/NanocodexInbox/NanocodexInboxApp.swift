@@ -16,6 +16,13 @@ struct NanocodexInboxApp: App {
         #if os(macOS)
         .defaultSize(width: 560, height: 850)
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandMenu("Inbox") {
+                Button("Next agent") { model.advance(reviewed: false) }.keyboardShortcut(.rightArrow, modifiers: .command)
+                Button("Mark update seen") { model.advance(reviewed: true) }.keyboardShortcut("d", modifiers: .command)
+                Button("Previous agent") { model.back() }.keyboardShortcut("[", modifiers: .command).disabled(!model.canGoBack)
+            }
+        }
         #endif
     }
 }

@@ -13,7 +13,10 @@ final class InboxUITests: XCTestCase {
         app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
     }
     private func selectInbox(_ app: XCUIApplication) {
-        app.buttons["Browse agents"].tap()
+        let browse = app.buttons["Browse agents"]
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: browse)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
+        browse.tap()
         app.buttons.containing(.staticText, identifier: "Build the agent inbox").firstMatch.tap()
         XCTAssertTrue(app.staticTexts["agent-title"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.staticTexts["agent-title"].label, "Build the agent inbox")
@@ -29,10 +32,11 @@ final class InboxUITests: XCTestCase {
     private func thread(_ app: XCUIApplication, contains text: String) {
         app.staticTexts["agent-title"].tap()
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
-        let message = app.staticTexts[text]
-        if !message.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        let conversation = app.scrollViews["conversation"]
+        let message = conversation.staticTexts[text]
+        if !message.isHittable { conversation.swipeUp() }
         XCTAssertTrue(message.waitForExistence(timeout: 5))
-        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+        XCTAssertEqual(conversation.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
     }
     func testSwipeDraftAndSteerJourney() {
         let app = launch()
@@ -111,6 +115,35 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["agent-title"].label, "Build the agent inbox")
         XCTAssertFalse(app.staticTexts["pending-message"].exists)
     }
+    func testCancellingFirstOfTwoQueuedMessagesKeepsSecondSteerable() {
+        let app = launch(); selectInbox(app)
+        queue(app, "First queued message")
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        queue(app, "Second queued message")
+        let cancel = app.buttons["Cancel queued message"].firstMatch
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: cancel)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
+        cancel.tap()
+        let one = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 1"), object: app.staticTexts.matching(identifier: "pending-message"))
+        XCTAssertEqual(XCTWaiter.wait(for: [one], timeout: 5), .completed)
+        XCTAssertEqual(app.staticTexts["pending-message"].label, "Second queued message")
+        app.buttons["steer-now"].tap(); gone(app.staticTexts["pending-message"])
+        thread(app, contains: "Second queued message")
+        XCTAssertTrue(app.staticTexts["Working on: Second queued message"].exists)
+    }
+    func testFinishedAgentStaysPinnedUntilThreadDismisses() {
+        let app = launch(["NANOCODEX_DEMO_FINISH_IN_THREAD": "1"])
+        selectInbox(app); app.buttons["filter-Running"].tap()
+        app.staticTexts["agent-title"].tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        // Wait for the demo completion through the running transcript indicator.
+        let title = app.navigationBars["Build the agent inbox"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        app.scrollViews.firstMatch.swipeUp(); app.scrollViews.firstMatch.swipeDown()
+        XCTAssertTrue(title.exists)
+        app.buttons["Done"].tap()
+        XCTAssertEqual(app.staticTexts["agent-title"].label, "Tighten the fuel forecast")
+    }
     func testVoiceSlideDownPreservesAgentDraft() {
         let app = launch(); selectInbox(app)
         composer(app).tap(); composer(app).typeText("Existing draft.")
@@ -125,6 +158,18 @@ final class InboxUITests: XCTestCase {
         app.buttons["send"].tap()
         XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
         capture(app, "09-voice-queued")
+    }
+    func testVoiceBackgroundSavesDraftWithoutDuplicatingOnDismiss() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
+        selectInbox(app); app.buttons["Voice input"].tap()
+        XCTAssertTrue(app.staticTexts["voice-transcript"].waitForExistence(timeout: 5))
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(app.buttons["Use voice draft"].waitForExistence(timeout: 5))
+        app.buttons["Use voice draft"].tap()
+        XCTAssertEqual(composer(app).value as? String, "Check reconnect first, then simplify the inbox")
+        app.terminate(); app.launch(); selectInbox(app)
+        XCTAssertEqual(composer(app).value as? String, "Check reconnect first, then simplify the inbox")
     }
     func testVoiceUnavailableKeepsTypedDraft() {
         let app = launch(["NANOCODEX_DEMO_VOICE_ERROR": "1"])

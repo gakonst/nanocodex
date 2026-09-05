@@ -7,7 +7,7 @@ public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let agentID: String
     public let input: String
-    public let predecessor: String
+    public var predecessor: String
     public var phase: Phase = .submitting
     public var acceptedCursor: Cursor?
     public var error: String?

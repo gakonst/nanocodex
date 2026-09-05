@@ -184,13 +184,13 @@ struct InboxView: View {
     }
     private var composer: some View {
         VStack(spacing: 10) {
-            if let card = model.focused, card.activeTurns.count > 1 {
+            if model.controllableTurns.count > 1 {
                 Picker("Active turn", selection: $model.selectedTurn) {
-                    ForEach(card.activeTurns, id: \.self) { id in Text(String(id.prefix(12))).tag(id) }
+                    ForEach(model.controllableTurns, id: \.self) { id in Text(String(id.prefix(12))).tag(id) }
                 }.pickerStyle(.menu)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                if model.focused?.isRunning == true {
+                if !model.focusedTurn.isEmpty {
                     Button {
                         if let card = model.focused { stopTarget = (card.id, model.focusedTurn, card.title); showStop = true }
                     } label: {
@@ -208,7 +208,7 @@ struct InboxView: View {
                     Image(systemName: model.busy.contains(model.focused?.id ?? "") ? "ellipsis" : "arrow.up")
                         .font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
                         .background(Ink.accent, in: Circle()).foregroundStyle(Ink.background)
-                }.buttonStyle(.plain).disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy.contains(model.focused?.id ?? ""))
+                }.buttonStyle(.plain).disabled(model.hasUnconfirmedMessage || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy.contains(model.focused?.id ?? ""))
                     .accessibilityLabel(model.focused?.isRunning == true ? "Queue message" : "Send message")
                     .accessibilityIdentifier("send").keyboardShortcut(.return, modifiers: .command)
             }.padding(10).padding(.leading, 6).background(Ink.surface, in: RoundedRectangle(cornerRadius: 30))
@@ -358,6 +358,7 @@ private struct ConversationView: View {
                 }.padding(18)
             }
             .background(Ink.background)
+            .accessibilityIdentifier("conversation")
             .navigationTitle(model.focused?.title ?? "Conversation")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

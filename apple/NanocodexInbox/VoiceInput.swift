@@ -89,6 +89,7 @@ final class VoiceInput: ObservableObject {
 
 struct VoiceInputView: View {
     @StateObject private var voice = VoiceInput()
+    @State private var committed = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -109,6 +110,10 @@ struct VoiceInputView: View {
                         .frame(width: 44, height: 44)
                 }.accessibilityLabel("Use voice draft")
             }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 12).onEnded { value in
+                if value.translation.height > 45 && value.translation.height > abs(value.translation.width) { dismiss() }
+            })
             HStack(spacing: 5) {
                 ForEach(0..<23) { index in
                     Capsule().fill(Color.primary)
@@ -117,7 +122,7 @@ struct VoiceInputView: View {
             }.frame(height: 80).animation(reduceMotion ? nil : .linear(duration: 0.08), value: voice.level)
                 .accessibilityHidden(true)
             ScrollView {
-                Text(voice.text.isEmpty ? (voice.recording ? "Listening…" : "Getting ready…") : voice.text)
+                Text(voice.text.isEmpty ? (voice.error != nil ? "Voice unavailable" : voice.recording ? "Listening…" : "Getting ready…") : voice.text)
                     .font(.system(size: 22)).frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("voice-transcript")
             }.frame(maxHeight: 130)
@@ -135,11 +140,17 @@ struct VoiceInputView: View {
                     }.accessibilityLabel("Stop recording")
                 }
             }
-        }.padding(24).frame(minWidth: 320).background(.background)
+        }.padding(24).frame(minWidth: 320).background(.background).tint(.primary)
             .presentationDetents([.height(420), .large]).presentationDragIndicator(.visible)
             .presentationCornerRadius(30)
             .task { await voice.start(demo: demo) }
-            .onChange(of: scenePhase) { _, phase in if phase != .active && voice.recording { voice.stop() } }
-            .onDisappear { voice.stop(); finish(voice.text) }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active && (voice.recording || !voice.text.isEmpty) { voice.stop(); keepDraft() }
+            }
+            .onDisappear { voice.stop(); keepDraft() }
+    }
+    private func keepDraft() {
+        guard !committed else { return }
+        committed = true; finish(voice.text)
     }
 }
