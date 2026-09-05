@@ -295,6 +295,33 @@ export type Turn = Readonly<{
   result(options?: TurnResultOptions): Promise<TurnResult>;
 }>;
 
+export type CronTriggerConfig = Readonly<{
+  /** Five-field cron expression, with minute precision. */
+  cron: string;
+  /** IANA time zone. Defaults to UTC. */
+  timezone?: string | undefined;
+  /** Text prompt submitted for each occurrence, at most 64 KiB. */
+  input: string;
+  /** Defaults to true; false pauses future occurrences. */
+  enabled?: boolean | undefined;
+}>;
+
+export type CronTrigger = Readonly<{
+  id: string;
+  cron: string;
+  timezone: string;
+  input: string;
+  enabled: boolean;
+  /** Unix milliseconds; null while paused. */
+  next_run_at: number | null;
+  /** Scheduled time of the last accepted occurrence, in Unix milliseconds. */
+  last_run_at: number | null;
+  last_turn_id: string | null;
+  last_skipped_at: number | null;
+  created_at: number;
+  updated_at: number;
+}>;
+
 export type Agent = Readonly<{
   type: "managed";
   id: string;
@@ -304,6 +331,13 @@ export type Agent = Readonly<{
   settings: Readonly<{
     read(): Promise<CreateSettings>;
     update(patch: SettingsPatch): Promise<CreateSettings>;
+  }>;
+  triggers: Readonly<{
+    list(): Promise<readonly CronTrigger[]>;
+    get(id: string): Promise<CronTrigger>;
+    /** Create or replace an account-owned schedule using a stable id. */
+    put(id: string, config: CronTriggerConfig): Promise<CronTrigger>;
+    delete(id: string): Promise<void>;
   }>;
   /** Reverse-tool endpoint with cookie/bearer transport retained in a private closure. */
   toolsTarget(): import("../tools/Tools.mjs").AttachmentTarget;

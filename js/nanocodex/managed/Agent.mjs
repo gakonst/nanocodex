@@ -240,6 +240,18 @@ function agentHandle(client, id, summary) {
         body: managedSettingsPatch(patch),
       })).settings),
     }),
+    triggers: Object.freeze({
+      list: async () => {
+        const body = await client.json(`${agentPath(id)}/triggers`);
+        if (!body || !Array.isArray(body.data)) throw new ManagedError("invalid_response", "managed triggers are malformed");
+        return Object.freeze(body.data.map(managedCronTrigger));
+      },
+      get: async (triggerId) => managedCronTrigger(await client.json(cronTriggerPath(id, triggerId))),
+      put: async (triggerId, config) => managedCronTrigger(await client.json(cronTriggerPath(id, triggerId), {
+        method: "PUT", body: cronTriggerBody(config),
+      })),
+      delete: async (triggerId) => { await client.empty(cronTriggerPath(id, triggerId), { method: "DELETE" }); },
+    }),
     toolsTarget: () => client.toolsTarget(id),
     state: () => client.json(agentPath(id)),
     delete: async () => {
@@ -251,6 +263,44 @@ function agentHandle(client, id, summary) {
     voiceTransport: managedVoiceTransport(client, id),
   });
   return agent;
+}
+
+function cronTriggerPath(agentId, triggerId) {
+  if (typeof triggerId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(triggerId)) {
+    throw new TypeError("trigger id must be 1-64 letters, digits, underscores or hyphens");
+  }
+  return `${agentPath(agentId)}/triggers/${triggerId}`;
+}
+
+function cronTriggerBody(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)
+    || Object.keys(config).some((key) => !["cron", "timezone", "input", "enabled"].includes(key))
+    || typeof config.cron !== "string" || config.cron.length > 256
+    || config.cron.trim().split(/\s+/).length !== 5
+    || typeof config.input !== "string" || config.input.trim().length === 0
+    || UTF8.encode(config.input).byteLength > 64 * 1024
+    || (config.timezone !== undefined && typeof config.timezone !== "string")
+    || (config.enabled !== undefined && typeof config.enabled !== "boolean")) {
+    throw new TypeError("invalid cron trigger configuration");
+  }
+  return JSON.stringify(config);
+}
+
+function managedCronTrigger(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || typeof value.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value.id)
+    || typeof value.cron !== "string" || typeof value.timezone !== "string"
+    || typeof value.input !== "string" || typeof value.enabled !== "boolean"
+    || ![value.created_at, value.updated_at].every((n) => Number.isSafeInteger(n) && n >= 0)
+    || ![value.next_run_at, value.last_run_at, value.last_skipped_at].every((n) => n === null || (Number.isSafeInteger(n) && n >= 0))
+    || (value.last_turn_id !== null && (typeof value.last_turn_id !== "string" || !TURN_ID.test(value.last_turn_id)))) {
+    throw new ManagedError("invalid_response", "managed cron trigger is malformed");
+  }
+  return Object.freeze({
+    id: value.id, cron: value.cron, timezone: value.timezone, input: value.input, enabled: value.enabled,
+    next_run_at: value.next_run_at, last_run_at: value.last_run_at, last_turn_id: value.last_turn_id,
+    last_skipped_at: value.last_skipped_at, created_at: value.created_at, updated_at: value.updated_at,
+  });
 }
 
 function managedSettingsPatch(patch) {
