@@ -247,6 +247,4 @@ jobs:
       - name: Exercise long conversations through the deployed managed API
         env:
           NANOCODEX_DURABILITY_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
-          NANOCODEX_DURABILITY_DIAGNOSE_AGENT: 1765412f-163c-84ae-8a28-6c5cf8c5de1e
-          NANOCODEX_DURABILITY_DIAGNOSE_TURN: turn-60
         run: node --test js/managed/test/live-durability.test.mjs
