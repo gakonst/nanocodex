@@ -37,7 +37,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         subject = ["title", "description", "path", "file_path", "query", "url", "task", "command", "cmd"]
             .map { decoded[$0].string }.first(where: { !$0.isEmpty }) ?? ""
         subject = String(subject.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").prefix(140))
-        input = Self.fields(decoded, label: "Input")
+        input = Self.fields(decoded, label: family == "exec" ? "Code" : family == "apply_patch" ? "Patch" : "Input")
         status = "Running"
     }
 
@@ -73,13 +73,20 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         switch value {
         case .null: return []
         case .bool(let flag): return [.init(label: label, value: flag ? "Yes" : "No")]
-        case .number(let number): return [.init(label: label, value: number.formatted(.number.grouping(.never)))]
+        case .number(let number): return [.init(label: label, value: String(number).replacingOccurrences(of: "\\.0$", with: "", options: .regularExpression))]
         case .string(let text):
             guard !text.isEmpty else { return [] }
             if text.hasPrefix("data:") { return [.init(label: label, value: "Embedded attachment")] }
             return [.init(label: label, value: text, code: ["Command", "Code", "Output", "Error output", "Patch"].contains(label))]
         case .array(let items):
-            return items.enumerated().flatMap { fields($0.element, label: items.count == 1 ? label : "\(label) · \($0.offset + 1)") }
+            return items.enumerated().flatMap { index, item in
+                let itemLabel = items.count == 1 ? label : "\(label) · \(index + 1)"
+                let content = fields(item, label: itemLabel)
+                if case .object = decoded(item), items.count > 1 {
+                    return content.map { .init(label: itemLabel + " · " + $0.label, value: $0.value, code: $0.code) }
+                }
+                return content
+            }
         case .object(let object):
             // Binary content is described, never printed as base64 in a transcript.
             let kind = object["type"]?.string ?? ""

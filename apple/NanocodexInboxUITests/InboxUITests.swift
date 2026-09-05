@@ -196,7 +196,7 @@ final class InboxUITests: XCTestCase {
         conversation.staticTexts["Run command"].tap()
         XCTAssertTrue(conversation.staticTexts["Command"].waitForExistence(timeout: 3))
         XCTAssertTrue(conversation.staticTexts["Exit code"].exists)
-        XCTAssertTrue(conversation.staticTexts["swift test --package-path apple/InboxCore"].exists)
+        XCTAssertTrue(conversation.staticTexts.matching(identifier: "swift test --package-path apple/InboxCore").firstMatch.exists)
         capture(app, "11-activity-details")
     }
     func testToolFailureIsReadable() {

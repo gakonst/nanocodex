@@ -241,7 +241,7 @@ struct InboxView: View {
                 }.buttonStyle(.plain).disabled(model.hasUnconfirmedMessage || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy.contains(model.focused?.id ?? ""))
                     .accessibilityLabel(model.focused?.isRunning == true ? "Queue message" : "Send message")
                     .accessibilityIdentifier("send").keyboardShortcut(.return, modifiers: .command)
-            }.padding(8).padding(.leading, 6).accessibilityIdentifier("composer-input")
+            }.padding(8).padding(.leading, 6).accessibilityElement(children: .contain).accessibilityIdentifier("composer-input")
 
         }.background(Ink.surface, in: RoundedRectangle(cornerRadius: 28))
             .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8).background(Ink.background)
