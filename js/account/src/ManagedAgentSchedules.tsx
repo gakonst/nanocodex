@@ -5,10 +5,10 @@ import type { ManagedCronTrigger as CronTrigger, ManagedAgent } from "nanocodex/
 import "./ManagedAgentSchedules.css";
 
 type ScheduleAgent = Pick<ManagedAgent, "id" | "triggers">;
-type Draft = { id: string; cron: string; timezone: string; input: string; enabled: boolean };
+type Draft = { id: string; cron: string; timezone: string; input: string; enabled: boolean; session_mode: "new" | "continue" };
 const freshDraft = (): Draft => ({
   id: crypto.randomUUID(), cron: "0 9 * * *",
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", input: "", enabled: true,
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", input: "", enabled: true, session_mode: "new",
 });
 
 export function ManagedAgentSchedules({ agent }: { agent: ScheduleAgent }) {
@@ -66,7 +66,7 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
   return <dialog ref={dialog} className="agent-schedules" aria-labelledby="agent-schedules-title"
     onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <header>
-      <div><h2 id="agent-schedules-title">Schedules</h2><p>Run a prompt in this conversation automatically.</p></div>
+      <div><h2 id="agent-schedules-title">Schedules</h2><p>Run a prompt automatically in a new or existing conversation.</p></div>
       <button type="button" aria-label="Close schedules" onClick={onClose}><X size={18} /></button>
     </header>
     <div className="agent-schedules-body">
@@ -99,6 +99,14 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
         <fieldset disabled={pending}>
           <label>Schedule ID<input required pattern={"[A-Za-z0-9_\\-]{1,64}"} maxLength={64} readOnly={editing}
             value={draft.id} onChange={(event) => setDraft({ ...draft, id: event.target.value })} /></label>
+          <label>Run in<select value={draft.session_mode}
+            onChange={(event) => setDraft({ ...draft, session_mode: event.target.value as Draft["session_mode"] })}>
+            <option value="new">New session each time</option>
+            <option value="continue">Continue this conversation</option>
+          </select></label>
+          <p className="agent-schedules-note">{draft.session_mode === "new"
+            ? "Each run starts with empty conversation history and this agent’s current model settings. Results appear as separate conversations."
+            : "Each run adds a turn to this conversation, including its existing history. Occurrences are skipped while it is busy."}</p>
           <label>Frequency<select value={["0 9 * * *", "0 9 * * MON-FRI", "0 * * * *"].includes(draft.cron) ? draft.cron : "custom"}
             onChange={(event) => setDraft({ ...draft, cron: event.target.value === "custom" ? "" : event.target.value })}>
             <option value="0 9 * * *">Every day at 09:00</option>
@@ -126,18 +134,19 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
       <ul className="agent-schedules-list">
         {rows?.map((row) => <li key={row.id} aria-label={`Schedule ${row.id}`}>
           <div className="agent-schedules-row"><strong>{row.id}</strong><span>{row.enabled ? "Enabled" : "Paused"}</span></div>
+          <p>{row.session_mode === "new" ? "New session each time" : "Continues this conversation"}</p>
           <p><code>{row.cron}</code> · {row.timezone}</p>
           <p className="agent-schedules-prompt">{row.input}</p>
           <p>Next: {row.next_run_at === null ? "Paused" : formatTime(row.next_run_at, row.timezone)}</p>
-          {row.last_run_at !== null && <p title={row.last_turn_id ?? undefined}>Last dispatched: {formatTime(row.last_run_at, row.timezone)} · see conversation for result</p>}
+          {row.last_run_at !== null && <p title={row.last_turn_id ?? undefined}>Last dispatched: {formatTime(row.last_run_at, row.timezone)} · <a href={`/agent/${encodeURIComponent(row.last_agent_id ?? agent.id)}`}>Open run</a></p>}
           {row.last_skipped_at !== null && <p>Last skipped while busy: {formatTime(row.last_skipped_at, row.timezone)}</p>}
           <div className="agent-schedules-actions">
             <button type="button" disabled={pending || Boolean(draft)} onClick={() => {
-              setDraft({ id: row.id, cron: row.cron, timezone: row.timezone, input: row.input, enabled: row.enabled });
+              setDraft({ id: row.id, cron: row.cron, timezone: row.timezone, input: row.input, enabled: row.enabled, session_mode: row.session_mode });
               setEditing(true); setDeleting(undefined); setError(undefined); setNotice("");
             }}>Edit</button>
             <button type="button" disabled={pending || Boolean(draft)} onClick={() => void run(async () => {
-              const saved = await agent.triggers.put(row.id, { cron: row.cron, timezone: row.timezone, input: row.input, enabled: !row.enabled });
+              const saved = await agent.triggers.put(row.id, { cron: row.cron, timezone: row.timezone, input: row.input, enabled: !row.enabled, session_mode: row.session_mode });
               replace(saved); if (active.current) setNotice(saved.enabled ? "Schedule resumed." : "Schedule paused. Any running turn continues.");
             })}>{row.enabled ? "Pause" : "Resume"}</button>
             <button type="button" disabled={pending || Boolean(draft)} onClick={() => setDeleting(row.id)}>Delete</button>
@@ -156,7 +165,7 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
           </div>}
         </li>)}
       </ul>
-      <p className="agent-schedules-note">Busy agents skip occurrences; missed times are not replayed individually. Pausing or deleting a schedule does not cancel a turn already running.</p>
+      <p className="agent-schedules-note">Continuing a busy conversation skips that occurrence. New sessions run independently. Missed times are not replayed individually. Pausing or deleting does not cancel a run already dispatched or being delivered.</p>
     </div>
   </dialog>;
 }

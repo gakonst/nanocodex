@@ -296,6 +296,8 @@ export type Turn = Readonly<{
 }>;
 
 export type CronTriggerConfig = Readonly<{
+  /** A fresh session per occurrence (default on create), or continue this conversation. Omit on update to retain the mode. */
+  session_mode?: "new" | "continue" | undefined;
   /** Five-field cron expression, with minute precision. */
   cron: string;
   /** IANA time zone. Defaults to UTC. */
@@ -308,6 +310,9 @@ export type CronTriggerConfig = Readonly<{
 
 export type CronTrigger = Readonly<{
   id: string;
+  session_mode: "new" | "continue";
+  /** Session containing last_turn_id; null before a run or on legacy servers. */
+  last_agent_id: string | null;
   cron: string;
   timezone: string;
   input: string;

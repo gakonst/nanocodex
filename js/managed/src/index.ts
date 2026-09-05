@@ -1225,7 +1225,7 @@ function observeManagedPrincipal(
 async function managedFetch(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
+  ctx: Pick<ExecutionContext, "waitUntil">,
   trustedAgentPrincipal?: Principal,
 ): Promise<Response> {
     const url = new URL(request.url);
@@ -2945,8 +2945,8 @@ export class DurableAgentSession extends DurableComputerSession {
       }
     }
     if (request.method === "POST" && url.pathname === "/durability/export") {
-      if (this.#cronTriggers.list().length > 0) {
-        return json({ error: "cron_triggers_present", message: "Delete cron triggers before exporting this agent; schedules are not portable yet." }, { status: 409 });
+      if (this.#cronTriggers.list().length > 0 || this.#cronTriggers.deliveries().length > 0) {
+        return json({ error: "cron_triggers_present", message: "Delete cron triggers and wait for pending deliveries before exporting this agent; schedules are not portable yet." }, { status: 409 });
       }
       if (this.#durabilityImportState === "pending") {
         return json({ error: "durability_import_pending" }, { status: 409 });
@@ -4173,9 +4173,9 @@ export class DurableAgentSession extends DurableComputerSession {
     const id = path === "/triggers" ? undefined : path.slice("/triggers/".length);
     if (id !== undefined && !CRON_TRIGGER_ID.test(id)) return json({ error: "invalid_trigger_id" }, { status: 400 });
     if (request.method === "GET") {
-      if (id === undefined) return json({ data: this.#cronTriggers.list().map(cronTriggerView) });
+      if (id === undefined) return json({ data: this.#cronTriggers.list().map((row) => cronTriggerView(row, session.session_id)) });
       const row = this.#cronTriggers.get(id);
-      return row ? json(cronTriggerView(row)) : json({ error: "not_found" }, { status: 404 });
+      return row ? json(cronTriggerView(row, session.session_id)) : json({ error: "not_found" }, { status: 404 });
     }
     if (id === undefined || !["PUT", "DELETE"].includes(request.method)) {
       return json({ error: "method_not_allowed" }, { status: 405 });
@@ -4188,7 +4188,7 @@ export class DurableAgentSession extends DurableComputerSession {
     try {
       const encoded = await readBoundedRequestText(request, 128 * 1024);
       let config;
-      try { config = parseCronTrigger(JSON.parse(encoded), Date.now()); }
+      try { config = parseCronTrigger(JSON.parse(encoded), Date.now(), this.#cronTriggers.get(id)?.session_mode); }
       catch (error) { return json({ error: "invalid_trigger", message: errorMessage(error) }, { status: 400 }); }
       const hash = await hashManagedInput(config.input);
       this.#assertDurabilityAdmissionActive();
@@ -4197,7 +4197,7 @@ export class DurableAgentSession extends DurableComputerSession {
       if (!exists && this.#cronTriggers.list().length >= 32) return json({ error: "trigger_limit" }, { status: 429 });
       const row = this.#cronTriggers.put(id, config, JSON.stringify(authorization), session.authorization_epoch, hash, Date.now());
       await this.#scheduleNextAlarm();
-      return json(cronTriggerView(row), { status: exists ? 200 : 201 });
+      return json(cronTriggerView(row, session.session_id), { status: exists ? 200 : 201 });
     } catch (error) { return managedErrorResponse(error); }
   }
 
@@ -4211,6 +4211,18 @@ export class DurableAgentSession extends DurableComputerSession {
       const next = nextCronRun(trigger.cron, trigger.timezone, now);
       if (trigger.authorization_epoch !== session.authorization_epoch) {
         this.#cronTriggers.delete(trigger.id);
+        continue;
+      }
+      if (trigger.session_mode === "new") {
+        const id = `cron:${trigger.revision}:${trigger.next_run_at}`;
+        const agentId = await idempotentAgentId(session.owner_id, `cron:${session.session_id}:${id}`);
+        if (this.#deleting || this.#deleted) return;
+        this.#cronTriggers.enqueue(trigger, next, {
+          id, trigger_id: trigger.id, trigger_created_at: trigger.created_at,
+          agent_id: agentId, scheduled_at: trigger.next_run_at!, retry_at: now,
+          payload_json: JSON.stringify({ input: trigger.input, settings: this.#settings(),
+            authorization: parseTurnAuthorization(trigger.authorization_json), epoch: trigger.authorization_epoch }),
+        });
         continue;
       }
       if (this.#recoverableTurnCount() > 0 || this.#streamError) {
@@ -4228,7 +4240,7 @@ export class DurableAgentSession extends DurableComputerSession {
             if (this.#recoverableTurnCount() > 0) {
               throw new ManagedRequestError(409, "cron_agent_busy", "agent became busy");
             }
-            if (!this.#cronTriggers.advance(trigger, now, next, id)) {
+            if (!this.#cronTriggers.advance(trigger, now, next, id, session.session_id)) {
               throw new ManagedRequestError(409, "cron_trigger_changed", "trigger changed before admission");
             }
           },
@@ -4241,6 +4253,52 @@ export class DurableAgentSession extends DurableComputerSession {
         }
         // Retain a wakeup beyond Cloudflare's bounded automatic alarm retries.
         this.#cronTriggers.retry(trigger, Date.now() + MAX_RETRY_DELAY_MS);
+        await this.#scheduleNextAlarm();
+        throw error;
+      }
+    }
+    await this.#deliverCronSessions();
+  }
+
+  async #deliverCronSessions(): Promise<void> {
+    const session = this.#session();
+    if (!session) return;
+    for (const delivery of this.#cronTriggers.deliveries(Date.now())) {
+      if (this.#deleting || this.#deleted) return;
+      const payload = JSON.parse(delivery.payload_json) as {
+        input: string; settings: ManagedAgentSettings; authorization: TurnAuthorization; epoch: number;
+      };
+      if (payload.epoch !== session.authorization_epoch) {
+        this.#cronTriggers.finishDelivery(delivery, false);
+        continue;
+      }
+      // Standing instructions retain exactly the capabilities authorized when
+      // saved. Reuse normal ownership, credential binding, and admission paths.
+      const principal: Principal = {
+        kind: "service", userId: session.owner_id, organizationId: session.organization_id,
+        teamId: session.team_id, authorizationEpoch: payload.epoch, role: "writer",
+        subjectId: `user:${session.owner_id}`, credentialId: delivery.id,
+        capabilities: payload.authorization.capabilities,
+      };
+      try {
+        const created = await managedFetch(new Request(new URL("/v1/agents", session.public_origin), {
+          method: "POST", headers: { "content-type": "application/json", "idempotency-key": `cron:${session.session_id}:${delivery.id}` },
+          body: JSON.stringify({ settings: payload.settings }),
+        }), this.env, this.ctx, principal);
+        await created.body?.cancel();
+        if (!created.ok) throw new Error(`cron session creation failed: ${created.status}`);
+        if (this.#deleting || this.#deleted) return;
+        const accepted = await managedFetch(new Request(new URL(`/v1/agents/${delivery.agent_id}/turns`, session.public_origin), {
+          method: "POST", headers: { "content-type": "application/json", "idempotency-key": delivery.id },
+          body: JSON.stringify({ id: delivery.id, input: payload.input }),
+        }), this.env, this.ctx, principal);
+        await accepted.body?.cancel();
+        if (!accepted.ok) throw new Error(`cron session admission failed: ${accepted.status}`);
+        this.#cronTriggers.finishDelivery(delivery, true);
+      } catch (error) {
+        // The persisted outbox replays the same session and turn after a lost
+        // response or eviction. At most one delivery per schedule can be pending.
+        this.#cronTriggers.retryDelivery(delivery.id, Date.now() + MAX_RETRY_DELAY_MS);
         await this.#scheduleNextAlarm();
         throw error;
       }
@@ -5724,6 +5782,7 @@ export class DurableAgentSession extends DurableComputerSession {
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_subagent_authorizations");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
+      this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_cancel_intents");
       this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");

@@ -5,7 +5,7 @@ import type { Principal } from "../src/account-auth";
 import { CronTriggers, nextCronRun, parseCronTrigger } from "../src/cron-triggers";
 
 const now = Date.parse("2026-09-05T12:00:00Z");
-const config = { cron: "* * * * *", input: "Check the system" };
+const config = { cron: "* * * * *", input: "Check the system", session_mode: "continue" as const };
 const request = (id: string, body: unknown = config) => new Request(`https://session.internal/triggers/${id}`, {
   method: "PUT", body: JSON.stringify(body),
 });
@@ -31,6 +31,7 @@ function retainBusyTurn(state: DurableObjectState) {
 
 describe("cron policy", () => {
   it("uses five fields, UTC by default, and skips to the next minute", () => {
+    expect(parseCronTrigger({ cron: config.cron, input: config.input }, now).session_mode).toBe("new");
     expect(parseCronTrigger(config, now)).toEqual({ ...config, timezone: "UTC", enabled: true });
     expect(nextCronRun("*/15 * * * *", "UTC", now + 1)).toBe(now + 15 * 60_000);
     expect(nextCronRun("0 7 * * MON-FRI", "Europe/Athens", now)).toBe(Date.parse("2026-09-07T04:00:00Z"));
@@ -47,7 +48,7 @@ describe("cron policy", () => {
   it.each([
     { cron: "* * * * * *" }, { cron: "@daily" }, { cron: "H * * * *" },
     { cron: "61 * * * *" }, { cron: "0 0 31 2 *" }, { timezone: "Mars/Olympus" },
-    { input: " " }, { input: "x".repeat(65_537) }, { enabled: "yes" }, { extra: true },
+    { input: " " }, { input: "x".repeat(65_537) }, { enabled: "yes" }, { extra: true }, { session_mode: "fork" },
   ])("rejects invalid or unbounded configuration %#", (patch) => {
     expect(() => parseCronTrigger({ ...config, ...patch }, now)).toThrow();
   });
@@ -162,6 +163,113 @@ describe("cron Durable Object protocol", () => {
       expect(restored.get("daily")!.retry_at).toBeNull();
       restored.retry(due, retryAt + 60_000);
       expect(restored.get("daily")!.retry_at).toBeNull();
+    });
+  });
+
+  it("migrates legacy schedules without changing their conversation mode", async () => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      initialize(state);
+      await session.fetch(request("legacy"));
+      state.storage.sql.exec("ALTER TABLE managed_cron_triggers DROP COLUMN session_mode");
+      state.storage.sql.exec("ALTER TABLE managed_cron_triggers DROP COLUMN last_agent_id");
+      const restored = new CronTriggers(state.storage);
+      expect(restored.get("legacy")!.session_mode).toBe("continue");
+      expect(restored.get("legacy")!.next_run_at).not.toBeNull();
+      const legacyPause = await session.fetch(request("legacy", { cron: config.cron, input: config.input, enabled: false }));
+      expect(await legacyPause.json()).toMatchObject({ session_mode: "continue", enabled: false });
+      const fresh = await session.fetch(request("fresh", { cron: config.cron, input: config.input }));
+      expect(await fresh.json()).toMatchObject({ session_mode: "new", last_agent_id: null });
+    });
+  });
+
+  it("atomically claims a bounded fresh-session delivery, fences stale edits, and retains it after pause", async () => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      initialize(state);
+      await session.fetch(request("fresh", { ...config, session_mode: "new" }));
+      const triggers = new CronTriggers(state.storage);
+      const row = triggers.get("fresh")!;
+      const delivery = { id: "cron:outbox", trigger_id: row.id, trigger_created_at: row.created_at,
+        agent_id: crypto.randomUUID(), scheduled_at: row.next_run_at!, payload_json: "{}", retry_at: Date.now() };
+      expect(() => state.storage.transactionSync(() => {
+        expect(triggers.enqueue(row, row.next_run_at! + 60_000, delivery)).toBe(true);
+        throw new Error("rollback");
+      })).toThrow("rollback");
+      expect(triggers.get(row.id)).toEqual(row);
+      expect(triggers.deliveries()).toEqual([]);
+      expect(triggers.enqueue(row, row.next_run_at! + 60_000, delivery)).toBe(true);
+      expect(triggers.enqueue(row, row.next_run_at! + 60_000, delivery)).toBe(false);
+      expect(triggers.due(Number.MAX_SAFE_INTEGER)).toEqual([]);
+      await session.fetch(request("fresh", { ...config, session_mode: "new", enabled: false }));
+      const restored = new CronTriggers(state.storage);
+      expect(restored.nextAlarm()).toBe(delivery.retry_at);
+      expect(restored.deliveries()).toEqual([delivery]);
+      restored.finishDelivery(delivery, true);
+      expect(restored.get(row.id)).toMatchObject({ enabled: 0, last_agent_id: delivery.agent_id, last_turn_id: delivery.id });
+      expect(restored.nextAlarm()).toBeUndefined();
+      expect(restored.enqueue(row, row.next_run_at! + 60_000, delivery)).toBe(false);
+    });
+  });
+
+  it("starts a separate session while the source is busy and replays lost admission responses to the same session", async () => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      initialize(state);
+      const owner = "11111111-1111-4111-8111-111111111111";
+      state.storage.sql.exec("UPDATE session_state SET owner_id = ?, organization_id = ?, team_id = ?", owner, crypto.randomUUID(), crypto.randomUUID());
+      retainBusyTurn(state);
+      const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+      const creations: { agentId: string; body: Record<string, unknown> }[] = [];
+      const admissions: { agentId: string; id: string; input: string }[] = [];
+      let loseResponse = true;
+      Object.defineProperty(session, "env", { value: {
+        ...runtimeEnv,
+        NANOCODEX_SESSIONS: {
+          idFromName: (id: string) => ({ toString: () => id }),
+          getByName: (agentId: string) => ({
+            prewarm: async () => {},
+            fetch: async (input: RequestInfo, init?: RequestInit) => {
+              const req = new Request(input, init);
+              const path = new URL(req.url).pathname;
+              if (path === "/initialize") creations.push({ agentId, body: await req.json() });
+              if (path === "/turns") {
+                expect(req.headers.get("x-nanocodex-owner-id")).toBe(owner);
+                expect(JSON.parse(req.headers.get("x-nanocodex-capabilities")!)).toEqual(["agents:read", "agents:write", "tools:use"]);
+                const body = await req.json<{ id: string; input: string }>();
+                admissions.push({ agentId, ...body });
+                if (loseResponse) throw new Error("lost admission response");
+                return Response.json({ turn_id: body.id }, { status: 200 });
+              }
+              return new Response(null, { status: 204 });
+            },
+          }),
+        },
+        NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
+      } });
+      await session.fetch(request("fresh", { ...config, session_mode: "new" }));
+      state.storage.sql.exec("UPDATE managed_cron_triggers SET next_run_at = ?, authorization_json = ?", Date.now() - 1,
+        JSON.stringify({ capabilities: ["agents:read", "agents:write", "tools:use"] }));
+      await expect(session.alarm()).rejects.toThrow("lost admission response");
+      const triggers = new CronTriggers(state.storage);
+      expect(triggers.deliveries()).toHaveLength(1);
+      expect(triggers.get("fresh")!.last_turn_id).toBeNull();
+      expect(creations[0]!.body).toMatchObject({ owner_id: owner });
+      expect(Object.keys(creations[0]!.body)).not.toContain("durability");
+      expect(admissions).toHaveLength(1);
+      const sourceId = state.storage.sql.exec<{ session_id: string }>("SELECT session_id FROM session_state").one().session_id;
+      expect(admissions[0]!.agentId).not.toBe(sourceId);
+      // Pause can race a claimed delivery, which must still finish exactly once.
+      await session.fetch(request("fresh", { ...config, session_mode: "new", enabled: false }));
+      state.storage.sql.exec("DELETE FROM managed_turns WHERE id = 'busy'");
+      loseResponse = false;
+      triggers.retryDelivery(triggers.deliveries()[0]!.id, 0);
+      await session.alarm();
+      expect(admissions).toHaveLength(2);
+      expect(admissions[1]).toEqual(admissions[0]);
+      expect(creations[1]).toEqual(creations[0]);
+      expect(triggers.deliveries()).toEqual([]);
+      expect(triggers.get("fresh")).toMatchObject({ last_agent_id: admissions[0]!.agentId, last_turn_id: admissions[0]!.id, next_run_at: null });
+      expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_turns").one().count).toBe(0);
+      await session.alarm();
+      expect(admissions).toHaveLength(2);
     });
   });
 

@@ -45,14 +45,19 @@ async function checkManaged() {
   });
   const opened: ManagedAgent = Agent.open("0198d3f0-8844-7000-8000-000000000001");
   const cron = await opened.triggers.put("morning", {
-    cron: "0 7 * * *", timezone: "Europe/Athens", input: "Daily summary",
+    cron: "0 7 * * *", timezone: "Europe/Athens", input: "Daily summary", session_mode: "new",
   });
   const nextRun: number | null = cron.next_run_at;
-  await opened.triggers.put(cron.id, { cron: cron.cron, input: cron.input, enabled: false });
+  const mode: "new" | "continue" = cron.session_mode;
+  const runAgent: string | null = cron.last_agent_id;
+  void mode; void runAgent;
+  await opened.triggers.put(cron.id, { cron: cron.cron, input: cron.input, enabled: false, session_mode: "continue" });
   await opened.triggers.get(cron.id);
   await opened.triggers.delete(cron.id);
   const schedules: readonly import("nanocodex/managed").ManagedCronTrigger[] = await opened.triggers.list();
   void nextRun; void schedules;
+  // @ts-expect-error unsupported session mode.
+  await opened.triggers.put("bad-mode", { cron: "* * * * *", input: "test", session_mode: "fork" });
   // @ts-expect-error cron triggers require an input.
   await opened.triggers.put("missing", { cron: "* * * * *" });
   // @ts-expect-error enabled is boolean.

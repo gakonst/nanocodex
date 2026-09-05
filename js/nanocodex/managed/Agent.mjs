@@ -274,11 +274,12 @@ function cronTriggerPath(agentId, triggerId) {
 
 function cronTriggerBody(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)
-    || Object.keys(config).some((key) => !["cron", "timezone", "input", "enabled"].includes(key))
+    || Object.keys(config).some((key) => !["cron", "timezone", "input", "enabled", "session_mode"].includes(key))
     || typeof config.cron !== "string" || config.cron.length > 256
     || config.cron.trim().split(/\s+/).length !== 5
     || typeof config.input !== "string" || config.input.trim().length === 0
     || UTF8.encode(config.input).byteLength > 64 * 1024
+    || (config.session_mode !== undefined && config.session_mode !== "new" && config.session_mode !== "continue")
     || (config.timezone !== undefined && typeof config.timezone !== "string")
     || (config.enabled !== undefined && typeof config.enabled !== "boolean")) {
     throw new TypeError("invalid cron trigger configuration");
@@ -291,6 +292,8 @@ function managedCronTrigger(value) {
     || typeof value.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value.id)
     || typeof value.cron !== "string" || typeof value.timezone !== "string"
     || typeof value.input !== "string" || typeof value.enabled !== "boolean"
+    || (value.session_mode !== undefined && value.session_mode !== "new" && value.session_mode !== "continue")
+    || (value.last_agent_id != null && (typeof value.last_agent_id !== "string" || !SESSION_ID.test(value.last_agent_id)))
     || ![value.created_at, value.updated_at].every((n) => Number.isSafeInteger(n) && n >= 0)
     || ![value.next_run_at, value.last_run_at, value.last_skipped_at].every((n) => n === null || (Number.isSafeInteger(n) && n >= 0))
     || (value.last_turn_id !== null && (typeof value.last_turn_id !== "string" || !TURN_ID.test(value.last_turn_id)))) {
@@ -298,6 +301,7 @@ function managedCronTrigger(value) {
   }
   return Object.freeze({
     id: value.id, cron: value.cron, timezone: value.timezone, input: value.input, enabled: value.enabled,
+    session_mode: value.session_mode ?? "continue", last_agent_id: value.last_agent_id ?? null,
     next_run_at: value.next_run_at, last_run_at: value.last_run_at, last_turn_id: value.last_turn_id,
     last_skipped_at: value.last_skipped_at, created_at: value.created_at, updated_at: value.updated_at,
   });
