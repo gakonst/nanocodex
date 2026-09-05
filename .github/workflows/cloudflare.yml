@@ -229,6 +229,26 @@ jobs:
         working-directory: js/account
         run: npx wrangler deploy --config dist/nanocodex/wrangler.json --message "$DEPLOY_MESSAGE"
 
+  cron-live:
+    name: exercise deployed cron schedules
+    needs: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: cloudflare-production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Exercise a real scheduled turn and schedule management
+        env:
+          NANOCODEX_CRON_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
+        run: node --test js/managed/test/live-cron.test.mjs
+
   durability-live:
     name: exercise deployed durable threads
     needs: production

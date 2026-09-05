@@ -179,6 +179,12 @@ await agent.triggers.delete("morning-review");
 | PUT | `/v1/agents/:agent/triggers/:id` | Create (201) or replace (200) |
 | DELETE | `/v1/agents/:agent/triggers/:id` | Idempotent deletion (204) |
 
+The managed-agent web composer also has a **Schedules** button. It opens the
+same account-authenticated API: create or edit a prompt and cron expression,
+choose an IANA time zone, inspect the next dispatch time, pause/resume, or
+delete a schedule. The last-dispatched time is not a completion receipt; read
+the conversation for the result. The ephemeral homepage agent has no schedules.
+
 PUT takes `{ cron, input, timezone?, enabled? }`. Expressions have five fields
 (minute, hour, day of month, month, day of week), supporting numeric values,
 lists, ranges, steps, and month/day names. The time zone defaults to UTC and

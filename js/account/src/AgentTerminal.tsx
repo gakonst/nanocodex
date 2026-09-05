@@ -25,6 +25,7 @@ import {
   type CredentialSource,
 } from "./modelSession";
 import { ArtifactDock } from "./ArtifactDock";
+import { ManagedAgentSchedules } from "./ManagedAgentSchedules";
 import {
   ACCOUNT_MCP_CATALOG_CHANGED,
   browserMcpConfiguration,
@@ -323,19 +324,22 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       retryAgent={retryAgent}
       voice={voiceEnabled}
       controls={({ agentReady }) => (
-        <TerminalSettingsControls
-          agentReady={agentReady && settingsReady}
-          modelLocked={conversationStarted}
-          settings={settings}
-          onFastMode={(fastMode) => updateManagedSettings({ fastMode })}
-          onModel={(model) => updateManagedSettings({
-            model,
-            ...(model === "gpt-6-astra" && settings.thinking === "none"
-              ? { thinking: "high" }
-              : {}),
-          })}
-          onThinking={(thinking) => updateManagedSettings({ thinking })}
-        />
+        <>
+          <TerminalSettingsControls
+            agentReady={agentReady && settingsReady}
+            modelLocked={conversationStarted}
+            settings={settings}
+            onFastMode={(fastMode) => updateManagedSettings({ fastMode })}
+            onModel={(model) => updateManagedSettings({
+              model,
+              ...(model === "gpt-6-astra" && settings.thinking === "none"
+                ? { thinking: "high" }
+                : {}),
+            })}
+            onThinking={(thinking) => updateManagedSettings({ thinking })}
+          />
+          <ManagedAgentSchedules agent={managed} />
+        </>
       )}
       accessory={({ agentReady, submit }) => browserHand ? (
         <ArtifactDock
