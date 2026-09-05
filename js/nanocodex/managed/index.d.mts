@@ -2,6 +2,8 @@ export * as Agent from "./Agent.mjs";
 export { ManagedError } from "./ManagedError.mjs";
 export type {
   Agent as ManagedAgent,
+  CronTrigger as ManagedCronTrigger,
+  CronTriggerConfig as ManagedCronTriggerConfig,
   CreateOptions as ManagedCreateOptions,
   CreateSettings as ManagedCreateSettings,
   Event as ManagedEvent,

@@ -20,6 +20,7 @@ import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
 import { MAX_NAMESPACE_MOUNTS } from "nanocodex-tools";
 import { managedCodeEvaluator } from "./code-evaluator";
+import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger } from "./cron-triggers";
 import {
   cloudflareSandboxTools,
   deleteCloudflareBrainWorkspace,
@@ -1907,6 +1908,28 @@ async function managedFetch(
         body: request.body,
       });
     }
+    if (resource === "triggers" || resource.startsWith("triggers/")) {
+      const triggerId = resource === "triggers" ? undefined : resource.slice("triggers/".length);
+      if (triggerId !== undefined && !CRON_TRIGGER_ID.test(triggerId)) {
+        return json({ error: "invalid_trigger_id" }, { status: 400 });
+      }
+      const allowed = triggerId === undefined ? ["GET"] : ["GET", "PUT", "DELETE"];
+      if (!allowed.includes(request.method)) return json({ error: "method_not_allowed" }, { status: 405 });
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      // Schedules are account-owned standing instructions, not ephemeral Connect grants.
+      if (principal.connectGrant || !principal.capabilities.includes(
+        request.method === "GET" ? "agents:read" : "agents:write",
+      ) || (request.method === "PUT" && !principal.capabilities.includes("tools:use"))) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      if (request.method !== "GET") {
+        const failure = requireSameOriginMutation(request, url, principal);
+        if (failure) return failure;
+      }
+      return stub.fetch(`https://session.internal/${resource}?${publicOrigin}`, {
+        method: request.method, headers: sessionHeaders, body: request.body,
+      });
+    }
     if (resource === "turns") {
       if (request.method !== "POST")
         return json({ error: "method_not_allowed" }, { status: 405 });
@@ -2442,6 +2465,7 @@ export class DurableAgentSession extends DurableComputerSession {
   readonly #namespaceMountRefreshTasks = new Map<string, Promise<void>>();
   #realtimeEventBuffer?: AgentEvent[];
   #realtimeRouteTail: Promise<void> = Promise.resolve();
+  readonly #cronTriggers: CronTriggers;
   #settingsMutationTail: Promise<void> = Promise.resolve();
   readonly #settingsRequests = new Set<Promise<Response>>();
   #recoveryTask?: Promise<void>;
@@ -2461,6 +2485,7 @@ export class DurableAgentSession extends DurableComputerSession {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.#cronTriggers = new CronTriggers(ctx.storage);
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS session_state (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -2912,6 +2937,9 @@ export class DurableAgentSession extends DurableComputerSession {
       }
     }
     if (request.method === "POST" && url.pathname === "/durability/export") {
+      if (this.#cronTriggers.list().length > 0) {
+        return json({ error: "cron_triggers_present", message: "Delete cron triggers before exporting this agent; schedules are not portable yet." }, { status: 409 });
+      }
       if (this.#durabilityImportState === "pending") {
         return json({ error: "durability_import_pending" }, { status: 409 });
       }
@@ -3162,6 +3190,9 @@ export class DurableAgentSession extends DurableComputerSession {
         headers: { "cache-control": "no-store" },
       });
     }
+    if (url.pathname === "/triggers" || url.pathname.startsWith("/triggers/")) {
+      return this.#cronTriggerRequest(request, turnAuthorization);
+    }
     if (request.method === "PATCH" && url.pathname === "/settings") {
       return this.#trackSettingsPatch(request);
     }
@@ -3339,6 +3370,7 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       return;
     }
+    await this.#fireCronTriggers();
     if (this.#eventArchive.needsSeal(this.#eventLog)) {
       // A failed alarm is retried by Durable Objects. This is the persistent
       // continuation for a seal that outlived or failed its originating turn.
@@ -4119,6 +4151,91 @@ export class DurableAgentSession extends DurableComputerSession {
       return json({ settings: await this.#applySettingsPatch(patch) });
     } catch (error) {
       return managedErrorResponse(error, "settings_update_failed");
+    }
+  }
+
+  async #cronTriggerRequest(request: Request, authorization: TurnAuthorization): Promise<Response> {
+    const session = this.#session();
+    if (!session || this.#deleted) return json({ error: "not_found" }, { status: 404 });
+    if (this.#deleting) return json({ error: "agent_deleting" }, { status: 409 });
+    if (session.runtime_profile !== "managed" || authorization.connectGrant) {
+      return json({ error: "forbidden" }, { status: 403 });
+    }
+    const path = new URL(request.url).pathname;
+    const id = path === "/triggers" ? undefined : path.slice("/triggers/".length);
+    if (id !== undefined && !CRON_TRIGGER_ID.test(id)) return json({ error: "invalid_trigger_id" }, { status: 400 });
+    if (request.method === "GET") {
+      if (id === undefined) return json({ data: this.#cronTriggers.list().map(cronTriggerView) });
+      const row = this.#cronTriggers.get(id);
+      return row ? json(cronTriggerView(row)) : json({ error: "not_found" }, { status: 404 });
+    }
+    if (id === undefined || !["PUT", "DELETE"].includes(request.method)) {
+      return json({ error: "method_not_allowed" }, { status: 405 });
+    }
+    if (request.method === "DELETE") {
+      this.#cronTriggers.delete(id);
+      await this.#scheduleNextAlarm();
+      return new Response(null, { status: 204 });
+    }
+    try {
+      const encoded = await readBoundedRequestText(request, 128 * 1024);
+      let config;
+      try { config = parseCronTrigger(JSON.parse(encoded), Date.now()); }
+      catch (error) { return json({ error: "invalid_trigger", message: errorMessage(error) }, { status: 400 }); }
+      const hash = await hashManagedInput(config.input);
+      this.#assertDurabilityAdmissionActive();
+      if (this.#deleting || this.#deleted) return json({ error: "agent_deleting" }, { status: 409 });
+      const exists = this.#cronTriggers.get(id) !== undefined;
+      if (!exists && this.#cronTriggers.list().length >= 32) return json({ error: "trigger_limit" }, { status: 429 });
+      const row = this.#cronTriggers.put(id, config, JSON.stringify(authorization), session.authorization_epoch, hash, Date.now());
+      await this.#scheduleNextAlarm();
+      return json(cronTriggerView(row), { status: exists ? 200 : 201 });
+    } catch (error) { return managedErrorResponse(error); }
+  }
+
+  async #fireCronTriggers(): Promise<void> {
+    if (this.#deleting || this.#deleted || this.#durabilityExported
+      || this.#durabilityImportState === "pending") return;
+    const session = this.#session();
+    if (!session || session.runtime_profile !== "managed") return;
+    const now = Date.now();
+    for (const trigger of this.#cronTriggers.due(now)) {
+      const next = nextCronRun(trigger.cron, trigger.timezone, now);
+      if (trigger.authorization_epoch !== session.authorization_epoch) {
+        this.#cronTriggers.delete(trigger.id);
+        continue;
+      }
+      if (this.#recoverableTurnCount() > 0 || this.#streamError) {
+        this.#cronTriggers.advance(trigger, now, next);
+        continue;
+      }
+      const id = `cron:${trigger.revision}:${trigger.next_run_at}`;
+      try {
+        await this.#submitManagedTurn(
+          id, trigger.input, trigger.request_hash, id, true,
+          parseTurnAuthorization(trigger.authorization_json),
+          () => {
+            // A pause, delete, edit, or interactive admission may win while
+            // archived receipt lookup yields. Fence and advance atomically.
+            if (this.#recoverableTurnCount() > 0) {
+              throw new ManagedRequestError(409, "cron_agent_busy", "agent became busy");
+            }
+            if (!this.#cronTriggers.advance(trigger, now, next, id)) {
+              throw new ManagedRequestError(409, "cron_trigger_changed", "trigger changed before admission");
+            }
+          },
+        );
+      } catch (error) {
+        if (error instanceof ManagedRequestError && error.code === "cron_trigger_changed") continue;
+        if (error instanceof ManagedRequestError && error.code === "cron_agent_busy") {
+          this.#cronTriggers.advance(trigger, now, next);
+          continue;
+        }
+        // Retain a wakeup beyond Cloudflare's bounded automatic alarm retries.
+        this.#cronTriggers.retry(trigger, Date.now() + MAX_RETRY_DELAY_MS);
+        await this.#scheduleNextAlarm();
+        throw error;
+      }
     }
   }
 
@@ -4931,6 +5048,7 @@ export class DurableAgentSession extends DurableComputerSession {
     requestKey: string | null,
     explicitId = true,
     authorization: TurnAuthorization = { capabilities: [] },
+    beforeAdmission?: () => void,
   ): Promise<ManagedTurnSubmission> {
     await this.#settingsMutationTail;
     if (this.#deleting || this.#deleted) {
@@ -5003,6 +5121,7 @@ export class DurableAgentSession extends DurableComputerSession {
       if (this.#deleting || !this.#sessionId()) {
         throw new ManagedRequestError(409, "agent_deleting", "the agent is being deleted");
       }
+      beforeAdmission?.();
       cancellationRequested = this.ctx.storage.sql.exec<{ turn_id: string }>(
         "SELECT turn_id FROM managed_turn_cancel_intents WHERE turn_id = ?",
         id,
@@ -5596,6 +5715,7 @@ export class DurableAgentSession extends DurableComputerSession {
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_subagent_authorizations");
+      this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_cancel_intents");
       this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");
@@ -8408,6 +8528,10 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#deleting || !this.#sessionId()) return;
     const now = Date.now();
     const targets: number[] = [];
+    if (!this.#durabilityExported && this.#durabilityImportState !== "pending") {
+      const cronAlarm = this.#cronTriggers.nextAlarm();
+      if (cronAlarm !== undefined) targets.push(cronAlarm);
+    }
     if (this.#eventArchive.needsSeal(this.#eventLog)
       || this.#turnArchive.needsSeal()
       || this.#realtimeArchive.needsSeal()) {

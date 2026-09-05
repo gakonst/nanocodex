@@ -151,3 +151,66 @@ still verifies account ownership at the managed service boundary. Use
 
 The managed API never accepts model-provider credentials, egress bindings,
 runtime environment objects, credential grants, or arbitrary request headers.
+
+## Cron triggers
+
+Schedules belong to an existing managed agent and run without an open client.
+Use a stable trigger ID to create or replace a schedule idempotently:
+
+```js
+const agent = await Agent.get(agentId, { baseUrl, apiKey });
+const morning = {
+  cron: "0 7 * * MON-FRI",
+  timezone: "Europe/Athens",
+  input: "Review my running agents and summarize anything that needs attention.",
+};
+await agent.triggers.put("morning-review", morning);
+await agent.triggers.list();
+await agent.triggers.get("morning-review");
+await agent.triggers.put("morning-review", { ...morning, enabled: false }); // pause
+await agent.triggers.put("morning-review", morning); // resume
+await agent.triggers.delete("morning-review");
+```
+
+| Method | Route | Result |
+| --- | --- | --- |
+| GET | `/v1/agents/:agent/triggers` | `{ data: [...] }` |
+| GET | `/v1/agents/:agent/triggers/:id` | Trigger or 404 |
+| PUT | `/v1/agents/:agent/triggers/:id` | Create (201) or replace (200) |
+| DELETE | `/v1/agents/:agent/triggers/:id` | Idempotent deletion (204) |
+
+PUT takes `{ cron, input, timezone?, enabled? }`. Expressions have five fields
+(minute, hour, day of month, month, day of week), supporting numeric values,
+lists, ranges, steps, and month/day names. The time zone defaults to UTC and
+accepts IANA names. Local times follow daylight saving transitions. Seconds,
+macros, and random `H` fields are rejected. Inputs are text up to 64 KiB;
+there can be at most 32 triggers per agent. IDs use 1–64 letters, digits,
+underscores, or hyphens. PUT is a full replacement; an identical retry preserves
+the next occurrence. A changed configuration starts from the next matching time.
+
+Durable Object alarms wake the agent. Each occurrence enters the normal durable
+turn queue, with the schedule advance and turn acceptance committed atomically.
+Inspect `last_turn_id` through the normal turn and event APIs. Times in trigger
+responses are Unix milliseconds; `last_run_at` is the scheduled time of the last
+accepted occurrence, and `next_run_at` is null while paused.
+
+Missed ticks coalesce into one occurrence when idle. If the agent has unfinished
+work (including a prior scheduled run) or a failed event stream, the tick is
+skipped and recorded in `last_skipped_at`. Simultaneously due triggers are
+processed by scheduled time, then ID; the first admitted run makes the agent
+busy. This prevents an unbounded queue. Pausing or deleting fences future
+admissions; it does not cancel a turn already accepted. Resume does not backfill.
+
+Read requests require `agents:read`; writes require `agents:write`, and PUT also
+requires `tools:use`. The usual ownership and browser-origin checks apply.
+Triggers are account-owned standing instructions with the creator's capability
+scope, and persist after the creating API key or browser session ends. Connect
+grants and multiplayer rooms cannot create schedules. Delete the trigger to
+revoke its standing instruction. Provider credentials are resolved by the usual
+managed execution path and are never stored in trigger definitions or returned
+by these endpoints.
+
+Deleting an agent removes its triggers. Portable durability export currently
+returns `409 cron_triggers_present` while any trigger exists: list and delete
+triggers before transfer, then recreate them at the destination. This avoids
+silently dropping schedules or running the same schedule on two agents.

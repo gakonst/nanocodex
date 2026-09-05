@@ -44,6 +44,19 @@ async function checkManaged() {
     settings: { model: "gpt-6-astra", thinking: "high" },
   });
   const opened: ManagedAgent = Agent.open("0198d3f0-8844-7000-8000-000000000001");
+  const cron = await opened.triggers.put("morning", {
+    cron: "0 7 * * *", timezone: "Europe/Athens", input: "Daily summary",
+  });
+  const nextRun: number | null = cron.next_run_at;
+  await opened.triggers.put(cron.id, { cron: cron.cron, input: cron.input, enabled: false });
+  await opened.triggers.get(cron.id);
+  await opened.triggers.delete(cron.id);
+  const schedules: readonly import("nanocodex/managed").ManagedCronTrigger[] = await opened.triggers.list();
+  void nextRun; void schedules;
+  // @ts-expect-error cron triggers require an input.
+  await opened.triggers.put("missing", { cron: "* * * * *" });
+  // @ts-expect-error enabled is boolean.
+  await opened.triggers.put("bad", { cron: "* * * * *", input: "test", enabled: "yes" });
   const settings = await opened.settings.read();
   await opened.settings.update({ model: "gpt-6-astra" });
   await opened.settings.update({ thinking: settings.thinking, fastMode: true });
