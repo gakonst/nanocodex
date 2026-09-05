@@ -308,6 +308,7 @@ private struct ConnectView: View {
     @State private var key = ""
     @State private var connecting = false
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 24) {
             Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 36, weight: .regular)).foregroundStyle(Ink.accent)
             Text("What are we working on?").font(.system(size: 34, weight: .semibold))
@@ -328,6 +329,7 @@ private struct ConnectView: View {
             if let error = model.error { Text(error).font(.caption).foregroundStyle(Ink.amber) }
             Button("Explore the demo") { model.demo() }.disabled(connecting)
         }.padding(32).frame(maxWidth: 480)
+        }.scrollDismissesKeyboard(.interactively)
     }
 }
 
@@ -337,6 +339,7 @@ private struct ConversationView: View {
     @State private var visibleRow: String?
     var body: some View {
         NavigationStack {
+            GeometryReader { viewport in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     if model.threadLoading { ProgressView("Loading conversation…") }
@@ -366,12 +369,13 @@ private struct ConversationView: View {
                             .accessibilityIdentifier("message-" + row.id)
                     }
                     Color.clear.frame(height: 1).id("latest")
-                }.scrollTargetLayout().padding(18)
+                }.scrollTargetLayout().padding(18).frame(minHeight: viewport.size.height, alignment: .top)
             }
             .defaultScrollAnchor(.bottom)
             .scrollPosition(id: $visibleRow, anchor: .top)
             .background(Ink.background)
             .accessibilityIdentifier("conversation")
+            }
             .navigationTitle(model.focused?.title ?? "Conversation")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
