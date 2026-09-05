@@ -181,6 +181,40 @@ describe("cron Durable Object protocol", () => {
 
 
 describe("cron HTTP routes", () => {
+  it("reads and cancels SDK-encoded cron turn IDs without accepting encoded path separators", async () => {
+    const id = "0198d3f0-8844-7000-8000-000000000002";
+    const turnId = "cron:fixture:1788630780000";
+    const principal: Principal = {
+      kind: "api_key", userId: "11111111-1111-4111-8111-111111111111",
+      organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", teamId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      role: "owner", subjectId: "user:11111111-1111-4111-8111-111111111111", credentialId: "test",
+      authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"],
+    };
+    await runInDurableObject(sessions().getByName(id), async (_session, state) => {
+      initialize(state);
+      state.storage.sql.exec("UPDATE session_state SET session_id = ?, owner_id = ?, organization_id = ?, team_id = ?",
+        id, principal.userId, principal.organizationId, principal.teamId);
+      retainBusyTurn(state);
+      state.storage.sql.exec("UPDATE managed_turns SET id = ? WHERE id = 'busy'", turnId);
+    });
+    const call = (path: string, method = "GET", actor = principal) => worker.fetch(
+      new Request(`https://nanocodex.example/v1/agents/${id}/turns/${path}`, { method }),
+      env as Parameters<typeof worker.fetch>[1], createExecutionContext(), actor,
+    );
+    for (const path of [turnId, encodeURIComponent(turnId), encodeURIComponent(turnId).replaceAll("%3A", "%3a")]) {
+      const response = await call(path);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ turn_id: turnId });
+    }
+    expect((await call(encodeURIComponent(turnId), "GET", { ...principal, capabilities: [] })).status).toBe(403);
+    for (const path of ["cron%2Fbad", "cron%3Fbad", "cron%23bad", "cron%253Abad", "cron%ZZbad", "a".repeat(129)]) {
+      expect((await call(path)).status).toBe(400);
+    }
+    const cancelled = await call(`${encodeURIComponent(turnId)}/cancel`, "POST");
+    expect(cancelled.status).toBe(202);
+    expect(await cancelled.json()).toMatchObject({ turn_id: turnId, state: "cancelling" });
+  });
+
   it("applies capability, origin, and ownership checks before routing to the real session", async () => {
     const id = "0198d3f0-8844-7000-8000-000000000001";
     const owner = "11111111-1111-4111-8111-111111111111";

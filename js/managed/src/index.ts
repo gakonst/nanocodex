@@ -2020,9 +2020,17 @@ async function managedFetch(
       );
     }
     const turnMatch = resource.match(
-      /^turns\/([A-Za-z0-9._:-]{1,128})(?:\/(steer|cancel))?$/,
+      /^turns\/([^/]+)(?:\/(steer|cancel))?$/,
     );
     if (turnMatch) {
+      // SDK paths percent-encode ':' in cron and other stable turn IDs.
+      // Decode one segment, then validate before constructing the internal URL.
+      let turnId: string;
+      try { turnId = decodeURIComponent(turnMatch[1]!); }
+      catch { return json({ error: "invalid_turn_id" }, { status: 400 }); }
+      if (!TURN_ID.test(turnId) || turnId === "." || turnId === "..") {
+        return json({ error: "invalid_turn_id" }, { status: 400 });
+      }
       const action = turnMatch[2];
       const expectedMethod = action === undefined ? "GET" : "POST";
       if (request.method !== expectedMethod) {
@@ -2037,7 +2045,7 @@ async function managedFetch(
         if (originFailure) return originFailure;
       }
       return stub.fetch(
-        `https://session.internal/turns/${turnMatch[1]}${action ? `/${action}` : ""}?${publicOrigin}`,
+        `https://session.internal/turns/${turnId}${action ? `/${action}` : ""}?${publicOrigin}`,
         {
           method: request.method,
           headers: sessionHeaders,
