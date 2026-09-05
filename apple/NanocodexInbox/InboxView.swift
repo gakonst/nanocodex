@@ -28,9 +28,11 @@ struct InboxView: View {
         ZStack {
             Ink.background.ignoresSafeArea()
             if model.connected {
-                VStack(spacing: 20) {
-                    header
-                    filters
+                VStack(spacing: composerFocused ? 12 : 16) {
+                    if !composerFocused {
+                        header
+                        filters
+                    }
                     if let card = model.focused { deck(card) }
                     else { emptyState.frame(maxHeight: .infinity) }
                     if model.focused != nil { actions }
@@ -57,6 +59,9 @@ struct InboxView: View {
         .confirmationDialog("Stop this turn?", isPresented: $showStop, titleVisibility: .visible) {
             Button("Stop turn", role: .destructive) { if let target = stopTarget { Task { await model.stop(agentID: target.agent, turnID: target.turn) } } }
         } message: { Text("The selected turn in \(stopTarget?.title ?? "this agent") will stop. You can send a new follow-up afterward.") }
+        .onChange(of: model.draft) { old, value in
+            if !old.isEmpty && value.isEmpty { composerFocused = false }
+        }
         .onChange(of: model.focused?.activeTurns ?? []) { _, turns in
             if !turns.contains(model.selectedTurn) { model.selectedTurn = turns.first ?? "" }
         }
@@ -122,7 +127,7 @@ struct InboxView: View {
                     }
                     .rotationEffect(.degrees(reduceMotion ? 0 : Double(drag / 28)))
                     .offset(x: drag)
-                    .gesture(DragGesture(minimumDistance: 18)
+                    .simultaneousGesture(DragGesture(minimumDistance: 18)
                         .onChanged { value in
                             if abs(value.translation.width) > abs(value.translation.height) * 1.3 { drag = value.translation.width }
                         }
@@ -131,7 +136,7 @@ struct InboxView: View {
                             withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) { drag = 0 }
                         })
             }
-        }.frame(minHeight: 230, maxHeight: .infinity).padding(.bottom, 12)
+        }.frame(minHeight: composerFocused ? 180 : 220, maxHeight: .infinity).padding(.bottom, 12)
     }
     private func cardFace(_ card: AgentCard, compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 14 : 22) {
@@ -143,6 +148,8 @@ struct InboxView: View {
                 Text("\(model.deck.order.firstIndex(of: card.id).map { $0 + 1 } ?? 1) / \(model.deck.order.count)")
                     .font(.system(.caption, design: .monospaced)).foregroundStyle(Ink.muted)
             }
+            ScrollView {
+                VStack(alignment: .leading, spacing: compact ? 12 : 20) {
             Text(card.title).font(.system(size: compact ? 24 : 29, weight: .semibold)).lineLimit(3).accessibilityIdentifier("agent-title")
             VStack(alignment: .leading, spacing: 10) {
                 Text(card.isRunning ? "WORKING ON IT" : "LATEST UPDATE")
@@ -150,7 +157,8 @@ struct InboxView: View {
                 Text(card.error ?? card.preview).font(.system(size: 16)).foregroundStyle(.white.opacity(0.83))
                     .lineLimit(compact ? 3 : 7).lineSpacing(4)
             }
-            Spacer(minLength: 0)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.scrollIndicators(.hidden)
             HStack {
                 Text(card.model.isEmpty ? "Managed agent" : card.model)
                     .font(.system(size: 11, design: .monospaced)).foregroundStyle(Ink.muted)
