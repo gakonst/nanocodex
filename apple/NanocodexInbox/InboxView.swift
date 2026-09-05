@@ -24,7 +24,6 @@ struct InboxView: View {
     @State private var showSettings = false
     @State private var showStop = false
     @State private var stopTarget: (agent: String, turn: String, title: String)?
-    @State private var sendFollowUp = false
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -78,12 +77,12 @@ struct InboxView: View {
             }.accessibilityLabel("Browse agents")
             Button { showSettings = true } label: {
                 HStack(spacing: 6) {
-                    Text("nanocodex").font(.system(size: 21, weight: .semibold))
+                    Text("nanocodex").font(.system(size: 21, weight: .semibold)).lineLimit(1)
                     Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.muted)
                 }
             }.accessibilityLabel("Account settings")
             Spacer(minLength: 4)
-            Text(model.connection).font(.system(size: 12)).foregroundStyle(Ink.muted)
+            Text(model.connection).font(.system(size: 12)).foregroundStyle(Ink.muted).lineLimit(1)
                 .accessibilityIdentifier("connection")
             Button { Task { await model.newAgent() } } label: {
                 Image(systemName: "square.and.pencil").font(.system(size: 21)).frame(width: 44, height: 44)
@@ -206,26 +205,22 @@ struct InboxView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 if model.focused?.isRunning == true {
-                    Menu {
-                        Button("Steer current turn", systemImage: sendFollowUp ? "circle" : "checkmark.circle") { sendFollowUp = false }
-                        Button("Queue a follow-up", systemImage: sendFollowUp ? "checkmark.circle" : "circle") { sendFollowUp = true }
-                        Divider()
-                        Button("Stop turn", role: .destructive) {
-                            if let card = model.focused { stopTarget = (card.id, model.focusedTurn, card.title); showStop = true }
-                        }.disabled(model.busy.contains(model.focused?.id ?? ""))
+                    Button {
+                        if let card = model.focused { stopTarget = (card.id, model.focusedTurn, card.title); showStop = true }
                     } label: {
-                        Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
-                    }.accessibilityLabel("Message mode and turn controls")
+                        Image(systemName: "stop.circle").frame(width: 44, height: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Stop turn")
+                        .disabled(model.busy.contains(model.focused?.id ?? ""))
                 }
-                TextField(model.focused?.isRunning == true && !sendFollowUp ? "Steer this agent…" : "Send a follow-up…", text: $model.draft, axis: .vertical)
+                TextField(model.focused?.isRunning == true ? "Steer this agent…" : "Send a follow-up…", text: $model.draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).font(.body).focused($composerFocused)
                     .padding(.vertical, 12).accessibilityIdentifier("composer")
-                Button { Task { await model.send(steer: model.focused?.isRunning == true && !sendFollowUp) } } label: {
+                Button { Task { await model.send(steer: model.focused?.isRunning == true) } } label: {
                     Image(systemName: model.busy.contains(model.focused?.id ?? "") ? "ellipsis" : "arrow.up")
                         .font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
                         .background(Ink.accent, in: Circle()).foregroundStyle(Ink.background)
                 }.buttonStyle(.plain).disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy.contains(model.focused?.id ?? ""))
-                    .accessibilityLabel(model.focused?.isRunning == true && !sendFollowUp ? "Send steering" : "Send follow-up")
+                    .accessibilityLabel(model.focused?.isRunning == true ? "Send steering" : "Send follow-up")
                     .accessibilityIdentifier("send").keyboardShortcut(.return, modifiers: .command)
             }.padding(10).padding(.leading, 6).background(Ink.surface, in: RoundedRectangle(cornerRadius: 30))
             if model.canRetry {
