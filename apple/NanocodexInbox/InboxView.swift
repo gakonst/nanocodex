@@ -31,7 +31,7 @@ struct InboxView: View {
         ZStack {
             Ink.background.ignoresSafeArea()
             if model.connected {
-                VStack(spacing: composerFocused ? 12 : 16) {
+                VStack(spacing: 10) {
                     if !composerFocused {
                         header
                         filters
@@ -49,7 +49,7 @@ struct InboxView: View {
                         Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
                     }
                 }
-                .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 12)
+                .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 4)
                 .frame(maxWidth: 620)
                 .safeAreaInset(edge: .bottom, spacing: 0) { if model.focused != nil { composer.frame(maxWidth: 620) } }
             } else { ConnectView(model: model) }
@@ -72,42 +72,38 @@ struct InboxView: View {
         .onChange(of: model.deck.focusedID) { _, _ in drag = 0; composerFocused = false; showStop = false }
     }
     private var header: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack(spacing: 12) {
-                Button { showAgents = true } label: {
-                    Image(systemName: "line.3.horizontal.decrease").font(.system(size: 22)).frame(width: 40, height: 44)
-                }.accessibilityLabel("Browse agents")
-                Button { showSettings = true } label: {
-                    HStack(spacing: 6) {
-                        Text("nanocodex").font(.system(size: 21, weight: .semibold))
-                        Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.muted)
-                    }
-                }.accessibilityLabel("Account settings")
-                Spacer()
-                Button { Task { await model.newAgent() } } label: {
-                    Image(systemName: "square.and.pencil").font(.system(size: 22)).frame(width: 44, height: 44)
-                }.disabled(model.isCreating).accessibilityLabel("New agent")
-            }.foregroundStyle(Ink.text).buttonStyle(.plain)
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Agent inbox").font(.system(size: 25, weight: .semibold))
-                    Text("\(model.attentionCount) to review · \(model.runningCount) running")
-                        .font(.system(size: 14)).foregroundStyle(Ink.muted)
+        HStack(spacing: 8) {
+            Button { showAgents = true } label: {
+                Image(systemName: "line.3.horizontal.decrease").font(.system(size: 21)).frame(width: 40, height: 44)
+            }.accessibilityLabel("Browse agents")
+            Button { showSettings = true } label: {
+                HStack(spacing: 6) {
+                    Text("nanocodex").font(.system(size: 21, weight: .semibold))
+                    Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.muted)
                 }
-                Spacer()
-                HStack(spacing: 5) {
-                    Circle().fill(Ink.muted).frame(width: 5, height: 5)
-                    Text(model.connection).font(.system(size: 12))
-                }.foregroundStyle(Ink.muted).accessibilityIdentifier("connection")
-            }
-        }
+            }.accessibilityLabel("Account settings")
+            Spacer(minLength: 4)
+            Text(model.connection).font(.system(size: 12)).foregroundStyle(Ink.muted)
+                .accessibilityIdentifier("connection")
+            Button { Task { await model.newAgent() } } label: {
+                Image(systemName: "square.and.pencil").font(.system(size: 21)).frame(width: 44, height: 44)
+            }.disabled(model.isCreating).accessibilityLabel("New agent")
+        }.foregroundStyle(Ink.text).buttonStyle(.plain)
     }
+
     private var filters: some View {
         HStack(spacing: 6) {
             ForEach(InboxModel.Filter.allCases, id: \.self) { filter in
                 Button { model.filter = filter } label: {
-                    Text(filter.rawValue).font(.subheadline.weight(.medium))
-                        .padding(.horizontal, 18).padding(.vertical, 10)
+                    HStack(spacing: 5) {
+                        Text(filter.rawValue)
+                        if filter != .all {
+                            Text(String(filter == .inbox ? model.attentionCount : model.runningCount))
+                                .monospacedDigit().opacity(0.7)
+                        }
+                    }.font(.system(size: 14, weight: .medium))
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .frame(minHeight: 44)
                         .foregroundStyle(model.filter == filter ? Ink.background : Ink.muted)
                         .background(model.filter == filter ? Ink.accent : Ink.surface, in: Capsule())
                 }.buttonStyle(.plain).accessibilityIdentifier("filter-" + filter.rawValue)
@@ -119,11 +115,11 @@ struct InboxView: View {
         }
     }
     private func deck(_ card: AgentCard) -> some View {
-        GeometryReader { geometry in
+        GeometryReader { _ in
             ZStack {
                 RoundedRectangle(cornerRadius: 28).fill(Ink.surface.opacity(0.6)).padding(.horizontal, 18).offset(y: 16)
                 RoundedRectangle(cornerRadius: 28).fill(Ink.surface).padding(.horizontal, 9).offset(y: 8)
-                cardFace(card, compact: geometry.size.height < 330)
+                cardFace(card)
                     .overlay(alignment: drag > 0 ? .topLeading : .topTrailing) {
                         if abs(drag) > 24 {
                             Text(drag > 0 ? "SEEN" : "LATER")
@@ -147,42 +143,30 @@ struct InboxView: View {
             }
         }.frame(minHeight: composerFocused ? 0 : 220, maxHeight: .infinity).padding(.bottom, 12)
     }
-    private func cardFace(_ card: AgentCard, compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 14 : 22) {
+    private func cardFace(_ card: AgentCard) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label(card.error == nil ? card.status : "Update unavailable", systemImage: card.isRunning ? "waveform" : card.status == "Failed" ? "exclamationmark.circle" : "checkmark.circle")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(card.isRunning || card.error != nil ? Ink.amber : Ink.accent)
-                Spacer()
+                Text(card.model).font(.system(size: 11)).foregroundStyle(Ink.muted).lineLimit(1)
+                Spacer(minLength: 4)
                 Text("\(model.deck.order.firstIndex(of: card.id).map { $0 + 1 } ?? 1) / \(model.deck.order.count)")
                     .font(.system(size: 13).monospacedDigit()).foregroundStyle(Ink.muted)
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 12) {
                     Text(card.title)
-                        .font(.system(size: compact ? 23 : 26, weight: .semibold))
-                        .lineLimit(3).accessibilityIdentifier("agent-title")
-                    if !composerFocused {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text(card.isRunning ? "Working on it" : "Latest update")
-                                .font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.muted)
-                            Text(card.error ?? card.preview)
-                                .font(.system(size: 17)).foregroundStyle(Ink.text)
-                                .lineLimit(compact ? 5 : 9).lineSpacing(5)
-                        }
-                    }
+                        .font(.system(size: 22, weight: .semibold))
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("agent-title")
+                    Text(card.error ?? card.preview)
+                        .font(.system(size: 17)).foregroundStyle(Ink.text)
+                        .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("agent-preview")
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.scrollIndicators(.hidden)
-            HStack {
-                Text(card.model.isEmpty ? "Managed agent" : card.model)
-                    .font(.system(size: 11)).foregroundStyle(Ink.muted)
-                Spacer()
-                Button { showThread = true } label: {
-                    Label("Open thread", systemImage: "arrow.up.right").font(.system(size: 13, weight: .medium)).padding(.vertical, 8)
-                }.accessibilityIdentifier("open-thread")
-            }
         }
-        .padding(composerFocused ? 18 : 24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Ink.card, in: RoundedRectangle(cornerRadius: 28))
         .overlay(RoundedRectangle(cornerRadius: 28).stroke(Ink.border, lineWidth: 0.75))
         .accessibilityElement(children: .contain)
@@ -191,26 +175,26 @@ struct InboxView: View {
         .accessibilityIdentifier("agent-card")
     }
     private var actions: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 8) {
             Button { model.back() } label: { Image(systemName: "arrow.uturn.backward").frame(width: 44, height: 44) }
                 .disabled(!model.canGoBack).accessibilityLabel("Previous agent").keyboardShortcut("[", modifiers: .command)
-            actionButton("Later", icon: "arrow.right", color: Ink.amber) { advance(reviewed: false) }
+            actionButton("Later", icon: "arrow.right") { advance(reviewed: false) }
                 .accessibilityIdentifier("later").keyboardShortcut(.rightArrow, modifiers: .command)
-            actionButton("Seen", icon: "checkmark", color: Ink.accent) { advance(reviewed: true) }
+            actionButton("Seen", icon: "checkmark") { advance(reviewed: true) }
                 .accessibilityIdentifier("seen").keyboardShortcut("d", modifiers: .command)
-            Button { showThread = true } label: { Image(systemName: "text.bubble").frame(width: 44, height: 44) }
-                .accessibilityLabel("Read conversation").keyboardShortcut("o", modifiers: .command)
-        }.foregroundStyle(Ink.muted)
+            Spacer(minLength: 0)
+            Button { showThread = true } label: {
+                Image(systemName: "text.bubble").frame(width: 44, height: 44)
+            }.accessibilityLabel("Open thread").accessibilityIdentifier("open-thread").keyboardShortcut("o", modifiers: .command)
+        }.foregroundStyle(Ink.muted).buttonStyle(.plain)
     }
-    private func actionButton(_ label: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+    private func actionButton(_ label: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 7) {
-                Image(systemName: icon).font(.system(size: 21, weight: .medium)).frame(width: 62, height: composerFocused ? 44 : 52)
-                    .background(label == "Seen" ? Ink.accent : Ink.background, in: Capsule())
-                    .overlay(Capsule().stroke(label == "Seen" ? Ink.accent : Ink.border, lineWidth: 1))
-                    .foregroundStyle(label == "Seen" ? Ink.background : Ink.text)
-                if !composerFocused { Text(label).font(.system(size: 12)).foregroundStyle(Ink.muted) }
-            }.foregroundStyle(color)
+            Label(label, systemImage: icon).font(.system(size: 14, weight: .medium))
+                .padding(.horizontal, 16).frame(height: 44)
+                .background(label == "Seen" ? Ink.accent : Ink.background, in: Capsule())
+                .overlay(Capsule().stroke(label == "Seen" ? Ink.accent : Ink.border, lineWidth: 1))
+                .foregroundStyle(label == "Seen" ? Ink.background : Ink.text)
         }.buttonStyle(.plain).accessibilityLabel(label)
     }
     private var composer: some View {
@@ -220,7 +204,19 @@ struct InboxView: View {
                     ForEach(card.activeTurns, id: \.self) { id in Text(String(id.prefix(12))).tag(id) }
                 }.pickerStyle(.menu)
             }
-            HStack(alignment: .bottom, spacing: 10) {
+            HStack(alignment: .bottom, spacing: 8) {
+                if model.focused?.isRunning == true {
+                    Menu {
+                        Button("Steer current turn", systemImage: sendFollowUp ? "circle" : "checkmark.circle") { sendFollowUp = false }
+                        Button("Queue a follow-up", systemImage: sendFollowUp ? "checkmark.circle" : "circle") { sendFollowUp = true }
+                        Divider()
+                        Button("Stop turn", role: .destructive) {
+                            if let card = model.focused { stopTarget = (card.id, model.focusedTurn, card.title); showStop = true }
+                        }.disabled(model.busy.contains(model.focused?.id ?? ""))
+                    } label: {
+                        Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
+                    }.accessibilityLabel("Message mode and turn controls")
+                }
                 TextField(model.focused?.isRunning == true && !sendFollowUp ? "Steer this agent…" : "Send a follow-up…", text: $model.draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).font(.body).focused($composerFocused)
                     .padding(.vertical, 12).accessibilityIdentifier("composer")
@@ -232,20 +228,12 @@ struct InboxView: View {
                     .accessibilityLabel(model.focused?.isRunning == true && !sendFollowUp ? "Send steering" : "Send follow-up")
                     .accessibilityIdentifier("send").keyboardShortcut(.return, modifiers: .command)
             }.padding(10).padding(.leading, 6).background(Ink.surface, in: RoundedRectangle(cornerRadius: 30))
-            HStack {
-                if model.focused?.isRunning == true {
-                    Menu {
-                        Button("Steer current turn") { sendFollowUp = false }
-                        Button("Queue a follow-up") { sendFollowUp = true }
-                    } label: { Label(sendFollowUp ? "Follow-up" : "Steer live", systemImage: "slider.horizontal.3") }
-                    Spacer()
-                    Button("Stop turn") { if let card = model.focused { stopTarget = (card.id, model.focusedTurn, card.title); showStop = true } }.foregroundStyle(Ink.muted)
-                        .disabled(model.busy.contains(model.focused?.id ?? ""))
-                } else { Text("Swipe to move on. Your agents keep working.").foregroundStyle(Ink.muted); Spacer() }
-                if model.canRetry { Button("Retry follow-up") { Task { await model.retry() } } }
-            }.font(.caption).padding(.horizontal, 8)
-        }.padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 12).background(Ink.background)
+            if model.canRetry {
+                Button("Retry follow-up") { Task { await model.retry() } }.font(.caption)
+            }
+        }.padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8).background(Ink.background)
     }
+
     private var emptyState: some View {
         VStack(spacing: 18) {
             Image(systemName: "tray").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(Ink.accent)
@@ -332,7 +320,7 @@ private struct ConversationView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     if model.hasOlder { Button(model.loadingOlder ? "Loading…" : "Load earlier messages") { Task { await model.loadOlder() } }.disabled(model.loadingOlder) }
                     ForEach(model.rows) { row in
                         HStack(alignment: .top, spacing: 0) {
@@ -358,7 +346,7 @@ private struct ConversationView: View {
                         }.frame(maxWidth: .infinity, alignment: row.role == "You" ? .trailing : .leading)
                     }
                     Color.clear.frame(height: 1).id("latest")
-                }.padding(24)
+                }.padding(18)
             }
             .background(Ink.background)
             .navigationTitle(model.focused?.title ?? "Conversation")

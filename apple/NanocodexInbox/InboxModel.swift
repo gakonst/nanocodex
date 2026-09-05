@@ -193,7 +193,7 @@ final class InboxModel: ObservableObject {
         prioritizeNext()
         deck.advance(reviewed: reviewed ? card.latestCursor : nil)
         reconcile(); observeFocused()
-        notice = reviewed ? "Update marked seen" : "Saved for another pass"
+        notice = nil
     }
     func back() {
         guard let previous = navigation.popLast() else { return }
