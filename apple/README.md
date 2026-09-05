@@ -27,12 +27,13 @@ opens explicitly labeled sample agents with simulated actions and no network.
 
 | Action | Result |
 | --- | --- |
-| Swipe left / Later / ⌘→ | Move the agent to the back of the deck |
-| Swipe right / Seen / ⌘D | Mark this update seen and advance |
-| Back / ⌘[ | Return to the previous agent |
-| Open thread / ⌘O | Read messages, reasoning, and expandable tool details |
-| Steer live / ⌘Return | Send direction to the displayed active turn |
-| Follow-up | Submit a new durable turn, including while another is running |
+| Swipe left | Move the agent to the back of the deck |
+| Swipe right | Mark this update seen and advance |
+| Long-press card → Previous agent | Return to the previous agent |
+| Tap card | Read messages, reasoning, and expandable tool details |
+| Send / ⌘Return | Submit one durable follow-up; queue behind current work |
+| Steer now on queued message | Cancel its captured predecessor so the follow-up can start |
+| Mic | Dictate into an agent-scoped draft; slide the sheet down to keep it |
 | Stop turn | Confirm cancellation of the selected turn |
 | Stack button | Jump directly to any agent or create one |
 
@@ -48,7 +49,17 @@ backoff after disconnect. Backgrounding detaches observation; agents continue
 on the service. Foregrounding reloads history and resumes. Active-turn state
 reads cannot overwrite newer streamed events. Changing accounts invalidates old
 callbacks and cancels owned requests. Follow-up retries reuse the same turn ID
-and idempotency key. Steering is never silently changed into a new turn.
+and idempotency key. The small queued-message row survives navigation and relaunch.
+“Steer now” uses cancel-and-continue: it cancels the captured predecessor without
+resubmitting the already durable follow-up. This is not in-flight runtime injection.
+Cancellation acknowledgement is not completion; the row stays until execution or
+a terminal event. Failed sends retain input and retry the same identity.
+
+Voice uses Apple Speech and the microphone, with permission requested on first use.
+A partial transcript becomes an editable draft, never an automatic send. Dismissal,
+backgrounding, and errors stop audio capture. Existing typed text is preserved.
+Demo voice uses a labeled transcript fixture; real microphone and recognition
+permissions require physical-device validation.
 
 The live event working set is capped at 512 events / 16 MiB. Earlier history is
 loaded explicitly, up to 2,048 events. Full history remains on the service.
@@ -64,16 +75,9 @@ xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -desti
 ```
 
 The `Apple Inbox` workflow runs protocol/policy tests, compiles both platforms,
-and drives the iPhone demo journey: preserve a draft while cycling agents, send,
-filter running agents, open the thread, and swipe. The test result includes a
-six screenshots and a simulator video. Demo automation does not establish authenticated live-service
-or on-device behavior; those require an account and an Apple device/simulator.
-
-Native verification on 2026-09-05: [Apple CI run 33972453607](https://github.com/gakonst/nanocodex/actions/runs/33972453607)
-passed all ten protocol/policy tests, the Mac build, the iPhone simulator build,
-and the native UI journey on iPhone 16 Pro. Screenshot review identified keyboard
-overflow; the typing layout now keeps a compact card and controls above the
-keyboard, with frame assertions in the UI journey to catch regressions. New runs
-attach the screenshots, simulator video, and full Xcode test result as
-`native-inbox-evidence`. Authenticated live-service and physical-device
-verification remain pending.
+and drives native iPhone demo journeys covering swipes, per-agent drafts, queue
+recovery, cancel failures, repeated taps, relaunch, thread continuity, and voice
+sheet dismissal/error handling. It attaches screenshots, simulator video, and the
+full Xcode result as `native-inbox-evidence`. Demo automation does not establish
+authenticated service behavior, real microphone recognition, or physical-device
+performance. Animation durations are 160–180 ms and respect Reduce Motion.

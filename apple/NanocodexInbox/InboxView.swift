@@ -19,6 +19,7 @@ struct InboxView: View {
     @ObservedObject var model: InboxModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drag: CGFloat = 0
+    @State private var voiceTarget: AgentCard?
     @State private var showThread = false
     @State private var showAgents = false
     @State private var showSettings = false
@@ -37,7 +38,6 @@ struct InboxView: View {
                     }
                     if let card = model.focused { deck(card) }
                     else { emptyState.frame(maxHeight: .infinity) }
-                    if model.focused != nil { actions }
                     if let error = model.error {
                         HStack(alignment: .top) {
                             Text(error).font(.caption).foregroundStyle(Ink.amber)
@@ -56,7 +56,12 @@ struct InboxView: View {
         .preferredColorScheme(.light)
         .foregroundStyle(Ink.text)
         .tint(Ink.accent)
-        .sheet(isPresented: $showThread) { ConversationView(model: model).tint(Ink.accent) }
+        .sheet(isPresented: $showThread, onDismiss: { model.closeThread() }) { ConversationView(model: model).tint(Ink.accent) }
+        .sheet(item: $voiceTarget) { card in
+            VoiceInputView(agentTitle: card.title, demo: model.isDemo) { text in
+                model.appendVoiceDraft(text, agentID: card.id)
+            }
+        }
         .sheet(isPresented: $showAgents) { agentList }
         .sheet(isPresented: $showSettings) { settings }
         .confirmationDialog("Stop this turn?", isPresented: $showStop, titleVisibility: .visible) {
@@ -118,7 +123,7 @@ struct InboxView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 28).fill(Ink.surface.opacity(0.6)).padding(.horizontal, 18).offset(y: 16)
                 RoundedRectangle(cornerRadius: 28).fill(Ink.surface).padding(.horizontal, 9).offset(y: 8)
-                cardFace(card)
+                cardFace(card).id(card.id).transition(.opacity)
                     .overlay(alignment: drag > 0 ? .topLeading : .topTrailing) {
                         if abs(drag) > 24 {
                             Text(drag > 0 ? "SEEN" : "LATER")
@@ -136,8 +141,8 @@ struct InboxView: View {
                             if abs(value.translation.width) > abs(value.translation.height) * 1.3 { drag = value.translation.width }
                         }
                         .onEnded { value in
-                            if abs(drag) > 85 || (abs(drag) > 30 && abs(value.predictedEndTranslation.width) > 160) { advance(reviewed: drag > 0) }
-                            withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) { drag = 0 }
+                            if abs(drag) > 65 || (abs(drag) > 24 && abs(value.predictedEndTranslation.width) > 130) { advance(reviewed: drag > 0) }
+                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.16)) { drag = 0 }
                         })
             }
         }.frame(minHeight: composerFocused ? 0 : 220, maxHeight: .infinity).padding(.bottom, 12)
@@ -169,32 +174,13 @@ struct InboxView: View {
         .background(Ink.card, in: RoundedRectangle(cornerRadius: 28))
         .overlay(RoundedRectangle(cornerRadius: 28).stroke(Ink.border, lineWidth: 0.75))
         .accessibilityElement(children: .contain)
+        .onTapGesture { model.openThread(); showThread = true }
+        .accessibilityAction(named: "Open thread") { model.openThread(); showThread = true }
+        .accessibilityAction(named: "Previous agent") { model.back() }
+        .contextMenu { Button("Previous agent") { model.back() }.disabled(!model.canGoBack) }
         .accessibilityAction(named: "Next agent, revisit later") { advance(reviewed: false) }
         .accessibilityAction(named: "Mark update seen") { advance(reviewed: true) }
         .accessibilityIdentifier("agent-card")
-    }
-    private var actions: some View {
-        HStack(spacing: 8) {
-            Button { model.back() } label: { Image(systemName: "arrow.uturn.backward").frame(width: 44, height: 44) }
-                .disabled(!model.canGoBack).accessibilityLabel("Previous agent").keyboardShortcut("[", modifiers: .command)
-            actionButton("Later", icon: "arrow.right") { advance(reviewed: false) }
-                .accessibilityIdentifier("later").keyboardShortcut(.rightArrow, modifiers: .command)
-            actionButton("Seen", icon: "checkmark") { advance(reviewed: true) }
-                .accessibilityIdentifier("seen").keyboardShortcut("d", modifiers: .command)
-            Spacer(minLength: 0)
-            Button { showThread = true } label: {
-                Image(systemName: "text.bubble").frame(width: 44, height: 44)
-            }.accessibilityLabel("Open thread").accessibilityIdentifier("open-thread").keyboardShortcut("o", modifiers: .command)
-        }.foregroundStyle(Ink.muted).buttonStyle(.plain)
-    }
-    private func actionButton(_ label: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(label, systemImage: icon).font(.system(size: 14, weight: .medium))
-                .padding(.horizontal, 16).frame(height: 44)
-                .background(label == "Seen" ? Ink.accent : Ink.background, in: Capsule())
-                .overlay(Capsule().stroke(label == "Seen" ? Ink.accent : Ink.border, lineWidth: 1))
-                .foregroundStyle(label == "Seen" ? Ink.background : Ink.text)
-        }.buttonStyle(.plain).accessibilityLabel(label)
     }
     private var composer: some View {
         VStack(spacing: 10) {
@@ -212,19 +198,47 @@ struct InboxView: View {
                     }.buttonStyle(.plain).accessibilityLabel("Stop turn")
                         .disabled(model.busy.contains(model.focused?.id ?? ""))
                 }
-                TextField(model.focused?.isRunning == true ? "Steer this agent…" : "Send a follow-up…", text: $model.draft, axis: .vertical)
+                TextField("Message this agent…", text: $model.draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).font(.body).focused($composerFocused)
                     .padding(.vertical, 12).accessibilityIdentifier("composer")
-                Button { Task { await model.send(steer: model.focused?.isRunning == true) } } label: {
+                Button { composerFocused = false; voiceTarget = model.focused } label: {
+                    Image(systemName: "mic").font(.system(size: 20)).frame(width: 44, height: 44)
+                }.buttonStyle(.plain).accessibilityLabel("Voice input")
+                Button { model.send() } label: {
                     Image(systemName: model.busy.contains(model.focused?.id ?? "") ? "ellipsis" : "arrow.up")
                         .font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
                         .background(Ink.accent, in: Circle()).foregroundStyle(Ink.background)
                 }.buttonStyle(.plain).disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy.contains(model.focused?.id ?? ""))
-                    .accessibilityLabel(model.focused?.isRunning == true ? "Send steering" : "Send follow-up")
+                    .accessibilityLabel(model.focused?.isRunning == true ? "Queue message" : "Send message")
                     .accessibilityIdentifier("send").keyboardShortcut(.return, modifiers: .command)
             }.padding(10).padding(.leading, 6).background(Ink.surface, in: RoundedRectangle(cornerRadius: 30))
-            if model.canRetry {
-                Button("Retry follow-up") { Task { await model.retry() } }.font(.caption)
+            if !model.focusedPending.isEmpty {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(model.focusedPending) { message in
+                            HStack(alignment: .center, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(message.phase == .submitting ? "Sending…" : message.phase == .starting ? "Stopping current turn…" : message.phase == .cancelling ? "Cancelling…" : message.phase == .failed ? "Not confirmed" : "Queued")
+                                        .font(.system(size: 11)).foregroundStyle(Ink.muted)
+                                    Text(message.input).font(.system(size: 13)).lineLimit(2)
+                                        .accessibilityIdentifier("pending-message")
+                                    if let error = message.error { Text(error).font(.caption2).foregroundStyle(Ink.muted) }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                if message.phase == .failed {
+                                    Button { model.retryPending(message.id) } label: { Text("Retry").frame(minHeight: 44) }.accessibilityIdentifier("retry-pending")
+                                } else if message.id == model.focusedPending.first?.id, message.interruption != nil {
+                                    Button { model.steerNow(message.id) } label: { Text("Steer now").frame(minHeight: 44) }.accessibilityIdentifier("steer-now")
+                                }
+                                Button { model.cancelPending(message.id) } label: {
+                                    Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle())
+                                }.accessibilityLabel("Cancel queued message")
+                            }.font(.system(size: 13, weight: .medium)).buttonStyle(.plain)
+                                .disabled(model.busy.contains(message.agentID) || message.phase == .starting || message.phase == .cancelling)
+                                .padding(.leading, 12)
+                        }
+                    }
+                }.frame(maxHeight: model.focusedPending.count > 1 ? 126 : model.focusedPending.first?.error == nil ? 58 : 92)
+                    .accessibilityIdentifier("pending-messages")
             }
         }.padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8).background(Ink.background)
     }
@@ -265,8 +279,8 @@ struct InboxView: View {
                     }
                 }
                 Section("Controls") {
-                    Text("Swipe left: revisit later\nSwipe right: mark this update seen\nOpen thread: read the conversation\nSteer live: change the current direction")
-                    Text("On Mac: ⌘→ next · ⌘[ back · ⌘D seen · ⌘O thread · ⌘Return send").font(.caption)
+                    Text("Swipe left: revisit later\nSwipe right: mark this update seen\nTap card: read the conversation\nSend: queue a message\nSteer now: stop the current turn so the queued message can start")
+                    Text("Long-press a card to go back. ⌘Return sends your message.").font(.caption)
                 }
             }.navigationTitle("Inbox settings").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
         }.frame(minWidth: 340, minHeight: 440).presentationDetents([.medium, .large])
@@ -276,7 +290,7 @@ struct InboxView: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
         #endif
-        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86)) { model.advance(reviewed: reviewed); drag = 0 }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { model.advance(reviewed: reviewed); drag = 0 }
     }
 }
 
@@ -349,18 +363,7 @@ private struct ConversationView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .safeAreaInset(edge: .bottom) {
-                Button { dismiss() } label: {
-                    HStack {
-                        Image(systemName: "slider.horizontal.3")
-                        Text("Steer this agent").fontWeight(.medium)
-                        Spacer()
-                        Image(systemName: "arrow.up").fontWeight(.semibold)
-                            .frame(width: 36, height: 36).background(Ink.accent, in: Circle()).foregroundStyle(Ink.background)
-                    }.padding(12).padding(.leading, 8)
-                        .background(Ink.surface, in: Capsule())
-                }.buttonStyle(.plain).padding(.horizontal, 20).padding(.vertical, 12).background(Ink.background)
-            }
+
         }.foregroundStyle(Ink.text).frame(minWidth: 340, minHeight: 520).presentationDetents([.large]).presentationDragIndicator(.visible)
     }
 }

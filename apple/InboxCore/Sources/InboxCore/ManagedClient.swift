@@ -96,9 +96,10 @@ public final class ManagedClient: @unchecked Sendable {
         let path = try Self.agentPath(id) + "/events/history?limit=128" + (before.map { "&before=" + $0.rawValue } ?? "")
         return try EventPage(try await json(path: path))
     }
-    public func command(_ command: AgentCommand) async throws {
+    @discardableResult
+    public func command(_ command: AgentCommand) async throws -> JSON {
         let spec = try command.requestSpec()
-        _ = try await json(path: spec.path, method: "POST", body: spec.body, idempotencyKey: spec.key)
+        return try await json(path: spec.path, method: "POST", body: spec.body, idempotencyKey: spec.key)
     }
     public func create(requestID: String) async throws -> String {
         let body = try await json(path: "/v1/agents", method: "POST", body: .object([:]), idempotencyKey: requestID)

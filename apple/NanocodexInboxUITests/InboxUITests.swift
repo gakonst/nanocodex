@@ -1,52 +1,141 @@
 import XCTest
 
 final class InboxUITests: XCTestCase {
-    func testSwipeDraftAndSteerJourney() throws {
+    private func launch(_ environment: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
+        app.launchEnvironment = ["NANOCODEX_DEMO_COMPLETE_AFTER_MS": "120000", "NANOCODEX_DEMO_DELAY_MS": "600"].merging(environment) { _, new in new }
         app.launch()
         XCTAssertTrue(app.staticTexts["agent-title"].waitForExistence(timeout: 10))
+        return app
+    }
+    private func composer(_ app: XCUIApplication) -> XCUIElement {
+        app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
+    }
+    private func selectInbox(_ app: XCUIApplication) {
+        app.buttons["Browse agents"].tap()
+        app.buttons.containing(.staticText, identifier: "Build the agent inbox").firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["agent-title"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.staticTexts["agent-title"].label, "Build the agent inbox")
+    }
+    private func queue(_ app: XCUIApplication, _ text: String) {
+        composer(app).tap(); composer(app).typeText(text)
+        app.buttons["send"].tap()
+    }
+    private func gone(_ element: XCUIElement, timeout: TimeInterval = 8) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed)
+    }
+    private func thread(_ app: XCUIApplication, contains text: String) {
+        app.staticTexts["agent-title"].tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        let message = app.staticTexts[text]
+        if !message.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+    }
+    func testSwipeDraftAndSteerJourney() {
+        let app = launch()
         capture(app, "01-agent-inbox")
         let original = app.staticTexts["agent-title"].label
-        let composer = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
-        composer.tap(); composer.typeText("Check the reconnect boundary")
+        composer(app).tap(); composer(app).typeText("Check the reconnect boundary")
         capture(app, "02-agent-draft")
-        app.buttons["later"].tap()
+        app.otherElements["agent-card"].swipeLeft()
         XCTAssertNotEqual(app.staticTexts["agent-title"].label, original)
+        app.otherElements["agent-card"].press(forDuration: 1)
         app.buttons["Previous agent"].tap()
         XCTAssertEqual(app.staticTexts["agent-title"].label, original)
-        XCTAssertEqual(composer.value as? String, "Check the reconnect boundary")
+        XCTAssertEqual(composer(app).value as? String, "Check the reconnect boundary")
         capture(app, "03-draft-restored")
-        app.buttons["send"].tap()
-        XCTAssertTrue(app.staticTexts["notice"].label.contains("Demo action"))
-        app.buttons["filter-Running"].tap()
-        XCTAssertTrue(app.staticTexts["agent-title"].exists)
-        XCTAssertEqual(app.buttons["send"].label, "Send steering")
+        selectInbox(app)
         app.buttons["Stop turn"].tap()
-        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 3))
-        app.buttons["Cancel"].tap()
-        composer.tap(); composer.typeText("Prioritize reconnect and keep the UI minimal")
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 3)); app.buttons["Cancel"].tap()
+        composer(app).tap(); composer(app).typeText("Prioritize reconnect and keep the UI minimal")
         XCTAssertTrue(app.staticTexts["agent-preview"].exists)
-        XCTAssertGreaterThanOrEqual(app.otherElements["agent-card"].frame.minY, app.frame.minY + 44)
         XCTAssertLessThanOrEqual(app.buttons["send"].frame.maxY, app.keyboards.firstMatch.frame.minY)
         capture(app, "04-steer-running-agent")
         app.buttons["send"].tap()
-        XCTAssertTrue(app.staticTexts["notice"].label.contains("Direction updated"))
-        app.buttons["open-thread"].tap()
-        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        capture(app, "07-queued-message")
+        app.otherElements["agent-card"].swipeLeft()
+        XCTAssertFalse(app.staticTexts["pending-message"].exists)
+        selectInbox(app)
+        thread(app, contains: "Prioritize reconnect and keep the UI minimal")
         capture(app, "05-conversation")
         app.buttons["Done"].tap()
-        #if os(iOS)
-        let runningTitle = app.staticTexts["agent-title"].label
-        app.otherElements["agent-card"].swipeLeft()
-        XCTAssertNotEqual(app.staticTexts["agent-title"].label, runningTitle)
-        #endif
+        app.buttons["steer-now"].doubleTap()
+        gone(app.staticTexts["pending-message"])
+        thread(app, contains: "Prioritize reconnect and keep the UI minimal")
+        app.buttons["Done"].tap()
+        let current = app.staticTexts["agent-title"].label
+        app.otherElements["agent-card"].swipeRight()
+        XCTAssertNotEqual(app.staticTexts["agent-title"].label, current)
         capture(app, "06-next-running-agent")
+    }
+    func testFailedSubmissionRetainsMessageAndRetriesOnce() {
+        let app = launch(["NANOCODEX_DEMO_FAIL_ONCE": "submit"])
+        selectInbox(app); queue(app, "Retry only once")
+        XCTAssertTrue(app.buttons["retry-pending"].waitForExistence(timeout: 5))
+        app.otherElements["agent-card"].swipeLeft(); selectInbox(app)
+        app.buttons["retry-pending"].doubleTap()
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        thread(app, contains: "Retry only once")
+    }
+    func testFailedCancellationCanRetryWithoutDuplicateInput() {
+        let app = launch(["NANOCODEX_DEMO_FAIL_ONCE": "cancel"])
+        selectInbox(app); queue(app, "Keep the captured target")
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        app.buttons["steer-now"].tap()
+        XCTAssertTrue(app.staticTexts["Cancellation unconfirmed. The queued message is retained; try again."].waitForExistence(timeout: 5))
+        app.buttons["steer-now"].tap(); gone(app.staticTexts["pending-message"])
+        thread(app, contains: "Keep the captured target")
+    }
+    func testPendingSurvivesRelaunchAndCanBeCancelled() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
+        selectInbox(app); queue(app, "Survive restart")
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.staticTexts["agent-title"].waitForExistence(timeout: 10))
+        selectInbox(app)
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        app.buttons["Cancel queued message"].tap(); gone(app.staticTexts["pending-message"])
+        XCTAssertTrue(app.buttons["Stop turn"].exists, "Cancelling the queued message keeps its predecessor running")
+        thread(app, contains: "Survive restart")
+    }
+    func testQueuedMessageStartsNaturallyWhileReadingThread() {
+        let app = launch(["NANOCODEX_DEMO_COMPLETE_AFTER_MS": "2500"])
+        selectInbox(app); queue(app, "Continue naturally")
+        thread(app, contains: "Continue naturally")
+        XCTAssertTrue(app.staticTexts["Working on: Continue naturally"].waitForExistence(timeout: 8))
+        app.buttons["Done"].tap()
+        XCTAssertEqual(app.staticTexts["agent-title"].label, "Build the agent inbox")
+        XCTAssertFalse(app.staticTexts["pending-message"].exists)
+    }
+    func testVoiceSlideDownPreservesAgentDraft() {
+        let app = launch(); selectInbox(app)
+        composer(app).tap(); composer(app).typeText("Existing draft.")
+        app.buttons["Voice input"].tap()
+        XCTAssertTrue(app.staticTexts["voice-transcript"].waitForExistence(timeout: 5))
+        capture(app, "08-voice-input")
+        app.staticTexts["Voice · Demo"].swipeDown()
+        gone(app.staticTexts["voice-transcript"])
+        XCTAssertEqual(composer(app).value as? String, "Existing draft.\nCheck reconnect first, then simplify the inbox")
+        app.otherElements["agent-card"].swipeLeft(); selectInbox(app)
+        XCTAssertTrue((composer(app).value as? String)?.contains("Check reconnect first") == true)
+        app.buttons["send"].tap()
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        capture(app, "09-voice-queued")
+    }
+    func testVoiceUnavailableKeepsTypedDraft() {
+        let app = launch(["NANOCODEX_DEMO_VOICE_ERROR": "1"])
+        composer(app).tap(); composer(app).typeText("Keep my typing")
+        app.buttons["Voice input"].tap()
+        XCTAssertTrue(app.staticTexts["voice-error"].waitForExistence(timeout: 5))
+        app.buttons["Use voice draft"].tap()
+        XCTAssertEqual(composer(app).value as? String, "Keep my typing")
     }
     private func capture(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 }

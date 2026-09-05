@@ -22,6 +22,10 @@ final class InboxModel: ObservableObject {
     @Published var loadingOlder = false
     @Published var selectedTurn = ""
     @Published var isCreating = false
+    @Published var pending: [PendingMessage] = []
+    private var pinnedThreadID: String?
+    private var demoRows: [String: [TranscriptRow]] = [:]
+    private var demoFaults = Set<String>()
     private var client: ManagedClient?
     private var polling: Task<Void, Never>?
     private var streaming: Task<Void, Never>?
@@ -47,6 +51,9 @@ final class InboxModel: ObservableObject {
     var attentionCount: Int { cards.filter { $0.needsAttention(seen: seenCursor($0.id)) }.count }
     var runningCount: Int { cards.filter(\.isRunning).count }
     var focusedTurn: String { focused?.activeTurns.contains(selectedTurn) == true ? selectedTurn : focused?.activeTurns.first ?? "" }
+    var focusedPending: [PendingMessage] { pending.filter { $0.agentID == focused?.id } }
+    func openThread() { pinnedThreadID = focused?.id }
+    func closeThread() { pinnedThreadID = nil; reconcile() }
     var canGoBack: Bool { !navigation.isEmpty }
     var canRetry: Bool { focused.flatMap { retries[$0.id] }?.kind == .followUp }
     var draft: String {
@@ -77,6 +84,7 @@ final class InboxModel: ObservableObject {
         scope = SHA256.hash(data: Data((credential.origin + ":" + String(credential.apiKey.prefix(21))).utf8)).map { String(format: "%02x", $0) }.joined()
         drafts = UserDefaults.standard.dictionary(forKey: "inbox.drafts." + scope) as? [String: String] ?? [:]
         seen = UserDefaults.standard.dictionary(forKey: "inbox.seen." + scope) as? [String: String] ?? [:]
+        restorePending()
         cards = initial; connected = true; connection = "Connecting"; reconcile(); resume()
     }
     func disconnect() throws {
@@ -88,7 +96,7 @@ final class InboxModel: ObservableObject {
         projection?.cancel(); projection = nil; eventBytes = []; retainedBytes = 0; navigation = []; deferred = [:]
         connected = false; isDemo = false; cards = []; deck = InboxDeck(); rows = []; events = []; drafts = [:]; seen = [:]
         scope = ""; error = nil; notice = nil; busy = []; retries = [:]; createID = nil; isCreating = false; refreshing = false
-        hasOlder = false; loadingOlder = false; connection = "Disconnected"
+        hasOlder = false; loadingOlder = false; connection = "Disconnected"; pending = []; pinnedThreadID = nil; demoRows = [:]; demoFaults = []
     }
     func setActive(_ active: Bool) {
         isActive = active
@@ -145,7 +153,10 @@ final class InboxModel: ObservableObject {
                 for update in updates {
                     guard let index = cards.firstIndex(where: { $0.id == update.id }) else { continue }
                     if let state = update.state, let page = update.page {
-                        do { try cards[index].apply(state: state); cards[index].apply(events: page.events) }
+                        do {
+                            try cards[index].apply(state: state); cards[index].apply(events: page.events)
+                            reconcilePending(id: update.id, events: page.events, state: cards[index])
+                        }
                         catch { cards[index].error = error.localizedDescription }
                     } else { cards[index].error = update.failure }
                 }
@@ -161,6 +172,7 @@ final class InboxModel: ObservableObject {
     private func reconcile() {
         let previous = deck.focusedID
         let eligible = cards.filter { card in
+            if card.id == pinnedThreadID { return true }
             switch filter {
             case .inbox: return card.isRunning || !card.checked || card.latestCursor > (seenCursor(card.id) ?? .zero)
             case .running: return card.isRunning
@@ -203,7 +215,7 @@ final class InboxModel: ObservableObject {
     private func observeFocused() {
         streaming?.cancel(); projection?.cancel(); projection = nil; observation = UUID(); loadingOlder = false; rows = []; events = []; eventBytes = []; retainedBytes = 0; cursor = .zero; olderBefore = nil; hasOlder = false; selectedTurn = ""
         guard let id = deck.focusedID else { return }
-        if isDemo { rows = DemoContent.rows(id); connection = "Demo"; return }
+        if isDemo { rows = demoRows[id] ?? DemoContent.rows(id); connection = "Demo"; return }
         guard let client, isActive else { return }
         let epoch = generation, token = observation
         connection = "Connecting"
@@ -217,7 +229,7 @@ final class InboxModel: ObservableObject {
                         let page = try await client.history(id)
                         guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
                         self.events = page.events; self.hasOlder = page.hasMore; self.measureEvents(); self.cursor = page.latest; self.olderBefore = self.events.first?.cursor
-                        self.rows = transcript(self.events); loaded = true
+                        self.rows = transcript(self.events); self.reconcilePending(id: id, events: self.events); loaded = true
                     }
                     try await client.stream(id, after: self.cursor) { [weak self] frame in
                         await self?.receive(frame, id: id, epoch: epoch, token: token)
@@ -240,6 +252,7 @@ final class InboxModel: ObservableObject {
         guard generation == epoch, observation == token else { return }
         if let event = frame.event, event.cursor > cursor {
             events.append(event)
+            reconcilePending(id: id, events: [event])
             let bytes = (try? JSONEncoder().encode(event.data).count) ?? 0
             eventBytes.append(bytes); retainedBytes += bytes
             // Token arrival never re-encodes the complete transcript on the main actor.
@@ -284,12 +297,157 @@ final class InboxModel: ObservableObject {
             if olderBefore == before { hasOlder = false; notice = "History limit reached. Earlier messages remain available on the service." }
         } catch { if token == observation { self.error = error.localizedDescription } }
     }
-    func send(steer: Bool) async {
-        guard let card = focused, !busy.contains(card.id), !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let command: AgentCommand
-        if !steer, let retry = retries[card.id], retry.kind == .followUp, retry.input == draft { command = retry }
-        else { command = AgentCommand(agentID: card.id, turnID: focusedTurn, input: draft, kind: steer ? .steer : .followUp) }
-        await perform(command)
+    // Reserve identity and the busy slot synchronously at the tap, before a swipe
+    // or another tap can change focus. The server owns the queued follow-up.
+    func appendVoiceDraft(_ text: String, agentID: String) {
+        let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spoken.isEmpty, cards.contains(where: { $0.id == agentID }) else { return }
+        let existing = drafts[agentID] ?? ""
+        drafts[agentID] = existing + (existing.isEmpty ? "" : "\n") + spoken
+        persist()
+    }
+    func send() {
+        guard let card = focused, !busy.contains(card.id) else { return }
+        let input = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty else { return }
+        let predecessor = focusedPending.last?.id ?? focusedTurn
+        let message = PendingMessage(agentID: card.id, input: input, predecessor: predecessor)
+        pending.append(message); drafts[card.id] = ""; busy.insert(card.id); notice = nil; persist()
+        let epoch = generation
+        Task { await submit(message, epoch: epoch) }
+    }
+    func retryPending(_ id: String) {
+        guard let index = pending.firstIndex(where: { $0.id == id }), pending[index].phase == .failed,
+              !busy.contains(pending[index].agentID) else { return }
+        pending[index].phase = .submitting; pending[index].error = nil
+        let message = pending[index], epoch = generation
+        busy.insert(message.agentID); persist()
+        Task { await submit(message, epoch: epoch) }
+    }
+    private func submit(_ message: PendingMessage, epoch: UUID) async {
+        defer { if generation == epoch { busy.remove(message.agentID) } }
+        do {
+            let receipt = try await execute(message.submission)
+            guard generation == epoch else { return }
+            guard receipt["turn_id"].string == message.id else { throw APIError.invalidResponse }
+            if let index = pending.firstIndex(where: { $0.id == message.id }) {
+                pending[index].phase = .queued
+                pending[index].acceptedCursor = Cursor(rawValue: receipt["cursor"].string.isEmpty ? receipt["accepted_cursor"].string : receipt["cursor"].string)
+            }
+            if ["completed", "cancelled", "failed"].contains(receipt["state"].string) {
+                pending.removeAll { $0.id == message.id }
+            }
+            persist()
+            if isDemo {
+                demoAdmit(message)
+                notice = "Demo action · Follow-up queued"
+            } else { await refresh() }
+        } catch {
+            guard generation == epoch else { return }
+            if let index = pending.firstIndex(where: { $0.id == message.id }) {
+                pending[index].phase = .failed
+                pending[index].error = "Delivery unconfirmed. Retry checks the same message; it won't create another one."
+                persist()
+            }
+        }
+    }
+    func steerNow(_ id: String) {
+        guard let message = pending.first(where: { $0.id == id }),
+              pending.first(where: { $0.agentID == message.agentID })?.id == id,
+              let command = message.interruption, !busy.contains(message.agentID) else { return }
+        controlPending(message, command: command, phase: .starting)
+    }
+    func cancelPending(_ id: String) {
+        guard let message = pending.first(where: { $0.id == id }), !busy.contains(message.agentID) else { return }
+        controlPending(message, command: AgentCommand(agentID: message.agentID, turnID: message.id, kind: .stop), phase: .cancelling)
+    }
+    private func controlPending(_ message: PendingMessage, command: AgentCommand, phase: PendingMessage.Phase) {
+        guard let index = pending.firstIndex(where: { $0.id == message.id }) else { return }
+        pending[index].phase = phase; pending[index].error = nil; busy.insert(message.agentID); persist()
+        let epoch = generation
+        Task {
+            defer { if generation == epoch { busy.remove(message.agentID) } }
+            do {
+                let receipt = try await execute(command)
+                guard generation == epoch else { return }
+                if command.turnID == message.id, ["completed", "cancelled", "failed"].contains(receipt["state"].string) {
+                    pending.removeAll { $0.id == message.id }; persist()
+                }
+                if isDemo { demoFinish(agentID: message.agentID, turnID: command.turnID) }
+                else { await refresh() }
+                // An acknowledgement means cancellation was requested, not that
+                // it finished. Keep the row until its own start/terminal event.
+            } catch {
+                guard generation == epoch else { return }
+                if let index = pending.firstIndex(where: { $0.id == message.id }) {
+                    pending[index].phase = message.phase
+                    pending[index].error = "Cancellation unconfirmed. The queued message is retained; try again."
+                    persist()
+                }
+            }
+        }
+    }
+    private func reconcilePending(id: String, events: [AgentEvent], state: AgentCard? = nil) {
+        let previousCount = pending.count
+        pending.removeAll { message in
+            message.agentID == id && (message.hasStarted(in: events)
+                || state.map { message.hasFinished(activeTurns: $0.activeTurns, stateCursor: $0.stateCursor) } == true)
+        }
+        if pending.count != previousCount { persist() }
+    }
+    private func restorePending() {
+        if let data = UserDefaults.standard.data(forKey: "inbox.pending." + scope),
+           let saved = try? JSONDecoder().decode([PendingMessage].self, from: data) {
+            pending = saved
+            for index in pending.indices { pending[index].restore() }
+        }
+    }
+    private func execute(_ command: AgentCommand) async throws -> JSON {
+        if isDemo {
+            let delay = Int(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_DELAY_MS"] ?? "200") ?? 200
+            try await Task.sleep(for: .milliseconds(delay))
+            let fault = command.kind == .stop ? "cancel" : "submit"
+            if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_FAIL_ONCE"] == fault, demoFaults.insert(fault).inserted {
+                throw APIError.http(503)
+            }
+            return .object(["turn_id": .string(command.kind == .followUp ? command.requestID : command.turnID), "state": .string(command.kind == .stop ? "cancelling" : "accepted")])
+        }
+        guard let client else { throw APIError.invalidResponse }
+        return try await client.command(command)
+    }
+    private func demoAdmit(_ message: PendingMessage) {
+        guard let index = cards.firstIndex(where: { $0.id == message.agentID }) else { return }
+        if !cards[index].activeTurns.contains(message.id) { cards[index].activeTurns.append(message.id) }
+        cards[index].status = "Running"
+        var history = demoRows[message.agentID] ?? DemoContent.rows(message.agentID)
+        if !history.contains(where: { $0.id == message.id }) { history.append(.init(id: message.id, role: "You", text: message.input)) }
+        demoRows[message.agentID] = history
+        if focused?.id == message.agentID { rows = history }
+        if message.predecessor.isEmpty { pending.removeAll { $0.id == message.id } }
+        else {
+            let epoch = generation
+            let delay = Int(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_COMPLETE_AFTER_MS"] ?? "15000") ?? 15000
+            Task {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard generation == epoch, cards.contains(where: { $0.id == message.agentID && $0.activeTurns.contains(message.predecessor) }) else { return }
+                demoFinish(agentID: message.agentID, turnID: message.predecessor)
+            }
+        }
+        persist()
+    }
+    private func demoFinish(agentID: String, turnID: String) {
+        guard let index = cards.firstIndex(where: { $0.id == agentID }) else { return }
+        cards[index].activeTurns.removeAll { $0 == turnID }
+        pending.removeAll { $0.agentID == agentID && $0.id == turnID }
+        if let next = pending.first(where: { $0.agentID == agentID && $0.predecessor == turnID && $0.phase != .failed && $0.phase != .submitting }) {
+            pending.removeAll { $0.id == next.id }
+            var history = demoRows[agentID] ?? DemoContent.rows(agentID)
+            history.append(.init(id: "started-" + next.id, role: "Agent", text: "Working on: " + next.input, running: true))
+            demoRows[agentID] = history; cards[index].preview = "Working on: " + next.input
+            if focused?.id == agentID { rows = history }
+        }
+        cards[index].status = cards[index].isRunning ? "Running" : "Stopped"
+        persist(); reconcile()
     }
     func stop(agentID: String, turnID: String) async {
         guard !turnID.isEmpty else { return }
@@ -298,19 +456,13 @@ final class InboxModel: ObservableObject {
     func retry() async { if let id = focused?.id, let command = retries[id], command.kind == .followUp { await perform(command) } }
     private func perform(_ command: AgentCommand) async {
         guard !busy.contains(command.agentID) else { return }
-        if isDemo {
-            if command.kind == .stop, let index = cards.firstIndex(where: { $0.id == command.agentID }) { cards[index].activeTurns = []; cards[index].status = "Stopped" }
-            else { rows.append(.init(id: UUID().uuidString, role: "You", text: command.input)); drafts[command.agentID] = "" }
-            notice = "Demo action · " + (command.kind == .steer ? "Direction updated" : command.kind == .stop ? "Stopped" : "Follow-up queued")
-            return
-        }
-        guard let client else { return }
         let epoch = generation
         busy.insert(command.agentID); error = nil
         defer { if generation == epoch { busy.remove(command.agentID) } }
         do {
-            try await client.command(command)
+            _ = try await execute(command)
             guard generation == epoch else { return }
+            if isDemo, command.kind == .stop { demoFinish(agentID: command.agentID, turnID: command.turnID) }
             if command.kind != .stop, drafts[command.agentID] == command.input { drafts[command.agentID] = ""; persist() }
             retries.removeValue(forKey: command.agentID)
             notice = command.kind == .steer ? "Direction sent" : command.kind == .stop ? "Stop requested" : "Follow-up accepted"
@@ -338,13 +490,28 @@ final class InboxModel: ObservableObject {
         } catch { if generation == epoch { self.error = error.localizedDescription } }
     }
     private func persist() {
-        guard !isDemo, !scope.isEmpty else { return }
+        guard !scope.isEmpty else { return }
         UserDefaults.standard.set(drafts, forKey: "inbox.drafts." + scope)
         UserDefaults.standard.set(seen, forKey: "inbox.seen." + scope)
+        if let data = try? JSONEncoder().encode(pending) { UserDefaults.standard.set(data, forKey: "inbox.pending." + scope) }
+        if isDemo {
+            if let data = try? JSONEncoder().encode(demoRows) { UserDefaults.standard.set(data, forKey: "inbox.demoRows." + scope) }
+            UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: cards.map { ($0.id, $0.activeTurns) }), forKey: "inbox.demoTurns." + scope)
+        }
     }
     func demo() {
         reset(); isDemo = true; connected = true; connection = "Demo"
-        cards = DemoContent.cards(); reconcile(); observeFocused()
+        cards = DemoContent.cards()
+        if let profile = ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] {
+            scope = "demo." + profile
+            restorePending()
+            drafts = UserDefaults.standard.dictionary(forKey: "inbox.drafts." + scope) as? [String: String] ?? [:]
+            if let data = UserDefaults.standard.data(forKey: "inbox.demoRows." + scope) { demoRows = (try? JSONDecoder().decode([String: [TranscriptRow]].self, from: data)) ?? [:] }
+            if let turns = UserDefaults.standard.dictionary(forKey: "inbox.demoTurns." + scope) as? [String: [String]] {
+                for index in cards.indices { cards[index].activeTurns = turns[cards[index].id] ?? cards[index].activeTurns }
+            }
+        }
+        reconcile(); observeFocused()
     }
 }
 

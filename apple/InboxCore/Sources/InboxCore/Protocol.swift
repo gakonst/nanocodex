@@ -105,7 +105,7 @@ public struct SSEParser: Sendable {
     }
 }
 
-public struct TranscriptRow: Identifiable, Equatable, Sendable {
+public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public var role: String
     public var text: String
