@@ -148,7 +148,14 @@ export class BrowserControl {
         } else if (operation === "key") {
           const keys: Record<string, number> = { Enter: 13, Tab: 9, Backspace: 8, Escape: 27, ArrowDown: 40, ArrowUp: 38, ArrowLeft: 37, ArrowRight: 39 };
           if (typeof body.key !== "string" || !Object.hasOwn(keys, body.key)) return reply({ error: "invalid_key" }, 400);
-          for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: body.key, windowsVirtualKeyCode: keys[body.key] });
+          // Chromium needs Enter's character payload to perform the default action
+          // (form submission/newline), not just a keydown notification.
+          await send("Input.dispatchKeyEvent", {
+            type: body.key === "Enter" ? "keyDown" : "rawKeyDown",
+            key: body.key, code: body.key, windowsVirtualKeyCode: keys[body.key],
+            ...(body.key === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}),
+          });
+          await send("Input.dispatchKeyEvent", { type: "keyUp", key: body.key, code: body.key, windowsVirtualKeyCode: keys[body.key] });
         } else return reply({ error: "not_found" }, 404);
         return reply({ ok: true });
       } catch {
