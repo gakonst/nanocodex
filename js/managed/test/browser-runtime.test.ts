@@ -53,7 +53,7 @@ describe("managed browser deployment policy", () => {
     });
     const binding = { fetch: vi.fn(async () => new Response()) };
     const runtime = await createManagedBrowserRuntime({
-      ctx: { storage: {} } as DurableObjectState,
+      ctx: { storage: { get: vi.fn(async () => undefined), put: vi.fn(async () => undefined) } } as unknown as DurableObjectState,
       env: {
         BROWSER: binding,
         LOADER: {} as WorkerLoader,
@@ -64,7 +64,7 @@ describe("managed browser deployment policy", () => {
     });
 
     expect(runtime.provider).toBe("cloudflare");
-    expect(runtime.tools.map(({ name }) => name)).toEqual(["browser_execute"]);
+    expect(runtime.tools.map(({ name }) => name)).toEqual(["browser_execute", "browser_handoff"]);
     expect(received?.browser).toBeInstanceOf(CredentialSafeBrowserBinding);
     expect(received?.loader).toBeDefined();
     expect(received?.quickActions).toBe(false);

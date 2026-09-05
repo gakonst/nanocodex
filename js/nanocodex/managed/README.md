@@ -237,3 +237,45 @@ Deleting an agent removes its triggers. Portable durability export currently
 returns `409 cron_triggers_present` while any trigger or pending delivery exists: delete
 triggers and let claimed deliveries finish before transfer, then recreate schedules at the destination. This avoids
 silently dropping schedules or running the same schedule on two agents.
+
+
+## Cloud browser control (experimental)
+
+The Cloud browser button in an account agent opens an owner-only page viewer.
+It uses the same retained Cloudflare browser session as `browser_execute`.
+The panel supports tab selection, navigation, refreshed screenshots, click/touch,
+scroll, private input, and common keyboard keys. This is currently a screenshot
+viewer, not a video stream.
+
+`browser_handoff({ reason })` pauses the browser task until the owner selects
+**Return to agent**. The control gate is persisted in the session Durable Object;
+model browser operations cannot run while the owner controls the page. Returning
+control rotates its generation, rejecting input from stale clients. A completed
+handoff call is remembered to avoid prompting again if that call is replayed.
+The model must inspect the resulting page: returning control does not establish
+that sign-in succeeded.
+
+```ts
+const view = await agent.browser.state();
+const control = await agent.browser.takeover();
+const frame = await agent.browser.action("frame", {
+  target: view.tabs[0].id,
+  generation: control.generation,
+});
+await agent.browser.release(control.generation);
+```
+
+These routes require full account authority with `agents:read`, `agents:write`,
+and `tools:use`; Connect grants cannot view or operate a signed-in browser.
+Mutations apply the existing same-origin checks. Private input travels through
+the owner API, never through an agent tool argument or conversation event.
+The trusted executor checks the destination URL and focused field before filling;
+CDP errors are replaced with generic errors and debug buffers are cleared.
+
+Current limitations: no external password-manager integration or structured login
+form yet; private input cannot fill cross-origin iframe fields; no profile sharing
+between agents or restoration of logins after Chromium expires. Closing the panel
+leaves human control active, allowing reconnection. Return control explicitly.
+If the browser expires, return control so the agent can reopen the page and ask
+for authentication again. Test real sign-in, Worker restart/replay, mobile input,
+and reload/reconnect before enabling production use.

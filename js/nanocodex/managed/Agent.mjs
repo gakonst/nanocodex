@@ -240,6 +240,15 @@ function agentHandle(client, id, summary) {
         body: managedSettingsPatch(patch),
       })).settings),
     }),
+    browser: Object.freeze({
+      state: () => client.json(`${agentPath(id)}/browser`),
+      takeover: () => client.json(`${agentPath(id)}/browser/takeover`, { method: "POST", body: "{}" }),
+      release: (generation) => client.json(`${agentPath(id)}/browser/release`, { method: "POST", body: JSON.stringify({ generation }) }),
+      action: (operation, input) => {
+        if (!["frame", "navigate", "click", "scroll", "type", "key"].includes(operation)) throw new TypeError("Unknown browser operation");
+        return client.json(`${agentPath(id)}/browser/${operation}`, { method: "POST", body: JSON.stringify(input) });
+      },
+    }),
     triggers: Object.freeze({
       list: async () => {
         const body = await client.json(`${agentPath(id)}/triggers`);
