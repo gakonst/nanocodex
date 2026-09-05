@@ -996,7 +996,9 @@ describe("local WebAuthn credential portability", () => {
 });
 
 describe("manual credential vault account boundary", () => {
-  it("requires a persistent same-origin session and forwards only validated JSON", async () => {
+  it.each(["login", "api_key"])("requires a persistent same-origin session and forwards only validated JSON (%s)", async (kind) => {
+    const payload = kind === "api_key" ? { name: "Example", api_key: "secret" }
+      : { name: "Example", username: "person", password: "secret" };
     const local = portableEnv();
     const sessionToken = "9".repeat(64);
     local.set("webauthn", `session:${sessionToken}`, {
@@ -1012,7 +1014,7 @@ describe("manual credential vault account boundary", () => {
         const request = new Request(input, init);
         seen.push(request);
         return request.method === "POST"
-          ? Response.json({ id: "v".repeat(32), kind: "login", name: "Example", created_at: 1 }, {
+          ? Response.json({ id: "v".repeat(32), kind, name: "Example", created_at: 1 }, {
               status: 201,
             })
           : new Response(null, { status: 204 });
@@ -1020,7 +1022,7 @@ describe("manual credential vault account boundary", () => {
     } as Fetcher;
     const credentialEnv = { ...local.env, NANOCODEX: binding };
     const origin = "http://nanocodex.localhost:20735";
-    const url = new URL("/v1/credentials/vault/login", origin);
+    const url = new URL(`/v1/credentials/vault/${kind}`, origin);
     const headers = {
       cookie: `nanocodex_account=${sessionToken}`,
       "content-type": "application/json; charset=utf-8",
@@ -1029,36 +1031,32 @@ describe("manual credential vault account boundary", () => {
     const created = await routeCredentialRequest(new Request(url, {
       method: "POST",
       headers,
-      body: JSON.stringify({ name: "Example", username: "person", password: "secret" }),
+      body: JSON.stringify(payload),
     }), credentialEnv, url);
     expect(created?.status).toBe(201);
     expect(seen).toHaveLength(1);
     expect(seen[0]!.url).toBe(
-      `https://broker.internal/users/${USER_ID}/credentials/vault/login`,
+      `https://broker.internal/users/${USER_ID}/credentials/vault/${kind}`,
     );
     expect(seen[0]!.headers.get("content-type")).toBe("application/json");
-    expect(await seen[0]!.json()).toEqual({
-      name: "Example",
-      username: "person",
-      password: "secret",
-    });
+    expect(await seen[0]!.json()).toEqual(payload);
 
     const unauthenticated = await routeCredentialRequest(new Request(url, {
       method: "POST",
       headers: { "content-type": "application/json", origin },
-      body: JSON.stringify({ name: "Example", username: "person", password: "secret" }),
+      body: JSON.stringify(payload),
     }), credentialEnv, url);
     expect(unauthenticated?.status).toBe(401);
 
     const crossOrigin = await routeCredentialRequest(new Request(url, {
       method: "POST",
       headers: { ...headers, origin: "https://attacker.example" },
-      body: JSON.stringify({ name: "Example", username: "person", password: "secret" }),
+      body: JSON.stringify(payload),
     }), credentialEnv, url);
     expect(crossOrigin?.status).toBe(403);
     expect(seen).toHaveLength(1);
 
-    const deleteUrl = new URL(`/v1/credentials/vault/login/${"v".repeat(32)}`, origin);
+    const deleteUrl = new URL(`/v1/credentials/vault/${kind}/${"v".repeat(32)}`, origin);
     const removed = await routeCredentialRequest(new Request(deleteUrl, {
       method: "DELETE",
       headers: { cookie: headers.cookie, origin },

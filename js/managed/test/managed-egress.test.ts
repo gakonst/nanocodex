@@ -11,7 +11,7 @@ const VAULT_ID = "v".repeat(22);
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Computer egress gateway", () => {
-  it("routes only vault references and placeholders through the private binding", async () => {
+  it.each(["PASSWORD", "API_KEY"])("routes only vault references and placeholders through the private binding (%s)", async (key) => {
     const seen: Request[] = [];
     const binding = {
       async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -24,7 +24,7 @@ describe("Computer egress gateway", () => {
     const gateway = testGateway(binding);
     const body = JSON.stringify({
       username: "{{NANOCODEX_VAULT_USERNAME}}",
-      password: "{{NANOCODEX_VAULT_PASSWORD}}",
+      password: `{{NANOCODEX_VAULT_${key}}}`,
     });
 
     const response = await gateway.fetch("https://accounts.example/session", {
@@ -32,7 +32,7 @@ describe("Computer egress gateway", () => {
       headers: {
         authorization: "Basic {{NANOCODEX_VAULT_BASIC}}",
         "content-type": "application/json",
-        "x-api-key": "{{NANOCODEX_VAULT_PASSWORD}}",
+        "x-api-key": `{{NANOCODEX_VAULT_${key}}}`,
         "x-nanocodex-vault-id": VAULT_ID,
       },
       body,
@@ -53,7 +53,7 @@ describe("Computer egress gateway", () => {
       headers: {
         authorization: "Basic {{NANOCODEX_VAULT_BASIC}}",
         "content-type": "application/json",
-        "x-api-key": "{{NANOCODEX_VAULT_PASSWORD}}",
+        "x-api-key": `{{NANOCODEX_VAULT_${key}}}`,
       },
       body,
     });

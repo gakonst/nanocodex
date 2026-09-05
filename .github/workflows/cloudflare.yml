@@ -83,6 +83,11 @@ jobs:
             --filter @nanocodex/connect-dialog \
             --filter @nanocodex/connect-playground \
             --filter nanocodex-web
+      - name: Exercise cloud browser without a model login
+        working-directory: js/managed
+        env:
+          NANOCODEX_LIVE_BROWSER: "true"
+        run: pnpm exec vitest run test/browser-control.live.test.ts
       - name: Build Astra trial application
         run: npm run build:client --prefix examples/astra-mpp-trial
       # Cloudflare does not issue preview URLs for Durable Object or container

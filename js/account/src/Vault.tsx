@@ -35,6 +35,7 @@ const sections: readonly Readonly<{
   addLabel: string;
 }>[] = [
   { kind: "login", title: "Logins", addLabel: "Add login" },
+  { kind: "api_key", title: "API keys", addLabel: "Add API key" },
   { kind: "card", title: "Cards", addLabel: "Add card" },
   { kind: "address", title: "Addresses", addLabel: "Add address" },
   { kind: "phone", title: "Phones", addLabel: "Add phone" },
@@ -276,7 +277,7 @@ function VaultEntryDialog({
     const data = new FormData(event.currentTarget);
     const values = Object.fromEntries(
       [...data.entries()].flatMap(([key, value]) => typeof value === "string" && value.trim()
-        ? [[key, key === "password" ? value : value.trim()]]
+        ? [[key, key === "password" || key === "api_key" ? value : value.trim()]]
         : []),
     );
     void onSave(kind, values);
@@ -289,7 +290,7 @@ function VaultEntryDialog({
       <section aria-labelledby={titleId} aria-modal="true" className="vault-dialog" ref={dialogRef} role="dialog">
         <header>
           <div>
-            <h2 id={titleId}>Add {labelForKind(kind).toLowerCase()}</h2>
+            <h2 id={titleId}>Add {kind === "api_key" ? "API key" : labelForKind(kind).toLowerCase()}</h2>
             <p>Values are encrypted in your vault.</p>
           </div>
           <button aria-label="Close" disabled={busy} onClick={onClose} type="button"><X aria-hidden="true" /></button>
@@ -310,6 +311,7 @@ function VaultEntryDialog({
 }
 
 function fieldsForKind(kind: VaultEntryKind): ReactNode {
+  if (kind === "api_key") return <VaultField autoCapitalize="none" autoComplete="off" label="API key" maxLength={8192} name="api_key" required spellCheck={false} type="password" secure />;
   if (kind === "login") return <>
     <VaultField autoCapitalize="none" autoComplete="username" label="Username" maxLength={512} name="username" required spellCheck={false} />
     <VaultField autoComplete="new-password" label="Password" maxLength={8192} name="password" required type="password" secure />
@@ -358,7 +360,7 @@ function VaultField({ inputRef, label, secure = false, ...input }: Readonly<{
 }
 
 function labelForKind(kind: VaultEntryKind): string {
-  return kind === "login" ? "Login" : kind === "card" ? "Card" : kind === "address" ? "Address" : "Phone";
+  return kind === "api_key" ? "API key" : kind === "login" ? "Login" : kind === "card" ? "Card" : kind === "address" ? "Address" : "Phone";
 }
 
 function namePlaceholder(kind: VaultEntryKind): string {

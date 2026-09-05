@@ -279,3 +279,17 @@ leaves human control active, allowing reconnection. Return control explicitly.
 If the browser expires, return control so the agent can reopen the page and ask
 for authentication again. Test real sign-in, Worker restart/replay, mobile input,
 and reload/reconnect before enabling production use.
+
+### Testing cloud-browser control without a model login
+
+Set `NANOCODEX_LOCAL_CHATGPT=false` when starting the account app to skip the
+optional local ChatGPT credential bootstrap. Account and Cloudflare authentication
+still apply.
+
+The Cloudflare PR preview workflow runs `NANOCODEX_LIVE_BROWSER=true pnpm exec
+vitest run test/browser-control.live.test.ts` from `js/managed`, using its existing
+Cloudflare credentials. This creates and deletes a temporary real Chromium session,
+fills a synthetic form, captures a frame, and verifies handoff, reconnect, model
+exclusion, destination checks, and stale-input rejection. It requires no model
+login, production agent, or real website credentials. It tests the browser control
+backend; it does not substitute for the account UI and mobile walkthrough.

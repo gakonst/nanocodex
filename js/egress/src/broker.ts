@@ -123,8 +123,9 @@ type RootWallet = {
   address: `0x${string}`;
   createdAt: number;
 };
-export type VaultKind = "login" | "card" | "address" | "phone";
+export type VaultKind = "login" | "api_key" | "card" | "address" | "phone";
 export type VaultEntryPayload =
+  | Readonly<{ kind: "api_key"; name: string; api_key: string }>
   | Readonly<{ kind: "login"; name: string; username: string; password: string }>
   | Readonly<{
       kind: "card";
@@ -148,6 +149,7 @@ export type VaultEntryPayload =
   | Readonly<{ kind: "phone"; name: string; phone_number: string }>;
 export type VaultEntry = VaultEntryPayload & Readonly<{ id: string; createdAt: number }>;
 type VaultEntryMetadata = (
+  | Readonly<{ kind: "api_key"; name: string }>
   | Readonly<{ kind: "login"; name: string; username: string }>
   | Readonly<{ kind: "card"; name: string; last4: string }>
   | Readonly<{
@@ -669,7 +671,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         return jsonError(405, "method_not_allowed");
       }
       const vaultMatch = url.pathname.match(
-        /^\/v1\/vault\/(login|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
+        /^\/v1\/vault\/(login|api_key|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
       );
       if (vaultMatch) {
         const kind = vaultMatch[1] as VaultKind;
@@ -1959,6 +1961,10 @@ export function validateVaultEntryPayload(
   }
   const name = vaultText(value.name, 120);
   if (!name) return undefined;
+  if (kind === "api_key") {
+    const apiKey = vaultSecret(value.api_key, 8_192);
+    return apiKey ? { kind, name, api_key: apiKey } : undefined;
+  }
   if (kind === "login") {
     const username = vaultText(value.username, 512);
     const password = vaultSecret(value.password, 8_192);
@@ -2012,6 +2018,7 @@ export function validateVaultEntryPayload(
 
 function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false): readonly string[] {
   switch (kind) {
+    case "api_key": return ["name", "api_key"];
     case "login": return ["name", "username", "password"];
     case "card": return [
       "name", "card_number", "expiry_month", "expiry_year", "cvv", "billing_zip",
@@ -2028,7 +2035,7 @@ function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false): readonly st
 function validateStoredVaultEntry(id: string, value: unknown): VaultEntry | undefined {
   if (!VAULT_ID.test(id) || !isRecord(value) || value.id !== id
     || !Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0
-    || !["login", "card", "address", "phone"].includes(String(value.kind))) return undefined;
+    || !["login", "api_key", "card", "address", "phone"].includes(String(value.kind))) return undefined;
   const kind = value.kind as VaultKind;
   const payloadKeys = vaultPayloadKeys(
     kind,
@@ -2057,7 +2064,7 @@ function validateStoredVaultMetadata(
 ): VaultEntryMetadata | undefined {
   if (!VAULT_ID.test(id) || !isRecord(value) || value.id !== id
     || !Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0
-    || !["login", "card", "address", "phone"].includes(String(value.kind))) {
+    || !["login", "api_key", "card", "address", "phone"].includes(String(value.kind))) {
     return undefined;
   }
   const kind = value.kind as VaultKind;
@@ -2068,6 +2075,10 @@ function validateStoredVaultMetadata(
     createdAt: value.createdAt as number,
   };
   if (!common.name) return undefined;
+  if (kind === "api_key") {
+    return hasExactKeys(value, ["id", "kind", "name", "createdAt"])
+      ? { ...common, kind, name: common.name } : undefined;
+  }
   if (kind === "login") {
     const username = vaultText(value.username, 512);
     return username && hasExactKeys(value, ["id", "kind", "name", "username", "createdAt"])
@@ -2123,6 +2134,7 @@ function vaultEntryMetadata(entry: VaultEntry): VaultEntryMetadata {
     createdAt: entry.createdAt,
   };
   switch (entry.kind) {
+    case "api_key": return { ...common, kind: entry.kind };
     case "login": return { ...common, kind: entry.kind, username: entry.username };
     case "card": return {
       ...common,
@@ -2150,6 +2162,7 @@ function sameVaultEntryMetadata(
   if (left.id !== right.id || left.kind !== right.kind || left.name !== right.name
     || left.createdAt !== right.createdAt) return false;
   switch (left.kind) {
+    case "api_key": return true;
     case "login": return right.kind === left.kind && left.username === right.username;
     case "card": return right.kind === left.kind && left.last4 === right.last4;
     case "address": return right.kind === left.kind
@@ -2186,7 +2199,7 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
   country?: string;
   phone_number?: string;
 }> {
-  const metadata = "password" in entry || "card_number" in entry
+  const metadata = "password" in entry || "api_key" in entry || "card_number" in entry
     ? vaultEntryMetadata(entry as VaultEntry)
     : entry as VaultEntryMetadata;
   const common = {
@@ -2196,6 +2209,7 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
     created_at: metadata.createdAt,
   };
   switch (metadata.kind) {
+    case "api_key": return common;
     case "login": return { ...common, username: metadata.username };
     case "card": return { ...common, last4: metadata.last4 };
     case "address": return {

@@ -67,7 +67,8 @@ test("Connect authorization stays on the egress gateway and never reaches its ta
   assert.equal(JSON.stringify(envelope).includes("grant-session"), false);
 });
 
-test("browser egress forwards only an opaque Vault reference and closed placeholders", async () => {
+for (const key of ["PASSWORD", "API_KEY"]) {
+test(`browser egress forwards only an opaque Vault reference and closed placeholders (${key})`, async () => {
   const requests = [];
   const fetch = createBrowserEgressFetch({
     origin: "https://nanocodex.example",
@@ -81,11 +82,11 @@ test("browser egress forwards only an opaque Vault reference and closed placehol
   await fetch("https://example.com/session", {
     method: "POST",
     headers: {
-      authorization: "Basic {{NANOCODEX_VAULT_BASIC}}",
+      authorization: `Bearer {{NANOCODEX_VAULT_${key}}}`,
       "content-type": "application/json",
       "x-nanocodex-vault-id": vaultId,
     },
-    body: JSON.stringify({ password: "{{NANOCODEX_VAULT_PASSWORD}}" }),
+    body: JSON.stringify({ password: `{{NANOCODEX_VAULT_${key}}}` }),
   });
 
   assert.deepEqual(await requests[0].json(), {
@@ -93,13 +94,14 @@ test("browser egress forwards only an opaque Vault reference and closed placehol
     url: "https://example.com/session",
     method: "POST",
     headers: {
-      authorization: "Basic {{NANOCODEX_VAULT_BASIC}}",
+      authorization: `Bearer {{NANOCODEX_VAULT_${key}}}`,
       "content-type": "application/json",
       "x-nanocodex-vault-id": vaultId,
     },
-    body: JSON.stringify({ password: "{{NANOCODEX_VAULT_PASSWORD}}" }),
+    body: JSON.stringify({ password: `{{NANOCODEX_VAULT_${key}}}` }),
   });
 });
+}
 
 test("browser egress rejects raw credentials and malformed Vault requests", async () => {
   const fetch = createBrowserEgressFetch({

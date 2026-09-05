@@ -114,7 +114,9 @@ export default defineConfig({
   },
   plugins: [
     nanocodex({
-      chatGpt: { credentialBrokerWorker: "nanocodex-egress" },
+      chatGpt: process.env.NANOCODEX_LOCAL_CHATGPT === "false"
+        ? false
+        : { credentialBrokerWorker: "nanocodex-egress" },
       devApplications: [{
         headers: {
           "content-security-policy": "frame-ancestors 'self' https://nanocodex.localhost https://*.nanocodex.localhost http://nanocodex.localhost:* http://*.nanocodex.localhost:*",
