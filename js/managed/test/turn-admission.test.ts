@@ -114,7 +114,36 @@ describe("managed durable turn admission", () => {
           }));
           expect(accepted.status).toBe(202);
           await entered.promise;
+          // Simulate receipt backlog retained after an interrupted archive
+          // write. The live admission must not make its alarm skip archival.
+          state.storage.transactionSync(() => {
+            for (let index = 0; index < 513; index += 1) {
+              const id = `archived-${index}`;
+              state.storage.sql.exec(
+                `INSERT INTO managed_turns (
+                   id, request_hash, input_json, authorization_json, state, accepted_cursor,
+                   terminal_json, terminal_cursor, created_at, accepted_at, updated_at
+                 ) VALUES (?, ?, '"fixture"', '{"capabilities":[]}', 'cancelled', 1, ?, 2, ?, ?, ?)`,
+                id, "a".repeat(64), JSON.stringify({ type: "turn_cancelled", id }), now, now, now,
+              );
+              state.storage.sql.exec(
+                `INSERT INTO managed_realtime_operations (
+                   voice_session_id, operation_id, kind, request_hash, state,
+                   response_json, created_at, updated_at
+                 ) VALUES ('fixture-voice', ?, 'stop', ?, 'completed', '{}', ?, ?)`,
+                id, "b".repeat(64), now, now,
+              );
+            }
+          });
           await session.alarm();
+          for (const table of ["managed_turn_archive_state", "managed_realtime_archive_state"]) {
+            expect(state.storage.sql.exec<{ archived_receipts: number }>(
+              `SELECT archived_receipts FROM ${table} WHERE singleton = 1`,
+            ).one().archived_receipts).toBe(1);
+          }
+          expect(state.storage.sql.exec<{ state: string }>(
+            "SELECT state FROM managed_turns WHERE id = 'stalled'",
+          ).one().state).toBe("accepted");
           const alarm = await state.storage.getAlarm();
           expect(alarm).toBeGreaterThanOrEqual(Date.now() + 59_000);
           expect(alarm).toBeLessThanOrEqual(Date.now() + 60_000);

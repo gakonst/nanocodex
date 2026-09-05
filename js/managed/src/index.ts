@@ -3344,6 +3344,12 @@ export class DurableAgentSession extends DurableComputerSession {
       // continuation for a seal that outlived or failed its originating turn.
       await this.#sealEventArchive(false);
     }
+    // Receipt archival has the same durable continuation as event archival.
+    // Busy sessions must retry failed seals too: returning to recovery first
+    // would keep scheduling an immediate alarm without draining the backlog.
+    // Seal one bounded batch per alarm so live admissions can keep progressing.
+    if (this.#turnArchive.needsSeal()) await this.#sealTurnArchive(false);
+    if (this.#realtimeArchive.needsSeal()) await this.#sealRealtimeArchive(false);
     if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
     else await this.#drainHistoryProjections();
     // An alarm may be the first event delivered to a freshly reconstructed
