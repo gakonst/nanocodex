@@ -337,6 +337,8 @@ private struct ConversationView: View {
     @ObservedObject var model: InboxModel
     @Environment(\.dismiss) private var dismiss
     @State private var visibleRow: String?
+    @State private var rowFrames: [String: CGRect] = [:]
+    @State private var scrollAnchor = UnitPoint.top
     var body: some View {
         NavigationStack {
             GeometryReader { viewport in
@@ -344,7 +346,18 @@ private struct ConversationView: View {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     if model.threadLoading { ProgressView("Loading conversation…") }
                     if let error = model.threadError { Text(error).font(.subheadline).foregroundStyle(Ink.muted) }
-                    if model.hasOlder { Button(model.loadingOlder ? "Loading…" : "Load earlier messages") { Task { await model.loadOlder() } }.disabled(model.loadingOlder).accessibilityIdentifier("load-older") }
+                    if model.hasOlder {
+                        Button(model.loadingOlder ? "Loading…" : "Load earlier messages") {
+                            // At the top, the loader has no message ID. Explicitly anchor
+                            // the first visible message before inserting anything above it.
+                            if let first = rowFrames.filter({ $0.value.maxY > 0 && $0.value.minY < viewport.size.height }).min(by: { $0.value.minY < $1.value.minY }) {
+                                let available = viewport.size.height - first.value.height
+                                scrollAnchor = UnitPoint(x: 0, y: available > 0 ? first.value.minY / available : 0)
+                                visibleRow = first.key
+                            }
+                            Task { await model.loadOlder() }
+                        }.disabled(model.loadingOlder).accessibilityIdentifier("load-older")
+                    }
                     ForEach(model.rows) { row in
                         HStack(alignment: .top, spacing: 0) {
                             if row.role == "You" { Spacer(minLength: 44) }
@@ -366,13 +379,18 @@ private struct ConversationView: View {
                             .background(row.role == "You" ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 24))
                             if row.role != "You" { Spacer(minLength: 0) }
                         }.frame(maxWidth: .infinity, alignment: row.role == "You" ? .trailing : .leading).id(row.id)
+                            .background(GeometryReader { geometry in
+                                Color.clear.preference(key: ConversationRowFrames.self, value: [row.id: geometry.frame(in: .named("conversation-viewport"))])
+                            })
                             .accessibilityIdentifier("message-" + row.id)
                     }
                     Color.clear.frame(height: 1).id("latest")
                 }.scrollTargetLayout().padding(18).frame(minHeight: viewport.size.height, alignment: .top)
             }
             .defaultScrollAnchor(.bottom)
-            .scrollPosition(id: $visibleRow, anchor: .top)
+            .scrollPosition(id: $visibleRow, anchor: scrollAnchor)
+            .coordinateSpace(name: "conversation-viewport")
+            .onPreferenceChange(ConversationRowFrames.self) { rowFrames = $0 }
             .background(Ink.background)
             .accessibilityIdentifier("conversation")
             }
@@ -383,6 +401,13 @@ private struct ConversationView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
 
         }.foregroundStyle(Ink.text).frame(minWidth: 340, minHeight: 520).presentationDetents([.large]).presentationDragIndicator(.visible)
+    }
+}
+
+private struct ConversationRowFrames: PreferenceKey {
+    static var defaultValue: [String: CGRect] { [:] }
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 

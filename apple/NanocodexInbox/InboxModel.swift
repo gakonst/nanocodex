@@ -114,7 +114,8 @@ final class InboxModel: ObservableObject {
         cards = initial; connected = true; connection = "Connecting"; reconcile(); resume()
     }
     func disconnect() throws {
-        try KeychainAccount.remove()
+        // Leaving sample agents must not touch a saved account or require Keychain access.
+        if !isDemo { try KeychainAccount.remove() }
         reset()
     }
     private func reset() {
