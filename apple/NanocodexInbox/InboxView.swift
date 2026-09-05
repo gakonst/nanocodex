@@ -19,6 +19,7 @@ struct InboxView: View {
     @ObservedObject var model: InboxModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drag: CGFloat = 0
+    @State private var horizontalDrag: Bool?
     @State private var voiceTarget: AgentCard?
     @State private var showThread = false
     @State private var showAgents = false
@@ -73,7 +74,7 @@ struct InboxView: View {
         .onChange(of: model.focused?.activeTurns ?? []) { _, turns in
             if !turns.contains(model.selectedTurn) { model.selectedTurn = turns.first ?? "" }
         }
-        .onChange(of: model.deck.focusedID) { _, _ in drag = 0; composerFocused = false; showStop = false }
+        .onChange(of: model.deck.focusedID) { _, _ in drag = 0; horizontalDrag = nil; composerFocused = false; showStop = false }
     }
     private var header: some View {
         HStack(spacing: 8) {
@@ -123,7 +124,7 @@ struct InboxView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 28).fill(Ink.surface.opacity(0.6)).padding(.horizontal, 18).offset(y: 16)
                 RoundedRectangle(cornerRadius: 28).fill(Ink.surface).padding(.horizontal, 9).offset(y: 8)
-                cardFace(card).id(card.id).transition(.opacity)
+                cardFace(card).id(card.id).transition(.identity)
                     .overlay(alignment: drag > 0 ? .topLeading : .topTrailing) {
                         if abs(drag) > 24 {
                             Text(drag > 0 ? "SEEN" : "LATER")
@@ -138,10 +139,12 @@ struct InboxView: View {
                     .offset(x: drag)
                     .simultaneousGesture(DragGesture(minimumDistance: 18)
                         .onChanged { value in
-                            if abs(value.translation.width) > abs(value.translation.height) * 1.3 { drag = value.translation.width }
+                            if horizontalDrag == nil { horizontalDrag = abs(value.translation.width) > abs(value.translation.height) * 1.3 }
+                            if horizontalDrag == true { drag = value.translation.width }
                         }
                         .onEnded { value in
-                            if abs(drag) > 65 || (abs(drag) > 24 && abs(value.predictedEndTranslation.width) > 130) { advance(reviewed: drag > 0) }
+                            if horizontalDrag == true && (abs(drag) > 65 || (abs(drag) > 24 && abs(value.predictedEndTranslation.width) > 130)) { advance(reviewed: drag > 0) }
+                            horizontalDrag = nil
                             withAnimation(reduceMotion ? nil : .snappy(duration: 0.16)) { drag = 0 }
                         })
             }
@@ -168,7 +171,7 @@ struct InboxView: View {
                         .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("agent-preview")
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }.scrollIndicators(.hidden)
+            }.scrollIndicators(.hidden).accessibilityIdentifier("card-content")
         }
         .padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Ink.card, in: RoundedRectangle(cornerRadius: 28))
@@ -331,11 +334,14 @@ private struct ConnectView: View {
 private struct ConversationView: View {
     @ObservedObject var model: InboxModel
     @Environment(\.dismiss) private var dismiss
+    @State private var visibleRow: String?
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    if model.hasOlder { Button(model.loadingOlder ? "Loading…" : "Load earlier messages") { Task { await model.loadOlder() } }.disabled(model.loadingOlder) }
+                    if model.threadLoading { ProgressView("Loading conversation…") }
+                    if let error = model.threadError { Text(error).font(.subheadline).foregroundStyle(Ink.muted) }
+                    if model.hasOlder { Button(model.loadingOlder ? "Loading…" : "Load earlier messages") { Task { await model.loadOlder() } }.disabled(model.loadingOlder).accessibilityIdentifier("load-older") }
                     ForEach(model.rows) { row in
                         HStack(alignment: .top, spacing: 0) {
                             if row.role == "You" { Spacer(minLength: 44) }
@@ -356,11 +362,14 @@ private struct ConversationView: View {
                             .padding(row.role == "You" ? 16 : 0)
                             .background(row.role == "You" ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 24))
                             if row.role != "You" { Spacer(minLength: 0) }
-                        }.frame(maxWidth: .infinity, alignment: row.role == "You" ? .trailing : .leading)
+                        }.frame(maxWidth: .infinity, alignment: row.role == "You" ? .trailing : .leading).id(row.id)
+                            .accessibilityIdentifier("message-" + row.id)
                     }
                     Color.clear.frame(height: 1).id("latest")
-                }.padding(18)
+                }.scrollTargetLayout().padding(18)
             }
+            .defaultScrollAnchor(.bottom)
+            .scrollPosition(id: $visibleRow, anchor: .top)
             .background(Ink.background)
             .accessibilityIdentifier("conversation")
             .navigationTitle(model.focused?.title ?? "Conversation")

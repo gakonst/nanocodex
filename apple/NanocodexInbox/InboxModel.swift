@@ -11,6 +11,9 @@ final class InboxModel: ObservableObject {
     @Published var filter: Filter = .inbox { didSet { reconcile() } }
     @Published var drafts: [String: String] = [:]
     @Published var rows: [TranscriptRow] = []
+    @Published var threadLoading = false
+    @Published var threadError: String?
+    private var observedAgentID: String?
     @Published var busy = Set<String>()
     @Published var connection = "Disconnected"
     @Published var error: String?
@@ -56,6 +59,16 @@ final class InboxModel: ObservableObject {
     var focusedPending: [PendingMessage] { pending.filter { $0.agentID == focused?.id } }
     func openThread() {
         pinnedThreadID = focused?.id
+        if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LONG_THREAD"] == "1", let id = focused?.id {
+            hasOlder = true
+            let epoch = generation
+            Task {
+                try? await Task.sleep(for: .seconds(12))
+                guard generation == epoch, focused?.id == id, !rows.contains(where: { $0.id == "live-tail" }) else { return }
+                rows.append(.init(id: "live-tail", role: "Agent", text: "Live update arrived while you were reading."))
+                demoRows[id] = rows
+            }
+        }
         if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_FINISH_IN_THREAD"] == "1",
            let id = focused?.id, !focusedTurn.isEmpty {
             let turn = focusedTurn, epoch = generation
@@ -107,13 +120,14 @@ final class InboxModel: ObservableObject {
     private func reset() {
         connectionAttempt = UUID(); generation = UUID(); observation = UUID(); polling?.cancel(); streaming?.cancel(); client?.close(); client = nil
         projection?.cancel(); projection = nil; eventBytes = []; retainedBytes = 0; navigation = []; deferred = [:]
+        observedAgentID = nil; threadLoading = false; threadError = nil
         connected = false; isDemo = false; cards = []; deck = InboxDeck(); rows = []; events = []; drafts = [:]; seen = [:]
         scope = ""; error = nil; notice = nil; busy = []; retries = [:]; createID = nil; isCreating = false; refreshing = false
         hasOlder = false; loadingOlder = false; connection = "Disconnected"; pending = []; pinnedThreadID = nil; demoRows = [:]; demoFaults = []
     }
     func setActive(_ active: Bool) {
         isActive = active
-        if active { resume() }
+        if active { if isDemo { connection = "Demo" } else { resume() } }
         else { polling?.cancel(); streaming?.cancel(); observation = UUID(); connection = "Paused" }
     }
     private func resume() {
@@ -127,7 +141,7 @@ final class InboxModel: ObservableObject {
                 do { try await Task.sleep(for: .seconds(15)) } catch { return }
             }
         }
-        observeFocused()
+        observeFocused(restart: true)
     }
     func refresh() async {
         guard let client, !refreshing else { return }
@@ -225,24 +239,33 @@ final class InboxModel: ObservableObject {
         seen[previous.id] = previous.seen; deferred.removeValue(forKey: previous.id); persist(); reconcile(); deck.focus(previous.id); observeFocused()
     }
     func select(_ id: String) { filter = .all; deck.focus(id); observeFocused() }
-    private func observeFocused() {
-        streaming?.cancel(); projection?.cancel(); projection = nil; observation = UUID(); loadingOlder = false; rows = []; events = []; eventBytes = []; retainedBytes = 0; cursor = .zero; olderBefore = nil; hasOlder = false; selectedTurn = ""
-        guard let id = deck.focusedID else { return }
-        if isDemo { rows = demoRows[id] ?? DemoContent.rows(id); connection = "Demo"; return }
+    private func observeFocused(restart: Bool = false) {
+        let changed = observedAgentID != deck.focusedID
+        guard changed || restart else { return }
+        observedAgentID = deck.focusedID
+        streaming?.cancel(); projection?.cancel(); projection = nil; observation = UUID(); loadingOlder = false
+        threadError = nil
+        if changed {
+            rows = []; events = []; eventBytes = []; retainedBytes = 0; cursor = .zero
+            olderBefore = nil; hasOlder = false; selectedTurn = ""
+        }
+        guard let id = deck.focusedID else { threadLoading = false; return }
+        if isDemo { rows = demoRows[id] ?? DemoContent.rows(id); connection = "Demo"; threadLoading = false; return }
+        threadLoading = rows.isEmpty
         guard let client, isActive else { return }
         let epoch = generation, token = observation
         connection = "Connecting"
         streaming = Task { [weak self] in
             guard let self else { return }
             var delay = 1
-            var loaded = false
+            var loaded = !self.events.isEmpty
             while !Task.isCancelled, self.generation == epoch, self.observation == token {
                 do {
                     if !loaded {
                         let page = try await client.history(id)
                         guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
                         self.events = page.events; self.hasOlder = page.hasMore; self.measureEvents(); self.cursor = page.latest; self.olderBefore = self.events.first?.cursor
-                        self.rows = transcript(self.events); self.reconcilePending(id: id, events: self.events); loaded = true
+                        self.rows = transcript(self.events); self.threadLoading = false; self.reconcilePending(id: id, events: self.events); loaded = true
                     }
                     try await client.stream(id, after: self.cursor) { [weak self] frame in
                         await self?.receive(frame, id: id, epoch: epoch, token: token)
@@ -251,10 +274,12 @@ final class InboxModel: ObservableObject {
                 } catch {
                     guard !Task.isCancelled, self.generation == epoch, self.observation == token else { return }
                     if let apiError = error as? APIError, apiError == .http(401) || apiError == .http(403) {
-                        self.connection = "Sign in again"; self.error = apiError.localizedDescription; return
+                        self.connection = "Sign in again"; self.error = apiError.localizedDescription; self.threadError = apiError.localizedDescription; self.threadLoading = false; return
                     }
                 }
                 guard !Task.isCancelled else { return }
+                self.threadLoading = false
+                if !loaded { self.threadError = "Could not load this conversation. Reconnecting…" }
                 self.connection = "Reconnecting"
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
                 delay = min(delay * 2, 15)
@@ -284,7 +309,7 @@ final class InboxModel: ObservableObject {
             }
         }
         if let position = frame.cursor { cursor = max(cursor, position) }
-        connection = "Live"
+        connection = "Live"; threadError = nil; threadLoading = false
     }
     private func measureEvents() {
         eventBytes = events.map { (try? JSONEncoder().encode($0.data).count) ?? 0 }
@@ -294,6 +319,15 @@ final class InboxModel: ObservableObject {
         }
     }
     func loadOlder() async {
+        if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LONG_THREAD"] == "1", let id = focused?.id, hasOlder {
+            guard !loadingOlder else { return }
+            loadingOlder = true
+            try? await Task.sleep(for: .milliseconds(600))
+            guard focused?.id == id else { return }
+            rows.insert(contentsOf: (-12..<0).map { .init(id: "older-\($0)", role: "Agent", text: "Earlier note \($0 + 13). Context retained before the current work.") }, at: 0)
+            demoRows[id] = rows; hasOlder = false; loadingOlder = false
+            return
+        }
         guard let client, let id = focused?.id, let before = olderBefore, hasOlder, !loadingOlder else { return }
         let token = observation
         loadingOlder = true
@@ -308,7 +342,7 @@ final class InboxModel: ObservableObject {
             else { hasOlder = page.hasMore }
             measureEvents(); olderBefore = events.first?.cursor; rows = transcript(events)
             if olderBefore == before { hasOlder = false; notice = "History limit reached. Earlier messages remain available on the service." }
-        } catch { if token == observation { self.error = error.localizedDescription } }
+        } catch { if token == observation { self.threadError = error.localizedDescription } }
     }
     // Reserve identity and the busy slot synchronously at the tap, before a swipe
     // or another tap can change focus. The server owns the queued follow-up.
@@ -501,7 +535,13 @@ final class InboxModel: ObservableObject {
     }
     func newAgent() async {
         guard !isCreating else { return }
-        if isDemo { notice = "Connect your account to start a real agent."; return }
+        if isDemo {
+            let id = "demo-" + UUID().uuidString
+            var card = AgentCard(id: id, title: "New agent")
+            card.checked = true; card.status = "Idle"; card.preview = "Send a message to begin."
+            cards.insert(card, at: 0); demoRows[id] = []; select(id)
+            return
+        }
         guard let client else { return }
         let epoch = generation
         isCreating = true

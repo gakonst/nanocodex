@@ -1,6 +1,7 @@
 import XCTest
 
 final class InboxUITests: XCTestCase {
+    override func setUp() { super.setUp(); continueAfterFailure = false }
     private func launch(_ environment: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
@@ -210,6 +211,114 @@ final class InboxUITests: XCTestCase {
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: failure)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
         capture(app, "12-activity-failure")
+    }
+    func testLongThreadKeepsPlaceAcrossUpdatesHistoryAndForeground() {
+        let app = launch(["NANOCODEX_DEMO_LONG_THREAD": "1"]); selectInbox(app)
+        app.staticTexts["agent-title"].tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        let conversation = app.scrollViews["conversation"]
+        let last = conversation.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Progress note 36.")).firstMatch
+        XCTAssertTrue(last.waitForExistence(timeout: 5)); XCTAssertTrue(last.isHittable, "Open the thread at its latest messages")
+        conversation.swipeDown(); conversation.swipeDown()
+        let anchor = conversation.staticTexts.allElementsBoundByIndex.first { $0.isHittable && $0.label.hasPrefix("Progress note ") }!
+        let label = anchor.label, y = anchor.frame.minY
+        capture(app, "13-reading-history")
+        Thread.sleep(forTimeInterval: 14)
+        XCTAssertTrue(conversation.staticTexts[label].isHittable)
+        XCTAssertEqual(conversation.staticTexts[label].frame.minY, y, accuracy: 4, "New output must not move what I am reading")
+        XCUIDevice.shared.press(.home); app.activate()
+        XCTAssertTrue(conversation.staticTexts[label].waitForExistence(timeout: 5))
+        XCTAssertEqual(conversation.staticTexts[label].frame.minY, y, accuracy: 4, "Foregrounding must keep the thread and its position")
+        capture(app, "14-thread-resumed")
+        for _ in 0..<8 { if app.buttons["load-older"].isHittable { break }; conversation.swipeDown() }
+        XCTAssertTrue(app.buttons["load-older"].isHittable)
+        let first = conversation.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Progress note 1.")).firstMatch
+        let before = first.frame.minY
+        app.buttons["load-older"].tap()
+        gone(app.buttons["load-older"])
+        XCTAssertTrue(first.isHittable)
+        XCTAssertEqual(first.frame.minY, before, accuracy: 4, "Prepending history must not jump away from the current messages")
+        capture(app, "15-older-history-loaded")
+        let update = conversation.staticTexts["Live update arrived while you were reading."]
+        for _ in 0..<12 { if update.isHittable { break }; conversation.swipeUp() }
+        XCTAssertTrue(update.isHittable)
+        capture(app, "23-latest-output-after-reading")
+    }
+    func testVerticalCardScrollAndRapidSwipesKeepNavigationStable() {
+        let app = launch(["NANOCODEX_DEMO_LONG_THREAD": "1"])
+        let title = app.staticTexts["agent-title"].label
+        app.scrollViews["card-content"].swipeUp(); app.scrollViews["card-content"].swipeDown()
+        XCTAssertEqual(app.staticTexts["agent-title"].label, title)
+        XCTAssertFalse(app.buttons["Done"].exists, "Scrolling the card must not open the thread")
+        capture(app, "16-card-scroll")
+        for _ in 0..<6 {
+            let original = app.staticTexts["agent-title"].label
+            let card = app.otherElements["agent-card"]
+            let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
+            start.press(forDuration: 0.01, thenDragTo: card.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
+            XCTAssertNotEqual(app.staticTexts["agent-title"].label, original)
+            XCTAssertTrue(app.staticTexts["agent-preview"].exists)
+        }
+        capture(app, "17-rapid-swipes")
+    }
+    func testCreateStopAndEmptyRunningFilter() {
+        let app = launch()
+        app.buttons["New agent"].tap()
+        XCTAssertEqual(app.staticTexts["agent-title"].label, "New agent")
+        XCTAssertFalse(app.buttons["send"].isEnabled)
+        queue(app, "Start a checklist")
+        gone(app.staticTexts["pending-message"])
+        XCTAssertTrue(app.buttons["Stop turn"].isEnabled)
+        capture(app, "18-new-agent-running")
+        for _ in 0..<3 {
+            app.buttons["filter-Running"].tap()
+            app.buttons["Stop turn"].tap()
+            app.buttons.matching(identifier: "Stop turn").lastMatch.tap()
+            Thread.sleep(forTimeInterval: 1)
+        }
+        XCTAssertTrue(app.staticTexts["Nothing running"].waitForExistence(timeout: 5))
+        capture(app, "19-empty-running-inbox")
+        app.buttons["View all agents"].tap()
+        XCTAssertTrue(app.staticTexts["agent-title"].exists)
+    }
+    func testInvalidAccountAndReturnToDemo() {
+        let app = launch()
+        app.buttons["Account settings"].tap()
+        app.buttons["Connect account"].tap()
+        XCTAssertTrue(app.secureTextFields["Account API key"].waitForExistence(timeout: 5))
+        app.secureTextFields["Account API key"].tap(); app.secureTextFields["Account API key"].typeText("invalid")
+        app.buttons["Connect account"].tap()
+        XCTAssertTrue(app.staticTexts["Enter a Nanocodex account API key."].waitForExistence(timeout: 5))
+        capture(app, "20-invalid-account")
+        app.buttons["Explore the demo"].tap()
+        XCTAssertTrue(app.staticTexts["agent-title"].waitForExistence(timeout: 5))
+    }
+    func testManyQueuedMessagesRemainScrollableWithKeyboard() {
+        let app = launch(); selectInbox(app)
+        for index in 1...4 {
+            queue(app, "Queued instruction \(index)")
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["Cancel queued message"].firstMatch)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+        }
+        app.scrollViews["pending-messages"].swipeUp()
+        XCTAssertTrue(app.staticTexts["Queued instruction 4"].isHittable)
+        composer(app).tap(); composer(app).typeText("A longer draft\nthat spans several lines\nand stays above the keyboard.")
+        XCTAssertLessThanOrEqual(app.buttons["send"].frame.maxY, app.keyboards.firstMatch.frame.minY)
+        app.scrollViews["pending-messages"].swipeDown()
+        XCTAssertTrue(app.buttons["steer-now"].isHittable)
+        capture(app, "21-queue-with-keyboard")
+    }
+    func testVoiceStopAndReviewWithoutSending() {
+        let app = launch(); selectInbox(app)
+        app.buttons["Voice input"].tap()
+        XCTAssertTrue(app.buttons["Stop recording"].waitForExistence(timeout: 5))
+        app.buttons["Stop recording"].tap()
+        XCTAssertFalse(app.buttons["Stop recording"].exists)
+        XCTAssertTrue(app.staticTexts["Review in the composer"].exists)
+        capture(app, "22-voice-stopped")
+        app.buttons["Use voice draft"].tap()
+        XCTAssertEqual(composer(app).value as? String, "Check reconnect first, then simplify the inbox")
+        XCTAssertFalse(app.staticTexts["pending-message"].exists)
     }
     private func capture(_ app: XCUIApplication, _ name: String) {
         // Native sheet/disclosure animations can outlive accessibility queries.

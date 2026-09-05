@@ -1,6 +1,0 @@
-/*
-  Content-Security-Policy: default-src 'self'; base-uri 'none'; connect-src 'self' https://api.nanocodex.xyz wss://api.nanocodex.xyz; form-action 'self' https://github.com; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'
-  Permissions-Policy: camera=(), geolocation=(), microphone=(), payment=()
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
-  X-Frame-Options: DENY

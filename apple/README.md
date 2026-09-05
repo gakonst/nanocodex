@@ -83,3 +83,7 @@ authenticated service behavior, real microphone recognition, or physical-device
 performance. Animation durations are 160–180 ms and respect Reduce Motion.
 
 Tool activity uses readable action names and statuses, with expandable labeled inputs and results. Commands retain code formatting; nested objects and arrays become labeled fields rather than JSON. Unknown tools use the same presentation. Agent replies have no redundant speaker label; reasoning is collapsed behind Thought process.
+
+Conversation scroll targets retain the visible message across prepended history and new output, and new conversations open at the latest messages. Returning to the foreground resumes the existing cursor and transcript rather than clearing the screen. Card drags lock their direction so vertical reading does not become a horizontal swipe; card changes do not crossfade.
+
+The recorded demo suite additionally exercises long-thread reading during new output and foregrounding, older-history pagination, vertical card scrolling, repeated fast swipes, new-agent creation and stop confirmation, an empty Running filter, invalid account input, a multi-message queue with the keyboard open, and stopping/reviewing voice input. The full simulator recording contains every test, including failure/retry paths and relaunches. Demo agents and injected failures are fixtures; this does not validate an authenticated service or physical microphone.
