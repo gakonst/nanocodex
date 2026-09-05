@@ -1,0 +1,145 @@
+name: iOS TestFlight
+
+on:
+  push:
+    branches: [master]
+  release:
+    types: [published]
+  workflow_dispatch:
+  pull_request:
+    paths: ['apple/**', '.github/workflows/ios-testflight.yml']
+
+permissions:
+  contents: read
+
+# Never interrupt signing/uploading. Pending pushes coalesce to the newest build.
+concurrency:
+  group: ios-testflight-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'distribution' }}
+  cancel-in-progress: false
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      # App Store Connect requires the iOS 26 SDK; macos-15 defaults to Xcode 16.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      UPLOAD: ${{ github.event_name == 'release' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/master') }}
+      BUNDLE_ID: xyz.paradigm.nanocodex.inbox
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install signing credentials
+        if: env.UPLOAD == 'true'
+        env:
+          IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
+          IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in IOS_DISTRIBUTION_P12_BASE64 IOS_DISTRIBUTION_P12_PASSWORD IOS_PROVISIONING_PROFILE_BASE64 APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing GitHub Actions secret: $name. See apple/TESTFLIGHT.md."
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+          umask 077
+          mkdir -p "$RUNNER_TEMP/ios-signing"
+          printf '%s' "$IOS_DISTRIBUTION_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/ios-signing/distribution.p12"
+          printf '%s' "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/ios-signing/app.mobileprovision"
+          printf '%s' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$RUNNER_TEMP/ios-signing/AuthKey.p8"
+          security cms -D -i "$RUNNER_TEMP/ios-signing/app.mobileprovision" > "$RUNNER_TEMP/ios-signing/profile.plist"
+          python3 - <<'PY'
+          import datetime, os, pathlib, plistlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'ios-signing'
+          profile = plistlib.loads((root / 'profile.plist').read_bytes())
+          entitlements = profile['Entitlements']
+          bundle = os.environ['BUNDLE_ID']
+          prefix = profile['ApplicationIdentifierPrefix'][0]
+          assert entitlements['application-identifier'] == f'{prefix}.{bundle}', 'Profile must match the app bundle ID'
+          assert not entitlements.get('get-task-allow', False), 'Use an App Store distribution profile'
+          assert 'ProvisionedDevices' not in profile and not profile.get('ProvisionsAllDevices'), 'Ad hoc and enterprise profiles cannot upload to TestFlight'
+          assert profile['ExpirationDate'] > datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), 'Provisioning profile has expired'
+          uuid, team = profile['UUID'], profile['TeamIdentifier'][0]
+          # Xcode 16 and later use this directory.
+          destination = pathlib.Path.home() / 'Library/Developer/Xcode/UserData/Provisioning Profiles'
+          destination.mkdir(parents=True, exist_ok=True)
+          (destination / f'{uuid}.mobileprovision').write_bytes((root / 'app.mobileprovision').read_bytes())
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'IOS_PROFILE_UUID={uuid}\nIOS_TEAM_ID={team}\n')
+          options = dict(method='app-store-connect', destination='upload', signingStyle='manual',
+              teamID=team, signingCertificate='Apple Distribution', provisioningProfiles={bundle: uuid},
+              uploadSymbols=True, manageAppVersionAndBuildNumber=True, testFlightInternalTestingOnly=True)
+          (root / 'ExportOptions.plist').write_bytes(plistlib.dumps(options))
+          PY
+          keychain_password=$(openssl rand -hex 24)
+          keychain="$RUNNER_TEMP/ios-signing/build.keychain-db"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/ios-signing/distribution.p12" -P "$IOS_DISTRIBUTION_P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+
+      - name: Test native protocol
+        run: swift test --package-path apple/InboxCore
+
+      - name: Archive iPhone release
+        run: |
+          set -euo pipefail
+          signing=(CODE_SIGNING_ALLOWED=NO)
+          if [ "$UPLOAD" = true ]; then
+            signing=(CODE_SIGN_STYLE=Manual "DEVELOPMENT_TEAM=$IOS_TEAM_ID" "PROVISIONING_PROFILE_SPECIFIER=$IOS_PROFILE_UUID" 'CODE_SIGN_IDENTITY=Apple Distribution')
+          fi
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/NanocodexInbox.xcarchive" \
+            "CURRENT_PROJECT_VERSION=$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT" \
+            "${signing[@]}" archive
+          app="$RUNNER_TEMP/NanocodexInbox.xcarchive/Products/Applications/NanocodexInbox.app"
+          plutil -lint "$app/Info.plist" "$app/PrivacyInfo.xcprivacy"
+          test -f "$app/Assets.car"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' "$app/Info.plist"
+          python3 - <<'PY'
+          import os, pathlib, plistlib
+          app = pathlib.Path(os.environ['RUNNER_TEMP']) / 'NanocodexInbox.xcarchive/Products/Applications/NanocodexInbox.app'
+          info = plistlib.loads((app / 'Info.plist').read_bytes())
+          assert info['ITSAppUsesNonExemptEncryption'] is False, 'Export exemption must be a plist Boolean'
+          assert info['CFBundleIdentifier'] == os.environ['BUNDLE_ID']
+          assert int(info['DTPlatformVersion'].split('.')[0]) >= 26, 'App Store Connect requires iOS SDK 26+'
+          PY
+
+      - name: Upload to internal TestFlight
+        if: env.UPLOAD == 'true'
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/NanocodexInbox.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ios-signing/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/ios-export" -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/ios-signing/AuthKey.p8" \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          Uploaded to App Store Connect for internal TestFlight testing.
+          Apple still needs to process the build. Enable automatic distribution for your
+          internal tester group and Automatic Updates in TestFlight on your iPhone.
+          This workflow does not publish to the App Store. See apple/TESTFLIGHT.md.
+          SUMMARY
+
+      - name: Remove signing credentials
+        if: always() && env.UPLOAD == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/ios-signing/build.keychain-db" 2>/dev/null || true
+          if [ -n "${IOS_PROFILE_UUID:-}" ]; then
+            rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
+          fi
+          rm -rf "$RUNNER_TEMP/ios-signing"

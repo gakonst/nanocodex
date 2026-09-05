@@ -290,6 +290,19 @@ struct InboxView: View {
                     Text("Swipe left: revisit later\nSwipe right: mark this update seen\nTap card: read the conversation\nSend: queue a message\nSteer now: stop the current turn so the queued message can start")
                     Text("Long-press a card to go back. ⌘Return sends your message.").font(.caption)
                 }
+                Section("App") {
+                    LabeledContent("Version", value: "\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"))")
+                    #if os(iOS)
+                    Button("Open TestFlight") {
+                        guard let url = URL(string: "itms-beta://") else { return }
+                        UIApplication.shared.open(url) { opened in
+                            if !opened, let store = URL(string: "https://apps.apple.com/app/testflight/id899247664") {
+                                UIApplication.shared.open(store)
+                            }
+                        }
+                    }
+                    #endif
+                }
             }.navigationTitle("Inbox settings").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
         }.frame(minWidth: 340, minHeight: 440).presentationDetents([.medium, .large])
     }
