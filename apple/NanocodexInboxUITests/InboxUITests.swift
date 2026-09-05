@@ -273,7 +273,8 @@ final class InboxUITests: XCTestCase {
         for _ in 0..<3 {
             app.buttons["filter-Running"].tap()
             app.buttons["Stop turn"].tap()
-            app.buttons.matching(identifier: "Stop turn").lastMatch.tap()
+            let stops = app.buttons.matching(identifier: "Stop turn")
+            stops.element(boundBy: stops.count - 1).tap()
             Thread.sleep(forTimeInterval: 1)
         }
         XCTAssertTrue(app.staticTexts["Nothing running"].waitForExistence(timeout: 5))
