@@ -63,6 +63,10 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
         let pending = app.scrollViews["pending-messages"]
         let input = app.otherElements["composer-input"]
+        let attached = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            input.frame.minY - pending.frame.maxY <= 2 && pending.frame.maxY <= input.frame.minY + 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [attached], timeout: 5), .completed)
         XCTAssertLessThanOrEqual(pending.frame.maxY, input.frame.minY + 1)
         XCTAssertLessThanOrEqual(input.frame.minY - pending.frame.maxY, 2, "Queue touches the composer")
         capture(app, "07-queued-message")
@@ -147,6 +151,8 @@ final class InboxUITests: XCTestCase {
         app.scrollViews.firstMatch.swipeUp(); app.scrollViews.firstMatch.swipeDown()
         XCTAssertTrue(title.exists)
         app.buttons["Done"].tap()
+        let next = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Tighten the fuel forecast"), object: app.staticTexts["agent-title"])
+        XCTAssertEqual(XCTWaiter.wait(for: [next], timeout: 5), .completed)
         XCTAssertEqual(app.staticTexts["agent-title"].label, "Tighten the fuel forecast")
     }
     func testVoiceSlideDownPreservesAgentDraft() {

@@ -339,9 +339,10 @@ private struct ConversationView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var visibleRow: String?
     @State private var rowFrames: [String: CGRect] = [:]
-    @State private var scrollAnchor = UnitPoint.top
+    @State private var historyRestore: (id: String, anchor: UnitPoint)?
     var body: some View {
         NavigationStack {
+            ScrollViewReader { scroll in
             GeometryReader { viewport in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
@@ -353,10 +354,13 @@ private struct ConversationView: View {
                             // the first visible message before inserting anything above it.
                             if let first = rowFrames.filter({ $0.value.maxY > 0 && $0.value.minY < viewport.size.height }).min(by: { $0.value.minY < $1.value.minY }) {
                                 let available = viewport.size.height - first.value.height
-                                scrollAnchor = UnitPoint(x: 0, y: available > 0 ? first.value.minY / available : 0)
-                                visibleRow = first.key
+                                historyRestore = (first.key, UnitPoint(x: 0, y: available > 0 ? first.value.minY / available : 0))
                             }
-                            Task { await model.loadOlder() }
+                            let previousFirst = model.rows.first?.id
+                            Task {
+                                await model.loadOlder()
+                                if model.rows.first?.id == previousFirst { historyRestore = nil }
+                            }
                         }.disabled(model.loadingOlder).accessibilityIdentifier("load-older")
                     }
                     ForEach(model.rows) { row in
@@ -389,11 +393,21 @@ private struct ConversationView: View {
                 }.scrollTargetLayout().padding(18).frame(minHeight: viewport.size.height, alignment: .top)
             }
             .defaultScrollAnchor(.bottom)
-            .scrollPosition(id: $visibleRow, anchor: scrollAnchor)
+            .scrollPosition(id: $visibleRow, anchor: .top)
             .coordinateSpace(name: "conversation-viewport")
             .onPreferenceChange(ConversationRowFrames.self) { rowFrames = $0 }
             .background(Ink.background)
             .accessibilityIdentifier("conversation")
+            }
+            .onChange(of: model.rows.first?.id) { _, _ in
+                guard let target = historyRestore else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    scroll.scrollTo(target.id, anchor: target.anchor)
+                    historyRestore = nil
+                }
+            }
             }
             .navigationTitle(model.focused?.title ?? "Conversation")
             #if os(iOS)
