@@ -145,6 +145,28 @@ impl ContextManager {
         replaced
     }
 
+    pub fn remove_tool_definition(&mut self, definition: &serde_json::Value) -> usize {
+        let mut removed = 0;
+        let mut items = self.flattened_items();
+        for item in &mut items {
+            if let ResponseItem::ToolSearchOutput { tools, .. } = item {
+                tools.retain_mut(|tool| {
+                    let mut value = tool.as_value().clone();
+                    let before = removed;
+                    let retain = retain_tool_definition(&mut value, definition, &mut removed);
+                    if retain && removed != before {
+                        *tool = value.into();
+                    }
+                    retain
+                });
+            }
+        }
+        if removed > 0 {
+            self.replace_and_recompute(items, &[]);
+        }
+        removed
+    }
+
     pub fn replace_and_recompute(&mut self, mut items: Vec<ResponseItem>, prefix: &[ResponseItem]) {
         assign_missing_response_item_ids(&mut items);
         self.items.replace(items);
@@ -412,6 +434,31 @@ pub fn responses_lite_request_prefix(
     );
     instructions_item.set_id(Some(instructions_id));
     Ok([tools_item, instructions_item])
+}
+
+// Only namespace children are definitions. Never walk arbitrary JSON Schema
+// properties that happen to be named `tools`.
+fn retain_tool_definition(
+    tool: &mut serde_json::Value,
+    rejected: &serde_json::Value,
+    removed: &mut usize,
+) -> bool {
+    if tool == rejected {
+        *removed += 1;
+        return false;
+    }
+    if tool["type"] == "namespace"
+        && let Some(children) = tool
+            .get_mut("tools")
+            .and_then(serde_json::Value::as_array_mut)
+    {
+        let before = *removed;
+        children.retain_mut(|child| retain_tool_definition(child, rejected, removed));
+        if *removed != before && children.is_empty() {
+            return false;
+        }
+    }
+    true
 }
 
 fn new_response_item_id(prefix: &str) -> ResponseItemId {

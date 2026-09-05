@@ -299,6 +299,18 @@ impl ManagedSessionState {
         self.context.replace_rejected_images()
     }
 
+    /// Removes exact matches from discovery metadata while retaining transcript items.
+    /// A changed history must be replayed without its old provider continuation.
+    #[doc(hidden)]
+    pub fn remove_tool_definition(&mut self, definition: &serde_json::Value) -> usize {
+        let removed = self.context.remove_tool_definition(definition);
+        if removed > 0 {
+            self.reset_for_full_request();
+            self.history_revision = self.history_revision.saturating_add(1);
+        }
+        removed
+    }
+
     /// Commits the active tail without changing continuation state.
     ///
     /// The agent uses this only when publishing a safe in-turn fork boundary.
@@ -352,7 +364,75 @@ pub enum ManagedSessionStateError {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::{ManagedSessionState, ManagedSessionStateError};
+
+    #[test]
+    fn removing_a_tool_definition_preserves_transcript_and_corrected_schemas() {
+        let rejected = json!({
+            "type": "function", "name": "lookup", "parameters": {
+                "type": "object", "properties": { "limit": { "type": "integer" } },
+                "required": []
+            }
+        });
+        let mut corrected = rejected.clone();
+        corrected["parameters"]["required"] = json!(["limit"]);
+        let sibling = json!({
+            "type": "function", "name": "other",
+            "parameters": { "type": "object", "tools": [rejected] }
+        });
+        let mut state = ManagedSessionState::new(
+            serde_json::from_value(json!([
+                { "type": "message", "role": "user", "content": [] },
+                { "type": "tool_search_call", "id": "tsc-original", "call_id": "search",
+                    "execution": "client", "arguments": { "query": "lookup" } },
+                { "type": "tool_search_output", "id": "tso-original", "call_id": "search",
+                    "status": "completed", "execution": "client", "tools": [
+                        rejected, corrected, sibling,
+                        { "type": "namespace", "name": "keep", "description": "Keep metadata",
+                            "tools": [rejected, corrected] },
+                        { "type": "namespace", "name": "prune", "tools": [
+                            { "type": "namespace", "name": "nested", "tools": [rejected] }
+                        ]}
+                    ] },
+                { "type": "function_call", "call_id": "completed", "name": "other",
+                    "arguments": "{}" },
+            { "type": "function_call_output", "call_id": "completed", "output": "already done" },
+            { "type": "tool_search_call", "call_id": "duplicate", "execution": "client",
+                "arguments": { "query": "lookup" } },
+            { "type": "tool_search_output", "call_id": "duplicate", "execution": "client",
+                "status": "completed", "tools": [rejected] }
+            ]))
+            .unwrap(),
+        );
+        state.set_previous_response_id("resp-before");
+        state.commit().unwrap();
+        let mut expected = serde_json::to_value(state.flattened_history()).unwrap();
+        expected[2]["tools"] = json!([
+            corrected, sibling,
+            { "type": "namespace", "name": "keep", "description": "Keep metadata",
+                "tools": [corrected] }
+        ]);
+
+        expected[6]["tools"] = json!([]);
+        assert_eq!(state.remove_tool_definition(&rejected), 4);
+        assert_eq!(
+            serde_json::to_value(state.flattened_history()).unwrap(),
+            expected
+        );
+        assert_eq!(state.previous_response_id(), None);
+        assert_eq!(state.delta_start(), 0);
+        assert_eq!(state.history_revision(), 1);
+        assert!(!state.prompt_history_with_repair().1);
+
+        state.set_previous_response_id("resp-after");
+        state.commit().unwrap();
+        assert_eq!(state.remove_tool_definition(&rejected), 0);
+        assert_eq!(state.previous_response_id(), Some("resp-after"));
+        assert_eq!(state.delta_start(), state.history_len());
+        assert_eq!(state.history_revision(), 1);
+    }
 
     #[test]
     fn empty_response_id_cannot_commit_an_incremental_checkpoint() {
