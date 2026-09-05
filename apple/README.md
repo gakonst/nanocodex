@@ -63,14 +63,14 @@ xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -desti
 The `Apple Inbox` workflow runs protocol/policy tests, compiles both platforms,
 and drives the iPhone demo journey: preserve a draft while cycling agents, send,
 filter running agents, open the thread, and swipe. The test result includes a
-native screenshot. Demo automation does not establish authenticated live-service
+six screenshots and a simulator video. Demo automation does not establish authenticated live-service
 or on-device behavior; those require an account and an Apple device/simulator.
 
-Local verification on 2026-09-05: the core typechecks with Swift 6.0.3; all ten
-protocol/policy XCTest cases pass when invoked directly with the Swift frontend.
-The native UI and UI-test sources pass Swift syntax parsing, and the project
-source references, shared scheme XML, and workflow YAML pass structural checks.
-Swift Package Manager crashes in this Linux host's process monitoring, so the
-same committed XCTest methods were invoked directly. Xcode builds, simulator
-interaction, and authenticated live-service verification remain pending. The
-branch push was blocked by automatic approval review; CI has not run yet.
+Native verification on 2026-09-05: [Apple CI run 33972453607](https://github.com/gakonst/nanocodex/actions/runs/33972453607)
+passed all ten protocol/policy tests, the Mac build, the iPhone simulator build,
+and the native UI journey on iPhone 16 Pro. Screenshot review identified keyboard
+overflow; the typing layout now keeps a compact card and controls above the
+keyboard, with frame assertions in the UI journey to catch regressions. New runs
+attach the screenshots, simulator video, and full Xcode test result as
+`native-inbox-evidence`. Authenticated live-service and physical-device
+verification remain pending.

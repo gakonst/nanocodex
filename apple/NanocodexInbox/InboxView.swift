@@ -42,7 +42,7 @@ struct InboxView: View {
                             Button { model.error = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("Dismiss error")
                         }
                         .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12))
-                    } else if let notice = model.notice {
+                    } else if let notice = model.notice, !composerFocused {
                         Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
                     }
                 }
@@ -53,7 +53,7 @@ struct InboxView: View {
         }
         .preferredColorScheme(.dark)
         .tint(Ink.accent)
-        .sheet(isPresented: $showThread) { ConversationView(model: model) }
+        .sheet(isPresented: $showThread) { ConversationView(model: model).tint(Ink.accent) }
         .sheet(isPresented: $showAgents) { agentList }
         .sheet(isPresented: $showSettings) { settings }
         .confirmationDialog("Stop this turn?", isPresented: $showStop, titleVisibility: .visible) {
@@ -136,7 +136,7 @@ struct InboxView: View {
                             withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) { drag = 0 }
                         })
             }
-        }.frame(minHeight: composerFocused ? 180 : 220, maxHeight: .infinity).padding(.bottom, 12)
+        }.frame(minHeight: composerFocused ? 0 : 220, maxHeight: .infinity).padding(.bottom, 12)
     }
     private func cardFace(_ card: AgentCard, compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 14 : 22) {
@@ -151,12 +151,12 @@ struct InboxView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: compact ? 12 : 20) {
             Text(card.title).font(.system(size: compact ? 24 : 29, weight: .semibold)).lineLimit(3).accessibilityIdentifier("agent-title")
-            VStack(alignment: .leading, spacing: 10) {
+            if !composerFocused { VStack(alignment: .leading, spacing: 10) {
                 Text(card.isRunning ? "WORKING ON IT" : "LATEST UPDATE")
                     .font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(1.5).foregroundStyle(Ink.muted)
                 Text(card.error ?? card.preview).font(.system(size: 16)).foregroundStyle(.white.opacity(0.83))
                     .lineLimit(compact ? 3 : 7).lineSpacing(4)
-            }
+            } }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.scrollIndicators(.hidden)
             HStack {
@@ -168,7 +168,7 @@ struct InboxView: View {
                 }.accessibilityIdentifier("open-thread")
             }
         }
-        .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(composerFocused ? 18 : 24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Ink.card, in: RoundedRectangle(cornerRadius: 28))
         .overlay(RoundedRectangle(cornerRadius: 28).stroke(.white.opacity(0.08), lineWidth: 1))
         .accessibilityElement(children: .contain)
@@ -191,11 +191,11 @@ struct InboxView: View {
     private func actionButton(_ label: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 7) {
-                Image(systemName: icon).font(.system(size: 21, weight: .medium)).frame(width: 62, height: 52)
+                Image(systemName: icon).font(.system(size: 21, weight: .medium)).frame(width: 62, height: composerFocused ? 44 : 52)
                     .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 20))
-                Text(label).font(.caption)
+                if !composerFocused { Text(label).font(.caption) }
             }.foregroundStyle(color)
-        }.buttonStyle(.plain)
+        }.buttonStyle(.plain).accessibilityLabel(label)
     }
     private var composer: some View {
         VStack(spacing: 10) {

@@ -22,6 +22,8 @@ final class InboxUITests: XCTestCase {
         app.buttons["filter-Running"].tap()
         XCTAssertTrue(app.staticTexts["agent-title"].exists)
         composer.tap(); composer.typeText("Prioritize reconnect and keep the UI minimal")
+        XCTAssertGreaterThanOrEqual(app.otherElements["agent-card"].frame.minY, app.frame.minY + 44)
+        XCTAssertLessThanOrEqual(app.buttons["send"].frame.maxY, app.keyboards.firstMatch.frame.minY)
         capture(app, "04-steer-running-agent")
         app.buttons["send"].tap()
         XCTAssertTrue(app.staticTexts["notice"].label.contains("Direction updated"))
@@ -30,7 +32,9 @@ final class InboxUITests: XCTestCase {
         capture(app, "05-conversation")
         app.buttons["Done"].tap()
         #if os(iOS)
+        let runningTitle = app.staticTexts["agent-title"].label
         app.otherElements["agent-card"].swipeLeft()
+        XCTAssertNotEqual(app.staticTexts["agent-title"].label, runningTitle)
         #endif
         capture(app, "06-next-running-agent")
     }
