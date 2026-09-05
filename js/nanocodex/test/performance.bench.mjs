@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
+import { gunzipSync } from "node:zlib";
 import WebSocket from "ws";
 import { createMemoryDurabilityStore } from "../runtime/durability-store.mjs";
 import { startResponsesServer, messageReader, sendWarmup, sendFinal } from "./support/responses.mjs";
@@ -203,6 +204,29 @@ test("long durable histories and cold replay fit within the Worker memory budget
     durable_payload_bytes: payloadBytes, turns: 96, cold_replay: true }));
   assert.ok(wasmBytes < 64 * 1024 * 1024, `long thread retained ${wasmBytes} WASM bytes`);
   assert.ok(payloadBytes < 4 * 1024 * 1024, `long thread persisted ${payloadBytes} bytes`);
+  await reopened.session.shutdown();
+
+  // Older deployments saved the same state as uncompressed JSON. They must
+  // reopen without creating a second escaped full-state envelope in the host.
+  const retained = store.load("long-memory-budget");
+  const prefix = "nanocodex-durable-state-gzip-v1:";
+  assert.ok(retained.payload.startsWith(prefix));
+  const legacy = createMemoryDurabilityStore("legacy-memory-budget", {
+    revision: retained.revision,
+    payload: gunzipSync(Buffer.from(retained.payload.slice(prefix.length), "base64")).toString("utf8"),
+  });
+  const legacyAgent = await HostAgent.create({
+    ...options, durability: legacy, durabilityId: "legacy-memory-budget",
+  });
+  context.after(() => legacyAgent.session.shutdown());
+  const legacyTurn = legacyAgent.turn.prompt({ id: "turn-95", input });
+  const legacyResult = await legacyTurn.result();
+  assert.equal(legacyResult.finalMessage, "DONE_95");
+  legacyResult.dispose();
+  legacyTurn.dispose();
+  const legacyWasmBytes = engine.memory.buffer.byteLength;
+  context.diagnostic(JSON.stringify({ legacy_reopen_wasm_bytes: legacyWasmBytes }));
+  assert.ok(legacyWasmBytes < 96 * 1024 * 1024, `legacy recovery retained ${legacyWasmBytes} WASM bytes`);
 });
 
 test("Worker completion keeps a large retained snapshot out of the eager crossover", async (context) => {

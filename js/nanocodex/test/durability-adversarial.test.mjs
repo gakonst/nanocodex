@@ -333,3 +333,20 @@ test("portable cutover has no random-number-generator dependency", async () => {
     else delete globalThis.crypto;
   }
 });
+
+
+test("large Unicode acquired states cross as exact UTF-8 without a nested JSON envelope", async () => {
+  const payload = 'retained \" 🧪\n'.repeat(100_000);
+  const host = {};
+  const store = createMemoryDurabilityStore("unicode-state", { revision: "1", payload });
+  const route = own(host, store, "unicode-state");
+  retain(host, route.id);
+  try {
+    const acquired = await acquire(route.id, "unicode-state", "owner");
+    assert.equal(acquired.owner_id, "owner");
+    assert.equal(acquired.revision, "1");
+    assert.ok(acquired.payload instanceof Uint8Array);
+    assert.equal(new TextDecoder().decode(acquired.payload), payload);
+    assert.equal(store.load("unicode-state").payload, payload);
+  } finally { release(host, route.id); }
+});

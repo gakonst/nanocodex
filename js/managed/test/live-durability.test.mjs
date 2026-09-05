@@ -59,9 +59,9 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     throw lastError ?? new Error(`${method} ${path}: request deadline exceeded`);
   };
   const diagnose = async (agentBase, turnId) => {
-    const [view, state, history] = await Promise.all([
+    const [view, state, history, capacity] = await Promise.all([
       request(`${agentBase}/turns/${turnId}`), request(agentBase),
-      request(`${agentBase}/events/history?limit=64`),
+      request(`${agentBase}/events/history?limit=64`), request(`${agentBase}/capacity`),
     ]);
     // Log state and event identities only. Never log prompts, provider frames,
     // reasoning, tool arguments, or tool output from retained conversations.
@@ -70,6 +70,8 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
         retry_at: view.retry_at, updated_at: view.updated_at },
       agent: { loaded: state.agent_loaded, active_turns: state.active_turns,
         stream_failed: Boolean(state.stream_error) },
+      durable_state: capacity.durable_state,
+      archived_turns: capacity.archived_turns,
       events: history.data.map((event) => ({ cursor: event.cursor,
         turn_id: event.turn_id, created_at: event.created_at,
         type: event.type === "event" ? event.event.type : event.type })),
@@ -173,6 +175,12 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
       await delay(5_000);
     }
     assert.ok(unloaded, "the long thread must unload before testing cold continuation");
+    const capacity = await request(`${base}/capacity`);
+    assert.ok(capacity.archived_turns.archived_receipts >= 16,
+      "old receipts must actually move into the archive before replay verification");
+    assert.ok(capacity.turns.terminal_rows <= 512, "receipt hot storage must stay bounded");
+    t.diagnostic(JSON.stringify({ durable_state: capacity.durable_state,
+      archived_turns: capacity.archived_turns, hot_terminal_rows: capacity.turns.terminal_rows }));
     t.diagnostic("long thread unloaded; testing cold continuation");
     const archived = completed[0];
     const replay = await request(`${base}/turns`, "POST", {

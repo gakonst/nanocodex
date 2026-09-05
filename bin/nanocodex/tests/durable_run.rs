@@ -615,7 +615,16 @@ fn retained_payload(database: &Path) -> Result<Option<Value>> {
         )
         .optional()?;
     payload
-        .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+        .map(|payload| {
+            use base64::Engine as _;
+            if let Some(encoded) = payload.strip_prefix("nanocodex-durable-state-gzip-v1:") {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+                serde_json::from_reader(flate2::read::GzDecoder::new(bytes.as_slice()))
+                    .map_err(Into::into)
+            } else {
+                serde_json::from_str(&payload).map_err(Into::into)
+            }
+        })
         .transpose()
 }
 

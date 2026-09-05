@@ -570,7 +570,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
   retainDurabilityHost(secondHost, secondRoute.id);
   try {
     assert.deepEqual(
-      JSON.parse(await globalThis.nanocodexHost.durabilityAcquire(
+      (await globalThis.nanocodexHost.durabilityAcquire(
         firstRoute.id,
         "state-1",
         "owner-1",
@@ -611,7 +611,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
       { status: "not_committed", message: "transaction rolled back" },
     );
     assert.deepEqual(
-      JSON.parse(await globalThis.nanocodexHost.durabilityAcquire(
+      (await globalThis.nanocodexHost.durabilityAcquire(
         secondRoute.id,
         "state-1",
         "owner-2",
@@ -620,7 +620,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
         owner_id: "owner-2",
         fence: "2",
         revision: "1",
-        payload: "opaque-rust-state",
+        payload: new TextEncoder().encode("opaque-rust-state"),
       },
     );
     assert.deepEqual(
@@ -635,7 +635,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
       { status: "fenced" },
     );
     assert.equal(
-      JSON.parse(await globalThis.nanocodexHost.durabilityAcquire(
+      (await globalThis.nanocodexHost.durabilityAcquire(
         firstRoute.id,
         "another-state",
         "owner-3",
@@ -645,7 +645,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
     );
     releaseDurabilityHost(firstHost, firstRoute.id);
     assert.equal(
-      JSON.parse(await globalThis.nanocodexHost.durabilityAcquire(
+      (await globalThis.nanocodexHost.durabilityAcquire(
         firstRoute.id,
         "state-1",
         "owner-3",
@@ -663,7 +663,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
       /no Nanocodex host owns durability route/,
     );
     assert.equal(
-      JSON.parse(await globalThis.nanocodexHost.durabilityAcquire(
+      (await globalThis.nanocodexHost.durabilityAcquire(
         secondRoute.id,
         "state-1",
         "owner-5",

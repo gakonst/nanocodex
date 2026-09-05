@@ -116,10 +116,15 @@ inside the Rust owner so preparing a replacement does not deep-copy every receip
 Managed sessions keep 16 inner terminal receipts; their managed inbox and archive
 continue to own public exact-ID replay beyond that tail.
 
-This is a hard cutover. State format 2 uses the
-`nanocodex_durable_state` envelope; format 1, the former
-`nanocodex_journal_state` envelope, and individual event batches are rejected.
-There is no adoption, migration, or compatibility reader for old durable data.
+State format 2 uses the `nanocodex_durable_state` envelope. Small states retain
+that JSON directly. Above 256 KiB, serialization streams into gzip and base64
+with the `nanocodex-durable-state-gzip-v1:` prefix, avoiding a complete
+uncompressed crossover allocation. Recovery accepts both encodings and
+validates the gzip checksum and complete envelope before admitting operations.
+The serialized payload remains opaque to every host and transfer adapter.
+Runtime versions predating this encoding cannot reopen compressed states.
+Format 1, the former `nanocodex_journal_state` envelope, and individual event
+batches remain rejected.
 
 ## Provider portability
 

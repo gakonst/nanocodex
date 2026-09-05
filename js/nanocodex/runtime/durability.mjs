@@ -52,11 +52,15 @@ export async function acquire(routeId, stateId, ownerId) {
   if ((retainedRevision === "0") !== (payload === null)) {
     throw new TypeError("durability.acquire() returned inconsistent revision and payload");
   }
-  return JSON.stringify({
+  // Cross the WASM boundary as fields. Wrapping a large legacy payload in
+  // another JSON string duplicates it in both JS and WASM during cold recovery.
+  return Object.freeze({
     owner_id: acquiredOwnerId,
     fence: uint64(stored.fence, "durability owner fence"),
     revision: retainedRevision,
-    payload,
+    // wasm-bindgen's string conversion can reserve three times a large
+    // Unicode string's length. UTF-8 bytes cross with one exact allocation.
+    payload: payload === null ? null : new TextEncoder().encode(payload),
   });
 }
 

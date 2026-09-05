@@ -31,6 +31,9 @@ export function cloudflareDurabilityStorage(): CloudflareDurableObjectStorage {
         } else if (sql.startsWith("INSERT INTO nanocodex_durable_owners")) {
           owners.set(stateId, { owner_id: args[1] as string, fence: args[2] as string });
           rows = [];
+        } else if (sql.startsWith("SELECT revision FROM nanocodex_durable_states")) {
+          const stored = states.get(stateId);
+          rows = stored ? [{ revision: stored.revision }] : [];
         } else if (sql.startsWith("SELECT revision, payload FROM nanocodex_durable_states")) {
           const stored = states.get(stateId);
           rows = stored ? [stored] : [];

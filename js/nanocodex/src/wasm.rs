@@ -357,15 +357,42 @@ impl StateStore for JavaScriptDurabilityStore {
             let value = JsFuture::from(promise)
                 .await
                 .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
-            let encoded = value.as_string().ok_or_else(|| {
-                StoreError::Backend(
-                    "JavaScript durability acquire returned a non-string".to_owned(),
-                )
-            })?;
-            let stored =
+            let stored = if let Some(encoded) = value.as_string() {
+                // Accept the former host ABI when embedding against an older
+                // host, but current hosts pass the payload without nesting it.
                 serde_json::from_str::<JavaScriptOwnedState>(&encoded).map_err(|error| {
                     StoreError::Backend(format!("invalid durability acquire result: {error}"))
-                })?;
+                })?
+            } else {
+                let field = |name: &str| {
+                    js_sys::Reflect::get(&value, &JsValue::from_str(name))
+                        .map_err(|error| StoreError::Backend(host_error_message(&error)))
+                };
+                let text = |name: &str| {
+                    field(name)?.as_string().ok_or_else(|| {
+                        StoreError::Backend(format!("invalid durability acquire {name}"))
+                    })
+                };
+                let payload = field("payload")?;
+                JavaScriptOwnedState {
+                    owner_id: text("owner_id")?,
+                    fence: text("fence")?,
+                    revision: text("revision")?,
+                    payload: if payload.is_null() {
+                        None
+                    } else if let Some(bytes) = payload.dyn_ref::<js_sys::Uint8Array>() {
+                        Some(String::from_utf8(bytes.to_vec()).map_err(|error| {
+                            StoreError::Backend(format!(
+                                "invalid durability acquire UTF-8: {error}"
+                            ))
+                        })?)
+                    } else {
+                        Some(payload.as_string().ok_or_else(|| {
+                            StoreError::Backend("invalid durability acquire payload".to_owned())
+                        })?)
+                    },
+                }
+            };
             if stored.owner_id != owner_id.as_str() {
                 return Err(StoreError::Backend(
                     "JavaScript durability acquire returned a different owner ID".to_owned(),
