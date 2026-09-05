@@ -12,7 +12,11 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
   assert.ok(key, "NANOCODEX_ASTRA_MANAGED_API_KEY is required for deployed durability evidence");
   const origin = "https://nanocodex.gakonst.workers.dev";
   const run = `durability-${process.env.GITHUB_RUN_ID ?? "local"}-${randomUUID()}`;
+  let diagnosticTurnId;
   const request = async (path, method = "GET", body, idempotencyKey) => {
+    diagnosticTurnId = path.match(/\/turns\/([^/?]+)/)?.[1]
+      ?? (method === "POST" && path.endsWith("/turns") ? body?.id : undefined)
+      ?? diagnosticTurnId;
     const deadline = Date.now() + 45_000;
     const encodedBody = body === undefined ? undefined : JSON.stringify(body);
     let attempt = 0;
@@ -56,7 +60,9 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
         ? Math.max(100, requestedDelay) : Math.min(250 * (2 ** (attempt - 1)), 5_000);
       await delay(Math.max(0, Math.min(backoff, deadline - Date.now())));
     }
-    throw lastError ?? new Error(`${method} ${path}: request deadline exceeded`);
+    throw new Error(`${method} ${path}: request deadline exceeded after ${attempt} attempts`, {
+      cause: lastError,
+    });
   };
   const diagnose = async (agentBase, turnId) => {
     const [view, state, history, capacity] = await Promise.all([
@@ -220,6 +226,10 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     assert.deepEqual(state.active_turns, []);
     passed = true;
     t.diagnostic("96 long turns, 432 archive cancellations, old-turn replays, idle reopen, cancellation, and a tool follow-on passed");
+  } catch (error) {
+    try { await diagnose(base, diagnosticTurnId ?? "turn-95"); }
+    catch (diagnosticError) { t.diagnostic(`failure diagnostics unavailable: ${diagnosticError.message}`); }
+    throw error;
   } finally {
     if (passed) await request(base, "DELETE");
     else t.diagnostic(`retained synthetic failing agent ${id} for diagnosis`);
