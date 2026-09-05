@@ -79,7 +79,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
             if text.hasPrefix("data:") { return [.init(label: label, value: "Embedded attachment")] }
             return [.init(label: label, value: text, code: ["Command", "Code", "Output", "Error output", "Patch"].contains(label))]
         case .array(let items):
-            return items.enumerated().flatMap { index, item in
+            return items.enumerated().flatMap { index, item -> [ToolField] in
                 let itemLabel = items.count == 1 ? label : "\(label) · \(index + 1)"
                 let content = fields(item, label: itemLabel)
                 if case .object = decoded(item), items.count > 1 {
