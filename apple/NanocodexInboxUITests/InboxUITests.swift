@@ -206,10 +206,15 @@ final class InboxUITests: XCTestCase {
         let conversation = app.scrollViews["conversation"]
         XCTAssertTrue(conversation.staticTexts["Failed"].exists)
         conversation.staticTexts["Run command"].tap()
-        XCTAssertTrue(conversation.staticTexts["The browser disconnected. Reconnect it and try again."].exists)
+        let failure = conversation.staticTexts["The browser disconnected. Reconnect it and try again."]
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: failure)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
         capture(app, "12-activity-failure")
     }
     private func capture(_ app: XCUIApplication, _ name: String) {
+        // Native sheet/disclosure animations can outlive accessibility queries.
+        // Capture their settled layout, not an intermediate clipped frame.
+        Thread.sleep(forTimeInterval: 0.4)
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
