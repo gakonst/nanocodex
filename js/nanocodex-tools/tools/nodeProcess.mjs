@@ -155,8 +155,6 @@ export async function createNodeProcessTools({
       if (input.workdir !== undefined && typeof input.workdir !== "string")
         throw new TypeError("workdir must be text");
       collect();
-      if (sessions.size >= 32 || processes.size >= 32)
-        throw new Error("This Hand has reached its 32-process limit.");
       const cwd = await realpath(resolve(root, input.workdir ?? root));
       const path = relative(root, cwd);
       if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path))
@@ -167,10 +165,6 @@ export async function createNodeProcessTools({
         throw new Error("shell must be an absolute executable path.");
       if (disposed) throw new Error("This compute hand is stopped.");
       context.signal?.throwIfAborted();
-      // Another parallel request may have acquired a process while realpath
-      // yielded above. Reserve capacity at the final synchronous spawn boundary.
-      if (sessions.size >= 32 || processes.size >= 32)
-        throw new Error("This Hand has reached its 32-process limit.");
       const child = spawn(
         shell,
         [input.login === true ? "-lc" : "-c", input.cmd],

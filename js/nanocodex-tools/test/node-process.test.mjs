@@ -146,17 +146,32 @@ test("stopping a Hand terminates retained processes and fences new commands", as
   await rm(workspace, { recursive: true });
 });
 
-test("parallel commands cannot bypass the process capacity boundary", { skip: process.platform === "win32" }, async () => {
+test("native Hands retain more than 32 parallel processes until completion", { skip: process.platform === "win32" }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), "nanocodex-capacity-"));
   const runtime = await createNodeProcessTools({ workspace });
+  const [exec, stdin] = runtime.tools;
+  const context = { sessionId: "owner" };
+  const sessions = [];
   try {
-    const results = await Promise.allSettled(Array.from({ length: 40 }, () => runtime.tools[0].handler(
-      { cmd: "sleep 5", yield_time_ms: 0 }, { sessionId: "owner" },
+    for (let batch = 0; batch < 2; batch++) {
+      const results = await Promise.allSettled(Array.from({ length: 40 }, () => exec.handler(
+        { cmd: 'read value; printf "%s\\n" "$value"', yield_time_ms: 0 }, context,
+      )));
+      for (const result of results) {
+        assert.equal(result.status, "fulfilled", result.reason?.message);
+        assert.equal(typeof result.value.session_id, "number");
+        sessions.push(result.value.session_id);
+      }
+    }
+    assert.equal(new Set(sessions).size, 80);
+    const completed = await Promise.all(sessions.map((session_id, index) => stdin.handler(
+      { session_id, chars: `process-${index}\n`, yield_time_ms: 1000 }, context,
     )));
-    assert.equal(results.filter(result => result.status === "fulfilled").length, 32);
-    const rejected = results.filter(result => result.status === "rejected");
-    assert.equal(rejected.length, 8);
-    for (const result of rejected) assert.match(result.reason.message, /32-process limit/);
+    for (const [index, result] of completed.entries()) {
+      assert.equal(result.exit_code, 0);
+      assert.equal(result.output, `process-${index}\n`);
+      assert.equal(result.session_id, undefined);
+    }
   } finally { await runtime.close(); await rm(workspace, { recursive: true }); }
 });
 
