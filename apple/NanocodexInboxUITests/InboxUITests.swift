@@ -60,6 +60,10 @@ final class InboxUITests: XCTestCase {
         capture(app, "04-steer-running-agent")
         app.buttons["send"].tap()
         XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        let pending = app.scrollViews["pending-messages"]
+        let input = app.otherElements["composer-input"]
+        XCTAssertLessThanOrEqual(pending.frame.maxY, input.frame.minY + 1)
+        XCTAssertLessThanOrEqual(input.frame.minY - pending.frame.maxY, 2, "Queue touches the composer")
         capture(app, "07-queued-message")
         app.otherElements["agent-card"].swipeLeft()
         XCTAssertFalse(app.staticTexts["pending-message"].exists)
@@ -179,6 +183,31 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["voice-error"].waitForExistence(timeout: 5))
         app.buttons["Use voice draft"].tap()
         XCTAssertEqual(composer(app).value as? String, "Keep my typing")
+    }
+    func testReadableToolActivityAndUnlabelledReplies() {
+        let app = launch(); selectInbox(app)
+        app.staticTexts["agent-title"].tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertFalse(conversation.staticTexts["nanocodex"].exists)
+        XCTAssertFalse(conversation.staticTexts["exec_command"].exists)
+        XCTAssertTrue(conversation.staticTexts["Run command"].exists)
+        capture(app, "10-readable-activity")
+        conversation.staticTexts["Run command"].tap()
+        XCTAssertTrue(conversation.staticTexts["Command"].waitForExistence(timeout: 3))
+        XCTAssertTrue(conversation.staticTexts["Exit code"].exists)
+        XCTAssertTrue(conversation.staticTexts["swift test --package-path apple/InboxCore"].exists)
+        capture(app, "11-activity-details")
+    }
+    func testToolFailureIsReadable() {
+        let app = launch(["NANOCODEX_DEMO_TOOL_ERROR": "1"]); selectInbox(app)
+        app.staticTexts["agent-title"].tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.staticTexts["Failed"].exists)
+        conversation.staticTexts["Run command"].tap()
+        XCTAssertTrue(conversation.staticTexts["The browser disconnected. Reconnect it and try again."].exists)
+        capture(app, "12-activity-failure")
     }
     private func capture(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())

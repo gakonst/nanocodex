@@ -49,7 +49,7 @@ backoff after disconnect. Backgrounding detaches observation; agents continue
 on the service. Foregrounding reloads history and resumes. Active-turn state
 reads cannot overwrite newer streamed events. Changing accounts invalidates old
 callbacks and cancels owned requests. Follow-up retries reuse the same turn ID
-and idempotency key. The small queued-message row survives navigation and relaunch.
+and idempotency key. The compact queued-message row sits flush above the input inside the composer surface and survives navigation and relaunch.
 “Steer now” uses cancel-and-continue: it cancels the captured predecessor without
 resubmitting the already durable follow-up. This is not in-flight runtime injection.
 Cancellation acknowledgement is not completion; the row stays until execution or
@@ -81,3 +81,5 @@ sheet dismissal/error handling. It attaches screenshots, simulator video, and th
 full Xcode result as `native-inbox-evidence`. Demo automation does not establish
 authenticated service behavior, real microphone recognition, or physical-device
 performance. Animation durations are 160–180 ms and respect Reduce Motion.
+
+Tool activity uses readable action names and statuses, with expandable labeled inputs and results. Commands retain code formatting; nested objects and arrays become labeled fields rather than JSON. Unknown tools use the same presentation. Agent replies have no redundant speaker label; reasoning is collapsed behind Thought process.

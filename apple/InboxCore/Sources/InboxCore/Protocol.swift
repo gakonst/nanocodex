@@ -111,8 +111,9 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
     public var text: String
     public var detail: String = ""
     public var running = false
-    public init(id: String, role: String, text: String, detail: String = "", running: Bool = false) {
-        self.id = id; self.role = role; self.text = text; self.detail = detail; self.running = running
+    public var tool: ToolPresentation?
+    public init(id: String, role: String, text: String, detail: String = "", running: Bool = false, tool: ToolPresentation? = nil) {
+        self.id = id; self.role = role; self.text = text; self.detail = detail; self.running = running; self.tool = tool
     }
 }
 
@@ -134,10 +135,20 @@ public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
             if !final.isEmpty, rows.last(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" })?.text != final {
                 rows.append(.init(id: id, role: "Agent", text: final))
             }
-            for index in rows.indices where rows[index].id.hasPrefix(turn + ":") { rows[index].running = false }
+            for index in rows.indices where rows[index].id.hasPrefix(turn + ":") {
+                if rows[index].running, rows[index].tool != nil {
+                    rows[index].tool?.status = envelope.type == "turn_cancelled" ? "Stopped" : "Result unavailable"
+                }
+                rows[index].running = false
+            }
         } else if envelope.type == "turn_failed" || envelope.type == "turn_cancelled" {
-            rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : d["error"].string))
-            for index in rows.indices where rows[index].id.hasPrefix(turn + ":") { rows[index].running = false }
+            rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : (d["error"].string.isEmpty ? "This turn failed. Open its activity for details." : d["error"].string)))
+            for index in rows.indices where rows[index].id.hasPrefix(turn + ":") {
+                if rows[index].running, rows[index].tool != nil {
+                    rows[index].tool?.status = envelope.type == "turn_cancelled" ? "Stopped" : "Result unavailable"
+                }
+                rows[index].running = false
+            }
         } else if envelope.type == "event" {
             let event = d["event"], p = event["payload"], type = event["type"].string
             let role = type == "reasoning.summary.delta" ? "Thinking" : "Agent"
@@ -151,11 +162,19 @@ public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
                     rows[last].text = p["text"].string; rows[last].running = false
                 } else { rows.append(.init(id: id, role: "Agent", text: p["text"].string)) }
             case "tool.call":
-                rows.append(.init(id: prefix + ":tool:" + p["call_id"].string, role: "Tool", text: p["tool"].string, detail: p["arguments"].pretty, running: true))
+                let tool = ToolPresentation(name: p["tool"].string, arguments: p["arguments"], metadata: p["metadata"])
+                rows.append(.init(id: prefix + ":tool:" + p["call_id"].string, role: "Tool", text: tool.title, running: true, tool: tool))
             case "tool.result":
-                if let index = rows.firstIndex(where: { $0.id == prefix + ":tool:" + p["call_id"].string }) {
+                let toolID = prefix + ":tool:" + p["call_id"].string
+                let result = p["structured_result"] == .null ? p["result"] : p["structured_result"]
+                if let index = rows.firstIndex(where: { $0.id == toolID }) {
                     rows[index].running = false
-                    rows[index].detail = (p["structured_result"] == .null ? p["result"] : p["structured_result"]).pretty
+                    rows[index].tool?.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"])
+                } else {
+                    // History can start after a call. Its result must remain readable.
+                    var tool = ToolPresentation(name: p["tool"].string, arguments: .null, metadata: p["metadata"])
+                    tool.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"])
+                    rows.append(.init(id: toolID, role: "Tool", text: tool.title, tool: tool))
                 }
             case "run.steered": rows.append(.init(id: id, role: "Status", text: "Direction updated"))
             case "run.error": rows.append(.init(id: id, role: "Status", text: p["message"].string))

@@ -183,11 +183,41 @@ struct InboxView: View {
         .accessibilityIdentifier("agent-card")
     }
     private var composer: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 0) {
             if model.controllableTurns.count > 1 {
                 Picker("Active turn", selection: $model.selectedTurn) {
-                    ForEach(model.controllableTurns, id: \.self) { id in Text(String(id.prefix(12))).tag(id) }
+                    ForEach(model.controllableTurns, id: \.self) { id in Text("Turn \(model.controllableTurns.firstIndex(of: id).map { $0 + 1 } ?? 1)").tag(id) }
                 }.pickerStyle(.menu)
+            }
+            if !model.focusedPending.isEmpty {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(model.focusedPending) { message in
+                            HStack(alignment: .center, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(message.phase == .submitting ? "Sending…" : message.phase == .starting ? "Stopping current turn…" : message.phase == .cancelling ? "Cancelling…" : message.phase == .failed ? "Not confirmed" : "Queued")
+                                        .font(.system(size: 11)).foregroundStyle(Ink.muted)
+                                    Text(message.input).font(.system(size: 13)).lineLimit(1)
+                                        .accessibilityIdentifier("pending-message")
+                                    if let error = message.error { Text(error).font(.caption2).foregroundStyle(Ink.muted) }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                if message.phase == .failed {
+                                    Button { model.retryPending(message.id) } label: { Text("Retry").frame(minHeight: 44) }.accessibilityIdentifier("retry-pending")
+                                } else if message.id == model.focusedPending.first?.id, message.interruption != nil {
+                                    Button { model.steerNow(message.id) } label: { Text("Steer now").frame(minHeight: 44) }.accessibilityIdentifier("steer-now")
+                                }
+                                Button { model.cancelPending(message.id) } label: {
+                                    Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle())
+                                }.accessibilityLabel("Cancel queued message")
+                            }.font(.system(size: 13, weight: .medium)).buttonStyle(.plain)
+                                .disabled(model.busy.contains(message.agentID) || message.phase == .starting || message.phase == .cancelling)
+                                .padding(.leading, 16)
+                        }
+                    }
+                }.frame(maxHeight: model.focusedPending.count > 1 ? 104 : model.focusedPending.first?.error == nil ? 48 : 82)
+                    .padding(.top, 4)
+                    .accessibilityIdentifier("pending-messages")
+                Rectangle().fill(Ink.border).frame(height: 0.5).padding(.horizontal, 16)
             }
             HStack(alignment: .bottom, spacing: 8) {
                 if !model.focusedTurn.isEmpty {
@@ -211,36 +241,10 @@ struct InboxView: View {
                 }.buttonStyle(.plain).disabled(model.hasUnconfirmedMessage || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy.contains(model.focused?.id ?? ""))
                     .accessibilityLabel(model.focused?.isRunning == true ? "Queue message" : "Send message")
                     .accessibilityIdentifier("send").keyboardShortcut(.return, modifiers: .command)
-            }.padding(10).padding(.leading, 6).background(Ink.surface, in: RoundedRectangle(cornerRadius: 30))
-            if !model.focusedPending.isEmpty {
-                ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(model.focusedPending) { message in
-                            HStack(alignment: .center, spacing: 8) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(message.phase == .submitting ? "Sending…" : message.phase == .starting ? "Stopping current turn…" : message.phase == .cancelling ? "Cancelling…" : message.phase == .failed ? "Not confirmed" : "Queued")
-                                        .font(.system(size: 11)).foregroundStyle(Ink.muted)
-                                    Text(message.input).font(.system(size: 13)).lineLimit(2)
-                                        .accessibilityIdentifier("pending-message")
-                                    if let error = message.error { Text(error).font(.caption2).foregroundStyle(Ink.muted) }
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                                if message.phase == .failed {
-                                    Button { model.retryPending(message.id) } label: { Text("Retry").frame(minHeight: 44) }.accessibilityIdentifier("retry-pending")
-                                } else if message.id == model.focusedPending.first?.id, message.interruption != nil {
-                                    Button { model.steerNow(message.id) } label: { Text("Steer now").frame(minHeight: 44) }.accessibilityIdentifier("steer-now")
-                                }
-                                Button { model.cancelPending(message.id) } label: {
-                                    Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle())
-                                }.accessibilityLabel("Cancel queued message")
-                            }.font(.system(size: 13, weight: .medium)).buttonStyle(.plain)
-                                .disabled(model.busy.contains(message.agentID) || message.phase == .starting || message.phase == .cancelling)
-                                .padding(.leading, 12)
-                        }
-                    }
-                }.frame(maxHeight: model.focusedPending.count > 1 ? 126 : model.focusedPending.first?.error == nil ? 58 : 92)
-                    .accessibilityIdentifier("pending-messages")
-            }
-        }.padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8).background(Ink.background)
+            }.padding(8).padding(.leading, 6).accessibilityIdentifier("composer-input")
+
+        }.background(Ink.surface, in: RoundedRectangle(cornerRadius: 28))
+            .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8).background(Ink.background)
     }
 
     private var emptyState: some View {
@@ -335,19 +339,18 @@ private struct ConversationView: View {
                         HStack(alignment: .top, spacing: 0) {
                             if row.role == "You" { Spacer(minLength: 44) }
                             VStack(alignment: .leading, spacing: 10) {
-                                if row.role != "You" {
-                                    HStack(spacing: 8) {
-                                        Text(row.role == "Agent" ? "nanocodex" : row.role)
-                                            .font(.system(size: 13, weight: .medium))
-                                        if row.running { ProgressView().controlSize(.mini) }
-                                    }.foregroundStyle(Ink.muted)
+                                if row.role == "Tool" {
+                                    ToolActivityView(row: row)
+                                } else if row.role == "Thinking" {
+                                    DisclosureGroup(row.running ? "Thinking…" : "Thought process") {
+                                        Text(row.text).font(.system(size: 15)).textSelection(.enabled)
+                                    }.font(.system(size: 13)).foregroundStyle(Ink.muted)
+                                } else {
+                                    Text(row.text).font(.system(size: row.role == "Status" ? 14 : 17))
+                                        .lineSpacing(5).textSelection(.enabled)
+                                        .foregroundStyle(row.role == "Status" ? Ink.muted : Ink.text)
                                 }
-                                Text(row.text).font(.system(size: 17)).lineSpacing(5).textSelection(.enabled)
-                                if !row.detail.isEmpty {
-                                    DisclosureGroup("Details") {
-                                        Text(row.detail).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                                    }.font(.subheadline).foregroundStyle(Ink.muted)
-                                }
+
                             }
                             .padding(row.role == "You" ? 16 : 0)
                             .background(row.role == "You" ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 24))
@@ -366,5 +369,47 @@ private struct ConversationView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
 
         }.foregroundStyle(Ink.text).frame(minWidth: 340, minHeight: 520).presentationDetents([.large]).presentationDragIndicator(.visible)
+    }
+}
+
+private struct ToolActivityView: View {
+    let row: TranscriptRow
+    private var tool: ToolPresentation {
+        if let tool = row.tool { return tool }
+        var fallback = ToolPresentation(name: row.text, arguments: .null)
+        if !row.running { fallback.finish(.string(row.detail)) }
+        return fallback
+    }
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 14) {
+                if !tool.input.isEmpty { fields(tool.input, heading: "Input") }
+                if !tool.output.isEmpty { fields(tool.output, heading: "Result") }
+            }.padding(.top, 10)
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                if row.running { ProgressView().controlSize(.small) }
+                else { Image(systemName: tool.status == "Failed" ? "exclamationmark.circle" : tool.status == "Completed" ? "checkmark" : "minus.circle") }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(tool.title).font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.text)
+                        Text(tool.status).font(.system(size: 12)).foregroundStyle(Ink.muted)
+                    }
+                    if !tool.subject.isEmpty { Text(tool.subject).font(.system(size: 13)).foregroundStyle(Ink.muted).lineLimit(1) }
+                }
+            }
+        }.foregroundStyle(Ink.muted).accessibilityIdentifier("tool-activity")
+    }
+    private func fields(_ values: [ToolField], heading: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(heading).font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.muted)
+            ForEach(Array(values.enumerated()), id: \.offset) { _, field in
+                VStack(alignment: .leading, spacing: 3) {
+                    if field.label != heading { Text(field.label).font(.system(size: 12)).foregroundStyle(Ink.muted) }
+                    Text(field.value).font(.system(size: 14, design: field.code ? .monospaced : .default))
+                        .foregroundStyle(Ink.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
