@@ -153,6 +153,10 @@ test("the SQLite durability store owns revision validation and compare-and-repla
       owners.set(stateId, { owner_id: ownerId, fence });
       return [];
     }
+    if (sql.startsWith("SELECT revision FROM nanocodex_durable_states")) {
+      const stored = states.get(stateId);
+      return stored === undefined ? [] : [{ revision: stored.revision }];
+    }
     if (sql.startsWith("SELECT revision, payload FROM nanocodex_durable_states")) {
       const stored = states.get(stateId);
       return stored === undefined ? [] : [stored];

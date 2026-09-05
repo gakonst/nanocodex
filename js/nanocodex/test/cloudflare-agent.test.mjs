@@ -123,6 +123,9 @@ class MemoryStorage {
       rows = owner === undefined ? [] : [{ fence: owner.fence }];
     } else if (statement.startsWith("INSERT INTO nanocodex_durable_owners")) {
       this.owners.set(args[0], { ownerId: args[1], fence: args[2] });
+    } else if (statement.startsWith("SELECT revision FROM nanocodex_durable_states")) {
+      rows = this.states.filter((batch) => batch.stateId === args[0])
+        .map(({ revision }) => ({ revision }));
     } else if (statement.startsWith("SELECT revision, payload FROM nanocodex_durable_states")) {
       rows = this.states
         .filter((batch) => batch.stateId === args[0])

@@ -91,30 +91,43 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
   const base = `/v1/agents/${encodeURIComponent(id)}`;
   t.diagnostic(`synthetic agent ${id}; deployment ${process.env.GITHUB_SHA ?? "local"}`);
   let passed = false;
-  const terminal = async (turnId) => {
+  const terminal = async (turnId, agentBase = base) => {
     const started = Date.now();
     // Responses transports allow five minutes of event silence before retry.
     // Observe that recovery budget rather than declaring a deadlock at two.
     const deadline = started + 7 * 60_000;
     let diagnosed = false;
     while (Date.now() < deadline) {
-      const view = await request(`${base}/turns/${turnId}`);
+      const view = await request(`${agentBase}/turns/${turnId}`);
       if (["completed", "failed", "cancelled"].includes(view.state)) {
         if (diagnosed) t.diagnostic(`${turnId} settled as ${view.state} after ${Date.now() - started}ms`);
         return view;
       }
       if (!diagnosed && Date.now() - started >= 120_000) {
         diagnosed = true;
-        try { await diagnose(base, turnId); }
+        try { await diagnose(agentBase, turnId); }
         catch (error) { t.diagnostic(`slow-turn diagnostics unavailable: ${error.message}`); }
       }
       await delay(500);
     }
-    try { await diagnose(base, turnId); }
+    try { await diagnose(agentBase, turnId); }
     catch (error) { t.diagnostic(`timeout diagnostics unavailable: ${error.message}`); }
     assert.fail(`turn ${turnId} did not settle within seven minutes, including provider idle recovery`);
   };
   try {
+    for (const fixture of JSON.parse(process.env.NANOCODEX_DURABILITY_RECOVERY_AGENTS ?? "[]")) {
+      const retainedBase = `/v1/agents/${encodeURIComponent(fixture.agent)}`;
+      const recovered = await terminal(fixture.turn, retainedBase);
+      assert.equal(recovered.state, "completed", `retained ${fixture.agent}/${fixture.turn} must recover`);
+      const followOnId = `recovery-${run}`;
+      await request(`${retainedBase}/turns`, "POST", {
+        id: followOnId, input: "Reply exactly RECOVERED. Use no tools.",
+      });
+      const continued = await terminal(followOnId, retainedBase);
+      assert.equal(continued.state, "completed");
+      assert.match(continued.terminal.final_message, /RECOVERED/);
+      t.diagnostic(`retained failing thread ${fixture.agent}/${fixture.turn} recovered and continued`);
+    }
     const completed = [];
     const context = Array.from({ length: 160 }, (_, index) =>
       `Synthetic record ${index}: durability preserves operation order, exact inputs, and committed results.`).join("\n");

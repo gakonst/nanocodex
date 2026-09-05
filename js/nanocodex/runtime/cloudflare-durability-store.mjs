@@ -87,7 +87,11 @@ function replaceState(query, sql, [stateId, revision, payload]) {
   }
   query("DELETE FROM nanocodex_durable_chunk_heads WHERE state_id = ?", [stateId]);
   query("DELETE FROM nanocodex_durable_state_chunks WHERE state_id = ?", [stateId]);
-  if (encoder.encode(payload).byteLength <= DIRECT_PAYLOAD_BYTES) {
+  // UTF-8 needs at least one byte per UTF-16 code unit. Do not allocate
+  // another full-state byte buffer just to decide an already-large payload
+  // needs chunks. The remaining encoding is bounded by the inline threshold.
+  if (payload.length <= DIRECT_PAYLOAD_BYTES
+    && encoder.encode(payload).byteLength <= DIRECT_PAYLOAD_BYTES) {
     return query(sql, [stateId, revision, payload]);
   }
   const result = query(sql, [stateId, revision, ""]);

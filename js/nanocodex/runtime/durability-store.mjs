@@ -405,14 +405,27 @@ export function createSqliteDurabilityStore(options) {
             return { status: "fenced" };
           }
           const expectedRevision = durabilityRevision(request?.expectedRevision);
-          return mapMaybePromise(loadSqliteState(query, stateId), (state) => {
-            if (state.revision !== expectedRevision) {
-              if (state.revision === nextRevision(expectedRevision)
-                && typeof request?.payload === "string"
-                && state.payload === request.payload) {
-                return { status: "replaced", revision: state.revision };
+          // The normal write needs only the revision. Loading the previous
+          // payload also hydrates every Cloudflare chunk, doubling live state
+          // memory while the replacement is already held by Rust and JS.
+          return mapMaybePromise(query(
+            "SELECT revision FROM nanocodex_durable_states WHERE state_id = ?",
+            [stateId],
+          ), (rows) => {
+            exactRows(rows, 1, "SQLite durability revision");
+            if (rows.length === 1) exactObject(rows[0], ["revision"], "SQLite durability revision");
+            const actualRevision = durabilityRevision(rows[0]?.revision ?? "0");
+            if (actualRevision !== expectedRevision) {
+              if (actualRevision === nextRevision(expectedRevision)
+                && typeof request?.payload === "string") {
+                // A lost acknowledgement must still replay only the exact
+                // committed payload, under the same transaction and fence.
+                return mapMaybePromise(loadSqliteState(query, stateId), (state) =>
+                  state.payload === request.payload
+                    ? { status: "replaced", revision: actualRevision }
+                    : { status: "conflict", actualRevision });
               }
-              return { status: "conflict", actualRevision: state.revision };
+              return { status: "conflict", actualRevision };
             }
             if (expectedRevision === MAX_REVISION_TEXT) {
               return { status: "not_committed", message: "SQLite durability revision overflow" };

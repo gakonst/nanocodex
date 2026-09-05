@@ -14,6 +14,7 @@ test("Cloudflare durability stores one state and chunks only oversized payloads"
   const chunks = [];
   const schema = [];
   let transactions = 0;
+  let payloadReads = 0;
   const storage = {
     sql: {
       exec(sql, ...args) {
@@ -33,7 +34,11 @@ test("Cloudflare durability stores one state and chunks only oversized payloads"
         } else if (sql.startsWith("INSERT INTO nanocodex_durable_owners")) {
           owners.set(stateId, { owner_id: args[1], fence: args[2] });
           rows = [];
+        } else if (sql.startsWith("SELECT revision FROM nanocodex_durable_states")) {
+          const stored = states.get(stateId);
+          rows = stored ? [{ revision: stored.revision }] : [];
         } else if (sql.startsWith("SELECT revision, payload FROM nanocodex_durable_states")) {
+          payloadReads += 1;
           const stored = states.get(stateId);
           rows = stored ? [stored] : [];
         } else if (sql.startsWith("INSERT INTO nanocodex_durable_states")) {
@@ -104,6 +109,23 @@ test("Cloudflare durability stores one state and chunks only oversized payloads"
   assert.ok(chunks.filter((chunk) => chunk.stateId === "agent-large").length > 1);
   assert.ok(chunks.every((chunk) => chunk.payload.length <= 256_000));
   assert.equal(store.load("agent-large").payload, largePayload);
+
+  // Writes must not materialize the old multi-megabyte checkpoint. Only an
+  // ambiguous acknowledgement at the next revision needs an exact comparison.
+  const writeOwner = store.acquire("agent-write", { ownerId: "worker-write" });
+  const write = (expectedRevision, payload) => store.replace("agent-write", {
+    ownerId: writeOwner.ownerId, fence: writeOwner.fence, expectedRevision, payload,
+  });
+  assert.deepEqual(write("0", largePayload), { status: "replaced", revision: "1" });
+  const beforeWrite = payloadReads;
+  assert.deepEqual(write("1", largePayload), { status: "replaced", revision: "2" });
+  assert.equal(payloadReads, beforeWrite, "normal replacement must not read the old payload");
+  assert.deepEqual(write("0", largePayload), { status: "conflict", actualRevision: "2" });
+  assert.equal(payloadReads, beforeWrite, "stale revisions must not read the old payload");
+  assert.deepEqual(write("1", largePayload), { status: "replaced", revision: "2" });
+  assert.equal(payloadReads, beforeWrite + 1, "lost acknowledgement requires exact payload replay");
+  assert.deepEqual(write("1", `${largePayload}different`), { status: "conflict", actualRevision: "2" });
+  assert.equal(store.load("agent-write").payload, largePayload);
 
   const replacementOwner = store.acquire("agent-large", { ownerId: "worker-replacement" });
   assert.deepEqual(store.replace("agent-large", {
