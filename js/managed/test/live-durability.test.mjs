@@ -28,7 +28,9 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     return text ? JSON.parse(text) : undefined;
   };
   const created = await request("/v1/agents", "POST", {
-    settings: { model: "gpt-5.6-luna", thinking: "low" },
+    settings: {
+      model: "gpt-5.6-luna", thinking: "low", reasoning_mode: "standard", fast_mode: false,
+    },
   }, run);
   const id = created.id ?? created.agent_id;
   assert.equal(typeof id, "string");
@@ -93,6 +95,19 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     const followOn = await terminal("tool-follow-on");
     assert.equal(followOn.state, "completed", JSON.stringify(followOn));
     assert.match(followOn.terminal.final_message, /16637/);
+    let before;
+    let sawToolResult = false;
+    for (;;) {
+      const page = await request(`${base}/events/history?limit=128${before ? `&before=${before}` : ""}`);
+      sawToolResult ||= page.data.some((event) => event.turn_id === "tool-follow-on"
+        && event.type === "event" && event.event.type === "tool.result");
+      const oldest = page.data.reduce((cursor, event) =>
+        cursor === undefined || BigInt(event.cursor) < BigInt(cursor) ? event.cursor : cursor, undefined);
+      if (sawToolResult || !page.has_more || oldest === undefined
+        || BigInt(oldest) <= BigInt(followOn.accepted_cursor)) break;
+      before = oldest;
+    }
+    assert.ok(sawToolResult, "cold follow-on must execute a tool, not just return mental arithmetic");
     const state = await request(base);
     assert.deepEqual(state.active_turns, []);
     passed = true;
