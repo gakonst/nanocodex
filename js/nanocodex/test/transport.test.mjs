@@ -30,7 +30,7 @@ test("subagents are installed by default and expose branded lifecycle helpers", 
   ]);
   assert.deepEqual(resolveTools(undefined), {
     tools: {},
-    subagents: { max_concurrency: 32 },
+    subagents: {},
   });
   const ping = {
     name: "ping",
@@ -41,8 +41,9 @@ test("subagents are installed by default and expose branded lifecycle helpers", 
     tools: {
       ping: { description: "Return pong.", handler: ping.handler },
     },
-    subagents: { max_concurrency: 32 },
+    subagents: {},
   });
+  assert.deepEqual(resolveTools([...Subagents.create()]), { tools: {}, subagents: {} });
   const subagents = Subagents.create({ maxConcurrency: 7 });
   const handler = () => "pong";
   assert.deepEqual(resolveTools([{

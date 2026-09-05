@@ -239,8 +239,8 @@ Subagents are installed by default, including on a durable root. Clean children
 persist independent execution state under their own agent session IDs. The
 Rust task-tree registry remains in memory and is closed with the live root, so
 tree-local IDs and topology are not reconstructed from those agent states. Use
-`Subagents.create({ maxConcurrency })` in `tools` only to override the default
-maximum concurrency of 32.
+`Subagents.create({ maxConcurrency })` in `tools` to set an explicit finite
+concurrency limit. Active subagent turns are unlimited by default.
 
 Each Durable Object persists a private runtime identity in its own SQLite
 storage and derives its state identity from it, so multiple objects in one

@@ -6,7 +6,7 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-pub(crate) const DEFAULT_MAX_SUBAGENTS: usize = 32;
+pub(crate) const DEFAULT_MAX_SUBAGENTS: usize = nanocodex_subagents::DEFAULT_MAX_SUBAGENTS;
 
 /// Reasoning effort displayed by the Tact composer.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]

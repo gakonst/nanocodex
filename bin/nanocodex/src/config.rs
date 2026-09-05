@@ -172,7 +172,7 @@ pub(crate) struct AgentArgs {
     )]
     subagents: bool,
 
-    /// Maximum number of active subagent turns across one task tree.
+    /// Maximum active subagent turns across one task tree (unlimited by default).
     #[arg(
         long,
         env = "NANOCODEX_MAX_SUBAGENTS",
@@ -945,14 +945,17 @@ mod tests {
     }
 
     #[test]
-    fn subagent_concurrency_defaults_to_tacts_limit() {
+    fn subagent_concurrency_defaults_to_unlimited() {
         let command = crate::Cli::command();
         let max_subagents = command
             .get_arguments()
             .find(|argument| argument.get_id() == "max_subagents")
             .expect("the CLI should expose the max-subagents argument");
 
-        assert_eq!(max_subagents.get_default_values(), ["32"]);
+        assert_eq!(
+            max_subagents.get_default_values(),
+            [crate::subagents::DEFAULT_MAX_SUBAGENTS.to_string().as_str()]
+        );
     }
 
     #[test]

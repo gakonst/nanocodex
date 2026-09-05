@@ -10,7 +10,7 @@ export type Tool = Readonly<{
 export type Subagents = readonly [Tool];
 
 export interface Options {
-  /** Maximum number of concurrently active subagent turns. Defaults to 32. */
+  /** Optional finite concurrency limit. Omit for unlimited active turns. */
   maxConcurrency?: number | undefined;
 }
 
