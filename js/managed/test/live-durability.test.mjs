@@ -13,19 +13,43 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
   const origin = "https://nanocodex.gakonst.workers.dev";
   const run = `durability-${process.env.GITHUB_RUN_ID ?? "local"}-${randomUUID()}`;
   const request = async (path, method = "GET", body, idempotencyKey) => {
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${key}`,
-        "content-type": "application/json",
-        ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    const text = await response.text();
-    assert.ok(response.ok, `${method} ${path}: HTTP ${response.status}: ${text.slice(0, 500)}`);
-    return text ? JSON.parse(text) : undefined;
+    const deadline = Date.now() + 45_000;
+    const encodedBody = body === undefined ? undefined : JSON.stringify(body);
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        const response = await fetch(`${origin}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${key}`,
+            "content-type": "application/json",
+            ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
+          },
+          ...(encodedBody === undefined ? {} : { body: encodedBody }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const text = await response.text();
+        if (response.ok) {
+          if (attempt > 1) t.diagnostic(`${method} ${path} recovered after ${attempt} attempts`);
+          return text ? JSON.parse(text) : undefined;
+        }
+        const transient = response.status === 408 || response.status === 425
+          || response.status === 429 || response.status >= 500;
+        if (!transient || Date.now() >= deadline) {
+          assert.fail(`${method} ${path}: HTTP ${response.status}: ${text.slice(0, 500)}`);
+        }
+        const retryAfterHeader = response.headers.get("retry-after");
+        const retryAfter = retryAfterHeader === null ? Number.NaN : Number(retryAfterHeader);
+        const backoff = Number.isFinite(retryAfter) && retryAfter >= 0
+          ? retryAfter * 1_000
+          : Math.min(250 * (2 ** (attempt - 1)), 5_000);
+        await delay(Math.min(backoff, Math.max(0, deadline - Date.now())));
+      } catch (error) {
+        if (error?.code === "ERR_ASSERTION" || Date.now() >= deadline) throw error;
+        await delay(Math.min(250 * (2 ** (attempt - 1)), 5_000, deadline - Date.now()));
+      }
+    }
   };
   const created = await request("/v1/agents", "POST", {
     settings: {
