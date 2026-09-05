@@ -2,6 +2,9 @@
 
 A new native SwiftUI app for iPhone, iPad, and Mac. One managed agent per card:
 review the latest update, steer its current turn, then move to the next agent.
+The interface uses ChatGPT-style neutral surfaces, native typography, a rounded
+composer, and right-aligned user message bubbles, with Nanocodex branding and
+the agent card deck, review actions, and live steering controls.
 The visual and durable-event vocabulary follows the existing macOS client in
 PR #256. This app connects directly to the current managed HTTP/SSE contract;
 it does not require that PR or a bundled Node runtime.

@@ -5,11 +5,14 @@ import UIKit
 #endif
 
 private enum Ink {
-    static let background = Color(red: 0.065, green: 0.07, blue: 0.068)
-    static let card = Color(red: 0.11, green: 0.12, blue: 0.115)
-    static let muted = Color(red: 0.58, green: 0.62, blue: 0.59)
-    static let accent = Color(red: 0.77, green: 0.92, blue: 0.55)
-    static let amber = Color(red: 0.98, green: 0.71, blue: 0.40)
+    static let background = Color.white
+    static let card = Color.white
+    static let surface = Color(white: 0.96)
+    static let text = Color(white: 0.08)
+    static let muted = Color(white: 0.43)
+    static let border = Color(white: 0.89)
+    static let accent = Color(white: 0.08)
+    static let amber = Color(white: 0.36)
 }
 
 struct InboxView: View {
@@ -46,12 +49,13 @@ struct InboxView: View {
                         Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
                     }
                 }
-                .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 12)
+                .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 12)
                 .frame(maxWidth: 620)
                 .safeAreaInset(edge: .bottom, spacing: 0) { if model.focused != nil { composer.frame(maxWidth: 620) } }
             } else { ConnectView(model: model) }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(.light)
+        .foregroundStyle(Ink.text)
         .tint(Ink.accent)
         .sheet(isPresented: $showThread) { ConversationView(model: model).tint(Ink.accent) }
         .sheet(isPresented: $showAgents) { agentList }
@@ -69,27 +73,32 @@ struct InboxView: View {
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 22) {
-            HStack {
-                HStack(spacing: 8) {
-                    Image(systemName: "terminal").foregroundStyle(Ink.accent)
-                    Text("nanocodex").font(.system(.body, design: .monospaced).weight(.semibold))
-                }
+            HStack(spacing: 12) {
+                Button { showAgents = true } label: {
+                    Image(systemName: "line.3.horizontal.decrease").font(.system(size: 22)).frame(width: 40, height: 44)
+                }.accessibilityLabel("Browse agents")
+                Button { showSettings = true } label: {
+                    HStack(spacing: 6) {
+                        Text("nanocodex").font(.system(size: 21, weight: .semibold))
+                        Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.muted)
+                    }
+                }.accessibilityLabel("Account settings")
                 Spacer()
-                Button { showAgents = true } label: { Image(systemName: "rectangle.stack").frame(width: 44, height: 44) }
-                    .accessibilityLabel("Browse agents")
-                Button { showSettings = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }
-                    .accessibilityLabel("Account settings")
-            }.foregroundStyle(.white)
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Agent inbox").font(.system(size: 32, weight: .semibold, design: .rounded))
-                    Text("\(model.attentionCount) to review · \(model.runningCount) running").font(.subheadline).foregroundStyle(Ink.muted)
+                Button { Task { await model.newAgent() } } label: {
+                    Image(systemName: "square.and.pencil").font(.system(size: 22)).frame(width: 44, height: 44)
+                }.disabled(model.isCreating).accessibilityLabel("New agent")
+            }.foregroundStyle(Ink.text).buttonStyle(.plain)
+            HStack {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Agent inbox").font(.system(size: 25, weight: .semibold))
+                    Text("\(model.attentionCount) to review · \(model.runningCount) running")
+                        .font(.system(size: 14)).foregroundStyle(Ink.muted)
                 }
                 Spacer()
                 HStack(spacing: 5) {
-                    Circle().fill(model.connection == "Live" ? Ink.accent : Ink.amber).frame(width: 5, height: 5)
-                    Text(model.connection).font(.system(size: 10, weight: .medium, design: .monospaced))
-                }.foregroundStyle(Ink.muted).padding(.bottom, 4).accessibilityIdentifier("connection")
+                    Circle().fill(Ink.muted).frame(width: 5, height: 5)
+                    Text(model.connection).font(.system(size: 12))
+                }.foregroundStyle(Ink.muted).accessibilityIdentifier("connection")
             }
         }
     }
@@ -100,7 +109,7 @@ struct InboxView: View {
                     Text(filter.rawValue).font(.subheadline.weight(.medium))
                         .padding(.horizontal, 18).padding(.vertical, 10)
                         .foregroundStyle(model.filter == filter ? Ink.background : Ink.muted)
-                        .background(model.filter == filter ? Color.white : Color.clear, in: Capsule())
+                        .background(model.filter == filter ? Ink.accent : Ink.surface, in: Capsule())
                 }.buttonStyle(.plain).accessibilityIdentifier("filter-" + filter.rawValue)
             }
             Spacer(minLength: 0)
@@ -112,13 +121,13 @@ struct InboxView: View {
     private func deck(_ card: AgentCard) -> some View {
         GeometryReader { geometry in
             ZStack {
-                RoundedRectangle(cornerRadius: 28).fill(Ink.card.opacity(0.4)).padding(.horizontal, 18).offset(y: 16)
-                RoundedRectangle(cornerRadius: 28).fill(Ink.card.opacity(0.7)).padding(.horizontal, 9).offset(y: 8)
+                RoundedRectangle(cornerRadius: 28).fill(Ink.surface.opacity(0.6)).padding(.horizontal, 18).offset(y: 16)
+                RoundedRectangle(cornerRadius: 28).fill(Ink.surface).padding(.horizontal, 9).offset(y: 8)
                 cardFace(card, compact: geometry.size.height < 330)
                     .overlay(alignment: drag > 0 ? .topLeading : .topTrailing) {
                         if abs(drag) > 24 {
                             Text(drag > 0 ? "SEEN" : "LATER")
-                                .font(.system(.title2, design: .monospaced).bold())
+                                .font(.system(.title2).weight(.semibold))
                                 .padding(12).background(Ink.background, in: RoundedRectangle(cornerRadius: 10))
                                 .foregroundStyle(drag > 0 ? Ink.accent : Ink.amber)
                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(drag > 0 ? Ink.accent : Ink.amber, lineWidth: 2))
@@ -142,35 +151,40 @@ struct InboxView: View {
         VStack(alignment: .leading, spacing: compact ? 14 : 22) {
             HStack {
                 Label(card.error == nil ? card.status : "Update unavailable", systemImage: card.isRunning ? "waveform" : card.status == "Failed" ? "exclamationmark.circle" : "checkmark.circle")
-                    .font(.system(.caption, design: .monospaced).weight(.medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(card.isRunning || card.error != nil ? Ink.amber : Ink.accent)
                 Spacer()
                 Text("\(model.deck.order.firstIndex(of: card.id).map { $0 + 1 } ?? 1) / \(model.deck.order.count)")
-                    .font(.system(.caption, design: .monospaced)).foregroundStyle(Ink.muted)
+                    .font(.system(size: 13).monospacedDigit()).foregroundStyle(Ink.muted)
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: compact ? 12 : 20) {
-            Text(card.title).font(.system(size: compact ? 24 : 29, weight: .semibold)).lineLimit(3).accessibilityIdentifier("agent-title")
-            if !composerFocused { VStack(alignment: .leading, spacing: 10) {
-                Text(card.isRunning ? "WORKING ON IT" : "LATEST UPDATE")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(1.5).foregroundStyle(Ink.muted)
-                Text(card.error ?? card.preview).font(.system(size: 16)).foregroundStyle(.white.opacity(0.83))
-                    .lineLimit(compact ? 3 : 7).lineSpacing(4)
-            } }
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(card.title)
+                        .font(.system(size: compact ? 23 : 26, weight: .semibold))
+                        .lineLimit(3).accessibilityIdentifier("agent-title")
+                    if !composerFocused {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(card.isRunning ? "Working on it" : "Latest update")
+                                .font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.muted)
+                            Text(card.error ?? card.preview)
+                                .font(.system(size: 17)).foregroundStyle(Ink.text)
+                                .lineLimit(compact ? 5 : 9).lineSpacing(5)
+                        }
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.scrollIndicators(.hidden)
             HStack {
                 Text(card.model.isEmpty ? "Managed agent" : card.model)
-                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Ink.muted)
+                    .font(.system(size: 11)).foregroundStyle(Ink.muted)
                 Spacer()
                 Button { showThread = true } label: {
-                    Label("Open thread", systemImage: "arrow.up.right").font(.caption.weight(.medium)).padding(.vertical, 8)
+                    Label("Open thread", systemImage: "arrow.up.right").font(.system(size: 13, weight: .medium)).padding(.vertical, 8)
                 }.accessibilityIdentifier("open-thread")
             }
         }
         .padding(composerFocused ? 18 : 24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Ink.card, in: RoundedRectangle(cornerRadius: 28))
-        .overlay(RoundedRectangle(cornerRadius: 28).stroke(.white.opacity(0.08), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 28).stroke(Ink.border, lineWidth: 0.75))
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Next agent, revisit later") { advance(reviewed: false) }
         .accessibilityAction(named: "Mark update seen") { advance(reviewed: true) }
@@ -192,8 +206,10 @@ struct InboxView: View {
         Button(action: action) {
             VStack(spacing: 7) {
                 Image(systemName: icon).font(.system(size: 21, weight: .medium)).frame(width: 62, height: composerFocused ? 44 : 52)
-                    .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 20))
-                if !composerFocused { Text(label).font(.caption) }
+                    .background(label == "Seen" ? Ink.accent : Ink.background, in: Capsule())
+                    .overlay(Capsule().stroke(label == "Seen" ? Ink.accent : Ink.border, lineWidth: 1))
+                    .foregroundStyle(label == "Seen" ? Ink.background : Ink.text)
+                if !composerFocused { Text(label).font(.system(size: 12)).foregroundStyle(Ink.muted) }
             }.foregroundStyle(color)
         }.buttonStyle(.plain).accessibilityLabel(label)
     }
@@ -211,11 +227,11 @@ struct InboxView: View {
                 Button { Task { await model.send(steer: model.focused?.isRunning == true && !sendFollowUp) } } label: {
                     Image(systemName: model.busy.contains(model.focused?.id ?? "") ? "ellipsis" : "arrow.up")
                         .font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
-                        .background(Ink.accent, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(Ink.background)
+                        .background(Ink.accent, in: Circle()).foregroundStyle(Ink.background)
                 }.buttonStyle(.plain).disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy.contains(model.focused?.id ?? ""))
                     .accessibilityLabel(model.focused?.isRunning == true && !sendFollowUp ? "Send steering" : "Send follow-up")
                     .accessibilityIdentifier("send").keyboardShortcut(.return, modifiers: .command)
-            }.padding(10).padding(.leading, 6).background(Ink.card, in: RoundedRectangle(cornerRadius: 23))
+            }.padding(10).padding(.leading, 6).background(Ink.surface, in: RoundedRectangle(cornerRadius: 30))
             HStack {
                 if model.focused?.isRunning == true {
                     Menu {
@@ -225,10 +241,10 @@ struct InboxView: View {
                     Spacer()
                     Button("Stop turn") { if let card = model.focused { stopTarget = (card.id, model.focusedTurn, card.title); showStop = true } }.foregroundStyle(Ink.muted)
                         .disabled(model.busy.contains(model.focused?.id ?? ""))
-                } else { Text("Give it a direction. Keep moving.").foregroundStyle(Ink.muted); Spacer() }
+                } else { Text("Swipe to move on. Your agents keep working.").foregroundStyle(Ink.muted); Spacer() }
                 if model.canRetry { Button("Retry follow-up") { Task { await model.retry() } } }
             }.font(.caption).padding(.horizontal, 8)
-        }.padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 16).background(Ink.background)
+        }.padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 12).background(Ink.background)
     }
     private var emptyState: some View {
         VStack(spacing: 18) {
@@ -244,7 +260,7 @@ struct InboxView: View {
             List(model.cards) { card in
                 Button { model.select(card.id); showAgents = false } label: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(card.title).foregroundStyle(.white)
+                        Text(card.title).foregroundStyle(Ink.text)
                         Text(card.status).font(.caption).foregroundStyle(card.isRunning ? Ink.amber : Ink.muted)
                     }.padding(.vertical, 6)
                 }
@@ -288,8 +304,8 @@ private struct ConnectView: View {
     @State private var connecting = false
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            Image(systemName: "rectangle.stack").font(.system(size: 40, weight: .ultraLight)).foregroundStyle(Ink.accent)
-            Text("A little direction.\nA lot in motion.").font(.system(size: 37, weight: .semibold, design: .rounded))
+            Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 36, weight: .regular)).foregroundStyle(Ink.accent)
+            Text("What are we working on?").font(.system(size: 34, weight: .semibold))
             Text("Your agents, one card at a time. Catch up, steer, and keep moving.").foregroundStyle(Ink.muted)
             VStack(spacing: 14) {
                 TextField("Server", text: $origin).textFieldStyle(.roundedBorder).autocorrectionDisabled()
@@ -319,25 +335,49 @@ private struct ConversationView: View {
                 LazyVStack(alignment: .leading, spacing: 24) {
                     if model.hasOlder { Button(model.loadingOlder ? "Loading…" : "Load earlier messages") { Task { await model.loadOlder() } }.disabled(model.loadingOlder) }
                     ForEach(model.rows) { row in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(row.role.uppercased()).font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1)
-                                if row.running { ProgressView().controlSize(.mini) }
-                            }.foregroundStyle(row.role == "You" ? Ink.accent : Ink.muted)
-                            Text(row.text).font(.body).textSelection(.enabled)
-                            if !row.detail.isEmpty {
-                                DisclosureGroup("Details") { Text(row.detail).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
+                        HStack(alignment: .top, spacing: 0) {
+                            if row.role == "You" { Spacer(minLength: 44) }
+                            VStack(alignment: .leading, spacing: 10) {
+                                if row.role != "You" {
+                                    HStack(spacing: 8) {
+                                        Text(row.role == "Agent" ? "nanocodex" : row.role)
+                                            .font(.system(size: 13, weight: .medium))
+                                        if row.running { ProgressView().controlSize(.mini) }
+                                    }.foregroundStyle(Ink.muted)
+                                }
+                                Text(row.text).font(.system(size: 17)).lineSpacing(5).textSelection(.enabled)
+                                if !row.detail.isEmpty {
+                                    DisclosureGroup("Details") {
+                                        Text(row.detail).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                                    }.font(.subheadline).foregroundStyle(Ink.muted)
+                                }
                             }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(row.role == "You" ? 16 : 0)
+                            .background(row.role == "You" ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 24))
+                            if row.role != "You" { Spacer(minLength: 0) }
+                        }.frame(maxWidth: .infinity, alignment: row.role == "You" ? .trailing : .leading)
                     }
                     Color.clear.frame(height: 1).id("latest")
                 }.padding(24)
             }
+            .background(Ink.background)
             .navigationTitle(model.focused?.title ?? "Conversation")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .safeAreaInset(edge: .bottom) {
-                Button("Steer this agent") { dismiss() }.buttonStyle(.borderedProminent).padding()
+                Button { dismiss() } label: {
+                    HStack {
+                        Image(systemName: "slider.horizontal.3")
+                        Text("Steer this agent").fontWeight(.medium)
+                        Spacer()
+                        Image(systemName: "arrow.up").fontWeight(.semibold)
+                            .frame(width: 36, height: 36).background(Ink.accent, in: Circle()).foregroundStyle(Ink.background)
+                    }.padding(12).padding(.leading, 8)
+                        .background(Ink.surface, in: Capsule())
+                }.buttonStyle(.plain).padding(.horizontal, 20).padding(.vertical, 12).background(Ink.background)
             }
-        }.frame(minWidth: 340, minHeight: 520).presentationDetents([.large])
+        }.foregroundStyle(Ink.text).frame(minWidth: 340, minHeight: 520).presentationDetents([.large]).presentationDragIndicator(.visible)
     }
 }
