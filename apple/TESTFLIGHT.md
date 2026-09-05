@@ -11,6 +11,8 @@ The Apple app currently lives in PR #267. Merge that app and this workflow into
 `master` before expecting master pushes to deliver it. Release tags must include
 the `apple/` target. The existing `Apple Inbox` workflow exercises the native UI;
 this workflow separately checks the actual device Release archive and resources.
+It selects Xcode 26.3 explicitly because the macOS 15 runner defaults to Xcode 16,
+and App Store Connect now requires the iOS 26 SDK or later.
 
 ## One-time Apple setup
 

@@ -22,6 +22,8 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     env:
+      # App Store Connect requires the iOS 26 SDK; macos-15 defaults to Xcode 16.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       UPLOAD: ${{ github.event_name == 'release' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/master') }}
       BUNDLE_ID: xyz.paradigm.nanocodex.inbox
     steps:
@@ -105,6 +107,14 @@ jobs:
           plutil -lint "$app/Info.plist" "$app/PrivacyInfo.xcprivacy"
           test -f "$app/Assets.car"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' "$app/Info.plist"
+          python3 - <<'PY'
+          import os, pathlib, plistlib
+          app = pathlib.Path(os.environ['RUNNER_TEMP']) / 'NanocodexInbox.xcarchive/Products/Applications/NanocodexInbox.app'
+          info = plistlib.loads((app / 'Info.plist').read_bytes())
+          assert info['ITSAppUsesNonExemptEncryption'] is False, 'Export exemption must be a plist Boolean'
+          assert info['CFBundleIdentifier'] == os.environ['BUNDLE_ID']
+          assert int(info['DTPlatformVersion'].split('.')[0]) >= 26, 'App Store Connect requires iOS SDK 26+'
+          PY
 
       - name: Upload to internal TestFlight
         if: env.UPLOAD == 'true'
