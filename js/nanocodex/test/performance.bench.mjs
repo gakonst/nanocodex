@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
+import WebSocket from "ws";
+import { createMemoryDurabilityStore } from "../runtime/durability-store.mjs";
+import { startResponsesServer, messageReader, sendWarmup, sendFinal } from "./support/responses.mjs";
 
 import { Actions } from "../index.mjs";
 import { Agent as HostAgent, Transport as HostTransport } from "../host/index.mjs";
@@ -145,6 +148,61 @@ test("a precompiled browser module instantiates once across isolated agents", as
   } finally {
     WebAssembly.instantiate = originalInstantiate;
   }
+});
+
+test("long durable histories and cold replay fit within the Worker memory budget", {
+  timeout: 180_000,
+}, async (context) => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const engine = await initializeBrowserEngine({ module });
+  const server = await startResponsesServer();
+  context.after(() => server.close());
+  const store = createMemoryDurabilityStore("long-memory-budget");
+  const options = {
+    module,
+    transport: HostTransport.openAi({
+      apiKey: "fixture", websocketUrl: server.url, WebSocketImpl: WebSocket, websocketWarmup: true,
+    }),
+    durability: store, durabilityId: "long-memory-budget", terminalReceiptRetention: 16,
+    thinking: "none",
+  };
+  const agent = await HostAgent.create(options);
+  context.after(() => agent.session.shutdown());
+  const scenario = (async () => {
+    const socket = await server.nextConnection();
+    const reader = messageReader(socket);
+    await reader.next();
+    sendWarmup(socket, "warmup");
+    for (let index = 0; index < 96; index += 1) {
+      await reader.next();
+      sendFinal(socket, `response-${index}`, `DONE_${index}`);
+    }
+  })();
+  const input = Array.from({ length: 160 }, (_, index) =>
+    `Synthetic record ${index}: durability preserves operation order, exact inputs, and committed results.`).join("\n");
+  for (let index = 0; index < 96; index += 1) {
+    const turn = agent.turn.prompt({ id: `turn-${index}`, input });
+    const result = await turn.result();
+    assert.equal(result.finalMessage, `DONE_${index}`);
+    result.dispose();
+    turn.dispose();
+  }
+  await scenario;
+  await agent.session.shutdown();
+  const reopened = await HostAgent.create(options);
+  context.after(() => reopened.session.shutdown());
+  const replay = reopened.turn.prompt({ id: "turn-95", input });
+  const result = await replay.result();
+  assert.equal(result.finalMessage, "DONE_95");
+  result.dispose();
+  replay.dispose();
+  // Leave half of the 128 MiB isolate budget for JS, transport, and storage.
+  const wasmBytes = engine.memory.buffer.byteLength;
+  const payloadBytes = Buffer.byteLength(store.load("long-memory-budget").payload);
+  context.diagnostic(JSON.stringify({ long_thread_wasm_bytes: wasmBytes,
+    durable_payload_bytes: payloadBytes, turns: 96, cold_replay: true }));
+  assert.ok(wasmBytes < 64 * 1024 * 1024, `long thread retained ${wasmBytes} WASM bytes`);
+  assert.ok(payloadBytes < 4 * 1024 * 1024, `long thread persisted ${payloadBytes} bytes`);
 });
 
 test("Worker completion keeps a large retained snapshot out of the eager crossover", async (context) => {

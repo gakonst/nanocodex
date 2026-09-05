@@ -84,6 +84,15 @@ orchestrator that assigns separate tree-local IDs, mailboxes, roles, or status
 must persist that topology independently and map those IDs to agent session
 IDs when it needs cold tree reconstruction.
 
+Small retained states use the existing format-2 JSON representation. Once a
+serialized state crosses 256 KiB, the Rust encoder streams it through gzip and
+base64 under the `nanocodex-durable-state-gzip-v1:` prefix. Recovery accepts both
+representations and decompresses directly into the reducer. Hosts must keep the
+payload opaque, including during export/import; they must not parse or rewrite
+its contents. Large states require a runtime with this encoding support when
+reopening, including after a deployment rollback. Encoding does not change
+operation identities, revisions, fencing, retention, or exact replay results.
+
 The runtime follows the same ownership model as the agent SDK. A
 `DurableSession` is a cheap channel handle; one spawned task owns its reducer,
 live claims, revision, and owner token. One separate task serializes access to

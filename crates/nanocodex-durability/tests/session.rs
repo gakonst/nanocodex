@@ -1288,3 +1288,74 @@ async fn sqlite_compare_and_replace_survives_reopen() {
         Ok(Admission::Completed { .. })
     ));
 }
+
+#[tokio::test]
+async fn large_checkpoint_reopens_with_exact_receipts_and_pending_step_replay() {
+    let store = MemoryStore::new().unwrap();
+    let session = DurableSession::open(store.clone(), "large-checkpoint")
+        .await
+        .unwrap();
+    let checkpoint = "quoted \" unicode 🧪\n".repeat(50_000);
+    session.admit("completed", &"input").await.unwrap();
+    session.begin_attempt("completed").await.unwrap();
+    session
+        .complete("completed", &checkpoint, &"result")
+        .await
+        .unwrap();
+    session.admit("pending", &"next").await.unwrap();
+    session.begin_attempt("pending").await.unwrap();
+    session
+        .begin_step("pending", "tool", "tool", &"effect")
+        .await
+        .unwrap();
+    session
+        .complete_step("pending", "tool", &checkpoint)
+        .await
+        .unwrap();
+    drop(session);
+
+    let reopened = DurableSession::open(store, "large-checkpoint")
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .latest_checkpoint()
+            .await
+            .unwrap()
+            .unwrap()
+            .decode::<String>()
+            .unwrap(),
+        checkpoint
+    );
+    match reopened
+        .admit_typed::<_, String, String>("completed", &"input")
+        .await
+        .unwrap()
+    {
+        Admission::Completed {
+            checkpoint: replay,
+            output,
+        } => {
+            assert_eq!(replay, checkpoint);
+            assert_eq!(output, "result");
+        }
+        other => panic!("expected exact completed replay, got {other:?}"),
+    }
+    assert!(matches!(
+        reopened.admit("pending", &"next").await.unwrap(),
+        Admission::Pending
+    ));
+    reopened.begin_attempt("pending").await.unwrap();
+    match reopened
+        .begin_step("pending", "tool", "tool", &"effect")
+        .await
+        .unwrap()
+    {
+        BeginStep::Replay(output) => assert_eq!(output.decode::<String>().unwrap(), checkpoint),
+        other => panic!("expected committed tool replay, got {other:?}"),
+    }
+    reopened
+        .complete("pending", &checkpoint, &"continued")
+        .await
+        .unwrap();
+}

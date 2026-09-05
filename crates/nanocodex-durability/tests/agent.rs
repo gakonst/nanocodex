@@ -310,6 +310,19 @@ impl crate::StateStore for CountingAcquires {
     }
 }
 
+// Fault injection inspects Rust-owned state after decoding its storage envelope.
+fn checkpoint_value(payload: &str) -> serde_json::Value {
+    use base64::Engine as _;
+    if let Some(encoded) = payload.strip_prefix("nanocodex-durable-state-gzip-v1:") {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        serde_json::from_reader(flate2::read::GzDecoder::new(bytes.as_slice())).unwrap()
+    } else {
+        serde_json::from_str(payload).unwrap()
+    }
+}
+
 #[derive(Clone)]
 struct FailEntryOnce {
     inner: crate::MemoryStore,
@@ -334,14 +347,13 @@ impl crate::StateStore for FailEntryOnce {
         expected_revision: u64,
         payload: &'a str,
     ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
-        let state: serde_json::Value = serde_json::from_str(payload)
-            .expect("durability fault injection receives a complete state value");
+        let state = checkpoint_value(payload);
         let operation_status =
             &state["nanocodex_durable_state"]["operations"][self.operation_id]["status"];
         let matches_entry = match self.entry_tag {
             "\"operation_cancelled\"" => operation_status.get("cancelled").is_some(),
             "\"operation_completed\"" => operation_status.get("completed").is_some(),
-            other => payload.contains(other),
+            other => state.to_string().contains(other),
         };
         if matches_entry && !self.failed.swap(true, Ordering::SeqCst) {
             return Box::pin(async {
@@ -378,8 +390,9 @@ impl crate::StateStore for GateCompactionAuthorization {
         expected_revision: u64,
         payload: &'a str,
     ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
-        if payload.contains("\"status\":\"effect_pending\"")
-            && payload.contains("\"kind\":\"compaction\"")
+        let state = checkpoint_value(payload).to_string();
+        if state.contains("\"status\":\"effect_pending\"")
+            && state.contains("\"kind\":\"compaction\"")
         {
             let started = Arc::clone(&self.started);
             let release = Arc::clone(&self.release);

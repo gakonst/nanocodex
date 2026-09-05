@@ -3,6 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod agent;
+mod encoding;
 mod memory;
 #[cfg(all(feature = "postgres", not(target_family = "wasm")))]
 mod postgres;

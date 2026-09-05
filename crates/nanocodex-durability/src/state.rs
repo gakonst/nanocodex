@@ -308,7 +308,7 @@ impl DurableState {
     }
 
     pub(crate) fn checkpoint_payload(&self) -> Result<String> {
-        serde_json::to_string(&RetainedCheckpointRef {
+        crate::encoding::encode(&RetainedCheckpointRef {
             nanocodex_durable_state: DurableCheckpointRef {
                 format: STATE_FORMAT,
                 operations: &self.operations,

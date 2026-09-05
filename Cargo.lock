@@ -5715,7 +5715,9 @@ dependencies = [
 name = "nanocodex-durability"
 version = "0.5.0"
 dependencies = [
+ "base64 0.22.1",
  "eyre",
+ "flate2",
  "nanocodex-agent",
  "nanocodex-oai-api",
  "nanocodex-tools",

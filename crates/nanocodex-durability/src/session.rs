@@ -1206,7 +1206,7 @@ fn reduce(stored: StoredState) -> Result<DurableState> {
     }
     let RetainedCheckpoint {
         nanocodex_durable_state,
-    } = serde_json::from_str(&payload).map_err(|source| Error::Decode {
+    } = crate::encoding::decode(&payload).map_err(|source| Error::Decode {
         revision: stored.revision,
         source,
     })?;

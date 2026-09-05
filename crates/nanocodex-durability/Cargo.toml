@@ -23,6 +23,8 @@ sqlite = ["dep:rusqlite"]
 postgres = ["dep:tokio-postgres"]
 
 [dependencies]
+base64.workspace = true
+flate2.workspace = true
 nanocodex-agent.workspace = true
 serde.workspace = true
 serde_json.workspace = true
