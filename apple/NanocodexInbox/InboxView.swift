@@ -63,8 +63,8 @@ struct InboxView: View {
                 model.appendVoiceDraft(text, agentID: card.id)
             }
         }
-        .sheet(isPresented: $showAgents) { agentList }
-        .sheet(isPresented: $showSettings) { settings }
+        .sheet(isPresented: $showAgents) { agentList.tint(Ink.accent) }
+        .sheet(isPresented: $showSettings) { settings.tint(Ink.accent) }
         .confirmationDialog("Stop this turn?", isPresented: $showStop, titleVisibility: .visible) {
             Button("Stop turn", role: .destructive) { if let target = stopTarget { Task { await model.stop(agentID: target.agent, turnID: target.turn) } } }
         } message: { Text("The selected turn in \(stopTarget?.title ?? "this agent") will stop. You can send a new follow-up afterward.") }
@@ -233,6 +233,7 @@ struct InboxView: View {
                 }
                 TextField("Message this agent…", text: $model.draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).font(.body).focused($composerFocused)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.vertical, 12).accessibilityIdentifier("composer")
                 Button { composerFocused = false; voiceTarget = model.focused } label: {
                     Image(systemName: "mic").font(.system(size: 20)).frame(width: 44, height: 44)
@@ -256,7 +257,7 @@ struct InboxView: View {
             Image(systemName: "tray").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(Ink.accent)
             Text(model.filter == .running ? "Nothing running" : "You're caught up").font(.title2.weight(.medium))
             Text("Start something new, or check all your agents.").font(.subheadline).foregroundStyle(Ink.muted).multilineTextAlignment(.center)
-            Button("New agent") { Task { await model.newAgent() } }.buttonStyle(.borderedProminent).disabled(model.isCreating)
+            Button("New agent") { Task { await model.newAgent() } }.buttonStyle(.borderedProminent).foregroundStyle(Ink.background).disabled(model.isCreating)
             Button("View all agents") { model.filter = .all }
         }
     }
@@ -323,7 +324,7 @@ private struct ConnectView: View {
                         catch { model.error = error.localizedDescription }
                         connecting = false
                     }
-                }.buttonStyle(.borderedProminent).controlSize(.large).disabled(connecting || key.isEmpty)
+                }.buttonStyle(.borderedProminent).foregroundStyle(Ink.background).controlSize(.large).disabled(connecting || key.isEmpty)
             }
             Text("Use an account key from Nanocodex → Settings → API keys. It is saved in your device's Keychain.").font(.caption).foregroundStyle(Ink.muted)
             if let error = model.error { Text(error).font(.caption).foregroundStyle(Ink.amber) }
