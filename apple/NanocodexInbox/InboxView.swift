@@ -234,7 +234,7 @@ struct InboxView: View {
                 TextField("Message this agent…", text: $model.draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).font(.body).focused($composerFocused)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.vertical, 12).accessibilityIdentifier("composer")
+                    .padding(.vertical, 8).accessibilityIdentifier("composer")
                 Button { composerFocused = false; voiceTarget = model.focused } label: {
                     Image(systemName: "mic").font(.system(size: 20)).frame(width: 44, height: 44)
                 }.buttonStyle(.plain).accessibilityLabel("Voice input")
