@@ -1,5 +1,10 @@
 export type VaultMetadata = Readonly<{
   id: string;
+  kind: "api_key";
+  name: string;
+  created_at: number;
+}> | Readonly<{
+  id: string;
   kind: "login";
   name: string;
   created_at: number;

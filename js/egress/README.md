@@ -123,3 +123,18 @@ the Vite-owned loopback relay instead of the production callback.
 `typecheck` and `test` cover this package. For a changed Worker boundary,
 exercise the deployed flow and inspect browser/network, Worker logs, bindings,
 and credential absence as required by `../../AGENTS.md`.
+
+### Manual API keys
+
+The account Vault supports `api_key` entries alongside username/password logins.
+Create one through `POST /v1/credentials/vault/api_key` with
+`{ "name": "Service", "api_key": "<key>" }` using the account's authenticated,
+same-origin session. Delete it with `DELETE /v1/credentials/vault/api_key/:id`.
+List/account-info responses contain only `id`, `kind`, `name`, and `created_at`;
+the key is stored in the encrypted per-entry envelope.
+
+For a brokered request, supply the entry ID in `x-nanocodex-vault-id` and use
+`Authorization: Bearer {{NANOCODEX_VAULT_API_KEY}}` or a custom header such as
+`x-api-key: {{NANOCODEX_VAULT_API_KEY}}`. The broker substitutes the key only at
+the final fetch. Existing destination policy and status-only responses apply;
+API-key entries cannot satisfy login/password placeholders.

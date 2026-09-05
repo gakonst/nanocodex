@@ -107,7 +107,7 @@ type ConnectorOperation = Readonly<{
   paths: readonly RegExp[];
 }>;
 
-type VaultPlaceholder = "USERNAME" | "PASSWORD" | "BASIC" | "CARD_NUMBER"
+type VaultPlaceholder = "API_KEY" | "USERNAME" | "PASSWORD" | "BASIC" | "CARD_NUMBER"
   | "EXPIRY_MONTH" | "EXPIRY_YEAR" | "CVV" | "BILLING_ZIP";
 
 type VaultEgressEnvelope = Readonly<{
@@ -636,15 +636,16 @@ function validateVaultEgressEnvelope(value: unknown): VaultEgressEnvelope {
 function validVaultPrivateHeader(name: string, value: string): boolean {
   if (name === "authorization") {
     return value === "Basic {{NANOCODEX_VAULT_BASIC}}"
+      || value === "Bearer {{NANOCODEX_VAULT_API_KEY}}"
       || value === "Bearer {{NANOCODEX_VAULT_PASSWORD}}";
   }
-  return /^\{\{NANOCODEX_VAULT_(?:PASSWORD|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}$/.test(value);
+  return /^\{\{NANOCODEX_VAULT_(?:PASSWORD|API_KEY|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}$/.test(value);
 }
 
 function vaultTemplatePlaceholders(template: string): Set<VaultPlaceholder> {
   const placeholders = new Set<VaultPlaceholder>();
   const supported = new Set<VaultPlaceholder>([
-    "USERNAME", "PASSWORD", "BASIC", "CARD_NUMBER", "EXPIRY_MONTH", "EXPIRY_YEAR",
+    "API_KEY", "USERNAME", "PASSWORD", "BASIC", "CARD_NUMBER", "EXPIRY_MONTH", "EXPIRY_YEAR",
     "CVV", "BILLING_ZIP",
   ]);
   for (const match of template.matchAll(VAULT_PLACEHOLDER)) {
@@ -718,7 +719,9 @@ function vaultReplacements(
   requested: ReadonlySet<VaultPlaceholder>,
 ): ReadonlyMap<VaultPlaceholder, string> {
   let replacements: Map<VaultPlaceholder, string>;
-  if (entry.kind === "login") {
+  if (entry.kind === "api_key") {
+    replacements = new Map([["API_KEY", entry.api_key]]);
+  } else if (entry.kind === "login") {
     replacements = new Map([
       ["USERNAME", entry.username],
       ["PASSWORD", entry.password],
@@ -1812,7 +1815,7 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const vaultMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/vault\/(login|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/vault\/(login|api_key|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
   );
   if (vaultMatch) {
     const userId = vaultMatch[1]!;

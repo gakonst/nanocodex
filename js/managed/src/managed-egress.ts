@@ -130,6 +130,7 @@ const VAULT_FORBIDDEN_HEADERS = new Set([
 const VAULT_BASIC_AUTHORIZATION = "Basic {{NANOCODEX_VAULT_BASIC}}";
 const VAULT_BEARER_AUTHORIZATION = "Bearer {{NANOCODEX_VAULT_PASSWORD}}";
 const VAULT_PLACEHOLDERS = new Set([
+  "{{NANOCODEX_VAULT_API_KEY}}",
   "{{NANOCODEX_VAULT_USERNAME}}",
   "{{NANOCODEX_VAULT_PASSWORD}}",
   "{{NANOCODEX_VAULT_BASIC}}",
@@ -384,7 +385,8 @@ export function isVaultPlaceholderHeader(name: string, value: string): boolean {
   const lower = name.toLowerCase();
   if (lower === "cookie" || lower === "proxy-authorization") return false;
   if (lower === "authorization") {
-    return value === VAULT_BASIC_AUTHORIZATION || value === VAULT_BEARER_AUTHORIZATION;
+    return value === VAULT_BASIC_AUTHORIZATION || value === VAULT_BEARER_AUTHORIZATION
+      || value === "Bearer {{NANOCODEX_VAULT_API_KEY}}";
   }
   return VAULT_PLACEHOLDERS.has(value);
 }

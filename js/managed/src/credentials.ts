@@ -13,7 +13,7 @@ const CREDENTIAL_BIND_ATTEMPTS = 3;
 const CREDENTIAL_BIND_RETRY_MS = 25;
 const MAX_VAULT_BODY_BYTES = 12 * 1024;
 
-type VaultKind = "login" | "card" | "address" | "phone";
+type VaultKind = "login" | "api_key" | "card" | "address" | "phone";
 
 const ROUTES = new Map<string, ReadonlySet<string>>([
   ["/v1/credentials", new Set(["GET"])],
@@ -30,7 +30,7 @@ export async function routeCredentialRequest(
 ): Promise<Response | undefined> {
   const sshIdentity = url.pathname.match(/^\/v1\/credentials\/ssh\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/)?.[1];
   const vaultMatch = url.pathname.match(
-    /^\/v1\/credentials\/vault\/(login|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
+    /^\/v1\/credentials\/vault\/(login|api_key|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
   );
   const vaultKind = vaultMatch?.[1] as VaultKind | undefined;
   const vaultId = vaultMatch?.[2];
@@ -216,6 +216,10 @@ function validateVaultPayload(
   }
   const name = boundedText(value.name, 120);
   if (!name) return undefined;
+  if (kind === "api_key") {
+    const apiKey = boundedSecret(value.api_key, 8_192);
+    return apiKey ? { name, api_key: apiKey } : undefined;
+  }
   if (kind === "login") {
     const username = boundedText(value.username, 512);
     const password = boundedSecret(value.password, 8_192);
@@ -267,6 +271,7 @@ function validateVaultPayload(
 
 function vaultKeys(kind: VaultKind, hasAddressLine2: boolean): readonly string[] {
   switch (kind) {
+    case "api_key": return ["name", "api_key"];
     case "login": return ["name", "username", "password"];
     case "card": return [
       "name", "card_number", "expiry_month", "expiry_year", "cvv", "billing_zip",

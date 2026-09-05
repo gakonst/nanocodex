@@ -59,3 +59,9 @@ test("Vault egress rejects invalid references, request bounds, and caller-suppli
   ];
   for (const value of invalid) assert.throws(() => vaultEgressEnvelope(value));
 });
+
+test("API key placeholders pass through bearer and custom headers", () => {
+  const headers = { authorization: "Bearer {{NANOCODEX_VAULT_API_KEY}}", "x-api-key": "{{NANOCODEX_VAULT_API_KEY}}" };
+  assert.deepEqual(vaultEgressEnvelope({ url: "https://example.com/api", headers: { ...headers, "x-nanocodex-vault-id": vaultId } }),
+    { vault_id: vaultId, url: "https://example.com/api", method: "GET", headers });
+});
