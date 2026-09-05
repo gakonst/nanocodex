@@ -16,68 +16,6 @@ on:
         options: [preview, production]
 
 jobs:
-  durability-retained-diagnostics:
-    if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/master'
-    name: inspect retained archive timeout
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    environment: cloudflare-production
-    permissions: {}
-    steps:
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-      - name: Read synthetic thread metadata
-        env:
-          NANOCODEX_DURABILITY_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          timeout 75s npx --yes wrangler@4.127.1 tail nanocodex-durable-agent --status error --format json > "$RUNNER_TEMP/durability-tail.json" &
-          tail_pid=$!
-          node --input-type=module <<'JS'
-          const base = 'https://nanocodex.gakonst.workers.dev/v1/agents/feefdff0-7ce2-84e4-9601-330e10d1af28';
-          await Promise.all(['', '/capacity', '/events/history?limit=8'].map(async (path) => {
-            try {
-              const response = await fetch(base + path, {
-                headers: { authorization: `Bearer ${process.env.NANOCODEX_DURABILITY_TEST_API_KEY}` },
-                signal: AbortSignal.timeout(30_000),
-              });
-              const data = await response.json();
-              console.log(JSON.stringify({ path, status: response.status,
-                ...(path === '' ? { loaded: data.agent_loaded, active_turns: data.active_turns,
-                  completed_turns: data.completed_turns, stream_failed: Boolean(data.stream_error) } : {}),
-                ...(path === '/capacity' ? { durable_state: data.durable_state, turns: data.turns,
-                  archived_turns: data.archived_turns, archived_events: data.archived_events } : {}),
-                ...(path.startsWith('/events') ? { events: data.data?.map(event => ({
-                  cursor: event.cursor, turn: event.turn_id, at: event.created_at,
-                  type: event.type === 'event' ? event.event.type : event.type,
-                })) } : {}),
-              }));
-            } catch (error) { console.log(JSON.stringify({ path, error_kind: error.name })); }
-          }));
-          JS
-          wait "$tail_pid" || [ "$?" -eq 124 ]
-          python3 - <<'PY'
-          import json, os
-          text = open(os.path.join(os.environ['RUNNER_TEMP'], 'durability-tail.json')).read()
-          decoder = json.JSONDecoder()
-          while text.strip():
-              text = text.lstrip()
-              try:
-                  event, end = decoder.raw_decode(text)
-              except ValueError:
-                  text = text.partition('\n')[2]
-                  continue
-              text = text[end:]
-              print(json.dumps({'outcome': event.get('outcome'), 'timestamp': event.get('eventTimestamp'),
-                  'exceptions': [{'name': e.get('name'), 'known_causes': [s for s in
-                    ['memory', 'CPU', 'reset', 'deadlock', 'code was updated', 'canceled', 'storage', 'overloaded',
-                     'subrequest', 'Too many', 'limit', 'quota', 'recursive', 'stack', 'internal', 'hung',
-                     'I/O', 'different request', 'promise', 'script', 'SQL', 'D1', 'alarm', 'network', 'fetch']
-                    if s.lower() in e.get('message', '').lower()]} for e in event.get('exceptions', [])]}))
-          PY
-
   preview:
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&

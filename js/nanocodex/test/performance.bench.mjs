@@ -227,6 +227,17 @@ test("long durable histories and cold replay fit within the Worker memory budget
   const legacyWasmBytes = engine.memory.buffer.byteLength;
   context.diagnostic(JSON.stringify({ legacy_reopen_wasm_bytes: legacyWasmBytes }));
   assert.ok(legacyWasmBytes < 96 * 1024 * 1024, `legacy recovery retained ${legacyWasmBytes} WASM bytes`);
+  for (let index = 0; index < 432; index += 1) {
+    const cancelled = legacyAgent.turn.prompt({
+      id: `cancel-${index}`, input: "Cancelled archive fixture.", cancelOnAdmission: true,
+    });
+    await assert.rejects(cancelled.result(), /cancel/i);
+    cancelled.dispose();
+  }
+  const cancellationWasmBytes = engine.memory.buffer.byteLength;
+  context.diagnostic(JSON.stringify({ cancellation_wasm_bytes: cancellationWasmBytes, cancellations: 432 }));
+  assert.ok(cancellationWasmBytes < 96 * 1024 * 1024,
+    `cancellation storm retained ${cancellationWasmBytes} WASM bytes`);
 });
 
 test("Worker completion keeps a large retained snapshot out of the eager crossover", async (context) => {
