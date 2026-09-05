@@ -6,6 +6,78 @@ import type { DurableAgentSession } from "../src/index";
 const FIXTURE_UNFINISHED_TURNS = 20;
 
 describe("managed durable turn admission", () => {
+  for (const prior of ["failed", "completed", "cancelled", "missing-dispatch"] as const) {
+    it(`reconciles a Rust pending identity against a ${prior} managed projection`, async () => {
+      const sessions = (env as unknown as {
+        NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
+      }).NANOCODEX_SESSIONS;
+      await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+        const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+        // Inject the typed Rust/Worker protocol at admission, before provider
+        // dispatch. The real Durable Object must reconcile its SQLite inbox.
+        Object.defineProperty(session, "env", { value: {
+          ...runtimeEnv,
+          NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+            throw Object.assign(new Error("older durable operation is unfinished"), {
+              code: "retryable", blockedBy: "older",
+            });
+          } },
+        } });
+        const now = Date.now();
+        state.storage.sql.exec(
+          `INSERT INTO session_state (
+             singleton, session_id, owner_id, organization_id, team_id,
+             authorization_epoch, public_origin, runtime_profile, completed_turns, last_active
+           ) VALUES (1, ?, 'fixture-owner', 'fixture-organization', 'fixture-team',
+                     1, 'https://nanocodex.example/', 'managed', ?, ?)`,
+          crypto.randomUUID(), prior === "completed" ? 1 : 0, now,
+        );
+        state.storage.sql.exec(
+          `INSERT INTO managed_turns (
+             id, request_key, request_hash, input_json, authorization_json,
+             state, accepted_cursor, terminal_json, terminal_cursor,
+             dispatch_input_chunks, may_have_inner_operation, attempt_count,
+             created_at, accepted_at, updated_at
+           ) VALUES ('older', 'older', 'hash', ?, ?, ?, 0, '{}', 1, ?, 1, 0, ?, ?, ?)`,
+          JSON.stringify("original input"), JSON.stringify({ capabilities: [] }),
+          prior === "missing-dispatch" ? "failed" : prior,
+          prior === "missing-dispatch" ? null : 1, now - 1, now - 1, now - 1,
+        );
+        if (prior !== "missing-dispatch") {
+          state.storage.sql.exec(
+            "INSERT INTO managed_turn_dispatch_chunks VALUES ('older', 0, ?)",
+            JSON.stringify("original input"),
+          );
+        }
+        const response = await session.fetch(new Request("https://session.internal/turns", {
+          method: "POST", body: JSON.stringify({ id: "later", input: "follow on" }),
+        }));
+        expect(response.status).toBe(202);
+        const deadline = Date.now() + 3_000;
+        while (state.storage.sql.exec<{ retry_at: number | null }>(
+          "SELECT retry_at FROM managed_turns WHERE id = 'later'",
+        ).one().retry_at === null && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const rows = state.storage.sql.exec<{
+          id: string; state: string; terminal_json: string | null; terminal_cursor: number | null;
+          retry_at: number | null;
+        }>("SELECT id, state, terminal_json, terminal_cursor, retry_at FROM managed_turns ORDER BY created_at").toArray();
+        expect(rows[1]).toMatchObject({ id: "later", state: "accepted" });
+        expect(rows[1]!.retry_at).not.toBeNull();
+        expect(rows[0]).toMatchObject(prior === "missing-dispatch" ? {
+          id: "older", state: "failed", terminal_json: "{}", terminal_cursor: 1,
+        } : {
+          id: "older", state: prior === "cancelled" ? "cancelling" : "accepted",
+          terminal_json: null, terminal_cursor: null,
+        });
+        expect(state.storage.sql.exec<{ completed_turns: number }>(
+          "SELECT completed_turns FROM session_state WHERE singleton = 1",
+        ).one().completed_turns).toBe(0);
+      });
+    });
+  }
+
   for (const connected of [false, true]) {
     it(`retains a recovery alarm during stalled admission with connected=${connected}`, async () => {
       const sessions = (env as unknown as {

@@ -168,10 +168,8 @@ where
                             let _guard = turn_span.enter();
                             let persisted = if cancellation_committed {
                                 Ok(())
-                            } else if let Some(operation_id) = execution_operation {
-                                self.execution
-                                    .cancel_operation(&operation_id, &prompt)
-                                    .await
+                            } else if let Some(operation_id) = &execution_operation {
+                                self.execution.cancel_operation(operation_id, &prompt).await
                             } else {
                                 Ok(())
                             };
@@ -200,6 +198,10 @@ where
                                     emitted.and(Err(error))
                                 }
                             };
+                            let outcome = self
+                                .execution
+                                .recover_failure(execution_operation.as_deref(), outcome)
+                                .await;
                             if !commands_open
                                 && let Err(error) = &outcome
                                 && !matches!(error, NanocodexError::TurnCancelled)
@@ -437,7 +439,7 @@ where
                             self.workspace.as_deref(),
                         )
                         .await;
-                    let (compaction_operation_id, admission) = match admitted {
+                    let (compaction_operation_id, compaction_input, admission) = match admitted {
                         Ok(admitted) => admitted,
                         Err(error) => {
                             let reopen = matches!(
@@ -479,9 +481,11 @@ where
                         drop(result.send(Err(error)));
                         continue;
                     }
-                    let execution_turn = self
-                        .execution
-                        .start_compaction(default_thinking, compaction_operation_id.clone());
+                    let execution_turn = self.execution.start_compaction(
+                        default_thinking,
+                        compaction_operation_id.clone(),
+                        compaction_input,
+                    );
                     if let Err(error) = execution_turn.begin().await {
                         if let Some(operation_id) = &compaction_operation_id {
                             self.execution.release_claim(operation_id).await;
@@ -789,14 +793,12 @@ where
                                 thread_model,
                                 checkpoint,
                             ));
+                            let execution_turn = execution_turn.interrupted();
                             let execution_turn = if compact_replaced {
                                 execution_turn.replaced()
                             } else {
-                                execution_turn.interrupted()
-                            }
-                            .retain_pending_attempt(
-                                "standalone compaction was interrupted before durable settlement",
-                            );
+                                execution_turn
+                            };
                             let persisted = self
                                 .execution
                                 .persist(&checkpoint, execution_turn)
@@ -804,6 +806,8 @@ where
                                 .await;
                             match persisted {
                                 Ok(()) => {
+                                    compact_checkpoint_committed = true;
+                                    latest_fork_checkpoint = Some(checkpoint);
                                     model.replace_client(ResponsesClient::new((self
                                         .spawner
                                         .service_factory)(
@@ -824,17 +828,35 @@ where
                                 .execution
                                 .persist(
                                     &checkpoint,
-                                    execution_turn.failed(error.to_string(), true),
+                                    execution_turn.failed(
+                                        error.to_string(),
+                                        matches!(
+                                            error.execution_policy_disposition(),
+                                            Some(crate::ExecutionPolicyDisposition::Retry)
+                                        ),
+                                    ),
                                 )
                                 .instrument(span.clone())
                                 .await;
                             match persisted {
-                                Ok(()) => Err(error),
+                                Ok(()) => {
+                                    if error.execution_policy_disposition()
+                                        != Some(crate::ExecutionPolicyDisposition::Retry)
+                                    {
+                                        compact_checkpoint_committed = true;
+                                        latest_fork_checkpoint = Some(checkpoint);
+                                    }
+                                    Err(error)
+                                }
                                 Err(error) => Err(error),
                             }
                         }
                         Err(error) => Err(error),
                     };
+                    let outcome = self
+                        .execution
+                        .recover_failure(compaction_operation_id.as_deref(), outcome)
+                        .await;
                     if !compact_checkpoint_committed && outcome.is_err() {
                         latest_fork_checkpoint = compact_base_checkpoint;
                         model = model_from_checkpoint(
@@ -951,7 +973,14 @@ where
             let thinking = thinking.unwrap_or(default_thinking);
             let fast_mode = fast_mode.unwrap_or(default_fast_mode);
             if let Err(error) = validate_model_thinking(thread_model, thinking) {
-                drop(result.send(Err(error)));
+                if let Some(operation_id) = &execution_operation {
+                    self.execution.release_claim(operation_id).await;
+                }
+                let outcome = self
+                    .execution
+                    .recover_failure(execution_operation.as_deref(), Err(error))
+                    .await;
+                drop(result.send(outcome));
                 continue;
             }
             if cancel_on_admission {
@@ -1013,10 +1042,6 @@ where
             let retained_steers = match execution_turn.begin().await {
                 Ok(steers) => steers,
                 Err(error) => {
-                    let reopen = matches!(
-                        error.execution_policy_disposition(),
-                        Some(crate::ExecutionPolicyDisposition::Reopen)
-                    );
                     if let Some(operation_id) = &execution_operation {
                         self.execution.release_claim(operation_id).await;
                     }
@@ -1029,7 +1054,15 @@ where
                         &error,
                     );
                     model.set_events(self.events.clone());
-                    drop(result.send(emitted.and(Err(error))));
+                    let outcome = self
+                        .execution
+                        .recover_failure(execution_operation.as_deref(), emitted.and(Err(error)))
+                        .await;
+                    let reopen = outcome.as_ref().is_err_and(|error| {
+                        error.execution_policy_disposition()
+                            == Some(crate::ExecutionPolicyDisposition::Reopen)
+                    });
+                    drop(result.send(outcome));
                     if reopen {
                         begin_shutdown(
                             &mut self.commands,
@@ -1495,6 +1528,10 @@ where
                     }
                 }
             };
+            let outcome = self
+                .execution
+                .recover_failure(execution_operation.as_deref(), outcome)
+                .await;
             if !commands_open
                 && !terminal_failure_committed
                 && let Err(error) = &outcome

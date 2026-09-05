@@ -303,7 +303,9 @@ const SESSION_OWNER_ASSERTION = "x-nanocodex-owner-id";
 const SESSION_CREATE_ID_ASSERTION = "x-nanocodex-create-session-id";
 // ManagedTurnArchive owns the long-lived API projection. The portable Rust
 // state keeps a bounded exact-replay window so cutovers do not call the model.
-const MANAGED_TERMINAL_RECEIPT_RETENTION = 512;
+// The managed inbox/archive owns public exact-ID replay. Rust needs a short
+// recovery tail, not hundreds of full-history checkpoints in Worker memory.
+const MANAGED_TERMINAL_RECEIPT_RETENTION = 16;
 const SESSION_ORGANIZATION_ASSERTION = "x-nanocodex-session-organization-id";
 const SESSION_TEAM_ASSERTION = "x-nanocodex-session-team-id";
 const SESSION_AUTHORIZATION_EPOCH_ASSERTION = "x-nanocodex-authorization-epoch";
@@ -7308,12 +7310,46 @@ export class DurableAgentSession extends DurableComputerSession {
     id: string,
     resolution: TurnResolution,
   ): ManagedTurnRow {
+    if (resolution.kind === "retry" && resolution.blockedBy !== undefined) {
+      this.#reconcilePendingOperation(resolution.blockedBy);
+    }
     const row = this.#managedTurn(id);
     return this.#commitManagedMessage(id, managedControlTransitionForResolution(
       id,
       row?.state === "cancelling",
       resolution,
     ));
+  }
+
+  #reconcilePendingOperation(id: string): void {
+    // Rust identified this exact operation as pending. A terminal JS receipt
+    // cannot overrule it: restore the retained dispatch and let the ordered
+    // recovery pump settle it before admitting later work.
+    let event: DurableEvent<StreamMessage> | undefined;
+    this.ctx.storage.transactionSync(() => {
+      const row = this.#managedTurn(id);
+      if (!row || !isTerminalState(row.state) || row.may_have_inner_operation !== 1
+        || this.#managedDispatchInput(row) === undefined) return;
+      const cancelling = row.state === "cancelled";
+      const message: ManagedTurnTransition = cancelling
+        ? { type: "turn_cancelling", id }
+        : { type: "turn_retryable", id, error: "recovering an unsettled durable operation" };
+      event = this.#eventLog.append(message, id);
+      this.ctx.storage.sql.exec(
+        `UPDATE managed_turns SET state = ?, terminal_json = NULL, terminal_cursor = NULL,
+           error = NULL, retry_at = NULL, updated_at = ? WHERE id = ?`,
+        cancelling ? "cancelling" : "accepted", Date.now(), id,
+      );
+      if (row.state === "completed") {
+        this.ctx.storage.sql.exec(
+          "UPDATE session_state SET completed_turns = MAX(0, completed_turns - 1) WHERE singleton = 1",
+        );
+      }
+    });
+    if (event) {
+      this.#publish(event);
+      this.#scheduleRecovery();
+    }
   }
 
   #commitManagedTurnTerminal(id: string, terminal: TurnTerminal): ManagedTurnRow {

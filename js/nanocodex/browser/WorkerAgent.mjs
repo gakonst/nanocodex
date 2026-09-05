@@ -1453,5 +1453,5 @@ function harnessDescriptor(options = {}, requireIdentity = false) {
   };
 }
 function harnessKey(harness) { return `${harness?.origin ?? ""}\n${harness?.threadId ?? ""}`; }
-function encodeError(error) { return { name: error?.name || "Error", message: error?.message || String(error), stack: error?.stack, ...(typeof error?.code === "string" ? { code: error.code } : {}) }; }
-function decodeError(encoded = {}) { const error = encoded.name === "RangeError" ? new RangeError(encoded.message) : encoded.name === "TypeError" ? new TypeError(encoded.message) : new Error(encoded.message || "Worker Agent failed"); if (encoded.stack) error.stack = encoded.stack; if (typeof encoded.code === "string") error.code = encoded.code; return error; }
+function encodeError(error) { return { name: error?.name || "Error", message: error?.message || String(error), stack: error?.stack, ...(typeof error?.code === "string" ? { code: error.code } : {}), ...(typeof error?.blockedBy === "string" ? { blockedBy: error.blockedBy } : {}) }; }
+function decodeError(encoded = {}) { const error = encoded.name === "RangeError" ? new RangeError(encoded.message) : encoded.name === "TypeError" ? new TypeError(encoded.message) : new Error(encoded.message || "Worker Agent failed"); if (encoded.stack) error.stack = encoded.stack; if (typeof encoded.code === "string") error.code = encoded.code; if (typeof encoded.blockedBy === "string") error.blockedBy = encoded.blockedBy; return error; }

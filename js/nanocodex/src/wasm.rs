@@ -2478,6 +2478,7 @@ struct TurnState {
 struct TurnFailure {
     code: &'static str,
     message: String,
+    blocked_by: Option<String>,
 }
 
 impl TurnState {
@@ -2647,6 +2648,7 @@ impl WasmTurn {
             notified.await.map_err(|_| TurnFailure {
                 code: "retryable",
                 message: "the turn stopped before it was accepted".to_owned(),
+                blocked_by: None,
             })?;
         }
     }
@@ -2689,6 +2691,7 @@ impl WasmTurn {
             notified.await.map_err(|_| TurnFailure {
                 code: "retryable",
                 message: "the turn stopped before it completed".to_owned(),
+                blocked_by: None,
             })?;
         }
     }
@@ -2729,7 +2732,21 @@ fn turn_failure(error: &NanocodexError) -> TurnFailure {
     TurnFailure {
         code,
         message: error.to_string(),
+        blocked_by: blocked_operation(error),
     }
+}
+
+fn blocked_operation(error: &NanocodexError) -> Option<String> {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = source {
+        if let Some(nanocodex::durability::Error::OperationBlocked { pending_id, .. }) =
+            error.downcast_ref::<nanocodex::durability::Error>()
+        {
+            return Some(pending_id.clone());
+        }
+        source = error.source();
+    }
+    None
 }
 
 const fn execution_policy_failure_code(
@@ -2747,6 +2764,9 @@ const fn execution_policy_failure_code(
 fn js_turn_error(failure: TurnFailure) -> JsValue {
     let error = js_sys::Error::new(&failure.message);
     let _ = js_sys::Reflect::set(&error, &"code".into(), &failure.code.into());
+    if let Some(blocked_by) = failure.blocked_by {
+        let _ = js_sys::Reflect::set(&error, &"blockedBy".into(), &blocked_by.into());
+    }
     error.into()
 }
 

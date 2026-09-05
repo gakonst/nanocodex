@@ -11,7 +11,7 @@ use nanocodex_agent::{
 use serde_json::value::RawValue;
 use tokio::sync::OnceCell;
 
-use crate::{Admission, BeginStep, DurableSession, Error, session::DurableOwner};
+use crate::{Admission, BeginStep, DurableSession, Error, OperationStatus, session::DurableOwner};
 
 /// Fluent builder extension that attaches portable durability to an agent.
 pub trait DurableAgentExt: Sized {
@@ -142,6 +142,46 @@ impl DurableExecution {
 }
 
 impl ExecutionPolicy for DurableExecution {
+    fn recover_failure<'a>(
+        &'a self,
+        operation_id: String,
+        error: NanocodexError,
+    ) -> ExecutionFuture<'a, NanocodexError> {
+        Box::pin(async move {
+            if error.execution_policy_disposition() == Some(ExecutionPolicyDisposition::Reopen) {
+                return error;
+            }
+            let owner = match self.owner().await {
+                Ok(owner) => owner,
+                Err(error) => return error,
+            };
+            match owner.recover_failure(operation_id).await {
+                Ok(Some(OperationStatus::Failed { error, .. })) => {
+                    NanocodexError::ReplayedExecutionFailed(error)
+                }
+                Ok(Some(OperationStatus::Cancelled { .. })) => NanocodexError::TurnCancelled,
+                // Completed work can still fail in event/result delivery. Its
+                // exact ID must replay the receipt, never invent a failed turn.
+                Ok(Some(OperationStatus::Pending | OperationStatus::Completed { .. })) => {
+                    if error.execution_policy_disposition()
+                        == Some(ExecutionPolicyDisposition::Retry)
+                    {
+                        return error;
+                    }
+                    NanocodexError::execution_policy_with_disposition(
+                        "durable operation recovery",
+                        ExecutionPolicyDisposition::Retry,
+                        error,
+                    )
+                }
+                // Admission may fail before acceptance, or retention may have
+                // pruned a terminal receipt. Neither proves pending work.
+                Ok(None) => error,
+                Err(error) => agent_error(error),
+            }
+        })
+    }
+
     fn shutdown<'a>(&'a self) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let Some(owner) = self.initialized_owner() else {
@@ -433,6 +473,101 @@ mod tests {
     use nanocodex_agent::ExecutionPolicyDisposition;
 
     use super::*;
+
+    #[tokio::test]
+    async fn failure_classification_follows_settlement_instead_of_error_text() {
+        let state = DurableSession::open(crate::MemoryStore::new().unwrap(), "settlement")
+            .await
+            .unwrap();
+        let (owner, _) = state.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("first".into(), &"input")
+            .await
+            .unwrap();
+        owner.begin_attempt("first".into()).await.unwrap();
+        let policy = DurableExecution::ready(owner);
+        let failure = policy
+            .recover_failure(
+                "first".into(),
+                NanocodexError::MalformedResponse {
+                    detail: "failure before a safe checkpoint",
+                },
+            )
+            .await;
+        assert_eq!(
+            failure.execution_policy_disposition(),
+            Some(ExecutionPolicyDisposition::Retry)
+        );
+
+        policy
+            .owner()
+            .await
+            .unwrap()
+            .fail(
+                "first".into(),
+                &1_u32,
+                "transport failed and turn was cancelled".into(),
+            )
+            .await
+            .unwrap();
+        let failure = policy
+            .recover_failure("first".into(), NanocodexError::TurnStopped)
+            .await;
+        assert!(matches!(
+            failure,
+            NanocodexError::ReplayedExecutionFailed(_)
+        ));
+        assert_eq!(failure.execution_policy_disposition(), None);
+
+        let owner = policy.owner().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("second".into(), &"input")
+            .await
+            .unwrap();
+        owner.begin_attempt("second".into()).await.unwrap();
+        owner
+            .complete("second".into(), &2_u32, &"answer")
+            .await
+            .unwrap();
+        let failure = policy
+            .recover_failure("second".into(), NanocodexError::TurnStopped)
+            .await;
+        assert_eq!(
+            failure.execution_policy_disposition(),
+            Some(ExecutionPolicyDisposition::Retry),
+            "lost result delivery must replay the completed receipt"
+        );
+        policy.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_failure_identifies_the_oldest_operation_that_needs_recovery() {
+        let state = DurableSession::open(crate::MemoryStore::new().unwrap(), "blocked")
+            .await
+            .unwrap();
+        let (owner, _) = state.acquire_agent().await.unwrap();
+        for id in ["older", "newer"] {
+            owner
+                .admit_typed::<_, u32, String>(id.into(), &"input")
+                .await
+                .unwrap();
+        }
+        let policy = DurableExecution::ready(owner);
+        let failure = policy
+            .recover_failure("newer".into(), NanocodexError::TurnStopped)
+            .await;
+        assert_eq!(
+            failure.execution_policy_disposition(),
+            Some(ExecutionPolicyDisposition::Retry)
+        );
+        let NanocodexError::ExecutionPolicy { source, .. } = failure else {
+            panic!("missing recovery policy")
+        };
+        assert!(
+            matches!(source.downcast_ref::<Error>(), Some(Error::OperationBlocked { pending_id, .. }) if pending_id == "older")
+        );
+        policy.shutdown().await.unwrap();
+    }
 
     #[test]
     fn durability_errors_preserve_their_required_recovery_action() {

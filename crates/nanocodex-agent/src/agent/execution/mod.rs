@@ -9,7 +9,6 @@ mod platform;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 
 use crate::{
     NanocodexError, Result,
@@ -88,6 +87,17 @@ pub struct ExecutionOutput {
 /// without becoming a dependency of `nanocodex-agent`.
 #[cfg(not(target_family = "wasm"))]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Resolves a failed attempt against the authoritative operation state.
+    /// A pending operation must return a retry/reopen disposition, even when
+    /// its original failure was not a transport or storage error.
+    fn recover_failure<'a>(
+        &'a self,
+        _operation_id: String,
+        error: NanocodexError,
+    ) -> ExecutionFuture<'a, NanocodexError> {
+        Box::pin(async move { error })
+    }
+
     /// Releases policy-owned lifecycle state after all Agent work has stopped.
     ///
     /// The default is a no-op so existing stateless policies remain source
@@ -241,6 +251,16 @@ pub trait ExecutionPolicy: Send + Sync {
 /// guarantees on every target.
 #[cfg(target_family = "wasm")]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Resolves a failed attempt against the authoritative operation state.
+    /// Pending work must remain recoverable regardless of the original error.
+    fn recover_failure<'a>(
+        &'a self,
+        _operation_id: String,
+        error: NanocodexError,
+    ) -> ExecutionFuture<'a, NanocodexError> {
+        Box::pin(async move { error })
+    }
+
     /// Releases policy-owned lifecycle state after all Agent work has stopped.
     ///
     /// The default is a no-op so existing stateless policies remain source
@@ -505,6 +525,19 @@ struct StandaloneCompactionBase {
 }
 
 impl Execution {
+    pub(crate) async fn recover_failure<T>(
+        &self,
+        operation_id: Option<&str>,
+        outcome: Result<T>,
+    ) -> Result<T> {
+        match (self.policy.as_ref(), operation_id, outcome) {
+            (Some(policy), Some(operation_id), Err(error)) => {
+                Err(policy.recover_failure(operation_id.to_owned(), error).await)
+            }
+            (_, _, outcome) => outcome,
+        }
+    }
+
     #[cfg(not(target_family = "wasm"))]
     pub(crate) const fn info(&self) -> Option<&RolloutInfo> {
         self.platform.info()
@@ -572,7 +605,7 @@ impl Execution {
             platform: self.platform.start_turn(prompt, effort),
             policy: self.policy.clone(),
             operation_id,
-            operation_input: Some(prompt.clone()),
+            operation_input: Some(ExecutionInput::Prompt(prompt.clone())),
             outcome: ExecutionOutcome::Started,
         }
     }
@@ -584,9 +617,9 @@ impl Execution {
         effort: nanocodex_oai_api::Thinking,
         fast_mode: bool,
         workspace: Option<&str>,
-    ) -> Result<(Option<String>, AdmittedExecution)> {
+    ) -> Result<(Option<String>, Option<String>, AdmittedExecution)> {
         let Some(policy) = &self.policy else {
-            return Ok((None, AdmittedExecution::Execute));
+            return Ok((None, None, AdmittedExecution::Execute));
         };
         let base_checkpoint = base_checkpoint.map(|checkpoint| {
             let mut history = checkpoint.model().snapshot_history();
@@ -609,16 +642,20 @@ impl Execution {
             workspace: workspace.map(str::to_owned),
         };
         let input_json = encode(&input)?;
-        let digest = Sha256::digest(input_json.as_bytes());
-        let digest = digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let candidate_operation_id = format!("standalone-compaction-{digest}");
+        // A new maintenance request may have identical input to a cancelled
+        // or failed one. Pending recovery still selects the original ID.
+        let candidate_operation_id = format!(
+            "standalone-compaction-{}",
+            crate::session::SessionId::default()
+        );
         let (operation_id, admission) = policy
-            .admit_automatic(candidate_operation_id, input_json)
+            .admit_automatic(candidate_operation_id, input_json.clone())
             .await?;
-        Ok((Some(operation_id), map_admission(admission)))
+        Ok((
+            Some(operation_id),
+            Some(input_json),
+            map_admission(admission),
+        ))
     }
 
     #[cfg_attr(target_family = "wasm", allow(clippy::missing_const_for_fn))]
@@ -626,12 +663,13 @@ impl Execution {
         &self,
         effort: nanocodex_oai_api::Thinking,
         operation_id: Option<String>,
+        operation_input: Option<String>,
     ) -> ExecutionTurn {
         ExecutionTurn {
             platform: self.platform.start_compaction(effort),
             policy: self.policy.clone(),
             operation_id,
-            operation_input: None,
+            operation_input: operation_input.map(ExecutionInput::Encoded),
             outcome: ExecutionOutcome::Started,
         }
     }
@@ -808,11 +846,25 @@ enum ExecutionOutcome {
     Failed { error: String, retryable: bool },
 }
 
+enum ExecutionInput {
+    Prompt(nanocodex_oai_api::Prompt),
+    Encoded(String),
+}
+
+impl ExecutionInput {
+    fn encode(&self) -> Result<String> {
+        match self {
+            Self::Prompt(prompt) => encode(prompt),
+            Self::Encoded(input) => Ok(input.clone()),
+        }
+    }
+}
+
 pub(crate) struct ExecutionTurn {
     platform: platform::Turn,
     policy: Option<Arc<dyn ExecutionPolicy>>,
     operation_id: Option<String>,
-    operation_input: Option<nanocodex_oai_api::Prompt>,
+    operation_input: Option<ExecutionInput>,
     outcome: ExecutionOutcome,
 }
 
@@ -914,20 +966,12 @@ impl ExecutionTurn {
         };
         self
     }
-
-    pub(crate) fn retain_pending_attempt(mut self, error: impl Into<String>) -> Self {
-        self.outcome = ExecutionOutcome::Failed {
-            error: error.into(),
-            retryable: true,
-        };
-        self
-    }
 }
 
 async fn persist_operation(
     policy: Option<Arc<dyn ExecutionPolicy>>,
     operation_id: Option<String>,
-    operation_input: Option<nanocodex_oai_api::Prompt>,
+    operation_input: Option<ExecutionInput>,
     outcome: ExecutionOutcome,
     checkpoint: &CommittedSession,
 ) -> Result<()> {
@@ -944,7 +988,10 @@ async fn persist_operation(
                 .await
         }
         ExecutionOutcome::Interrupted => {
-            let input = operation_input.as_ref().map(encode).transpose()?;
+            let input = operation_input
+                .as_ref()
+                .map(ExecutionInput::encode)
+                .transpose()?;
             cancel_with_reclaim(&policy, operation_id, input, Some(checkpoint.snapshot())).await
         }
         ExecutionOutcome::Failed { error, retryable } => {

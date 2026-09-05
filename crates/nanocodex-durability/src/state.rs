@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
@@ -12,12 +12,12 @@ const STATE_FORMAT: u8 = 2;
 /// as opaque bytes.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
-pub struct EncodedPayload(String);
+pub struct EncodedPayload(Arc<str>);
 
 impl EncodedPayload {
     pub(crate) fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Self> {
         serde_json::to_string(value)
-            .map(Self)
+            .map(|json| Self(Arc::from(json)))
             .map_err(Error::InvalidPayload)
     }
 
@@ -321,7 +321,20 @@ impl DurableState {
     pub(crate) fn retain_terminal_receipts(&mut self, limit: usize) -> bool {
         let before = self.operations.len();
         Self::retain_terminal_operations(&mut self.operations, limit);
-        self.operations.len() != before
+        let mut changed = self.operations.len() != before;
+        for operation in self
+            .operations
+            .values_mut()
+            .filter(|operation| operation.status.is_terminal())
+        {
+            // Terminal replay uses only input, result, and checkpoint. Keeping
+            // every intermediate full-history model request multiplies memory
+            // and write volume across long conversations.
+            changed |= !operation.steps.is_empty() || !operation.steers.is_empty();
+            operation.steps.clear();
+            operation.steers.clear();
+        }
+        changed
     }
 
     fn retain_terminal_operations(operations: &mut BTreeMap<String, OperationState>, limit: usize) {

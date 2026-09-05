@@ -142,6 +142,11 @@ struct AgentAcquisition {
 }
 
 enum Command {
+    RecoverFailure {
+        caller: Caller,
+        operation_id: String,
+        result: oneshot::Sender<Result<Option<OperationStatus>>>,
+    },
     State {
         result: oneshot::Sender<DurableState>,
     },
@@ -335,6 +340,26 @@ impl Driver {
                 self.handle_release(release);
             }
             match command {
+                Command::RecoverFailure {
+                    caller,
+                    operation_id,
+                    result,
+                } => {
+                    let outcome = self.authorize(&caller).and_then(|()| {
+                        let operation = self.state.operation(&operation_id);
+                        if operation.is_some_and(|operation| !operation.status.is_terminal())
+                            && let Some((pending_id, _)) = self.state.first_pending_operation()
+                            && pending_id != operation_id
+                        {
+                            return Err(Error::OperationBlocked {
+                                operation_id,
+                                pending_id: pending_id.to_owned(),
+                            });
+                        }
+                        Ok(operation.map(|operation| operation.status.clone()))
+                    });
+                    drop(result.send(outcome));
+                }
                 Command::State { result } => drop(result.send(self.state.clone())),
                 Command::LatestCheckpoint { result } => {
                     drop(result.send(self.state.latest_checkpoint().cloned()));
@@ -1725,6 +1750,20 @@ pub(crate) struct DurableOwner {
 }
 
 impl DurableOwner {
+    pub(crate) async fn recover_failure(
+        &self,
+        operation_id: String,
+    ) -> Result<Option<OperationStatus>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::RecoverFailure {
+            caller: self.caller()?,
+            operation_id,
+            result,
+        })
+        .await?;
+        receiver.await.map_err(|_| Error::DriverStopped)?
+    }
+
     fn caller(&self) -> Result<Caller> {
         if self.release.state.load(Ordering::Acquire) != OWNER_ACTIVE {
             Err(Error::ModelOwnerFenced)

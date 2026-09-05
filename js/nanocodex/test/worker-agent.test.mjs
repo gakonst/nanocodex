@@ -151,9 +151,11 @@ test("Worker Agent retains and proxies the Rust browser voice handle", async () 
   assert.equal(worker.terminated, 1);
 });
 
-test("Worker turn admission preserves stable error codes", async () => {
+test("Worker turn admission preserves stable error codes and recovery identity", async () => {
   const fixture = createFixture({
-    acceptanceError: Object.assign(new Error("durable input conflict"), { code: "conflict" }),
+    acceptanceError: Object.assign(new Error("durable operation blocked"), {
+      code: "retryable", blockedBy: "older-operation",
+    }),
   });
   const worker = new LoopbackWorker(fixture.createAgent);
   const agent = await createWorkerAgent({ sessionId: "root", harness: false }, { worker });
@@ -162,10 +164,12 @@ test("Worker turn admission preserves stable error codes", async () => {
   await assert.rejects(
     turn.accepted(),
     (error) => error instanceof Error
-      && error.message === "durable input conflict"
-      && error.code === "conflict",
+      && error.message === "durable operation blocked"
+      && error.code === "retryable"
+      && error.blockedBy === "older-operation",
   );
-  await assert.rejects(turn.result(), (error) => error?.code === "conflict");
+  await assert.rejects(turn.result(), (error) => error?.code === "retryable"
+    && error.blockedBy === "older-operation");
   assert.equal(fixture.log.filter(([kind]) => kind === "turn-dispose").length, 1);
 
   turn.dispose();

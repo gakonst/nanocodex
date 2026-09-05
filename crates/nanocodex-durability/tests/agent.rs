@@ -39,6 +39,201 @@ fn test_session_id() -> SessionId {
 }
 
 #[derive(Clone)]
+struct CrashAtReplace {
+    inner: MemoryStore,
+    revision: u64,
+    after_commit: bool,
+    fired: Arc<AtomicBool>,
+}
+
+impl StateStore for CrashAtReplace {
+    fn acquire<'a>(
+        &'a mut self,
+        id: &'a str,
+        owner: OwnerId,
+    ) -> StoreFuture<'a, std::result::Result<OwnedState, StoreError>> {
+        self.inner.acquire(id, owner)
+    }
+
+    fn replace<'a>(
+        &'a mut self,
+        id: &'a str,
+        owner: &'a OwnerToken,
+        revision: u64,
+        payload: &'a str,
+    ) -> StoreFuture<'a, std::result::Result<u64, StoreError>> {
+        Box::pin(async move {
+            if revision == self.revision && !self.fired.swap(true, Ordering::SeqCst) {
+                if self.after_commit {
+                    self.inner.replace(id, owner, revision, payload).await?;
+                    return Err(StoreError::Backend(
+                        "lost acknowledgement after commit".into(),
+                    ));
+                }
+                return Err(StoreError::NotCommitted(
+                    "write rejected before commit".into(),
+                ));
+            }
+            self.inner.replace(id, owner, revision, payload).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn every_first_turn_write_recovers_before_and_after_commit() -> Result<()> {
+    for after_commit in [false, true] {
+        // Admission, warmup intent/output, model intent/output, terminal.
+        for revision in 0..6 {
+            let store = CrashAtReplace {
+                inner: MemoryStore::new()?,
+                revision,
+                after_commit,
+                fired: Arc::new(AtomicBool::new(false)),
+            };
+            let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let openai = || {
+                let generations = Arc::clone(&generations);
+                OpenAi::builder("test-key")
+                    .service(move || DurableReplayService {
+                        generations: Arc::clone(&generations),
+                    })
+                    .build()
+            };
+            let workspace = temporary_workspace("commit-crash-matrix")?;
+            let state = DurableSession::open(store.clone(), "crash-matrix").await?;
+            let (agent, events) = Nanocodex::builder(openai()?)
+                .workspace(&workspace)
+                .durability(state)
+                .await?
+                .build()?;
+            let request = || PromptRequest::new("exact crash recovery input").request_id("crashed");
+            let first = match agent.prompt(request()).await {
+                Ok(turn) => turn.result().await.map(|_| ()),
+                Err(error) => Err(error),
+            };
+            assert!(
+                store.fired.load(Ordering::SeqCst),
+                "fault {revision}/{after_commit} was not reached"
+            );
+            let error = first.expect_err("lost/rejected writes cannot be acknowledged");
+            assert!(
+                matches!(
+                    error.execution_policy_disposition(),
+                    Some(ExecutionPolicyDisposition::Retry | ExecutionPolicyDisposition::Reopen)
+                ),
+                "{revision}/{after_commit}: {error}"
+            );
+            let _ = agent.shutdown().await;
+            drop((agent, events));
+
+            let state = DurableSession::open(store, "crash-matrix").await?;
+            let (agent, events) = Nanocodex::builder(openai()?)
+                .workspace(&workspace)
+                .durability(state.clone())
+                .await?
+                .build()?;
+            assert_eq!(
+                agent
+                    .prompt(request())
+                    .await?
+                    .result()
+                    .await?
+                    .final_message(),
+                "durably replayed"
+            );
+            let before_replay = state.state().await?.revision();
+            let calls_before_replay = generations.load(Ordering::SeqCst);
+            assert_eq!(
+                agent
+                    .prompt(request())
+                    .await?
+                    .result()
+                    .await?
+                    .final_message(),
+                "durably replayed"
+            );
+            assert_eq!(state.state().await?.revision(), before_replay);
+            assert_eq!(generations.load(Ordering::SeqCst), calls_before_replay);
+            agent
+                .prompt(PromptRequest::new("new work after crash").request_id("next"))
+                .await?
+                .result()
+                .await?;
+            assert!(state.state().await?.pending_operations().is_empty());
+            agent.shutdown().await?;
+            drop((agent, events));
+            std::fs::remove_dir_all(workspace)?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn six_hundred_turns_cross_retention_and_twenty_four_owner_changes() -> Result<()> {
+    let store = MemoryStore::new()?;
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let workspace = temporary_workspace("long-durable-session")?;
+    for epoch in 0..24 {
+        let openai = OpenAi::builder("test-key")
+            .service({
+                let generations = Arc::clone(&generations);
+                move || DurableReplayService {
+                    generations: Arc::clone(&generations),
+                }
+            })
+            .build()?;
+        let state =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "long-session", 16)
+                .await?;
+        let (agent, events) = Nanocodex::builder(openai)
+            .workspace(&workspace)
+            .durability(state.clone())
+            .await?
+            .build()?;
+        for index in (epoch * 25)..((epoch + 1) * 25) {
+            let id = format!("turn-{index}");
+            let input = format!("remember ordered turn {index}");
+            let result = agent
+                .prompt(PromptRequest::new(input.clone()).request_id(id.clone()))
+                .await?
+                .result()
+                .await?;
+            assert_eq!(result.final_message(), "durably replayed");
+            let retained = state.state().await?;
+            assert!(retained.pending_operations().is_empty());
+            assert!(retained.operations().len() <= 16);
+            assert!(
+                retained
+                    .operations()
+                    .values()
+                    .all(|operation| operation.steps.is_empty() && operation.steers.is_empty())
+            );
+            if index % 19 == 0 {
+                let replay = agent
+                    .prompt(PromptRequest::new(input).request_id(id))
+                    .await?
+                    .result()
+                    .await?;
+                assert_eq!(
+                    serde_json::to_value(replay.snapshot())?,
+                    serde_json::to_value(result.snapshot())?
+                );
+                assert_eq!(state.state().await?.revision(), retained.revision());
+            }
+        }
+        agent.shutdown().await?;
+        drop((agent, events));
+    }
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        600,
+        "replay and reopen must not regenerate completed work"
+    );
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[derive(Clone)]
 struct FailReplaceOnce {
     inner: crate::MemoryStore,
     expected_revision: u64,
@@ -2172,7 +2367,7 @@ async fn independent_session_takeover_fences_standalone_compaction_before_execut
 }
 
 #[tokio::test]
-async fn cold_reopen_resubmits_a_pending_standalone_compaction() -> Result<()> {
+async fn cancelled_standalone_compaction_does_not_block_a_cold_follow_on() -> Result<()> {
     let store = MemoryStore::new()?;
     let compactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let started = Arc::new(tokio::sync::Notify::new());
@@ -2216,17 +2411,22 @@ async fn cold_reopen_resubmits_a_pending_standalone_compaction() -> Result<()> {
 
     let reopened = DurableSession::open(store, state_id).await?;
     let retained = reopened.state().await?;
+    assert!(retained.pending_operations().is_empty());
     let compaction = retained
-        .pending_operations()
-        .into_iter()
+        .operations()
+        .iter()
         .find(|(_, operation)| {
             operation
                 .steps
                 .values()
                 .any(|step| step.kind == "compaction")
         })
-        .ok_or_else(|| eyre!("pending standalone compaction receipt was not retained"))?
+        .ok_or_else(|| eyre!("cancelled standalone compaction receipt was not retained"))?
         .1;
+    assert!(matches!(
+        compaction.status,
+        OperationStatus::Cancelled { .. }
+    ));
     let provider_step = compaction
         .steps
         .values()
@@ -2242,11 +2442,19 @@ async fn cold_reopen_resubmits_a_pending_standalone_compaction() -> Result<()> {
         .durability(reopened)
         .await?
         .build()?;
+    // A normal prompt must make progress without knowing that maintenance was
+    // interrupted. This used to produce OperationBlocked forever.
+    resumed
+        .prompt("continue the conversation")
+        .await?
+        .result()
+        .await?;
+    assert_eq!(compactions.load(Ordering::SeqCst), 1);
     resumed.compact().await?;
     assert_eq!(
         compactions.load(Ordering::SeqCst),
         2,
-        "cold recovery must resubmit an unfinished provider call"
+        "a later explicit compaction is a fresh request"
     );
 
     resumed.shutdown().await?;

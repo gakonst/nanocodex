@@ -108,6 +108,14 @@ There is exactly zero or one retained payload. Multiple historical batches are
 corruption and are rejected. Receipt retention is a normal state transition,
 not log-prefix compaction. Hosts never deserialize state.
 
+With bounded receipt retention, terminal operations retain their exact input,
+checkpoint, and result, but discard intermediate step and steer payloads. These
+payloads are recovery scratch data and cannot be used after settlement. Pending
+operations keep every recovery record. Encoded payloads share immutable storage
+inside the Rust owner so preparing a replacement does not deep-copy every receipt.
+Managed sessions keep 16 inner terminal receipts; their managed inbox and archive
+continue to own public exact-ID replay beyond that tail.
+
 This is a hard cutover. State format 2 uses the
 `nanocodex_durable_state` envelope; format 1, the former
 `nanocodex_journal_state` envelope, and individual event batches are rejected.
@@ -225,6 +233,12 @@ Standalone compaction follows the same rule. A committed resulting checkpoint
 replays; otherwise a later request runs compaction again. It cannot run while an
 accepted operation is pending.
 
+Each new standalone compaction gets a fresh candidate identity; automatic
+admission can reclaim a matching pending compaction. Graceful interruption
+commits cancellation and its checkpoint, and a committed failure is terminal.
+A later prompt therefore cannot be stranded behind abandoned maintenance work.
+An uncommitted or ambiguous replacement still requires recovery.
+
 ## Checkpoints and terminals
 
 The checkpoint inside `OperationCompleted` or `OperationFailed` and that
@@ -261,6 +275,19 @@ Transient infrastructure failure does not create another state. The row stays
 `accepted` or `cancelling` with `error`, `attempt_count`, and an absolute
 `retry_at`. `turn_retryable` is a control event describing that schedule, not a
 terminal or a separate source of truth.
+
+After a turn error, the Rust owner resolves the outcome from authoritative
+operation state. A pending operation requires retry; a completed operation whose
+delivery failed requires exact-ID replay; a committed failure or cancellation is
+terminal. An ambiguous store result requires reopening. Typed dispositions take
+precedence over diagnostic text, including text mentioning cancellation or a
+transport failure.
+
+An ordering rejection carries the exact pending operation ID through WASM and
+Worker errors as `blockedBy`. If an older managed terminal projection disagrees
+with that Rust fact and its frozen dispatch is retained, managed recovery restores
+that row to the ordered recovery queue. It never reconstructs input or authority
+from error strings. Missing dispatch or archived receipts are not guessed.
 
 The Durable Object commits the turn row and `turn_accepted` cursor before
 returning HTTP 202. It commits a terminal row and terminal event cursor in the
