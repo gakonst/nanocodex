@@ -8,6 +8,9 @@
   "scripts": {
     "predev": "portless proxy start --port ${PORTLESS_PORT:-443}",
     "dev": "turbo run dev --filter=nanocodex-web --filter=@nanocodex/connect-playground",
+    "dev:desktop": "pnpm --filter @nanocodex/desktop run dev",
+    "build:desktop": "pnpm --filter @nanocodex/desktop run build",
+    "test:desktop": "pnpm --filter @nanocodex/desktop run test:e2e",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
@@ -17,7 +20,8 @@
     "deploy:connect-api": "turbo run build --filter=@nanocodex/connect-api && pnpm --filter @nanocodex/connect-api run deploy",
     "deploy:chief-of-staff": "pnpm --filter @nanocodex/chief-of-staff run deploy",
     "deploy:connect-playground": "turbo run build --filter=@nanocodex/connect-playground && pnpm --filter @nanocodex/connect-playground run deploy",
-    "deploy:account": "turbo run build --filter=nanocodex-web && pnpm --filter nanocodex-web run deploy"
+    "deploy:account": "turbo run build --filter=nanocodex-web && pnpm --filter nanocodex-web run deploy",
+    "build:macos": "pnpm --filter @nanocodex/desktop-runtime run build && xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Release -derivedDataPath macos/build build"
   },
   "devDependencies": {
     "portless": "0.15.6",

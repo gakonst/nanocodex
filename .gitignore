@@ -1,6 +1,6 @@
 .env
 .dev.vars*
-/node_modules/
+node_modules/
 .turbo/
 .cache/
 .wrangler/
@@ -55,3 +55,9 @@ trials/
 /reverse-me
 __pycache__/
 *.pyc
+
+# Generated outputs left at former workspace paths.
+/js/bindings/pkg-node/
+/js/bindings/pkg-web/
+/web/dist/
+/web/.repository-data/
