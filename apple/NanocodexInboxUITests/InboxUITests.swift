@@ -136,7 +136,7 @@ final class InboxUITests: XCTestCase {
         selectInbox(app); app.buttons["filter-Running"].tap()
         app.staticTexts["agent-title"].tap()
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 5))
-        // Wait for the demo completion through the running transcript indicator.
+        // Keep reading while the demo turn finishes.
         let title = app.navigationBars["Build the agent inbox"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         app.scrollViews.firstMatch.swipeUp(); app.scrollViews.firstMatch.swipeDown()
@@ -150,7 +150,8 @@ final class InboxUITests: XCTestCase {
         app.buttons["Voice input"].tap()
         XCTAssertTrue(app.staticTexts["voice-transcript"].waitForExistence(timeout: 5))
         capture(app, "08-voice-input")
-        app.staticTexts["Voice · Demo"].swipeDown()
+        let voiceHeader = app.staticTexts["Voice · Demo"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        voiceHeader.press(forDuration: 0.05, thenDragTo: voiceHeader.withOffset(CGVector(dx: 0, dy: 260)))
         gone(app.staticTexts["voice-transcript"])
         XCTAssertEqual(composer(app).value as? String, "Existing draft.\nCheck reconnect first, then simplify the inbox")
         app.otherElements["agent-card"].swipeLeft(); selectInbox(app)
