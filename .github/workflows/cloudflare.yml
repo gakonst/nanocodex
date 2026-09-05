@@ -16,6 +16,50 @@ on:
         options: [preview, production]
 
 jobs:
+  durability-runtime-diagnostics:
+    if: vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    name: inspect durable runtime failures
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: cloudflare-production
+    permissions: {}
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Observe runtime outcomes without request or log payloads
+        run: |
+          timeout 90s npx --yes wrangler@4.127.1 tail nanocodex-durable-agent --status error --format json > "$RUNNER_TEMP/durability-tail.json" || [ "$?" -eq 124 ]
+          python3 - <<'PY'
+          import json, os, pathlib
+          source = pathlib.Path(os.environ['RUNNER_TEMP'], 'durability-tail.json').read_text()
+          decoder = json.JSONDecoder()
+          offset = 0
+          count = 0
+          while offset < len(source):
+              start = source.find('{', offset)
+              if start < 0:
+                  break
+              try:
+                  event, consumed = decoder.raw_decode(source[start:])
+              except json.JSONDecodeError:
+                  offset = start + 1
+                  continue
+              offset = start + consumed
+              if not isinstance(event, dict) or 'outcome' not in event:
+                  continue
+              count += 1
+              print(json.dumps({
+                  'outcome': event.get('outcome'),
+                  'timestamp': event.get('eventTimestamp'),
+                  'exception_names': [item.get('name') for item in event.get('exceptions', [])],
+              }))
+          print(f'Observed {count} failing Worker invocations')
+          PY
+
   preview:
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
