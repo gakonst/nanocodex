@@ -293,7 +293,7 @@ function managedCronTrigger(value) {
     || typeof value.cron !== "string" || typeof value.timezone !== "string"
     || typeof value.input !== "string" || typeof value.enabled !== "boolean"
     || (value.session_mode !== undefined && value.session_mode !== "new" && value.session_mode !== "continue")
-    || (value.last_agent_id != null && (typeof value.last_agent_id !== "string" || !SESSION_ID.test(value.last_agent_id)))
+    || (value.last_agent_id != null && (typeof value.last_agent_id !== "string" || !UUID.test(value.last_agent_id)))
     || ![value.created_at, value.updated_at].every((n) => Number.isSafeInteger(n) && n >= 0)
     || ![value.next_run_at, value.last_run_at, value.last_skipped_at].every((n) => n === null || (Number.isSafeInteger(n) && n >= 0))
     || (value.last_turn_id !== null && (typeof value.last_turn_id !== "string" || !TURN_ID.test(value.last_turn_id)))) {

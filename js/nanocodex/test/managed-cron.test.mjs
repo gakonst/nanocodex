@@ -82,3 +82,12 @@ test("cron SDK supports legacy views and both session modes", async () => {
     assert.equal(saved.last_agent_id, agentId);
   }
 });
+
+
+test("cron SDK accepts UUIDv8 session IDs created by idempotent scheduling", async () => {
+  const childId = "4bcd45bc-209d-8df6-9ebd-a373f838c9ae";
+  const agent = Agent.open(agentId, { baseUrl: "https://managed.example", fetch: async () => Response.json({
+    ...trigger, last_agent_id: childId, last_turn_id: "cron:fixture:1788630780000", last_run_at: 1_800_000,
+  }) });
+  assert.equal((await agent.triggers.get("morning")).last_agent_id, childId);
+});
