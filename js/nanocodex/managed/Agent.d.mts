@@ -1,3 +1,4 @@
+import type { ManagedHands } from "./Hands.mjs";
 import type { Model, PromptInput, ReasoningMode, Thinking, TurnUsage } from "../types.mjs";
 import type { AgentId } from "../runtime/subagents.mjs";
 
@@ -306,6 +307,7 @@ export type Agent = Readonly<{
     update(patch: SettingsPatch): Promise<CreateSettings>;
   }>;
   /** Reverse-tool endpoint with cookie/bearer transport retained in a private closure. */
+  readonly hands: ManagedHands;
   toolsTarget(): import("../tools/Tools.mjs").AttachmentTarget;
   events: Readonly<{
     page(options?: EventHistoryOptions): Promise<EventHistoryPage>;

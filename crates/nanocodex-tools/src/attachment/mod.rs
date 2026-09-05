@@ -4,7 +4,14 @@
 //! account, placement, and endpoint discovery remain the caller's responsibility.
 
 mod driver;
+mod observation;
 mod protocol;
+mod screen;
+pub use observation::{
+    MAX_OBSERVATION_IMAGE_BYTES, OBSERVATION_TIMEOUT, ObservationFrame, ObservationImageFormat,
+    ObservationKind, ObservationProvider, ObservationSurface,
+};
+pub use screen::ScreenObservation;
 
 use std::{collections::HashSet, fmt, sync::Arc};
 use tokio::sync::{mpsc, watch};
@@ -261,6 +268,7 @@ pub struct AttachmentConnector {
     tools: Tools,
     target: AttachmentTarget,
     metadata: Option<AttachmentMetadata>,
+    observation: Option<Arc<dyn ObservationProvider>>,
 }
 
 impl Tools {
@@ -271,6 +279,7 @@ impl Tools {
             tools: self,
             target,
             metadata: None,
+            observation: None,
         }
     }
 }
@@ -283,6 +292,13 @@ impl AttachmentConnector {
         self
     }
 
+    /// Enables opt-in live viewing for this exact machine attachment.
+    #[must_use]
+    pub fn observation(mut self, provider: Arc<dyn ObservationProvider>) -> Self {
+        self.observation = Some(provider);
+        self
+    }
+
     /// Validates the recipe and starts its complete lifecycle in the background.
     ///
     /// # Errors
@@ -291,6 +307,27 @@ impl AttachmentConnector {
     /// attached catalog. Discovery and transport failures are reported through
     /// the returned handle while its driver initializes and reconnects.
     pub fn start(self) -> Result<(Attachment, AttachmentEvents), AttachmentError> {
+        let observation_surfaces = match &self.observation {
+            None => Vec::new(),
+            Some(provider) => {
+                let surfaces = provider.surfaces();
+                let unique: HashSet<_> = surfaces.iter().map(ObservationSurface::id).collect();
+                if self
+                    .metadata
+                    .as_ref()
+                    .and_then(AttachmentMetadata::attached_machine)
+                    .is_none()
+                    || surfaces.is_empty()
+                    || surfaces.len() > 8
+                    || unique.len() != surfaces.len()
+                {
+                    return Err(AttachmentError::Catalog(
+                        "observation requires one machine and 1-8 unique surfaces".into(),
+                    ));
+                }
+                surfaces.to_vec()
+            }
+        };
         install_default_rustls_crypto_provider();
         let prepared = PreparedTools::prepare(&self.tools)?;
         let (command_tx, command_rx) = mpsc::channel(8);
@@ -302,6 +339,8 @@ impl AttachmentConnector {
             prepared,
             self.target,
             self.metadata,
+            self.observation,
+            observation_surfaces,
             command_rx,
             event_tx,
             status_tx,
@@ -335,6 +374,8 @@ async fn initialize_and_run(
     prepared: PreparedTools,
     target: AttachmentTarget,
     metadata: Option<AttachmentMetadata>,
+    observation: Option<Arc<dyn ObservationProvider>>,
+    observation_surfaces: Vec<ObservationSurface>,
     mut command_rx: mpsc::Receiver<driver::Command>,
     event_tx: mpsc::Sender<AttachmentEvent>,
     status_tx: watch::Sender<AttachmentStatus>,
@@ -380,6 +421,8 @@ async fn initialize_and_run(
             authorization: format!("Bearer {}", target.bearer).into(),
             tools,
             metadata,
+            observation,
+            observation_surfaces,
         })
     })();
     let config = match config {
@@ -467,7 +510,11 @@ impl Attachment {
         }
     }
 
-    async fn wait_until_ready(&self) -> Result<(), AttachmentError> {
+    /// Waits for catalog acknowledgement while the caller retains cancellation ownership.
+    ///
+    /// # Errors
+    /// Returns the terminal initialization or transport error if readiness fails.
+    pub async fn wait_until_ready(&self) -> Result<(), AttachmentError> {
         let mut status = self.status.clone();
         loop {
             let current = status.borrow().clone();

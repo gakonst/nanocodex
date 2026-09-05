@@ -30,7 +30,7 @@ pub(crate) struct VmHand {
 
 impl VmHand {
     pub(crate) async fn start(config: &Hand) -> Result<Self, ManagedError> {
-        Self::start_config(&VmHandConfig::from(config)).await
+        Self::start_config(&VmHandConfig::try_from(config)?).await
     }
 
     pub(crate) async fn start_config(config: &VmHandConfig) -> Result<Self, ManagedError> {

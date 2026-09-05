@@ -1,3 +1,4 @@
+import { handObservationResponse } from "./hand-observation";
 import { DurableObject } from "cloudflare:workers";
 import {
   HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE,
@@ -96,6 +97,13 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         return Response.json({ error: "not_found" }, { status: 404 });
       }
       return this.#broker.upgrade(ownerId);
+    }
+    if (request.method === "GET" && (url.pathname === "/hands" || url.pathname === "/hands/frame")) {
+      const ownerId = request.headers.get(OWNER_ASSERTION);
+      if (!isUserId(ownerId) || !await this.#owns(ownerId)) {
+        return Response.json({ error: "not_found" }, { status: 404, headers: { "cache-control": "no-store" } });
+      }
+      return handObservationResponse(this.#broker, request);
     }
     if (request.method === "POST" && url.pathname === "/snapshot") {
       const ownerId = await ownerFromBody(request);

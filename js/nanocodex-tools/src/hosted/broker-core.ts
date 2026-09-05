@@ -1,3 +1,4 @@
+import { OBSERVATION_TIMEOUT_MS, OBSERVATION_INTERVAL_MS, type ObservationSurface, type ObservationResult } from "../../tools/observation.mjs";
 import {
   HOSTED_TOOL_CALL_TIMEOUT_MS,
   HOSTED_TOOLS_LEASE_MS,
@@ -48,6 +49,13 @@ const encoder = new TextEncoder();
 export const HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE = Symbol.for(
   "nanocodex.tool.preDispatchUnavailable",
 );
+
+export type HostedObservationSurface = ObservationSurface & Readonly<{
+  machine_id: string; machine_name: string; route_token: string;
+}>;
+export class HandObservationError extends Error {
+  constructor(readonly code: "unavailable" | "busy" | "timeout" | "aborted") { super(`Hand observation ${code}`); }
+}
 
 export type HostedToolsCallState =
   | "admitted"
@@ -101,6 +109,7 @@ type HostedToolsSocketAttachment = {
   active?: true;
   draining?: true;
   machines?: readonly HostedMachine[];
+  observationSurfaces?: readonly ObservationSurface[];
 };
 
 type PendingCall = {
@@ -263,6 +272,8 @@ export type HostedToolsLeasedAttachmentRenewal = Readonly<{
 /** Owns one reverse-tool attachment over an injected socket and durable ledger. */
 export class HostedToolsBrokerCore {
   readonly #provider: HostedToolsDynamicProvider;
+  readonly #observations = new Map<string, { socket: HostedToolsSocket; finish(result: ObservationResult | HandObservationError): void }>();
+  readonly #lastObservation = new WeakMap<HostedToolsSocket, number>();
   readonly #pending = new Map<string, PendingCall>();
   readonly #now: () => number;
   readonly #randomUUID: () => string;
@@ -281,6 +292,61 @@ export class HostedToolsBrokerCore {
     | undefined;
   #catalogValidator: HostedToolsCatalogValidator | undefined;
   #nextCandidateGeneration: number;
+
+  /** Live metadata only: frames and capture requests never enter durable tool receipts. */
+  observationSurfaces(): HostedObservationSurface[] {
+    return this.#observationBindings().map(({ surface }) => surface);
+  }
+
+  #observationBindings(): { socket: HostedToolsSocket; surface: HostedObservationSurface }[] {
+    return this.#persistence.states().flatMap((state) => {
+      const socket = this.#liveRoutingSocketForState(state);
+      const attachment = socket && this.#attachment(socket);
+      const machine = attachment?.machines?.[0];
+      if (!socket || !attachment || attachment.connectGrantId !== undefined || !machine) return [];
+      return (attachment.observationSurfaces ?? []).map((surface) => ({ socket, surface: {
+        ...surface, machine_id: machine.id, machine_name: machine.name,
+        route_token: `${state.lease_id}:${state.generation}`,
+      } }));
+    });
+  }
+
+  async observe(routeToken: string, surfaceId: string, signal?: AbortSignal): Promise<ObservationResult> {
+    if (signal?.aborted) throw new HandObservationError("aborted");
+    const binding = this.#observationBindings().find(({ surface }) => surface.route_token === routeToken && surface.id === surfaceId);
+    if (!binding) throw new HandObservationError("unavailable");
+    const { socket } = binding;
+    if (this.#observations.size >= 32 || [...this.#observations.values()].some((p) => p.socket === socket)
+      || this.#now() - (this.#lastObservation.get(socket) ?? -Infinity) < OBSERVATION_INTERVAL_MS) throw new HandObservationError("busy");
+    this.#lastObservation.set(socket, this.#now());
+    const requestId = this.#randomUUID();
+    return new Promise((resolve, reject) => {
+      const finish = (result: ObservationResult | HandObservationError) => {
+        if (!this.#observations.delete(requestId)) return;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", aborted);
+        if (result instanceof HandObservationError) reject(result); else resolve(result);
+      };
+      const cancel = (code: "timeout" | "aborted") => {
+        try { this.#send(socket, { type: "observe_cancel", request_id: requestId }); } catch { /* Connection may already be closed. */ }
+        finish(new HandObservationError(code));
+      };
+      const aborted = () => cancel("aborted");
+      const timer = setTimeout(() => cancel("timeout"), OBSERVATION_TIMEOUT_MS);
+      this.#observations.set(requestId, { socket, finish });
+      signal?.addEventListener("abort", aborted, { once: true });
+      try { this.#send(socket, { type: "observe", request_id: requestId, surface_id: surfaceId }); }
+      catch { finish(new HandObservationError("unavailable")); }
+    });
+  }
+
+  #cancelObservations(socket: HostedToolsSocket): void {
+    for (const [requestId, pending] of this.#observations) {
+      if (pending.socket !== socket) continue;
+      try { this.#send(socket, { type: "observe_cancel", request_id: requestId }); } catch { /* Closed socket. */ }
+      pending.finish(new HandObservationError("unavailable"));
+    }
+  }
 
   constructor(
     readonly context: HostedToolsBrokerCoreContext,
@@ -591,7 +657,11 @@ export class HostedToolsBrokerCore {
     if (frame.type === "catalog") await this.#publishCatalog(socket, frame);
     else if (frame.type === "ping") await this.#heartbeat(socket, frame);
     else if (frame.type === "drain") this.#drain(socket);
-    else this.#completeResult(socket, frame);
+    else if (frame.type === "observation") {
+      this.#activeAttachment(socket);
+      const pending = this.#observations.get(frame.request_id);
+      if (pending?.socket === socket) pending.finish(frame.result);
+    } else this.#completeResult(socket, frame);
   }
 
   #activeAttachment(socket: HostedToolsSocket): HostedToolsSocketAttachment {
@@ -825,6 +895,15 @@ export class HostedToolsBrokerCore {
     }
     const now = this.#now();
     const replaced = state.lease_id ? state : undefined;
+    this.context.writeAttachment(
+      socket,
+      {
+        ...candidate,
+        active: true,
+        ...(frame.observation_surfaces === undefined ? {} : { observationSurfaces: frame.observation_surfaces }),
+        ...(frame.machines === undefined ? {} : { machines: frame.machines }),
+      } satisfies HostedToolsSocketAttachment,
+    );
     // A failed ready send must leave the previous attachment routable.
     this.#send(socket, { type: "ready" });
     this.#persistence.transaction(() => {
@@ -855,14 +934,7 @@ export class HostedToolsBrokerCore {
         closeSocket(existing, 1008, "Hosted Tools attachment replaced");
       }
     }
-    this.context.writeAttachment(
-      socket,
-      {
-        ...candidate,
-        active: true,
-        ...(frame.machines === undefined ? {} : { machines: frame.machines }),
-      } satisfies HostedToolsSocketAttachment,
-    );
+
     this.#notifyCatalogChanged();
   }
 
@@ -872,6 +944,7 @@ export class HostedToolsBrokerCore {
       throw new HostedToolsProtocolError("already_draining", "socket is already draining");
     }
     const state = this.#persistence.state(attachment.routeId!)!;
+    this.#cancelObservations(socket);
     // Visibility is removed before the peer is told that draining began.
     this.#persistence.clearCatalog(state.lease_id!, state.generation);
     this.context.writeAttachment(
@@ -1288,6 +1361,10 @@ export class HostedToolsBrokerCore {
   }
 
   #resolveGeneration(leaseId: string, generation: number, outcome: HostedToolCallOutcome): void {
+    for (const socket of this.context.sockets()) {
+      const attachment = this.#attachment(socket);
+      if (attachment?.leaseId === leaseId && attachment.generation === generation) this.#cancelObservations(socket);
+    }
     for (const [callId, pending] of this.#pending) {
       if (pending.leaseId !== leaseId || pending.generation !== generation) continue;
       this.#takePending(callId)?.resolve(outcome);

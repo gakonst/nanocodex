@@ -44,6 +44,13 @@ async function checkManaged() {
     settings: { model: "gpt-6-astra", thinking: "high" },
   });
   const opened: ManagedAgent = Agent.open("0198d3f0-8844-7000-8000-000000000001");
+  const [screen] = await opened.hands.list();
+  if (screen) {
+    for await (const result of opened.hands.frames(screen, { signal: new AbortController().signal })) {
+      if (result.status === "frame") { const width: number = result.frame.width; void width; }
+      break;
+    }
+  }
   const settings = await opened.settings.read();
   await opened.settings.update({ model: "gpt-6-astra" });
   await opened.settings.update({ thinking: settings.thinking, fastMode: true });

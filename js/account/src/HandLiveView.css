@@ -1,0 +1,10 @@
+.hand-live-view { position: fixed; right: 16px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 100; width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 116px); overflow: auto; box-sizing: border-box; padding: 16px; background: var(--surface, #191c22); color: var(--text, #eee); border: 1px solid #68708066; border-radius: 16px; box-shadow: 0 16px 60px #0005; font: 14px/1.5 system-ui, sans-serif; }
+.hand-live-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.hand-live-toolbar strong { flex: 1; }
+.hand-live-view button, .hand-live-view select { font: inherit; color: inherit; background: transparent; border: 1px solid #68708088; border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.hand-live-view label { display: flex; align-items: center; gap: 12px; }
+.hand-live-view select { flex: 1; min-width: 0; }
+.hand-live-view option { color: #111; }
+.hand-live-screen { display: flex; justify-content: center; align-items: center; min-height: 180px; background: #080a0e; color: #bfc6d2; border-radius: 8px; margin: 12px 0 8px; overflow: hidden; }
+.hand-live-screen img { display: block; width: 100%; height: auto; max-height: min(60dvh, 640px); object-fit: contain; }
+.hand-live-view small { opacity: .75; }

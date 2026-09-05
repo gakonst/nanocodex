@@ -655,3 +655,42 @@ async function waitForTimer(predicate) {
   }
   throw new Error("timer condition did not become true");
 }
+
+test("observation is demand-driven, concurrent with tools, and cancelled on detach", async () => {
+  const socket = new FakeSocket();
+  let captureSignal;
+  let finishCapture;
+  let captures = 0;
+  const tools = await createTools({
+    attachmentId: "desktop",
+    machines: [{ id: "desktop", name: "Desktop", workspace: "/work", capabilities: ["screen"] }],
+    observation: {
+      surfaces: [{ id: "screen", name: "Screen", kind: "desktop" }],
+      capture: ({ signal }) => { captures++; captureSignal = signal; return new Promise((resolve) => { finishCapture = resolve; }); },
+    },
+    tools: { echo: { description: "Echo", handler: () => "ok" } },
+  });
+  const connector = tools.attach(reverseTarget(async () => socket));
+  const connecting = connector.connect();
+  await waitFor(() => socket.frames().length > 0);
+  assert.equal(socket.frames()[0].observation_surfaces[0].id, "screen");
+  socket.receive({ type: "ready" });
+  const client = await connecting;
+  assert.equal(captures, 0);
+  socket.receive({ type: "observe", request_id: "view-1", surface_id: "screen" });
+  await waitFor(() => captures === 1);
+  socket.receive(callFrame({}));
+  await waitFor(() => lastFrame(socket, "result"));
+  socket.receive({ type: "ack", call_id: "call:1" });
+  socket.receive({ type: "observe", request_id: "view-2", surface_id: "screen" });
+  await waitFor(() => lastFrame(socket, "observation"));
+  assert.equal(lastFrame(socket, "observation").result.status, "unavailable");
+  const closing = client.close();
+  assert.equal(captureSignal.aborted, true);
+  finishCapture({ captured_at: 1, width: 1, height: 1, mime_type: "image/png", data: "AAAA" });
+  await tick();
+  assert.equal(socket.frames().some((f) => f.type === "observation" && f.request_id === "view-1"), false);
+  socket.receive({ type: "draining" });
+  await closing;
+  await tools.close();
+});

@@ -1,3 +1,4 @@
+import { normalizeObservationProvider, normalizeObservationFrame, OBSERVATION_TIMEOUT_MS } from "./observation.mjs";
 import { toolRouterRuntime } from "../runtime/tool-router.mjs";
 import { utf8ByteLength } from "../runtime/utf8.mjs";
 import { hostedCatalog } from "./hostedCatalog.mjs";
@@ -33,6 +34,7 @@ export function createAttachment(owner, target, options = {}) {
   validateAttachmentOptions(target, options);
   const machines = normalizeHostedMachines(options.machines);
   const attachmentId = options.attachmentId;
+  options = { ...options, observation: normalizeObservationProvider(options.observation, machines) };
   if (machines.length > 0 && attachmentId !== machines[0].id) {
     throw new TypeError("a machine attachment requires one machine whose id equals attachmentId");
   }
@@ -86,6 +88,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     catalog: hostedCatalog(admission.catalog(options.provider ?? "javascript")),
     machines,
     attachmentId,
+    observation: undefined,
     calls: new Map(),
     receipts: new Map(),
     heartbeat: undefined,
@@ -113,6 +116,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     close() {
       if (state.stopped) return closed;
       state.stopped = true;
+      state.observation?.controller.abort();
       clearTimeout(state.reconnectTimer);
       state.reconnectTimer = undefined;
       const socket = state.socket;
@@ -219,9 +223,35 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     send(socket, {
       type: "catalog",
       tools: state.catalog,
+      ...(options.observation === undefined ? {} : { observation_surfaces: options.observation.surfaces }),
       ...(state.machines.length === 0 ? {} : { machines: state.machines }),
       ...(state.attachmentId === undefined ? {} : { attachment_id: state.attachmentId }),
     });
+  }
+
+  async function captureObservation(frame, socket) {
+    const reply = (result) => {
+      if (state.socket === socket && !state.stopped && !state.draining) {
+        try { send(socket, { type: "observation", request_id: frame.request_id, result }); }
+        catch (error) { transportFailure(socket, error); }
+      }
+    };
+    if (state.observation || !options.observation?.surfaces.some((s) => s.id === frame.surface_id)) {
+      reply({ status: "unavailable", message: "Screen capture unavailable" });
+      return;
+    }
+    const capture = { requestId: frame.request_id, controller: new AbortController() };
+    state.observation = capture;
+    const timer = setTimeout(() => capture.controller.abort(), OBSERVATION_TIMEOUT_MS);
+    try {
+      const image = await options.observation.capture({ surfaceId: frame.surface_id, signal: capture.controller.signal });
+      if (!capture.controller.signal.aborted) reply({ status: "frame", frame: normalizeObservationFrame(image) });
+    } catch {
+      if (!capture.controller.signal.aborted) reply({ status: "unavailable", message: "Screen capture unavailable" });
+    } finally {
+      clearTimeout(timer);
+      if (state.observation === capture) state.observation = undefined;
+    }
   }
 
   async function handleFrame(encoded, socket) {
@@ -236,6 +266,13 @@ function createClient(endpoint, transport, options, admission, machines, attachm
         state.handshakeTimer = undefined;
         startHeartbeat(socket);
         if (!state.readySettled) { state.readySettled = true; resolveReady(publicClient); }
+        break;
+      case "observe":
+        if (!state.readyReceived || state.draining) throw new Error("observe outside routing-ready socket");
+        void captureObservation(frame, socket);
+        break;
+      case "observe_cancel":
+        if (state.observation?.requestId === frame.request_id) state.observation.controller.abort();
         break;
       case "call":
         if (!state.readyReceived || state.drainAcknowledged) throw new Error("call received outside a routing-ready socket");
@@ -481,7 +518,7 @@ async function openSocket(endpoint, transport) {
 
 function validateAttachmentOptions(target, options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) throw new TypeError("tool attachment options must be an object");
-  const allowed = new Set(["provider", "reconnect", "reconnectDelayMs", "heartbeatMs", "handshakeTimeoutMs", "drainTimeoutMs", "machines", "attachmentId"]);
+  const allowed = new Set(["provider", "reconnect", "reconnectDelayMs", "heartbeatMs", "handshakeTimeoutMs", "drainTimeoutMs", "machines", "attachmentId", "observation"]);
   for (const name of Object.keys(options)) if (!allowed.has(name)) throw new TypeError(`unsupported tool attachment option: ${name}`);
   if (options.provider !== undefined && (typeof options.provider !== "string" || !options.provider.trim())) throw new TypeError("tool attachment provider must be a non-empty string");
   if (options.reconnect !== undefined && typeof options.reconnect !== "boolean") throw new TypeError("tool attachment reconnect must be boolean");
@@ -542,6 +579,9 @@ function parseFrame(encoded) {
     if (positiveInteger(frame.output_token_budget, "output_token_budget") > 1_000_000) throw new Error("output_token_budget exceeds protocol bound");
     if (positiveInteger(frame.output_byte_budget, "output_byte_budget") > 128 * 1024) throw new Error("output_byte_budget exceeds protocol bound");
     positiveInteger(frame.deadline_at, "deadline_at");
+  } else if (frame.type === "observe" || frame.type === "observe_cancel") {
+    requiredIdentifier(frame.request_id, "request_id");
+    if (frame.type === "observe") requiredIdentifier(frame.surface_id, "surface_id");
   } else if (frame.type === "cancel" || frame.type === "ack") requiredIdentifier(frame.call_id, "call_id");
   else if (frame.type === "pong") {
     if (typeof frame.nonce !== "string" || !frame.nonce || utf8ByteLength(frame.nonce) > 128) throw new Error("invalid pong nonce");
@@ -555,6 +595,7 @@ function clearTimers(state) {
   state.pendingNonce = undefined;
 }
 function abortGeneration(state, reason) {
+  state.observation?.controller.abort(reason);
   for (const call of state.calls.values()) call.controller.abort(reason);
   state.calls.clear(); state.receipts.clear(); state.pendingNonce = undefined;
 }
@@ -595,6 +636,8 @@ function randomNonce() {
 
 const DO_KEYS = Object.freeze({
   ready: ["type"],
+  observe: ["type", "request_id", "surface_id"],
+  observe_cancel: ["type", "request_id"],
   call: ["type", "session_id", "call_id", "model", "name", "input", "output_token_budget", "output_byte_budget", "deadline_at"],
   cancel: ["type", "call_id"],
   ack: ["type", "call_id"],

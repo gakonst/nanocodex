@@ -1,3 +1,4 @@
+import { HandLiveView } from "./HandLiveView";
 import {
   memo,
   type ReactNode,
@@ -322,7 +323,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       onStateChange={onStateChange}
       retryAgent={retryAgent}
       voice={voiceEnabled}
-      controls={({ agentReady }) => (
+      controls={({ agentReady }) => (<>
         <TerminalSettingsControls
           agentReady={agentReady && settingsReady}
           modelLocked={conversationStarted}
@@ -336,7 +337,8 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
           })}
           onThinking={(thinking) => updateManagedSettings({ thinking })}
         />
-      )}
+        <HandLiveView key={agentId} agent={managed} />
+      </>)}
       accessory={({ agentReady, submit }) => browserHand ? (
         <ArtifactDock
           agentReady={agentReady}

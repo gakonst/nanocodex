@@ -1,3 +1,6 @@
+use super::{
+    OBSERVATION_TIMEOUT, ObservationProvider, ObservationSurface, observation::ObservationResult,
+};
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
@@ -42,6 +45,8 @@ pub(crate) struct Config {
     pub(crate) authorization: Box<str>,
     pub(crate) tools: Value,
     pub(crate) metadata: Option<AttachmentMetadata>,
+    pub(crate) observation: Option<Arc<dyn ObservationProvider>>,
+    pub(crate) observation_surfaces: Vec<ObservationSurface>,
 }
 
 pub(crate) enum Command {
@@ -456,6 +461,8 @@ where
         &mut socket,
         &ExecutorFrame::Catalog {
             tools: &config.tools,
+            observation_surfaces: (!config.observation_surfaces.is_empty())
+                .then_some(config.observation_surfaces.as_slice()),
             machines: config
                 .metadata
                 .as_ref()
@@ -503,6 +510,8 @@ where
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pong_timeout = Box::pin(tokio::time::sleep(PONG_TIMEOUT));
     let mut awaiting_pong: Option<String> = None;
+    let mut captures = tokio::task::JoinSet::new();
+    let mut capture_request: Option<String> = None;
     let mut detaching = false;
     let mut draining = false;
 
@@ -522,6 +531,8 @@ where
                 if let Err(error) = send(&mut socket, &ExecutorFrame::Drain {}).await {
                     break ConnectionEnd::DetachFailed(error);
                 }
+                captures.abort_all();
+                capture_request = None;
                 detaching = true;
             }
             _ = &mut pong_timeout, if awaiting_pong.is_some() => {
@@ -539,6 +550,16 @@ where
                 }
                 awaiting_pong = Some(nonce);
                 pong_timeout.as_mut().reset(tokio::time::Instant::now() + PONG_TIMEOUT);
+            }
+            captured = captures.join_next(), if !captures.is_empty() => {
+                if let Some(Ok((request_id, result))) = captured {
+                    if capture_request.as_ref() == Some(&request_id) && !detaching {
+                        capture_request = None;
+                        if let Err(error) = send(&mut socket, &ExecutorFrame::Observation { request_id: &request_id, result: &result }).await {
+                            break ConnectionEnd::Failed(error);
+                        }
+                    }
+                }
             }
             completion = completed_rx.recv() => if let Some(Completion::Result { call_id, outcome, observed }) = completion {
                 let Some(call) = in_flight.remove(&call_id) else { continue };
@@ -558,6 +579,29 @@ where
                     Err(end) => break end,
                 };
                 match frame {
+                    RemoteFrame::ObserveCancel { request_id } => {
+                        if capture_request.as_ref() == Some(&request_id) {
+                            captures.abort_all();
+                            capture_request = None;
+                        }
+                    }
+                    RemoteFrame::Observe { request_id, surface_id } => {
+                        if detaching || !captures.is_empty() || !config.observation_surfaces.iter().any(|s| s.id() == surface_id) {
+                            if let Err(error) = send(&mut socket, &ExecutorFrame::Observation { request_id: &request_id, result: &ObservationResult::unavailable() }).await {
+                                break ConnectionEnd::Failed(error);
+                            }
+                            continue;
+                        }
+                        let Some(provider) = config.observation.clone() else { continue };
+                        capture_request = Some(request_id.clone());
+                        captures.spawn(async move {
+                            let result = match tokio::time::timeout(OBSERVATION_TIMEOUT, provider.capture(&surface_id)).await {
+                                Ok(Ok(frame)) => ObservationResult::Frame { frame },
+                                _ => ObservationResult::unavailable(),
+                            };
+                            (request_id, result)
+                        });
+                    }
                     RemoteFrame::Call { session_id, call_id, model, name, input, output_token_budget, output_byte_budget, deadline_at } => {
                         if draining { break ConnectionEnd::Rejected("call received after drain barrier".into()); }
                         let identity = CallIdentity { session_id:session_id.into(), call_id:call_id.clone().into(), model:model.into(), name:name.clone().into(), input:input.clone(), output_token_budget, output_byte_budget, deadline_at };
@@ -644,6 +688,8 @@ where
     } else {
         end
     };
+
+    captures.shutdown().await;
 
     if !matches!(end, ConnectionEnd::Detached) {
         for call in pending {

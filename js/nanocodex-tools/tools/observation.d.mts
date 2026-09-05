@@ -1,0 +1,12 @@
+export type ObservationSurface = Readonly<{ id: string; name: string; kind: "desktop" | "browser" | "phone" }>;
+export type ObservationFrame = Readonly<{ captured_at: number; width: number; height: number; mime_type: "image/jpeg" | "image/png"; data: string }>;
+export type ObservationResult = Readonly<{ status: "frame"; frame: ObservationFrame } | { status: "unavailable"; message: string }>;
+export type ObservationProvider = Readonly<{ surfaces: readonly ObservationSurface[]; capture(request: { surfaceId: string; signal: AbortSignal }): Promise<ObservationFrame> }>;
+export const MAX_OBSERVATION_IMAGE_BYTES: number;
+export const OBSERVATION_TIMEOUT_MS: number;
+export const OBSERVATION_INTERVAL_MS: number;
+export function observationId(value: unknown): string;
+export function normalizeObservationSurfaces(value: unknown): readonly ObservationSurface[];
+export function normalizeObservationProvider(value: ObservationProvider | undefined, machines: readonly unknown[]): ObservationProvider | undefined;
+export function normalizeObservationFrame(value: unknown): ObservationFrame;
+export function normalizeObservationResult(value: unknown): ObservationResult;

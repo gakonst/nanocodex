@@ -1,3 +1,4 @@
+import { normalizeObservationSurfaces, normalizeObservationResult, observationId, type ObservationSurface, type ObservationResult } from "../../tools/observation.mjs";
 import {
   normalizeHostedMachines,
   type HostedMachine,
@@ -81,11 +82,13 @@ export type HostedToolCallOutcome =
   | { status: "cancelled"; message: string };
 
 export type HostedToolsHostFrame =
+  | { type: "observation"; request_id: string; result: ObservationResult }
   | {
       type: "catalog";
       tools: HostedToolCatalogEntry[];
       machines?: HostedMachine[];
       attachment_id?: string;
+      observation_surfaces?: readonly ObservationSurface[];
     }
   | {
       type: "result";
@@ -99,6 +102,8 @@ export type HostedToolsHostFrame =
   | { type: "drain" };
 
 export type HostedToolsManagedFrame =
+  | { type: "observe"; request_id: string; surface_id: string }
+  | { type: "observe_cancel"; request_id: string }
   | { type: "ready" }
   | {
       type: "call";
@@ -127,8 +132,8 @@ export type HostedToolsManagedFrame =
 
 export type HostedToolsFrame = HostedToolsHostFrame | HostedToolsManagedFrame;
 
-const HOST_FRAME_TYPES = new Set(["catalog", "result", "ping", "drain"]);
-const MANAGED_FRAME_TYPES = new Set(["ready", "call", "cancel", "ack", "pong", "draining"]);
+const HOST_FRAME_TYPES = new Set(["catalog", "result", "ping", "drain", "observation"]);
+const MANAGED_FRAME_TYPES = new Set(["ready", "call", "cancel", "ack", "pong", "draining", "observe", "observe_cancel"]);
 
 export function parseHostedToolsHostFrame(encoded: string): HostedToolsHostFrame {
   const frame = parseHostedToolsFrame(encoded);
@@ -167,6 +172,15 @@ export function parseHostedToolsFrame(encoded: string): HostedToolsFrame {
   }
   const frame = objectValue(value, "Hosted Tools frame");
   switch (frame.type) {
+    case "observation":
+      exactKeys(frame, ["type", "request_id", "result"]);
+      return { type: "observation", request_id: observationId(frame.request_id), result: normalizeObservationResult(frame.result) };
+    case "observe":
+      exactKeys(frame, ["type", "request_id", "surface_id"]);
+      return { type: "observe", request_id: observationId(frame.request_id), surface_id: observationId(frame.surface_id) };
+    case "observe_cancel":
+      exactKeys(frame, ["type", "request_id"]);
+      return { type: "observe_cancel", request_id: observationId(frame.request_id) };
     case "catalog":
       return parseCatalog(frame);
     case "result":
@@ -198,7 +212,7 @@ export function parseHostedToolsFrame(encoded: string): HostedToolsFrame {
 function parseCatalog(
   frame: Record<string, unknown>,
 ): Extract<HostedToolsHostFrame, { type: "catalog" }> {
-  exactKeys(frame, ["type", "tools", "machines", "attachment_id"]);
+  exactKeys(frame, ["type", "tools", "machines", "attachment_id", "observation_surfaces"]);
   if (!Array.isArray(frame.tools) || frame.tools.length > MAX_HOSTED_TOOL_CATALOG_ENTRIES) {
     throw new HostedToolsProtocolError(
       "invalid_catalog",
@@ -207,6 +221,8 @@ function parseCatalog(
   }
   const tools = frame.tools.map((entry, index) => catalogEntry(entry, index));
   const machines = machineCatalog(frame.machines);
+  const surfaces = frame.observation_surfaces === undefined ? undefined : normalizeObservationSurfaces(frame.observation_surfaces);
+  if (surfaces && machines?.length !== 1) throw new HostedToolsProtocolError("invalid_catalog", "observation requires one machine");
   const attachmentId = frame.attachment_id === undefined
     ? undefined
     : sourceIdentifier(frame.attachment_id, "attachment_id");
@@ -238,6 +254,7 @@ function parseCatalog(
     tools,
     ...(machines === undefined ? {} : { machines }),
     ...(attachmentId === undefined ? {} : { attachment_id: attachmentId }),
+    ...(surfaces === undefined ? {} : { observation_surfaces: surfaces }),
   };
 }
 

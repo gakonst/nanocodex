@@ -18,10 +18,13 @@ pub(crate) struct VmHandConfig {
     pub(crate) machine_name: String,
 }
 
-impl From<&Hand> for VmHandConfig {
-    fn from(config: &Hand) -> Self {
-        Self {
-            rootfs: config.rootfs.clone(),
+impl TryFrom<&Hand> for VmHandConfig {
+    type Error = nanocodex_managed::ManagedError;
+    fn try_from(config: &Hand) -> Result<Self, Self::Error> {
+        Ok(Self {
+            rootfs: config.rootfs.clone().ok_or_else(|| {
+                nanocodex_managed::ManagedError::Configuration("VM root is required".into())
+            })?,
             vm_guest_runtime: config.vm_guest_runtime.clone(),
             vm_cache: config.vm_cache.clone(),
             vm_firmware: config.vm_firmware.clone(),
@@ -32,6 +35,6 @@ impl From<&Hand> for VmHandConfig {
             vm_no_network: config.vm_no_network,
             machine_id: config.machine_id.clone(),
             machine_name: config.machine_name.clone(),
-        }
+        })
     }
 }

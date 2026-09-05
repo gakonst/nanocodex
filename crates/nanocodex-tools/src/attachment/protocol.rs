@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::AttachmentMachine;
+use super::{AttachmentMachine, ObservationSurface, observation::ObservationResult};
 
 pub(crate) const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_OUTPUT_BYTES: u64 = 128 * 1024;
@@ -21,6 +21,12 @@ pub(crate) enum ExecutorFrame<'a> {
         machines: Option<&'a [AttachmentMachine]>,
         #[serde(skip_serializing_if = "Option::is_none")]
         attachment_id: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        observation_surfaces: Option<&'a [ObservationSurface]>,
+    },
+    Observation {
+        request_id: &'a str,
+        result: &'a ObservationResult,
     },
     Result {
         call_id: &'a str,
@@ -35,6 +41,13 @@ pub(crate) enum ExecutorFrame<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum RemoteFrame {
+    Observe {
+        request_id: String,
+        surface_id: String,
+    },
+    ObserveCancel {
+        request_id: String,
+    },
     Ready {},
     Call {
         session_id: String,
@@ -61,6 +74,8 @@ pub(crate) enum RemoteFrame {
 impl RemoteFrame {
     pub(crate) const fn kind(&self) -> &'static str {
         match self {
+            Self::Observe { .. } => "observe",
+            Self::ObserveCancel { .. } => "observe_cancel",
             Self::Ready {} => "ready",
             Self::Call { .. } => "call",
             Self::Cancel { .. } => "cancel",
@@ -81,6 +96,23 @@ impl RemoteFrame {
 
     fn validate(&self) -> Result<(), &'static str> {
         match self {
+            Self::Observe {
+                request_id,
+                surface_id,
+            } => {
+                if valid_identifier(request_id) && valid_identifier(surface_id) {
+                    Ok(())
+                } else {
+                    Err("invalid observation identity")
+                }
+            }
+            Self::ObserveCancel { request_id } => {
+                if valid_identifier(request_id) {
+                    Ok(())
+                } else {
+                    Err("invalid observation identity")
+                }
+            }
             Self::Ready {} | Self::Draining {} => Ok(()),
             Self::Call {
                 session_id,

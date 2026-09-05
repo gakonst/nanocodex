@@ -1,3 +1,4 @@
+import type { ObservationProvider } from "nanocodex-tools/observation";
 import type { McpServers, NamedTool, ToolMap } from "../types.mjs";
 import type { Workspace } from "../runtime/workspace.mjs";
 import type { HostedMachine } from "./hostedCatalog.mjs";
@@ -46,6 +47,8 @@ export function createTools(options?: {
   tools?: ToolMap | readonly NamedTool[];
   /** Stable safe ASCII identifier (at most 123 bytes) for this independent attachment. */
   attachmentId?: string;
+  /** Optional live screen capture, requested only while a viewer is watching. */
+  observation?: ObservationProvider;
   /** Sole non-secret machine published by this host; its id must equal attachmentId. */
   machines?: readonly HostedMachine[];
   /** Portable workspace handle; React Native supplies one via createWorkspace({ backend }). */
