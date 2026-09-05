@@ -1,3 +1,4 @@
+import { normalizeObservationProvider } from "nanocodex-tools/observation";
 import { resolveTools } from "../runtime/tool-configuration.mjs";
 import { tools as workspaceTools } from "../runtime/workspace.mjs";
 import {
@@ -20,6 +21,7 @@ export async function createTools(options = {}) {
   validateOptions(options);
   const machines = normalizeHostedMachines(options.machines);
   const attachmentId = options.attachmentId;
+  const observation = normalizeObservationProvider(options.observation, machines);
   if (machines.length > 0 && attachmentId !== machines[0].id) {
     throw new TypeError("createTools machine attachment requires one machine whose id equals attachmentId");
   }
@@ -81,7 +83,7 @@ export async function createTools(options = {}) {
     attach(target) {
       if (closed) throw new Error("Tools runtime is closed");
       if (arguments.length !== 1) throw new TypeError("Tools.attach accepts only a target");
-      const attachment = createAttachment(owner, target, { machines, attachmentId });
+      const attachment = createAttachment(owner, target, { machines, attachmentId, observation });
       attachments.add(attachment);
       void attachment.closed().then(() => attachments.delete(attachment));
       return attachment;
@@ -120,7 +122,7 @@ function validateOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("createTools options must be an object");
   }
-  const allowed = new Set(["tools", "workspace", "workspaceOptions", "mcp", "mcpOptions", "machines", "attachmentId"]);
+  const allowed = new Set(["tools", "workspace", "workspaceOptions", "mcp", "mcpOptions", "machines", "attachmentId", "observation"]);
   for (const name of Object.keys(options)) {
     if (!allowed.has(name)) throw new TypeError(`unsupported createTools option: ${name}`);
   }

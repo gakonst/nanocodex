@@ -1332,3 +1332,92 @@ function result(callId: string, output: string): string {
     },
   });
 }
+
+const screenCatalog = {
+  type: "catalog", attachment_id: "screen-host", tools: [entry()],
+  machines: [{ id: "screen-host", name: "Screen host", workspace: "/work", capabilities: ["screen"] }],
+  observation_surfaces: [{ id: "screen", name: "Screen", kind: "desktop" }],
+};
+const observation = { status: "frame", frame: { captured_at: 123, width: 1, height: 1, mime_type: "image/png", data: "AAAA" } };
+
+describe("hand observation protocol", () => {
+  it("fences generations, bounds requests and keeps frames out of durable receipts", async () => {
+    let now = NOW;
+    const fixture = createFixture(undefined, { now: () => now });
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify(screenCatalog));
+    const [screen] = fixture.broker.observationSurfaces();
+    const result = fixture.broker.observe(screen!.route_token, "screen");
+    await expect(fixture.broker.observe(screen!.route_token, "screen")).rejects.toMatchObject({ code: "busy" });
+    const request = host.sent.at(-1)!;
+    expect(request).toMatchObject({ type: "observe", surface_id: "screen" });
+    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "observation", request_id: request.request_id, result: observation }));
+    await expect(result).resolves.toEqual(observation);
+    expect(fixture.persistence.call(String(request.request_id))).toBeUndefined();
+    now += 250;
+    const interrupted = fixture.broker.observe(screen!.route_token, "screen");
+    const rejected = expect(interrupted).rejects.toMatchObject({ code: "unavailable" });
+    const replacement = fixture.socket();
+    await fixture.broker.message(replacement.webSocket, JSON.stringify(screenCatalog));
+    await rejected;
+    await expect(fixture.broker.observe(screen!.route_token, "screen")).rejects.toMatchObject({ code: "unavailable" });
+    expect(fixture.broker.observationSurfaces()[0]!.route_token).not.toBe(screen!.route_token);
+  });
+
+  it("cancels viewers without retiring the hand, and removes draining screens", async () => {
+    let now = NOW;
+    const fixture = createFixture(undefined, { now: () => now });
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify(screenCatalog));
+    const [screen] = fixture.broker.observationSurfaces();
+    const controller = new AbortController();
+    const result = fixture.broker.observe(screen!.route_token, "screen", controller.signal);
+    controller.abort();
+    await expect(result).rejects.toMatchObject({ code: "aborted" });
+    expect(host.sent.at(-1)).toMatchObject({ type: "observe_cancel" });
+    expect(fixture.broker.provider().definitions()).toHaveLength(1);
+    expect(host.closed).toBeUndefined();
+    now += 250;
+    const pending = fixture.broker.observe(screen!.route_token, "screen");
+    const rejected = expect(pending).rejects.toMatchObject({ code: "unavailable" });
+    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "drain" }));
+    await rejected;
+    expect(fixture.broker.observationSurfaces()).toEqual([]);
+  });
+
+  it("keeps an existing hand when candidate socket metadata cannot be serialized", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify(screenCatalog));
+    const before = fixture.broker.observationSurfaces();
+    const candidate = fixture.socket();
+    const original = candidate.serializeAttachment.bind(candidate);
+    candidate.serializeAttachment = (value: unknown) => {
+      if ((value as { observationSurfaces?: unknown }).observationSurfaces) throw new Error("attachment too large");
+      original(value);
+    };
+    await fixture.broker.message(candidate.webSocket, JSON.stringify(screenCatalog));
+    expect(fixture.broker.observationSurfaces()).toEqual(before);
+    expect(host.closed).toBeUndefined();
+    expect(candidate.sent).not.toContainEqual({ type: "ready" });
+  });
+});
+
+it("times out a stalled observation and ignores its late frame without fencing tool routing", async () => {
+  vi.useFakeTimers();
+  try {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify(screenCatalog));
+    const [screen] = fixture.broker.observationSurfaces();
+    const pending = fixture.broker.observe(screen!.route_token, "screen");
+    const request = host.sent.at(-1)!;
+    const rejected = expect(pending).rejects.toMatchObject({ code: "timeout" });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejected;
+    expect(host.sent.at(-1)).toMatchObject({ type: "observe_cancel", request_id: request.request_id });
+    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "observation", request_id: request.request_id, result: observation }));
+    expect(fixture.broker.observationSurfaces()).toHaveLength(1);
+    expect(host.closed).toBeUndefined();
+  } finally { vi.useRealTimers(); }
+});

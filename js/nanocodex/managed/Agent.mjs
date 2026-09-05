@@ -1,3 +1,4 @@
+import { managedHands } from "./Hands.mjs";
 import { ManagedError } from "./ManagedError.mjs";
 import { registerManagedAgent } from "./internal.mjs";
 
@@ -240,6 +241,7 @@ function agentHandle(client, id, summary) {
         body: managedSettingsPatch(patch),
       })).settings),
     }),
+    hands: managedHands(client, agentPath(id)),
     toolsTarget: () => client.toolsTarget(id),
     state: () => client.json(agentPath(id)),
     delete: async () => {

@@ -1,3 +1,4 @@
+import { sessionHandObservationResponse } from "./hand-observation";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import {
   getWorkspace,
@@ -1799,6 +1800,14 @@ async function managedFetch(
     sessionHeaders.delete("x-nanocodex-vm-renewal");
     forwardPrincipalAssertions(sessionHeaders, principal);
     const publicOrigin = `public_origin=${encodeURIComponent(url.origin)}`;
+    if (resource === "hands" || resource === "hands/frame") {
+      if (request.method !== "GET") return json({ error: "method_not_allowed" }, { status: 405 });
+      if (principal.connectGrant || !principal.capabilities.includes("agents:read")
+        || !principal.capabilities.includes("tools:use")) return json({ error: "forbidden" }, { status: 403 });
+      return stub.fetch(`https://session.internal/${resource}${url.search}`, {
+        headers: sessionHeaders, signal: request.signal,
+      });
+    }
     if (resource === "vm-host") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
       if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
@@ -3002,6 +3011,13 @@ export class DurableAgentSession extends DurableComputerSession {
         ?? "VM host control lease ended";
       this.#hostedTools.revokeRoute(routeId, reason.slice(0, 256));
       return new Response(null, { status: 204 });
+    }
+    if (request.method === "GET" && (url.pathname === "/hands" || url.pathname === "/hands/frame")) {
+      if (ownerAssertion === null || this.#deleting || this.#deleted) return json({ error: "not_found" }, { status: 404 });
+      if (turnAuthorization.connectGrant || !turnAuthorization.capabilities.includes("agents:read")
+        || !turnAuthorization.capabilities.includes("tools:use")) return json({ error: "forbidden" }, { status: 403 });
+      return sessionHandObservationResponse({ broker: this.#hostedTools, request, ownerId: ownerAssertion,
+        account: this.env.NANOCODEX_ACCOUNT_TOOLS.getByName(ownerAssertion) });
     }
     if (request.method === "GET" && url.pathname === "/tool-host") {
       if (ownerAssertion === null) return json({ error: "not_found" }, { status: 404 });

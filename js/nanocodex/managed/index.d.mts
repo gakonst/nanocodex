@@ -16,3 +16,4 @@ export type {
   Turn as ManagedTurn,
   TurnResult as ManagedTurnResult,
 } from "./Agent.mjs";
+export type { ManagedHands, ManagedHandSurface, ManagedHandFrame } from "./Hands.mjs";

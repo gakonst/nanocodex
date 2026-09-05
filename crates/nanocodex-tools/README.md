@@ -239,3 +239,44 @@ deliberately restoring proxy-safe credential markers to tool subprocesses.
 - [`workspace_runtime`] contains the retained canonical workspace-tool runtime
   used by process companions.
 - [`image`] contains prompt-image preparation and tool-output normalization.
+
+### Live screen observations
+
+Attach an opt-in screen provider alongside the native hand's tools:
+
+```rust,ignore
+use std::sync::Arc;
+use nanocodex_tools::attachment::{AttachmentMetadata, ScreenObservation};
+
+let (attachment, events) = tools.attach(target)
+    .metadata(AttachmentMetadata::machine(machine))
+    .observation(Arc::new(ScreenObservation::desktop("Desktop")?))
+    .connect().await?;
+```
+
+`ScreenObservation::android(serial, name)` captures an explicit adb device. Both
+providers require FFmpeg; desktop acquisition uses macOS screencapture, X11,
+Windows gdigrab, or grim on supported Wayland compositors. Grant the necessary
+OS screen-recording/device permissions to the hand process.
+
+Custom browser, phone, or VM adapters implement `ObservationProvider`; capture
+futures must release resources on drop. Providers describe 1–8 screens on one
+named machine and only run for authorized viewer requests. Each capture has a
+five-second deadline and a 180 KB JPEG/PNG limit. Frames never enter durable tool
+receipts or agent history. Cancellation, detach, and connection loss abort
+capture without replaying it into another connection.
+
+With the configured managed origin and `NANOCODEX_API_KEY`:
+
+```sh
+nanocodex2 hand --screen desktop --machine-id laptop --workspace /path/to/work
+nanocodex2 hand --screen android --device SERIAL --machine-id phone --workspace /path/to/work
+```
+
+Open **Live view** in any owned agent's web terminal. Screen hands attach native
+workspace tools from the selected directory, so agent actions and capture run
+on the same host. Android tools can invoke adb against the same explicit serial.
+Existing `hand --vm ROOTFS` behavior is preserved. VM mode and host screen mode
+are exclusive: host capture does not represent the guest display. Built-in iOS
+and graphical VM capture adapters are not included; custom providers can supply
+those surfaces through the same protocol.

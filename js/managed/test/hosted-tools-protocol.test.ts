@@ -186,3 +186,16 @@ describe("hosted tools socket protocol", () => {
     }))).toThrow("id equals attachment_id");
   });
 });
+
+it("validates observation direction, metadata and image bounds", () => {
+  const observe = { type: "observe", request_id: "request:1", surface_id: "screen" };
+  expect(parseHostedToolsManagedFrame(JSON.stringify(observe))).toEqual(observe);
+  expect(() => parseHostedToolsHostFrame(JSON.stringify(observe))).toThrow();
+  expect(() => parseHostedToolsManagedFrame(JSON.stringify({ ...observe, surface_id: "bad/id" }))).toThrow();
+  expect(() => parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", tools: [], observation_surfaces: [{ id: "screen", name: "Screen", kind: "desktop" }] }))).toThrow();
+  const observation = { type: "observation", request_id: "request:1", result: { status: "frame", frame: { captured_at: 1, width: 1, height: 1, mime_type: "image/jpeg", data: "AAAA" } } };
+  expect(parseHostedToolsHostFrame(JSON.stringify(observation))).toEqual(observation);
+  expect(() => parseHostedToolsManagedFrame(JSON.stringify(observation))).toThrow();
+  observation.result.frame.data = "a".repeat(240004);
+  expect(() => parseHostedToolsHostFrame(JSON.stringify(observation))).toThrow();
+});

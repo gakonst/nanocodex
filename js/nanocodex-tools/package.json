@@ -71,6 +71,14 @@
     "./workspace": {
       "types": "./tools/workspace.d.mts",
       "import": "./tools/workspace.mjs"
+    },
+    "./observation": {
+      "types": "./tools/observation.d.mts",
+      "import": "./tools/observation.mjs"
+    },
+    "./observation/node": {
+      "types": "./tools/observation-node.d.mts",
+      "import": "./tools/observation-node.mjs"
     }
   },
   "files": [

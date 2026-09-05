@@ -27,7 +27,7 @@ const CLOUD_TURN_ID: &str = "019fc927-b283-7a11-8445-1b9996ad2fb0";
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[tokio::test]
-async fn hand_help_exposes_the_vm_and_machine_contract() {
+async fn hand_help_exposes_the_vm_screen_and_machine_contract() {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
         .args(["hand", "--help"])
         .output()
@@ -36,12 +36,16 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("Usage: nanocodex2 hand [OPTIONS] --vm <ROOTFS>"),
+        stdout.contains("Usage: nanocodex2 hand [OPTIONS]\n"),
         "{stdout}"
     );
     assert!(!stdout.contains("AGENT_ID"), "{stdout}");
     for expected in [
         "--vm <ROOTFS>",
+        "--screen <SCREEN>",
+        "--device <DEVICE>",
+        "--workspace <LOCAL_WORKSPACE>",
+        "[possible values: desktop, android]",
         "--vm-guest-runtime <ELF>",
         "--vm-workspace <PATH>",
         "--vm-cpus <COUNT>",

@@ -74,7 +74,7 @@ struct Cli {
 enum Command {
     /// Attach this machine's workspace to an existing managed agent.
     Attach(Attach),
-    /// Register one retained libkrun VM as a compute hand for the account.
+    /// Register a VM, desktop, or Android hand for the account.
     Hand(Hand),
     /// Serve a bounded pool of on-demand libkrun VM hands.
     Host(Host),
@@ -122,8 +122,26 @@ struct Hand {
     observability: HandObservabilityArgs,
 
     /// Writable raw ext4 image or development directory used as the retained VM root.
-    #[arg(long = "vm", visible_alias = "vm-rootfs", value_name = "ROOTFS")]
-    rootfs: PathBuf,
+    #[arg(
+        long = "vm",
+        visible_alias = "vm-rootfs",
+        value_name = "ROOTFS",
+        required_unless_present = "screen",
+        conflicts_with = "screen"
+    )]
+    rootfs: Option<PathBuf>,
+
+    /// Share the local desktop or one Android screen alongside local workspace tools.
+    #[arg(long, value_enum, conflicts_with = "rootfs")]
+    screen: Option<ScreenSource>,
+
+    /// Exact adb device serial for --screen android.
+    #[arg(long, required_if_eq("screen", "android"), requires = "screen")]
+    device: Option<String>,
+
+    /// Local tool workspace for a screen hand (defaults to configured workspace).
+    #[arg(long = "workspace", requires = "screen")]
+    local_workspace: Option<PathBuf>,
 
     /// Statically linked Linux guest executable used with a raw ext4 root.
     #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
@@ -158,12 +176,28 @@ struct Hand {
     vm_no_network: bool,
 
     /// Stable account-local machine identifier.
-    #[arg(long, default_value = "vm")]
+    #[arg(
+        long,
+        default_value = "vm",
+        default_value_if("screen", "desktop", "desktop"),
+        default_value_if("screen", "android", "android")
+    )]
     machine_id: String,
 
     /// Human-readable name shown in accountInfo().machines.
-    #[arg(long, default_value = "Nanocodex VM")]
+    #[arg(
+        long,
+        default_value = "Nanocodex VM",
+        default_value_if("screen", "desktop", "Desktop"),
+        default_value_if("screen", "android", "Android")
+    )]
     machine_name: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ScreenSource {
+    Desktop,
+    Android,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -414,7 +448,11 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
 }
 
 async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError> {
-    let (root_kind, root_bytes) = match std::fs::metadata(&command.rootfs) {
+    let rootfs = command
+        .rootfs
+        .as_ref()
+        .ok_or_else(|| ManagedError::Configuration("VM root is required".into()))?;
+    let (root_kind, root_bytes) = match std::fs::metadata(rootfs) {
         Ok(metadata) if metadata.is_file() => ("file", metadata.len()),
         Ok(metadata) if metadata.is_dir() => ("directory", 0),
         Ok(_) => ("other", 0),
@@ -473,6 +511,9 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
 }
 
 async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
+    if command.screen.is_some() {
+        return serve_screen_hand(client, command).await;
+    }
     let target = client.account_attachment_target()?;
     let hand = launch_vm_hand(&command).await?;
     drop(command);
@@ -517,6 +558,72 @@ async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), Mana
         (Err(error), Err(shutdown)) => Err(ManagedError::Configuration(format!(
             "{error}; VM shutdown also failed: {shutdown}"
         ))),
+    }
+}
+
+async fn serve_screen_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
+    use nanocodex_tools::attachment::{AttachmentMachine, ScreenObservation};
+    let error = |error: nanocodex_tools::attachment::AttachmentError| {
+        ManagedError::Configuration(error.to_string())
+    };
+    let source = match command.screen {
+        Some(ScreenSource::Desktop) if command.device.is_none() => {
+            ScreenObservation::desktop("Desktop")
+        }
+        Some(ScreenSource::Android) => {
+            ScreenObservation::android(command.device.unwrap_or_default(), "Android screen")
+        }
+        _ => {
+            return Err(ManagedError::Configuration(
+                "--device is only valid with --screen android".into(),
+            ));
+        }
+    }
+    .map_err(error)?;
+    let workspace = match command.local_workspace {
+        Some(path) => path,
+        None => HostConfig::load()
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?
+            .workspace()
+            .to_path_buf(),
+    };
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+    let machine = AttachmentMachine::new(
+        command.machine_id,
+        command.machine_name,
+        workspace.to_string_lossy(),
+        ["native", "filesystem", "process", "screen"],
+    )
+    .map_err(error)?;
+    let tools = Tools::builder()
+        .without_defaults()
+        .add(WorkspaceTools::new(&workspace))
+        .build()
+        .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+    let (attachment, _events) = tools
+        .attach(client.account_attachment_target()?)
+        .metadata(AttachmentMetadata::machine(machine))
+        .observation(std::sync::Arc::new(source))
+        .start()
+        .map_err(error)?;
+    // Retain the handle during initialization so Ctrl-C also cancels connection attempts.
+    tokio::select! {
+        result = attachment.wait_until_ready() => result.map_err(error)?,
+        signal = tokio::signal::ctrl_c() => {
+            signal.map_err(|error| ManagedError::Configuration(error.to_string()))?;
+            return attachment.detach().await.map_err(error);
+        }
+    }
+    tracing::info!(target: "nanocodex2", "Screen hand ready; open Live view in an owned agent. Ctrl-C detaches.");
+    let closed = attachment.clone();
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal.map_err(|error| ManagedError::Configuration(error.to_string()))?;
+            attachment.detach().await.map_err(error)
+        }
+        result = closed.closed() => result.map_err(error),
     }
 }
 
@@ -845,6 +952,45 @@ fn write_json_line<T: serde::Serialize>(value: &T) -> Result<(), ManagedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_hand_requires_an_explicit_source_and_android_device() {
+        assert!(Cli::try_parse_from(["nanocodex2", "hand"]).is_err());
+        assert!(Cli::try_parse_from(["nanocodex2", "hand", "--screen", "android"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "nanocodex2",
+                "hand",
+                "--screen",
+                "desktop",
+                "--vm",
+                "root.ext4"
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from(["nanocodex2", "hand", "--screen", "desktop"]).unwrap();
+        let Some(Command::Hand(hand)) = cli.command else {
+            panic!("expected hand")
+        };
+        assert_eq!(hand.screen, Some(ScreenSource::Desktop));
+        assert!(hand.rootfs.is_none());
+        assert_eq!(hand.machine_id, "desktop");
+        let cli = Cli::try_parse_from([
+            "nanocodex2",
+            "hand",
+            "--screen",
+            "android",
+            "--device",
+            "SERIAL",
+        ])
+        .unwrap();
+        let Some(Command::Hand(hand)) = cli.command else {
+            panic!("expected hand")
+        };
+        assert_eq!(hand.device.as_deref(), Some("SERIAL"));
+        assert_eq!(hand.machine_id, "android");
+        assert!(Cli::try_parse_from(["nanocodex2", "hand", "--vm", "root.ext4"]).is_ok());
+    }
 
     #[test]
     fn parses_attach_url_into_its_agent_id() {

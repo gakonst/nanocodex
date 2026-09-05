@@ -448,3 +448,40 @@ function machineEntry() {
     timeout_ms: 30_000,
   };
 }
+
+it("serves live observations through an account-owned Worker socket with isolation and drain fencing", async () => {
+  const namespace = (env as unknown as { NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools> }).NANOCODEX_ACCOUNT_TOOLS;
+  const stub = namespace.getByName(ACCOUNT_A);
+  const headers = { "x-nanocodex-owner-id": ACCOUNT_A };
+  const upgraded = await stub.fetch("https://account-tools.internal/tool-host", { headers: { ...headers, upgrade: "websocket" } });
+  const socket = upgraded.webSocket!;
+  socket.accept();
+  const ready = nextFrame(socket);
+  socket.send(JSON.stringify({ type: "catalog", attachment_id: "observed", tools: [machineEntry()],
+    machines: [{ id: "observed", name: "Observed desktop", workspace: "/work", capabilities: ["screen"] }],
+    observation_surfaces: [{ id: "screen", name: "Desktop", kind: "desktop" }] }));
+  await expect(ready).resolves.toEqual({ type: "ready" });
+  const listed = await stub.fetch("https://account-tools.internal/hands", { headers });
+  expect(listed.headers.get("cache-control")).toBe("no-store");
+  const body = await listed.json<{ surfaces: { route_token: string }[] }>();
+  const query = new URLSearchParams({ route_token: body.surfaces[0]!.route_token, surface_id: "screen" });
+  const url = `https://account-tools.internal/hands/frame?${query}`;
+  expect((await stub.fetch(url, { headers: { "x-nanocodex-owner-id": ACCOUNT_B } })).status).toBe(404);
+  expect((await stub.fetch(url)).status).toBe(404);
+  expect((await stub.fetch(`${url}&surface_id=other`, { headers })).status).toBe(400);
+  const request = nextFrame(socket);
+  const capture = stub.fetch(url, { headers });
+  const frame = await request;
+  expect(frame).toMatchObject({ type: "observe", surface_id: "screen" });
+  const result = { status: "frame", frame: { captured_at: 123, width: 1, height: 1, mime_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6iAAAAABJRU5ErkJggg==" } };
+  socket.send(JSON.stringify({ type: "observation", request_id: frame.request_id, result }));
+  const response = await capture;
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toEqual(result);
+  const draining = nextFrame(socket);
+  socket.send(JSON.stringify({ type: "drain" }));
+  await expect(draining).resolves.toEqual({ type: "draining" });
+  expect((await stub.fetch(url, { headers })).status).toBe(409);
+  socket.close(1000, "test complete");
+});

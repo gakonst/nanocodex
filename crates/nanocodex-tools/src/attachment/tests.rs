@@ -442,3 +442,124 @@ fn machine_metadata(id: &str, workspace: &str) -> AttachmentMetadata {
         .unwrap(),
     )
 }
+
+struct TestObservation {
+    surfaces: [ObservationSurface; 1],
+    started: tokio::sync::Notify,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct CaptureGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl ObservationProvider for TestObservation {
+    fn surfaces(&self) -> &[ObservationSurface] {
+        &self.surfaces
+    }
+    async fn capture(&self, _surface_id: &str) -> Result<ObservationFrame, AttachmentError> {
+        let _guard = CaptureGuard(self.stopped.clone());
+        self.started.notify_one();
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn observation_capture_cancellation_does_not_block_tool_calls_or_drain() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let source = Arc::new(TestObservation {
+        surfaces: [ObservationSurface::new("screen", "Desktop", ObservationKind::Desktop).unwrap()],
+        started: tokio::sync::Notify::new(),
+        stopped: Arc::new(AtomicUsize::new(0)),
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+    let (complete_tx, complete_rx) = tokio::sync::oneshot::channel();
+    let observed = source.clone();
+    let server = tokio::spawn(async move {
+        let mut socket = accept(&listener).await;
+        let catalog = recv_json(&mut socket).await;
+        assert_eq!(
+            catalog["observation_surfaces"],
+            json!([{"id":"screen","name":"Desktop","kind":"desktop"}])
+        );
+        send_json(&mut socket, json!({"type":"ready"})).await;
+        assert_eq!(observed.stopped.load(Ordering::SeqCst), 0);
+        send_json(
+            &mut socket,
+            json!({"type":"observe","request_id":"view-1","surface_id":"screen"}),
+        )
+        .await;
+        observed.started.notified().await;
+        send_json(&mut socket, call("call-1", "echo")).await;
+        let result = recv_json(&mut socket).await;
+        assert_eq!(result["type"], "result");
+        assert_eq!(result["outcome"]["status"], "completed");
+        send_json(&mut socket, json!({"type":"ack","call_id":"call-1"})).await;
+        send_json(
+            &mut socket,
+            json!({"type":"observe","request_id":"view-2","surface_id":"screen"}),
+        )
+        .await;
+        let busy = recv_json(&mut socket).await;
+        assert_eq!(busy["result"]["status"], "unavailable");
+        send_json(
+            &mut socket,
+            json!({"type":"observe_cancel","request_id":"view-1"}),
+        )
+        .await;
+        send_json(&mut socket, call("call-2", "echo")).await;
+        assert_eq!(recv_json(&mut socket).await["call_id"], "call-2");
+        send_json(&mut socket, json!({"type":"ack","call_id":"call-2"})).await;
+        assert_eq!(observed.stopped.load(Ordering::SeqCst), 1);
+        let _ = complete_tx.send(());
+        assert_eq!(recv_json(&mut socket).await, json!({"type":"drain"}));
+        send_json(&mut socket, json!({"type":"draining"})).await;
+    });
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+    let (attachment, _) = tools
+        .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+        .metadata(machine_metadata("observed", "/work"))
+        .observation(source)
+        .connect()
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), complete_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    attachment.detach().await.unwrap();
+    server.await.unwrap();
+}
+
+#[test]
+fn observation_bounds_match_the_javascript_contract() {
+    assert!(ObservationSurface::new("bad/id", "Screen", ObservationKind::Phone).is_err());
+    assert!(ObservationSurface::new("screen", "é".repeat(65), ObservationKind::Phone).is_err());
+    assert!(ObservationFrame::new(1, 0, 1, ObservationImageFormat::Png, &[1]).is_err());
+    assert!(
+        ObservationFrame::new(1, 1, 1, ObservationImageFormat::Png, &vec![0; 180_001]).is_err()
+    );
+    let frame = ObservationFrame::new(1, 1, 1, ObservationImageFormat::Png, &[0, 0, 0]).unwrap();
+    assert_eq!(
+        serde_json::to_value(frame).unwrap(),
+        json!({"captured_at":1,"width":1,"height":1,"mime_type":"image/png","data":"AAAA"})
+    );
+    assert!(
+        protocol::RemoteFrame::parse(
+            r#"{"type":"observe","request_id":"r","surface_id":"screen","command":"evil"}"#
+        )
+        .is_err()
+    );
+    assert!(
+        protocol::RemoteFrame::parse(r#"{"type":"observe_cancel","request_id":"bad/id"}"#).is_err()
+    );
+}

@@ -20,6 +20,8 @@ rustdoc-args = ["-D", "warnings"]
 [features]
 default = ["native"]
 attachment = [
+    "dep:base64",
+    "dep:tempfile",
     "dep:async-trait",
     "dep:futures-util",
     "dep:http",
@@ -83,6 +85,7 @@ schemars = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"], optional = true }
 tokio-util = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
