@@ -30,6 +30,25 @@ export async function gitProvider(request) {
     const { head, size, sha256 } = repository();
     return Response.json({ head, size, sha256 });
   }
+  if (url.origin === "https://api.github.com" && url.pathname.startsWith("/repos/fixture/large/tarball/")) {
+    const ref = url.pathname.slice("/repos/fixture/large/tarball/".length);
+    const location = ref === "foreign" ? "https://codeload.github.com/another/repo/legacy.tar.gz/HEAD"
+      : ref === "external" ? "https://example.com/fixture/large/legacy.tar.gz/HEAD"
+      : `https://codeload.github.com/fixture/large/legacy.tar.gz/${ref}?token=archive-download-secret`;
+    return new Response(null, { status: 302, headers: { location } });
+  }
+  if (url.origin === "https://codeload.github.com" && url.pathname.startsWith("/fixture/large/legacy.tar.gz/")) {
+    if (request.headers.has("authorization") || request.headers.has("x-nanocodex-subject")
+      || url.searchParams.get("token") !== "archive-download-secret") {
+      return new Response("invalid archive credentials", { status: 403 });
+    }
+    if (url.pathname.endsWith("/reflect")) return new Response("archive-download-secret");
+    if (url.pathname.endsWith("/redirect")) return Response.redirect("https://example.com/", 302);
+    const { git, head } = repository();
+    return new Response(git(["archive", "--format=tar.gz", "--prefix=fixture-large/", head]), {
+      headers: { "content-type": "application/gzip" },
+    });
+  }
   if (url.hostname !== "github.com" || !url.pathname.startsWith("/fixture/large.git/")) return undefined;
   if (request.headers.get("authorization") !== `Basic ${btoa("x-access-token:github-connector-access")}`) {
     return new Response("Authentication required", { status: 401 });

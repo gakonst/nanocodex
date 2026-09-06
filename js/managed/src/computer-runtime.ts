@@ -142,25 +142,45 @@ function createManagedShellFetch(
   }, { stream });
 }
 
-async function* shellResponseChunks(response: Response, signal?: AbortSignal): AsyncIterable<Uint8Array> {
-  if (response.body === null) { signal?.throwIfAborted(); return; }
+function shellResponseChunks(response: Response, signal?: AbortSignal): AsyncIterable<Uint8Array> {
+  if (response.body === null) return (async function* () { signal?.throwIfAborted(); })();
+  // Own cancellation as soon as headers arrive, including before the archive
+  // decoder starts reading. A lazy generator would leave that body open.
   const reader = response.body.getReader();
-  const abort = () => { void reader.cancel(signal?.reason).catch(() => {}); };
-  signal?.addEventListener("abort", abort, { once: true });
-  let complete = false;
-  try {
-    for (;;) {
-      signal?.throwIfAborted();
-      const { done, value } = await reader.read();
-      if (done) { complete = true; break; }
-      yield value;
-    }
-    signal?.throwIfAborted();
-  } finally {
-    if (!complete) {
-      try { await reader.cancel(signal?.reason); } catch { /* Preserve the read failure. */ }
-    }
+  let finished: Promise<void> | undefined;
+  const finish = (complete = false): Promise<void> => finished ??= (async () => {
     signal?.removeEventListener("abort", abort);
-    reader.releaseLock();
-  }
+    try {
+      if (!complete) await reader.cancel(signal?.reason);
+    } finally { reader.releaseLock(); }
+  })();
+  const abort = () => { void finish().catch(() => {}); };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          try {
+            signal?.throwIfAborted();
+            if (finished) { await finished; return { done: true, value: undefined } as const; }
+            const next = await reader.read();
+            signal?.throwIfAborted();
+            if (next.done) {
+              await finish(true);
+              return { done: true, value: undefined } as const;
+            }
+            return next;
+          } catch (error) {
+            await finish().catch(() => {});
+            throw error;
+          }
+        },
+        async return() {
+          await finish();
+          return { done: true, value: undefined } as const;
+        },
+      };
+    },
+  };
 }

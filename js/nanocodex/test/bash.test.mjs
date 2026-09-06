@@ -28,6 +28,7 @@ test("Just Bash advertises its cloud workspace execution", async () => {
   );
   assert.match(instructions, /exactly gh repo clone OWNER\/REPO DESTINATION/);
   assert.match(instructions, /git clone URL DESTINATION/);
+  assert.match(instructions, /all current files, without .git or history/);
   assert.match(instructions, /Do not add depth, filter, branch, or other flags/);
   assert.doesNotMatch(instructions, /\bwget\b/);
 });

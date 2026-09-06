@@ -379,6 +379,10 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   }
 
   async #proxy(provider: ProviderRule, request: Request, url: URL): Promise<Response> {
+    const archiveRepository = provider.id === "github" && request.method === "GET"
+      && url.origin === "https://api.github.com"
+      ? /^\/repos\/([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)\/tarball(?:\/[^/]+)?$/.exec(url.pathname)?.[1]
+      : undefined;
     if (!CONNECTOR_METHODS.has(request.method)) {
       throw new ConnectorFailure(403, "method_denied");
     }
@@ -396,7 +400,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     } catch (error) {
       // Public Git remains usable before an account connects GitHub. Never
       // fall back when an exact connection was selected or has expired.
-      if (provider.origin !== "https://github.com" || selectedConnectionId !== null
+      if ((provider.origin !== "https://github.com" && archiveRepository === undefined) || selectedConnectionId !== null
         || !(error instanceof ConnectorFailure) || error.code !== "connector_not_connected") throw error;
     }
     const connector = selected?.connector;
@@ -408,6 +412,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       ? await slackRequestBody(request)
       : request.body;
     let upstream: Response;
+    const archiveCredentials: string[] = [];
     try {
       upstream = await fetch(new Request(url, {
         method: request.method,
@@ -430,8 +435,33 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       throw new ConnectorFailure(409, "connector_reauthentication_required");
     }
     if (REDIRECT_STATUS.has(upstream.status)) {
+      // GitHub's archive API returns a codeload URL. Resolve that one redirect
+      // inside the broker; neither OAuth credentials nor signed URLs reach tools.
+      const location = upstream.headers.get("location");
       await upstream.body?.cancel();
-      throw new ConnectorFailure(502, "connector_redirect_blocked");
+      let target: URL | undefined;
+      try { if (location) target = new URL(location); } catch { /* Fail closed below. */ }
+      if (!archiveRepository || !target || target.origin !== "https://codeload.github.com"
+        || target.username || target.password || target.hash || target.href.length > MAX_CONNECTOR_URL_BYTES
+        || !target.pathname.startsWith(`/${archiveRepository}/legacy.tar.gz/`)) {
+        throw new ConnectorFailure(502, "connector_redirect_blocked");
+      }
+      for (const name of ["token", "access_token"]) {
+        const value = target.searchParams.get(name);
+        if (value) archiveCredentials.push(value);
+      }
+      try {
+        upstream = await fetch(target, {
+          method: "GET", redirect: "manual", signal: request.signal,
+          headers: { "user-agent": "nanocodex-connector-broker", accept: "application/gzip" },
+        });
+      } catch {
+        throw new ConnectorFailure(503, "connector_provider_unavailable");
+      }
+      if (REDIRECT_STATUS.has(upstream.status)) {
+        await upstream.body?.cancel();
+        throw new ConnectorFailure(502, "connector_redirect_blocked");
+      }
     }
     let body: ReadableStream<Uint8Array> | null;
     if (request.method === "HEAD" || !responseBodyPermitted(upstream.status)) {
@@ -440,9 +470,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     } else {
       body = upstream.body;
     }
-    const credentials = connector ? [connector.accessToken, connector.refreshToken,
+    const credentials = [...archiveCredentials, ...(connector ? [connector.accessToken, connector.refreshToken,
       headers.get("authorization")?.split(" ", 2)[1]]
-      .filter((value): value is string => Boolean(value)) : [];
+      .filter((value): value is string => Boolean(value)) : [])];
     const responseHeaders = connectorResponseHeaders(upstream.headers);
     for (const value of responseHeaders.values()) {
       if (credentials.some((credential) => value.includes(credential))) {

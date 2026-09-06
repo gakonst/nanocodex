@@ -1,5 +1,6 @@
 import git, { type GitHttpRequest, type HttpClient } from "isomorphic-git";
 import type { Workspace, WorkspaceEntry } from "../tools/types.mjs";
+import { downloadRepositoryArchive } from "./repository-archive.js";
 
 export type ShellFetchOptions = Readonly<{
   method?: string | undefined;
@@ -20,7 +21,7 @@ export type ShellFetch = ((
   url: string,
   options?: ShellFetchOptions,
 ) => Promise<ShellFetchResult>) & Readonly<{
-  /** Optional streaming transport for Git packfiles, without a buffered shell response. */
+  /** Optional streaming transport for source archives and Git packfiles. */
   stream?: (url: string, options?: ShellFetchOptions) => Promise<
     Omit<ShellFetchResult, "body"> & { body: AsyncIterable<Uint8Array> }
   >;
@@ -179,7 +180,7 @@ function ghRepoCloneArguments(args: string[]): string[] {
   ];
 }
 
-/** Git compatibility command backed by durable storage and host-authorized Git smart HTTP. */
+/** Git compatibility command backed by durable storage and host-authorized GitHub downloads. */
 export function createGitCommand(
   fetch: ShellFetch,
   workspace: () => Workspace,
@@ -192,7 +193,7 @@ export function createGitCommand(
         const mounted = commandWorkspace(workspace(), context.signal);
         const command = args[0];
         if (command === "clone") {
-          return ok(await cloneRepository(fetch, mounted, args.slice(1), context));
+          return ok(await cloneRepository(fetch, workspace(), args.slice(1), context));
         }
         const dir = await gitDirectory(mounted, context.cwd);
         const fs = workspaceFs(mounted);
@@ -313,12 +314,17 @@ async function cloneRepository(
   const dir = `${root}/${destination}`;
   if (await workspaceEntry(workspace, dir)) throw new Error(`destination path '${destination}' already exists`);
   try {
+    if (depth === undefined) {
+      await downloadRepositoryArchive(fetch, commandWorkspace(workspace, signal), repository, branch ?? "HEAD", dir, signal);
+      return `Downloaded source files into '${destination}' (no .git or history).\n`;
+    }
     await git.clone({
-      fs: workspaceFs(workspace),
+      fs: workspaceFs(commandWorkspace(workspace, signal)),
       http: managedGitHttp(fetch, signal),
       dir,
       url: `https://github.com/${repository}.git`,
-      ...(depth === undefined ? {} : { depth, singleBranch: true }),
+      depth,
+      singleBranch: true,
       ...(branch === undefined ? {} : { ref: branch }),
     });
   } catch (error) {

@@ -18,7 +18,7 @@ const computer = () => ({
 });
 
 describe("durable brain without hands", () => {
-  it("clones a real Git pack beyond 16 MiB and retains its exact bytes after reopening", async () => {
+  it.each([false, true])("downloads a real repository beyond 16 MiB and retains exact bytes (git: %s)", async (withGit) => {
     const id = crypto.randomUUID();
     const seen: Request[] = [];
     const egress = { async fetch(request: Request) {
@@ -29,7 +29,7 @@ describe("durable brain without hands", () => {
       const headers = new Headers(request.headers);
       headers.delete("x-nanocodex-subject");
       headers.set("authorization", `Basic ${btoa("x-access-token:github-connector-access")}`);
-      return fetch(new Request(request, { headers }));
+      return fetch(new Request(request, { headers, redirect: "follow" }));
     } } as unknown as Fetcher;
     const runtime = await createManagedComputerRuntime({
       computer: computer(), filesystem: createBrainWorkspace(bucket, id),
@@ -40,16 +40,20 @@ describe("durable brain without hands", () => {
         "https://api.github.com/repos/fixture/large",
       )).body)) as { head: string; size: number; sha256: string };
       expect(metadata.size).toBeGreaterThan(16 * 1024 * 1024);
-      const cloned = await runtime.tool.handler({ cmd: "gh repo clone fixture/large repository" }, context());
+      const cloned = await runtime.tool.handler({ cmd: `gh repo clone fixture/large repository${withGit ? " -- --depth 1" : ""}` }, context());
       expect(cloned).toMatchObject({ exit_code: 0 });
       expect((cloned as { output: string }).output).not.toMatch(/limit|credential|token/);
-      expect(await runtime.tool.handler({ cmd: "git rev-parse HEAD", workdir: "/brain/repository" }, context()))
-        .toMatchObject({ exit_code: 0, output: `${metadata.head}\n` });
+      if (withGit) {
+        expect(await runtime.tool.handler({ cmd: "git rev-parse HEAD", workdir: "/brain/repository" }, context()))
+          .toMatchObject({ exit_code: 0, output: `${metadata.head}\n` });
+      } else {
+        expect(await runtime.tool.handler({ cmd: "test ! -e repository/.git" }, context())).toMatchObject({ exit_code: 0 });
+      }
       const bytes = await createBrainWorkspace(bucket, id).readFile("repository/large.bin");
       expect(bytes.byteLength).toBe(metadata.size);
       const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
       expect([...hash].map((value) => value.toString(16).padStart(2, "0")).join("")).toBe(metadata.sha256);
-      expect(seen.some((request) => request.url.endsWith("/git-upload-pack"))).toBe(true);
+      expect(seen.some((request) => request.url.endsWith(withGit ? "/git-upload-pack" : "/tarball/HEAD"))).toBe(true);
     } finally { runtime.dispose(); }
   }, 60_000);
 
@@ -63,12 +67,14 @@ describe("durable brain without hands", () => {
     expect(await workspace.list()).toEqual([]);
   });
 
-  it("cancels a stalled HTTP body when its tool call is aborted", async () => {
+  it.each(["gh api user", "gh repo clone fixture/large repository"])("cancels a stalled HTTP body when %s is aborted", async (cmd) => {
     let started!: () => void;
     const requestStarted = new Promise<void>((resolve) => { started = resolve; });
     const cancel = vi.fn();
+    const filesystem = createBrainWorkspace(bucket, crypto.randomUUID());
+    await filesystem.writeFile("retained", "keep this");
     const runtime = await createManagedComputerRuntime({
-      computer: computer(), filesystem: createBrainWorkspace(bucket, crypto.randomUUID()),
+      computer: computer(), filesystem,
       subject: "s".repeat(43), connectorAllowed: () => true,
       egress: { async fetch() {
         started();
@@ -77,11 +83,13 @@ describe("durable brain without hands", () => {
     });
     try {
       const controller = new AbortController();
-      const pending = runtime.tool.handler({ cmd: "gh api user" }, { ...context(), signal: controller.signal });
+      const pending = runtime.tool.handler({ cmd }, { ...context(), signal: controller.signal });
       await requestStarted;
       controller.abort(new Error("caller cancelled"));
       await expect(pending).resolves.toMatchObject({ exit_code: 124 });
       expect(cancel).toHaveBeenCalledOnce();
+      expect((await filesystem.list(".", { recursive: true })).map((entry) => entry.path)).toEqual(["/brain/retained"]);
+      expect(new TextDecoder().decode(await filesystem.readFile("retained"))).toBe("keep this");
     } finally { runtime.dispose(); }
   });
 
@@ -180,6 +188,38 @@ describe("durable brain without hands", () => {
     await expect(workspace.writeFile("a/b/file/child", "no")).rejects.toMatchObject({ code: "ENOTDIR" });
     await expect(workspace.writeFile("a", "no")).rejects.toMatchObject({ code: "EISDIR" });
     await workspace.remove("a", { recursive: true });
+    expect(await workspace.list()).toEqual([]);
+    expect((await bucket.list({ prefix: `brains/${id}/` })).objects).toEqual([]);
+  });
+
+  it("reuses command metadata and refreshes native changes before the next command", async () => {
+    const id = crypto.randomUUID();
+    const head = vi.fn((key: string) => bucket.head(key));
+    const list = vi.fn((options: R2ListOptions) => bucket.list(options));
+    const storage = {
+      head, list,
+      get: bucket.get.bind(bucket), put: bucket.put.bind(bucket), delete: bucket.delete.bind(bucket),
+    } as unknown as R2Bucket;
+    const workspace = createBrainWorkspace(storage, id);
+    await workspace.list(".", { recursive: true });
+    list.mockClear();
+    await workspace.writeFile("repo/src/main.rs", "fn main() {}\n");
+    for (let index = 0; index < 20; index += 1) {
+      expect(await workspace.list("repo/src")).toMatchObject([{ path: "/brain/repo/src/main.rs", kind: "file" }]);
+      await workspace.mkdir("repo/src");
+      await workspace.readFile("repo/src/main.rs");
+    }
+    expect(head).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+
+    await bucket.delete(`brains/${id}/repo/src/main.rs`);
+    await bucket.put(`brains/${id}/repo/src/native.rs`, "from the hand\n");
+    await workspace.list(".", { recursive: true });
+    expect(await workspace.list("repo/src")).toMatchObject([{ path: "/brain/repo/src/native.rs", kind: "file" }]);
+    expect(await workspace.list("repo/src")).toHaveLength(1);
+    await expect(workspace.writeFile("repo/src/native.rs/child", "no")).rejects.toMatchObject({ code: "ENOTDIR" });
+    await expect(workspace.writeFile("repo", "no")).rejects.toMatchObject({ code: "EISDIR" });
+    await workspace.remove("repo", { recursive: true });
     expect(await workspace.list()).toEqual([]);
     expect((await bucket.list({ prefix: `brains/${id}/` })).objects).toEqual([]);
   });
