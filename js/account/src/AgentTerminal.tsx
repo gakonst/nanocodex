@@ -25,6 +25,7 @@ import {
   type CredentialSource,
 } from "./modelSession";
 import { ArtifactDock } from "./ArtifactDock";
+import { ManagedCloudBrowser } from "./ManagedCloudBrowser";
 import { ManagedAgentSchedules } from "./ManagedAgentSchedules";
 import {
   ACCOUNT_MCP_CATALOG_CHANGED,
@@ -338,6 +339,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
             })}
             onThinking={(thinking) => updateManagedSettings({ thinking })}
           />
+          <ManagedCloudBrowser agent={managed} />
           <ManagedAgentSchedules agent={managed} />
         </>
       )}

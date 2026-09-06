@@ -337,6 +337,14 @@ export type Agent = Readonly<{
     read(): Promise<CreateSettings>;
     update(patch: SettingsPatch): Promise<CreateSettings>;
   }>;
+  /** Owner-only cloud browser. Frames and private input are never conversation events. */
+  browser: Readonly<{
+    state(): Promise<BrowserState>;
+    takeover(): Promise<BrowserControl>;
+    release(generation: string): Promise<BrowserControl>;
+    action(operation: "frame", input: BrowserAction): Promise<{ data: string; width: number; height: number }>;
+    action(operation: "navigate" | "click" | "scroll" | "type" | "key", input: BrowserAction): Promise<{ ok: true }>;
+  }>;
   triggers: Readonly<{
     list(): Promise<readonly CronTrigger[]>;
     get(id: string): Promise<CronTrigger>;
@@ -378,3 +386,13 @@ export function memory(operation: MemoryDeleteOperation, options?: Options): Pro
 export function memory(operation: MemoryOperation, options?: Options): Promise<MemoryResult>;
 export function getOrganization(options?: Options): Promise<Organization>;
 export function updateOrganization(request: OrganizationUpdate, options?: Options): Promise<Organization>;
+
+export type BrowserControl = Readonly<{ mode: "agent" | "human"; generation: string; reason: string }>;
+export type BrowserState = BrowserControl & Readonly<{
+  available: boolean;
+  tabs: readonly Readonly<{ id: string; title: string; url: string }>[];
+}>;
+export type BrowserAction = Readonly<{
+  generation: string; target: string;
+  url?: string; pageUrl?: string; x?: number; y?: number; deltaY?: number; text?: string; key?: string;
+}>;

@@ -14,6 +14,7 @@
     "baseUrl": ".",
     "paths": {
       "nanocodex": ["../nanocodex/index.d.mts"],
+      "nanocodex/managed": ["../nanocodex/managed/index.d.mts"],
       "nanocodex/browser": ["../nanocodex/browser/index.d.mts"],
       "nanocodex/browser/voice": ["../nanocodex/browser/Voice.d.mts"],
       "nanocodex/browser/workspace": ["../nanocodex/browser/workspace.d.mts"],

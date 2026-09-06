@@ -1,3 +1,4 @@
+import { BrowserControl } from "./browser-control";
 import { asSchema, type Tool as AiSdkTool, type ToolSet as AiSdkToolSet } from "ai";
 import {
   DurableBrowserSessionStore,
@@ -29,6 +30,7 @@ export type ManagedBrowserRuntime = Readonly<{
   tools: readonly NamedTool[];
   expireAndSweep(): Promise<void>;
   close(): Promise<void>;
+  control?: BrowserControl;
 }>;
 
 type BrowserRuntimeFactory = (options: CreateBrowserToolsOptions) => BrowserRuntime;
@@ -395,6 +397,7 @@ export async function createManagedBrowserRuntime(
       fetch: options.fetch,
     }), keepAliveMs);
   }
+  const ownerBrowser = browser;
   browser = new CredentialSafeBrowserBinding(browser, secret ? [secret] : []);
   const baseStore = new DurableBrowserSessionStore(options.ctx.storage);
   const store = new ScopedBrowserSessionStore(baseStore, `${provider}:${options.sessionId}:`);
@@ -409,9 +412,28 @@ export async function createManagedBrowserRuntime(
     name: `managed-browser-${provider}`,
   });
   const tools = await adaptAiSdkTools(runtime.tools, { secrets: secret ? [secret] : [] });
+  const control = provider === "cloudflare"
+    ? new BrowserControl(options.ctx.storage, ownerBrowser, () => runtime.connector.sessionInfo())
+    : undefined;
+  const controlledTools: readonly NamedTool[] = control ? [
+    ...tools.map((tool) => ({ ...tool, handler: (input: unknown, context: ToolContext) =>
+      control.model(context, async () => tool.handler(input, context)) })),
+    {
+      name: "browser_handoff",
+      description: "Pause browser work and ask the account owner to sign in or take control in the Cloud browser panel. Call when login, OTP, or another human step is required. Never ask for credentials in chat. This waits until the owner returns control; then inspect the page to verify the result.",
+      parameters: { type: "object", properties: { reason: { type: "string", maxLength: 500 } }, required: ["reason"], additionalProperties: false },
+      supportsParallelToolCalls: false,
+      handler: (input: unknown, context: ToolContext) => {
+        const reason = (input as { reason?: unknown })?.reason;
+        if (typeof reason !== "string" || !reason.trim() || reason.length > 500) throw new TypeError("A short handoff reason is required");
+        return control.handoff(reason, context);
+      },
+    },
+  ] : tools;
   return Object.freeze({
     provider,
-    tools,
+    tools: controlledTools,
+    control,
     async expireAndSweep() {
       await runtime.runtime.expirePaused();
       await runtime.connector.sweep({ maxIdleMs: keepAliveMs });

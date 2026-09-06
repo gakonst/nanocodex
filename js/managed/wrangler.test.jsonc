@@ -4,6 +4,7 @@
   "main": "test/memory-scope-worker.ts",
   "compatibility_date": "2026-07-29",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "browser": { "binding": "BROWSER", "remote": true },
   "alias": {
     "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
   },
