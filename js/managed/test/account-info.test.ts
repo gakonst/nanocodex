@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { accountInfo, projectAccountInfo, withInitialAccountInfo } from "../src/account-info";
+import { accountInfo, projectAccountInfo } from "../src/account-info";
 
 const A = "a".repeat(43);
 const B = "b".repeat(43);
@@ -116,7 +116,7 @@ describe("managed account info", () => {
     });
   });
 
-  it("fails closed on malformed connection metadata and documents the generic selector", async () => {
+  it("fails closed on malformed connection metadata", async () => {
     const unavailable = await accountInfo({
       fetch: async () => Response.json({ connectors: {
         github: { connected: true, connections: [{ id: "not-opaque", label: "bad" }] },
@@ -124,11 +124,6 @@ describe("managed account info", () => {
     }, "user", { enabled: true });
     expect(unavailable).toMatchObject({ status: "unavailable", connectorAccounts: {} });
 
-    const prompt = withInitialAccountInfo("Use my calendar", unavailable);
-    expect(JSON.stringify(prompt)).toContain("X-Nanocodex-Connector-Connection");
-    expect(JSON.stringify(prompt)).toContain("Never invent a connection id");
-    expect(JSON.stringify(prompt)).toContain("call accountInfo immediately before choosing");
-    expect((prompt as readonly { text: string }[])[0]!.text).toContain('"machines":[]');
   });
 
   it("preserves available hands when connector status is unavailable", async () => {

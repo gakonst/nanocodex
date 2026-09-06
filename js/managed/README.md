@@ -55,9 +55,14 @@ storage ownership.
 - The first admitted prompt automatically calls `find_session` and `memory`
   (`operation: "scan"`) before the model starts, using a bounded query from
   that prompt. The normal tool handlers enforce the caller's capabilities.
-  Results appear as initial tool events and untrusted model context; durable
-  receipts prevent completed lookups from repeating on recovery or reconnect.
-  The original user prompt stays unchanged in the UI and history index.
+  Retrieval runs in parallel with runtime and account discovery. A durable
+  developer message injects the results and the safe `accountInfo` snapshot,
+  including connected hands, logical mounts, and capabilities, before the first
+  model request. Retrieved content is explicitly untrusted data. Bootstrap emits
+  no tool events and leaves the user prompt unchanged. Stable instructions stay
+  first; the snapshot is appended once, preserving the cached conversation prefix.
+  Durable receipts and checkpoint reconciliation prevent duplicate injection on
+  recovery or reconnect. Later connection changes are available through `accountInfo`.
   Subsequent turns use `memory` to scan, read, put/replace, and delete team facts;
   mutations require root-agent `memory:write` authority and puts require a scan.
 - `create_cron` saves a recurring prompt through the same durable scheduler as
