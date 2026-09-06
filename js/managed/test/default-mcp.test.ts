@@ -8,6 +8,7 @@ import {
   managedAccountMcpServers,
 } from "../src/default-mcp";
 import { memorySessionTools } from "../src/memory-session-tools";
+import { createCronTool } from "../src/cron-tool";
 
 describe("durable managed default MCP catalog", () => {
   it("matches the canonical five public MCP servers", () => {
@@ -161,6 +162,7 @@ describe("durable managed default MCP catalog", () => {
         requireRootMemoryMutation() {},
         recordCitations() {},
       }),
+      createCronTool(async () => { throw new Error("not called during discovery"); }),
     ], mcp);
     const socket = new CatalogSocket();
     const connector = tools.attach({
@@ -174,6 +176,8 @@ describe("durable managed default MCP catalog", () => {
       const catalog = socket.frames.find((frame) => frame.type === "catalog");
       expect(catalog?.tools?.map((entry) => entry.definition.name).sort()).toEqual([
         "accountInfo",
+        "create_cron",
+        "find_session",
         "find_sessions",
         "memory",
         "mcp__cloudflare__search",

@@ -371,6 +371,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
       codeEvaluator: internalRuntime?.codeEvaluator,
       [Symbol.for("nanocodex.browser.internalRuntime")]: {
         toolProviders: internalRuntime?.toolProviders,
+        subagentMaxConcurrency: internalRuntime?.subagentMaxConcurrency,
         subagentSessions,
         [CLOUDFLARE_SESSION_RESERVATION]: sessionReservation,
       },

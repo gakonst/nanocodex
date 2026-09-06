@@ -5,6 +5,7 @@ import {
   EXEC_COMMAND_PARAMETERS,
   EXECUTION_OUTPUT_SCHEMA,
   namespaceMountRoot,
+  resolveNamespaceCwd,
   PREVIEW_OUTPUT_SCHEMA,
   routeNamespaceCwd,
   WRITE_STDIN_PARAMETERS,
@@ -17,7 +18,7 @@ import {
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const DEFAULT_CWD = "/brain";
 
-type RoutedTool = Readonly<{
+export type RoutedTool = Readonly<{
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
 }>;
 
@@ -67,11 +68,13 @@ export type NamespaceExecutionRuntime = Readonly<{
 export function createNamespaceExecutionRuntime(
   machines: (context: ToolContext) => readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver = () => undefined,
+  brainExec?: RoutedTool,
 ): NamespaceExecutionRuntime {
   const brain = Object.freeze({
     mountId: "mount:brain",
     root: "/brain",
-    workspace: "/workspace",
+    workspace: "/brain",
+    exec: brainExec,
   }) satisfies MountedHand;
   const cells = new Map<string, CellBinding>();
   const sessions = new Map<number, ProcessBinding>();
@@ -103,17 +106,20 @@ export function createNamespaceExecutionRuntime(
 
   const tools: ToolMap = {
     exec_command: {
-      description: "Run a command on the hand that owns the root of workdir. workdir is a logical namespace path returned by mount or listed by accountInfo, such as /repo-test/repo or /laptop/repo. No execution hand is attached by default.",
+      description: "Run a command in durable /brain using bounded Just Bash by default. Use an explicit hand workdir returned by mount or accountInfo only for native binaries, builds, or process sessions. No execution hand is attached by default.",
       parameters: EXEC_COMMAND_PARAMETERS,
       outputSchema: EXECUTION_OUTPUT_SCHEMA,
       supportsParallelToolCalls: true,
       handler: async (input, context) => {
         const value = record(input);
         const workdir = optionalString(value.workdir, "workdir");
-        if (workdir === undefined) {
-          throw new Error(
-            "exec_command.workdir must select an attached hand; call mount when native execution is needed",
-          );
+        if (brainExec !== undefined && isBrainExecution(value)) {
+          // Brain calls must remain independent of hand discovery/readiness,
+          // and do not need to retain a per-cell native mount lease.
+          return brainExec.handler({
+            ...without(value, "workdir"),
+            workdir: resolveNamespaceCwd(DEFAULT_CWD, workdir),
+          }, context);
         }
         const binding = cell(context);
         const route = routeNamespaceCwd(binding.scope, workdir);
@@ -215,6 +221,12 @@ export function createNamespaceExecutionTools(
 }
 
 export const machineMountRoot = namespaceMountRoot;
+
+export function isBrainExecution(input: unknown): boolean {
+  const value = record(input);
+  const cwd = resolveNamespaceCwd(DEFAULT_CWD, optionalString(value.workdir, "workdir"));
+  return cwd === DEFAULT_CWD || cwd.startsWith(`${DEFAULT_CWD}/`);
+}
 
 function createCellBinding(
   brain: MountedHand,

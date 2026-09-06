@@ -245,6 +245,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   const [settingsReady, setSettingsReady] = useState(false);
   const [conversationStarted, setConversationStarted] = useState(true);
   const [browserHand, setBrowserHand] = useState<Awaited<ReturnType<typeof attachManagedBrowserHand>>>();
+  const [browserHandSettledFor, setBrowserHandSettledFor] = useState<typeof managed>();
   const [browserHandAttempt, setBrowserHandAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -272,6 +273,8 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       if (controller.signal.aborted) return;
       console.warn("nanocodex:browser_hand_attach_failed", { error: errorMessage(error) });
       reconnect();
+    }).finally(() => {
+      if (!controller.signal.aborted) setBrowserHandSettledFor(managed);
     });
     return () => {
       controller.abort();
@@ -306,9 +309,13 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
     const updated = await managed.settings.update(patch);
     setSettings(updated);
   }, [managed]);
+  // Keep the first prompt queued while this page's hand is still attaching,
+  // so the host can include it in the initial environment snapshot. A failed
+  // optional hand does not block the managed brain or subsequent reconnects.
+  const startupReady = browserHandSettledFor === managed || (settingsReady && conversationStarted);
   return (
     <AgentTerminalView
-      agent={agent}
+      agent={startupReady ? agent : undefined}
       agentError={undefined}
       inactiveMessage={({ agentError, agentStatus }) => inactiveTerminalMessage({
         agentError,

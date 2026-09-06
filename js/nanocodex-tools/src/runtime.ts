@@ -15,6 +15,7 @@ export type ComputerCommandContext = Readonly<{
 export type ComputerRuntimeOptions = Readonly<{
   filesystem: Workspace;
   fetch: ShellFetch;
+  refreshFilesystemBeforeExec?: boolean | undefined;
   networkMode: string;
   maxEntries?: number | undefined;
   maxOutputTokens?: number | undefined;
@@ -48,6 +49,7 @@ export async function createComputerRuntime(
   const additional = options.commands?.({ fetch: options.fetch, filesystem }) ?? [];
   const shell = await justBash({
     filesystem: options.filesystem,
+    refreshFilesystemBeforeExec: options.refreshFilesystemBeforeExec,
     maxEntries: options.maxEntries ?? DEFAULT_MAX_ENTRIES,
     maxOutputTokens: options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     fetch: options.fetch,

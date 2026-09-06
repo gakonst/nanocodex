@@ -32,7 +32,24 @@ storage ownership.
 - `GET /v1/agents/:id/capacity` requires `agents:read` for that agent and returns
   storage byte counts, hot receipt counts, and archive counts without loading
   the runtime or returning conversation contents.
-- Managed agents begin with no sandbox hand. The provider-neutral `mount` model
+- Managed agents execute bounded Just Bash in durable `/brain` without a hand.
+  `exec_command` defaults there; `/brain` and `.` also select the brain. Its R2
+  prefix is shared with the native hand mounts, and listings refresh between
+  commands. Text/file processing, HTTP, and supported Git/GitHub commands run
+  here; native binaries, package installs, builds, and process sessions need a
+  hand. The agent reuses a suitable attached hand or mounts one when needed.
+  Known native work such as `cargo test` can go directly to a hand; an
+  unsupported brain capability can also trigger that choice after a probe.
+  `exec_command` always honors its selected cwd; the agent owns the fallback.
+  Brain execution requires `tools:use`, with connector authority taken
+  from the exact calling root or subagent.
+  Shell HTTP response bodies are bounded at 16 MiB.
+  Oversized responses fail with a request to narrow the result. Connect grants
+  cannot use Vault-backed shell requests or SSH identities.
+  The shared task tree admits at most eight active subagents, including nested
+  delegation. The existing WASM admission policy enforces this ceiling before
+  creating children; a failed tool does not justify recursively delegating it.
+  The provider-neutral `mount` model
   tool provisions and attaches named execution hands on demand. `cf_sandbox`
   names the built-in Cloudflare Sandbox factory (`cloudflare` remains a legacy
   input alias); any other provider value is the exact name of a connected VM
@@ -49,6 +66,29 @@ storage ownership.
 - `/v1/history/*` and `/v1/memory` expose organization- and team-scoped
   retained context. `/v1/credentials` and `/v1/connectors` manage brokered
   credentials, OAuth connections, and MCP connections without exposing secrets.
+- Managed agents can search completed team conversations with `find_session`
+  (`find_sessions` remains available) and verify exact turns with `read_session`.
+  Each call requires its own agent's `history:read` capability.
+- The first admitted prompt automatically calls `find_session` and `memory`
+  (`operation: "scan"`) before the model starts, using a bounded query from
+  that prompt. The normal tool handlers enforce the caller's capabilities.
+  Retrieval runs in parallel with runtime and account discovery. A durable
+  developer message injects the results and the safe `accountInfo` snapshot,
+  including connected hands, logical mounts, and capabilities, before the first
+  model request. Retrieved content is explicitly untrusted data. Bootstrap emits
+  no tool events and leaves the user prompt unchanged. Stable instructions stay
+  first; the snapshot is appended once, preserving the cached conversation prefix.
+  Durable receipts and checkpoint reconciliation prevent duplicate injection on
+  recovery or reconnect. Later connection changes are available through `accountInfo`.
+  Subsequent turns use `memory` to scan, read, put/replace, and delete team facts;
+  mutations require root-agent `memory:write` authority and puts require a scan.
+- `create_cron` saves a recurring prompt through the same durable scheduler as
+  `/v1/agents/:id/triggers/:triggerId`. Supply a stable `id`, five-field `cron`,
+  and `input`; optional `timezone`, `enabled`, and `session_mode` default to UTC,
+  true, and `new`. Identical retries return the saved schedule; conflicting IDs
+  fail without replacement. Creation requires account `agents:write` and
+  `tools:use` authority; Connect grants and shared rooms cannot create schedules.
+  Use the triggers API or UI to edit, pause, or delete a saved schedule.
 - `/v1/rooms` creates, joins, observes, and deletes multiplayer rooms. A
   `MultiplayerRoom` owns room chat and its private agent; `MultiplayerQuota`
   enforces deployment-wide room and turn limits. Room WebSockets use their own

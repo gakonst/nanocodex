@@ -21,7 +21,7 @@ export type ShellFetch = (
   options?: ShellFetchOptions,
 ) => Promise<ShellFetchResult>;
 
-type CommandContext = Readonly<{ cwd?: unknown }>;
+type CommandContext = Readonly<{ cwd?: unknown; signal?: AbortSignal }>;
 type CommandResult = Readonly<{
   stdout: string;
   stderr: string;
@@ -46,9 +46,14 @@ export function createGhCommand(
     name: "gh",
     trusted: true,
     async execute(args: string[], context: CommandContext = {}) {
+      const request: ShellFetch = (url, options) => {
+        context.signal?.throwIfAborted();
+        return fetch(url, { ...options, signal: context.signal });
+      };
       try {
+        context.signal?.throwIfAborted();
         if (args[0] === "auth" && args[1] === "status") {
-          const user = await github(fetch, "/user");
+          const user = await github(request, "/user");
           return ok(`Logged in to github.com as ${text(user, "login")} through the connected account.\n`);
         }
         if (args[0] === "api") {
@@ -66,7 +71,7 @@ export function createGhCommand(
             for (const [name, value] of Object.entries(fields)) target.searchParams.set(name, value);
             path = `${target.pathname}${target.search}`;
           }
-          return ok(`${JSON.stringify(await github(fetch, path, {
+          return ok(`${JSON.stringify(await github(request, path, {
             method,
             ...(hasFields && method !== "GET" && method !== "HEAD"
               ? { body: JSON.stringify(fields) }
@@ -78,7 +83,7 @@ export function createGhCommand(
             ?? args.slice(2).find((value) => !value.startsWith("-"));
           requireRepository(repository, "gh repo view requires OWNER/REPO");
           const repo = requireRecord(
-            await github(fetch, `/repos/${repository}`),
+            await github(request, `/repos/${repository}`),
             "repository",
           );
           return ok([
@@ -95,7 +100,7 @@ export function createGhCommand(
         if (args[0] === "repo" && args[1] === "list") {
           const owner = positional(args.slice(2), ["--limit", "-L"]);
           const perPage = limit(option(args.slice(2), "--limit", "-L"));
-          const repositories = await github(fetch, `/user/repos?${new URLSearchParams({
+          const repositories = await github(request, `/user/repos?${new URLSearchParams({
             affiliation: "owner,collaborator,organization_member",
             per_page: "100",
             sort: "updated",
@@ -119,7 +124,7 @@ export function createGhCommand(
         if (args[0] === "pr" && args[1] === "list") {
           const repository = option(args.slice(2), "--repo", "-R");
           requireRepository(repository, "gh pr list requires --repo OWNER/REPO");
-          const pulls = await github(fetch, `/repos/${repository}/pulls?${new URLSearchParams({
+          const pulls = await github(request, `/repos/${repository}/pulls?${new URLSearchParams({
             state: "open",
             per_page: String(limit(option(args.slice(2), "--limit", "-L"))),
           })}`);
@@ -164,6 +169,7 @@ function ghRepoCloneArguments(args: string[]): string[] {
   const repository = commandArgs[0];
   requireRepository(repository, "gh repo clone requires OWNER/REPO");
   return [
+    "clone",
     ...gitArgs,
     `https://github.com/${repository}.git`,
     ...(commandArgs[1] === undefined ? [] : [commandArgs[1]]),
@@ -178,13 +184,13 @@ export function createGitCommand(
   return {
     name: "git",
     trusted: true,
-    async execute(args: string[], context: { cwd?: unknown } = {}) {
+    async execute(args: string[], context: CommandContext = {}) {
       try {
+        const mounted = commandWorkspace(workspace(), context.signal);
         const command = args[0];
         if (command === "clone") {
-          return ok(await cloneRepository(fetch, workspace(), args.slice(1), context.cwd));
+          return ok(await cloneRepository(fetch, mounted, args.slice(1), context));
         }
-        const mounted = workspace();
         const dir = await gitDirectory(mounted, context.cwd);
         const fs = workspaceFs(mounted);
         if (command === "status") {
@@ -276,10 +282,11 @@ async function cloneRepository(
   fetch: ShellFetch,
   workspace: Workspace,
   args: string[],
-  cwd: unknown,
+  context: CommandContext,
 ): Promise<string> {
+  const { cwd, signal } = context;
   const depthValue = option(args, "--depth", "-") ?? joinedOption(args, "--depth");
-  const depth = depthValue === undefined ? 1 : positiveInteger(depthValue, "--depth");
+  const depth = depthValue === undefined ? undefined : positiveInteger(depthValue, "--depth");
   const branch = option(args, "--branch", "-b") ?? joinedOption(args, "--branch");
   const positionals = gitPositionals(args);
   const remote = positionals[0];
@@ -306,12 +313,10 @@ async function cloneRepository(
   try {
     await git.clone({
       fs: workspaceFs(workspace),
-      http: managedGitHttp(fetch),
+      http: managedGitHttp(fetch, signal),
       dir,
       url: `https://github.com/${repository}.git`,
-      depth,
-      noTags: true,
-      singleBranch: true,
+      ...(depth === undefined ? {} : { depth, singleBranch: true }),
       ...(branch === undefined ? {} : { ref: branch }),
     });
   } catch (error) {
@@ -323,9 +328,10 @@ async function cloneRepository(
   return `Cloning into '${destination}'...\n`;
 }
 
-function managedGitHttp(fetch: ShellFetch): HttpClient {
+function managedGitHttp(fetch: ShellFetch, signal?: AbortSignal): HttpClient {
   return {
     async request(request: GitHttpRequest) {
+      signal?.throwIfAborted();
       const body = request.body === undefined
         ? undefined
         : await collectGitBody(request.body);
@@ -333,7 +339,7 @@ function managedGitHttp(fetch: ShellFetch): HttpClient {
         method: request.method,
         headers: request.headers,
         body,
-        ...(request.signal instanceof AbortSignal ? { signal: request.signal } : {}),
+        signal: signal ?? (request.signal instanceof AbortSignal ? request.signal : undefined),
       });
       return {
         url: response.url,
@@ -396,6 +402,17 @@ function workspaceFs(workspace: Workspace) {
     chmod: async (path: string) => { await requiredWorkspaceEntry(workspace, resolve(path)); },
   };
   return { promises };
+}
+
+function commandWorkspace(workspace: Workspace, signal?: AbortSignal): Workspace {
+  return {
+    root: workspace.root,
+    list: (...args) => { signal?.throwIfAborted(); return workspace.list(...args); },
+    readFile: (...args) => { signal?.throwIfAborted(); return workspace.readFile(...args); },
+    writeFile: (...args) => { signal?.throwIfAborted(); return workspace.writeFile(...args); },
+    mkdir: (...args) => { signal?.throwIfAborted(); return workspace.mkdir(...args); },
+    remove: (...args) => { signal?.throwIfAborted(); return workspace.remove(...args); },
+  };
 }
 
 function gitWorkspacePath(workspace: Workspace, path: string): string {

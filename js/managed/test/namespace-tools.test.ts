@@ -26,7 +26,7 @@ describe("cwd-root namespace execution", () => {
     const tools = createRuntimeNamespaceExecutionTools(() => []);
 
     await expect(tools.exec_command!.handler({ cmd: "pwd" }, context()))
-      .rejects.toThrow("call mount when native execution is needed");
+      .rejects.toThrow("namespace cwd /brain lacks process.exec");
   });
 
   it("keeps canonical schemas and routes an explicit logical cwd to a sandbox hand", async () => {

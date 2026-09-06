@@ -39,6 +39,11 @@ test("concurrent cold WASM package builds are serialized", async () => {
     for (const artifact of generatedArtifacts) {
       assert((await readFile(join(fixture.packageRoot, artifact))).length > 0, artifact);
     }
+    for (const artifact of ["pkg-web/nanocodex.js", "pkg-web/nanocodex_bg.js", "pkg-node/nanocodex.js"]) {
+      const glue = await readFile(join(fixture.packageRoot, artifact), "utf8");
+      assert.ok(glue.includes("new Uint8Array(wasm.memory.buffer, ptr, len)"), artifact);
+      assert.ok(!glue.includes("getUint8ArrayMemory0().subarray("), artifact);
+    }
   } finally {
     await fixture.close();
   }
@@ -59,6 +64,16 @@ test("an incomplete Node package cache regenerates bindings", async () => {
       NANOCODEX_WASM_LOCK_HELD: fixture.repository,
     });
     await assert.rejects(readFile(fixture.bindgenEvents), { code: "ENOENT" });
+
+    const viewScript = join(fixture.repository, "js/nanocodex-vite/scripts/wasm-memory-views.mjs");
+    await writeFile(viewScript, `${await readFile(viewScript, "utf8")}\n// Changed generator policy.\n`);
+    await runBuild(fixture, {
+      CACHE_VALID: "1",
+      NANOCODEX_WASM_BUILD_DELAY: "0",
+      NANOCODEX_WASM_LOCK_HELD: fixture.repository,
+    });
+    assert.deepEqual((await readFile(fixture.bindgenEvents, "utf8")).trim().split("\n"),
+      ["nodejs", "web", "bundler"], "memory-view changes must invalidate generated bindings");
 
     for (const artifact of ["pkg-node/nanocodex.d.ts", "pkg-node/package.json"]) {
       await Promise.all([
@@ -99,6 +114,7 @@ async function createBuildFixture() {
     mkdir(fakeBin, { recursive: true }),
   ]);
   await copyFile(sourceBuildScript, buildScript);
+  await copyFile(new URL("../scripts/wasm-memory-views.mjs", import.meta.url), join(scripts, "wasm-memory-views.mjs"));
   await chmod(buildScript, 0o755);
   await Promise.all([
     writeExecutable(join(fakeBin, "cargo"), `#!/bin/sh
@@ -125,13 +141,21 @@ while [ "$#" -gt 0 ]; do
 done
 mkdir -p "$output"
 printf 'fixture wasm\\n' > "$output/nanocodex_bg.wasm"
-printf 'fixture glue\\n' > "$output/nanocodex.js"
+cat > "$output/nanocodex.js" <<'GLUE'
+getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+getUint8ArrayMemory0().subarray(ptr, ptr + len);
+getUint8ArrayMemory0().subarray(ptr, ptr + buf.length);
+getUint8ArrayMemory0().subarray(ptr + offset, ptr + len);
+GLUE
 printf 'fixture types\\n' > "$output/nanocodex.d.ts"
-printf 'fixture worker glue\\n' > "$output/nanocodex_bg.js"
+cp "$output/nanocodex.js" "$output/nanocodex_bg.js"
 printf '%s\\n' "$target" >> "$NANOCODEX_WASM_BINDGEN_EVENTS"
 `),
     writeExecutable(join(fakeBin, "node"), `#!/bin/sh
 case "$1" in
+  *wasm-memory-views.mjs)
+    exec '${process.execPath.replaceAll("'", "'\\''")}' "$@"
+    ;;
   *write-package-types.mjs)
     printf '{"type":"commonjs"}\\n' > js/nanocodex/pkg-node/package.json
     printf '{"type":"module"}\\n' > js/nanocodex/pkg-web/package.json

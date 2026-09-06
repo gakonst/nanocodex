@@ -1,5 +1,8 @@
 import type { DefaultAgent, Thinking } from "../types.mjs";
 
+// Adapter-specific extend() signatures do not change subagent ownership.
+type SubagentOwner = Omit<DefaultAgent, "extend">;
+
 declare const subagentToolBrand: unique symbol;
 
 /** Opaque selector for the Rust-owned subagent tool set. */
@@ -85,20 +88,20 @@ export type MessageReceipt = Readonly<{
 
 /** Returns a spreadable Rust-backed tool extension for an Agent's tools array. */
 export function create(options?: Options): Subagents;
-/** Directly invokes the canonical Rust spawn_agent handler. */
-export function spawn(agent: DefaultAgent, options: SpawnOptions): Promise<SpawnReport>;
+/** Starts a structured SDK child through the Rust registry. */
+export function spawn(agent: SubagentOwner, options: SpawnOptions): Promise<SpawnReport>;
 /** Atomically reserves and starts an ordered batch of canonical Rust subagents. */
 export function spawnMany(
-  agent: DefaultAgent,
+  agent: SubagentOwner,
   options: readonly BatchSpawnOptions[],
 ): Promise<readonly SpawnReport[]>;
 /** Waits on numeric SDK child IDs through the Rust registry. */
-export function wait(agent: DefaultAgent, options: WaitOptions): Promise<WaitReport>;
+export function wait(agent: SubagentOwner, options: WaitOptions): Promise<WaitReport>;
 /** Lists the SDK task tree through the Rust registry. */
-export function list(agent: DefaultAgent, options?: DirectoryOptions): Promise<DirectoryReport>;
+export function list(agent: SubagentOwner, options?: DirectoryOptions): Promise<DirectoryReport>;
 /** Delivers a structured SDK message through the Rust registry. */
-export function send(agent: DefaultAgent, options: SendOptions): Promise<MessageReceipt>;
+export function send(agent: SubagentOwner, options: SendOptions): Promise<MessageReceipt>;
 /** Interrupts the SDK child and its descendants. */
-export function interrupt(agent: DefaultAgent, agentId: AgentId): Promise<LifecycleReport>;
+export function interrupt(agent: SubagentOwner, agentId: AgentId): Promise<LifecycleReport>;
 /** Closes the SDK child and its descendants. */
-export function close(agent: DefaultAgent, agentId: AgentId): Promise<LifecycleReport>;
+export function close(agent: SubagentOwner, agentId: AgentId): Promise<LifecycleReport>;
