@@ -1327,7 +1327,10 @@ function memoryOutputCursorStorage(): SandboxOutputCursorStorage {
 }
 
 function mergedShellCommand(command: string): string {
-  return `exec 2>&1\n${command}`;
+  // The SDK appends its completion bookkeeping to the supplied shell body.
+  // Keep exit, exec, and shell options inside the user's command so that they
+  // cannot bypass that bookkeeping or change the SDK's control shell.
+  return `(\n${command}\n) 2>&1`;
 }
 
 function isTerminalProcessStatus(status: SandboxProcessStatus): boolean {
