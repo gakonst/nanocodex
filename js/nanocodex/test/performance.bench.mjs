@@ -349,6 +349,9 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
   }));
 
   const actionIterations = 50_000;
+  // Collect preceding workloads outside each independent timing phase. GC
+  // during the timed workload still counts toward its budget.
+  globalThis.gc?.();
   const actionStarted = performance.now();
   for (let index = 0; index < actionIterations; index += 1) {
     agent.turn.prompt({ input: "measure wrapper overhead" }).dispose();
@@ -360,6 +363,9 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
   const watch = agent.events.watch();
   const iterator = watch[Symbol.asyncIterator]();
   const eventCount = 4_096;
+  // In particular, do not charge collection of 50,000 disposed prompt wrappers
+  // to event buffering simply because V8 scheduled it at the next allocation.
+  globalThis.gc?.();
   const eventsStarted = performance.now();
   for (let seq = 1; seq <= eventCount; seq += 1) {
     for (const listener of subscriptions) {
@@ -386,6 +392,7 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
     },
   });
   const codeIterations = 1_000;
+  globalThis.gc?.();
   const codeStarted = performance.now();
   for (let index = 0; index < codeIterations; index += 1) {
     const result = JSON.parse(await code.executeCode(
