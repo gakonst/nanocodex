@@ -216,3 +216,21 @@ running as an independent product surface. Use the repository operator commands,
 deployment order, secret handling, and required browser evidence in
 [`../../AGENTS.md`](../../AGENTS.md). The package scripts provide its focused
 typecheck, test, and Wrangler dry-run build when that boundary changes.
+
+### Original video attachments
+
+The authenticated `/v1/agents/:id/attachments/:uuid` route stores original
+MP4/MOV bytes in the agent's existing `/brain/attachments/:uuid/original.*`
+filesystem. `POST` accepts `{name, media_type, size}` and returns the file path,
+8 MiB part size, next part number, and completion state. `PUT .../parts/:number`
+accepts exact binary chunks in order; identical retries are safe and conflicting
+bytes are rejected. `POST .../complete` finalizes the file idempotently. `GET`
+returns private, uncached bytes and supports ranges. Multipart upload IDs remain
+server-side. No image frames or audio conversions occur at this boundary.
+
+Account ownership, organization, team, authorization epoch, and capabilities
+are checked before filesystem access. Connect grants cannot use this route.
+Session deletion fences new work, cancels body readers, drains pending writes,
+and aborts incomplete uploads before the existing `/brain` cleanup. The
+`attachments.test.ts` Worker tests exercise real local R2 multipart behavior,
+reconstruction, retries, filesystem reads, deletion fencing, and account isolation.

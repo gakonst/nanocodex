@@ -11,6 +11,10 @@
     {
       "binding": "NANOCODEX_HISTORY",
       "bucket_name": "nanocodex-managed-history-test"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES",
+      "bucket_name": "nanocodex-sandbox-workspaces-test"
     }
   ],
   "durable_objects": {

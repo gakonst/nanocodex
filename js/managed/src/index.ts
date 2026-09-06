@@ -19,6 +19,7 @@ import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
 import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
 import { createWorkspaceFilesystem } from "nanocodex-tools";
+import { SessionAttachments } from "./attachments";
 import { createBrainWorkspace } from "./brain-workspace";
 import { managedCodeEvaluator } from "./code-evaluator";
 import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
@@ -1885,6 +1886,21 @@ async function managedFetch(
         headers: sessionHeaders,
       });
     }
+    if (resource.startsWith("attachments/")) {
+      if (principal.connectGrant || !principal.capabilities.includes(
+        request.method === "GET" ? "agents:read" : "agents:write",
+      ) || (request.method !== "GET" && !principal.capabilities.includes("tools:use"))) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      if (request.method !== "GET") {
+        const failure = requireSameOriginMutation(request, url, principal);
+        if (failure) return failure;
+      }
+      return stub.fetch(`https://session.internal/${resource}`, {
+        method: request.method, headers: sessionHeaders, body: request.body, signal: request.signal,
+      });
+    }
     if (resource === "settings") {
       if (request.method !== "PATCH") {
         return json({ error: "method_not_allowed" }, { status: 405 });
@@ -2479,6 +2495,7 @@ export class DurableAgentSession extends DurableComputerSession {
   #realtimeRouteTail: Promise<void> = Promise.resolve();
   readonly #cronTriggers: CronTriggers;
   readonly #startupContext: ManagedStartupContext;
+  #attachments?: SessionAttachments;
   #settingsMutationTail: Promise<void> = Promise.resolve();
   readonly #settingsRequests = new Set<Promise<Response>>();
   #recoveryTask?: Promise<void>;
@@ -3033,6 +3050,20 @@ export class DurableAgentSession extends DurableComputerSession {
         headers: { "cache-control": "no-store", "retry-after": "1" },
       });
     }
+    if (url.pathname.startsWith("/attachments/")) {
+      const session = this.#session();
+      if (!ownerAssertion || !session || session.runtime_profile !== "managed") {
+        return json({ error: "not_found" }, { status: 404 });
+      }
+      if (turnAuthorization.connectGrant || !turnAuthorization.capabilities.includes(
+        request.method === "GET" ? "agents:read" : "agents:write",
+      ) || (request.method !== "GET" && !turnAuthorization.capabilities.includes("tools:use"))) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const match = url.pathname.match(/^\/attachments\/([^/]+)(?:\/(.*))?$/);
+      if (!match) return json({ error: "not_found" }, { status: 404 });
+      return this.#attachmentStore().fetch(request, match[1]!, match[2]);
+    }
     if (request.method === "GET" && url.pathname === "/socket")
       return this.#upgrade(turnAuthorization, url.searchParams.get("cursor"));
     if (request.method === "POST" && url.pathname === "/vm-host-revoke") {
@@ -3297,6 +3328,13 @@ export class DurableAgentSession extends DurableComputerSession {
       return new Response(null, { status: 204 });
     }
     return json({ error: "not_found" }, { status: 404 });
+  }
+
+  #attachmentStore(): SessionAttachments {
+    return this.#attachments ??= new SessionAttachments(
+      this.ctx.storage, this.env.NANOCODEX_WORKSPACES, this.#sessionId()!,
+      () => !this.#deleting && !this.#deleted && !this.#durabilityExported,
+    );
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -5782,6 +5820,7 @@ export class DurableAgentSession extends DurableComputerSession {
     await this.#releaseRuntimeOwnershipForDeletion(timeoutMs);
     if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
     if (session?.runtime_profile === "managed") {
+      await this.#attachmentStore().cleanup();
       const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
       const initialized = await initializeMemoryScope(memory, session.organization_id);
       if (!initialized.ok) throw new Error("memory scope initialization failed during deletion");
