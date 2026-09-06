@@ -26,7 +26,7 @@ async function seed(plan: string, marker: string) {
 }
 
 function headers(subject: string) {
-  return { authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "x-nanocodex-subject": subject, "content-type": "application/json", "session-id": "context-session", "x-openai-tool-output-truncation-policy": '{"mode":"tokens","limit":10000}' };
+  return { authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "x-nanocodex-subject": subject, "content-type": "application/json", "session-id": "context-session", "x-openai-tool-output-truncation-policy": '{"mode":"tokens","limit":200000}' };
 }
 
 function operation(subject: string, path = "alpha/notes/v2/write_file", changes: Record<string, string> = {}) {
@@ -50,7 +50,9 @@ describe("private history/notes credential boundary", () => {
   it("binds notes context, injects private authentication, and preserves encrypted output", async () => {
     const { subject, secret } = await seed("plus", "private-write");
     let observed: Request | undefined;
-    const result = await handleEgress(operation(subject), { ...workerEnv, CHATGPT_EGRESS: undefined }, undefined, (async (input) => {
+    const directEnv = { ...workerEnv };
+    delete directEnv.CHATGPT_EGRESS;
+    const result = await handleEgress(operation(subject), directEnv, undefined, (async (input) => {
       observed = input as Request;
       return Response.json({ encrypted_output: "opaque-result" }, { headers: { "set-cookie": "provider-private" } });
     }) as typeof fetch);
@@ -62,7 +64,7 @@ describe("private history/notes credential boundary", () => {
     expect(observed?.headers.get("chatgpt-account-id")).toBe("account-history");
     expect(observed?.headers.get("x-nanocodex-subject")).toBeNull();
     expect(observed?.headers.get("x-openai-encrypted-tool-arguments")).toBe("true");
-    expect(JSON.parse(observed!.headers.get("x-openai-tool-output-truncation-policy")!)).toEqual({ mode: "tokens", limit: 10000 });
+    expect(JSON.parse(observed!.headers.get("x-openai-tool-output-truncation-policy")!)).toEqual({ mode: "tokens", limit: 200000 });
     expect((await observed!.json<{ context: unknown }>()).context).toEqual({ session_id: "context-session", current_agent_name: "/root" });
   });
 

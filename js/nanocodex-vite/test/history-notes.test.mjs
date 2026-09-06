@@ -36,7 +36,7 @@ test("Vite history/notes authenticates locally and rejects foreign origins and r
     const request = {
       path: "alpha/notes/v2/write_file", threadId: "thread",
       body: { path: "progress", content: "checkpoint", context: { session_id: "session", current_agent_name: "/root" } },
-      budget: { mode: "tokens", limit: 10000 },
+      budget: { mode: "tokens", limit: 200_000 },
     };
     const response = await post(request);
     assert.equal(response.status, 200);
@@ -46,6 +46,7 @@ test("Vite history/notes authenticates locally and rejects foreign origins and r
     assert.equal(calls[0].init.headers.get("chatgpt-account-id"), "private-account");
     assert.equal(calls[0].init.headers.get("x-openai-encrypted-tool-arguments"), "true");
     assert.equal(calls[0].init.headers.get("x-openai-fedramp"), "true");
+    assert.deepEqual(JSON.parse(calls[0].init.headers.get("x-openai-tool-output-truncation-policy")), request.budget);
     assert.equal((await post(request, { origin: "https://evil.example" })).status, 403);
     assert.equal((await post(request, { authorization: "Bearer injected" })).status, 403);
     assert.equal((await post({ ...request, path: "alpha/notes/v2/delete_all" })).status, 400);

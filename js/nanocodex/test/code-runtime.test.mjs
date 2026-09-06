@@ -324,6 +324,11 @@ for (const evaluator of ["native", "quickjs", "worker"]) test(`${evaluator} supp
   assert.equal(last.output.find((item) => item.type === "input_audio").audio_url, "data:audio/wav;base64,AAAA");
   assert.match(outputText(last.output), /output truncated/);
   assert.doesNotMatch(outputText(last.output), /�/);
+  const silent = await observed(runtime, runtime.executeCodeObserved(
+    '// @exec: {"max_output_tokens":0}\ntext("must-not-appear");', "helpers", "exec-silent",
+  ), "helpers", "exec-silent");
+  assert.equal(silent.success, true);
+  assert.equal(outputText(silent.output).split("Output:\n")[1].trim(), "…output truncated…");
   runtime.reset();
 });
 

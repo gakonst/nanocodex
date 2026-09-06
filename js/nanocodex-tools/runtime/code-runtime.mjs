@@ -431,7 +431,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         : `Script running with cell ID ${cell.id}`;
       const output = withStatus(status, startedAt, cell.content.splice(0));
       if (result) cells.delete(cell.id);
-      let limited = limitCodeOutput(output, Math.max(1, budget));
+      let limited = limitCodeOutput(output, budget);
       if (result?.success === false && Array.isArray(limited) && limited.every((item) => item.type === "input_text")) {
         limited = limited.map((item) => item.text).join("");
       }
@@ -801,14 +801,12 @@ function limitCodeOutput(output, budget) {
     const half = Math.floor(remaining / 2);
     remaining = 0;
     // Decode complete code points only, including for non-ASCII tool output.
-    const decoder = new TextDecoder("utf-8", { fatal: true });
-    const slice = (start, end) => {
-      for (;;) {
-        try { return decoder.decode(bytes.subarray(start, end)); }
-        catch { if (start === 0) end--; else start++; }
-      }
-    };
-    return `${slice(0, half)}…output truncated…${half ? slice(bytes.length - half, bytes.length) : ""}`;
+    let end = half;
+    let start = bytes.length - half;
+    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+    while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+    const decoder = new TextDecoder();
+    return `${decoder.decode(bytes.subarray(0, end))}…output truncated…${decoder.decode(bytes.subarray(start))}`;
   };
   if (typeof output === "string") {
     const split = output.indexOf("Output:\n");

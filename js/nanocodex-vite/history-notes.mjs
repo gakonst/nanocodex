@@ -1,4 +1,6 @@
 // Codex ac192cd793 history/notes protocol; local credentials stay in the Vite owner.
+import { json } from "node:stream/consumers";
+
 const PATHS = new Set([
   "alpha/history/v2/list_windows", "alpha/history/v2/list_items",
   "alpha/history/v2/read_item", "alpha/history/v2/search_contents",
@@ -6,7 +8,6 @@ const PATHS = new Set([
   "alpha/notes/v2/search_contents", "alpha/notes/v2/write_file",
   "alpha/notes/v2/append_to_file", "alpha/notes/v2/thread_hint",
 ]);
-const ID = /^[A-Za-z0-9._:-]{1,200}$/;
 
 function eligible(auth) {
   try {
@@ -25,15 +26,8 @@ export async function proxyHistoryNotes(request, response, loadAuth, requestFetc
   const closed = () => controller.abort();
   response.once("close", closed);
   try {
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of request) {
-      size += chunk.length;
-      if (size > 32 * 1024 * 1024) { reply(413, { error: "request_too_large" }); return; }
-      chunks.push(chunk);
-    }
     let input;
-    try { input = JSON.parse(Buffer.concat(chunks).toString()); }
+    try { input = await json(request); }
     catch { reply(400, { error: "invalid_request" }); return; }
     let auth = await loadAuth();
     if (input && Object.keys(input).length === 0) {
@@ -41,13 +35,12 @@ export async function proxyHistoryNotes(request, response, loadAuth, requestFetc
       return;
     }
     if (!eligible(auth)) { reply(409, { error: "experimental_context_unavailable" }); return; }
-    const { path, body, budget, threadId } = input ?? {};
-    if (!PATHS.has(path) || !ID.test(threadId ?? "")
-      || !ID.test(body?.context?.session_id ?? "")
-      || !/^\/root(?:\/[A-Za-z0-9_-]+)*$/.test(body?.context?.current_agent_name ?? "")
-      || body.context.current_agent_name.length > 1024
+    const { path, body, budget } = input ?? {};
+    if (!PATHS.has(path)
+      || typeof body?.context?.session_id !== "string" || !body.context.session_id
+      || typeof body?.context?.current_agent_name !== "string" || !body.context.current_agent_name
       || !["tokens", "bytes"].includes(budget?.mode) || !Number.isSafeInteger(budget?.limit)
-      || budget.limit < 1 || budget.limit > (budget.mode === "bytes" ? 4000 : 128_000)) {
+      || budget.limit < 0) {
       reply(400, { error: "invalid_request" });
       return;
     }

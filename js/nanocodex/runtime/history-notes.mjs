@@ -28,8 +28,7 @@ export function historyNotesHost({ direct = false, broker, apiBaseUrl, fetch: re
     },
     async request(threadId, encoded, bearer, accountId, fedramp) {
       const request = JSON.parse(encoded);
-      if (!PATHS.has(request.path) || !request.body || typeof request.body !== "object"
-        || !request.budget || typeof request.budget !== "object") {
+      if (!PATHS.has(request.path)) {
         throw new Error("Invalid history/notes request");
       }
       const controller = new AbortController();
@@ -103,7 +102,7 @@ export function sameOriginHistoryNotes(websocketUrl, location = globalThis.locat
   return Object.freeze({
     async available() {
       try {
-        const response = await post({}, AbortSignal.timeout(10_000));
+        const response = await post({});
         if (!response.ok) { await response.body?.cancel(); return false; }
         return (await response.json())?.enabled === true;
       } catch { return false; }

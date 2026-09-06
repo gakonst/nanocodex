@@ -20,25 +20,20 @@ export function historyNotesEligible(credential: UserCredentialSnapshot & { sour
 
 export function historyNotesHeaders(request: Request, body: Uint8Array | null): Headers {
   const budget = JSON.parse(request.headers.get("x-openai-tool-output-truncation-policy") ?? "null");
-  if (!budget || typeof budget !== "object" || Array.isArray(budget)
-    || Object.keys(budget).some((key) => key !== "mode" && key !== "limit")
-    || !["tokens", "bytes"].includes(budget.mode) || !Number.isSafeInteger(budget.limit)
-    || budget.limit < 1 || budget.limit > (budget.mode === "bytes" ? 4000 : 128_000)) {
+  if (!["tokens", "bytes"].includes(budget?.mode) || !Number.isSafeInteger(budget?.limit)
+    || budget.limit < 0) {
     throw new Error("invalid_history_notes_budget");
   }
   if (!body) throw new Error("invalid_history_notes_context");
   const input = JSON.parse(new TextDecoder().decode(body));
   const context = input?.context;
-  if (!context || typeof context.session_id !== "string"
-    || !/^[A-Za-z0-9._:-]{1,200}$/.test(context.session_id)
+  if (typeof context?.session_id !== "string" || !context.session_id
     || context.session_id !== request.headers.get("session-id")
-    || typeof context.current_agent_name !== "string"
-    || !/^\/root(?:\/[A-Za-z0-9_-]+)*$/.test(context.current_agent_name)
-    || context.current_agent_name.length > 1024) {
+    || typeof context.current_agent_name !== "string" || !context.current_agent_name) {
     throw new Error("invalid_history_notes_context");
   }
   const headers = new Headers({
-    "x-openai-tool-output-truncation-policy": JSON.stringify(budget),
+    "x-openai-tool-output-truncation-policy": JSON.stringify({ mode: budget.mode, limit: budget.limit }),
   });
   const path = new URL(request.url).pathname;
   if (path.endsWith("/search_contents") || path.endsWith("/write_file") || path.endsWith("/append_to_file")) {
