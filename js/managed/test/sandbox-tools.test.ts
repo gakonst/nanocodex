@@ -92,7 +92,7 @@ describe("Cloudflare sandbox tools", () => {
     });
     expect(sandbox.startProcess).toHaveBeenCalledWith("exec 2>&1\ntask", {
       cwd: "/workspace/repo",
-      envVars: { GH_TOKEN: "NANOCODEX_PROVIDER_CREDENTIAL", GH_PROMPT_DISABLED: "1", GIT_TERMINAL_PROMPT: "0" },
+      env: { GH_TOKEN: "NANOCODEX_PROVIDER_CREDENTIAL", GH_PROMPT_DISABLED: "1", GIT_TERMINAL_PROMPT: "0" },
       processId: expect.stringMatching(/^nanocodex-[1-9][0-9]*$/),
       autoCleanup: false,
     });
