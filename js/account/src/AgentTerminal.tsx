@@ -33,6 +33,7 @@ import {
   type BrowserAccountMcpConnection,
 } from "./browserMcp";
 import { clientFailureMessage } from "./clientFailure";
+import { AgentModelMenu } from "./AgentModelMenu";
 import { attachManagedBrowserHand } from "./managedBrowserHand";
 import { managedTerminalAgent, openManagedAgent } from "./managedAgentRuntime";
 
@@ -41,12 +42,7 @@ export { AgentTerminalView } from "nanocodex-terminal";
 
 type Model = ManagedCreateSettings["model"];
 type Thinking = ManagedCreateSettings["thinking"];
-const MODELS: readonly Model[] = [
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-6-astra",
-];
+
 
 /** Authenticated website policy around the headless Agent SDK and shared transcript view. */
 type AgentTerminalProps = Readonly<{
@@ -186,6 +182,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       agent={agent}
       agentError={isError ? errorMessage(error) : undefined}
       composer={composer}
+      composerPlaceholder="Ask Nanocodex"
       inactiveMessage={({ agentError, agentStatus }) => inactiveTerminalMessage({
         agentError,
         agentStatus,
@@ -201,7 +198,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       voice={voiceEnabled}
       welcome={welcome}
       controls={source === "brokered" ? ({ agentReady }) => (
-        <TerminalSettingsControls
+        <AgentModelMenu
           agentReady={agentReady}
           modelLocked={conversationStarted}
           settings={settings}
@@ -330,9 +327,11 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       onStateChange={onStateChange}
       retryAgent={retryAgent}
       voice={voiceEnabled}
+      welcome={settingsReady && !conversationStarted ? "# What should we work on?" : undefined}
+      composerPlaceholder="Ask Nanocodex"
       controls={({ agentReady }) => (
         <>
-          <TerminalSettingsControls
+          <AgentModelMenu
             agentReady={agentReady && settingsReady}
             modelLocked={conversationStarted}
             settings={settings}
@@ -372,58 +371,6 @@ function terminalDefaultSettings(source: CredentialSource | undefined): ManagedC
   };
 }
 
-function TerminalSettingsControls({
-  agentReady,
-  modelLocked,
-  settings,
-  onFastMode,
-  onModel,
-  onThinking,
-}: Readonly<{
-  agentReady: boolean;
-  modelLocked: boolean;
-  settings: ManagedCreateSettings;
-  onFastMode(enabled: boolean): Promise<unknown>;
-  onModel(model: Model): Promise<unknown>;
-  onThinking(thinking: Thinking): Promise<unknown>;
-}>) {
-  const [error, setError] = useState<string>();
-  const run = (operation: Promise<unknown>) => {
-    setError(undefined);
-    void operation.catch((cause) => setError(errorMessage(cause)));
-  };
-  const thinking: readonly Thinking[] = ["none", "low", "medium", "high", "xhigh", "max"];
-  return <div className="agent-runtime-controls" title={error}>
-    <select
-      aria-label="Model"
-      disabled={!agentReady || modelLocked}
-      value={settings.model}
-      onChange={(event) => run(onModel(event.currentTarget.value as Model))}
-    >
-      {MODELS.map((model) => <option key={model} value={model}>{model.replace("gpt-5.6-", "").replace("gpt-6-", "")}</option>)}
-    </select>
-    <select
-      aria-label="Thinking"
-      disabled={!agentReady}
-      value={settings.thinking}
-      onChange={(event) => run(onThinking(event.currentTarget.value as Thinking))}
-    >
-      {thinking.map((effort) => <option
-        key={effort}
-        value={effort}
-        disabled={settings.model === "gpt-6-astra" && effort === "none"}
-      >{effort}</option>)}
-    </select>
-    <button
-      aria-label="Fast mode"
-      aria-pressed={settings.fastMode}
-      className={settings.fastMode ? "is-active" : undefined}
-      disabled={!agentReady}
-      type="button"
-      onClick={() => run(onFastMode(!settings.fastMode))}
-    >fast</button>
-  </div>;
-}
 
 function artifactFollowOnPrompt(
   artifact: ArtifactDocument,

@@ -423,7 +423,7 @@ export function ConnectOnboarding({
         data-testid={complete ? "device-connect-complete" : "device-connect-error"}
       >
         {!wizard ? <header className="dialog-header">
-          <span className="wordmark">nanocodex/connect</span>
+          <span className="wordmark">Nanocodex Connect</span>
           <span className="secure-label"><span aria-hidden="true" /> device</span>
         </header> : null}
         <div className={wizard ? "wizard-content wizard-complete" : "dialog-content"}>
@@ -1264,7 +1264,7 @@ export function ConnectOnboarding({
       data-testid={wizard ? "device-connect-wizard" : "remote-connect-dialog"}
     >
       {!wizard ? <header className="dialog-header">
-        <span className="wordmark">nanocodex/connect</span>
+        <span className="wordmark">Nanocodex Connect</span>
           <span className="secure-label"><span aria-hidden="true" /> {hostPrincipalRequest
             ? "host identity"
             : "SMS account"}</span>

@@ -244,11 +244,12 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
   const navigate = useNavigate();
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem("nanocodex-theme");
-    const initial = stored === "light" || stored === "dark" ? stored : "dark";
+    const initial = stored === "light" || stored === "dark" ? stored
+      : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     document.documentElement.dataset.theme = initial;
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", initial === "dark" ? "#161616" : "#ffffff");
+      ?.setAttribute("content", initial === "dark" ? "#212121" : "#ffffff");
     return initial;
   });
   const surface = surfaceFromUrl({
@@ -631,7 +632,7 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
     document.documentElement.dataset.theme = theme;
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", theme === "dark" ? "#161616" : "#ffffff");
+      ?.setAttribute("content", theme === "dark" ? "#212121" : "#ffffff");
     localStorage.setItem("nanocodex-theme", theme);
   }, [theme]);
 
@@ -1356,10 +1357,12 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
                   className="sr-only"
                   id={surface === "agent" ? "agent-page-title" : "home-title"}
                 >
-                  {surface === "agent" ? "Nanocodex durable agent" : "High-performance Codex SDK. Runs anywhere."}
+                  {surface === "agent" ? "Your Nanocodex agents" : "Chat with Nanocodex"}
                 </h1>
                 <section className="home-demo" id="agent-demo">
                   <AgentExperience
+                    theme={theme}
+                    onThemeChange={setTheme}
                     agentId={routeAgentId}
                     landing={agentExperienceSurface === "home"}
                     mode={

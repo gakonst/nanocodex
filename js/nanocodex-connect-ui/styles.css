@@ -1,17 +1,18 @@
 :root.connect-dialog-standalone {
   color-scheme: dark;
-  font-family: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", monospace;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --surface: #141414;
-  --surface-raised: #1c1c1c;
-  --surface-subtle: #171717;
-  --text: #ffffff;
-  --muted: rgba(255, 255, 255, 0.62);
-  --faint: rgba(255, 255, 255, 0.4);
+  --surface: #212121;
+  --surface-raised: #303030;
+  --surface-subtle: #191919;
+  --text: #ececec;
+  --text-inverse: #212121;
+  --negative: #ffaaaa;
+  --muted: color-mix(in srgb, var(--text) 72%, transparent);
+  --faint: color-mix(in srgb, var(--text) 65%, transparent);
   --border: rgba(255, 255, 255, 0.1);
-  --border-strong: rgba(255, 255, 255, 0.2);
+  --border-strong: color-mix(in srgb, var(--text) 18%, transparent);
   --positive: #73d89b;
   --warning: #e8c77a;
   background: transparent;
@@ -36,9 +37,9 @@
   place-items: center;
   margin: 0;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.66);
+  background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.45;
 }
 
@@ -49,7 +50,7 @@
 
 .connect-onboarding button:focus-visible,
 .connect-onboarding summary:focus-visible {
-  outline: 1px solid var(--text);
+  outline: 2px solid var(--text);
   outline-offset: 2px;
 }
 
@@ -62,26 +63,26 @@
 }
 
 .connect-onboarding {
-  --muted: rgba(255, 255, 255, 0.62);
-  --faint: rgba(255, 255, 255, 0.4);
-  --border-strong: rgba(255, 255, 255, 0.2);
+  --muted: color-mix(in srgb, var(--text) 72%, transparent);
+  --faint: color-mix(in srgb, var(--text) 65%, transparent);
+  --border-strong: color-mix(in srgb, var(--text) 18%, transparent);
   --warning: #e8c77a;
   color: var(--text);
-  font-family: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", monospace;
-  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
   line-height: 1.45;
 }
 
 @scope (.connect-onboarding) {
 :scope.dialog-shell {
   display: flex;
-  width: min(408px, calc(100vw - 24px));
-  max-height: min(650px, calc(100vh - 24px));
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(696px, calc(100dvh - 24px));
   min-height: 0;
   margin: 0 auto;
   overflow: hidden;
   border: 1px solid var(--border-strong);
+  border-radius: 24px;
   background: var(--surface);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.55);
 }
@@ -105,13 +106,13 @@
 
 .dialog-header {
   flex: 0 0 auto;
-  min-height: 46px;
-  padding: 0 20px;
+  min-height: 60px;
+  padding: 0 24px;
   border-bottom: 1px solid var(--border);
 }
 
 .wordmark {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.03em;
 }
@@ -121,7 +122,7 @@
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .secure-label > span {
@@ -133,7 +134,7 @@
 .dialog-content {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 0 20px 18px;
+  padding: 0 24px 24px;
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-color: var(--border-strong) transparent;
@@ -182,7 +183,7 @@
   display: block;
   margin-top: 2px;
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -200,19 +201,19 @@
 
 .terminal-code span {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .terminal-code strong {
   color: var(--positive);
-  font-size: 12px;
+  font-size: 14px;
   letter-spacing: 0.08em;
 }
 
 .eyebrow {
   margin-bottom: 7px;
   color: var(--positive);
-  font-size: 9px;
+  font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -228,7 +229,7 @@
   max-width: 350px;
   margin-top: 6px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 13px;
   line-height: 1.55;
 }
 
@@ -247,7 +248,7 @@
   background: transparent;
   cursor: pointer;
   color: var(--faint);
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .account-mode button:last-child {
@@ -351,7 +352,7 @@
   background: var(--surface-raised);
   color: var(--muted);
   content: attr(data-tooltip);
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.5;
   opacity: 0;
   pointer-events: none;
@@ -387,7 +388,7 @@
   border: 1px solid var(--surface);
   background: var(--positive);
   color: #0b0b0b;
-  font-size: 8px;
+  font-size: 11px;
   font-style: normal;
   font-weight: 700;
 }
@@ -404,7 +405,7 @@
 }
 
 .capability-token:focus-visible {
-  outline: 1px solid var(--text);
+  outline: 2px solid var(--text);
   outline-offset: 3px;
 }
 
@@ -420,7 +421,7 @@
   padding: 7px 0 0;
   overflow: visible;
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1;
   white-space: nowrap;
 }
@@ -450,7 +451,7 @@
   background: var(--surface-raised);
   color: var(--muted);
   content: attr(data-tooltip);
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.4;
   opacity: 0;
   pointer-events: none;
@@ -470,7 +471,7 @@
 }
 
 .app-sees-permission:focus-visible {
-  outline: 1px solid var(--text);
+  outline: 2px solid var(--text);
   outline-offset: 2px;
 }
 
@@ -497,7 +498,7 @@
   border: 1px solid var(--surface);
   background: var(--surface-raised);
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -514,13 +515,13 @@
   padding: 10px 1px;
   border-bottom: 1px solid var(--border);
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
   text-decoration: none;
 }
 
 .device-code strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0.08em;
 }
 
@@ -553,7 +554,7 @@
   place-items: center;
   background: var(--surface-raised);
   color: var(--text);
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .mcp-connection-copy {
@@ -564,7 +565,7 @@
 
 .mcp-connection-copy strong {
   overflow: hidden;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -574,7 +575,7 @@
 .mcp-connection-copy small,
 .mcp-connection-state {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .mcp-connection-actions {
@@ -593,7 +594,7 @@
   border: 1px solid var(--border-strong);
   background: transparent;
   cursor: pointer;
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .mcp-connection-card button:disabled {
@@ -611,17 +612,17 @@
 
 .grant-boundary > span {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .grant-boundary strong {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
 }
 
 .grant-boundary small {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 400;
 }
 
@@ -682,21 +683,21 @@
 }
 
 .preview-header strong {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
 }
 
 .preview-header div > span {
   overflow: hidden;
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .preview-state {
   color: var(--positive);
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -728,7 +729,7 @@
   font-weight: 600;
   width: 28px;
   height: 28px;
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .preview-service strong {
@@ -736,14 +737,14 @@
   min-width: 0;
   align-items: center;
   gap: 5px;
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 500;
   line-height: 1.25;
 }
 
 .preview-service > span {
   color: var(--positive);
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -770,13 +771,13 @@
 }
 
 .section-heading h2 {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
 }
 
 .section-heading > span {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -802,12 +803,12 @@
 
 .permission-row span {
   color: var(--faint);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .permission-row strong {
   color: var(--text);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 500;
   text-align: right;
 }
@@ -815,7 +816,7 @@
 .period-note {
   margin-top: 8px;
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -829,7 +830,7 @@
   padding: 9px 1px;
   color: var(--muted);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .advanced-details[open] summary {
@@ -851,13 +852,13 @@
 
 dt {
   color: var(--faint);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 dd {
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -869,7 +870,7 @@ dd {
   padding: 10px 11px;
   border-top: 1px solid var(--border);
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
   list-style: none;
 }
 
@@ -887,7 +888,7 @@ dd {
   border-top: 1px solid var(--border);
   color: var(--muted);
   font: inherit;
-  font-size: 8px;
+  font-size: 11px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -895,7 +896,7 @@ dd {
 .signature-note {
   padding: 10px 1px 0;
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -904,7 +905,7 @@ dd {
   flex: 0 0 auto;
   grid-template-columns: 0.65fr 1.35fr;
   gap: 7px;
-  padding: 12px 20px 16px;
+  padding: 16px 24px 20px;
   border-top: 1px solid var(--border);
   background: var(--surface);
 }
@@ -915,22 +916,22 @@ dd {
   border: 1px solid var(--border-strong);
   background: transparent;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .dialog-actions button:last-child {
   border-color: var(--text);
   background: var(--text);
-  color: #000000;
+  color: var(--surface);
   font-weight: 600;
 }
 
 .dialog-actions button:not(:disabled):hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
 .dialog-actions button:last-child:not(:disabled):hover {
-  background: rgba(255, 255, 255, 0.86);
+  background: color-mix(in srgb, var(--text) 86%, var(--surface));
 }
 
 .dialog-actions button:disabled {
@@ -943,8 +944,8 @@ dd {
   padding: 9px 10px;
   border: 1px solid rgba(255, 105, 105, 0.42);
   background: rgba(255, 105, 105, 0.07);
-  color: #ffaaaa;
-  font-size: 9px;
+  color: var(--negative, #ffaaaa);
+  font-size: 12px;
 }
 
 .onramp-card {
@@ -955,12 +956,12 @@ dd {
 
 .card-topline {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .card-method {
   color: var(--positive);
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -980,7 +981,7 @@ dd {
 
 .funding-caption {
   color: var(--faint);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .funding-details {
@@ -996,7 +997,7 @@ dd {
   padding-top: 14px;
   border-top: 1px solid var(--border);
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -1020,14 +1021,14 @@ dd {
 }
 
 .passkey-note strong {
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 500;
 }
 
 .passkey-note p {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -1055,7 +1056,7 @@ dd {
 
 .wizard-app p {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -1072,11 +1073,11 @@ dd {
 .wizard-section-title span,
 .wizard-section-title small {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .wizard-terminal-code strong {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.09em;
 }
@@ -1104,7 +1105,7 @@ dd {
 }
 
 .wizard-section-title h2 {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
 }
 
@@ -1123,13 +1124,13 @@ dd {
 }
 
 .sms-otp-form > label {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
 }
 
 .sms-otp-form > p {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -1177,7 +1178,7 @@ dd {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .wizard-account-choice {
@@ -1220,7 +1221,7 @@ dd {
   place-items: center;
   border: 1px solid var(--border-strong);
   background: var(--surface-raised);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .wizard-passkey-avatar {
@@ -1241,18 +1242,18 @@ dd {
 }
 
 .wizard-account-copy strong {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
 }
 
 .wizard-account-copy small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .wizard-account-arrow {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .wizard-account-create-form {
@@ -1292,7 +1293,7 @@ dd {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .wizard-connectors {
@@ -1331,7 +1332,7 @@ dd {
 }
 
 .wizard-connectors .connection-card-copy strong {
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -1339,7 +1340,7 @@ dd {
 .wizard-connectors .connection-card-action {
   overflow: hidden;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1365,7 +1366,7 @@ dd {
 
 .wizard-visibility > div > span {
   color: var(--positive);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .wizard-visibility > div > div {
@@ -1375,7 +1376,7 @@ dd {
 .wizard-visibility strong,
 .wizard-visibility small {
   overflow: hidden;
-  font-size: 8px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1394,7 +1395,7 @@ dd {
   justify-content: space-between;
   padding: 9px 0;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .wizard-device-code strong {
@@ -1413,6 +1414,7 @@ dd {
     margin: 0;
     border-inline: 0;
     border-bottom: 0;
+    border-radius: 24px 24px 0 0;
     box-shadow: 0 -24px 72px rgba(0, 0, 0, 0.55);
   }
 
@@ -1472,4 +1474,40 @@ dd {
     display: grid;
     place-items: end center;
   }
+}
+
+/* The hosted consent surface follows the native app's system appearance. */
+@media (prefers-color-scheme: light) {
+  :root.connect-dialog-standalone {
+    color-scheme: light;
+    --surface: #fff;
+    --surface-raised: #f4f4f4;
+    --surface-subtle: #f9f9f9;
+    --text: #262626;
+    --text-inverse: #fff;
+    --border: rgba(0, 0, 0, .1);
+    --positive: #0d7136;
+    --negative: #b72f2f;
+    --warning: #886013;
+  }
+}
+
+@scope (.connect-onboarding) {
+  button, input, .app-sees-permission { border-radius: 10px; }
+  .app-mark, .connector-logo, .mcp-connection-logo, .wizard-account-avatar { border-radius: 12px; }
+  .secure-label > span, .connector-state, .passkey-icon { border-radius: 50%; }
+  .wizard-account-chooser, .sms-otp-form, .permission-rows, .mcp-connection-card, .dialog-error { border-radius: 14px; overflow: hidden; }
+  .wizard-account-choice { border-radius: 0; }
+  .dialog-actions button, .sms-otp-input-row :is(button, input) { min-height: 46px; }
+  .sms-otp-input-row { grid-template-columns: minmax(0, 1fr); }
+  .sms-otp-input-row input { font-size: 16px; }
+  .request-title, .consent-hero { padding-block: 24px 20px; }
+  .request-title h1, .wizard-app h1 { font-size: 24px; line-height: 1.2; letter-spacing: -.035em; }
+  .wordmark { font-size: 15px; letter-spacing: -.025em; }
+  .wizard-section { padding-block: 18px; }
+  .app-sees, .capability-logos { flex-wrap: wrap; }
+  .wizard-section-title { flex-wrap: wrap; }
+  .wizard-account-copy small { line-height: 1.5; }
+  .sms-otp-change { min-height: 44px; }
+  .wizard-account-choice:focus-visible, input:focus-visible { outline: 2px solid var(--text); outline-offset: -3px; }
 }
