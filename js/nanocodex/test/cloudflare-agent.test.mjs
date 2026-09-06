@@ -292,6 +292,12 @@ test("Cloudflare Agent owns credentials, transport, and durability options", asy
     /subagent lifecycle hook must be a function/,
   );
   await assert.rejects(
+    create(module, durableOwner(new MemoryStorage()), {
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentMaxConcurrency: 0 },
+    }),
+    /subagentMaxConcurrency must be a positive safe integer/,
+  );
+  await assert.rejects(
     create(module, { env: { NANOCODEX: egressBinding() } }),
     /requires owner\.ctx/,
   );

@@ -8,6 +8,48 @@ import test from "node:test";
 
 import * as NodeWorkspace from "../node/workspace.mjs";
 import { materializeRepositoryWorkspace } from "../tools/repository-workspace.mjs";
+import { createComputerRuntime } from "nanocodex-tools";
+
+test("Just Bash gh clone creates a usable repository with the requested history", async () => {
+  const fixture = await gitFixture();
+  const destination = await mkdtemp(join(tmpdir(), "nanocodex-shell-clone-"));
+  try {
+    const runtime = await createComputerRuntime({
+      filesystem: await NodeWorkspace.open({ path: destination }),
+      networkMode: "test",
+      fetch: async (url, options) => {
+        const target = new URL(url);
+        assert.equal(target.origin, "https://github.com");
+        assert.ok(options.signal instanceof AbortSignal);
+        const response = await fetch(`${fixture.url}/git/${fixture.head}${target.pathname.slice("/fixture/repo.git".length)}${target.search}`, options);
+        return {
+          status: response.status, statusText: response.statusText,
+          headers: Object.fromEntries(response.headers),
+          body: new Uint8Array(await response.arrayBuffer()), url,
+        };
+      },
+    });
+    const call = { signal: new AbortController().signal, sessionId: "fixture" };
+    const cloned = await runtime.tool.handler({
+      cmd: "gh repo clone fixture/repo /workspace/source && cd source && git log --oneline && git status --porcelain",
+    }, call);
+    assert.equal(cloned.exit_code, 0, cloned.output);
+    assert.match(cloned.output, /Cloning into 'source'/);
+    assert.match(cloned.output, /second/);
+    assert.match(cloned.output, /seed/);
+    assert.equal(await readFile(join(destination, "source/README.md"), "utf8"), "immutable\n");
+    assert.equal(await git(["rev-list", "--count", "HEAD"], join(destination, "source")), "2\n");
+    assert.equal(await git(["tag"], join(destination, "source")), "v1\n");
+    const shallow = await runtime.tool.handler({
+      cmd: "gh repo clone fixture/repo shallow -- --depth 1",
+    }, call);
+    assert.equal(shallow.exit_code, 0, shallow.output);
+    assert.equal(await git(["rev-list", "--count", "HEAD"], join(destination, "shallow")), "1\n");
+  } finally {
+    await fixture.close();
+    await rm(destination, { recursive: true, force: true });
+  }
+});
 
 test("materializes once, reopens without network, and preserves retained work", async () => {
   const fixture = await gitFixture();
@@ -107,6 +149,8 @@ async function gitFixture() {
   await writeFile(join(source, "README.md"), "immutable\n");
   await git(["add", "README.md"], source);
   await git(["commit", "-q", "-m", "seed"], source);
+  await git(["tag", "v1"], source);
+  await git(["commit", "-q", "--allow-empty", "-m", "second"], source);
   const head = (await git(["rev-parse", "HEAD"], source)).trim();
   await git(["clone", "-q", "--bare", source, join(repositories, "seed.git")], directory);
 

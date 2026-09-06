@@ -48,6 +48,14 @@ export async function justBash(options) {
         ? undefined
         : "restricted-http"),
     customCommands: options.customCommands,
+    aroundExecute: options.refreshFilesystemBeforeExec
+      ? async ({ execute, signal }) => {
+        signal.throwIfAborted();
+        await shellFilesystem.open();
+        signal.throwIfAborted();
+        return execute();
+      }
+      : undefined,
     executionTimeoutMs,
     defaultMaxOutputTokens: maxOutputTokens,
     maxOutputTokens,
@@ -281,8 +289,10 @@ class WorkspaceShellFileSystem {
   }
 
   async open() {
-    this.#entries.set(this.#root, directoryEntry());
     const entries = await this.#source.list(".", { recursive: true, maxEntries: this.#maxEntries });
+    this.#entries.clear();
+    this.#sortedPaths = undefined;
+    this.#entries.set(this.#root, directoryEntry());
     for (const entry of entries) {
       const path = resolvePath(this.#root, this.#root, entry.path);
       this.#addParents(path);
@@ -443,6 +453,9 @@ class WorkspaceShellFileSystem {
     const source = resolvePath(this.#root, this.#root, sourcePath);
     const destination = resolvePath(this.#root, this.#root, destinationPath);
     const entry = this.#require(source);
+    if (source === destination || (entry.kind === "directory" && destination.startsWith(`${source}/`))) {
+      throw fsError("EINVAL", "cannot copy a path onto itself or into its own subtree");
+    }
     if (entry.kind === "directory") {
       if (!options.recursive) throw fsError("EISDIR", "copying a directory requires recursive mode");
       await this.mkdir(destination, { recursive: true });

@@ -32,7 +32,24 @@ storage ownership.
 - `GET /v1/agents/:id/capacity` requires `agents:read` for that agent and returns
   storage byte counts, hot receipt counts, and archive counts without loading
   the runtime or returning conversation contents.
-- Managed agents begin with no sandbox hand. The provider-neutral `mount` model
+- Managed agents execute bounded Just Bash in durable `/brain` without a hand.
+  `exec_command` defaults there; `/brain` and `.` also select the brain. Its R2
+  prefix is shared with the native hand mounts, and listings refresh between
+  commands. Text/file processing, HTTP, and supported Git/GitHub commands run
+  here; native binaries, package installs, builds, and process sessions need a
+  hand. The agent reuses a suitable attached hand or mounts one when needed.
+  Known native work such as `cargo test` can go directly to a hand; an
+  unsupported brain capability can also trigger that choice after a probe.
+  `exec_command` always honors its selected cwd; the agent owns the fallback.
+  Brain execution requires `tools:use`, with connector authority taken
+  from the exact calling root or subagent.
+  Shell HTTP response bodies are bounded at 16 MiB.
+  Oversized responses fail with a request to narrow the result. Connect grants
+  cannot use Vault-backed shell requests or SSH identities.
+  The shared task tree admits at most eight active subagents, including nested
+  delegation. The existing WASM admission policy enforces this ceiling before
+  creating children; a failed tool does not justify recursively delegating it.
+  The provider-neutral `mount` model
   tool provisions and attaches named execution hands on demand. `cf_sandbox`
   names the built-in Cloudflare Sandbox factory (`cloudflare` remains a legacy
   input alias); any other provider value is the exact name of a connected VM
