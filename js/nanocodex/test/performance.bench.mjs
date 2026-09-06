@@ -165,7 +165,7 @@ test("long durable histories and cold replay fit within the Worker memory budget
       apiKey: "fixture", websocketUrl: server.url, WebSocketImpl: WebSocket, websocketWarmup: true,
     }),
     durability: store, durabilityId: "long-memory-budget", terminalReceiptRetention: 16,
-    thinking: "none",
+    thinking: "low",
   };
   const agent = await HostAgent.create(options);
   context.after(() => agent.session.shutdown());
@@ -189,8 +189,10 @@ test("long durable histories and cold replay fit within the Worker memory budget
     turn.dispose();
   }
   await scenario;
+  const liveWasmBytes = engine.memory.buffer.byteLength;
   await agent.session.shutdown();
   const reopened = await HostAgent.create(options);
+  const reopenedWasmBytes = engine.memory.buffer.byteLength;
   context.after(() => reopened.session.shutdown());
   const replay = reopened.turn.prompt({ id: "turn-95", input });
   const result = await replay.result();
@@ -201,6 +203,7 @@ test("long durable histories and cold replay fit within the Worker memory budget
   const wasmBytes = engine.memory.buffer.byteLength;
   const payloadBytes = Buffer.byteLength(store.load("long-memory-budget").payload);
   context.diagnostic(JSON.stringify({ long_thread_wasm_bytes: wasmBytes,
+    live_wasm_bytes: liveWasmBytes, reopened_wasm_bytes: reopenedWasmBytes,
     durable_payload_bytes: payloadBytes, turns: 96, cold_replay: true }));
   assert.ok(wasmBytes < 64 * 1024 * 1024, `long thread retained ${wasmBytes} WASM bytes`);
   assert.ok(payloadBytes < 4 * 1024 * 1024, `long thread persisted ${payloadBytes} bytes`);
