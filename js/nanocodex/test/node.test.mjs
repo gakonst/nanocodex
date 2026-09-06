@@ -1146,6 +1146,11 @@ test("WASM context reset archives exact history and retains notes, tools and cac
           }
           sendCompleted(socket, `notes-read-${reopened}`, [{ type: "function_call", namespace: "context_notes", name: "read_file", call_id: "read-note", arguments: '{"path":"progress"}' }]);
           assert.match(JSON.stringify((await reader.next()).input), /durable-notes-marker/);
+          sendCompleted(socket, `history-current-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "search_contents", call_id: "current-history", arguments: JSON.stringify({ window_id: windowId, query: "durable-notes-marker" }) }]);
+          const current = (await reader.next()).input.find((item) => item.call_id === "current-history").output;
+          const currentItems = JSON.parse(current.find((part) => part.type === "input_text").text).items;
+          assert.ok(currentItems.length > 0);
+          assert.ok(currentItems.every((item) => item.window_id === windowId));
           sendCompleted(socket, `history-read-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "search_contents", call_id: "recover-request", arguments: JSON.stringify({ window_id: previousId, query: "original-user-marker" }) }]);
           const found = (await reader.next()).input.find((item) => item.call_id === "recover-request");
           const foundText = typeof found.output === "string" ? found.output : found.output.find((part) => part.type === "input_text").text;

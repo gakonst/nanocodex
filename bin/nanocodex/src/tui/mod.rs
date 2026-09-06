@@ -4573,10 +4573,12 @@ mod tests {
             let (stream, _) = listener.accept().await?;
             let mut branch = accept_async(stream).await?;
             let edited = next_ws_json(&mut branch).await?;
-            assert_eq!(edited["previous_response_id"], "resp-first");
-            assert_eq!(edited["input"].as_array().map(Vec::len), Some(1));
+            // The edited branch installs its own context-window identity.
+            assert!(edited["previous_response_id"].is_null());
+            assert!(edited.to_string().contains("first prompt"));
+            assert!(edited.to_string().contains("first answer"));
             assert_eq!(
-                edited["input"][0]["content"][0]["text"],
+                edited["input"].as_array().unwrap().last().unwrap()["content"][0]["text"],
                 "revised second prompt"
             );
             send_completed(&mut branch, "resp-edited", "edited answer").await?;

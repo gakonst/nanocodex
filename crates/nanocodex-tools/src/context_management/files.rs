@@ -27,15 +27,18 @@ impl HistoryNotesHost for FileHost {
     ) -> BackendFuture<Result<Value, String>> {
         let workspace = self.workspace.clone();
         Box::pin(async move {
-            access(workspace, operation)
+            // Keep each filesystem operation on one blocking worker instead
+            // of dispatching every path component and directory entry.
+            tokio::task::spawn_blocking(move || access(workspace, operation))
                 .await
+                .map_err(|error| error.to_string())?
                 .map_err(|error| error.to_string())
         })
     }
 }
 
-async fn access(workspace: PathBuf, operation: StorageOperation) -> std::io::Result<Value> {
-    use tokio::fs;
+fn access(workspace: PathBuf, operation: StorageOperation) -> std::io::Result<Value> {
+    use std::fs;
     let relative = match &operation {
         StorageOperation::Read { path }
         | StorageOperation::Write { path, .. }
@@ -47,7 +50,7 @@ async fn access(workspace: PathBuf, operation: StorageOperation) -> std::io::Res
             return Err(std::io::Error::other("Context path escaped its workspace"));
         };
         path.push(name);
-        match fs::symlink_metadata(&path).await {
+        match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_symlink() => {
                 return Err(std::io::Error::other(
                     "Context storage refuses symbolic links",
@@ -59,35 +62,38 @@ async fn access(workspace: PathBuf, operation: StorageOperation) -> std::io::Res
         }
     }
     match operation {
-        StorageOperation::Read { .. } => match fs::read_to_string(path).await {
+        StorageOperation::Read { .. } => match fs::read_to_string(path) {
             Ok(text) => Ok(json!(text)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Value::Null),
             Err(error) => Err(error),
         },
         StorageOperation::Write { contents, .. } => {
-            use tokio::io::AsyncWriteExt;
+            use std::io::Write;
+            #[cfg(unix)]
+            use std::os::unix::fs::OpenOptionsExt;
             let parent = path.parent().expect("context file has a parent");
-            fs::create_dir_all(parent).await?;
+            fs::create_dir_all(parent)?;
             let temporary = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
             let mut options = fs::OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]
             options.mode(0o600);
-            let mut file = options.open(&temporary).await?;
-            file.write_all(contents.as_bytes()).await?;
+            let mut file = options.open(&temporary)?;
+            file.write_all(contents.as_bytes())?;
             drop(file);
-            fs::rename(&temporary, path).await?;
+            fs::rename(&temporary, path)?;
             Ok(Value::Null)
         }
         StorageOperation::List { path: relative } => {
-            let mut directory = match fs::read_dir(path).await {
+            let directory = match fs::read_dir(path) {
                 Ok(directory) => directory,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(json!([])),
                 Err(error) => return Err(error),
             };
             let mut entries = Vec::new();
-            while let Some(entry) = directory.next_entry().await? {
-                if entry.file_type().await?.is_file()
+            for entry in directory {
+                let entry = entry?;
+                if entry.file_type()?.is_file()
                     && entry.path().extension().is_some_and(|ext| ext == "json")
                 {
                     entries.push(format!(

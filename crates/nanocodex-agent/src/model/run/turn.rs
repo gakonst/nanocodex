@@ -838,7 +838,10 @@ where
             session.conversation.clear_delta();
             let history = code_calls
                 .iter()
-                .any(|call| call.name == "exec")
+                .any(|call| {
+                    call.name == "exec"
+                        || qualified_tool_name(call).starts_with("context_history__")
+                })
                 .then(|| Arc::new(session.conversation.flattened_history()));
             self.execute_model_tools(
                 &session.tools,

@@ -133,10 +133,12 @@ if errors:
 during = threads()
 for agent in agents:
     agent.shutdown()
-deadline = time.monotonic() + 2
+# Workspace I/O uses Tokio's shared blocking pool, whose idle timeout is 10s.
+# Measure retained threads after that pool and the per-agent workers settle.
+deadline = time.monotonic() + 15
 while True:
     after = threads()
-    if during - after >= len(agents) or time.monotonic() >= deadline:
+    if after - before <= 5 or time.monotonic() >= deadline:
         break
     time.sleep(0.01)
 print(json.dumps({{"before": before, "during": during, "after": after}}))
@@ -149,7 +151,7 @@ print(json.dumps({{"before": before, "during": during, "after": after}}))
             )
             self.assertEqual(server.connection_count, 8)
         counts = json.loads(completed.stdout)
-        self.assertEqual(
+        self.assertGreaterEqual(
             counts["during"] - counts["after"],
             8,
             counts,

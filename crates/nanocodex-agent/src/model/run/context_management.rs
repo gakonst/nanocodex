@@ -84,8 +84,8 @@ where
                     }
                 };
                 session.conversation.append(initial);
+                session.conversation.reset_for_full_request();
             }
-            session.conversation.reset_for_full_request();
             self.session = Some(session);
         }
         self.context_management = Some(context);
