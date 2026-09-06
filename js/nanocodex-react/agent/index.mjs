@@ -17,6 +17,7 @@ import {
   queueSteer,
   requeueSteerAsPrompt,
   steerAdmitted,
+  steerCancelled,
   steerFailed,
   turnFinished,
 } from "./transcript.mjs";
@@ -78,6 +79,7 @@ function createController(agent, options) {
   let scheduled = false;
   let cancelScheduled;
   let attached = false;
+  let attachmentGeneration = 0;
   let disposed = false;
   let watcher;
   let releases = [];
@@ -205,6 +207,7 @@ function createController(agent, options) {
   function detach() {
     if (!attached) return;
     attached = false;
+    attachmentGeneration += 1;
     try { watcher?.off(); } catch (error) { emit("controller.cleanup_error", { error }); }
     for (const release of releases.splice(0)) {
       try { release(); } catch (error) { emit("controller.cleanup_error", { error }); }
@@ -233,15 +236,28 @@ function createController(agent, options) {
     }
     const id = nextPromptId++;
     const current = latestActiveTurn();
-    if (submitOptions.intent !== "queue" && current) {
+    if (submitOptions.intent !== "queue" && current && !current.cancelRequested) {
+      const generation = attachmentGeneration;
+      const cancelVersion = current.cancelVersion;
       state = boundedState(queueSteer(state, id, input), options.maxEntries);
       publish();
       try {
         await current.turn.steer({ input });
-        if (disposed) return current.turn;
+        if (disposed || generation !== attachmentGeneration) return current.turn;
+        if (current.cancelVersion !== cancelVersion) {
+          state = steerCancelled(state, id);
+          publish();
+          return current.turn;
+        }
         state = boundedState(steerAdmitted(state, id), options.maxEntries);
         emit("prompt.steered", { id, input });
       } catch (error) {
+        if (disposed || generation !== attachmentGeneration) return current.turn;
+        if (current.cancelVersion !== cancelVersion) {
+          state = steerCancelled(state, id);
+          publish();
+          return current.turn;
+        }
         if (isCompletedSteerRace(error)) {
           return startRootTurn(id, input, true);
         }
@@ -275,7 +291,7 @@ function createController(agent, options) {
         : queuePrompt(state, id, input, turn.historyEntryId),
       options.maxEntries,
     );
-    const record = { disposed: false, id, turn };
+    const record = { disposed: false, id, turn, cancelRequested: false, cancelVersion: 0, cancellation: undefined };
     activeTurns.add(record);
     emit("prompt.accepted", { id, input, sessionId: agent.sessionId });
     publish();
@@ -300,7 +316,7 @@ function createController(agent, options) {
       if (disposed || record.disposed) return;
       state = boundedState(turnFinished(
         state,
-        errorMessage(error),
+        error?.code === "turn_cancelled" ? "the turn was cancelled" : errorMessage(error),
         undefined,
         record.id,
         record.turn.historyEntryId,
@@ -319,16 +335,26 @@ function createController(agent, options) {
   async function cancel() {
     const current = latestActiveTurn();
     if (!current || disposed) return false;
-    try {
-      await current.turn.cancel();
-      emit("prompt.cancelled", { id: current.id });
+    if (current.cancellation) return current.cancellation;
+    // Fence already-submitted corrections before waiting for the server.
+    // Later messages start a new turn while this cancellation settles.
+    current.cancelRequested = true;
+    current.cancelVersion += 1;
+    const generation = attachmentGeneration;
+    current.cancellation = Promise.resolve().then(() => current.turn.cancel()).then(() => {
+      if (!disposed && generation === attachmentGeneration) emit("prompt.cancelled", { id: current.id });
       return true;
-    } catch (error) {
-      state = boundedState(appendLocalError(state, errorMessage(error)), options.maxEntries);
-      emit("prompt.cancel_error", { error, id: current.id });
-      publish();
+    }, (error) => {
+      current.cancelRequested = false;
+      current.cancellation = undefined;
+      if (!disposed && generation === attachmentGeneration) {
+        state = boundedState(appendLocalError(state, errorMessage(error)), options.maxEntries);
+        emit("prompt.cancel_error", { error, id: current.id });
+        publish();
+      }
       return false;
-    }
+    });
+    return current.cancellation;
   }
 
   async function loadOlder() {

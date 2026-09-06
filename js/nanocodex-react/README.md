@@ -40,6 +40,11 @@ controller continues reducing events and publishes one catch-up snapshot after
 becoming visible. `AgentController` provides the same API as a render-prop
 component.
 
+Calling `cancel()` immediately fences corrections already submitted for that
+turn. A later `submit()` starts a new turn while cancellation settles, and
+repeated Stop requests share the same cancellation. Detaching the controller
+also prevents a delayed steering response from starting another turn.
+
 Reasoning summaries and assistant text arrive as separate Markdown-bearing
 entries. Consumers can apply the same streaming renderer to both while keeping
 their own visual policy:

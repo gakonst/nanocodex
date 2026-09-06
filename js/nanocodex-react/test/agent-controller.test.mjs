@@ -253,6 +253,147 @@ test("prompt controls steer active work, queue roots, cancel the latest turn, an
   }
 });
 
+for (const completion of ["cancelled", "completed"]) {
+  test(`Stop fences a pending correction even when the old turn ${completion}`, async () => {
+    const frames = fakeAnimationFrames();
+    const source = fakeAgent();
+    let controller, root;
+    function Consumer() {
+      controller = useAgentController(source.agent);
+      return null;
+    }
+    const steering = Promise.withResolvers();
+    const cancellation = Promise.withResolvers();
+    try {
+      await act(async () => { root = create(createElement(Consumer)); });
+      await act(async () => { await controller.submit("original"); });
+      let cancelCalls = 0;
+      source.turns[0].steer = () => steering.promise;
+      source.turns[0].cancel = () => { cancelCalls++; return cancellation.promise; };
+      let correction, firstStop, secondStop, newMessage;
+      await act(async () => {
+        correction = controller.submit("older correction");
+        firstStop = controller.cancel();
+        secondStop = controller.cancel();
+        newMessage = controller.submit("new message after Stop");
+      });
+      assert.equal(source.turns.length, 2, "a new message must not steer the cancelling turn");
+      assert.equal(cancelCalls, 1, "repeated Stop clicks share one cancellation");
+      await act(async () => {
+        cancellation.resolve();
+        await Promise.all([firstStop, secondStop, newMessage]);
+        if (completion === "cancelled") {
+          source.turns[0].fail(Object.assign(new Error("managed turn cancelled"), { code: "turn_cancelled" }));
+        } else source.turns[0].complete("finished before cancellation arrived");
+        steering.reject(Object.assign(new Error(`turn is ${completion}`), {
+          status: 409, code: "turn_not_steerable", state: completion,
+        }));
+        await correction;
+        source.turns[1].complete("new message completed");
+      });
+      await flushFrames(frames);
+      assert.equal(source.turns.length, 2, "the old correction must never restart after Stop");
+      assert.equal(controller.pendingTurns, 0);
+      assert.equal(controller.entries.some((entry) => entry.kind === "error"), false);
+      assert.ok(controller.entries.some((entry) => entry.text === "new message completed"));
+    } finally {
+      cancellation.resolve();
+      steering.resolve();
+      if (root) await act(async () => root.unmount());
+      frames.restore();
+    }
+  });
+}
+
+test("a failed Stop can be retried without reviving an older correction", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  let controller, root;
+  function Consumer() { controller = useAgentController(source.agent); return null; }
+  const steering = Promise.withResolvers();
+  try {
+    await act(async () => { root = create(createElement(Consumer)); });
+    await act(async () => { await controller.submit("original"); });
+    source.turns[0].steer = () => steering.promise;
+    let calls = 0;
+    source.turns[0].cancel = async () => {
+      if (++calls === 1) throw new Error("temporary cancellation failure");
+    };
+    let correction;
+    await act(async () => {
+      correction = controller.submit("correction before Stop");
+      assert.equal(await controller.cancel(), false);
+      assert.equal(await controller.cancel(), true);
+      source.turns[0].fail(Object.assign(new Error("managed turn cancelled"), { code: "turn_cancelled" }));
+      steering.reject(Object.assign(new Error("turn cancelled"), { status: 409, code: "turn_not_steerable" }));
+      await correction;
+    });
+    await flushFrames(frames);
+    assert.equal(calls, 2);
+    assert.equal(source.turns.length, 1);
+    assert.equal(controller.pendingTurns, 0);
+    assert.equal(controller.status, "Cancelled");
+    assert.deepEqual(controller.entries.filter((entry) => entry.kind === "error").map((entry) => entry.text),
+      ["temporary cancellation failure"]);
+  } finally {
+    steering.resolve();
+    if (root) await act(async () => root.unmount());
+    frames.restore();
+  }
+});
+
+test("a correction still becomes a new turn when its target completes naturally", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  let controller, root;
+  function Consumer() { controller = useAgentController(source.agent); return null; }
+  const steering = Promise.withResolvers();
+  try {
+    await act(async () => { root = create(createElement(Consumer)); });
+    await act(async () => { await controller.submit("original"); });
+    source.turns[0].steer = () => steering.promise;
+    let correction;
+    await act(async () => { correction = controller.submit("correction after completion"); });
+    await act(async () => {
+      source.turns[0].complete("original completed");
+      steering.reject(Object.assign(new Error("turn completed"), { status: 409, code: "turn_not_steerable" }));
+      await correction;
+    });
+    assert.equal(source.turns.length, 2);
+    assert.equal(source.turns[1].input, "correction after completion");
+  } finally {
+    steering.resolve();
+    if (root) await act(async () => root.unmount());
+    frames.restore();
+  }
+});
+
+test("a delayed steer rejection cannot start work after the controller detaches", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  let controller, root;
+  function Consumer() { controller = useAgentController(source.agent); return null; }
+  const steering = Promise.withResolvers();
+  try {
+    await act(async () => { root = create(createElement(Consumer)); });
+    await act(async () => { await controller.submit("original"); });
+    source.turns[0].steer = () => steering.promise;
+    let correction;
+    await act(async () => { correction = controller.submit("correction before navigation"); });
+    await act(async () => root.unmount());
+    root = undefined;
+    await act(async () => {
+      steering.reject(Object.assign(new Error("turn completed"), { status: 409, code: "turn_not_steerable" }));
+      await correction;
+    });
+    assert.equal(source.turns.length, 1);
+  } finally {
+    steering.resolve();
+    if (root) await act(async () => root.unmount());
+    frames.restore();
+  }
+});
+
 test("retained history merges older pages by durable turn and exposes load state", async () => {
   const frames = fakeAnimationFrames();
   const source = fakeAgent();

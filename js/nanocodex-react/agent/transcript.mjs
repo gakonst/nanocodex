@@ -54,6 +54,13 @@ export function steerFailed(state, id, error) {
   }, error);
 }
 
+export function steerCancelled(state, id) {
+  return {
+    ...state,
+    pendingSteers: state.pendingSteers.filter((steer) => steer.id !== id),
+  };
+}
+
 export function requeueSteerAsPrompt(state, id, text, historyEntryId) {
   const turnId = historyTurnId(historyEntryId);
   return {
@@ -71,6 +78,7 @@ export function requeueSteerAsPrompt(state, id, text, historyEntryId) {
 }
 
 export function turnFinished(state, error, finalMessage, promptId, historyEntryId) {
+  const cancelled = error === "the turn was cancelled";
   const turnId = historyTurnId(historyEntryId);
   let next = {
     ...state,
@@ -90,7 +98,7 @@ export function turnFinished(state, error, finalMessage, promptId, historyEntryI
       running: false,
       activeTurnId: undefined,
       pendingRunError: undefined,
-      status: error ? "Turn failed" : "Ready",
+      status: cancelled ? "Cancelled" : error ? "Turn failed" : "Ready",
     };
   }
   if (finalMessage?.trim()) {
@@ -132,7 +140,8 @@ export function turnFinished(state, error, finalMessage, promptId, historyEntryI
       };
     }
   }
-  if (!error || error === "the turn was cancelled") return next;
+  if (cancelled && next.pendingTurns === 0 && !next.running) next = { ...next, status: "Cancelled" };
+  if (!error || cancelled) return next;
   const tail = next.entries.at(-1);
   return tail?.kind === "error" && tail.text === error ? next : appendError(next, error, turnId);
 }
