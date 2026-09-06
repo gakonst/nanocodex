@@ -21,6 +21,7 @@ import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
 import { createWorkspaceFilesystem } from "nanocodex-tools";
 import { SessionAttachments } from "./attachments";
 import { createBrainWorkspace } from "./brain-workspace";
+import { createBrainBucket } from "./brain-bucket";
 import { managedCodeEvaluator } from "./code-evaluator";
 import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
 import { createCronTool } from "./cron-tool";
@@ -44,6 +45,7 @@ import {
 import {
   ContainerProxy,
   Sandbox,
+  serveBrainFilesystem,
 } from "./sandbox-runtime";
 import {
   connectedManagedAccountMcps,
@@ -2456,6 +2458,7 @@ const DurableComputerSession = withWorkspace(
 );
 
 export class DurableAgentSession extends DurableComputerSession {
+  #brainStorage?: R2Bucket;
   #agent?: CloudflareAgent.Agent;
   #agentPromise?: Promise<CloudflareAgent.Agent>;
   #agentPrewarmTask?: Promise<void>;
@@ -3332,9 +3335,22 @@ export class DurableAgentSession extends DurableComputerSession {
 
   #attachmentStore(): SessionAttachments {
     return this.#attachments ??= new SessionAttachments(
-      this.ctx.storage, this.env.NANOCODEX_WORKSPACES, this.#sessionId()!,
+      this.ctx.storage, this.#brainBucket(), this.#sessionId()!,
       () => !this.#deleting && !this.#deleted && !this.#durabilityExported,
     );
+  }
+
+  #brainBucket(): R2Bucket {
+    if (this.env.NANOCODEX_SANDBOX_LOCAL === "true") return this.env.NANOCODEX_WORKSPACES;
+    return this.#brainStorage ??= createBrainBucket(this.ctx.storage, this.env.NANOCODEX_WORKSPACES, this.#sessionId()!);
+  }
+
+  /** Trusted container-proxy RPC; public HTTP routes never expose this method. */
+  async brainFilesystem(request: Request, readOnly: boolean): Promise<Response> {
+    const session = this.#session();
+    if (!session || this.#deleting || this.#deleted || this.#durabilityExported
+      || this.#durabilityImportState === "pending") return new Response(null, { status: 409 });
+    return serveBrainFilesystem(request, this.#brainBucket(), session.session_id, readOnly);
   }
 
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -6350,7 +6366,7 @@ export class DurableAgentSession extends DurableComputerSession {
     // fail closed without a subject, while ordinary public HTTP remains usable.
     const computer = await createManagedComputerRuntime({
       computer: workspace,
-      ...(multiplayer ? {} : { filesystem: createBrainWorkspace(this.env.NANOCODEX_WORKSPACES, session.session_id) }),
+      ...(multiplayer ? {} : { filesystem: createBrainWorkspace(this.#brainBucket(), session.session_id) }),
       egress: this.env.NANOCODEX,
       ...(multiplayer ? {} : { subject: this.ctx.id.toString() }),
       connectorAllowed: (connector, connectionId, context) => (
@@ -6362,7 +6378,7 @@ export class DurableAgentSession extends DurableComputerSession {
         && this.#hasFullAccountAuthority(this.#authorizationForToolContext(context)),
     });
     const sharedBrainWorkspace = createSharedBrainReadWorkspace(
-      this.env.NANOCODEX_WORKSPACES,
+      this.#brainBucket(),
       session.session_id,
       { readFile: async (path: string) => {
         if (multiplayer || !path.startsWith("/")) return computer.filesystem.readFile(path);
