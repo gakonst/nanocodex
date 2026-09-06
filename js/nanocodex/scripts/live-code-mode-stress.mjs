@@ -14,7 +14,6 @@ import { artifact as artifactTool } from "../tools/index.mjs";
 import { readCodexSubscription } from "../../managed/scripts/codex-auth-file.mjs";
 
 const executeFile = promisify(execFile);
-const LOGICAL_WORKSPACE = "/workspace";
 const authPath = resolve(
   process.env.NANOCODEX_CODEX_AUTH_FILE ?? join(homedir(), ".codex", "auth.json"),
 );
@@ -43,10 +42,11 @@ try {
   });
   agent = await Agent.create({
     transport: Transport.chatGpt({ subscription }),
-    workspace: LOGICAL_WORKSPACE,
+    workspace: workspace,
     instructions: [
       "You are exercising a browser-computer-compatible Code Mode boundary.",
       "Perform real work through tools.exec_command; never simulate command output.",
+      "Keep all file operations and process activity within the supplied workspace; do not search or manage the host system.",
       "Use one elaborate JavaScript cell when the operations can be composed there.",
     ].join(" "),
     tools: [{
@@ -136,7 +136,7 @@ async function executeCommand(input, context) {
   if (!input || typeof input !== "object" || typeof input.cmd !== "string" || !input.cmd.trim()) {
     throw new TypeError("exec_command.cmd must be a non-empty string");
   }
-  const cwd = workspacePath(input.workdir ?? LOGICAL_WORKSPACE);
+  const cwd = workspacePath(input.workdir ?? workspace);
   const startedAt = performance.now();
   const call = { cmd: input.cmd, exitCode: undefined };
   calls.push(call);
@@ -189,7 +189,7 @@ function validateArtifactSource(source) {
 
 function nodeArtifactWorkspace() {
   return {
-    root: LOGICAL_WORKSPACE,
+    root: workspace,
     async list() { return []; },
     async readFile(path) { return readFile(workspacePath(path)); },
     async writeFile(path, contents) { await writeFile(workspacePath(path), contents); },
@@ -199,8 +199,8 @@ function nodeArtifactWorkspace() {
 }
 
 function workspacePath(path) {
-  const logical = path === LOGICAL_WORKSPACE || path.startsWith(`${LOGICAL_WORKSPACE}/`)
-    ? relative(LOGICAL_WORKSPACE, path)
+  const logical = path === workspace || path.startsWith(`${workspace}/`)
+    ? relative(workspace, path)
     : path;
   const target = isAbsolute(logical) ? resolve(logical) : resolve(workspace, logical);
   const child = relative(workspace, target);
