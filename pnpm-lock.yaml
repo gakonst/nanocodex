@@ -7,6 +7,9 @@ settings:
 overrides:
   '@microsoft/dev-tunnels-ssh': 3.12.40
 
+patchedDependencies:
+  '@cloudflare/sandbox@0.12.4': 7fa7387e610c11eed36979117adfdd317b44eed0f2feffba0c35cdfa24aed2b2
+
 importers:
 
   .:
@@ -466,7 +469,7 @@ importers:
         version: 0.2.1(ai@7.0.90(zod@4.5.4))(supports-color@10.2.2)(zod@4.5.4)
       '@cloudflare/sandbox':
         specifier: 0.12.4
-        version: 0.12.4
+        version: 0.12.4(patch_hash=7fa7387e610c11eed36979117adfdd317b44eed0f2feffba0c35cdfa24aed2b2)
       '@jitl/quickjs-wasmfile-release-asyncify':
         specifier: 0.32.0
         version: 0.32.0
@@ -6602,7 +6605,7 @@ snapshots:
 
   '@cloudflare/kv-asset-handler@0.5.0': {}
 
-  '@cloudflare/sandbox@0.12.4':
+  '@cloudflare/sandbox@0.12.4(patch_hash=7fa7387e610c11eed36979117adfdd317b44eed0f2feffba0c35cdfa24aed2b2)':
     dependencies:
       '@cloudflare/containers': 0.3.7
       aws4fetch: 1.0.20

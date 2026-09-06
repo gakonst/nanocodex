@@ -49,6 +49,11 @@ storage ownership.
   injected only at the provider boundary. Exact Connect identities and revocation
   apply to both GitHub API calls and Git smart HTTP. Connect grants cannot use
   Vault-backed shell requests or SSH identities.
+  The pnpm patch for Sandbox SDK 0.12.4 preserves S3FS `x-amz-meta-*` metadata
+  through R2 uploads, metadata-replacing copies, multipart uploads, and reads.
+  Without it, native permissions and timestamps disappear after revalidation.
+  `sandbox-r2-metadata.test.ts` exercises the SDK proxy against the Worker R2
+  binding; remove the patch when an SDK release passes that contract unpatched.
   Shell execution, workspace traversal, and subagent admission have no implicit
   application quota; caller-specified limits, cancellation, and platform capacity
   still apply.

@@ -19,3 +19,6 @@ minimumReleaseAgeExclude:
   - "@ai-sdk/gateway@4.0.72"
   - "@ai-sdk/provider-utils@5.0.36"
   - "ai@7.0.90"
+
+patchedDependencies:
+  '@cloudflare/sandbox@0.12.4': patches/@cloudflare__sandbox@0.12.4.patch
