@@ -141,6 +141,8 @@ later watcher to resume strictly after the acknowledged event. Network endings
 reconnect automatically from that cursor. Watchers and independently awaitable
 turn results on one agent handle share one replayable event connection; each
 subscriber keeps its own cursor, so consuming one never steals another's events.
+Rapid `turn.steer()` calls on one turn handle are sent in invocation order.
+`turn.cancel()` bypasses pending steering requests, so Stop can interrupt them.
 Pass `cursor: "latest"` to attach atomically at the durable head without
 replaying retained history; a history page can then hydrate independently.
 

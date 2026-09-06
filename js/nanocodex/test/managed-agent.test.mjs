@@ -1208,6 +1208,82 @@ test("a result observer can detach without aborting durable prompt or cancel mut
   assert.equal(cancelSignal.aborted, false);
 });
 
+test("rapid steers retain invocation order without delaying cancellation or another turn", async () => {
+  const firstStarted = deferredPromise();
+  const releaseFirst = deferredPromise();
+  const requests = [];
+  const agent = Agent.open(agentId, {
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      if (path.endsWith("/turns")) {
+        return Response.json({ turn_id: (await request.json()).id, state: "accepted", accepted_cursor: "1" }, { status: 202 });
+      }
+      if (path.endsWith("/steer")) {
+        const { input: correction } = await request.json();
+        requests.push(correction);
+        if (correction === "first correction") {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        }
+        return Response.json({ state: "steering" }, { status: 202 });
+      }
+      if (path.endsWith("/cancel")) {
+        requests.push("cancel");
+        return Response.json({ state: "cancelling" }, { status: 202 });
+      }
+      throw new Error(`unexpected request ${path}`);
+    },
+  });
+  const turn = agent.turn.prompt({ id: "ordered", input: "original" });
+  const first = turn.steer({ input: "first correction" });
+  const second = turn.steer({ input: "second correction" });
+  try {
+    await firstStarted.promise;
+    await within(turn.cancel(), 100, "cancellation behind a pending steer");
+    const other = agent.turn.prompt({ id: "independent", input: "another turn" });
+    await within(other.steer({ input: "independent correction" }), 100, "independent steering");
+    assert.deepEqual(requests, ["first correction", "cancel", "independent correction"]);
+  } finally {
+    releaseFirst.resolve();
+    await Promise.all([first, second]);
+  }
+  assert.equal(requests.at(-1), "second correction");
+});
+
+test("a rejected steer does not discard later corrections", async () => {
+  const releaseFirst = deferredPromise();
+  const requests = [];
+  const turn = Agent.open(agentId, {
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname.endsWith("/turns")) {
+        return Response.json({ turn_id: "retry-steer", state: "accepted", accepted_cursor: "1" }, { status: 202 });
+      }
+      const { input: correction } = await request.json();
+      requests.push(correction);
+      if (correction === "first") {
+        await releaseFirst.promise;
+        return Response.json({ error: "turn_recovering" }, { status: 503 });
+      }
+      return Response.json({ state: "steering" }, { status: 202 });
+    },
+  }).turn.prompt({ id: "retry-steer", input: "original" });
+  const first = turn.steer({ input: "first" });
+  const second = turn.steer({ input: "latest" });
+  const rejected = assert.rejects(first, { status: 503, code: "turn_recovering" });
+  await waitFor(() => requests.length > 0);
+  try {
+    assert.deepEqual(requests, ["first"]);
+  } finally {
+    releaseFirst.resolve();
+    await Promise.all([rejected, second]);
+  }
+  assert.deepEqual(requests, ["first", "latest"]);
+});
+
 test("stable-ID cancellation dispatches after the prompt AbortSignal has fired", async () => {
   const promptStarted = deferredPromise();
   let cancelSignal;

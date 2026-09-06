@@ -456,6 +456,7 @@ function managedTurn(client, agentId, eventStream, options) {
   });
   void submission.catch(() => {});
   let result;
+  let steeringTail = Promise.resolve();
   const turn = {
     idempotencyKey,
     accepted: async () => requiredString(await submission, "turn_id"),
@@ -464,12 +465,19 @@ function managedTurn(client, agentId, eventStream, options) {
       return client.json(turnPath(agentId, requiredString(accepted, "turn_id")), { signal });
     },
     steer: async ({ input }) => {
-      const accepted = await submission;
-      return client.json(`${turnPath(agentId, requiredString(accepted, "turn_id"))}/steer`, {
-        method: "POST",
-        body: JSON.stringify({ input }),
-        signal,
+      const body = JSON.stringify({ input });
+      // Preserve this turn's correction order across concurrent HTTP requests.
+      // Cancellation deliberately bypasses this queue.
+      const steering = steeringTail.then(async () => {
+        const accepted = await submission;
+        return client.json(`${turnPath(agentId, requiredString(accepted, "turn_id"))}/steer`, {
+          method: "POST",
+          body,
+          signal,
+        });
       });
+      steeringTail = steering.then(() => {}, () => {});
+      return steering;
     },
     cancel: async () => {
       const turnId = id ?? requiredString(await submission, "turn_id");
