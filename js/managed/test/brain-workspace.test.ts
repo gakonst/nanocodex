@@ -18,6 +18,41 @@ const computer = () => ({
 });
 
 describe("durable brain without hands", () => {
+  it("clones a real Git pack beyond 16 MiB and retains its exact bytes after reopening", async () => {
+    const id = crypto.randomUUID();
+    const seen: Request[] = [];
+    const egress = { async fetch(request: Request) {
+      seen.push(request);
+      expect(request.headers.get("x-nanocodex-subject")).toBe("s".repeat(43));
+      expect(request.headers.get("authorization")).toBe("Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+      // The provider fixture requires the broker's injected credential.
+      const headers = new Headers(request.headers);
+      headers.delete("x-nanocodex-subject");
+      headers.set("authorization", `Basic ${btoa("x-access-token:github-connector-access")}`);
+      return fetch(new Request(request, { headers }));
+    } } as unknown as Fetcher;
+    const runtime = await createManagedComputerRuntime({
+      computer: computer(), filesystem: createBrainWorkspace(bucket, id),
+      subject: "s".repeat(43), egress,
+    });
+    try {
+      const metadata = JSON.parse(new TextDecoder().decode((await runtime.fetch(
+        "https://api.github.com/repos/fixture/large",
+      )).body)) as { head: string; size: number; sha256: string };
+      expect(metadata.size).toBeGreaterThan(16 * 1024 * 1024);
+      const cloned = await runtime.tool.handler({ cmd: "gh repo clone fixture/large repository" }, context());
+      expect(cloned).toMatchObject({ exit_code: 0 });
+      expect((cloned as { output: string }).output).not.toMatch(/limit|credential|token/);
+      expect(await runtime.tool.handler({ cmd: "git rev-parse HEAD", workdir: "/brain/repository" }, context()))
+        .toMatchObject({ exit_code: 0, output: `${metadata.head}\n` });
+      const bytes = await createBrainWorkspace(bucket, id).readFile("repository/large.bin");
+      expect(bytes.byteLength).toBe(metadata.size);
+      const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      expect([...hash].map((value) => value.toString(16).padStart(2, "0")).join("")).toBe(metadata.sha256);
+      expect(seen.some((request) => request.url.endsWith("/git-upload-pack"))).toBe(true);
+    } finally { runtime.dispose(); }
+  }, 60_000);
+
   it("fences the retained R2 handle after disposal", async () => {
     const workspace = createBrainWorkspace(bucket, crypto.randomUUID());
     const runtime = await createManagedComputerRuntime({
@@ -50,7 +85,7 @@ describe("durable brain without hands", () => {
     } finally { runtime.dispose(); }
   });
 
-  it("cancels oversized chunked HTTP responses before buffering them in full", async () => {
+  it.each([false, true])("accepts bodies beyond 16 MiB (content-length: %s)", async (declared) => {
     let chunks = 0;
     const cancel = vi.fn();
     const runtime = await createManagedComputerRuntime({
@@ -58,15 +93,18 @@ describe("durable brain without hands", () => {
       subject: "s".repeat(43), connectorAllowed: () => true,
       egress: { async fetch() {
         return new Response(new ReadableStream<Uint8Array>({
-          pull(controller) { chunks++; controller.enqueue(new Uint8Array(1024 * 1024)); }, cancel,
-        }));
+          pull(controller) {
+            if (chunks++ < 17) controller.enqueue(new TextEncoder().encode(" ".repeat(1024 * 1024)));
+            else { controller.enqueue(new TextEncoder().encode('{"login":"large-response"}')); controller.close(); }
+          }, cancel,
+        }), { headers: declared ? { "content-length": String(17 * 1024 * 1024 + 26) } : {} });
       } } as unknown as Fetcher,
     });
     try {
       await expect(runtime.tool.handler({ cmd: "gh api user" }, context()))
-        .resolves.toMatchObject({ exit_code: 1, output: expect.stringContaining("exceeds 16 MiB") });
-      expect(cancel).toHaveBeenCalledOnce();
-      expect(chunks).toBeLessThanOrEqual(18);
+        .resolves.toMatchObject({ exit_code: 0, output: expect.stringContaining("large-response") });
+      expect(cancel).not.toHaveBeenCalled();
+      expect(chunks).toBe(18);
       await expect(runtime.tool.handler({ cmd: "echo still-working" }, context()))
         .resolves.toMatchObject({ exit_code: 0, output: "still-working\n" });
     } finally { runtime.dispose(); }

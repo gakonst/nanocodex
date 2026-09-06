@@ -32,7 +32,7 @@ storage ownership.
 - `GET /v1/agents/:id/capacity` requires `agents:read` for that agent and returns
   storage byte counts, hot receipt counts, and archive counts without loading
   the runtime or returning conversation contents.
-- Managed agents execute bounded Just Bash in durable `/brain` without a hand.
+- Managed agents execute Just Bash in durable `/brain` without a hand.
   `exec_command` defaults there; `/brain` and `.` also select the brain. Its R2
   prefix is shared with the native hand mounts, and listings refresh between
   commands. Text/file processing, HTTP, and supported Git/GitHub commands run
@@ -43,12 +43,15 @@ storage ownership.
   `exec_command` always honors its selected cwd; the agent owns the fallback.
   Brain execution requires `tools:use`, with connector authority taken
   from the exact calling root or subagent.
-  Shell HTTP response bodies are bounded at 16 MiB.
-  Oversized responses fail with a request to narrow the result. Connect grants
-  cannot use Vault-backed shell requests or SSH identities.
-  The shared task tree admits at most eight active subagents, including nested
-  delegation. The existing WASM admission policy enforces this ceiling before
-  creating children; a failed tool does not justify recursively delegating it.
+  Shell and Git transfers stream through the account's egress broker without an
+  application byte ceiling. Browser runtime and Cloudflare Sandbox HTTP traffic
+  use the same broker; native `gh` receives a public marker so authentication is
+  injected only at the provider boundary. Exact Connect identities and revocation
+  apply to both GitHub API calls and Git smart HTTP. Connect grants cannot use
+  Vault-backed shell requests or SSH identities.
+  Shell execution, workspace traversal, and subagent admission have no implicit
+  application quota; caller-specified limits, cancellation, and platform capacity
+  still apply.
   The provider-neutral `mount` model
   tool provisions and attaches named execution hands on demand. `cf_sandbox`
   names the built-in Cloudflare Sandbox factory (`cloudflare` remains a legacy

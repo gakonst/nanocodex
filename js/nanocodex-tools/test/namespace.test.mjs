@@ -6,7 +6,6 @@ import {
   createNamespaceScope,
   deriveChildNamespaceScope,
   isNamespacePathWithin,
-  MAX_NAMESPACE_MOUNTS,
   namespaceMountRoot,
   normalizeNamespacePath,
   resolveNamespaceCwd,
@@ -98,9 +97,8 @@ test("manifest admission rejects root ambiguity, aliases, reserved roots, and bo
     assert.throws(() => make([mount(root)]), /root|path/);
   assert.throws(() => make([mount("/one"), mount("/one", "mount:two")]), /duplicate mount root/);
   assert.throws(() => make([mount("/one", "same"), mount("/two", "same")]), /duplicate mount identity/);
-  assert.throws(
-    () => make(Array.from({ length: MAX_NAMESPACE_MOUNTS + 1 }, (_, index) => mount(`/m${index}`))),
-    /1 to 64 mounts/,
+  assert.doesNotThrow(
+    () => make(Array.from({ length: 100 }, (_, index) => mount(`/m${index}`))),
   );
 });
 

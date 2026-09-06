@@ -243,14 +243,9 @@ const ACCOUNT_LINK_TTL = 5 * 60;
 const REGISTERED_APP_ID = "atlas-workspace";
 const MAX_BROKER_BODY_BYTES = 16 * 1024;
 const MAX_BROKER_CREDENTIALS_BODY_BYTES = 256 * 1024;
-const MAX_CONNECTOR_REQUEST_BODY_BYTES = 256 * 1024;
-const MAX_CONNECTOR_RESPONSE_BODY_BYTES = 1024 * 1024;
 const MAX_AGENT_TOOL_BODY_BYTES = 20 * 1024 * 1024;
-const MAX_PUBLIC_EGRESS_BODY_BYTES = 256 * 1024;
-const MAX_PUBLIC_EGRESS_RESPONSE_BYTES = 1024 * 1024;
 const MAX_MANAGED_MEMORY_REQUEST_BYTES = 16 * 1024;
 const MAX_MANAGED_MEMORY_RESPONSE_BYTES = 1024 * 1024;
-const MAX_PINNED_RUNTIME_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_ACCOUNT_AUTHORIZATIONS = 64;
 const MAX_DEVICE_REGISTER_BYTES = 64 * 1024;
 const MAX_CONNECTION_REQUEST_BYTES = 128 * 1024;
@@ -266,6 +261,7 @@ const CONNECTOR_REQUEST_HEADERS = new Set([
   "accept",
   "content-range",
   "content-type",
+  "git-protocol",
   "if-match",
   "if-modified-since",
   "if-none-match",
@@ -288,17 +284,16 @@ const FORBIDDEN_CONNECTOR_HEADERS = /^(?:authorization|cookie|forwarded|host|ori
 const PRIVATE_EGRESS_HEADER = /(?:^|[-_])(?:auth(?:orization)?|cookie|credential|password|proxy|secret|token|api[-_]?key)(?:$|[-_]|\d)/i;
 const FORBIDDEN_EGRESS_HEADERS = new Set([
   "connection", "host", "origin", "proxy-connection", "referer", "te", "trailer",
-  "transfer-encoding", "upgrade", "x-nanocodex-subject", "x-nanocodex-vault-id",
+  "transfer-encoding", "upgrade", "x-nanocodex-subject", "x-nanocodex-vault-id", "x-nanocodex-target-url",
 ]);
 const BLOCKED_EGRESS_RESPONSE_HEADERS = new Set([
   "clear-site-data", "connection", "content-encoding", "content-length", "keep-alive", "nel", "proxy-authenticate",
   "proxy-authorization", "refresh", "report-to", "set-cookie", "set-cookie2",
-  "trailer", "transfer-encoding", "upgrade", "x-nanocodex-subject",
+  "trailer", "transfer-encoding", "upgrade", "x-nanocodex-subject", "x-nanocodex-target-url",
 ]);
 const PRIVATE_HOST_SUFFIXES = [
   ".internal", ".invalid", ".local", ".localhost", ".test", ".home.arpa",
 ];
-const PUBLIC_REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
 type ConnectorState = Readonly<{
   accountAddress?: `0x${string}`;
@@ -3270,7 +3265,7 @@ async function grantBrowserEgress(request: Request, env: Env, grant: GrantRecord
   if (grant.expiresAt <= Math.floor(Date.now() / 1000)) {
     throw new ApiFailure(409, "grant_expired", "The grant has expired.");
   }
-  const value = await boundedJson(request, MAX_PUBLIC_EGRESS_BODY_BYTES, "browser egress");
+  const value = await boundedJson(request, Infinity, "browser egress");
   const targetValue = value.url;
   const threadId = value.thread_id;
   if (typeof targetValue !== "string" || typeof threadId !== "string"
@@ -3309,16 +3304,16 @@ async function grantBrowserEgress(request: Request, env: Env, grant: GrantRecord
     }));
   }
   if (connector) {
-    const result = await grantConnectorRequest(env, grant, connector, {
+    return grantConnectorRequest(env, grant, connector, {
       path: `${target.pathname}${target.search}`,
       method: value.method,
       headers: value.headers,
       body: value.body,
+      body_base64: value.body_base64,
       connection_id: value.connection_id,
-    });
-    return new Response(result.body, { status: result.status, headers: result.headers });
+    }, target, request.signal);
   }
-  return publicBrowserEgress(target, value, request.signal);
+  return publicBrowserEgress(env, grant, target, value, request.signal);
 }
 
 function connectorForUrl(url: URL): RoutableConnectorCapability | undefined {
@@ -3326,73 +3321,51 @@ function connectorForUrl(url: URL): RoutableConnectorCapability | undefined {
 }
 
 async function publicBrowserEgress(
+  env: Env,
+  grant: GrantRecord,
   target: URL,
   value: Record<string, unknown>,
   signal: AbortSignal,
 ): Promise<Response> {
-  let url = publicEgressUrl(target);
-  let method = typeof value.method === "string" ? value.method.toUpperCase() : "GET";
+  const url = publicEgressUrl(target);
+  const method = typeof value.method === "string" ? value.method.toUpperCase() : "GET";
   if (!CONNECTOR_METHODS.has(method)) {
     throw new ApiFailure(403, "egress_method_denied", "The browser egress method is denied.");
   }
+  if (!EGRESS_SUBJECT.test(grant.egressSubject)) {
+    throw new ApiFailure(403, "invalid_grant_binding", "The grant's broker binding is invalid.");
+  }
   const headers = publicEgressHeaders(value.headers);
-  const bodyValue = value.body;
-  if (bodyValue !== undefined && typeof bodyValue !== "string") {
-    throw new ApiFailure(400, "invalid_egress_body", "The browser egress body must be a string.");
-  }
-  let body: string | undefined = bodyValue;
-  if (body !== undefined && (method === "GET" || method === "HEAD")) {
-    throw new ApiFailure(400, "invalid_egress_body", "GET and HEAD egress requests cannot have a body.");
-  }
-  for (let redirects = 0; ; redirects += 1) {
-    if (redirects > 5) {
-      throw new ApiFailure(502, "too_many_redirects", "The public request redirected too many times.");
-    }
-    const outgoingHeaders = new Headers(headers);
-    if (method === "GET" || method === "HEAD") {
-      outgoingHeaders.delete("content-length");
-      outgoingHeaders.delete("content-type");
-      body = undefined;
-    }
-    const upstream = await fetch(url, {
-      method,
-      headers: outgoingHeaders,
-      ...(body === undefined ? {} : { body }),
-      redirect: "manual",
-      signal,
-    });
-    if (PUBLIC_REDIRECTS.has(upstream.status)) {
-      const location = upstream.headers.get("location");
-      await upstream.body?.cancel();
-      if (!location) throw new ApiFailure(502, "invalid_redirect", "The public request returned an invalid redirect.");
-      url = publicEgressUrl(new URL(location, url));
-      if (connectorForUrl(url)) {
-        throw new ApiFailure(502, "redirect_to_connector_denied", "Public requests cannot redirect into a connected account.");
-      }
-      if (upstream.status === 303
-        || ((upstream.status === 301 || upstream.status === 302) && method === "POST")) {
-        method = "GET";
-        body = undefined;
-      }
-      continue;
-    }
-    const responseBody = await boundedResponseBytes(upstream, publicEgressResponseLimit(url));
-    return new Response(responseBody, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: projectedPublicHeaders(upstream.headers),
-    });
-  }
+  const body = browserEgressBody(value, method);
+  headers.set("x-nanocodex-subject", grant.egressSubject);
+  headers.set("x-nanocodex-target-url", url.href);
+  const upstream = await env.EGRESS.fetch(new Request("https://public-egress.internal/v1/request", {
+    method,
+    headers,
+    ...(body === undefined ? {} : { body }),
+    redirect: "manual",
+    signal,
+  }));
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: projectedPublicHeaders(upstream.headers),
+  });
 }
 
-function publicEgressResponseLimit(url: URL): number {
-  if (url.origin === "https://cdn.jsdelivr.net" && (
-    url.pathname.startsWith("/pyodide/v314.0.5/full/")
-    || url.pathname.startsWith("/npm/wasm-clang@0.0.1/bin/")
-  )) {
-    return MAX_PINNED_RUNTIME_RESPONSE_BYTES;
+function browserEgressBody(value: Record<string, unknown>, method: string): string | Uint8Array<ArrayBuffer> | undefined {
+  if ((value.body !== undefined && typeof value.body !== "string")
+    || (value.body !== undefined && value.body_base64 !== undefined)
+    || (value.body_base64 !== undefined && (typeof value.body_base64 !== "string"
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.body_base64)))) {
+    throw new ApiFailure(400, "invalid_egress_body", "The browser egress body must be text or base64 bytes.");
   }
-  return MAX_PUBLIC_EGRESS_RESPONSE_BYTES;
+  if ((value.body !== undefined || value.body_base64 !== undefined) && (method === "GET" || method === "HEAD")) {
+    throw new ApiFailure(400, "invalid_egress_body", "GET and HEAD egress requests cannot have a body.");
+  }
+  return typeof value.body_base64 === "string"
+    ? Uint8Array.from(atob(value.body_base64), (character) => character.charCodeAt(0))
+    : value.body as string | undefined;
 }
 
 function publicEgressUrl(url: URL): URL {
@@ -5131,7 +5104,9 @@ async function grantConnectorRequest(
   grant: GrantRecord,
   connector: RoutableConnectorCapability,
   value: Record<string, unknown>,
-): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+  browserTarget: URL,
+  signal: AbortSignal,
+): Promise<Response> {
   if (grant.status !== "active") {
     throw new ApiFailure(409, "grant_inactive", "The grant is not active.");
   }
@@ -5149,7 +5124,15 @@ async function grantConnectorRequest(
   if (!CONNECTOR_METHODS.has(method)) {
     throw new ApiFailure(400, "invalid_connector_method", "The connector request method is not allowed.");
   }
-  const target = connectorTarget(connector, value.path);
+  let target = connectorTarget(connector, value.path);
+  publicEgressUrl(browserTarget);
+  if (browserTarget.href !== target.href) {
+    if (connector !== "github" || browserTarget.origin !== "https://github.com"
+      || connectorForUrl(browserTarget) !== connector) {
+      throw new ApiFailure(403, "connector_destination_denied", "The connector destination is not allowed.");
+    }
+    target = browserTarget;
+  }
   const headers = connectorHeaders(value.headers);
   try {
     applyConnectorConnectionSelector(
@@ -5165,30 +5148,22 @@ async function grantConnectorRequest(
   }
   headers.set("authorization", PROVIDER_CREDENTIAL_PLACEHOLDER);
   headers.set("x-nanocodex-subject", grant.egressSubject);
-  const body = value.body;
-  if (body !== undefined && typeof body !== "string") {
-    throw new ApiFailure(400, "invalid_connector_body", "The connector request body must be a string.");
-  }
-  if (typeof body === "string" && new TextEncoder().encode(body).byteLength > MAX_CONNECTOR_REQUEST_BODY_BYTES) {
-    throw new ApiFailure(413, "connector_body_too_large", "Connector request bodies are limited to 256 KiB.");
-  }
-  if (body !== undefined && (method === "GET" || method === "HEAD")) {
-    throw new ApiFailure(400, "invalid_connector_body", "GET and HEAD connector requests cannot have a body.");
-  }
+  const body = browserEgressBody(value, method);
 
   const response = await env.EGRESS.fetch(new Request(target, {
     method,
     headers,
     ...(body === undefined ? {} : { body }),
+    redirect: "manual",
+    signal,
   }));
-  const responseBody = await boundedResponseText(response, MAX_CONNECTOR_RESPONSE_BODY_BYTES);
-  const responseHeaders: Record<string, string> = {};
+  const responseHeaders = new Headers();
   for (const [name, headerValue] of response.headers) {
     if (CONNECTOR_RESPONSE_HEADERS.has(name.toLowerCase()) && headerValue.length <= 4_096) {
-      responseHeaders[name.toLowerCase()] = headerValue;
+      responseHeaders.set(name, headerValue);
     }
   }
-  return { status: response.status, headers: responseHeaders, body: responseBody };
+  return new Response(response.body, { status: response.status, headers: responseHeaders });
 }
 
 async function grantMcpRequest(
@@ -5215,10 +5190,7 @@ async function grantMcpRequest(
     const value = request.headers.get(name);
     if (value && value.length <= 4_096) headers.set(name, value);
   }
-  let body: ArrayBuffer | undefined;
-  if (request.method !== "GET" && request.method !== "HEAD" && request.body) {
-    body = await boundedRequestBytes(request, MAX_CONNECTOR_REQUEST_BODY_BYTES);
-  }
+  const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
   const upstream = await env.EGRESS.fetch(new Request(
     `https://mcp.internal/v1/connections/${connectionId}`,
     {

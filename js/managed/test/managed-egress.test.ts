@@ -272,33 +272,48 @@ describe("Computer egress gateway", () => {
     expect(publicFetch).not.toHaveBeenCalled();
   });
 
-  it("manually follows only revalidated public redirects", async () => {
+  it("routes public requests through the account broker without direct network access", async () => {
+    const direct = vi.fn();
+    vi.stubGlobal("fetch", direct);
     const requests: Request[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = new Request(input, init);
+    const binding = { async fetch(request: Request) {
       requests.push(request);
-      if (request.url === "https://one.example/start") {
-        return new Response(null, { status: 302, headers: { location: "https://two.example/end" } });
-      }
-      return new Response("done", { headers: { "set-cookie": "credential=must-not-return" } });
-    }));
-    const gateway = testGateway({ fetch: vi.fn() } as unknown as Fetcher);
-    const followed = await gateway.fetch("https://one.example/start", { method: "POST", body: "small" });
-    expect(await followed.text()).toBe("done");
-    expect(followed.headers.get("set-cookie")).toBeNull();
-    expect(requests.map(({ method, url }) => [method, url])).toEqual([
-      ["POST", "https://one.example/start"],
-      ["GET", "https://two.example/end"],
-    ]);
+      return new Response("done", { headers: { "set-cookie": "must-not-return" } });
+    } } as unknown as Fetcher;
+    const response = await testGateway(binding).fetch("https://one.example/start", { method: "POST", body: "data" });
+    expect(await response.text()).toBe("done");
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(direct).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toBe("https://public-egress.internal/v1/request");
+    expect(requests[0]!.headers.get("x-nanocodex-target-url")).toBe("https://one.example/start");
+    expect(requests[0]!.headers.get("x-nanocodex-subject")).toBe(SUBJECT);
+    expect(await requests[0]!.text()).toBe("data");
+  });
 
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, {
-      status: 302,
-      headers: { location: "http://169.254.169.254/latest" },
-    })));
-    const deniedRedirect = await gateway.fetch("https://one.example/start");
-    expect(deniedRedirect.status).toBe(502);
-    expect(await deniedRedirect.json()).toEqual({ error: "redirect_denied" });
-
+  it("uses the same exact GitHub connection for API and smart HTTP", async () => {
+    const selected = "c".repeat(43);
+    const seen: Request[] = [];
+    const binding = { async fetch(request: Request) { seen.push(request); return new Response("ok"); } } as unknown as Fetcher;
+    for (const url of [
+      "https://api.github.com/user",
+      "https://github.com/owner/private.git/info/refs?service=git-upload-pack",
+      "https://github.com/owner/private.git/git-upload-pack",
+      "https://github.com/owner/private.git/git-receive-pack",
+    ]) {
+      const request = new Request(url, { method: url.endsWith("pack") && !url.includes("?") ? "POST" : "GET" });
+      const response = await handleManagedEgress(request, binding, SUBJECT,
+        (connector, id) => connector === "github" ? exactConnectorAccess([selected], id) : false);
+      expect(response.status).toBe(200);
+      expect(seen.at(-1)!.headers.get("x-nanocodex-connector-connection")).toBe(selected);
+      expect(seen.at(-1)!.headers.get("x-nanocodex-subject")).toBe(SUBJECT);
+      expect(seen.at(-1)!.headers.get("authorization")).toBe("Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+      const denied = await handleManagedEgress(new Request(url, {
+        headers: { "x-nanocodex-connector-connection": "d".repeat(43) },
+      }), binding, SUBJECT, (_connector, id) => exactConnectorAccess([selected], id));
+      expect(denied.status).toBe(403);
+    }
+    expect(seen).toHaveLength(4);
   });
 
   it("streams public responses without an application byte ceiling", async () => {
@@ -309,8 +324,9 @@ describe("Computer egress gateway", () => {
         value.enqueue(new TextEncoder().encode("first"));
       },
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(upstream)));
-    const gateway = testGateway({ fetch: vi.fn() } as unknown as Fetcher);
+    const direct = vi.fn();
+    vi.stubGlobal("fetch", direct);
+    const gateway = testGateway({ fetch: vi.fn(async () => new Response(upstream)) } as unknown as Fetcher);
 
     const response = await gateway.fetch("https://assets.example/compiler");
     const reader = response.body!.getReader();
@@ -319,6 +335,7 @@ describe("Computer egress gateway", () => {
     controller.close();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("second");
     expect((await reader.read()).done).toBe(true);
+    expect(direct).not.toHaveBeenCalled();
   });
 });
 

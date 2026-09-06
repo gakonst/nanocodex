@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { credentialFilteringBody } from "./credential-stream";
 
 import {
   CredentialVault,
@@ -50,9 +51,7 @@ const PENDING_TTL_MS = 10 * 60_000;
 const MAX_BODY_BYTES = 8 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES = 64 * 1024;
 const MAX_CONNECTOR_URL_BYTES = 8 * 1024;
-const MAX_CONNECTOR_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_SLACK_REQUEST_BYTES = 1024 * 1024;
-const CONNECTOR_TIMEOUT_MS = 20_000;
 const EXPIRY_SKEW_MS = 30_000;
 const REVOCATION_RETRY_BASE_MS = 30_000;
 const REVOCATION_RETRY_MAX_MS = 60 * 60_000;
@@ -69,6 +68,12 @@ type ProviderRule = Readonly<{
 }>;
 
 const PROVIDER_RULES: readonly ProviderRule[] = [
+  {
+    id: "github",
+    provider: "github",
+    origin: "https://github.com",
+    paths: [/^\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\/(?:info\/refs|git-upload-pack|git-receive-pack)$/],
+  },
   {
     id: "github",
     provider: "github",
@@ -385,12 +390,20 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     if (selectedConnectionId !== null && !CONNECTION_ID.test(selectedConnectionId)) {
       throw new ConnectorFailure(400, "connector_connection_invalid");
     }
-    const selected = await this.#usableConnector(
-      provider,
-      selectedConnectionId ?? undefined,
-    );
-    const connector = selected.connector;
-    const headers = connectorRequestHeaders(request.headers, provider.id, connector.accessToken);
+    let selected: { connectionId: string; connector: StoredConnector } | undefined;
+    try {
+      selected = await this.#usableConnector(provider, selectedConnectionId ?? undefined);
+    } catch (error) {
+      // Public Git remains usable before an account connects GitHub. Never
+      // fall back when an exact connection was selected or has expired.
+      if (provider.origin !== "https://github.com" || selectedConnectionId !== null
+        || !(error instanceof ConnectorFailure) || error.code !== "connector_not_connected") throw error;
+    }
+    const connector = selected?.connector;
+    const headers = connectorRequestHeaders(request.headers, provider.id, connector?.accessToken);
+    if (provider.origin === "https://github.com" && connector) {
+      headers.set("authorization", `Basic ${btoa(`x-access-token:${connector.accessToken}`)}`);
+    }
     const requestBody = provider.provider === "slack"
       ? await slackRequestBody(request)
       : request.body;
@@ -405,12 +418,12 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         redirect: "manual",
       }), {
         redirect: "manual",
-        signal: AbortSignal.timeout(CONNECTOR_TIMEOUT_MS),
+        signal: request.signal,
       });
     } catch {
       throw new ConnectorFailure(503, "connector_provider_unavailable");
     }
-    if (upstream.status === 401) {
+    if (upstream.status === 401 && selected) {
       await upstream.body?.cancel();
       delete this.#connections(provider.provider)[selected.connectionId];
       await this.#persist();
@@ -420,20 +433,26 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       await upstream.body?.cancel();
       throw new ConnectorFailure(502, "connector_redirect_blocked");
     }
-    let body: Uint8Array | null;
+    let body: ReadableStream<Uint8Array> | null;
     if (request.method === "HEAD" || !responseBodyPermitted(upstream.status)) {
       await upstream.body?.cancel();
       body = null;
     } else {
-      body = await readBoundedBytes(upstream, MAX_CONNECTOR_RESPONSE_BYTES);
+      body = upstream.body;
     }
-    if (body && containsCredential(body, connector)) {
-      throw new ConnectorFailure(502, "credential_projection_blocked");
+    const credentials = connector ? [connector.accessToken, connector.refreshToken,
+      headers.get("authorization")?.split(" ", 2)[1]]
+      .filter((value): value is string => Boolean(value)) : [];
+    const responseHeaders = connectorResponseHeaders(upstream.headers);
+    for (const value of responseHeaders.values()) {
+      if (credentials.some((credential) => value.includes(credential))) {
+        await body?.cancel();
+        throw new ConnectorFailure(502, "credential_projection_blocked");
+      }
     }
-    return new Response(body, {
+    return new Response(body && credentials.length ? credentialFilteringBody(body, credentials) : body, {
       status: upstream.status,
-      statusText: upstream.statusText,
-      headers: connectorResponseHeaders(upstream.headers),
+      headers: responseHeaders,
     });
   }
 
@@ -1277,12 +1296,12 @@ async function slackRequestBody(request: Request): Promise<string | null> {
 function connectorRequestHeaders(
   caller: Headers,
   id: ConnectorId,
-  accessToken: string,
+  accessToken: string | undefined,
 ): Headers {
   const headers = new Headers({
     accept: boundedCallerHeader(caller, "accept") ?? "application/json",
-    authorization: `Bearer ${accessToken}`,
   });
+  if (accessToken !== undefined) headers.set("authorization", `Bearer ${accessToken}`);
   for (const name of [
     "content-range",
     "content-type",
@@ -1290,6 +1309,7 @@ function connectorRequestHeaders(
     "if-none-match",
     "if-modified-since",
     "if-unmodified-since",
+    "git-protocol",
   ])
     if (caller.has(name)) headers.set(name, boundedCallerHeader(caller, name)!);
   if (id === "github") {
@@ -1328,44 +1348,6 @@ function connectorResponseHeaders(upstream: Headers): Headers {
   return headers;
 }
 
-async function readBoundedBytes(response: Response, limit: number): Promise<Uint8Array> {
-  const declared = response.headers.get("content-length");
-  if (declared !== null) {
-    const size = Number(declared);
-    if (!/^(?:0|[1-9][0-9]*)$/.test(declared) || !Number.isSafeInteger(size) || size > limit) {
-      await response.body?.cancel();
-      throw new ConnectorFailure(502, "connector_response_too_large");
-    }
-  }
-  if (!response.body) return new Uint8Array();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > limit) {
-        await reader.cancel();
-        throw new ConnectorFailure(502, "connector_response_too_large");
-      }
-      chunks.push(value);
-    }
-  } finally { reader.releaseLock(); }
-  const body = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-  return body;
-}
-
-function containsCredential(body: Uint8Array, connector: StoredConnector): boolean {
-  const credentials = [connector.accessToken, connector.refreshToken].filter(
-    (value): value is string => Boolean(value),
-  );
-  const decoded = new TextDecoder().decode(body);
-  return credentials.some((credential) => decoded.includes(credential));
-}
 
 function validRedirectUri(value: string, env: ConnectorBrokerEnv): boolean {
   try {

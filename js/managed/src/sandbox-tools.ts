@@ -125,7 +125,7 @@ type SandboxToolClient = {
   }>;
   startProcess(
     command: string,
-    options: { cwd: string; processId: string; autoCleanup: false },
+    options: { cwd: string; processId: string; autoCleanup: false; envVars?: Record<string, string> },
   ): Promise<SandboxProcess>;
   getProcess(id: string): Promise<SandboxProcess | null>;
   tunnels: {
@@ -148,9 +148,14 @@ export function cloudflareSandboxTools(
   outputCursorStorage?: SandboxOutputCursorStorage,
   namespaceMounts?: () => readonly CloudflareSandboxNamespaceMount[],
   brainWorkspace?: CloudflareBrainWorkspace,
+  accountSubject?: string,
 ): ToolMap {
   return createCloudflareSandboxTools(
-    () => namespaceMounts === undefined
+    async () => {
+      // Bind before provisioning or running any user process. The SDK retains
+      // this outbound handler across container sleep and Durable Object reload.
+      if (accountSubject !== undefined) await sandboxHandle(namespace, sessionId).bindAccountEgress(accountSubject);
+      return namespaceMounts === undefined
       ? prepareSandbox(namespace, sessionId, localBucket)
       : prepareSandboxNamespace(
           namespace,
@@ -158,7 +163,8 @@ export function cloudflareSandboxTools(
           localBucket,
           namespaceMounts(),
           brainWorkspace,
-        ),
+        );
+    },
     publicOrigin === undefined || previewSecret === undefined
       ? undefined
       : async (port) => ({
@@ -196,7 +202,9 @@ export async function prepareCloudflareSandboxHand(
   mounts: readonly CloudflareSandboxNamespaceMount[],
   localBucket = false,
   brainWorkspace?: CloudflareBrainWorkspace,
+  accountSubject?: string,
 ): Promise<void> {
+  if (accountSubject !== undefined) await sandboxHandle(namespace, resourceId).bindAccountEgress(accountSubject);
   const normalized = validateNamespaceMounts(mounts);
   if (brainWorkspace === undefined) {
     throw new Error("Cloudflare namespace requires a shared brain workspace");
@@ -297,6 +305,11 @@ export function createCloudflareSandboxTools(
             cwd,
             processId: sandboxProcessId(sessionId),
             autoCleanup: false,
+            envVars: {
+              GH_TOKEN: "NANOCODEX_PROVIDER_CREDENTIAL",
+              GH_PROMPT_DISABLED: "1",
+              GIT_TERMINAL_PROMPT: "0",
+            },
           });
           return await observeProcess(
             sandbox,

@@ -230,3 +230,33 @@ function secureJson(url, value) {
     url,
   };
 }
+
+
+test("browser runtime preserves binary Git uploads and returns the broker response stream", async () => {
+  const bytes = new Uint8Array([0, 255, 128, 254, 10]);
+  let envelope;
+  let cancelled = false;
+  const upstream = new Response(new ReadableStream({
+    start(controller) { controller.enqueue(bytes); },
+    cancel() { cancelled = true; },
+  }));
+  const fetch = createBrowserRuntimeFetch({
+    origin: "https://connect.example",
+    threadId: THREAD_ID,
+    async fetch(_input, init) {
+      envelope = JSON.parse(init.body);
+      return upstream;
+    },
+  });
+  const response = await fetch("https://github.com/fixture/large.git/git-upload-pack", {
+    method: "POST", body: bytes,
+    headers: { "content-type": "application/x-git-upload-pack-request" },
+  });
+  assert.equal(response, upstream);
+  assert.deepEqual(new Uint8Array(Buffer.from(envelope.body_base64, "base64")), bytes);
+  assert.equal(envelope.body, undefined);
+  const reader = response.body.getReader();
+  assert.deepEqual((await reader.read()).value, bytes);
+  await reader.cancel();
+  assert.equal(cancelled, true);
+});

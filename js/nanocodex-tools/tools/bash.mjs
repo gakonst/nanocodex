@@ -4,13 +4,59 @@ import {
   EXECUTION_OUTPUT_SCHEMA,
 } from "./execution-contract.mjs";
 
-const DEFAULT_EXECUTION_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_ENTRIES = 2_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
 const MAX_OUTPUT_TOKENS = 100_000;
 const OUTPUT_TRUNCATION_NOTICE = "\n[output truncated by exec_command]";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+// The host owns resources and cancellation. Interpreter ceilings must not
+// turn otherwise valid commands, repositories, or data files into errors.
+const UNLIMITED_EXECUTION_LIMITS = Object.freeze({
+  maxSourceBytes: Infinity,
+  maxExecDepth: Infinity,
+  maxCallDepth: Infinity,
+  maxCommandCount: Infinity,
+  maxLoopIterations: Infinity,
+  maxAwkIterations: Infinity,
+  maxSedIterations: Infinity,
+  maxJqIterations: Infinity,
+  maxQueryTokens: Infinity,
+  maxQueryDepth: Infinity,
+  maxQueryElements: Infinity,
+  maxAwkParserTokens: Infinity,
+  maxAwkParserDepth: Infinity,
+  maxAwkParserOperations: Infinity,
+  maxCsvRows: Infinity,
+  maxCsvCells: Infinity,
+  maxWorkUnits: Infinity,
+  maxTraversalEntries: Infinity,
+  maxTraversalDepth: Infinity,
+  maxTraversalWork: Infinity,
+  maxLiveBytes: Infinity,
+  maxInputBytes: Infinity,
+  maxFileSystemBytes: Infinity,
+  maxDatabaseBytes: Infinity,
+  maxDatabaseResultBytes: Infinity,
+  maxArchiveBytes: Infinity,
+  maxArchiveCompressedBytes: Infinity,
+  maxArchiveEntryBytes: Infinity,
+  maxArchiveEntries: Infinity,
+  maxWorkerMessageBytes: Infinity,
+  maxExecutionTimeMs: Infinity,
+  maxSqliteTimeoutMs: Infinity,
+  maxPythonTimeoutMs: Infinity,
+  maxJsTimeoutMs: Infinity,
+  maxGlobOperations: Infinity,
+  maxStringLength: Infinity,
+  maxArrayElements: Infinity,
+  maxHeredocSize: Infinity,
+  maxSubstitutionDepth: Infinity,
+  maxBraceExpansionResults: Infinity,
+  maxOutputSize: Infinity,
+  maxFileDescriptors: Infinity,
+  maxSourceDepth: Infinity,
+});
 
 const DEVICES = new Set(["/dev/full", "/dev/null", "/dev/stderr", "/dev/stdout"]);
 
@@ -21,10 +67,11 @@ export async function justBash(options) {
   validateWorkspace(options.filesystem);
   const executionTimeoutMs = positiveInteger(
     options.executionTimeoutMs,
-    DEFAULT_EXECUTION_TIMEOUT_MS,
+    undefined,
     "executionTimeoutMs",
   );
-  const maxEntries = positiveInteger(options.maxEntries, DEFAULT_MAX_ENTRIES, "maxEntries");
+  const maxEntries = options.maxEntries === undefined
+    ? undefined : positiveInteger(options.maxEntries, undefined, "maxEntries");
   const maxOutputTokens = Math.min(
     MAX_OUTPUT_TOKENS,
     positiveInteger(options.maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, "maxOutputTokens"),
@@ -60,15 +107,8 @@ export async function justBash(options) {
     defaultMaxOutputTokens: maxOutputTokens,
     maxOutputTokens,
     executionLimits: {
-      maxCommandCount: 10_000,
-      maxExecutionTimeMs: executionTimeoutMs,
-      maxFileSystemBytes: 64 * 1024 * 1024,
-      maxInputBytes: 16 * 1024 * 1024,
-      maxLiveBytes: 32 * 1024 * 1024,
-      maxOutputSize: maxOutputTokens * 4,
-      maxSourceBytes: 1024 * 1024,
-      maxStringLength: 16 * 1024 * 1024,
-      maxTraversalEntries: maxEntries,
+      ...(executionTimeoutMs === undefined ? {} : { maxExecutionTimeMs: executionTimeoutMs }),
+      ...(maxEntries === undefined ? {} : { maxTraversalEntries: maxEntries }),
     },
   });
 
@@ -89,7 +129,7 @@ export async function createJustBashRuntime(options) {
   const cwd = normalizeRoot(requiredString(options.cwd, "cwd"));
   const executionTimeoutMs = positiveInteger(
     options.executionTimeoutMs,
-    DEFAULT_EXECUTION_TIMEOUT_MS,
+    undefined,
     "executionTimeoutMs",
   );
   const defaultMaxOutputTokens = positiveInteger(
@@ -105,7 +145,7 @@ export async function createJustBashRuntime(options) {
   if (defaultMaxOutputTokens > maxOutputTokens) {
     throw new RangeError("defaultMaxOutputTokens cannot exceed maxOutputTokens");
   }
-  const executionLimits = Object.freeze({ ...options.executionLimits });
+  const executionLimits = Object.freeze({ ...UNLIMITED_EXECUTION_LIMITS, ...options.executionLimits });
   const { Bash, defineCommand } = await import("just-bash/browser");
   const customCommands = typeof options.customCommands === "function"
     ? await options.customCommands({ defineCommand })
@@ -120,7 +160,7 @@ export async function createJustBashRuntime(options) {
         ? {}
         : { network: options.network }),
     ...(customCommands === undefined ? {} : { customCommands: [...customCommands] }),
-    executionLimitProfile: "hardened",
+    executionLimitProfile: "normal",
     executionLimits,
   });
   const descriptor = describeRuntime({
@@ -201,7 +241,7 @@ async function executeCommand({
   const abort = () => deadline.abort(signal?.reason);
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) abort();
-  const timeout = setTimeout(
+  const timeout = executionTimeoutMs === undefined ? undefined : setTimeout(
     () => deadline.abort(new Error(`exec_command exceeded ${executionTimeoutMs} milliseconds`)),
     executionTimeoutMs,
   );
@@ -248,7 +288,7 @@ function describeRuntime({
     commands: Object.freeze([...bash.commands.keys()].sort()),
     customCommands: Object.freeze(customCommandNames.sort()),
     cwd,
-    limits: executionLimits,
+    limits: Object.freeze(Object.fromEntries(Object.entries(executionLimits).filter(([, value]) => Number.isFinite(value)))),
     network: Object.freeze({
       enabled: networkEnabled,
       mode: networkMode ?? (networkEnabled ? "http" : "disabled"),
@@ -289,7 +329,7 @@ class WorkspaceShellFileSystem {
   }
 
   async open() {
-    const entries = await this.#source.list(".", { recursive: true, maxEntries: this.#maxEntries });
+    const entries = await this.#source.list(".", { recursive: true, ...(this.#maxEntries === undefined ? {} : { maxEntries: this.#maxEntries }) });
     this.#entries.clear();
     this.#sortedPaths = undefined;
     this.#entries.set(this.#root, directoryEntry());
@@ -519,7 +559,7 @@ class WorkspaceShellFileSystem {
   }
 
   #set(path, entry) {
-    if (!this.#entries.has(path) && this.#entries.size - 1 >= this.#maxEntries) {
+    if (this.#maxEntries !== undefined && !this.#entries.has(path) && this.#entries.size - 1 >= this.#maxEntries) {
       throw fsError("EFBIG", `workspace exceeds ${this.#maxEntries} entries`);
     }
     this.#entries.set(path, entry);
@@ -527,6 +567,7 @@ class WorkspaceShellFileSystem {
   }
 
   #assertCapacity(path) {
+    if (this.#maxEntries === undefined) return;
     let additions = this.#entries.has(path) ? 0 : 1;
     const relative = path.slice(this.#root.length + 1);
     let current = this.#root;
