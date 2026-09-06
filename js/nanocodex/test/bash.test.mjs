@@ -71,6 +71,16 @@ test("the returned filesystem is the authoritative bounded mutation handle", asy
   );
 });
 
+test("copying a directory into itself fails without losing its contents", async () => {
+  const runtime = await justBash({ filesystem: memoryWorkspace() });
+  await runtime.tool.handler({ cmd: "mkdir data && echo keep > data/file" }, context());
+  for (const command of ["cp -r data data/child", "mv data data/child"]) {
+    const result = await runtime.tool.handler({ cmd: command }, context());
+    assert.notEqual(result.exit_code, 0);
+    assert.equal(new TextDecoder().decode(await runtime.filesystem.readFile("data/file")), "keep\n");
+  }
+});
+
 test("workspace paths cannot escape the mounted root", async () => {
   const source = memoryWorkspace();
   const runtime = await justBash({ filesystem: source });

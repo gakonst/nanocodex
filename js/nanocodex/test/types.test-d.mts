@@ -263,6 +263,12 @@ async function check() {
   cloudflareAgent.turn.prompt({ input: "hello" });
   cloudflareAgent.events.connect(new Request("https://agent.internal/events"));
   const extendedCloudflareAgent = cloudflareAgent.extend(() => ({ application: true as const }));
+  const managedChild = await Subagents.spawn(cloudflareAgent, {
+    role: "researcher", task: "Inspect the brain", outputSchema: { type: "object" },
+  });
+  await Subagents.send(extendedCloudflareAgent, {
+    agentId: managedChild.agent_id, priority: "urgent", message: "Report status",
+  });
   extendedCloudflareAgent.events.connect(new Request("https://agent.internal/events"));
   const cloudflareApplication: true = extendedCloudflareAgent.application;
   void cloudflareApplication;

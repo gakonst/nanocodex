@@ -18,7 +18,8 @@ import type {
 import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
 import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
-import { MAX_NAMESPACE_MOUNTS } from "nanocodex-tools";
+import { createWorkspaceFilesystem, MAX_NAMESPACE_MOUNTS } from "nanocodex-tools";
+import { createBrainWorkspace } from "./brain-workspace";
 import { managedCodeEvaluator } from "./code-evaluator";
 import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
 import { createCronTool } from "./cron-tool";
@@ -34,6 +35,7 @@ import {
 } from "./sandbox-tools";
 import {
   createNamespaceExecutionRuntime,
+  isBrainExecution,
   machineMountRoot,
   type MachineToolResolver,
   type NamespaceMachine,
@@ -800,6 +802,7 @@ const SANDBOX_HAND_CAPABILITIES = Object.freeze([
   "servers",
 ]);
 const MAX_MANAGED_MOUNTS = 16;
+export const MANAGED_SUBAGENT_MAX_CONCURRENCY = 8;
 
 const json = (body: unknown, init: ResponseInit = {}) => Response.json(body, {
   ...init,
@@ -1086,9 +1089,7 @@ export function createSharedBrainReadWorkspace(
     readFile: async (path: string): Promise<Uint8Array> => {
       const key = sharedBrainObjectKey(resourceId, path);
       if (key === undefined) return fallback.readFile(path);
-      const object = await bucket.get(key);
-      if (object === null) throw new Error(`brain workspace file not found: ${path}`);
-      return new Uint8Array(await object.arrayBuffer());
+      return createBrainWorkspace(bucket, resourceId).readFile(path);
     },
   });
 }
@@ -2254,12 +2255,14 @@ export function createManagedNamespaceTools(
   machines: (context: ToolContext) => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
   prepareNamespace: (context: ToolContext) => Promise<void> = async () => {},
+  brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
 ): NamedTool[] {
   return createManagedNamespaceRuntime(
     canUseExecutionNamespace,
     machines,
     resolveMachineTool,
     prepareNamespace,
+    brain,
   ).tools;
 }
 
@@ -2268,15 +2271,17 @@ function createManagedNamespaceRuntime(
   machines: (context: ToolContext) => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
   prepareNamespace: (context: ToolContext) => Promise<void> = async () => {},
+  brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
 ): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): Promise<void> }> {
   const runtime = createNamespaceExecutionRuntime(
     machines,
     resolveMachineTool,
+    brain?.tool,
   );
   const captured = new Set<string>();
   const preparations = new Map<string, Promise<void>>();
   const cellKey = (context: ToolContext): string => (
-    `${context.sessionId}\u0000${context.parentCallId}`
+    `${context.sessionId}\u0000${context.parentCallId || context.callId}`
   );
   const capture = async (context: ToolContext): Promise<void> => {
     const key = cellKey(context);
@@ -2308,6 +2313,13 @@ function createManagedNamespaceRuntime(
     name,
     ...tool,
     handler: async (input, context) => {
+      context.signal.throwIfAborted();
+      if (name === "exec_command" && brain !== undefined && isBrainExecution(input)) {
+        if (!brain.allowed(context)) {
+          throw new ManagedRequestError(403, "namespace_forbidden", "the current authorization cannot use brain tools");
+        }
+        return tool.handler(input, context);
+      }
       if (!canUseExecutionNamespace(context)) {
         throw new ManagedRequestError(
           403,
@@ -2326,6 +2338,7 @@ function createManagedNamespaceRuntime(
       captured.clear();
       preparations.clear();
       tool.dispose?.();
+      if (name === "exec_command") brain?.tool.dispose?.();
     },
   } satisfies NamedTool));
   return Object.freeze({ tools, capture });
@@ -6317,17 +6330,26 @@ export class DurableAgentSession extends DurableComputerSession {
     // fail closed without a subject, while ordinary public HTTP remains usable.
     const computer = await createManagedComputerRuntime({
       computer: workspace,
+      ...(multiplayer ? {} : { filesystem: createBrainWorkspace(this.env.NANOCODEX_WORKSPACES, session.session_id) }),
       egress: this.env.NANOCODEX,
       ...(multiplayer ? {} : { subject: this.ctx.id.toString() }),
-      connectorAllowed: (connector, connectionId) => (
-        this.#activeTurnConnectorAllowed(connector, connectionId)
+      connectorAllowed: (connector, connectionId, context) => (
+        this.#toolConnectorAllowed(connector, connectionId, context)
       ),
-      sshIdentityAllowed: (reference) => this.#activeTurnSshIdentityAllowed(reference),
+      vaultAllowed: (context) => context !== undefined
+        && this.#hasFullAccountAuthority(this.#authorizationForToolContext(context)),
+      sshIdentityAllowed: (_reference, context) => context !== undefined
+        && this.#hasFullAccountAuthority(this.#authorizationForToolContext(context)),
     });
     const sharedBrainWorkspace = createSharedBrainReadWorkspace(
       this.env.NANOCODEX_WORKSPACES,
       session.session_id,
-      computer.filesystem,
+      { readFile: async (path: string) => {
+        if (multiplayer || !path.startsWith("/")) return computer.filesystem.readFile(path);
+        // Retain explicit legacy /workspace image paths without opening that
+        // filesystem during ordinary brain-only startup or relative reads.
+        return (await createWorkspaceFilesystem(workspace)).readFile(path);
+      } },
     );
     const computerRuntimeMs = performance.now() - phaseStartedAt;
     const currentAccountInfo = async (context: ToolContext) => {
@@ -6453,6 +6475,10 @@ export class DurableAgentSession extends DurableComputerSession {
       (context) => this.#refreshMountedHostMounts(
         this.#authorizationForToolContext(context),
       ),
+      {
+        tool: computer.tool,
+        allowed: (context) => this.#authorizationForToolContext(context)?.capabilities.includes("tools:use") === true,
+      },
     );
     const cloudTools: NamedTool[] = [
       ...(browserRuntime?.tools ?? []),
@@ -6513,8 +6539,8 @@ export class DurableAgentSession extends DurableComputerSession {
         parameters: { type: "object", additionalProperties: false },
         handler: async (_input: unknown, context: ToolContext) => ({
           runtime: "cloudflare-durable-object",
-          shell: multiplayer ? computer.descriptor.shell : "unavailable",
-          shell_network: multiplayer ? computer.descriptor.network.mode : "unavailable",
+          shell: computer.descriptor.shell,
+          shell_network: computer.descriptor.network.mode,
           namespace: multiplayer ? { status: "disabled" } : {
             status: "cwd-placement",
             default_cwd: "/brain",
@@ -6534,9 +6560,10 @@ export class DurableAgentSession extends DurableComputerSession {
             },
           },
           workspace: computer.descriptor.cwd,
-          commands: multiplayer ? computer.descriptor.commands : [],
-          custom_commands: multiplayer ? computer.descriptor.customCommands : [],
+          commands: computer.descriptor.commands,
+          custom_commands: computer.descriptor.customCommands,
           limits: computer.descriptor.limits,
+          subagent_max_concurrency: MANAGED_SUBAGENT_MAX_CONCURRENCY,
           pty: multiplayer ? computer.descriptor.pty : false,
           sessions: multiplayer ? computer.descriptor.sessions : false,
           sandbox_escalation: false,
@@ -6584,9 +6611,11 @@ export class DurableAgentSession extends DurableComputerSession {
             "No process sandbox is attached. Bounded Just Bash is the complete local execution boundary.",
           ].join("\n\n")
           : [
-            "You are the durable Nanocodex brain running on Cloudflare Workers. The brain does not execute shell commands. /brain is durable shared scratch mounted read-write in every Cloudflare hand; it never contains credentials or control-plane authority.",
-            "The agent starts without a sandbox hand. When a task such as cloning a repository, building code, or running tests needs native Linux execution, infer that need and call mount with provider cf_sandbox and a useful stable name. Use another provider only when the user supplied its exact connected VM factory name. Do not ask the user to request a routine sandbox mount. mount provisions and attaches the hand before it returns.",
-            "Hands appear as logical top-level paths returned by mount or listed in accountInfo().machines. exec_command has its standard shape: set workdir to the exact hand mount or a path beneath it; the root of that cwd selects where the process runs. The default /brain cwd is not executable. write_stdin remains pinned to the hand that created its session. There is no environment or host argument.",
+            "You are the durable Nanocodex brain running on Cloudflare Workers. Use Code Mode, tools, and bounded Just Bash in /brain first. /brain is durable shared scratch mounted read-write in every Cloudflare hand; it never contains credentials or control-plane authority.",
+            computer.instructions,
+            "The agent starts without a sandbox hand. File work, text processing, HTTP, supported Git/GitHub commands, and JavaScript computation in Code Mode need no hand. When the task needs native binaries, package installation, builds, tests, a server, or a process session, reuse a suitable attached hand from accountInfo or mount output; otherwise call mount with provider cf_sandbox and a useful stable name. A known native command such as cargo test should go directly to a suitable hand. If a brain command reveals an unsupported binary or runtime capability, select or mount a hand and continue there, checking for partial effects before retrying. A compiler error or failing test on a hand should be investigated there. Use another provider only when the user supplied its exact connected VM factory name. Do not ask the user to request a routine sandbox mount. mount provisions and attaches the hand before it returns.",
+            `Subagents share your tools and permissions. Delegate bounded independent work; spawning another researcher does not repair an unavailable tool. The entire task tree may have at most ${MANAGED_SUBAGENT_MAX_CONCURRENCY} active subagents. When capacity is full, continue your assigned work with the available brain tools.`,
+            "Hands appear as logical top-level paths returned by mount or listed in accountInfo().machines. exec_command defaults to /brain; omit workdir or use /brain for Just Bash. For native execution, set workdir to the exact hand mount or a path beneath it. The root of that cwd selects where the process runs. write_stdin remains pinned to the hand that created its session. There is no environment or host argument.",
             "A Code Mode cell captures its mount mapping. Commands in Promise.all may run concurrently on different cwd roots, and subagents use the same cwd rule independently. A disconnect or reconnect never retargets an admitted command or session.",
             "Cloudflare sandbox hands are separate retained workspaces mounted into each other's native filesystem namespaces. A process may write its executing hand through /workspace or that hand's logical mount path, read peer hand paths without mutating them, and read or write /brain using ordinary filesystem syscalls. The trees are mounted, never copied or synchronized. Connected user hands and future providers remain placement-only until their provider advertises a conforming native namespace adapter, so native_cross_mounts remains false globally while runtimeInfo.cloudflare_native_cross_mounts is true.",
             "The browser_execute tool is the managed remote browser. Reuse its retained session when continuity matters. Never inspect, return, or persist cookies, authorization material, CDP connection URLs, provider URLs, or Live View URLs. If a login, MFA, CAPTCHA, or other human-only gate appears, stop and ask the user to complete it outside the model-visible browser tool; do not bypass or evade the gate.",
@@ -6602,9 +6631,10 @@ export class DurableAgentSession extends DurableComputerSession {
           ].join("\n\n"),
         tools: preparedTools ?? cloudTools,
       };
-      if (hostedRuntime !== undefined) {
-        Object.defineProperty(agentOptions, internalRuntime, { value: hostedRuntime });
-      }
+      Object.defineProperty(agentOptions, internalRuntime, { value: {
+        ...hostedRuntime,
+        subagentMaxConcurrency: MANAGED_SUBAGENT_MAX_CONCURRENCY,
+      } });
       Object.defineProperty(agentOptions, internalConfiguration, { value: this.#settings() });
       phaseStartedAt = performance.now();
       agent = await CloudflareAgent.create(this, agentOptions);
@@ -7442,11 +7472,12 @@ export class DurableAgentSession extends DurableComputerSession {
       .sort((left, right) => left.id.localeCompare(right.id));
   }
 
-  #activeTurnConnectorAllowed(
+  #toolConnectorAllowed(
     connector: ManagedEgressConnectorId,
     connectionId?: string,
+    context?: ToolContext,
   ): boolean | string {
-    const authorization = this.#activeTurnAuthorization();
+    const authorization = context === undefined ? undefined : this.#authorizationForToolContext(context);
     if (authorization === undefined) return false;
     const grant = authorization.connectGrant;
     if (grant === undefined) return true;
@@ -7461,12 +7492,6 @@ export class DurableAgentSession extends DurableComputerSession {
     return authorization !== undefined
       && (authorization.connectGrant === undefined
         || authorization.connectGrant.mcpIds.includes(connectionId));
-  }
-
-  #activeTurnSshIdentityAllowed(_reference: string): boolean {
-    // Full account turns may use account identities. Connect grants fail closed
-    // until signed resources can enumerate exact SSH identity references.
-    return this.#hasFullAccountAuthority();
   }
 
   #hostedToolAllowed(
