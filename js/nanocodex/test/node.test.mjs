@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
@@ -1086,103 +1088,84 @@ for (const [options, effort] of [
   }
 });
 
-test("WASM eligible context windows retain Code Mode state, notes, cache identity and durable window identity", async (t) => {
+test("WASM context reset archives exact history and retains notes, tools and cache across reopen", async () => {
   const sessionId = "018f1f9a-7b3c-7a08-8000-000000000008";
-  const subscription = await ChatGptSubscription.open({
-    id: "context-window-subscription",
-    store: createMemoryChatGptSubscriptionStore("context-window-subscription"),
-    seed: {
-      accessToken: `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "context-account", chatgpt_plan_type: "plus" } })).toString("base64url")}.signature`,
-      refreshToken: "test-refresh", accountId: "context-account",
-    },
-  });
-  const http = [];
-  let note = "";
-  t.mock.method(globalThis, "fetch", async (url, init) => {
-    const path = new URL(url).pathname;
-    const input = JSON.parse(init.body);
-    http.push({ path, input, headers: init.headers });
-    if (path.endsWith("/thread_hint")) return Response.json({ text: "Progress is in notes/progress." });
-    if (path.endsWith("/write_file")) { note = input.content; return Response.json({
-      encrypted_output: "opaque-note-result",
-      images: [{ data: "abc", mime_type: "image/png", detail: "original" }],
-    }); }
-    if (path.endsWith("/read_file")) return Response.json({ text: note });
-    throw new Error(`unexpected HTTP path: ${path}`);
-  });
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-context-"));
   const durability = createMemoryDurabilityStore("context-window-durable");
   let windowId;
+  let previousId;
   let cacheKey;
+  const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
   const metadata = (request) => JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
   try {
     for (const reopened of [false, true]) {
       const server = await startServer();
       const agent = await Agent.create({
-        sessionId, durability, durabilityId: "context-window-durable",
-        transport: Transport.chatGpt({ subscription, websocketUrl: server.url, websocketWarmup: true }),
+        sessionId, workspace, durability, durabilityId: "context-window-durable",
+        transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url, websocketWarmup: true }),
         tools: { echo: { handler: (input) => input } },
       });
       try {
         const scenario = (async () => {
-          const reader = messageReader(await server.connection);
           const socket = await server.connection;
+          const reader = messageReader(socket);
           const warmup = await reader.next();
           const specs = warmup.input[0].tools;
           assert.ok(specs.some((tool) => tool.name === "new_context"));
-          assert.equal(specs.find((tool) => tool.name === "history").tools.length, 4);
-          assert.equal(specs.find((tool) => tool.name === "notes").tools.length, 5);
-          assert.doesNotMatch(specs.find((tool) => tool.name === "exec").description, /new_context|history__read_item/);
+          assert.equal(specs.find((tool) => tool.name === "context_history").tools.length, 4);
+          assert.equal(specs.find((tool) => tool.name === "context_notes").tools.length, 5);
+          assert.doesNotMatch(specs.find((tool) => tool.name === "exec").description, /new_context|context_history__read_item/);
           let first = warmup;
           if (warmup.generate === false) {
             sendWarmup(socket, `context-warmup-${reopened}`);
             first = await reader.next();
           }
-          assert.equal(metadata(first).history_ingest_requested, true);
+          assert.equal(metadata(first).history_ingest_requested, undefined);
           assert.equal(metadata(first).agent_name, "/root");
-          assert.equal(metadata(first).request_kind, "turn");
           assert.equal(metadata(first).window_id, `${sessionId}:${reopened ? 1 : 0}`);
-          if (reopened) {
-            assert.equal(metadata(first).context_window_id, windowId);
-            assert.equal(first.prompt_cache_key, cacheKey);
-            sendCompleted(socket, "notes-read", [{ type: "function_call", namespace: "notes", name: "read_file", call_id: "read-note", arguments: '{"path":"progress"}' }]);
-            assert.match(JSON.stringify((await reader.next()).input), /durable-notes-marker/);
-          } else {
-            windowId = metadata(first).context_window_id;
+          if (!reopened) {
+            previousId = metadata(first).context_window_id;
             cacheKey = first.prompt_cache_key;
-            sendCompleted(socket, "store-cell", [{ type: "custom_tool_call", name: "exec", call_id: "store-before-reset", input: 'store("retained", "live-cell-marker"); if (typeof tools.new_context !== "undefined" || typeof tools.history__read_item !== "undefined") throw new Error("context controls exposed inside Code Mode"); text("context-controls-direct-only");' }]);
+            sendCompleted(socket, "store-cell", [{ type: "custom_tool_call", name: "exec", call_id: "store-before-reset", input: 'store("retained", "live-cell-marker"); if (typeof tools.new_context !== "undefined" || typeof tools.context_history__read_item !== "undefined") throw new Error("context controls exposed inside Code Mode"); text("context-controls-direct-only");' }]);
             assert.match(JSON.stringify((await reader.next()).input), /context-controls-direct-only/);
-            sendCompleted(socket, "notes-write", [{ type: "function_call", namespace: "notes", name: "write_file", call_id: "write-note", arguments: '{"path":"progress","content":"durable-notes-marker"}' }]);
-            const noteResult = (await reader.next()).input.find((item) => item.call_id === "write-note");
-            assert.deepEqual(noteResult.output, [
-              { type: "encrypted_content", encrypted_content: "opaque-note-result" },
-              { type: "input_image", image_url: "data:image/png;base64,abc" },
-            ]);
+            sendCompleted(socket, "notes-write", [{ type: "function_call", namespace: "context_notes", name: "write_file", call_id: "write-note", arguments: '{"path":"progress","text":"durable-notes-marker"}' }]);
+            assert.match(JSON.stringify((await reader.next()).input), /written/);
             sendCompleted(socket, "context-reset", [{ type: "function_call", name: "new_context", call_id: "reset", arguments: "{}" }]);
             const reset = await reader.next();
             assert.equal(reset.prompt_cache_key, cacheKey);
             assert.equal(metadata(reset).window_number, 1);
-            assert.equal(metadata(reset).window_id, `${sessionId}:1`);
             assert.equal(metadata(reset).turn_id, metadata(first).turn_id);
-            assert.notEqual(metadata(reset).context_window_id, windowId);
             windowId = metadata(reset).context_window_id;
+            assert.notEqual(windowId, previousId);
             assert.doesNotMatch(JSON.stringify(reset.input), /original-user-marker/);
             sendCompleted(socket, "load-cell", [{ type: "custom_tool_call", name: "exec", call_id: "load-after-reset", input: 'text(load("retained"));' }]);
             assert.match(JSON.stringify((await reader.next()).input), /live-cell-marker/);
+          } else {
+            assert.equal(metadata(first).context_window_id, windowId);
+            assert.equal(first.prompt_cache_key, cacheKey);
           }
+          sendCompleted(socket, `notes-read-${reopened}`, [{ type: "function_call", namespace: "context_notes", name: "read_file", call_id: "read-note", arguments: '{"path":"progress"}' }]);
+          assert.match(JSON.stringify((await reader.next()).input), /durable-notes-marker/);
+          sendCompleted(socket, `history-read-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "search_contents", call_id: "recover-request", arguments: JSON.stringify({ window_id: previousId, query: "original-user-marker" }) }]);
+          const found = (await reader.next()).input.find((item) => item.call_id === "recover-request");
+          const foundText = typeof found.output === "string" ? found.output : found.output.find((part) => part.type === "input_text").text;
+          const original = JSON.parse(foundText).items.find((item) => item.role === "user");
+          assert.match(original.truncated_content, /original-user-marker/);
+          sendCompleted(socket, `history-item-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "read_item", call_id: "recover-item", arguments: JSON.stringify({ window_id: previousId, item_id: original.item_id }) }]);
+          const recovered = (await reader.next()).input.find((item) => item.call_id === "recover-item").output;
+          assert.ok(recovered.some((part) => part.type === "input_image" && part.image_url === imageUrl));
           sendFinal(socket, `context-final-${reopened}`, "done");
         })();
-        await bounded(Promise.all([agent.turn.prompt({ input: reopened ? "Read saved notes." : "original-user-marker" }).result(), scenario]), "WASM context window lifecycle");
+        await bounded(Promise.all([agent.turn.prompt({ input: reopened ? "Recover the prior task." : [
+          { type: "text", text: "original-user-marker" },
+          { type: "image", image_url: imageUrl },
+        ] }).result(), scenario]), "WASM context reset and recovery");
       } finally {
         await agent.session.shutdown();
         await server.close();
       }
     }
-    assert.ok(http.some((call) => call.path.endsWith("/read_file")));
-    for (const call of http) {
-      assert.deepEqual(call.input.context, { session_id: sessionId, current_agent_name: "/root" });
-      assert.equal(call.headers.get("chatgpt-account-id"), "context-account");
-    }
-  } finally { subscription.dispose(); }
+  } finally { await rm(workspace, { recursive: true }); }
 });
 
 async function startServer() {

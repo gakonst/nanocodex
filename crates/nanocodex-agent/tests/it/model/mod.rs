@@ -177,6 +177,7 @@ fn remove_client_item_id(item: &mut Value, expected_prefix: &str) {
 async fn run_model(endpoint: &str, workspace: &Path, instruction: &str) -> Result<String> {
     let task = Prompt::new(instruction);
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)

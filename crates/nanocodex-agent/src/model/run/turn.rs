@@ -20,7 +20,8 @@ where
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
         self.stats = RunStats::default();
-        self.initialize_context_management().await?;
+        self.initialize_context_management(requested_workspace.as_deref())
+            .await?;
         let mut session = match self.session.take() {
             Some(session) => session,
             None => self.empty_session(requested_workspace.as_deref())?,
@@ -444,7 +445,8 @@ where
         cancel: &mut tokio::sync::oneshot::Receiver<()>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTaskOutcome> {
-        self.initialize_context_management().await?;
+        self.initialize_context_management(requested_workspace.as_deref())
+            .await?;
         let mut session = if let Some(mut session) = self.session.take() {
             session.factory = session.factory.for_logical_turn(logical_turn);
             if let Err(error) = session.validate_workspace(requested_workspace.as_deref()) {
@@ -501,7 +503,13 @@ where
             );
             let mut history = task_input(&task, user_content, &context_snapshot);
             if let Some(context) = &self.context_management {
-                history.splice(2..2, context.initial_context().await);
+                history.splice(
+                    2..2,
+                    context
+                        .initial_context()
+                        .await
+                        .map_err(NanocodexError::ContextStorage)?,
+                );
             }
             if !self.pending_developer_messages.is_empty() {
                 history.splice(2..2, self.pending_developer_messages.drain(..));

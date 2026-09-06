@@ -77,7 +77,6 @@ export async function create(options = {}) {
     websocketWarmup,
     WebSocketImpl,
     createWebSocket,
-    historyNotes,
   } = resolveResponsesTransport(transport ?? defaultHostManagedTransport());
   const { tools: hostTools, subagents: configuredSubagents } = resolveTools(tools);
   const subagentMaxConcurrency = internalRuntime?.subagentMaxConcurrency;
@@ -100,10 +99,10 @@ export async function create(options = {}) {
   const tempoMcp = mpp?.[Symbol.for("nanocodex.tempo.mcp")];
   let hostDefinitionId;
   const host = createBrowserHost({
+    contextStorage: options.contextStorage,
     apiBaseUrl,
     WebSocketImpl,
     createWebSocket,
-    historyNotes,
     hostAuth: hostAuth === true
       || (apiKey === undefined && mpp === undefined && subscription === undefined),
     hostManagedProtocol,

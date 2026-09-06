@@ -445,6 +445,7 @@ test("a replacement socket drops the remote response ID and replays committed hi
 test("manual compaction and historical forks preserve exact committed boundaries", async () => {
   const server = await startResponsesServer();
   const agent = await createWarmAgent({
+    model: "gpt-5.6-sol",
     apiKey: "test-key",
     websocketUrl: server.url,
     thinking: "low",

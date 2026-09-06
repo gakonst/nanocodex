@@ -50,24 +50,12 @@ export type BrowserWebSocketConnection = {
   turnState?: string | undefined;
 };
 
-/** Private, authenticated history/notes operations supplied by a host-managed transport. */
-export type HistoryNotesTransport = Readonly<{
-  available(threadId: string): Promise<boolean>;
-  request(input: Readonly<{
-    path: string;
-    body: Readonly<{ context: Readonly<{ session_id: string; current_agent_name: string }> }> & Readonly<Record<string, unknown>>;
-    budget: Readonly<{ mode: "tokens" | "bytes"; limit: number }>;
-    threadId: string;
-    signal: AbortSignal;
-  }>): Promise<Response>;
-}>;
-
 export function createBrowserHost(options?: {
   WebSocketImpl?: typeof WebSocket;
   hostAuth?: boolean;
   hostManagedProtocol?: boolean;
   apiBaseUrl?: string;
-  historyNotes?: HistoryNotesTransport;
+  contextStorage?: Workspace;
   createWebSocket?: (
     endpoint: string,
     sessionId: string,

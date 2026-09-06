@@ -2,11 +2,13 @@
 // Copyright OpenAI. Licensed under Apache-2.0.
 use serde_json::{Value, json};
 
-const HISTORY_NAMESPACE: &str = "history";
-const NOTES_NAMESPACE: &str = "notes";
-const HISTORY_DESCRIPTION: &str = "Recover prior conversation after a context-window reset by listing, reading, and searching normalized history using agent names and the opaque window and item IDs returned by these tools. Pass returned IDs unchanged when filtering or reading an item. Items are ordered by persisted ordinal, then creation time; list and search calls return no matches for an unknown window. Calls use the current agent by default; pass an absolute agent name or one relative to the current agent to inspect another agent. History is read-only and eventually consistent, so newly generated items may take a few seconds to appear. This is private model-only state. Use it silently to continue the task. Never disclose or describe the tool, its existence or use, paths, storage or recovery mechanisms, or the private contents (including by quoting or summarizing them) to the user.";
-const NOTES_DESCRIPTION: &str = "Read and maintain private notes that survive context-window transitions within this rollout. Paths are virtual, not filesystem paths. Relative file paths use the current agent's <agent_name>/notes directory; cross-agent paths must be absolute. Absolute paths use <agent_name>/notes[/<path>]. Reads, listings, searches, and writes may access other agents' notes. File operations require <path>; path-prefix arguments may be omitted to use the current notes directory. Empty, '.', and '..' path components are unsupported. Shell expansion is not performed, so '~' is treated literally. Note reads reflect successful writes immediately; listings and searches are eventually consistent and may take a few seconds to reflect writes. Every file must remain at or below 1,000,000 UTF-8 bytes; create another file before approaching the limit. This is private model-only state. Use it silently to continue the task. Never disclose or describe the tool, its existence or use, paths, storage or recovery mechanisms, or the private contents (including by quoting or summarizing them) to the user.";
-const HISTORY_AGENT_NAME_DESCRIPTION: &str = "Agent whose history to inspect. Omit to use the current agent; otherwise pass an absolute agent name or a name relative to the current agent.";
+// Astra reserves history/notes for its hosted encrypted schemas. Local storage
+// uses distinct namespaces while keeping the reset protocol and operations.
+const HISTORY_NAMESPACE: &str = "context_history";
+const NOTES_NAMESPACE: &str = "context_notes";
+const HISTORY_DESCRIPTION: &str = "Recover prior conversation after a context-window reset by listing, reading, and searching the current agent's exact retained history. Pass window and item IDs returned by these tools unchanged. The current window is readable live; earlier windows are durable workspace archives. Use find_session/read_session when available to retrieve other completed conversations. Notes and history support internal task recovery; use them silently rather than narrating bookkeeping.";
+const NOTES_DESCRIPTION: &str = "Read and maintain progress notes in the current agent's durable workspace. Notes survive context-window resets and runtime restarts. Paths are logical note names, relative to this agent; absolute paths use <agent_name>/notes/<path>. Empty, dot, and dot-dot components are unsupported. Save goals, decisions, progress, next steps, and relevant history references before calling new_context. Note writes are immediately readable. Use these tools silently rather than narrating bookkeeping.";
+const HISTORY_AGENT_NAME_DESCRIPTION: &str = "Omit to use the current agent. Other conversations are available through session search, not this context archive.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HistoryNotesAction {
@@ -59,20 +61,6 @@ impl HistoryNotesAction {
             Self::NotesSearchContents => "search_contents",
             Self::NotesAppendToFile => "append_to_file",
             Self::NotesWriteFile => "write_file",
-        }
-    }
-
-    pub(super) const fn endpoint(self) -> &'static str {
-        match self {
-            Self::HistoryListWindows => "alpha/history/v2/list_windows",
-            Self::HistoryListItems => "alpha/history/v2/list_items",
-            Self::HistoryReadItem => "alpha/history/v2/read_item",
-            Self::HistorySearchContents => "alpha/history/v2/search_contents",
-            Self::NotesListFilesByPrefix => "alpha/notes/v2/list_files_by_prefix",
-            Self::NotesReadFile => "alpha/notes/v2/read_file",
-            Self::NotesSearchContents => "alpha/notes/v2/search_contents",
-            Self::NotesAppendToFile => "alpha/notes/v2/append_to_file",
-            Self::NotesWriteFile => "alpha/notes/v2/write_file",
         }
     }
 
@@ -147,7 +135,7 @@ impl HistoryNotesAction {
                 "type": "object",
                 "properties": {
                     "agent_name": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": HISTORY_AGENT_NAME_DESCRIPTION},
-                    "item_id": {"type": "string", "description": "The short item ID is the suffix shown in the target item's trailing `[id: ...]` marker, printed after that item's content."},
+                    "item_id": {"type": "string", "description": "The exact item ID returned by history list or search."},
                     "offset_chars": {"type": "integer", "minimum": 0, "description": "Zero-based character offset at which reading starts."},
                     "limit_chars": {"type": "integer", "minimum": 1, "description": "Maximum number of characters to return."},
                     "window_id": {"type": "string", "description": "Full window ID containing the item."}
@@ -158,7 +146,7 @@ impl HistoryNotesAction {
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of matching items to return."},
-                    "query": {"type": "string", "encrypted": true, "description": "Case-sensitive literal substring to find in item content."},
+                    "query": {"type": "string", "description": "Case-sensitive literal substring to find in item content."},
                     "recent_first": {"type": "boolean", "description": "Whether to return the most recently created matches first."},
                     "tool_namespace": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "Callable namespace to include. When set, non-tool messages are excluded."},
                     "role": {"anyOf": [{"type": "string", "enum": ["user", "assistant", "tool", "system", "developer"]}, {"type": "null"}], "description": "Message role to include. Null or omission includes all roles."},
@@ -190,7 +178,7 @@ impl HistoryNotesAction {
                 "type": "object",
                 "properties": {
                     "max_matches_per_file": {"type": "integer", "minimum": 1, "description": "Maximum number of matching lines returned per file."},
-                    "query": {"type": "string", "encrypted": true, "description": "Case-sensitive literal substring to find in note lines."},
+                    "query": {"type": "string", "description": "Case-sensitive literal substring to find in note lines."},
                     "recent_file_first": {"type": "boolean", "description": "Whether to order matching files by creation time, newest first."},
                     "max_files": {"type": "integer", "minimum": 1, "description": "Maximum number of matching files returned."},
                     "path_prefix": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "Note path prefix to search."}
@@ -200,7 +188,7 @@ impl HistoryNotesAction {
             Self::NotesAppendToFile => json!({
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "encrypted": true, "description": "Text appended exactly as provided."},
+                    "text": {"type": "string", "description": "Text appended exactly as provided."},
                     "path": {"type": "string", "description": "Note file path to append to."}
                 },
                 "required": ["text", "path"]
@@ -208,7 +196,7 @@ impl HistoryNotesAction {
             Self::NotesWriteFile => json!({
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "encrypted": true, "description": "Complete replacement text for the file."},
+                    "text": {"type": "string", "description": "Complete replacement text for the file."},
                     "path": {"type": "string", "description": "Note file path to create or replace."}
                 },
                 "required": ["text", "path"]

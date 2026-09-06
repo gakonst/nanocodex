@@ -7,8 +7,15 @@ where
     S::Error: Into<nanocodex_oai_api::ResponseError>,
     S::Future: AgentSend,
 {
-    pub(super) async fn initialize_context_management(&mut self) -> Result<()> {
+    pub(super) async fn initialize_context_management(
+        &mut self,
+        requested_workspace: Option<&str>,
+    ) -> Result<()> {
         if self.context_management_checked {
+            return Ok(());
+        }
+        if !self.config.experimental_context || self.model != Model::Astra {
+            self.context_management_checked = true;
             return Ok(());
         }
         #[cfg(target_family = "wasm")]
@@ -17,31 +24,25 @@ where
             .as_ref()
             .and_then(|session| session.tools.history_notes_host())
             .or_else(|| nanocodex_tools::embedded::history_notes_host(&self.tools));
-        #[cfg(target_family = "wasm")]
-        let eligible = if self.config.experimental_context && self.model == Model::Astra {
-            match &host {
-                Some(host) => {
-                    host.eligible(
-                        self.config.auth.clone(),
-                        self.config.api_base_url.clone(),
-                        self.events.request_id().to_owned(),
-                    )
-                    .await
-                }
-                None => false,
-            }
-        } else {
-            false
-        };
         #[cfg(not(target_family = "wasm"))]
-        let eligible = self.config.experimental_context
-            && ContextManagement::eligible(
-                self.model,
-                &self.config.auth,
-                &self.config.api_base_url,
-            )
-            .await;
-        if !eligible {
+        let host = Some(nanocodex_tools::context_management::files::host(
+            self.session
+                .as_ref()
+                .map(|session| session.workspace.clone())
+                .or_else(|| requested_workspace.map(str::to_owned))
+                .map_or_else(|| self.context_source.resolve_workspace(None), Ok)?,
+        ));
+        #[cfg(target_family = "wasm")]
+        let _ = requested_workspace;
+        let Some(host) = host else {
+            self.context_management_checked = true;
+            return Ok(());
+        };
+        if !host
+            .available(self.events.request_id().to_owned())
+            .await
+            .map_err(NanocodexError::ContextStorage)?
+        {
             self.context_management_checked = true;
             return Ok(());
         }
@@ -56,16 +57,11 @@ where
             format!("/root/{}", self.events.request_id())
         };
         let context = ContextManagement::new(
-            self.config.auth.clone(),
-            self.config.api_base_url.clone(),
+            host,
             self.provider_session_id.to_string(),
+            self.events.request_id().to_owned(),
             agent_name,
             &history,
-        );
-        #[cfg(target_family = "wasm")]
-        let context = context.with_host(
-            host.expect("eligible host"),
-            self.events.request_id().to_owned(),
         );
         if let Some(mut session) = self.session.take() {
             if let Err(error) = context.install(&mut session.tools) {
@@ -80,7 +76,14 @@ where
                 }
             };
             if !context.has_saved_window(&history) {
-                session.conversation.append(context.initial_context().await);
+                let initial = match context.initial_context().await {
+                    Ok(initial) => initial,
+                    Err(error) => {
+                        self.session = Some(session);
+                        return Err(NanocodexError::ContextStorage(error));
+                    }
+                };
+                session.conversation.append(initial);
             }
             session.conversation.reset_for_full_request();
             self.session = Some(session);
@@ -183,13 +186,22 @@ where
         let items = if let Some(items) = recovered {
             items
         } else {
+            let archive_id = context
+                .archive(&conversation.flattened_history())
+                .await
+                .map_err(NanocodexError::ContextStorage)?;
             let next = context.successor();
+            next.record_archive(previous.context_window_id.clone(), archive_id);
             let canonical = snapshot.map_or_else(
                 || (*conversation.canonical_context).clone(),
                 ContextSnapshot::full_item,
             );
             let mut items = vec![developer_context(), canonical];
-            items.extend(next.initial_context().await);
+            items.extend(
+                next.initial_context()
+                    .await
+                    .map_err(NanocodexError::ContextStorage)?,
+            );
             // Client-authored developer instructions survive resets. User/task
             // history is recovered with notes/history, as in upstream Codex.
             items.extend(compaction::truncate_retained_messages(
@@ -321,8 +333,8 @@ mod tests {
             ..ModelConfig::default()
         });
         let context = ContextManagement::new(
-            config.auth.clone(),
-            "http://127.0.0.1:1".into(),
+            nanocodex_tools::context_management::files::host(workspace.path()),
+            "context-test".into(),
             "context-test".into(),
             "/root".into(),
             &[],
@@ -355,7 +367,9 @@ mod tests {
                 .await
                 .success
         );
-        session.conversation.append(context.initial_context().await);
+        session
+            .conversation
+            .append(context.initial_context().await.unwrap());
         session.conversation.append([
             developer_message("Keep this client instruction".into()),
             ResponseItem::message(
@@ -370,6 +384,20 @@ mod tests {
         let journal = Arc::new(test_policy::Journal::default());
         run.execution_steps = Some(ExecutionSteps::for_test(journal.clone()));
         let before = serde_json::to_value(session.conversation.flattened_history()).unwrap();
+        // A real filesystem failure must not discard the only copy of the task.
+        let blocked_directory = workspace.path().join(".nanocodex");
+        std::fs::write(&blocked_directory, "not a directory").unwrap();
+        assert!(matches!(
+            run.reset_context(1, &mut session.conversation, &session.factory, None)
+                .await,
+            Err(NanocodexError::ContextStorage(_))
+        ));
+        assert_eq!(
+            serde_json::to_value(session.conversation.flattened_history()).unwrap(),
+            before
+        );
+        assert_eq!(context.window().context_window_id, first.context_window_id);
+        std::fs::remove_file(blocked_directory).unwrap();
         // Simulate losing the acknowledgement after the reset step was saved.
         journal
             .lose_ack
@@ -407,8 +435,8 @@ mod tests {
         assert_eq!(context.window().first_window_id, first.first_window_id);
         assert!(session.conversation.previous_response_id().is_none());
         let restored = ContextManagement::new(
-            run.config.auth.clone(),
-            "http://127.0.0.1:1".into(),
+            nanocodex_tools::context_management::files::host(workspace.path()),
+            "context-test".into(),
             "context-test".into(),
             "/root".into(),
             &serde_json::from_slice::<Vec<ResponseItem>>(&serde_json::to_vec(&history).unwrap())

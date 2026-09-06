@@ -3,7 +3,6 @@ import { isIP } from "node:net";
 import WebSocket, { WebSocketServer } from "ws";
 
 import { defaultCodexAuthFile, readCodexSubscription } from "./codex-auth-file.mjs";
-import { proxyHistoryNotes } from "./history-notes.mjs";
 
 const CHATGPT_RESPONSES_URL = "wss://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_RESPONSES_PATH = "/api/responses";
@@ -71,19 +70,6 @@ export function createChatGptSubscriptionPlugin(options = {}, dependencies) {
         }
       };
       const loadAuth = () => dependencies.readAuth(authFile, { minimumTtlMs: minimumTokenTtlMs });
-
-      vite.middlewares.use((request, response, next) => {
-        if (request.url !== `${responsesPath}/context`) { next(); return; }
-        if (closed || request.method !== "POST" || !safeSameOriginRequest(request)
-          || headerBytes(request) > MAX_HEADER_BYTES
-          || request.headers["content-type"] !== "application/json"
-          || [...FORBIDDEN_DOWNSTREAM_HEADERS].some((name) => request.headers[name] !== undefined)) {
-          response.writeHead(403, noStoreHeaders("application/json"));
-          response.end('{"error":"forbidden"}');
-          return;
-        }
-        void proxyHistoryNotes(request, response, loadAuth, dependencies.fetchImpl);
-      });
 
       if (statusPath !== false) {
         vite.middlewares.use((request, response, next) => {

@@ -1,7 +1,6 @@
 import type {
   BrowserWebSocketConnection,
   BrowserWebSocketRequest,
-  HistoryNotesTransport,
 } from "../browser/host.mjs";
 
 /** Structural subset of a private Cloudflare Service Binding. */
@@ -22,7 +21,6 @@ export type CloudflareEgressOptions = Readonly<{
 
 /** Exact function-backed options for `Transport.hostManaged(...)`. */
 export type CloudflareEgressTransportOptions = Readonly<{
-  historyNotes: HistoryNotesTransport;
   apiBaseUrl: string;
   websocketUrl: string;
   createWebSocket(

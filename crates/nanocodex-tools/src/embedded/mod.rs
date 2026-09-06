@@ -146,7 +146,7 @@ pub enum EmbeddedToolMode {
 /// [`CodeModeExecution`] for model-visible script failures. Reserve
 /// [`CodeModeHostError`] for failures in the host bridge itself.
 pub trait CodeModeHost: Send + Sync + 'static {
-    /// Optional authenticated history/notes capability. Unsupported hosts retain compaction.
+    /// Optional workspace storage for context archives and notes. Unsupported hosts retain compaction.
     fn history_notes_host(&self) -> Option<Arc<dyn crate::context_management::HistoryNotesHost>> {
         None
     }

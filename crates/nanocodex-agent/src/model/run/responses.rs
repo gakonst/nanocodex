@@ -189,9 +189,9 @@ where
                     let mut recorded_prompt_history =
                         prompt_history.iter().cloned().collect::<Vec<_>>();
                     let mut recorded_request_prefix = factory.profile().prefix().to_vec();
-                    // Notes refer to item IDs in the ingested context window.
+                    // Notes refer to item IDs in the retained context archive.
                     // Replaying the retained request must preserve those IDs.
-                    if !factory.profile().history_ingest_requested() {
+                    if self.context_management.is_none() {
                         for item in recorded_prompt_history
                             .iter_mut()
                             .chain(&mut recorded_request_prefix)

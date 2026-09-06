@@ -55,6 +55,7 @@ async fn cancellation_retains_interrupted_prompt_and_resumes_from_the_abort_boun
 
     let workspace = temporary_workspace("cancel-turn")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, mut events) = Nanocodex::builder(openai)
@@ -432,6 +433,7 @@ async fn cancellation_during_pre_turn_compaction_retains_the_accepted_prompt() -
 
     let workspace = temporary_workspace("cancel-pre-turn-compaction")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)
@@ -528,6 +530,7 @@ async fn cancellation_pairs_an_active_tool_call_before_resuming() -> Result<()> 
 
     let workspace = temporary_workspace("cancel-tool")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, mut events) = Nanocodex::builder(openai)

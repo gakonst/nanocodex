@@ -14,36 +14,9 @@ export function cloudflareEgress(options) {
   return Object.freeze({
     apiBaseUrl: BROKER_API_BASE_URL,
     websocketUrl: BROKER_WEBSOCKET_URL,
-    historyNotes: Object.freeze({
-      async available() {
-        const headers = brokerHistoryHeaders(binding);
-        const response = await binding.fetch("https://nanocodex.internal/.well-known/nanocodex/context-management", {
-          method: "GET", headers,
-        });
-        if (!response.ok) { await response.body?.cancel(); return false; }
-        return (await response.json())?.enabled === true;
-      },
-      request({ path, body, budget, threadId, signal }) {
-        const headers = brokerHistoryHeaders(binding);
-        headers.set("content-type", "application/json");
-        headers.set("session-id", body.context.session_id);
-        headers.set("thread-id", threadId);
-        headers.set("x-openai-tool-output-truncation-policy", JSON.stringify(budget));
-        return binding.fetch(`${BROKER_API_BASE_URL}/${path}`, {
-          method: "POST", headers, body: JSON.stringify(body), signal,
-        });
-      },
-    }),
     createWebSocket: (endpoint, sessionId, request) =>
       openBrokeredWebSocket(binding, endpoint, sessionId, request),
   });
-}
-
-function brokerHistoryHeaders(binding) {
-  const headers = new Headers({ Authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL" });
-  const subject = cloudflareEgressSubject(binding);
-  if (subject !== undefined) headers.set("x-nanocodex-subject", subject);
-  return headers;
 }
 
 function validateOptions(options) {

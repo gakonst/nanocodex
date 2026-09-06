@@ -67,6 +67,7 @@ export function create(options = {}) {
   const tempoMcp = mpp?.[Symbol.for("nanocodex.tempo.mcp")];
   let hostDefinitionId;
   const host = createNodeHost({
+    contextStorage: options.contextStorage,
     mpp,
     mcpServers: mcp === false
       ? undefined

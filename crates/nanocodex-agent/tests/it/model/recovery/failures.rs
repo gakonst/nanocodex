@@ -298,6 +298,7 @@ async fn context_window_error_forces_compaction_before_the_next_prompt() -> Resu
 
     let workspace = temporary_workspace("context-error-compaction")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)

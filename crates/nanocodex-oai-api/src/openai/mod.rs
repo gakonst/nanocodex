@@ -238,10 +238,10 @@ impl<F> OpenAiBuilder<F> {
         self
     }
 
-    /// Enables Codex's experimental context management for eligible subscriptions.
+    /// Enables model-managed context windows with durable workspace recovery.
     ///
-    /// Enabled by default. API keys, custom endpoints, unsupported models, and
-    /// hosts without a history/notes backend retain remote compaction.
+    /// Enabled by default for Astra when the host has context storage. Other
+    /// models and hosts without storage retain provider compaction.
     #[must_use]
     pub const fn experimental_context(mut self, enabled: bool) -> Self {
         self.config.experimental_context = enabled;

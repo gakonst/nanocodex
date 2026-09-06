@@ -385,6 +385,7 @@ async fn compaction_admission_executes_the_provider() -> Result<()> {
     let service_calls = Arc::clone(&provider_calls);
     let policy = Arc::new(ProviderSteps::new());
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .transport(ResponsesTransport::Https)
         .service(move || ProviderProbe {
             calls: Arc::clone(&service_calls),

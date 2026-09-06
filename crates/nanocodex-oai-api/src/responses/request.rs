@@ -112,13 +112,6 @@ impl RequestProfile {
         &self.prefix
     }
 
-    /// Whether requests ingest history for a model-managed context window.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn history_ingest_requested(&self) -> bool {
-        self.context_window.is_some()
-    }
-
     /// Shares the byte-stable request prefix with an internal checkpoint.
     #[doc(hidden)]
     #[must_use]
@@ -833,8 +826,6 @@ impl Serialize for SerializedTurnMetadata<'_> {
             window_id: Option<String>,
             turn_id: String,
             request_kind: &'static str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            history_ingest_requested: Option<bool>,
             tool_namespaces_info: &'a BTreeMap<String, serde_json::Value>,
         }
 
@@ -850,7 +841,6 @@ impl Serialize for SerializedTurnMetadata<'_> {
                 .map(|window| format!("{}:{}", profile.thread_id(), window.window_number)),
             turn_id: format!("{}:{}", profile.thread_id(), profile.logical_turn),
             request_kind: self.request_kind,
-            history_ingest_requested: window.map(|_| true),
             tool_namespaces_info: &profile.tool_namespaces_info,
         })
         .map_err(serde::ser::Error::custom)?;

@@ -2344,6 +2344,7 @@ async fn independent_session_takeover_fences_standalone_compaction_before_execut
     let state = crate::DurableSession::open(store.clone(), "independent-compaction-fence").await?;
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .service({
             let generations = Arc::clone(&generations);
             move || DurableReplayService {
@@ -2388,6 +2389,7 @@ async fn cancelled_standalone_compaction_does_not_block_a_cold_follow_on() -> Re
         let compactions = Arc::clone(&compactions);
         let started = Arc::clone(&started);
         OpenAi::builder("test-key")
+            .experimental_context(false)
             .service(move || PendingStandaloneCompactionService {
                 compactions: Arc::clone(&compactions),
                 started: Arc::clone(&started),
@@ -2482,6 +2484,7 @@ async fn live_replacement_resubmits_a_pending_standalone_compaction() -> Result<
     let compactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let started = Arc::new(tokio::sync::Notify::new());
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .service({
             let compactions = Arc::clone(&compactions);
             let started = Arc::clone(&started);
@@ -2654,6 +2657,7 @@ async fn failed_completed_compaction_persistence_restores_the_committed_live_bou
     };
     let openai = || {
         OpenAi::builder("test-key")
+            .experimental_context(false)
             .service(|| DurableCompactionService)
             .build()
     };
@@ -2937,6 +2941,7 @@ async fn automatic_compaction_replays_a_after_terminal_not_committed_instead_of_
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let compactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .service({
             let generations = Arc::clone(&generations);
             let compactions = Arc::clone(&compactions);
@@ -3026,6 +3031,7 @@ async fn takeover_during_automatic_compaction_authorization_fences_before_provid
         let generations = Arc::clone(&generations);
         let compactions = Arc::clone(&compactions);
         OpenAi::builder("test-key")
+            .experimental_context(false)
             .service(move || AutomaticCompactionService {
                 generations: Arc::clone(&generations),
                 compactions: Arc::clone(&compactions),
@@ -3801,6 +3807,10 @@ async fn model_recovery_uses_recorded_requests_across_runtime_changes() -> Resul
         if let Some(input) = recorded_input {
             let mut expected = input["request_prefix"].as_array().unwrap().clone();
             expected.extend(input["prompt_history"].as_array().unwrap().iter().cloned());
+            // Local recovery IDs remain in the journal but are not provider handles.
+            for item in &mut expected {
+                item.as_object_mut().unwrap().remove("id");
+            }
             assert_eq!(
                 requests.lock().unwrap().last().unwrap(),
                 &json!(expected),

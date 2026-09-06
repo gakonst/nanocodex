@@ -1,10 +1,12 @@
-//! Codex's model-managed context-window controls and authenticated history/notes tools.
+//! Codex-style context-window controls with Nanocodex-owned history and notes.
 //!
-//! Protocol pinned to openai/codex ac192cd793. Unsupported providers keep remote compaction.
+//! Workspace files survive model context resets independently of the provider.
 mod backend;
+#[cfg(not(target_family = "wasm"))]
+pub mod files;
 mod spec;
 
-pub use backend::{BackendFuture, HistoryNotesHost, HistoryNotesRequest};
+pub use backend::{BackendFuture, HistoryNotesHost, StorageOperation};
 
 use crate::{
     Tool, ToolContext, ToolDefinition, ToolExposure, ToolInput, ToolOutput, ToolResult,
@@ -12,10 +14,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use backend::Backend;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use nanocodex_oai_api::{
-    Model,
-    auth::{OpenAiAuth, OpenAiAuthMode},
     responses::{ContentItem, MessageRole, ResponseItem},
     tools::ToolOutputContent,
 };
@@ -43,6 +42,8 @@ pub struct ContextWindow {
     pub previous_window_id: Option<String>,
     pub context_window_id: String,
     pub window_number: u64,
+    #[serde(default)]
+    pub archives: std::collections::BTreeMap<String, String>,
 }
 
 impl ContextWindow {
@@ -53,6 +54,7 @@ impl ContextWindow {
             previous_window_id: None,
             context_window_id: id,
             window_number: 0,
+            archives: Default::default(),
         }
     }
 
@@ -86,6 +88,9 @@ impl ContextWindow {
                     previous_window_id: field("Previous context window id: "),
                     context_window_id: field("Current context window id: ")?,
                     window_number: field("Context window number: ")?.parse().ok()?,
+                    archives: field("Archived windows: ")
+                        .and_then(|text| serde_json::from_str(&text).ok())
+                        .unwrap_or_default(),
                 })
             })
         })
@@ -107,41 +112,22 @@ pub struct ContextManagement {
 }
 
 impl ContextManagement {
-    /// Resolves the exact upstream model/provider/subscription eligibility gate.
-    pub async fn eligible(model: Model, auth: &OpenAiAuth, base_url: &str) -> bool {
-        if model != Model::Astra
-            || auth.mode() != OpenAiAuthMode::ChatGpt
-            || base_url.trim_end_matches('/') != OpenAiAuthMode::ChatGpt.default_api_base_url()
-        {
-            return false;
-        }
-        auth.snapshot()
-            .await
-            .is_ok_and(|snapshot| eligible_plan(snapshot.bearer()))
-    }
-
     /// Creates controls, restoring context identity from durable history when present.
     pub fn new(
-        auth: OpenAiAuth,
-        base_url: String,
+        host: Arc<dyn HistoryNotesHost>,
         session_id: String,
+        thread_id: String,
         agent_name: String,
         history: &[ResponseItem],
     ) -> Self {
-        #[cfg(not(target_family = "wasm"))]
-        nanocodex_oai_api::transport::install_default_rustls_crypto_provider();
         let window =
             ContextWindow::from_history(history, &agent_name).unwrap_or_else(ContextWindow::new);
         Self {
             backend: Backend {
-                #[cfg(not(target_family = "wasm"))]
-                client: reqwest::Client::new(),
-                host: None,
-                auth,
-                base_url,
-                thread_id: session_id.clone(),
+                host,
                 session_id,
                 agent_name,
+                thread_id,
             },
             state: Arc::new(State {
                 window: Mutex::new(window),
@@ -155,11 +141,19 @@ impl ContextManagement {
         }
     }
 
-    /// Installs the embedding's authenticated operation boundary.
-    pub fn with_host(mut self, host: Arc<dyn HistoryNotesHost>, thread_id: String) -> Self {
-        self.backend.host = Some(host);
-        self.backend.thread_id = thread_id;
-        self
+    /// Commits the exact old window before the live conversation is reset.
+    pub async fn archive(&self, history: &[ResponseItem]) -> Result<String, String> {
+        self.backend.archive(&self.window(), history).await
+    }
+
+    /// Associates only a committed successor with its immutable archived predecessor.
+    pub fn record_archive(&self, window_id: String, archive_id: String) {
+        self.state
+            .window
+            .lock()
+            .expect("context window lock")
+            .archives
+            .insert(window_id, archive_id);
     }
 
     /// Installs control tools and the direct-only history/notes namespace contracts.
@@ -192,7 +186,7 @@ impl ContextManagement {
         for action in HistoryNotesAction::ALL {
             runtime.add_context_tool(
                 Arc::new(HistoryTool {
-                    backend: self.backend.clone(),
+                    context: self.clone(),
                     action,
                 }),
                 ToolExposure::DirectOnly,
@@ -225,7 +219,7 @@ impl ContextManagement {
     pub fn take_request(&self) -> bool {
         self.state.requested.swap(false, Ordering::AcqRel)
     }
-    /// Advances identity without resetting tools, environment, or server-side notes.
+    /// Advances identity without resetting tools, environment, or saved notes.
     pub fn advance(&self) {
         let mut window = self
             .state
@@ -267,7 +261,7 @@ impl ContextManagement {
         ContextWindow::from_history(history, self.agent_name()).is_some()
     }
     /// Produces the canonical context-window and model guidance messages.
-    pub async fn initial_context(&self) -> Vec<ResponseItem> {
+    pub async fn initial_context(&self) -> Result<Vec<ResponseItem>, String> {
         let window = self.window();
         let mut body = format!(
             "Agent name: {}\nFirst context window id: {}\nCurrent context window id: {}\nContext window number: {}",
@@ -276,48 +270,27 @@ impl ContextManagement {
             window.context_window_id,
             window.window_number
         );
+        body.push_str(&format!(
+            "\nArchived windows: {}",
+            serde_json::to_string(&window.archives).expect("archive index")
+        ));
         if let Some(previous) = window.previous_window_id {
             body.push_str(&format!("\nPrevious context window id: {previous}"));
         }
-        if let Ok(hint) = self
-            .backend
-            .call(
-                "alpha/notes/v2/thread_hint",
-                json!({}),
-                json!({"mode": "bytes", "limit": 4000}),
-            )
-            .await
-            && let Some(hint) = hint
-                .get("text")
-                .and_then(Value::as_str)
-                .filter(|text| text.len() <= 4000 && !text.is_empty())
-        {
+        let mut hint = self.backend.hint().await?;
+        hint.truncate(hint.floor_char_boundary(4000));
+        if !hint.is_empty() {
             body.push('\n');
-            body.push_str(hint);
+            body.push_str(&hint);
         }
-        vec![
+        Ok(vec![
             developer(format!("<context_window>\n{body}\n</context_window>")),
             developer(format!(
                 "<context_window_guidance>\n{}\n</context_window_guidance>",
                 self.budget.guidance_message
             )),
-        ]
+        ])
     }
-}
-
-fn eligible_plan(bearer: &str) -> bool {
-    let Some(payload) = bearer
-        .split('.')
-        .nth(1)
-        .and_then(|part| URL_SAFE_NO_PAD.decode(part).ok())
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-    else {
-        return false;
-    };
-    matches!(
-        payload["https://api.openai.com/auth"]["chatgpt_plan_type"].as_str(),
-        Some("plus" | "pro" | "prolite")
-    )
 }
 
 pub(crate) fn namespace_description(namespace: &str) -> Option<&'static str> {
@@ -419,7 +392,7 @@ impl Tool for ControlTool {
 }
 
 struct HistoryTool {
-    backend: Backend,
+    context: ContextManagement,
     action: HistoryNotesAction,
 }
 #[async_trait]
@@ -438,11 +411,13 @@ impl Tool for HistoryTool {
         let arguments = input.decode_json()?;
         Ok(
             match self
+                .context
                 .backend
                 .call(
-                    self.action.endpoint(),
+                    self.action,
                     arguments,
-                    json!({"mode": "tokens", "limit": context.output_token_budget()}),
+                    &self.context.window(),
+                    context.history(),
                 )
                 .await
             {
@@ -454,33 +429,21 @@ impl Tool for HistoryTool {
 }
 
 fn output(mut result: Value) -> ToolOutput {
-    let images = result
+    let media = result
         .as_object_mut()
-        .and_then(|object| object.remove("images"));
-    let mut content = match result.get("encrypted_output").and_then(Value::as_str) {
-        Some(encrypted) => vec![ToolOutputContent::EncryptedContent {
-            encrypted_content: encrypted.to_owned(),
-        }],
-        None => vec![ToolOutputContent::InputText {
-            text: result.to_string(),
-        }],
-    };
-    if let Some(images) = images {
-        let Some(images) = images.as_array() else {
-            return ToolOutput::error("History backend returned invalid image content.");
-        };
-        for image in images {
-            let (Some(data), Some(mime), Some(detail)) = (
-                image["data"].as_str(),
-                image["mime_type"].as_str(),
-                serde_json::from_value(image["detail"].clone()).ok(),
-            ) else {
-                return ToolOutput::error("History backend returned invalid image content.");
-            };
-            content.push(ToolOutputContent::InputImage {
-                image_url: format!("data:{mime};base64,{data}"),
-                detail,
-            });
+        .and_then(|object| object.remove("media"));
+    let mut content = vec![ToolOutputContent::InputText {
+        text: result.to_string(),
+    }];
+    if let Some(Value::Array(parts)) = media {
+        for mut part in parts {
+            if part["type"] == "input_image" && part["detail"].is_null() {
+                part["detail"] = json!("auto");
+            }
+            match serde_json::from_value(part) {
+                Ok(part) => content.push(part),
+                Err(error) => return ToolOutput::error(error.to_string()),
+            }
         }
     }
     ToolOutput::content(content)
@@ -502,10 +465,11 @@ mod tests {
             2
         );
         assert!(ContextWindow::from_history(&history, "/root/reviewer").is_none());
+        let workspace = tempfile::tempdir().unwrap();
         let child = ContextManagement::new(
-            OpenAiAuth::api_key("test"),
-            "http://127.0.0.1:1".into(),
+            files::host(workspace.path()),
             "session".into(),
+            "child-thread".into(),
             "/root/reviewer".into(),
             &history,
         );
@@ -513,26 +477,5 @@ mod tests {
         assert!(!child.has_saved_window(&history));
         child.restore(&history);
         assert_eq!(child.window().window_number, 0);
-    }
-
-    #[test]
-    fn only_supported_subscriptions_are_eligible() {
-        for (plan, expected) in [
-            ("plus", true),
-            ("pro", true),
-            ("prolite", true),
-            ("free", false),
-            ("enterprise", false),
-            ("team", false),
-        ] {
-            let token = format!(
-                "header.{}.signature",
-                URL_SAFE_NO_PAD.encode(
-                    json!({"https://api.openai.com/auth":{"chatgpt_plan_type":plan}}).to_string()
-                )
-            );
-            assert_eq!(eligible_plan(&token), expected, "{plan}");
-        }
-        assert!(!eligible_plan("invalid"));
     }
 }

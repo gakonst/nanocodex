@@ -1,5 +1,4 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { HISTORY_NOTES_PATHS, historyNotesEligible, historyNotesHeaders } from "./history-notes";
 import {
   AgentSubjectDirectory,
   type BrokerEnv,
@@ -55,7 +54,6 @@ const SUBJECT_HEADER = "x-nanocodex-subject";
 const CREDENTIAL_PROVENANCE_HEADER = "x-nanocodex-credential-provenance";
 const PROVIDER_PLACEHOLDER = "Bearer NANOCODEX_PROVIDER_CREDENTIAL";
 const MODEL_STATUS_PATH = "/.well-known/nanocodex/model-status";
-const CONTEXT_CAPABILITY_PATH = "/.well-known/nanocodex/context-management";
 const SPONSORED_TRIAL_RESET_PATH = "/.well-known/nanocodex/sponsored-trial-reset";
 const BROKER_READINESS_PATH = "/.well-known/nanocodex/broker-readiness";
 const MAX_CONTROL_BODY_BYTES = 16 * 1024;
@@ -100,7 +98,6 @@ const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefine
   "image-edit": "codex-image-edit",
   "realtime-call": undefined,
   "realtime-sideband": undefined,
-  "history-notes": undefined,
 };
 
 type ConnectorOperation = Readonly<{
@@ -222,7 +219,7 @@ export class ChiefOfStaffEgress extends WorkerEntrypoint<EgressEnv> {
 
 type ModelOperation = Readonly<{
   id: "responses" | "search" | "image-generation" | "image-edit"
-    | "realtime-call" | "realtime-sideband" | "history-notes";
+    | "realtime-call" | "realtime-sideband";
   method: "GET" | "POST";
   path: `/v1/${string}`;
   websocket: boolean;
@@ -233,12 +230,6 @@ type ModelOperation = Readonly<{
 }>;
 
 const OPERATIONS: readonly ModelOperation[] = [
-  ...HISTORY_NOTES_PATHS.map((path): ModelOperation => ({
-    id: "history-notes", method: "POST", path: `/v1/${path}`, websocket: false,
-    openai: `https://api.openai.com/v1/${path}`,
-    chatgpt: `https://chatgpt.com/backend-api/codex/${path}`,
-    chatGptOnly: true,
-  })),
   {
     id: "responses",
     method: "GET",
@@ -335,9 +326,6 @@ export async function handleEgress(
   }
   if (url.pathname === BROKER_READINESS_PATH) return handleReadiness(request, env);
   if (url.pathname === MODEL_STATUS_PATH) return handleModelStatus(request, env);
-  if (url.pathname === CONTEXT_CAPABILITY_PATH && url.origin === "https://nanocodex.internal") {
-    return handleContextCapability(request, env);
-  }
   if (url.pathname === SPONSORED_TRIAL_RESET_PATH) {
     return handleSponsoredTrialReset(request, env);
   }
@@ -378,9 +366,6 @@ export async function handleEgress(
     const sponsoredDemo = EPHEMERAL_BROWSER_MODEL_SUBJECT.test(subject)
       && operation.id === "responses";
     let credential = await resolveCredential(env, userId, false, undefined, sponsoredDemo);
-    if (operation.id === "history-notes" && !historyNotesEligible(credential)) {
-      return auditedError(409, "experimental_context_unavailable", request, url, operation.id, started);
-    }
     if (operation.chatGptOnly && credential.kind !== "chatgpt") {
       return auditedError(409, "chatgpt_credential_required", request, url, operation.id, started, {
         user_id: userId,
@@ -410,9 +395,6 @@ export async function handleEgress(
           credential.revision,
           sponsoredDemo,
         );
-        if (operation.id === "history-notes" && !historyNotesEligible(credential)) {
-          return auditedError(409, "experimental_context_unavailable", request, url, operation.id, started);
-        }
         if (operation.chatGptOnly && credential.kind !== "chatgpt") {
           return auditedError(409, "chatgpt_credential_required", request, url, operation.id, started, {
             user_id: userId,
@@ -2041,20 +2023,6 @@ async function handleModelStatus(request: Request, env: EgressEnv): Promise<Resp
   } catch { return jsonError(503, "broker_not_ready"); }
 }
 
-async function handleContextCapability(request: Request, env: EgressEnv): Promise<Response> {
-  if (request.method !== "GET" || request.body !== null) return jsonError(404, "not_found");
-  const subject = request.headers.get(SUBJECT_HEADER);
-  if (!subject || !SUBJECT.test(subject)
-    || request.headers.get("authorization") !== PROVIDER_PLACEHOLDER) {
-    return jsonError(403, "agent_subject_required");
-  }
-  try {
-    const userId = await resolveSubject(env, subject);
-    const credential = await resolveCredential(env, userId, false);
-    return json({ enabled: historyNotesEligible(credential) }, 200);
-  } catch { return json({ enabled: false }, 200); }
-}
-
 async function handleSponsoredTrialReset(request: Request, env: EgressEnv): Promise<Response> {
   if (!localSponsoredTrialResetEnabled(env)
     || request.method !== "POST") {
@@ -2105,11 +2073,6 @@ function buildUpstreamRequest(
   for (const name of allowed) {
     const value = original.headers.get(name);
     if (value !== null) headers.set(name, value);
-  }
-  if (operation.id === "history-notes") {
-    try {
-      for (const [name, value] of historyNotesHeaders(original, body)) headers.set(name, value);
-    } catch { throw new EgressFailure(400, "invalid_history_notes_request"); }
   }
   if (realtime) {
     const realtimeSessionId = original.headers.get("x-session-id");
@@ -2173,9 +2136,7 @@ function upstreamUrl(
     relay.pathname = target.pathname;
     relay.search = target.search;
   } else if (!operation.websocket) {
-    const httpRoute = operation.id === "history-notes"
-      ? `codex-${operation.path.slice("/v1/alpha/".length).replace("/v2/", "-").replaceAll("_", "-")}`
-      : RELAY_HTTP_ROUTES[operation.id];
+    const httpRoute = RELAY_HTTP_ROUTES[operation.id];
     if (!httpRoute) throw new EgressFailure(503, "invalid_codex_relay_url");
     relay.pathname = `${relay.pathname}/http/${httpRoute}`;
   }

@@ -23,7 +23,8 @@ const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 
 export function createNodeHost(options = {}) {
-  const historyNotes = historyNotesHost({ direct: !options.mpp });
+  const historyNotes = historyNotesHost(() => options.contextStorage ?? options.filesystem
+    ?? import("./workspace.mjs").then(({ open }) => open({ path: options.workspace ?? process.cwd() })));
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
     throw new TypeError("toolMode must be code or direct");
@@ -295,7 +296,6 @@ export function createNodeHost(options = {}) {
 
   function dispose() {
     if (disposal) return disposal;
-    historyNotes.cancel();
     disposal = Promise.resolve().then(() => settleCleanup([
       ...[...connections.keys()].map((handle) => () => close(handle)),
       () => code.reset(),
@@ -326,16 +326,16 @@ export function createNodeHost(options = {}) {
     executeCode: code.executeCodeObserved,
     waitCode: code.waitCodeObserved,
     beginCodeTurn: code.beginTurn,
-    cancelCodeTurn: (sessionId) => { historyNotes.cancel(sessionId); return code.cancelTurn(sessionId); },
+    cancelCodeTurn: code.cancelTurn,
     nextCodeUpdate: code.nextCodeUpdate,
     executeTool: code.executeTool,
     bindSubagentSession: code.bindSubagentSession,
-    cancelCode: (sessionId) => { historyNotes.cancel(sessionId); return code.cancel(sessionId); },
+    cancelCode: code.cancel,
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
-    releaseSession: (sessionId) => { historyNotes.cancel(sessionId); return code.releaseSession(sessionId); },
+    releaseSession: code.releaseSession,
     emitEvent: onEvent,
-    reset: () => { historyNotes.cancel(); return code.reset(); },
+    reset: code.reset,
     dispose,
   });
 }

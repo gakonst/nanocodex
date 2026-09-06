@@ -193,6 +193,7 @@ async fn normal_code_mode_executes_direct_function_and_custom_tools() -> Result<
         .tool(NamespacedEcho)
         .build()?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(&endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)

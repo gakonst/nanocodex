@@ -18,6 +18,8 @@ export type AgentEvent = {
 };
 
 export type AgentOptions = {
+  /** Durable context archives and notes; defaults to the agent workspace when available. */
+  contextStorage?: import("nanocodex-tools").Workspace | undefined;
   /** Replaces the selected model's built-in instructions. */
   instructions?: string | undefined;
   /** Appends host instructions while retaining the selected model's prompt. */

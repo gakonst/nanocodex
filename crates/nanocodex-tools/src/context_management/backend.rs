@@ -1,207 +1,474 @@
-// Adapted from openai/codex ac192cd793, ext/history-notes/src/backend.rs.
-// Copyright OpenAI. Licensed under Apache-2.0.
-#[cfg(not(target_family = "wasm"))]
-use std::time::Duration;
+//! Context archives and notes backed by the embedding's workspace.
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use nanocodex_oai_api::auth::OpenAiAuth;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use nanocodex_oai_api::responses::ResponseItem;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use super::{ContextWindow, spec::HistoryNotesAction};
 
 pub type BackendFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-/// Authenticated history/notes boundary implemented by an embedding host.
-/// The host must keep provider credentials private and accept only the pinned endpoints.
+/// Workspace operations, owned by the same host as the agent's files.
 pub trait HistoryNotesHost: Send + Sync + 'static {
-    fn eligible(
+    fn available(&self, thread_id: String) -> BackendFuture<Result<bool, String>>;
+    fn access(
         &self,
-        auth: OpenAiAuth,
-        base_url: String,
         thread_id: String,
-    ) -> BackendFuture<bool>;
-    fn call(
-        &self,
-        auth: OpenAiAuth,
-        request: HistoryNotesRequest,
+        operation: StorageOperation,
     ) -> BackendFuture<Result<Value, String>>;
 }
 
-/// One already context-bound operation. The backend owns authentication and retry policy.
-#[derive(Clone)]
-pub struct HistoryNotesRequest {
-    pub base_url: String,
-    pub path: String,
-    pub thread_id: String,
-    pub arguments: Value,
-    pub budget: Value,
+#[derive(Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum StorageOperation {
+    Read { path: String },
+    Write { path: String, contents: String },
+    List { path: String },
 }
 
 #[derive(Clone)]
 pub(super) struct Backend {
-    #[cfg(not(target_family = "wasm"))]
-    pub(super) client: reqwest::Client,
-    pub(super) host: Option<Arc<dyn HistoryNotesHost>>,
-    pub(super) auth: OpenAiAuth,
-    pub(super) base_url: String,
+    pub(super) host: Arc<dyn HistoryNotesHost>,
     pub(super) session_id: String,
     pub(super) agent_name: String,
     pub(super) thread_id: String,
 }
 
+#[derive(Deserialize, Serialize)]
+struct Archive {
+    window: ContextWindow,
+    items: Vec<Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Note {
+    text: String,
+    created_at: u64,
+    updated_at: u64,
+}
+
 impl Backend {
-    pub(super) async fn call(
-        &self,
-        path: &str,
-        mut arguments: Value,
-        budget: Value,
-    ) -> Result<Value, String> {
-        let object = arguments
-            .as_object_mut()
-            .ok_or("History tool arguments must be a JSON object")?;
-        object.insert(
-            "context".into(),
-            json!({"session_id": self.session_id, "current_agent_name": self.agent_name}),
-        );
-        if let Some(host) = &self.host {
-            return host
-                .call(
-                    self.auth.clone(),
-                    HistoryNotesRequest {
-                        base_url: self.base_url.clone(),
-                        path: path.to_owned(),
-                        thread_id: self.thread_id.clone(),
-                        arguments,
-                        budget,
-                    },
-                )
-                .await;
-        }
-        #[cfg(target_family = "wasm")]
-        return Err("Authenticated history/notes host is unavailable.".into());
-        #[cfg(not(target_family = "wasm"))]
-        self.call_native(path, arguments, budget).await
+    fn root(&self) -> String {
+        format!(
+            ".nanocodex/context/{}/{}/",
+            encode(&self.session_id),
+            encode(&self.agent_name)
+        )
     }
 
-    #[cfg(not(target_family = "wasm"))]
-    async fn call_native(
+    async fn read(&self, path: String) -> Result<Option<String>, String> {
+        let value = self
+            .host
+            .access(self.thread_id.clone(), StorageOperation::Read { path })
+            .await?;
+        if value.is_null() {
+            Ok(None)
+        } else {
+            value
+                .as_str()
+                .map(|text| Some(text.to_owned()))
+                .ok_or_else(|| "Context storage returned invalid text".into())
+        }
+    }
+
+    async fn write(&self, path: String, contents: String) -> Result<(), String> {
+        self.host
+            .access(
+                self.thread_id.clone(),
+                StorageOperation::Write { path, contents },
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn list(&self, path: String) -> Result<Vec<String>, String> {
+        serde_json::from_value(
+            self.host
+                .access(self.thread_id.clone(), StorageOperation::List { path })
+                .await?,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    pub(super) async fn archive(
         &self,
-        path: &str,
-        arguments: Value,
-        budget: Value,
+        window: &ContextWindow,
+        history: &[ResponseItem],
+    ) -> Result<String, String> {
+        let archive_id = uuid::Uuid::new_v4().to_string();
+        let archive = Archive {
+            window: window.clone(),
+            items: history
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<_, _>>()
+                .map_err(|error| error.to_string())?,
+        };
+        self.write(
+            format!("{}history/{}.json", self.root(), archive_id),
+            serde_json::to_string(&archive).map_err(|error| error.to_string())?,
+        )
+        .await?;
+        Ok(archive_id)
+    }
+
+    pub(super) async fn hint(&self) -> Result<String, String> {
+        let paths = self.list(format!("{}notes", self.root())).await?;
+        let names = paths
+            .iter()
+            .filter_map(|path| path.rsplit('/').next())
+            .filter_map(|name| name.strip_suffix(".json"))
+            .map(decode)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(if names.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Saved progress notes: {}. Read the relevant note before continuing.",
+                names.join(", ")
+            )
+        })
+    }
+
+    pub(super) async fn call(
+        &self,
+        action: HistoryNotesAction,
+        args: Value,
+        window: &ContextWindow,
+        history: &[ResponseItem],
     ) -> Result<Value, String> {
-        let mut auth = self.auth.snapshot().await.map_err(
-            |_| "Unable to perform operation: Could not resolve backend authentication.",
-        )?;
-        for attempt in 0..2 {
-            let mut request = self
-                .client
-                .post(format!("{}/{}", self.base_url.trim_end_matches('/'), path))
-                .bearer_auth(auth.bearer())
-                .header("originator", "nanocodex")
-                .header(
-                    "user-agent",
-                    concat!("nanocodex/", env!("CARGO_PKG_VERSION")),
-                )
-                .header("x-openai-tool-output-truncation-policy", budget.to_string())
-                .timeout(Duration::from_secs(35))
-                .json(&arguments);
-            if let Some(account) = auth.account_id() {
-                request = request.header("ChatGPT-Account-ID", account);
-            }
-            if auth.is_fedramp() {
-                request = request.header("X-OpenAI-Fedramp", "true");
-            }
-            if matches!(
-                path,
-                "alpha/history/v2/search_contents"
-                    | "alpha/notes/v2/search_contents"
-                    | "alpha/notes/v2/append_to_file"
-                    | "alpha/notes/v2/write_file"
-            ) {
-                request = request.header("x-openai-encrypted-tool-arguments", "true");
-            }
-            let response = request
-                .send()
-                .await
-                .map_err(|_| "Unable to perform operation: The backend request failed.")?;
-            if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-                self.auth.recover_unauthorized(&auth).await.map_err(
-                    |_| "Unable to perform operation: Could not refresh backend authentication.",
-                )?;
-                auth = self.auth.snapshot().await.map_err(
-                    |_| "Unable to perform operation: Could not resolve backend authentication.",
-                )?;
+        if action.namespace() == "context_history" {
+            self.history(action, &args, window, history).await
+        } else {
+            self.notes(action, &args).await
+        }
+    }
+
+    async fn history(
+        &self,
+        action: HistoryNotesAction,
+        args: &Value,
+        current: &ContextWindow,
+        history: &[ResponseItem],
+    ) -> Result<Value, String> {
+        if args["agent_name"]
+            .as_str()
+            .is_some_and(|name| name != self.agent_name)
+        {
+            return Err(
+                "History belongs to the current agent; use session search for other conversations"
+                    .into(),
+            );
+        }
+        let mut candidates = Vec::new();
+        // Only archives named in committed context state are readable. A replaced
+        // owner or a reset whose journal commit failed can leave no visible history.
+        for archive_id in current.archives.values() {
+            let text = self
+                .read(format!("{}history/{archive_id}.json", self.root()))
+                .await?
+                .ok_or("Archived context window is missing")?;
+            let archive: Archive =
+                serde_json::from_str(&text).map_err(|error| error.to_string())?;
+            candidates.push((
+                archive.window.window_number,
+                archive.window.context_window_id,
+                archive.items.len(),
+            ));
+        }
+        candidates.push((
+            current.window_number,
+            current.context_window_id.clone(),
+            history.len(),
+        ));
+        candidates.sort_by_key(|(number, _, _)| *number);
+        if args["recent_first"].as_bool().unwrap_or(false) {
+            candidates.reverse();
+        }
+        let limit = count(args, "limit", 100);
+        if action == HistoryNotesAction::HistoryListWindows {
+            return Ok(
+                json!({"windows": candidates.into_iter().take(limit).map(|(_, id, count)|
+                json!({"window_id":id,"item_count":count})).collect::<Vec<_>>()}),
+            );
+        }
+        let mut results = Vec::new();
+        if limit == 0 && action != HistoryNotesAction::HistoryReadItem {
+            return Ok(json!({"items":results}));
+        }
+        for (_, id, _) in candidates {
+            if args["window_id"]
+                .as_str()
+                .is_some_and(|filter| filter != id)
+            {
                 continue;
             }
-            if !response.status().is_success() {
-                return Err("Unable to perform operation: The backend request failed.".into());
+            let mut items: Vec<Value> = if id == current.context_window_id {
+                history
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<_, _>>()
+                    .map_err(|error| error.to_string())?
+            } else {
+                let text = self
+                    .read(format!(
+                        "{}history/{}.json",
+                        self.root(),
+                        current
+                            .archives
+                            .get(&id)
+                            .ok_or("Archived context window is missing")?
+                    ))
+                    .await?
+                    .ok_or("Archived context window is missing")?;
+                serde_json::from_str::<Archive>(&text)
+                    .map_err(|error| error.to_string())?
+                    .items
+            };
+            let calls: std::collections::HashMap<String, Value> = items
+                .iter()
+                .filter(|item| item.get("name").is_some())
+                .filter_map(|item| {
+                    item["call_id"]
+                        .as_str()
+                        .map(|id| (id.to_owned(), item.clone()))
+                })
+                .collect();
+            if args["recent_first"].as_bool().unwrap_or(false) {
+                items.reverse();
             }
-            return response.json().await.map_err(|_| {
-                "Unable to perform operation: The backend returned invalid JSON.".into()
-            });
+            for item in items {
+                let item_id = item["id"].as_str().unwrap_or_default();
+                let tool = item["call_id"]
+                    .as_str()
+                    .and_then(|id| calls.get(id))
+                    .unwrap_or(&item);
+                let role = item["role"].as_str().unwrap_or_else(|| {
+                    if item["type"]
+                        .as_str()
+                        .is_some_and(|kind| kind.ends_with("_output"))
+                    {
+                        "tool"
+                    } else {
+                        "assistant"
+                    }
+                });
+                let mut readable = item.clone();
+                let mut media = Vec::new();
+                for key in ["content", "output"] {
+                    if let Some(parts) = readable.get_mut(key).and_then(Value::as_array_mut) {
+                        for part in parts {
+                            if matches!(
+                                part["type"].as_str(),
+                                Some("input_image" | "input_audio" | "encrypted_content")
+                            ) {
+                                media.push(part.clone());
+                                *part = json!({"type":part["type"],"content":"Use context_history.read_item to recover this part."});
+                            }
+                        }
+                    }
+                }
+                let content =
+                    serde_json::to_string(&readable).map_err(|error| error.to_string())?;
+                if action == HistoryNotesAction::HistoryReadItem {
+                    if args["item_id"].as_str() != Some(item_id) {
+                        continue;
+                    }
+                    let offset = count(args, "offset_chars", 0);
+                    let length = count(args, "limit_chars", 10_000);
+                    return Ok(json!({"window_id":id,"item_id":item_id,
+                        "content":content.chars().skip(offset).take(length).collect::<String>(),
+                        "total_chars":content.chars().count(),"media":media}));
+                }
+                if args["role"].as_str().is_some_and(|filter| filter != role)
+                    || args["tool_name"]
+                        .as_str()
+                        .is_some_and(|filter| Some(filter) != tool["name"].as_str())
+                    || args["tool_namespace"].as_str().is_some_and(|filter| {
+                        tool["name"].as_str().is_none()
+                            || filter != tool["namespace"].as_str().unwrap_or("functions")
+                    })
+                    || args["query"]
+                        .as_str()
+                        .is_some_and(|query| !content.contains(query))
+                {
+                    continue;
+                }
+                let max_chars = count(args, "max_chars_per_item", 1000);
+                results.push(json!({"window_id":id,"item_id":item_id,"role":role,
+                    "tool_name":tool.get("name"),"truncated_content":content.chars().take(max_chars).collect::<String>()}));
+                if results.len() >= limit {
+                    return Ok(json!({"items":results}));
+                }
+            }
         }
-        unreachable!("final attempt returns")
+        if action == HistoryNotesAction::HistoryReadItem {
+            Err("History item was not found".into())
+        } else {
+            Ok(json!({"items":results}))
+        }
+    }
+
+    async fn notes(&self, action: HistoryNotesAction, args: &Value) -> Result<Value, String> {
+        let root = format!("{}notes/", self.root());
+        if let Some(path) = args["path"].as_str() {
+            let path = self.note_path(path)?;
+            let file = format!("{root}{}.json", encode(&path));
+            let previous = self
+                .read(file.clone())
+                .await?
+                .map(|text| serde_json::from_str::<Note>(&text).map_err(|error| error.to_string()))
+                .transpose()?;
+            if action == HistoryNotesAction::NotesReadFile {
+                let note = previous.ok_or("Note was not found")?;
+                let lines: Vec<_> = note.text.lines().collect();
+                let line = |key: &str, default: usize| {
+                    args[key].as_i64().map_or(default, |n| {
+                        if n < 0 {
+                            (lines.len() as i64 + n).max(0) as usize
+                        } else {
+                            usize::try_from(n.saturating_sub(1)).unwrap_or(usize::MAX)
+                        }
+                    })
+                };
+                let start = line("start_line", 0).min(lines.len());
+                let end = line("stop_line", lines.len().saturating_sub(1))
+                    .saturating_add(1)
+                    .min(lines.len());
+                let text = if args["start_line"].is_null() && args["stop_line"].is_null() {
+                    note.text
+                } else {
+                    lines[start..end.max(start)].join("\n")
+                };
+                return Ok(json!({"path":path,"text":text}));
+            }
+            let text = args["text"].as_str().ok_or("Note text is required")?;
+            let now = web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_millis() as u64;
+            let note = Note {
+                text: if action == HistoryNotesAction::NotesAppendToFile {
+                    format!(
+                        "{}{text}",
+                        previous.as_ref().map_or("", |note| note.text.as_str())
+                    )
+                } else {
+                    text.to_owned()
+                },
+                created_at: previous.as_ref().map_or(now, |note| note.created_at),
+                updated_at: now,
+            };
+            self.write(
+                file,
+                serde_json::to_string(&note).map_err(|error| error.to_string())?,
+            )
+            .await?;
+            return Ok(json!({"path":path,"written":true}));
+        }
+        let prefix = args["prefix"]
+            .as_str()
+            .or_else(|| args["path_prefix"].as_str())
+            .unwrap_or("");
+        let prefix = if prefix.is_empty() {
+            String::new()
+        } else {
+            let path = self.note_path(prefix.trim_end_matches('/'))?;
+            if prefix.ends_with('/') {
+                format!("{path}/")
+            } else {
+                path
+            }
+        };
+        let mut files = Vec::new();
+        for file in self.list(root).await? {
+            let Some(name) = file
+                .rsplit('/')
+                .next()
+                .and_then(|name| name.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            let path = decode(name)?;
+            if !path.starts_with(&prefix) {
+                continue;
+            }
+            let text = self.read(file).await?.ok_or("Note was not found")?;
+            let note: Note = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+            files.push((path, note));
+        }
+        files.sort_by(
+            |(a, left), (b, right)| match args["file_order_by"].as_str() {
+                Some("created_at") => left.created_at.cmp(&right.created_at).then(a.cmp(b)),
+                Some("updated_at") => left.updated_at.cmp(&right.updated_at).then(a.cmp(b)),
+                _ => a.cmp(b),
+            },
+        );
+        if args["file_order"].as_str() == Some("descending") {
+            files.reverse();
+        }
+        if action == HistoryNotesAction::NotesSearchContents {
+            if args["recent_file_first"].as_bool().unwrap_or(false) {
+                files.sort_by_key(|(_, note)| std::cmp::Reverse(note.created_at));
+            }
+            let query = args["query"].as_str().ok_or("Search query is required")?;
+            let max_matches = count(args, "max_matches_per_file", 20);
+            let matches: Vec<_> = files
+                .into_iter()
+                .filter_map(|(path, note)| {
+                    let lines: Vec<_> = note
+                        .text
+                        .lines()
+                        .enumerate()
+                        .filter(|(_, line)| line.contains(query))
+                        .take(max_matches)
+                        .map(|(index, text)| json!({"line":index+1,"text":text}))
+                        .collect();
+                    (!lines.is_empty()).then(|| json!({"path":path,"matches":lines}))
+                })
+                .take(count(args, "max_files", 100))
+                .collect();
+            Ok(json!({"files":matches}))
+        } else {
+            Ok(
+                json!({"files":files.into_iter().take(count(args, "max_results", 100))
+                .map(|(path,note)|json!({"path":path,"created_at":note.created_at,"updated_at":note.updated_at})).collect::<Vec<_>>()}),
+            )
+        }
+    }
+
+    fn note_path(&self, path: &str) -> Result<String, String> {
+        let relative = if path.starts_with('/') {
+            path.strip_prefix(&format!("{}/notes/", self.agent_name))
+                .ok_or("Notes belong to the current agent")?
+        } else {
+            path
+        };
+        if relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err("Note paths must contain nonempty names without dot components".into());
+        }
+        Ok(relative.to_owned())
     }
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
-mod tests {
-    use super::*;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-    };
-
-    #[tokio::test]
-    async fn notes_requests_bind_context_and_preserve_encrypted_output() {
-        nanocodex_oai_api::transport::install_default_rustls_crypto_provider();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base_url = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            loop {
-                let mut buffer = [0; 4096];
-                let read = socket.read(&mut buffer).await.unwrap();
-                assert!(read > 0);
-                request.extend_from_slice(&buffer[..read]);
-                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
-                    let length: usize = headers
-                        .lines()
-                        .find_map(|line| line.strip_prefix("content-length: "))
-                        .unwrap()
-                        .parse()
-                        .unwrap();
-                    if request.len() < end + 4 + length {
-                        continue;
-                    }
-                    assert!(headers.starts_with("post /alpha/notes/v2/write_file "));
-                    assert!(headers.contains("authorization: bearer test-token"));
-                    assert!(headers.contains("originator: nanocodex"));
-                    assert!(headers.contains("x-openai-encrypted-tool-arguments: true"));
-                    assert!(headers.contains("x-openai-tool-output-truncation-policy: {\"limit\":10000,\"mode\":\"tokens\"}"));
-                    let body: Value = serde_json::from_slice(&request[end + 4..]).unwrap();
-                    assert_eq!(
-                        body,
-                        json!({"path":"progress", "content":"checkpoint", "context":{"session_id":"session", "current_agent_name":"/root"}})
-                    );
-                    let response = r#"{"encrypted_output":"opaque"}"#;
-                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
-                    break;
-                }
-            }
-        });
-        let backend = Backend {
-            client: reqwest::Client::new(),
-            host: None,
-            auth: OpenAiAuth::api_key("test-token"),
-            base_url,
-            session_id: "session".into(),
-            agent_name: "/root".into(),
-            thread_id: "session".into(),
-        };
-        let response = backend.call("alpha/notes/v2/write_file", json!({"path":"progress", "content":"checkpoint", "context":{"session_id":"spoof"}}), json!({"mode":"tokens","limit":10000})).await.unwrap();
-        assert_eq!(response, json!({"encrypted_output":"opaque"}));
-        server.await.unwrap();
-    }
+fn encode(value: &str) -> String {
+    URL_SAFE_NO_PAD.encode(value)
+}
+fn count(args: &Value, key: &str, default: usize) -> usize {
+    args[key].as_u64().map_or(default, |value| {
+        usize::try_from(value).unwrap_or(usize::MAX)
+    })
+}
+fn decode(value: &str) -> Result<String, String> {
+    String::from_utf8(
+        URL_SAFE_NO_PAD
+            .decode(value)
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
 }

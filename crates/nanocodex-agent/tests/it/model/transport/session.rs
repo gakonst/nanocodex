@@ -178,6 +178,7 @@ async fn https_stored_fork_uses_the_historical_response_checkpoint() -> Result<(
 
     let workspace = temporary_workspace("https-stored-fork")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .transport(ResponsesTransport::Https)
         .store(true)
         .api_base_url(endpoint)

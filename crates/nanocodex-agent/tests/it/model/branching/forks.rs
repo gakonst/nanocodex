@@ -222,6 +222,7 @@ async fn active_boundary_fork_sends_tool_and_steer_delta_then_replays_on_checkpo
     });
 
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .store(true)
         .build()?;
@@ -332,6 +333,7 @@ async fn latest_and_historical_forks_keep_distinct_boundaries_during_an_active_t
 
     let workspace = temporary_workspace("latest-vs-historical-fork")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .store(true)
         .build()?;
@@ -444,6 +446,7 @@ async fn historical_fork_runs_while_the_mainline_turn_is_in_flight() -> Result<(
 
     let workspace = temporary_workspace("historical-fork")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .store(true)
         .build()?;

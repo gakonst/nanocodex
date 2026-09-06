@@ -1,19 +1,23 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { open } from "../node/workspace.mjs";
 import { test } from "node:test";
 import WebSocket, { WebSocketServer } from "ws";
 import { create } from "../browser/InlineAgent.mjs";
 import * as Transport from "../browser/Transport.mjs";
 
-for (const enabled of [false, true]) test(`browser WASM uses private host context capability: ${enabled}`, async () => {
+for (const enabled of [false, true]) test(`browser WASM uses the supplied context workspace: ${enabled}`, async () => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise((resolve) => server.once("listening", resolve));
   const connection = new Promise((resolve) => server.once("connection", (socket) => {
     socket.send(JSON.stringify({ type: "nanocodex.proxy.ready" }));
     resolve(socket);
   }));
-  const calls = [];
+  const directory = await mkdtemp(join(tmpdir(), "nanocodex-browser-context-"));
   const agent = await create({
+    contextStorage: enabled ? await open({ path: directory }) : undefined,
     module: await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)),
     transport: Transport.hostManaged({
       apiBaseUrl: "https://nanocodex.internal/v1",
@@ -21,13 +25,6 @@ for (const enabled of [false, true]) test(`browser WASM uses private host contex
       WebSocketImpl: WebSocket,
       websocketPreconnect: false,
       websocketWarmup: true,
-      historyNotes: {
-        async available() { return enabled; },
-        async request(input) {
-          calls.push(input);
-          return Response.json({ text: "Saved notes are available." });
-        },
-      },
     }),
   });
   try {
@@ -60,17 +57,10 @@ for (const enabled of [false, true]) test(`browser WASM uses private host contex
     })();
     const [result] = await Promise.all([agent.turn.prompt({ input: "Start a fresh context." }).result(), scenario]);
     assert.equal(result.finalMessage, "done");
-    assert.equal(calls.length, enabled ? 2 : 0);
-    for (const call of calls) {
-      assert.equal(call.path, "alpha/notes/v2/thread_hint");
-      assert.equal(call.body.context.session_id, agent.sessionId);
-      assert.equal(call.body.context.current_agent_name, "/root");
-      assert.equal(call.bearer, undefined);
-      assert.equal(call.accountId, undefined);
-    }
   } finally {
     await agent.session.shutdown();
     for (const socket of server.clients) socket.terminate();
     await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true });
   }
 });
