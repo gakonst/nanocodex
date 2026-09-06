@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createBrainBucket } from "../src/brain-bucket";
 import { createBrainWorkspace } from "../src/brain-workspace";
 import { ContainerProxy, serveBrainFilesystem } from "../src/sandbox-runtime";
+import { deleteCloudflareBrainWorkspace } from "../src/sandbox-tools";
 import type { DurableAgentSession } from "../src/index";
 
 const bindings = env as unknown as {
@@ -138,5 +139,26 @@ describe("brain storage local to its agent", () => {
     Object.defineProperty(unmounted, "props", { value: {} });
     expect((await new ContainerProxy(unmounted, { NANOCODEX_SESSIONS: bindings.NANOCODEX_SESSIONS })
       .fetch(new Request("http://r2.internal/NANOCODEX_BRAIN/owned", { headers: { "x-brain-id": id } }))).status).toBe(403);
+  });
+
+  it("purges inline and R2 files across cleanup pages without deleting another agent's data", async () => {
+    const id = crypto.randomUUID();
+    const backing = bindings.NANOCODEX_WORKSPACES;
+    const foreignKey = `brains/${crypto.randomUUID()}/retained`;
+    await backing.put(foreignKey, "retained");
+    await backing.put(`brains/${id}/legacy`, "legacy");
+    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(id), async (_instance, state) => {
+      const bucket = createBrainBucket(state.storage, backing, id);
+      for (let file = 0; file < 1001; file++) await bucket.put(`brains/${id}/file-${file}`, "inline");
+      await bucket.put(`brains/${id}/legacy`, "inline replacement");
+      await bucket.put(`brains/${id}/large`, new Uint8Array(1024 * 1024 + 1));
+      await deleteCloudflareBrainWorkspace(bucket, id);
+      expect(state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM nanocodex_brain_objects",
+      ).one().count).toBe(0);
+      expect((await backing.list({ prefix: `brains/${id}/` })).objects).toHaveLength(0);
+      expect(await (await backing.get(foreignKey))!.text()).toBe("retained");
+      expect((await createBrainBucket(state.storage, backing, id).list()).objects).toHaveLength(0);
+    });
   });
 });

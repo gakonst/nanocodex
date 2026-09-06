@@ -5879,7 +5879,7 @@ export class DurableAgentSession extends DurableComputerSession {
         deleteCloudflareSandboxWorkspace(this.env.NANOCODEX_WORKSPACES, resourceId)
       )));
       await deleteCloudflareBrainWorkspace(
-        this.env.NANOCODEX_WORKSPACES,
+        this.#brainBucket(),
         session.session_id,
       );
     }
