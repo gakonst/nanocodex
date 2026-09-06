@@ -90,7 +90,7 @@ describe("Cloudflare sandbox tools", () => {
       exit_code: 7,
       wall_time_seconds: expect.any(Number),
     });
-    expect(sandbox.startProcess).toHaveBeenCalledWith("exec 2>&1\ntask", {
+    expect(sandbox.startProcess).toHaveBeenCalledWith("(\ntask\n) 2>&1", {
       cwd: "/workspace/repo",
       env: { GH_TOKEN: "NANOCODEX_PROVIDER_CREDENTIAL", GH_PROMPT_DISABLED: "1", GIT_TERMINAL_PROMPT: "0" },
       processId: expect.stringMatching(/^nanocodex-[1-9][0-9]*$/),
