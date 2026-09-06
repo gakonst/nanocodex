@@ -1,3 +1,4 @@
+import { historyNotesHost, sameOriginHistoryNotes } from "../runtime/history-notes.mjs";
 import { createCodeRuntime, toolResult } from "../runtime/code-runtime.mjs";
 import {
   toolRouterBrand,
@@ -15,6 +16,11 @@ const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 const WEBSOCKET_OPEN = 1;
 
 export function createBrowserHost(options = {}) {
+  const historyNotes = historyNotesHost({
+    broker: options.historyNotes ?? (options.hostAuth && options.hostManagedProtocol && !options.createWebSocket
+      ? sameOriginHistoryNotes(options.websocketUrl) : undefined),
+    apiBaseUrl: options.apiBaseUrl ?? "https://api.openai.com/v1",
+  });
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
     throw new TypeError("toolMode must be code or direct");
@@ -380,6 +386,7 @@ export function createBrowserHost(options = {}) {
 
   function dispose() {
     if (disposal) return disposal;
+    historyNotes.cancel();
     disposalError = new Error("Nanocodex host was disposed during WebSocket connection");
     disposal = Promise.resolve().then(async () => {
       const cleanups = [];
@@ -485,6 +492,7 @@ export function createBrowserHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    historyNotes,
     connect,
     preconnect,
     send,
@@ -494,11 +502,11 @@ export function createBrowserHost(options = {}) {
     executeCode: code.executeCodeObserved,
     waitCode: code.waitCodeObserved,
     beginCodeTurn: code.beginTurn,
-    cancelCodeTurn: code.cancelTurn,
+    cancelCodeTurn: (sessionId) => { historyNotes.cancel(sessionId); return code.cancelTurn(sessionId); },
     nextCodeUpdate: code.nextCodeUpdate,
     executeTool: code.executeTool,
     bindSubagentSession: code.bindSubagentSession,
-    cancelCode: code.cancel,
+    cancelCode: (sessionId) => { historyNotes.cancel(sessionId); return code.cancel(sessionId); },
     readWorkspaceFile: async (path) => {
       if (!options.filesystem) throw new Error("browser workspace is unavailable");
       const contents = await options.filesystem.readFile(path);
@@ -524,9 +532,9 @@ export function createBrowserHost(options = {}) {
     },
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
-    releaseSession: code.releaseSession,
+    releaseSession: (sessionId) => { historyNotes.cancel(sessionId); return code.releaseSession(sessionId); },
     emitEvent: onEvent,
-    reset: code.reset,
+    reset: () => { historyNotes.cancel(); return code.reset(); },
     dispose,
   });
 }

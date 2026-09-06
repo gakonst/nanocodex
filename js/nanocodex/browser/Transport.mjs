@@ -54,6 +54,7 @@ function connection(options = {}) {
     WebSocketImpl: options.WebSocketImpl,
     apiBaseUrl: options.apiBaseUrl,
     createWebSocket: options.createWebSocket,
+    historyNotes: options.historyNotes,
     websocketUrl: options.websocketUrl,
     websocketPreconnect: options.websocketPreconnect,
     websocketWarmup: options.websocketWarmup,

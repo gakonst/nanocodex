@@ -1,17 +1,50 @@
 // Adapted from openai/codex ac192cd793, ext/history-notes/src/backend.rs.
 // Copyright OpenAI. Licensed under Apache-2.0.
+#[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use nanocodex_oai_api::auth::OpenAiAuth;
 use serde_json::{Value, json};
 
+pub type BackendFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+/// Authenticated history/notes boundary implemented by an embedding host.
+/// The host must keep provider credentials private and accept only the pinned endpoints.
+pub trait HistoryNotesHost: Send + Sync + 'static {
+    fn eligible(
+        &self,
+        auth: OpenAiAuth,
+        base_url: String,
+        thread_id: String,
+    ) -> BackendFuture<bool>;
+    fn call(
+        &self,
+        auth: OpenAiAuth,
+        request: HistoryNotesRequest,
+    ) -> BackendFuture<Result<Value, String>>;
+}
+
+/// One already context-bound operation. The backend owns authentication and retry policy.
+#[derive(Clone)]
+pub struct HistoryNotesRequest {
+    pub base_url: String,
+    pub path: String,
+    pub thread_id: String,
+    pub arguments: Value,
+    pub budget: Value,
+}
+
 #[derive(Clone)]
 pub(super) struct Backend {
+    #[cfg(not(target_family = "wasm"))]
     pub(super) client: reqwest::Client,
+    pub(super) host: Option<Arc<dyn HistoryNotesHost>>,
     pub(super) auth: OpenAiAuth,
     pub(super) base_url: String,
     pub(super) session_id: String,
     pub(super) agent_name: String,
+    pub(super) thread_id: String,
 }
 
 impl Backend {
@@ -28,6 +61,33 @@ impl Backend {
             "context".into(),
             json!({"session_id": self.session_id, "current_agent_name": self.agent_name}),
         );
+        if let Some(host) = &self.host {
+            return host
+                .call(
+                    self.auth.clone(),
+                    HistoryNotesRequest {
+                        base_url: self.base_url.clone(),
+                        path: path.to_owned(),
+                        thread_id: self.thread_id.clone(),
+                        arguments,
+                        budget,
+                    },
+                )
+                .await;
+        }
+        #[cfg(target_family = "wasm")]
+        return Err("Authenticated history/notes host is unavailable.".into());
+        #[cfg(not(target_family = "wasm"))]
+        self.call_native(path, arguments, budget).await
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    async fn call_native(
+        &self,
+        path: &str,
+        arguments: Value,
+        budget: Value,
+    ) -> Result<Value, String> {
         let mut auth = self.auth.snapshot().await.map_err(
             |_| "Unable to perform operation: Could not resolve backend authentication.",
         )?;
@@ -83,7 +143,7 @@ impl Backend {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
     use tokio::{
@@ -133,10 +193,12 @@ mod tests {
         });
         let backend = Backend {
             client: reqwest::Client::new(),
+            host: None,
             auth: OpenAiAuth::api_key("test-token"),
             base_url,
             session_id: "session".into(),
             agent_name: "/root".into(),
+            thread_id: "session".into(),
         };
         let response = backend.call("alpha/notes/v2/write_file", json!({"path":"progress", "content":"checkpoint", "context":{"session_id":"spoof"}}), json!({"mode":"tokens","limit":10000})).await.unwrap();
         assert_eq!(response, json!({"encrypted_output":"opaque"}));

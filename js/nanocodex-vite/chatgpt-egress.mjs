@@ -10,6 +10,16 @@ const RELAY_HTTP_PATHS = new Map([
   ["codex-web-search", "/backend-api/codex/alpha/search"],
   ["codex-image-generation", "/backend-api/codex/images/generations"],
   ["codex-image-edit", "/backend-api/codex/images/edits"],
+  ["codex-history-list-windows", "/backend-api/codex/alpha/history/v2/list_windows"],
+  ["codex-history-list-items", "/backend-api/codex/alpha/history/v2/list_items"],
+  ["codex-history-read-item", "/backend-api/codex/alpha/history/v2/read_item"],
+  ["codex-history-search-contents", "/backend-api/codex/alpha/history/v2/search_contents"],
+  ["codex-notes-list-files-by-prefix", "/backend-api/codex/alpha/notes/v2/list_files_by_prefix"],
+  ["codex-notes-read-file", "/backend-api/codex/alpha/notes/v2/read_file"],
+  ["codex-notes-search-contents", "/backend-api/codex/alpha/notes/v2/search_contents"],
+  ["codex-notes-write-file", "/backend-api/codex/alpha/notes/v2/write_file"],
+  ["codex-notes-append-to-file", "/backend-api/codex/alpha/notes/v2/append_to_file"],
+  ["codex-notes-thread-hint", "/backend-api/codex/alpha/notes/v2/thread_hint"],
 ]);
 const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
 
@@ -206,6 +216,8 @@ function upstreamHttpHeaders(request) {
     "authorization",
     "chatgpt-account-id",
     "content-type",
+    "x-openai-tool-output-truncation-policy",
+    "x-openai-encrypted-tool-arguments",
     "openai-alpha",
     "originator",
     "session-id",

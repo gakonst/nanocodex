@@ -93,7 +93,6 @@ where
         context: CompactionContext<'_>,
     ) -> Result<bool> {
         let CompactionContext { snapshot, phase } = context;
-        #[cfg(not(target_family = "wasm"))]
         if self.context_management.is_some() {
             return self
                 .maybe_reset_context(after_model_call_index, conversation, factory, snapshot)

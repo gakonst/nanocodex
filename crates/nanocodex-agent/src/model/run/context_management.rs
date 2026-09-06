@@ -11,14 +11,37 @@ where
         if self.context_management_checked {
             return Ok(());
         }
-        if !self.config.experimental_context
-            || !ContextManagement::eligible(
+        #[cfg(target_family = "wasm")]
+        let host = self
+            .session
+            .as_ref()
+            .and_then(|session| session.tools.history_notes_host())
+            .or_else(|| nanocodex_tools::embedded::history_notes_host(&self.tools));
+        #[cfg(target_family = "wasm")]
+        let eligible = if self.config.experimental_context && self.model == Model::Astra {
+            match &host {
+                Some(host) => {
+                    host.eligible(
+                        self.config.auth.clone(),
+                        self.config.api_base_url.clone(),
+                        self.events.request_id().to_owned(),
+                    )
+                    .await
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
+        #[cfg(not(target_family = "wasm"))]
+        let eligible = self.config.experimental_context
+            && ContextManagement::eligible(
                 self.model,
                 &self.config.auth,
                 &self.config.api_base_url,
             )
-            .await
-        {
+            .await;
+        if !eligible {
             self.context_management_checked = true;
             return Ok(());
         }
@@ -38,6 +61,11 @@ where
             self.provider_session_id.to_string(),
             agent_name,
             &history,
+        );
+        #[cfg(target_family = "wasm")]
+        let context = context.with_host(
+            host.expect("eligible host"),
+            self.events.request_id().to_owned(),
         );
         if let Some(mut session) = self.session.take() {
             if let Err(error) = context.install(&mut session.tools) {
@@ -260,11 +288,11 @@ fn is_client_developer(item: &ResponseItem) -> bool {
     !content.iter().any(|part| matches!(part, ContentItem::InputText { text } if ["<permissions instructions>", "<context_window>", "<context_window_guidance>", "<context_window_reminder>"].iter().any(|prefix| text.trim_start().starts_with(prefix))))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 #[path = "context_management_test_policy.rs"]
 mod test_policy;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
     use nanocodex_oai_api::responses::FunctionOutputBody;

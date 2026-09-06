@@ -28,7 +28,7 @@ mod code_mode_order;
 #[cfg(feature = "native")]
 #[path = "code_mode/spec.rs"]
 mod code_mode_spec;
-#[cfg(all(not(target_family = "wasm"), feature = "native"))]
+#[cfg(feature = "native")]
 #[doc(hidden)]
 #[allow(missing_docs)]
 pub mod context_management;

@@ -127,7 +127,6 @@ where
             conversation.reset_for_full_request();
         }
         let (prompt_history, prompt_repaired) = conversation.prompt_history_with_repair();
-        #[cfg(not(target_family = "wasm"))]
         let context_factory = self.context_management.as_ref().map(|context| {
             context.restore(&conversation.flattened_history());
             context.set_remaining(
@@ -141,7 +140,6 @@ where
                 window.window_number,
             )
         });
-        #[cfg(not(target_family = "wasm"))]
         let factory = context_factory.as_ref().unwrap_or(factory);
         let previous_response_id = if prompt_repaired {
             None

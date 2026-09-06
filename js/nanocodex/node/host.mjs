@@ -1,3 +1,4 @@
+import { historyNotesHost } from "../runtime/history-notes.mjs";
 import { Console } from "node:console";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -22,6 +23,7 @@ const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 
 export function createNodeHost(options = {}) {
+  const historyNotes = historyNotesHost({ direct: !options.mpp });
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
     throw new TypeError("toolMode must be code or direct");
@@ -293,6 +295,7 @@ export function createNodeHost(options = {}) {
 
   function dispose() {
     if (disposal) return disposal;
+    historyNotes.cancel();
     disposal = Promise.resolve().then(() => settleCleanup([
       ...[...connections.keys()].map((handle) => () => close(handle)),
       () => code.reset(),
@@ -314,6 +317,7 @@ export function createNodeHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    historyNotes,
     connect,
     send,
     next,
@@ -322,16 +326,16 @@ export function createNodeHost(options = {}) {
     executeCode: code.executeCodeObserved,
     waitCode: code.waitCodeObserved,
     beginCodeTurn: code.beginTurn,
-    cancelCodeTurn: code.cancelTurn,
+    cancelCodeTurn: (sessionId) => { historyNotes.cancel(sessionId); return code.cancelTurn(sessionId); },
     nextCodeUpdate: code.nextCodeUpdate,
     executeTool: code.executeTool,
     bindSubagentSession: code.bindSubagentSession,
-    cancelCode: code.cancel,
+    cancelCode: (sessionId) => { historyNotes.cancel(sessionId); return code.cancel(sessionId); },
     toolMode: () => toolMode,
     toolDefinitions: code.toolDefinitions,
-    releaseSession: code.releaseSession,
+    releaseSession: (sessionId) => { historyNotes.cancel(sessionId); return code.releaseSession(sessionId); },
     emitEvent: onEvent,
-    reset: code.reset,
+    reset: () => { historyNotes.cancel(); return code.reset(); },
     dispose,
   });
 }

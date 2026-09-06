@@ -440,6 +440,12 @@ export function releaseDefinitionHost(id) {
 }
 
 const hostBridge = Object.freeze({
+  historyNotesCapability(threadId, baseUrl) {
+    return requiredSessionHost(threadId).historyNotes.capability(threadId, baseUrl);
+  },
+  historyNotesRequest(threadId, request, bearer, accountId, fedramp) {
+    return requiredSessionHost(threadId).historyNotes.request(threadId, request, bearer, accountId, fedramp);
+  },
   async connect(endpoint, apiKey, accountId, fedramp, sessionId, threadId, turnState) {
     const host = requiredSessionHost(threadId);
     let result;

@@ -7,6 +7,16 @@ const DEFAULT_UPSTREAM_ORIGIN = "https://chatgpt.com";
 const MAX_UPSTREAM_HEADER_BYTES = 64 * 1024;
 const UPSTREAM_HANDSHAKE_TIMEOUT_MS = 15_000;
 const ALLOWED_HTTP_PATHS = new Set([
+  "/backend-api/codex/alpha/history/v2/list_windows",
+  "/backend-api/codex/alpha/history/v2/list_items",
+  "/backend-api/codex/alpha/history/v2/read_item",
+  "/backend-api/codex/alpha/history/v2/search_contents",
+  "/backend-api/codex/alpha/notes/v2/list_files_by_prefix",
+  "/backend-api/codex/alpha/notes/v2/read_file",
+  "/backend-api/codex/alpha/notes/v2/search_contents",
+  "/backend-api/codex/alpha/notes/v2/write_file",
+  "/backend-api/codex/alpha/notes/v2/append_to_file",
+  "/backend-api/codex/alpha/notes/v2/thread_hint",
   "/backend-api/codex/alpha/search",
   "/backend-api/codex/images/edits",
   "/backend-api/codex/images/generations",
@@ -27,6 +37,8 @@ const FORWARDED_HEADERS = [
   "x-codex-turn-state",
   "x-oai-attestation",
   "x-openai-fedramp",
+  "x-openai-encrypted-tool-arguments",
+  "x-openai-tool-output-truncation-policy",
   "x-openai-internal-codex-responses-lite",
   "x-responsesapi-include-timing-metrics",
   "x-session-id",

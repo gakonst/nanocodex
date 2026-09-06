@@ -4,6 +4,8 @@
 mod backend;
 mod spec;
 
+pub use backend::{BackendFuture, HistoryNotesHost, HistoryNotesRequest};
+
 use crate::{
     Tool, ToolContext, ToolDefinition, ToolExposure, ToolInput, ToolOutput, ToolResult,
     runtime::ToolRuntime,
@@ -123,12 +125,16 @@ impl ContextManagement {
         agent_name: String,
         history: &[ResponseItem],
     ) -> Self {
+        #[cfg(not(target_family = "wasm"))]
         nanocodex_oai_api::transport::install_default_rustls_crypto_provider();
         Self {
             backend: Backend {
+                #[cfg(not(target_family = "wasm"))]
                 client: reqwest::Client::new(),
+                host: None,
                 auth,
                 base_url,
+                thread_id: session_id.clone(),
                 session_id,
                 agent_name,
             },
@@ -144,6 +150,13 @@ impl ContextManagement {
                     .expect("pinned Codex token budget"),
             ),
         }
+    }
+
+    /// Installs the embedding's authenticated operation boundary.
+    pub fn with_host(mut self, host: Arc<dyn HistoryNotesHost>, thread_id: String) -> Self {
+        self.backend.host = Some(host);
+        self.backend.thread_id = thread_id;
+        self
     }
 
     /// Installs control tools and the direct-only history/notes namespace contracts.
@@ -307,6 +320,41 @@ pub(crate) fn namespace_description(namespace: &str) -> Option<&'static str> {
         .map(|action| action.namespace_description())
 }
 
+pub(crate) fn group_definitions(definitions: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    let mut grouped = Vec::new();
+    for mut definition in definitions {
+        let canonical = definition.name().to_owned();
+        let Some((namespace, name)) = canonical.rsplit_once("__") else {
+            grouped.push(definition);
+            continue;
+        };
+        let Some(description) = namespace_description(namespace) else {
+            grouped.push(definition);
+            continue;
+        };
+        let ToolDefinition::Function {
+            name: direct_name, ..
+        } = &mut definition
+        else {
+            grouped.push(definition);
+            continue;
+        };
+        *direct_name = name.into();
+        if let Some(ToolDefinition::Namespace { tools, .. }) = grouped.iter_mut().find(
+            |group| matches!(group, ToolDefinition::Namespace { name, .. } if &**name == namespace),
+        ) {
+            tools.push(definition);
+        } else {
+            grouped.push(ToolDefinition::namespace(
+                namespace,
+                description,
+                [definition],
+            ));
+        }
+    }
+    grouped
+}
+
 fn developer(text: String) -> ResponseItem {
     ResponseItem::message(
         MessageRole::Developer,
@@ -431,7 +479,7 @@ fn output(mut result: Value) -> ToolOutput {
     ToolOutput::content(content)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
 

@@ -20,7 +20,6 @@ where
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
         self.stats = RunStats::default();
-        #[cfg(not(target_family = "wasm"))]
         self.initialize_context_management().await?;
         let mut session = match self.session.take() {
             Some(session) => session,
@@ -37,7 +36,6 @@ where
             .conversation
             .prepare_request_policy(self.continuation_policy());
 
-        #[cfg(not(target_family = "wasm"))]
         if self.context_management.is_some() {
             let result = {
                 let reset = self.reset_context(
@@ -446,7 +444,6 @@ where
         cancel: &mut tokio::sync::oneshot::Receiver<()>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTaskOutcome> {
-        #[cfg(not(target_family = "wasm"))]
         self.initialize_context_management().await?;
         let mut session = if let Some(mut session) = self.session.take() {
             session.factory = session.factory.for_logical_turn(logical_turn);
@@ -486,7 +483,6 @@ where
                 .map(Arc::<str>::from);
             #[allow(unused_mut)]
             let mut tools = tool_runtime(&workspace, &self.config, &self.tools);
-            #[cfg(not(target_family = "wasm"))]
             if let Some(context) = &self.context_management {
                 context
                     .install(&mut tools)
@@ -504,7 +500,6 @@ where
                 self.context_source.execution_environment(),
             );
             let mut history = task_input(&task, user_content, &context_snapshot);
-            #[cfg(not(target_family = "wasm"))]
             if let Some(context) = &self.context_management {
                 history.splice(2..2, context.initial_context().await);
             }

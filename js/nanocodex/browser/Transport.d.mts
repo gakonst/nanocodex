@@ -6,6 +6,7 @@ import type { Options as ManagedClientOptions } from "../managed/Agent.mjs";
 import type {
   BrowserWebSocketConnection,
   BrowserWebSocketRequest,
+  HistoryNotesTransport,
 } from "./host.mjs";
 
 declare const responsesTransport: unique symbol;
@@ -34,9 +35,11 @@ type SharedEndpointOptions = Readonly<{
 type WorkerEndpointOptions = SharedEndpointOptions & Readonly<{
   WebSocketImpl?: never;
   createWebSocket?: never;
+  historyNotes?: never;
 }>;
 
 type EndpointOptions = SharedEndpointOptions & Readonly<{
+  historyNotes?: HistoryNotesTransport | undefined;
   WebSocketImpl?: typeof WebSocket | undefined;
   createWebSocket?(
     endpoint: string,

@@ -52,7 +52,7 @@ mod input;
 mod runtime;
 mod types;
 
-use std::{error::Error, fmt, future::Future, pin::Pin};
+use std::{error::Error, fmt, future::Future, pin::Pin, sync::Arc};
 
 use crate::{ToolContext, ToolDefinition, ToolInput, ToolOutput};
 
@@ -72,6 +72,16 @@ pub use types::{
 pub fn bind_host(mut tools: crate::Tools, host: impl CodeModeHost) -> crate::Tools {
     tools.embedded_host = Some(std::sync::Arc::new(host));
     tools
+}
+
+#[doc(hidden)]
+pub fn history_notes_host(
+    tools: &crate::Tools,
+) -> Option<Arc<dyn crate::context_management::HistoryNotesHost>> {
+    tools
+        .embedded_host
+        .as_ref()
+        .and_then(|host| host.history_notes_host())
 }
 
 /// Future returned by an embedded Code Mode operation.
@@ -136,6 +146,10 @@ pub enum EmbeddedToolMode {
 /// [`CodeModeExecution`] for model-visible script failures. Reserve
 /// [`CodeModeHostError`] for failures in the host bridge itself.
 pub trait CodeModeHost: Send + Sync + 'static {
+    /// Optional authenticated history/notes capability. Unsupported hosts retain compaction.
+    fn history_notes_host(&self) -> Option<Arc<dyn crate::context_management::HistoryNotesHost>> {
+        None
+    }
     /// Selects Code Mode or CSP-safe direct function dispatch.
     fn tool_mode(&self) -> EmbeddedToolMode {
         EmbeddedToolMode::Code
