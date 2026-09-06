@@ -104,6 +104,7 @@ async fn stored_reconnect_drops_checkpoint_and_replays_full_history() -> Result<
 
     let workspace = temporary_workspace("stored-reconnect")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(&endpoint)
         .store(true)
         .build()?;
@@ -427,6 +428,7 @@ async fn sol_compacts_before_sampling_a_follow_on_turn() -> Result<()> {
 
     let workspace = temporary_workspace("pre-turn-compaction")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)

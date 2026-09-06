@@ -1217,8 +1217,8 @@ async fn send_ready(socket: &mut WebSocket, cursor: &str, restored: bool) {
 
 fn agent_settings() -> serde_json::Value {
     serde_json::json!({
-        "model": "gpt-5.6-sol",
-        "thinking": "high",
+        "model": "gpt-6-astra",
+        "thinking": "low",
         "reasoning_mode": "standard",
         "fast_mode": false
     })
@@ -1356,7 +1356,7 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
                 "type": "call",
                 "session_id": AGENT_ID,
                 "call_id": "call-managed",
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-astra",
                 "name": "exec_command",
                 "input": {"cmd":"printf 'private-host\\n' > hosted-proof.txt && cat hosted-proof.txt"},
                 "output_token_budget": 1024,

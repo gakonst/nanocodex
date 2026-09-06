@@ -440,6 +440,12 @@ export function releaseDefinitionHost(id) {
 }
 
 const hostBridge = Object.freeze({
+  historyNotesCapability(threadId) {
+    return requiredSessionHost(threadId).historyNotes.capability(threadId);
+  },
+  historyNotesRequest(threadId, request) {
+    return requiredSessionHost(threadId).historyNotes.request(threadId, request);
+  },
   async connect(endpoint, apiKey, accountId, fedramp, sessionId, threadId, turnState) {
     const host = requiredSessionHost(threadId);
     let result;
@@ -529,11 +535,20 @@ const hostBridge = Object.freeze({
   executeCode(source, sessionId, callId, model) {
     return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model);
   },
+  waitCode(input, sessionId, callId) {
+    return requiredSessionHost(sessionId).waitCode(input, sessionId, callId);
+  },
   nextCodeUpdate(sessionId, callId) {
     return requiredSessionHost(sessionId).nextCodeUpdate(sessionId, callId);
   },
   executeTool(name, input, sessionId, callId, model) {
     return requiredSessionHost(sessionId).executeTool(name, input, sessionId, callId, model);
+  },
+  beginCodeTurn(sessionId) {
+    hostSessions.get(sessionId)?.beginCodeTurn?.(sessionId);
+  },
+  cancelCodeTurn(sessionId) {
+    hostSessions.get(sessionId)?.cancelCodeTurn?.(sessionId);
   },
   cancelCode(sessionId) {
     hostSessions.get(sessionId)?.cancelCode?.(sessionId);

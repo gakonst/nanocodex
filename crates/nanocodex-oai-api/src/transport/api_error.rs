@@ -43,6 +43,39 @@ pub(super) fn api_error_has_code(event: &str, expected: &str) -> bool {
     event.code() == Some(expected)
 }
 
+/// Resolves only structured paths into discovered function parameters.
+pub(super) fn invalid_tool_schema_path(event: &str) -> Option<Vec<usize>> {
+    let event: ApiErrorEnvelope = serde_json::from_str(event).ok()?;
+    let (code, param) = if event.code.is_some() {
+        (event.code.as_deref(), event.param.as_deref())
+    } else {
+        let error = event.error()?;
+        (error.code.as_deref(), error.param.as_deref())
+    };
+    if code != Some("invalid_function_parameters") {
+        return None;
+    }
+    let (input, mut rest) = path_index(param?.strip_prefix("input[")?)?;
+    let mut indices = vec![input];
+    while let Some(suffix) = rest.strip_prefix(".tools[") {
+        let (index, suffix) = path_index(suffix)?;
+        indices.push(index);
+        rest = suffix;
+    }
+    let suffix = rest.strip_prefix(".parameters")?;
+    (indices.len() >= 2
+        && (suffix.is_empty() || suffix.starts_with('.') || suffix.starts_with('[')))
+    .then_some(indices)
+}
+
+fn path_index(path: &str) -> Option<(usize, &str)> {
+    let (index, rest) = path.split_once(']')?;
+    if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((index.parse().ok()?, rest))
+}
+
 pub(super) fn api_error_is_checkpoint_missing(event: &str) -> bool {
     let Ok(event) = serde_json::from_str::<ApiErrorEnvelope>(event) else {
         return false;
@@ -88,6 +121,8 @@ struct ApiErrorEnvelope {
     #[serde(default)]
     code: Option<Box<str>>,
     #[serde(default)]
+    param: Option<Box<str>>,
+    #[serde(default)]
     error: Option<ApiErrorDetail>,
     #[serde(default)]
     response: Option<ApiErrorResponse>,
@@ -121,6 +156,8 @@ struct ApiErrorDetail {
     kind: Option<Box<str>>,
     #[serde(default)]
     code: Option<Box<str>>,
+    #[serde(default)]
+    param: Option<Box<str>>,
     #[serde(default)]
     message: Option<Box<str>>,
     #[serde(default)]

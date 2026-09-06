@@ -52,7 +52,7 @@ mod input;
 mod runtime;
 mod types;
 
-use std::{error::Error, fmt, future::Future, pin::Pin};
+use std::{error::Error, fmt, future::Future, pin::Pin, sync::Arc};
 
 use crate::{ToolContext, ToolDefinition, ToolInput, ToolOutput};
 
@@ -72,6 +72,16 @@ pub use types::{
 pub fn bind_host(mut tools: crate::Tools, host: impl CodeModeHost) -> crate::Tools {
     tools.embedded_host = Some(std::sync::Arc::new(host));
     tools
+}
+
+#[doc(hidden)]
+pub fn history_notes_host(
+    tools: &crate::Tools,
+) -> Option<Arc<dyn crate::context_management::HistoryNotesHost>> {
+    tools
+        .embedded_host
+        .as_ref()
+        .and_then(|host| host.history_notes_host())
 }
 
 /// Future returned by an embedded Code Mode operation.
@@ -136,9 +146,33 @@ pub enum EmbeddedToolMode {
 /// [`CodeModeExecution`] for model-visible script failures. Reserve
 /// [`CodeModeHostError`] for failures in the host bridge itself.
 pub trait CodeModeHost: Send + Sync + 'static {
+    /// Optional workspace storage for context archives and notes. Unsupported hosts retain compaction.
+    fn history_notes_host(&self) -> Option<Arc<dyn crate::context_management::HistoryNotesHost>> {
+        None
+    }
     /// Selects Code Mode or CSP-safe direct function dispatch.
     fn tool_mode(&self) -> EmbeddedToolMode {
         EmbeddedToolMode::Code
+    }
+
+    /// Whether the host implements resumable `exec`/`wait` cells and helpers.
+    /// Existing complete-cell embeddings retain their original contract.
+    fn supports_cells(&self) -> bool {
+        false
+    }
+
+    /// Resumes a yielded cell while streaming newly observed nested work.
+    fn wait_with_updates<'a>(
+        &'a self,
+        _input: &'a str,
+        _context: ToolContext<'a>,
+        _observer: &'a mut dyn CodeModeObserver,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(async {
+            Err(CodeModeHostError::new(
+                "embedded host does not support resumable cells",
+            ))
+        })
     }
 
     /// Returns the tools available to Code Mode for this session.
@@ -192,6 +226,17 @@ pub trait CodeModeHost: Send + Sync + 'static {
                 "direct embedded tool `{name}` is unavailable"
             )))
         })
+    }
+
+    /// Starts a logical turn without cancelling cells retained by earlier turns.
+    fn begin_turn(&self, _session_id: &str) {}
+
+    /// Cancels cells created or observed during the current logical turn.
+    fn cancel_turn<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
+        self.cancel(session_id)
     }
 
     /// Cancels host-owned Code Mode and nested-tool work for one agent session.

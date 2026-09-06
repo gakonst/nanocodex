@@ -159,6 +159,7 @@ async fn steering_is_bounded_fifo_and_joins_at_the_next_model_boundary() -> Resu
 
     let workspace = temporary_workspace("steer")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, mut events) = Nanocodex::builder(openai)
@@ -364,6 +365,7 @@ async fn compaction_resumes_tool_continuation_before_queued_steering() -> Result
     });
 
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)

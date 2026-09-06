@@ -186,6 +186,14 @@ function summarizeInput(family: string, input: unknown): string | undefined {
 }
 
 function summarizeOutput(family: string, output: unknown): string | undefined {
+  if (Array.isArray(output)) {
+    const textParts = output.filter((part) => isRecord(part)
+      && ["input_text", "output_text", "text"].includes(String(part.type))
+      && typeof part.text === "string");
+    return compact(textParts.length === output.length
+      ? textParts.map((part) => part.text).join("\n")
+      : stringify(output));
+  }
   if (isRecord(output)) {
     if (SUBAGENT_TOOLS.has(family)) {
       const summary = summarizeSubagentOutput(family, output);

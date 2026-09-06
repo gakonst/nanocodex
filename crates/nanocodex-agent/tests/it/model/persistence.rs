@@ -109,6 +109,7 @@ async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
 
     let workspace = temporary_workspace("checkpoint-miss")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .store(true)
         .build()?;
@@ -191,6 +192,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     let rollout_home = temporary_workspace("serialized-resume-rollout")?;
     let openai = || {
         OpenAi::builder("test-key")
+            .model(Model::Sol)
             .websocket_url(endpoint.clone())
             .build()
     };

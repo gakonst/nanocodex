@@ -58,6 +58,9 @@ impl<F> NanocodexBuilder<F> {
     #[must_use]
     pub const fn model(mut self, model: Model) -> Self {
         self.config.model = model;
+        if !self.config.thinking_explicit {
+            self.config.thinking = model.default_thinking();
+        }
         if self.config.context_window_tokens > model.max_context_window_tokens() {
             self.config.context_window_tokens = model.max_context_window_tokens();
         }
@@ -86,6 +89,7 @@ impl<F> NanocodexBuilder<F> {
     #[must_use]
     pub const fn thinking(mut self, thinking: Thinking) -> Self {
         self.config.thinking = thinking;
+        self.config.thinking_explicit = true;
         self
     }
 

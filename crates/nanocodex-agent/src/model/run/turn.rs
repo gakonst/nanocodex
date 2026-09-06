@@ -20,6 +20,8 @@ where
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
         self.stats = RunStats::default();
+        self.initialize_context_management(requested_workspace.as_deref())
+            .await?;
         let mut session = match self.session.take() {
             Some(session) => session,
             None => self.empty_session(requested_workspace.as_deref())?,
@@ -34,6 +36,36 @@ where
         session
             .conversation
             .prepare_request_policy(self.continuation_policy());
+
+        if self.context_management.is_some() {
+            let result = {
+                let reset = self.reset_context(
+                    self.stats.model_calls,
+                    &mut session.conversation,
+                    &session.factory,
+                    session.context.snapshot(),
+                );
+                tokio::pin!(reset);
+                tokio::select! {
+                    biased;
+                    _ = &mut *cancel => None,
+                    result = &mut reset => Some(result),
+                }
+            };
+            if matches!(result, Some(Ok(_))) {
+                session.conversation.commit_tail();
+                session.context.require_full_reinjection();
+                session.preserve_inherited_delta = false;
+            }
+            let checkpoint =
+                Self::checkpoint_from_session(&session, false, self.global_instructions.clone());
+            self.session = Some(session);
+            return Ok(match result {
+                Some(Ok(_)) => ModelCompactOutcome::Completed(checkpoint),
+                Some(Err(error)) => ModelCompactOutcome::Failed { error, checkpoint },
+                None => ModelCompactOutcome::Cancelled(checkpoint),
+            });
+        }
 
         let active_context_tokens = session.conversation.active_context_tokens();
         let previous_response_id = session
@@ -274,6 +306,12 @@ where
                         }) {
                             session.conversation.replace_rejected_images();
                         }
+                        if let Some(definition) = error
+                            .responses_error()
+                            .and_then(ResponsesError::invalid_tool_schema)
+                        {
+                            session.conversation.remove_tool_definition(definition);
+                        }
                         session.conversation.commit_interrupted();
                         session.preserve_inherited_delta = false;
                     }
@@ -407,6 +445,8 @@ where
         cancel: &mut tokio::sync::oneshot::Receiver<()>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTaskOutcome> {
+        self.initialize_context_management(requested_workspace.as_deref())
+            .await?;
         let mut session = if let Some(mut session) = self.session.take() {
             session.factory = session.factory.for_logical_turn(logical_turn);
             if let Err(error) = session.validate_workspace(requested_workspace.as_deref()) {
@@ -443,7 +483,13 @@ where
                 .context_source
                 .project_instructions(&workspace)
                 .map(Arc::<str>::from);
-            let tools = tool_runtime(&workspace, &self.config, &self.tools);
+            #[allow(unused_mut)]
+            let mut tools = tool_runtime(&workspace, &self.config, &self.tools);
+            if let Some(context) = &self.context_management {
+                context
+                    .install(&mut tools)
+                    .map_err(NanocodexError::InvalidExecutionPolicy)?;
+            }
             let tool_control = tools.control();
             tool_control.begin_turn();
             self.active_tools = Some(tool_control);
@@ -456,6 +502,15 @@ where
                 self.context_source.execution_environment(),
             );
             let mut history = task_input(&task, user_content, &context_snapshot);
+            if let Some(context) = &self.context_management {
+                history.splice(
+                    2..2,
+                    context
+                        .initial_context()
+                        .await
+                        .map_err(NanocodexError::ContextStorage)?,
+                );
+            }
             if !self.pending_developer_messages.is_empty() {
                 history.splice(2..2, self.pending_developer_messages.drain(..));
             }
@@ -783,7 +838,10 @@ where
             session.conversation.clear_delta();
             let history = code_calls
                 .iter()
-                .any(|call| call.name == "exec")
+                .any(|call| {
+                    call.name == "exec"
+                        || qualified_tool_name(call).starts_with("context_history__")
+                })
                 .then(|| Arc::new(session.conversation.flattened_history()));
             self.execute_model_tools(
                 &session.tools,

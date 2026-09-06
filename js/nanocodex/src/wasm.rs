@@ -55,6 +55,7 @@ use nanocodex_voice_protocol::{
     valid_realtime_call_id,
 };
 
+mod context;
 mod transport;
 
 use transport::JavaScriptResponsesHost;
@@ -110,6 +111,9 @@ extern "C" {
         model: &str,
     ) -> Result<Promise, JsValue>;
 
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = waitCode)]
+    fn host_wait_code(input: &str, session_id: &str, call_id: &str) -> Result<Promise, JsValue>;
+
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = nextCodeUpdate)]
     fn host_next_code_update(session_id: &str, call_id: &str) -> Result<Promise, JsValue>;
 
@@ -121,6 +125,12 @@ extern "C" {
         call_id: &str,
         model: &str,
     ) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = beginCodeTurn)]
+    fn host_begin_code_turn(session_id: &str);
+
+    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = cancelCodeTurn)]
+    fn host_cancel_code_turn(session_id: &str);
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = cancelCode)]
     fn host_cancel_code(session_id: &str);
@@ -492,6 +502,28 @@ impl JavaScriptCodeModeHost {
 }
 
 impl CodeModeHost for JavaScriptCodeModeHost {
+    fn history_notes_host(
+        &self,
+    ) -> Option<Arc<dyn nanocodex::tools::context_management::HistoryNotesHost>> {
+        Some(context::host())
+    }
+    fn supports_cells(&self) -> bool {
+        true
+    }
+
+    fn wait_with_updates<'a>(
+        &'a self,
+        input: &'a str,
+        context: ToolContext<'a>,
+        observer: &'a mut dyn CodeModeObserver,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(async move {
+            let execution = host_wait_code(input, context.session_id(), context.call_id())
+                .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
+            observe_javascript_code(execution, context, Some(observer)).await
+        })
+    }
+
     fn tool_mode(&self) -> EmbeddedToolMode {
         self.mode
     }
@@ -578,6 +610,20 @@ impl CodeModeHost for JavaScriptCodeModeHost {
         })
     }
 
+    fn begin_turn(&self, session_id: &str) {
+        host_begin_code_turn(session_id);
+    }
+
+    fn cancel_turn<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
+        Box::pin(async move {
+            host_cancel_code_turn(session_id);
+            Ok(())
+        })
+    }
+
     fn cancel<'a>(&'a self, session_id: &'a str) -> HostFuture<'a, Result<(), CodeModeHostError>> {
         Box::pin(async move {
             host_cancel_code(session_id);
@@ -589,7 +635,7 @@ impl CodeModeHost for JavaScriptCodeModeHost {
 async fn execute_javascript_code(
     source: &str,
     context: ToolContext<'_>,
-    mut observer: Option<&mut dyn CodeModeObserver>,
+    observer: Option<&mut dyn CodeModeObserver>,
 ) -> Result<CodeModeExecution, CodeModeHostError> {
     let execution = host_execute_code(
         source,
@@ -598,6 +644,14 @@ async fn execute_javascript_code(
         context.model(),
     )
     .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
+    observe_javascript_code(execution, context, observer).await
+}
+
+async fn observe_javascript_code(
+    execution: Promise,
+    context: ToolContext<'_>,
+    mut observer: Option<&mut dyn CodeModeObserver>,
+) -> Result<CodeModeExecution, CodeModeHostError> {
     loop {
         let update = host_next_code_update(context.session_id(), context.call_id())
             .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
@@ -742,8 +796,8 @@ struct WasmConfig {
     host_definition_id: u32,
     #[serde(default = "default_model")]
     model: String,
-    #[serde(default = "default_thinking")]
-    thinking: String,
+    #[serde(default)]
+    thinking: Option<Thinking>,
     #[serde(default = "default_reasoning_mode")]
     reasoning_mode: String,
     #[serde(default)]
@@ -1174,17 +1228,18 @@ impl WasmNanocodex {
 
         let model = config.model.parse::<Model>().map_err(js_error)?;
         let host_definition_id = config.host_definition_id;
-        let thinking = config.thinking.parse::<Thinking>().map_err(js_error)?;
         let reasoning_mode = config
             .reasoning_mode
             .parse::<ReasoningMode>()
             .map_err(js_error)?;
         let mut openai = OpenAi::builder(auth)
             .model(model)
-            .thinking(thinking)
             .reasoning_mode(reasoning_mode)
             .fast_mode(config.fast_mode)
             .websocket_warmup(config.websocket_warmup);
+        if let Some(thinking) = config.thinking {
+            openai = openai.thinking(thinking);
+        }
         if let Some(websocket_url) = config.websocket_url {
             openai = openai.websocket_url(websocket_url);
         }
@@ -3103,10 +3158,6 @@ fn parse_revision(revision: &str) -> Result<u64, StoreError> {
     revision.parse::<u64>().map_err(|error| {
         StoreError::Backend(format!("invalid JavaScript durability revision: {error}"))
     })
-}
-
-fn default_thinking() -> String {
-    "high".to_owned()
 }
 
 fn default_model() -> String {

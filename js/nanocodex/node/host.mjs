@@ -1,3 +1,4 @@
+import { historyNotesHost } from "../runtime/history-notes.mjs";
 import { Console } from "node:console";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -22,6 +23,8 @@ const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 
 export function createNodeHost(options = {}) {
+  const historyNotes = historyNotesHost(() => options.contextStorage ?? options.filesystem
+    ?? import("./workspace.mjs").then(({ open }) => open({ path: options.workspace ?? process.cwd() })));
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
     throw new TypeError("toolMode must be code or direct");
@@ -314,12 +317,16 @@ export function createNodeHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    historyNotes,
     connect,
     send,
     next,
     close,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     executeCode: code.executeCodeObserved,
+    waitCode: code.waitCodeObserved,
+    beginCodeTurn: code.beginTurn,
+    cancelCodeTurn: code.cancelTurn,
     nextCodeUpdate: code.nextCodeUpdate,
     executeTool: code.executeTool,
     bindSubagentSession: code.bindSubagentSession,

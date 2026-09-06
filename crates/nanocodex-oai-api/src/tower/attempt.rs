@@ -516,7 +516,7 @@ impl ResponsesAttemptFactory {
     /// Returns an attempt factory scoped to one client-side logical turn.
     pub fn for_logical_turn(&self, logical_turn: u64) -> Self {
         Self {
-            profile: Arc::clone(&self.profile),
+            profile: Arc::new((*self.profile).clone().with_logical_turn(logical_turn)),
             observer: self.observer.clone(),
             logical_turn,
             session_transport: Arc::clone(&self.session_transport),
@@ -527,6 +527,23 @@ impl ResponsesAttemptFactory {
     #[must_use]
     pub fn profile(&self) -> &RequestProfile {
         &self.profile
+    }
+
+    /// Updates context identity without changing the cache key or immutable prefix.
+    #[doc(hidden)]
+    pub fn with_context_window(
+        &self,
+        agent_name: String,
+        context_window_id: String,
+        window_number: u64,
+    ) -> Self {
+        let mut factory = self.for_logical_turn(self.logical_turn);
+        factory.profile = Arc::new((*self.profile).clone().with_context_window(
+            agent_name,
+            context_window_id,
+            window_number,
+        ));
+        factory
     }
 
     /// Reconstructs retained request content on the current event and transport owner.

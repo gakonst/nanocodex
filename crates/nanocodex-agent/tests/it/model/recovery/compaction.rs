@@ -100,6 +100,7 @@ async fn manual_compaction_before_first_prompt_reinjects_cached_context_and_pers
     std::fs::write(workspace.join("AGENTS.md"), "creation-time agents\n")?;
     let rollout_home = temporary_workspace("manual-empty-compaction-rollout")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)
@@ -226,6 +227,7 @@ async fn manual_compaction_after_a_turn_uses_the_live_session_and_reinjects_next
 
     let workspace = temporary_workspace("manual-post-turn-compaction")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)
@@ -289,7 +291,7 @@ async fn manual_compaction_uses_current_defaults_and_a_fresh_logical_turn() -> R
             "warmup and generation belong to one logical turn"
         );
         assert_eq!(first["reasoning"]["effort"], "low");
-        assert!(first.get("service_tier").is_none());
+        assert_eq!(first["service_tier"], "default");
         send_final(&mut socket, "resp-first").await?;
 
         let compact = next_json(&mut socket).await?;
@@ -321,6 +323,7 @@ async fn manual_compaction_uses_current_defaults_and_a_fresh_logical_turn() -> R
 
     let workspace = temporary_workspace("manual-current-defaults")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let (agent, events) = Nanocodex::builder(openai)
@@ -423,6 +426,7 @@ async fn a_later_manual_compaction_replaces_a_stuck_manual_compaction() -> Resul
     let factory_calls = Arc::clone(&calls);
     let factory_started = Arc::clone(&first_started);
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .service(move || ReplaceableCompactionService {
             calls: Arc::clone(&factory_calls),
             first_started: Arc::clone(&factory_started),
@@ -585,6 +589,7 @@ async fn manual_compaction_replaces_an_active_turn_before_queued_prompts() -> Re
     let factory_started = Arc::clone(&active_started);
     let factory_order = Arc::clone(&order);
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .service(move || ActiveReplacementService {
             calls: Arc::clone(&factory_calls),
             active_started: Arc::clone(&factory_started),
@@ -764,6 +769,7 @@ async fn pre_turn_compaction_keeps_creation_time_agents_md() -> Result<()> {
     let factory_generation_calls = Arc::clone(&generation_calls);
     let service_workspace = workspace.path().to_path_buf();
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .service(move || PreTurnCompactionService {
             observations: Arc::clone(&factory_observations),
             generation_calls: Arc::clone(&factory_generation_calls),

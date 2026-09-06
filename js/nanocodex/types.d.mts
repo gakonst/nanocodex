@@ -18,6 +18,8 @@ export type AgentEvent = {
 };
 
 export type AgentOptions = {
+  /** Durable context archives and notes; defaults to the agent workspace when available. */
+  contextStorage?: import("nanocodex-tools").Workspace | undefined;
   /** Replaces the selected model's built-in instructions. */
   instructions?: string | undefined;
   /** Appends host instructions while retaining the selected model's prompt. */
@@ -459,6 +461,11 @@ export type CodeEvaluatorEnvironment = {
   text(value: unknown): void;
   image(value: unknown, detail?: string): void;
   generatedImage(value: unknown): void;
+  audio(value: unknown): void;
+  notify(value: unknown): void;
+  yield_control(): void;
+  setTimeout(callback: () => void, delayMs?: number): number;
+  clearTimeout(timerId?: number): void;
   store(key: string, value: unknown): void;
   load(key: string): unknown;
   exit(): never;

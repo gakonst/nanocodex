@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
 
-import { Actions, Agent, Subagents, Transport } from "../node/index.mjs";
+import { Actions, Agent, ChatGptSubscription, Subagents, Transport } from "../node/index.mjs";
+import { createMemoryChatGptSubscriptionStore } from "../index.mjs";
 import { createNodeHost } from "../node/host.mjs";
 import { createMemoryDurabilityStore } from "../runtime/durability-store.mjs";
 import { createWorkspace } from "../runtime/workspace.mjs";
@@ -20,6 +23,7 @@ const SESSION_IDS = Object.freeze({
 });
 
 const createWarmAgent = ({ apiKey, websocketUrl, ...options }) => Agent.create({
+  model: "gpt-5.6-sol", // Legacy fixtures exercise none/pro reasoning and Sol pricing.
   ...options,
   transport: Transport.openAi({ apiKey, websocketUrl, websocketWarmup: true }),
 });
@@ -284,7 +288,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     assert.equal(warmup.reasoning.mode, "pro");
     assert.equal(warmup.reasoning.effort, "none");
     assert.equal(warmup.input[0].tools[0].name, "exec");
-    assert.match(warmup.input[0].tools[0].description, /tools\.multiply/);
+    assert.match(warmup.input[0].tools[0].description, /multiply\(args:/);
     sendWarmup(socket, "resp-warmup");
 
     const generation = await reader.next();
@@ -419,6 +423,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
         "send_agent_message",
         "spawn_agent",
         "submit_result",
+        "wait",
         "wait_agent",
       ],
     );
@@ -455,8 +460,8 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     const childReader = messageReader(childSocket);
     const childWarmup = await childReader.next();
     assert.equal(childWarmup.input[0].tools.some((tool) => tool.name === "send_agent_message"), true);
-    assert.match(childWarmup.input[0].tools[0].description, /tools\.rootOnly/);
-    assert.doesNotMatch(childWarmup.input[0].tools[0].description, /tools\.decoyOnly/);
+    assert.match(childWarmup.input[0].tools[0].description, /rootOnly/);
+    assert.doesNotMatch(childWarmup.input[0].tools[0].description, /decoyOnly/);
     sendWarmup(childSocket, "child-warmup");
 
     const rootSpawned = await rootReader.next();
@@ -977,8 +982,8 @@ test("independent agents keep their host connections isolated", async () => {
     assert.equal(socket.request.headers["session-id"], sessionId);
     const reader = messageReader(socket);
     const warmup = await reader.next();
-    assert.match(warmup.input[0].tools[0].description, new RegExp(`tools\\.${visibleTool}`));
-    assert.doesNotMatch(warmup.input[0].tools[0].description, new RegExp(`tools\\.${hiddenTool}`));
+    assert.match(warmup.input[0].tools[0].description, new RegExp(visibleTool));
+    assert.doesNotMatch(warmup.input[0].tools[0].description, new RegExp(hiddenTool));
     sendWarmup(socket, `${sessionId}-warmup`);
     await reader.next();
     sendFinal(socket, `${sessionId}-final`, message);
@@ -1001,6 +1006,171 @@ test("independent agents keep their host connections isolated", async () => {
   left.dispose();
   right.dispose();
   await Promise.all([leftServer.close(), rightServer.close()]);
+});
+
+test("WASM advertises and resumes Code Mode cells through function wait", async () => {
+  const server = await startServer();
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const agent = await Agent.create({
+    transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url, websocketWarmup: true }),
+    sessionId: "018f1f9a-7b3c-7a07-8000-000000000007",
+    tools: { delayed: { async handler() { await blocked; return "cell-completed-marker"; } } },
+  });
+  try {
+    const scenario = (async () => {
+      const socket = await server.connection;
+      const reader = messageReader(socket);
+      const warmup = await reader.next();
+      const specs = warmup.input[0].tools;
+      const wait = specs.find((tool) => tool.name === "wait");
+      assert.deepEqual(wait.parameters.required, ["cell_id"]);
+      assert.match(specs.find((tool) => tool.name === "exec").description, /yield_control/);
+      assert.equal(warmup.model, "gpt-6-astra");
+      assert.equal(warmup.reasoning.effort, "low");
+      sendWarmup(socket, "cell-warmup");
+      await reader.next();
+      sendCompleted(socket, "cell-start", [{
+        type: "custom_tool_call", name: "exec", call_id: "exec-cell",
+        input: '// @exec: {"yield_time_ms":0}\ntext("first-cell-chunk"); text(await tools.delayed({}));',
+      }]);
+      const yielded = await reader.next();
+      const output = yielded.input.find((item) => item.type === "custom_tool_call_output");
+      const encoded = JSON.stringify(output);
+      const cellId = encoded.match(/Script running with cell ID ([a-f0-9-]+:\d+)/)[1];
+      assert.match(encoded, /first-cell-chunk/);
+      release();
+      sendCompleted(socket, "cell-wait", [{
+        type: "function_call", name: "wait", call_id: "wait-cell",
+        arguments: JSON.stringify({ cell_id: cellId }),
+      }]);
+      const completed = await reader.next();
+      const result = completed.input.find((item) => item.type === "function_call_output");
+      assert.equal(result.call_id, "wait-cell");
+      assert.match(JSON.stringify(result), /Script completed/);
+      assert.match(JSON.stringify(result), /cell-completed-marker/);
+      assert.doesNotMatch(JSON.stringify(result), /first-cell-chunk/);
+      sendFinal(socket, "cell-final", "done");
+    })();
+    const [turn] = await bounded(Promise.all([
+      agent.turn.prompt({ input: "Run delayed in a yielding cell, then wait for it." }).result(),
+      scenario,
+    ]), "WASM exec/wait continuation");
+    assert.equal(turn.finalMessage, "done");
+  } finally {
+    release();
+    await agent.session.shutdown();
+    await server.close();
+  }
+});
+
+for (const [options, effort] of [
+  [{ model: "gpt-5.6-luna" }, "medium"],
+  [{ model: "gpt-6-astra", thinking: "high" }, "high"],
+]) test(`WASM resolves catalog effort and preserves explicit effort: ${JSON.stringify(options)}`, async () => {
+  const server = await startServer();
+  const agent = await createWarmAgent({ ...options, apiKey: "test-key", websocketUrl: server.url });
+  try {
+    const scenario = (async () => {
+      const socket = await server.connection;
+      const reader = messageReader(socket);
+      const request = await reader.next();
+      assert.equal(request.model, options.model);
+      assert.equal(request.reasoning.effort, effort);
+      sendWarmup(socket, "defaults-warmup");
+      await reader.next();
+      sendFinal(socket, "defaults-final", "done");
+    })();
+    await bounded(Promise.all([agent.turn.prompt({ input: "Reply done." }).result(), scenario]), "model defaults");
+  } finally {
+    await agent.session.shutdown();
+    await server.close();
+  }
+});
+
+test("WASM context reset archives exact history and retains notes, tools and cache across reopen", async () => {
+  const sessionId = "018f1f9a-7b3c-7a08-8000-000000000008";
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-context-"));
+  const durability = createMemoryDurabilityStore("context-window-durable");
+  let windowId;
+  let previousId;
+  let cacheKey;
+  const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
+  const metadata = (request) => JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
+  try {
+    for (const reopened of [false, true]) {
+      const server = await startServer();
+      const agent = await Agent.create({
+        sessionId, workspace, durability, durabilityId: "context-window-durable",
+        transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url, websocketWarmup: true }),
+        tools: { echo: { handler: (input) => input } },
+      });
+      try {
+        const scenario = (async () => {
+          const socket = await server.connection;
+          const reader = messageReader(socket);
+          const warmup = await reader.next();
+          const specs = warmup.input[0].tools;
+          assert.ok(specs.some((tool) => tool.name === "new_context"));
+          assert.equal(specs.find((tool) => tool.name === "context_history").tools.length, 4);
+          assert.equal(specs.find((tool) => tool.name === "context_notes").tools.length, 5);
+          assert.doesNotMatch(specs.find((tool) => tool.name === "exec").description, /new_context|context_history__read_item/);
+          let first = warmup;
+          if (warmup.generate === false) {
+            sendWarmup(socket, `context-warmup-${reopened}`);
+            first = await reader.next();
+          }
+          assert.equal(metadata(first).history_ingest_requested, undefined);
+          assert.equal(metadata(first).agent_name, "/root");
+          assert.equal(metadata(first).window_id, `${sessionId}:${reopened ? 1 : 0}`);
+          if (!reopened) {
+            previousId = metadata(first).context_window_id;
+            cacheKey = first.prompt_cache_key;
+            sendCompleted(socket, "store-cell", [{ type: "custom_tool_call", name: "exec", call_id: "store-before-reset", input: 'store("retained", "live-cell-marker"); if (typeof tools.new_context !== "undefined" || typeof tools.context_history__read_item !== "undefined") throw new Error("context controls exposed inside Code Mode"); text("context-controls-direct-only");' }]);
+            assert.match(JSON.stringify((await reader.next()).input), /context-controls-direct-only/);
+            sendCompleted(socket, "notes-write", [{ type: "function_call", namespace: "context_notes", name: "write_file", call_id: "write-note", arguments: '{"path":"progress","text":"durable-notes-marker"}' }]);
+            assert.match(JSON.stringify((await reader.next()).input), /written/);
+            sendCompleted(socket, "context-reset", [{ type: "function_call", name: "new_context", call_id: "reset", arguments: "{}" }]);
+            const reset = await reader.next();
+            assert.equal(reset.prompt_cache_key, cacheKey);
+            assert.equal(metadata(reset).window_number, 1);
+            assert.equal(metadata(reset).turn_id, metadata(first).turn_id);
+            windowId = metadata(reset).context_window_id;
+            assert.notEqual(windowId, previousId);
+            assert.doesNotMatch(JSON.stringify(reset.input), /original-user-marker/);
+            sendCompleted(socket, "load-cell", [{ type: "custom_tool_call", name: "exec", call_id: "load-after-reset", input: 'text(load("retained"));' }]);
+            assert.match(JSON.stringify((await reader.next()).input), /live-cell-marker/);
+          } else {
+            assert.equal(metadata(first).context_window_id, windowId);
+            assert.equal(first.prompt_cache_key, cacheKey);
+          }
+          sendCompleted(socket, `notes-read-${reopened}`, [{ type: "function_call", namespace: "context_notes", name: "read_file", call_id: "read-note", arguments: '{"path":"progress"}' }]);
+          assert.match(JSON.stringify((await reader.next()).input), /durable-notes-marker/);
+          sendCompleted(socket, `history-current-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "search_contents", call_id: "current-history", arguments: JSON.stringify({ window_id: windowId, query: "durable-notes-marker" }) }]);
+          const current = (await reader.next()).input.find((item) => item.call_id === "current-history").output;
+          const currentItems = JSON.parse(current.find((part) => part.type === "input_text").text).items;
+          assert.ok(currentItems.length > 0);
+          assert.ok(currentItems.every((item) => item.window_id === windowId));
+          sendCompleted(socket, `history-read-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "search_contents", call_id: "recover-request", arguments: JSON.stringify({ window_id: previousId, query: "original-user-marker" }) }]);
+          const found = (await reader.next()).input.find((item) => item.call_id === "recover-request");
+          const foundText = typeof found.output === "string" ? found.output : found.output.find((part) => part.type === "input_text").text;
+          const original = JSON.parse(foundText).items.find((item) => item.role === "user");
+          assert.match(original.truncated_content, /original-user-marker/);
+          sendCompleted(socket, `history-item-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "read_item", call_id: "recover-item", arguments: JSON.stringify({ window_id: previousId, item_id: original.item_id }) }]);
+          const recovered = (await reader.next()).input.find((item) => item.call_id === "recover-item").output;
+          assert.ok(recovered.some((part) => part.type === "input_image" && part.image_url === imageUrl));
+          sendFinal(socket, `context-final-${reopened}`, "done");
+        })();
+        await bounded(Promise.all([agent.turn.prompt({ input: reopened ? "Recover the prior task." : [
+          { type: "text", text: "original-user-marker" },
+          { type: "image", image_url: imageUrl },
+        ] }).result(), scenario]), "WASM context reset and recovery");
+      } finally {
+        await agent.session.shutdown();
+        await server.close();
+      }
+    }
+  } finally { await rm(workspace, { recursive: true }); }
 });
 
 async function startServer() {

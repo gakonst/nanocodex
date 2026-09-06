@@ -138,13 +138,16 @@ pub struct OpenAiBuilder<F = StandardServiceFactory> {
 }
 
 impl<F> OpenAiBuilder<F> {
-    /// Selects the default GPT-5.6 coding model for new sessions and agents.
+    /// Selects the default coding model for new sessions and agents.
     ///
     /// A higher-level session or agent builder may override this reusable
     /// client default without mutating the `OpenAi` recipe.
     #[must_use]
     pub const fn model(mut self, model: Model) -> Self {
         self.config.model = model;
+        if !self.config.thinking_explicit {
+            self.config.thinking = model.default_thinking();
+        }
         if self.config.context_window_tokens > model.max_context_window_tokens() {
             self.config.context_window_tokens = model.max_context_window_tokens();
         }
@@ -231,6 +234,17 @@ impl<F> OpenAiBuilder<F> {
     #[must_use]
     pub const fn thinking(mut self, thinking: Thinking) -> Self {
         self.config.thinking = thinking;
+        self.config.thinking_explicit = true;
+        self
+    }
+
+    /// Enables model-managed context windows with durable workspace recovery.
+    ///
+    /// Enabled by default for Astra when the host has context storage. Other
+    /// models and hosts without storage retain provider compaction.
+    #[must_use]
+    pub const fn experimental_context(mut self, enabled: bool) -> Self {
+        self.config.experimental_context = enabled;
         self
     }
 

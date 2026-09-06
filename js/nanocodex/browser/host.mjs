@@ -1,3 +1,4 @@
+import { historyNotesHost } from "../runtime/history-notes.mjs";
 import { createCodeRuntime, toolResult } from "../runtime/code-runtime.mjs";
 import {
   toolRouterBrand,
@@ -15,6 +16,7 @@ const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 const WEBSOCKET_OPEN = 1;
 
 export function createBrowserHost(options = {}) {
+  const historyNotes = historyNotesHost(options.contextStorage ?? options.filesystem);
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
     throw new TypeError("toolMode must be code or direct");
@@ -485,6 +487,7 @@ export function createBrowserHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    historyNotes,
     connect,
     preconnect,
     send,
@@ -492,6 +495,9 @@ export function createBrowserHost(options = {}) {
     close,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     executeCode: code.executeCodeObserved,
+    waitCode: code.waitCodeObserved,
+    beginCodeTurn: code.beginTurn,
+    cancelCodeTurn: code.cancelTurn,
     nextCodeUpdate: code.nextCodeUpdate,
     executeTool: code.executeTool,
     bindSubagentSession: code.bindSubagentSession,

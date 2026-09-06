@@ -33,6 +33,7 @@ const STARTUP_TIMEOUT_MS = 10_000;
 const INTERNAL_RUNTIME = Symbol.for("nanocodex.cloudflare.internalRuntime");
 const INTERNAL_CONFIGURATION = Symbol.for("nanocodex.cloudflare.internalConfiguration");
 const EPHEMERAL_APPLICATION_OPTIONS = new Set([
+  "contextStorage",
   "additionalInstructions",
   "fastMode",
   "instructions",
@@ -45,6 +46,7 @@ const EPHEMERAL_APPLICATION_OPTIONS = new Set([
   "workspace",
 ]);
 const APPLICATION_OPTIONS = new Set([
+  "contextStorage",
   "additionalInstructions",
   "durabilityId",
   "eventPersistence",

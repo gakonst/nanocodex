@@ -321,9 +321,14 @@ test("web-target WASM exposes browser bash and Rust apply_patch as standard tool
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
     assert.deepEqual(toolPrefix.tools.map((tool) => tool.name), [
       "exec",
+      "wait",
       "exec_command",
       "apply_patch",
       ...SUBAGENT_TOOL_NAMES,
+      "new_context",
+      "get_context_remaining",
+      "context_history",
+      "context_notes",
     ]);
     const execCommand = toolPrefix.tools.find((tool) => tool.name === "exec_command");
     assert.match(execCommand.description, /^Run browser bash\./);
@@ -429,6 +434,7 @@ test("web-target WASM keeps remote MCP deferred behind tool_search and Code Mode
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
     assert.deepEqual(toolPrefix.tools.map((tool) => tool.name ?? tool.type), [
       "exec",
+      "wait",
       "tool_search",
       ...SUBAGENT_TOOL_NAMES,
     ]);
@@ -839,12 +845,17 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
     assert.deepEqual(toolPrefix.tools.map((tool) => tool.name ?? tool.type), [
       "exec",
+      "wait",
       "exec_command",
       "update_plan",
       "apply_patch",
       "view_image",
       "tool_search",
       ...SUBAGENT_TOOL_NAMES,
+      "new_context",
+      "get_context_remaining",
+      "context_history",
+      "context_notes",
     ]);
     assert.equal(toolPrefix.tools[0].type, "custom");
     assert.equal(
@@ -1069,7 +1080,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       url: "https://demo.test/api/tools/web-search",
       body: {
         commands: { search_query: [{ q: "browser tools" }] },
-        model: "gpt-5.6-sol",
+        model: "gpt-6-astra",
         session_id: agent.sessionId,
       },
     }]);

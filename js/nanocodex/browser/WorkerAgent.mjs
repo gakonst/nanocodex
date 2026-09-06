@@ -1369,7 +1369,7 @@ async function hydrateConfig(config, createDurabilityStore) {
     options.durabilityId = workerDurabilityId;
   }
   if (harnessRuntime) {
-    if (options.model === "gpt-6-astra" && options.instructions === undefined) {
+    if ((options.model ?? "gpt-6-astra") === "gpt-6-astra" && options.instructions === undefined) {
       options.additionalInstructions = [
         harnessRuntime.instructions,
         options.additionalInstructions,

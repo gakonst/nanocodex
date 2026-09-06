@@ -93,6 +93,11 @@ where
         context: CompactionContext<'_>,
     ) -> Result<bool> {
         let CompactionContext { snapshot, phase } = context;
+        if self.context_management.is_some() {
+            return self
+                .maybe_reset_context(after_model_call_index, conversation, factory, snapshot)
+                .await;
+        }
         let Some(auto_compact_token_limit) = compaction::auto_compact_token_limit(
             self.model.as_str(),
             self.config.context_window_tokens,

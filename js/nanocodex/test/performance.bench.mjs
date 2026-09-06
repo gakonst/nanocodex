@@ -165,7 +165,7 @@ test("long durable histories preserve cold replay and cancellation results", {
       apiKey: "fixture", websocketUrl: server.url, WebSocketImpl: WebSocket, websocketWarmup: true,
     }),
     durability: store, durabilityId: "long-memory-budget", terminalReceiptRetention: 16,
-    thinking: "none",
+    thinking: "low",
   };
   const agent = await HostAgent.create(options);
   context.after(() => agent.session.shutdown());
@@ -189,8 +189,10 @@ test("long durable histories preserve cold replay and cancellation results", {
     turn.dispose();
   }
   await scenario;
+  const liveWasmBytes = engine.memory.buffer.byteLength;
   await agent.session.shutdown();
   const reopened = await HostAgent.create(options);
+  const reopenedWasmBytes = engine.memory.buffer.byteLength;
   context.after(() => reopened.session.shutdown());
   const replay = reopened.turn.prompt({ id: "turn-95", input });
   const result = await replay.result();
@@ -202,6 +204,7 @@ test("long durable histories preserve cold replay and cancellation results", {
   const wasmBytes = engine.memory.buffer.byteLength;
   const payloadBytes = Buffer.byteLength(store.load("long-memory-budget").payload);
   context.diagnostic(JSON.stringify({ long_thread_wasm_bytes: wasmBytes,
+    live_wasm_bytes: liveWasmBytes, reopened_wasm_bytes: reopenedWasmBytes,
     durable_payload_bytes: payloadBytes, turns: 96, cold_replay: true }));
   assert.ok(payloadBytes < 4 * 1024 * 1024, `long thread persisted ${payloadBytes} bytes`);
   await reopened.session.shutdown();
@@ -343,6 +346,9 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
   }));
 
   const actionIterations = 50_000;
+  // Collect preceding workloads outside each independent timing phase. GC
+  // during the timed workload still counts toward its budget.
+  globalThis.gc?.();
   const actionStarted = performance.now();
   for (let index = 0; index < actionIterations; index += 1) {
     agent.turn.prompt({ input: "measure wrapper overhead" }).dispose();
@@ -354,6 +360,9 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
   const watch = agent.events.watch();
   const iterator = watch[Symbol.asyncIterator]();
   const eventCount = 4_096;
+  // In particular, do not charge collection of 50,000 disposed prompt wrappers
+  // to event buffering simply because V8 scheduled it at the next allocation.
+  globalThis.gc?.();
   const eventsStarted = performance.now();
   for (let seq = 1; seq <= eventCount; seq += 1) {
     for (const listener of subscriptions) {
@@ -380,6 +389,7 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
     },
   });
   const codeIterations = 1_000;
+  globalThis.gc?.();
   const codeStarted = performance.now();
   for (let index = 0; index < codeIterations; index += 1) {
     const result = JSON.parse(await code.executeCode(

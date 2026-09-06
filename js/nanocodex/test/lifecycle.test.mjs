@@ -42,7 +42,7 @@ test("prompt acceptance is separate from results and healthy follow-ons reuse on
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.lifecycle,
   });
   const watch = agent.events.watch();
@@ -109,7 +109,7 @@ test("durable acceptance exposes its request ID and classifies conflicts", async
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.durability,
     durability: createMemoryDurabilityStore(durabilityId),
     durabilityId,
@@ -153,14 +153,14 @@ test("a fenced durability owner requires reopening instead of retrying the stale
   });
   const first = await Agent.create({
     transport,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.durability,
     durability,
     durabilityId,
   });
   const second = await Agent.create({
     transport,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.durabilityFence,
     durability,
     durabilityId,
@@ -194,7 +194,7 @@ test("a duplicate durable session rejects without fencing the live Agent", async
   };
   const options = {
     transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url }),
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.durabilityCollision,
     durability,
     durabilityId,
@@ -248,7 +248,7 @@ test("durability store failures preserve reopen and retry-safe dispositions", as
     };
     const agent = await Agent.create({
       transport,
-      thinking: "none",
+      thinking: "low",
       durability,
       durabilityId,
     });
@@ -268,7 +268,7 @@ test("steering joins the active turn at the next model boundary", async () => {
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.steer,
   });
   const scenario = (async () => {
@@ -306,7 +306,7 @@ test("cancellation stops the active socket and replays only committed and aborte
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.cancel,
   });
   const scenario = (async () => {
@@ -355,7 +355,7 @@ test("graceful shutdown cancels active work and joins transport cleanup exactly 
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.shutdown,
   });
   const scenario = (async () => {
@@ -389,7 +389,7 @@ test("graceful shutdown cancels active work and joins transport cleanup exactly 
   const replacement = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.shutdown,
   });
   replacement.dispose();
@@ -402,7 +402,7 @@ test("a replacement socket drops the remote response ID and replays committed hi
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.reconnect,
   });
   const scenario = (async () => {
@@ -445,9 +445,10 @@ test("a replacement socket drops the remote response ID and replays committed hi
 test("manual compaction and historical forks preserve exact committed boundaries", async () => {
   const server = await startResponsesServer();
   const agent = await createWarmAgent({
+    model: "gpt-5.6-sol",
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.compact,
   });
   const scenario = (async () => {

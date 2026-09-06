@@ -14,7 +14,6 @@ import { artifact as artifactTool } from "../tools/index.mjs";
 import { readCodexSubscription } from "../../managed/scripts/codex-auth-file.mjs";
 
 const executeFile = promisify(execFile);
-const LOGICAL_WORKSPACE = "/workspace";
 const authPath = resolve(
   process.env.NANOCODEX_CODEX_AUTH_FILE ?? join(homedir(), ".codex", "auth.json"),
 );
@@ -28,6 +27,7 @@ const workspace = await mkdtemp(join(tmpdir(), "nanocodex-code-mode-stress-"));
 const calls = [];
 let active = 0;
 let peak = 0;
+let waited = false;
 let agent;
 let subscription;
 let watcher;
@@ -42,16 +42,16 @@ try {
   });
   agent = await Agent.create({
     transport: Transport.chatGpt({ subscription }),
-    model: "gpt-5.6-luna",
-    thinking: "medium",
-    workspace: LOGICAL_WORKSPACE,
+    workspace: workspace,
     instructions: [
       "You are exercising a browser-computer-compatible Code Mode boundary.",
       "Perform real work through tools.exec_command; never simulate command output.",
+      "Keep all file operations and process activity within the supplied workspace; do not search or manage the host system.",
       "Use one elaborate JavaScript cell when the operations can be composed there.",
     ].join(" "),
     tools: [{
       name: "exec_command",
+      supportsParallelToolCalls: true,
       description: "Run a bash command in the persistent workspace.",
       parameters: {
         type: "object",
@@ -81,6 +81,7 @@ try {
   });
   watcher = agent.events.watch();
   unwatch = watcher.onEvent((event) => {
+    if (event.type === "tool.call" && /(?:^|[._])wait$/.test(event.payload?.tool ?? "")) waited = true;
     if (event.type === "tool.call" || event.type === "tool.result" || event.type.startsWith("run.")) {
       process.stderr.write(`${JSON.stringify({
         sequence: event.sequence,
@@ -97,12 +98,12 @@ try {
   const turn = agent.turn.prompt({
     input: [
       "Stress-test Code Mode end to end and leave a real published artifact.",
-      "In one JavaScript exec cell, start three independent exec_command writes with Promise.all:",
+      'Start your JavaScript exec cell with // @exec: {"yield_time_ms": 0}, then start three independent exec_command writes with Promise.all:',
       "twenty.txt=20, twenty-one.txt=21, and one.txt=1.",
       "Then read them with a second Promise.all, use map/filter/reduce to compute 42, and store the summary.",
       "Create executable JavaScript defining function App({ sendPrompt }) with the provided html tagged-template helper; JSX is unavailable.",
       "Render the computed total in that component and publish it in the same cell with tools.render_artifact using id stress-ui and title Code Mode Stress.",
-      "Finally verify the artifact JSON and report the total. Do not fake any command or artifact output.",
+      "Use wait to resume the yielded cell until it completes. Finally verify the artifact JSON and report the total. Do not fake any command or artifact output.",
     ].join(" "),
   });
   const result = await resultBeforeDeadline(turn, 90_000);
@@ -112,6 +113,7 @@ try {
   validateArtifactSource(artifact.source);
   if (!artifact.source.includes("42")) throw new Error("published artifact does not contain 42");
   if (peak < 3) throw new Error(`exec_command Promise.all only reached concurrency ${peak}`);
+  if (!waited) throw new Error("the model did not resume its cell through wait");
   const failed = calls.filter((call) => call.exitCode !== 0);
   process.stdout.write(`${JSON.stringify({
     artifact: artifact.id,
@@ -119,6 +121,7 @@ try {
     failedCalls: failed.map(({ cmd, exitCode }) => ({ cmd, exitCode })),
     finalMessage: result.finalMessage,
     peakConcurrency: peak,
+    resumedCell: waited,
     total: 42,
   })}\n`);
 } finally {
@@ -133,7 +136,7 @@ async function executeCommand(input, context) {
   if (!input || typeof input !== "object" || typeof input.cmd !== "string" || !input.cmd.trim()) {
     throw new TypeError("exec_command.cmd must be a non-empty string");
   }
-  const cwd = workspacePath(input.workdir ?? LOGICAL_WORKSPACE);
+  const cwd = workspacePath(input.workdir ?? workspace);
   const startedAt = performance.now();
   const call = { cmd: input.cmd, exitCode: undefined };
   calls.push(call);
@@ -186,7 +189,7 @@ function validateArtifactSource(source) {
 
 function nodeArtifactWorkspace() {
   return {
-    root: LOGICAL_WORKSPACE,
+    root: workspace,
     async list() { return []; },
     async readFile(path) { return readFile(workspacePath(path)); },
     async writeFile(path, contents) { await writeFile(workspacePath(path), contents); },
@@ -196,8 +199,8 @@ function nodeArtifactWorkspace() {
 }
 
 function workspacePath(path) {
-  const logical = path === LOGICAL_WORKSPACE || path.startsWith(`${LOGICAL_WORKSPACE}/`)
-    ? relative(LOGICAL_WORKSPACE, path)
+  const logical = path === workspace || path.startsWith(`${workspace}/`)
+    ? relative(workspace, path)
     : path;
   const target = isAbsolute(logical) ? resolve(logical) : resolve(workspace, logical);
   const child = relative(workspace, target);

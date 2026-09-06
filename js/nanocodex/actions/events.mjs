@@ -1,8 +1,8 @@
 import { reportError, subscribeAgentEvents } from "../internal.mjs";
+import { utf8ByteLength } from "../runtime/utf8.mjs";
 
 const MAX_BUFFERED_EVENTS = 4_096;
 const MAX_BUFFERED_EVENT_BYTES = 32 * 1024 * 1024;
-const eventEncoder = new TextEncoder();
 
 export function watch(agent, options = {}) {
   const listeners = new Set();
@@ -94,7 +94,7 @@ function eventIterator(onEnd) {
         }
         resolve({ done: false, value: event });
       } else {
-        const bytes = encodedLength ?? eventEncoder.encode(JSON.stringify(event)).byteLength;
+        const bytes = encodedLength ?? utf8ByteLength(JSON.stringify(event));
         if (
           queue.length - head >= MAX_BUFFERED_EVENTS
           || bufferedBytes + bytes > MAX_BUFFERED_EVENT_BYTES

@@ -47,6 +47,7 @@ async fn per_agent_tool_factory_binds_recursive_forks_to_the_invoking_driver() -
     let (handles, mut received_handles) = tokio::sync::mpsc::unbounded_channel::<AgentHandle>();
     let workspace = temporary_workspace("recursive-fork-tools")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .store(true)
         .build()?;
@@ -330,6 +331,7 @@ async fn cloned_builders_singleflight_one_shared_prefix_warmup() -> Result<()> {
 
     let workspace = temporary_workspace("shared-warmup")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .build()?;
     let builder = Nanocodex::builder(openai)

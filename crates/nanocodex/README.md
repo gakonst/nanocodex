@@ -40,9 +40,10 @@ not wait for the turn's optional event stream to be consumed. Follow-on prompts
 reuse the same retained context and transport without asking the caller to
 manage response IDs or history.
 
-`gpt-5.6-sol` is the SDK default; `.model(Model::Terra)`, `.model(Model::Luna)`,
-and `.model(Model::Astra)` select the other supported models when creating the
-agent. Astra requires low or greater reasoning. A caller may change the model
+`gpt-6-astra` with low reasoning is the SDK default; `.model(Model::Sol)`,
+`.model(Model::Terra)`, and `.model(Model::Luna)` select the other supported models
+when creating the agent. Model selection uses the catalog's default reasoning
+unless an effort was explicitly selected. Astra requires low or greater reasoning. A caller may change the model
 before the first turn is accepted; it then remains fixed for the thread so follow-on turns can continue from the provider
 checkpoint without replaying the complete retained context.
 
