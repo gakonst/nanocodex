@@ -1,4 +1,3 @@
-import type { PromptInput } from "nanocodex";
 import type { HostedMachine } from "./hosted-tools-protocol";
 
 import {
@@ -198,28 +197,6 @@ export function projectAccountInfo(
     vault,
     machines: info.machines ?? [],
   };
-}
-
-export function withInitialAccountInfo(input: PromptInput, info: AccountInfo): PromptInput {
-  const explanation = [
-    "The managed runtime already resolved the following non-secret accountInfo snapshot for",
-    "this agent. Use it as the current connected-account context. Do not call accountInfo",
-    "again unless the task requires state refreshed after this first prompt. Machine topology is",
-    "intentionally omitted from this retained snapshot: call accountInfo immediately before choosing",
-    "a hand because user machines can connect or disconnect without restarting the agent. When connectorAccounts",
-    "lists multiple connections for a service, choose the appropriate one by label and pass its id",
-    "as X-Nanocodex-Connector-Connection on that provider request. Never invent a connection id.",
-    "Vault entries are safe references only and never contain passwords, full card numbers, CVVs,",
-    "expiry details,",
-    "or billing ZIPs.",
-  ].join(" ");
-  const context = {
-    type: "text" as const,
-    text: `${explanation}\n\n<account_info>\n${JSON.stringify({ ...info, machines: [] })}\n</account_info>`,
-  };
-  return typeof input === "string"
-    ? [context, { type: "text", text: input }]
-    : [context, ...input];
 }
 
 function emptyInfo(
