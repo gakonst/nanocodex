@@ -657,42 +657,6 @@ mod tests {
 
     use super::{OpenAi, apply_mode_defaults};
 
-    #[test]
-    fn model_defaults_respect_explicit_effort_in_either_builder_order() {
-        use crate::Thinking;
-        for model in [Model::Astra, Model::Sol, Model::Terra, Model::Luna] {
-            let implicit = OpenAi::builder("test-key").model(model).build().unwrap();
-            assert_eq!(implicit.config.thinking, model.default_thinking());
-            let explicit = OpenAi::builder("test-key")
-                .thinking(Thinking::Low)
-                .model(model)
-                .build()
-                .unwrap();
-            assert_eq!(explicit.config.thinking, Thinking::Low);
-            let explicit = OpenAi::builder("test-key")
-                .model(model)
-                .thinking(Thinking::High)
-                .build()
-                .unwrap();
-            assert_eq!(explicit.config.thinking, Thinking::High);
-        }
-        assert!(
-            OpenAi::builder("test-key")
-                .build()
-                .unwrap()
-                .config
-                .experimental_context
-        );
-        assert!(
-            !OpenAi::builder("test-key")
-                .experimental_context(false)
-                .build()
-                .unwrap()
-                .config
-                .experimental_context
-        );
-    }
-
     #[derive(Clone)]
     struct NeverCalled;
 

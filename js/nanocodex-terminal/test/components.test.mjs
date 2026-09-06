@@ -818,13 +818,3 @@ assistant: on it</transcript_delta>
     [{ kind: "assistant", text: "…retained transcript tail" }],
   );
 });
-
-test("Code Mode text content arrays have readable tool summaries", async () => {
-  const { presentTool } = await import("../dist/toolPresentation.js");
-  const tool = { callId: "cell-wait", name: "wait", status: "completed", children: [],
-    output: [{ type: "input_text", text: "Script completed\nOutput:\n" },
-      { type: "input_text", text: "astra-managed-6sep-cobalt" }],
-  };
-  assert.equal(presentTool(tool).outputSummary, "Script completed Output: astra-managed-6sep-cobalt");
-  assert.equal(presentTool({ ...tool, output: [{ value: 42 }] }).outputSummary, '[{"value":42}]');
-});

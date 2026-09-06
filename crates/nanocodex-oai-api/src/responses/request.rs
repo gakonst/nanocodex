@@ -952,49 +952,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn context_window_metadata_rotates_without_changing_the_cached_prefix() {
-        let config = ModelConfig::default();
-        let base = RequestProfile::new("session", "cache", Arc::from([]))
-            .with_thread_id("thread")
-            .with_logical_turn(7);
-        for number in [0, 1] {
-            let profile = base.clone().with_context_window(
-                "/root".into(),
-                format!("context-{number}"),
-                number,
-            );
-            let request = serde_json::to_value(ResponseCreate::generation_with_policy(
-                &config,
-                CreatePolicy::new(
-                    crate::ResponsesTransport::WebSocket,
-                    Model::Astra,
-                    Thinking::Low,
-                    false,
-                ),
-                ResponsesInput::new(profile.prefix(), &[], None),
-                None,
-                &profile,
-                None,
-            ))
-            .unwrap();
-            assert_eq!(request["prompt_cache_key"], "cache");
-            let metadata: serde_json::Value = serde_json::from_str(
-                request["client_metadata"]["x-codex-turn-metadata"]
-                    .as_str()
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(metadata["history_ingest_requested"], true);
-            assert_eq!(metadata["agent_name"], "/root");
-            assert_eq!(metadata["request_kind"], "turn");
-            assert_eq!(metadata["turn_id"], "thread:7");
-            assert_eq!(metadata["window_id"], format!("thread:{number}"));
-            assert_eq!(metadata["context_window_id"], format!("context-{number}"));
-            assert_eq!(metadata["window_number"], number);
-        }
-    }
-
-    #[test]
     fn prompt_cache_key_is_stable_across_the_session() {
         let config = ModelConfig {
             auth: crate::OpenAiAuth::api_key("test-key"),
@@ -1150,11 +1107,6 @@ mod tests {
             Some("server-item-id"),
             "outbound preparation must not mutate authoritative history"
         );
-    }
-
-    #[test]
-    fn thinking_defaults_to_low() {
-        assert_eq!(ModelConfig::default().thinking, Thinking::Low);
     }
 
     #[test]

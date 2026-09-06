@@ -1103,7 +1103,10 @@ test("WASM eligible context windows retain Code Mode state, notes, cache identit
     const input = JSON.parse(init.body);
     http.push({ path, input, headers: init.headers });
     if (path.endsWith("/thread_hint")) return Response.json({ text: "Progress is in notes/progress." });
-    if (path.endsWith("/write_file")) { note = input.content; return Response.json({ encrypted_output: "opaque-note-result" }); }
+    if (path.endsWith("/write_file")) { note = input.content; return Response.json({
+      encrypted_output: "opaque-note-result",
+      images: [{ data: "abc", mime_type: "image/png", detail: "original" }],
+    }); }
     if (path.endsWith("/read_file")) return Response.json({ text: note });
     throw new Error(`unexpected HTTP path: ${path}`);
   });
@@ -1128,11 +1131,16 @@ test("WASM eligible context windows retain Code Mode state, notes, cache identit
           assert.ok(specs.some((tool) => tool.name === "new_context"));
           assert.equal(specs.find((tool) => tool.name === "history").tools.length, 4);
           assert.equal(specs.find((tool) => tool.name === "notes").tools.length, 5);
+          assert.doesNotMatch(specs.find((tool) => tool.name === "exec").description, /new_context|history__read_item/);
           let first = warmup;
           if (warmup.generate === false) {
             sendWarmup(socket, `context-warmup-${reopened}`);
             first = await reader.next();
           }
+          assert.equal(metadata(first).history_ingest_requested, true);
+          assert.equal(metadata(first).agent_name, "/root");
+          assert.equal(metadata(first).request_kind, "turn");
+          assert.equal(metadata(first).window_id, `${sessionId}:${reopened ? 1 : 0}`);
           if (reopened) {
             assert.equal(metadata(first).context_window_id, windowId);
             assert.equal(first.prompt_cache_key, cacheKey);
@@ -1141,14 +1149,20 @@ test("WASM eligible context windows retain Code Mode state, notes, cache identit
           } else {
             windowId = metadata(first).context_window_id;
             cacheKey = first.prompt_cache_key;
-            sendCompleted(socket, "store-cell", [{ type: "custom_tool_call", name: "exec", call_id: "store-before-reset", input: 'store("retained", "live-cell-marker");' }]);
-            await reader.next();
+            sendCompleted(socket, "store-cell", [{ type: "custom_tool_call", name: "exec", call_id: "store-before-reset", input: 'store("retained", "live-cell-marker"); if (typeof tools.new_context !== "undefined" || typeof tools.history__read_item !== "undefined") throw new Error("context controls exposed inside Code Mode"); text("context-controls-direct-only");' }]);
+            assert.match(JSON.stringify((await reader.next()).input), /context-controls-direct-only/);
             sendCompleted(socket, "notes-write", [{ type: "function_call", namespace: "notes", name: "write_file", call_id: "write-note", arguments: '{"path":"progress","content":"durable-notes-marker"}' }]);
-            assert.match(JSON.stringify((await reader.next()).input), /opaque-note-result/);
+            const noteResult = (await reader.next()).input.find((item) => item.call_id === "write-note");
+            assert.deepEqual(noteResult.output, [
+              { type: "encrypted_content", encrypted_content: "opaque-note-result" },
+              { type: "input_image", image_url: "data:image/png;base64,abc" },
+            ]);
             sendCompleted(socket, "context-reset", [{ type: "function_call", name: "new_context", call_id: "reset", arguments: "{}" }]);
             const reset = await reader.next();
             assert.equal(reset.prompt_cache_key, cacheKey);
             assert.equal(metadata(reset).window_number, 1);
+            assert.equal(metadata(reset).window_id, `${sessionId}:1`);
+            assert.equal(metadata(reset).turn_id, metadata(first).turn_id);
             assert.notEqual(metadata(reset).context_window_id, windowId);
             windowId = metadata(reset).context_window_id;
             assert.doesNotMatch(JSON.stringify(reset.input), /original-user-marker/);

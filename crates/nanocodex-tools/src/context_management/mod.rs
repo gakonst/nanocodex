@@ -515,68 +515,6 @@ mod tests {
         assert_eq!(child.window().window_number, 0);
     }
 
-    #[tokio::test]
-    async fn context_controls_are_direct_and_do_not_leak_into_code_mode() {
-        let context = ContextManagement::new(
-            OpenAiAuth::api_key("test-key"),
-            "http://127.0.0.1:1".into(),
-            "session".into(),
-            "/root".into(),
-            &[],
-        );
-        let tools = crate::Tools::builder().without_defaults().build().unwrap();
-        let mut runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
-        context.install(&mut runtime).unwrap();
-        let specs = serde_json::to_value(runtime.model_specs("session")).unwrap();
-        let specs = specs.as_array().unwrap();
-        assert!(specs.iter().any(|spec| spec["name"] == "new_context"));
-        let history = specs.iter().find(|spec| spec["name"] == "history").unwrap();
-        assert_eq!(history["tools"].as_array().unwrap().len(), 4);
-        let notes = specs.iter().find(|spec| spec["name"] == "notes").unwrap();
-        assert_eq!(notes["tools"].as_array().unwrap().len(), 5);
-        let exec = specs.iter().find(|spec| spec["name"] == "exec").unwrap();
-        assert!(
-            !exec["description"]
-                .as_str()
-                .unwrap()
-                .contains("new_context")
-        );
-        let call_context = ToolContext::new("gpt-6-astra", "session", "call", &[], 10_000);
-        let output = runtime
-            .execute_code(
-                "text(typeof tools.new_context); text(typeof tools.history__read_item);",
-                call_context,
-            )
-            .await;
-        assert!(output.success);
-        assert!(!context.take_request());
-        let control = ControlTool {
-            context: context.clone(),
-            reset: false,
-        };
-        context.set_remaining(1234);
-        let output = control
-            .execute(
-                ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
-                call_context,
-            )
-            .await
-            .unwrap();
-        assert_eq!(output.structured_result(), json!({"tokens_left":1234}));
-        let reset = ControlTool {
-            context: context.clone(),
-            reset: true,
-        };
-        reset
-            .execute(
-                ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
-                call_context,
-            )
-            .await
-            .unwrap();
-        assert!(context.take_request());
-        assert!(!context.take_request());
-    }
     #[test]
     fn only_supported_subscriptions_are_eligible() {
         for (plan, expected) in [
@@ -596,21 +534,5 @@ mod tests {
             assert_eq!(eligible_plan(&token), expected, "{plan}");
         }
         assert!(!eligible_plan("invalid"));
-    }
-    #[test]
-    fn history_images_and_encrypted_output_are_preserved() {
-        let result = output(
-            json!({"encrypted_output":"opaque", "images":[{"data":"abc", "mime_type":"image/png", "detail":"original"}]}),
-        );
-        assert!(result.success);
-        let crate::ToolOutputBody::Content(content) = result.output else {
-            panic!("content");
-        };
-        assert!(
-            matches!(&content[0], ToolOutputContent::EncryptedContent { encrypted_content } if encrypted_content == "opaque")
-        );
-        assert!(
-            matches!(&content[1], ToolOutputContent::InputImage { image_url, .. } if image_url == "data:image/png;base64,abc")
-        );
     }
 }
