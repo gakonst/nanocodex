@@ -315,8 +315,9 @@ function ResponseActions({ text }: { text: string }) {
     return () => clearTimeout(timer);
   }, [state]);
   return <div className="agent-response-actions">
-    <button type="button" aria-label={state === "copied" ? "Copied response" : "Copy response"} title={state === "copied" ? "Copied" : "Copy response"} onClick={() => {
-      void navigator.clipboard.writeText(text).then(() => setState("copied")).catch(() => setState("error"));
+    <button type="button" aria-label={state === "copied" ? "Copied response" : "Copy response"} title={state === "copied" ? "Copied" : "Copy response"} onClick={async () => {
+      try { await navigator.clipboard.writeText(text); setState("copied"); }
+      catch { setState("error"); }
     }}>{state === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</button>
     <span role="status">{state === "copied" ? "Copied" : state === "error" ? "Couldn’t copy. Select the text to copy it." : ""}</span>
   </div>;

@@ -1,20 +1,20 @@
 :root.connect-dialog-standalone {
-  color-scheme: dark;
+  color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --surface: #212121;
-  --surface-raised: #303030;
-  --surface-subtle: #191919;
-  --text: #ececec;
-  --text-inverse: #212121;
-  --negative: #ffaaaa;
+  --surface: light-dark(#fff, #212121);
+  --surface-raised: light-dark(#f4f4f4, #303030);
+  --surface-subtle: light-dark(#f9f9f9, #191919);
+  --text: light-dark(#262626, #ececec);
+  --text-inverse: light-dark(#fff, #212121);
+  --negative: light-dark(#b72f2f, #ffaaaa);
   --muted: color-mix(in srgb, var(--text) 72%, transparent);
   --faint: color-mix(in srgb, var(--text) 65%, transparent);
-  --border: rgba(255, 255, 255, 0.1);
+  --border: color-mix(in srgb, var(--text) 12%, transparent);
   --border-strong: color-mix(in srgb, var(--text) 18%, transparent);
-  --positive: #73d89b;
-  --warning: #e8c77a;
+  --positive: light-dark(#0d7136, #73d89b);
+  --warning: light-dark(#886013, #e8c77a);
   background: transparent;
   color: var(--text);
 }
@@ -30,6 +30,12 @@
 .connect-dialog-standalone #root {
   min-width: 0;
   height: 100%;
+}
+
+.connect-dialog-standalone #root {
+  display: grid;
+  width: 100%;
+  place-items: center;
 }
 
 .connect-dialog-standalone body {
@@ -66,7 +72,7 @@
   --muted: color-mix(in srgb, var(--text) 72%, transparent);
   --faint: color-mix(in srgb, var(--text) 65%, transparent);
   --border-strong: color-mix(in srgb, var(--text) 18%, transparent);
-  --warning: #e8c77a;
+  --warning: light-dark(#886013, #e8c77a);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
@@ -1409,13 +1415,9 @@ dd {
 
 @media (max-width: 440px) {
   :scope.dialog-shell {
-    width: 100vw;
-    max-height: 90dvh;
-    margin: 0;
-    border-inline: 0;
-    border-bottom: 0;
-    border-radius: 24px 24px 0 0;
-    box-shadow: 0 -24px 72px rgba(0, 0, 0, 0.55);
+    width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+    margin: 12px auto;
   }
 
   .dialog-header {
@@ -1469,28 +1471,10 @@ dd {
 }
 }
 
-@media (max-width: 440px) {
-  .connect-dialog-standalone #root {
-    display: grid;
-    place-items: end center;
-  }
-}
 
-/* The hosted consent surface follows the native app's system appearance. */
-@media (prefers-color-scheme: light) {
-  :root.connect-dialog-standalone {
-    color-scheme: light;
-    --surface: #fff;
-    --surface-raised: #f4f4f4;
-    --surface-subtle: #f9f9f9;
-    --text: #262626;
-    --text-inverse: #fff;
-    --border: rgba(0, 0, 0, .1);
-    --positive: #0d7136;
-    --negative: #b72f2f;
-    --warning: #886013;
-  }
-}
+/* Honor the website's saved appearance, otherwise follow the system. */
+:root.connect-dialog-standalone[data-theme="light"] { color-scheme: light; }
+:root.connect-dialog-standalone[data-theme="dark"] { color-scheme: dark; }
 
 @scope (.connect-onboarding) {
   button, input, .app-sees-permission { border-radius: 10px; }
@@ -1510,4 +1494,43 @@ dd {
   .wizard-account-copy small { line-height: 1.5; }
   .sms-otp-change { min-height: 44px; }
   .wizard-account-choice:focus-visible, input:focus-visible { outline: 2px solid var(--text); outline-offset: -3px; }
+}
+
+@scope (.connect-onboarding) {
+  .sms-auth-panel .wizard-app > span {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .sms-auth-panel .sms-otp-form {
+    margin-top: 0;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    gap: 10px;
+  }
+
+  .sms-auth-panel .sms-otp-form > p {
+    font-size: 12px;
+  }
+
+  .sms-auth-security {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 16px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .sms-auth-security > span {
+    color: var(--positive);
+  }
+
+  .sms-auth-panel .wizard-cancel {
+    width: 100%;
+    min-height: 44px;
+    margin-top: 8px;
+  }
 }
