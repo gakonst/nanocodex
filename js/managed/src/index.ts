@@ -5497,7 +5497,12 @@ export class DurableAgentSession extends DurableComputerSession {
           },
           assertActive,
         );
-      const [agent] = await Promise.all([agentReady, bootstrap]);
+      // Drain construction even if bootstrap fails, so its admission-queue
+      // publication cannot race the failure cleanup below.
+      const [runtimeResult, bootstrapResult] = await Promise.allSettled([agentReady, bootstrap]);
+      if (runtimeResult.status === "rejected") throw runtimeResult.reason;
+      if (bootstrapResult.status === "rejected") throw bootstrapResult.reason;
+      const agent = runtimeResult.value;
       const assertAgentActive = () => {
         assertActive();
         if (this.#agent !== agent) throw retryableError("agent became unavailable during admission");
