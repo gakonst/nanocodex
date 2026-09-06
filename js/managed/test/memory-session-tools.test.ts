@@ -41,14 +41,15 @@ describe("managed memory and session tool boundary", () => {
     });
 
     expect(tools.map((tool) => tool.name)).toEqual([
+      "find_session",
       "find_sessions",
       "read_session",
       "memory",
     ]);
-    for (const tool of tools.slice(0, 2)) expect(tool.parameters).toMatchObject({
+    for (const tool of tools.slice(0, 3)) expect(tool.parameters).toMatchObject({
       additionalProperties: false,
     });
-    expect((tools[2]!.parameters?.oneOf as { additionalProperties: boolean }[])
+    expect((tools[3]!.parameters?.oneOf as { additionalProperties: boolean }[])
       .map((operation) => operation.additionalProperties)).toEqual([
       false, false, false, false,
     ]);
@@ -63,13 +64,16 @@ describe("managed memory and session tool boundary", () => {
         preview: "deployed",
       }],
     });
-    expect(requireCapability).toHaveBeenCalledExactlyOnceWith("history:read");
+    expect(requireCapability).toHaveBeenCalledExactlyOnceWith("history:read", context);
     expect(findSessions).toHaveBeenCalledExactlyOnceWith({ query: "deploy", limit: 1 });
     expect(recordCitations).toHaveBeenCalledExactlyOnceWith([{
       thread_id: sessionId,
       title: "Deploy",
       sources: [{ turn_id: "turn-1", cursor: "1" }],
     }]);
+    await expect(tools[1]!.handler({ query: "deploy", limit: 1 }, context)).resolves.toEqual(
+      await tools[0]!.handler({ query: "deploy", limit: 1 }, context),
+    );
   });
 
   it("fences reads and root-only mutations through active-turn authorization", async () => {
@@ -88,11 +92,11 @@ describe("managed memory and session tool boundary", () => {
       requireRootMemoryMutation,
       recordCitations: vi.fn(),
     });
-    const memoryTool = tools[2]!;
+    const memoryTool = tools.find((tool) => tool.name === "memory")!;
 
     await expect(memoryTool.handler({ operation: "scan", query: "scope" }, context))
       .resolves.toMatchObject({ operation: "scan", abstained: true });
-    expect(requireCapability).toHaveBeenLastCalledWith("memory:read");
+    expect(requireCapability).toHaveBeenLastCalledWith("memory:read", context);
     expect(requireRootMemoryMutation).not.toHaveBeenCalled();
 
     const subagent = {
@@ -115,6 +119,26 @@ describe("managed memory and session tool boundary", () => {
       operation: "delete",
       key: { id: 1, version: 1 },
     }, context)).resolves.toMatchObject({ operation: "delete" });
-    expect(requireCapability).toHaveBeenLastCalledWith("memory:write");
+    expect(requireCapability).toHaveBeenLastCalledWith("memory:write", context);
+  });
+
+  it("checks each history call's own context before accessing persistence", async () => {
+    const findSessions = vi.fn();
+    const readSession = vi.fn();
+    const denied = { ...context, sessionId: crypto.randomUUID() };
+    const tools = memorySessionTools({
+      findSessions, readSession, memory: vi.fn(), recordCitations: vi.fn(),
+      requireRootMemoryMutation: vi.fn(),
+      requireCapability: (_capability, caller) => {
+        expect(caller).toBe(denied);
+        throw new Error("forbidden");
+      },
+    });
+    for (const tool of tools.filter((tool) => tool.name !== "memory")) {
+      await expect(tool.handler(tool.name === "read_session"
+        ? { session_id: sessionId } : { query: "deploy" }, denied)).rejects.toThrow("forbidden");
+    }
+    expect(findSessions).not.toHaveBeenCalled();
+    expect(readSession).not.toHaveBeenCalled();
   });
 });
