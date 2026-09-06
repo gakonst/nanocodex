@@ -18,7 +18,7 @@ import type {
 import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
 import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
-import { createWorkspaceFilesystem, MAX_NAMESPACE_MOUNTS } from "nanocodex-tools";
+import { createWorkspaceFilesystem } from "nanocodex-tools";
 import { createBrainWorkspace } from "./brain-workspace";
 import { managedCodeEvaluator } from "./code-evaluator";
 import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
@@ -269,12 +269,10 @@ export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account
 
 const MAX_CLIENT_MESSAGE_BYTES = 1024 * 1024;
 const MAX_PRE_ADMISSION_CANCELLATIONS = 64;
-const MAX_CLIENT_CONNECTIONS = 64;
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const MAX_REALTIME_REQUEST_BYTES = 64 * 1024;
 const MAX_REALTIME_CONTEXT_BYTES = 1024 * 1024;
 const DISPATCH_INPUT_CHUNK_CODE_UNITS = 256_000;
-const MAX_PENDING_REALTIME_OPERATIONS = 32;
 const MAX_RETRY_DELAY_MS = 60_000;
 const MAX_IMPORT_BATCHES_PER_CREATE = 4;
 const UUID =
@@ -801,8 +799,8 @@ const SANDBOX_HAND_CAPABILITIES = Object.freeze([
   "processes",
   "servers",
 ]);
-const MAX_MANAGED_MOUNTS = 16;
-export const MANAGED_SUBAGENT_MAX_CONCURRENCY = 8;
+// One alias per peer bucket is required by the Sandbox SDK mount protocol.
+const CLOUDFLARE_NAMESPACE_BINDING_COUNT = 16;
 
 const json = (body: unknown, init: ResponseInit = {}) => Response.json(body, {
   ...init,
@@ -3669,9 +3667,6 @@ export class DurableAgentSession extends DurableComputerSession {
       && !authorization.connectGrant.connectors.includes("chatgpt")) {
       return json({ error: "connector_forbidden" }, { status: 403 });
     }
-    if (this.ctx.getWebSockets("client").length >= MAX_CLIENT_CONNECTIONS) {
-      return new Response("Session client limit reached", { status: 429 });
-    }
     const latestCursor = this.#eventArchive.latestCursor(this.#eventLog);
     const cursor = requestedCursor === null || requestedCursor === "latest"
       ? latestCursor
@@ -4243,9 +4238,6 @@ export class DurableAgentSession extends DurableComputerSession {
       || previous.authorization_epoch !== session.authorization_epoch)) {
       throw new ManagedRequestError(409, "trigger_exists", "cron trigger id already exists with different settings or authorization; choose a new id");
     }
-    if (!previous && this.#cronTriggers.list().length >= 32) {
-      throw new ManagedRequestError(429, "trigger_limit", "at most 32 cron triggers per agent");
-    }
     const row = this.#cronTriggers.put(id, config, encodedAuthorization, session.authorization_epoch, hash, Date.now());
     await this.#scheduleNextAlarm();
     return { trigger: cronTriggerView(row, session.session_id), exists: previous !== undefined };
@@ -4727,17 +4719,6 @@ export class DurableAgentSession extends DurableComputerSession {
         "realtime operation is pending and will not be replayed",
       );
     }
-    const pendingOperations = this.ctx.storage.sql.exec<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM managed_realtime_operations WHERE state = 'pending' AND blocked = 0",
-    ).one().count;
-    if (pendingOperations >= MAX_PENDING_REALTIME_OPERATIONS) {
-      throw new ManagedRequestError(
-        429,
-        "realtime_queue_full",
-        `at most ${MAX_PENDING_REALTIME_OPERATIONS} realtime operations may be pending`,
-      );
-    }
-
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
       this.#assertDurabilityAdmissionActive();
@@ -6455,6 +6436,7 @@ export class DurableAgentSession extends DurableComputerSession {
             undefined,
             () => this.#cloudflareNamespaceMounts("mounted"),
             { resourceId: session.session_id },
+            this.ctx.id.toString(),
           );
           sandboxToolsByMount.set(mount.id, tools);
         }
@@ -6563,7 +6545,6 @@ export class DurableAgentSession extends DurableComputerSession {
           commands: computer.descriptor.commands,
           custom_commands: computer.descriptor.customCommands,
           limits: computer.descriptor.limits,
-          subagent_max_concurrency: MANAGED_SUBAGENT_MAX_CONCURRENCY,
           pty: multiplayer ? computer.descriptor.pty : false,
           sessions: multiplayer ? computer.descriptor.sessions : false,
           sandbox_escalation: false,
@@ -6611,10 +6592,10 @@ export class DurableAgentSession extends DurableComputerSession {
             "No process sandbox is attached. Bounded Just Bash is the complete local execution boundary.",
           ].join("\n\n")
           : [
-            "You are the durable Nanocodex brain running on Cloudflare Workers. Use Code Mode, tools, and bounded Just Bash in /brain first. /brain is durable shared scratch mounted read-write in every Cloudflare hand; it never contains credentials or control-plane authority.",
+            "You are the durable Nanocodex brain running on Cloudflare Workers. Use Code Mode, tools, and Just Bash in /brain first. /brain is durable shared scratch mounted read-write in every Cloudflare hand; it never contains credentials or control-plane authority.",
             computer.instructions,
             "The agent starts without a sandbox hand. File work, text processing, HTTP, supported Git/GitHub commands, and JavaScript computation in Code Mode need no hand. When the task needs native binaries, package installation, builds, tests, a server, or a process session, reuse a suitable attached hand from accountInfo or mount output; otherwise call mount with provider cf_sandbox and a useful stable name. A known native command such as cargo test should go directly to a suitable hand. If a brain command reveals an unsupported binary or runtime capability, select or mount a hand and continue there, checking for partial effects before retrying. A compiler error or failing test on a hand should be investigated there. Use another provider only when the user supplied its exact connected VM factory name. Do not ask the user to request a routine sandbox mount. mount provisions and attaches the hand before it returns.",
-            `Subagents share your tools and permissions. Delegate bounded independent work; spawning another researcher does not repair an unavailable tool. The entire task tree may have at most ${MANAGED_SUBAGENT_MAX_CONCURRENCY} active subagents. When capacity is full, continue your assigned work with the available brain tools.`,
+            "Subagents share your tools and permissions. Delegate independent work when it advances the task.",
             "Hands appear as logical top-level paths returned by mount or listed in accountInfo().machines. exec_command defaults to /brain; omit workdir or use /brain for Just Bash. For native execution, set workdir to the exact hand mount or a path beneath it. The root of that cwd selects where the process runs. write_stdin remains pinned to the hand that created its session. There is no environment or host argument.",
             "A Code Mode cell captures its mount mapping. Commands in Promise.all may run concurrently on different cwd roots, and subagents use the same cwd rule independently. A disconnect or reconnect never retargets an admitted command or session.",
             "Cloudflare sandbox hands are separate retained workspaces mounted into each other's native filesystem namespaces. A process may write its executing hand through /workspace or that hand's logical mount path, read peer hand paths without mutating them, and read or write /brain using ordinary filesystem syscalls. The trees are mounted, never copied or synchronized. Connected user hands and future providers remain placement-only until their provider advertises a conforming native namespace adapter, so native_cross_mounts remains false globally while runtimeInfo.cloudflare_native_cross_mounts is true.",
@@ -6633,7 +6614,6 @@ export class DurableAgentSession extends DurableComputerSession {
       };
       Object.defineProperty(agentOptions, internalRuntime, { value: {
         ...hostedRuntime,
-        subagentMaxConcurrency: MANAGED_SUBAGENT_MAX_CONCURRENCY,
       } });
       Object.defineProperty(agentOptions, internalConfiguration, { value: this.#settings() });
       phaseStartedAt = performance.now();
@@ -6892,23 +6872,6 @@ export class DurableAgentSession extends DurableComputerSession {
       created = mount === undefined;
     }
     if (mount === undefined) {
-      const count = this.ctx.storage.sql.exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM managed_mounts",
-      ).one().count;
-      if (count >= MAX_MANAGED_MOUNTS) {
-        throw new ManagedRequestError(
-          409,
-          "mount_limit_reached",
-          `an agent may retain at most ${MAX_MANAGED_MOUNTS} mounts`,
-        );
-      }
-      if (count + this.#userHandMachines(context).length >= MAX_NAMESPACE_MOUNTS - 1) {
-        throw new ManagedRequestError(
-          409,
-          "namespace_mount_limit_reached",
-          `the execution namespace may contain at most ${MAX_NAMESPACE_MOUNTS} mounts`,
-        );
-      }
       const id = uuidV7();
       const now = Date.now();
       const providerCount = this.ctx.storage.sql.exec<{ count: number }>(
@@ -7002,6 +6965,7 @@ export class DurableAgentSession extends DurableComputerSession {
           this.#cloudflareNamespaceMountsForPreparation(mount.id),
           this.env.NANOCODEX_SANDBOX_LOCAL === "true",
           { resourceId: session.session_id },
+          this.ctx.id.toString(),
         );
         return;
       }
@@ -7368,7 +7332,7 @@ export class DurableAgentSession extends DurableComputerSession {
 
   #nextCloudflareNamespaceSlot(): number {
     const used = new Set(this.#ensureCloudflareNamespaceSlots().values());
-    for (let slot = 0; slot < MAX_MANAGED_MOUNTS; slot += 1) {
+    for (let slot = 0; slot < CLOUDFLARE_NAMESPACE_BINDING_COUNT; slot += 1) {
       if (!used.has(slot)) return slot;
     }
     throw new Error("Cloudflare namespace has no free binding slot");
@@ -7382,7 +7346,7 @@ export class DurableAgentSession extends DurableComputerSession {
       const configuration = managedMountConfiguration(mount.configuration_json);
       const slot = configuration.namespace_slot;
       if (slot === undefined) continue;
-      if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_MANAGED_MOUNTS || used.has(slot)) {
+      if (!Number.isInteger(slot) || slot < 0 || slot >= CLOUDFLARE_NAMESPACE_BINDING_COUNT || used.has(slot)) {
         throw new Error("retained Cloudflare mount has an invalid namespace slot");
       }
       slots.set(mount.id, slot);
@@ -7392,7 +7356,7 @@ export class DurableAgentSession extends DurableComputerSession {
       if (slots.has(mount.id)) continue;
       let slot = 0;
       while (used.has(slot)) slot += 1;
-      if (slot >= MAX_MANAGED_MOUNTS) {
+      if (slot >= CLOUDFLARE_NAMESPACE_BINDING_COUNT) {
         throw new Error("retained Cloudflare mounts exceed the namespace binding limit");
       }
       const configuration = managedMountConfiguration(mount.configuration_json);

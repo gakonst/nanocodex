@@ -4,7 +4,6 @@ import type { NamedTool, Workspace } from "../tools/types.mjs";
 
 import { createGhCommand, createGitCommand, type ShellFetch } from "./shell.js";
 
-const DEFAULT_MAX_ENTRIES = 20_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
 
 export type ComputerCommandContext = Readonly<{
@@ -50,7 +49,7 @@ export async function createComputerRuntime(
   const shell = await justBash({
     filesystem: options.filesystem,
     refreshFilesystemBeforeExec: options.refreshFilesystemBeforeExec,
-    maxEntries: options.maxEntries ?? DEFAULT_MAX_ENTRIES,
+    maxEntries: options.maxEntries,
     maxOutputTokens: options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     fetch: options.fetch,
     networkMode: options.networkMode,

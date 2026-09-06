@@ -1,8 +1,6 @@
 import { resolveNamespaceCwd, type Workspace, type WorkspaceEntry } from "nanocodex-tools";
 
 const ROOT = "/brain";
-const MAX_FILE_BYTES = 64 * 1024 * 1024;
-const MAX_ENTRIES = 20_000;
 
 /** The same prefix that Sandbox mounts at /brain; no copy or hand is needed. */
 export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Workspace {
@@ -51,9 +49,9 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
     await ancestors(absolute);
     const kind = await stat(absolute);
     if (kind !== "directory") throw error(kind === "file" ? "ENOTDIR" : "ENOENT", `${absolute} is not a directory`);
-    const maximum = options.maxEntries ?? MAX_ENTRIES;
-    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > MAX_ENTRIES) {
-      throw new RangeError(`workspace listing limit must be between 1 and ${MAX_ENTRIES}`);
+    const maximum = options.maxEntries ?? Infinity;
+    if (options.maxEntries !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) {
+      throw new RangeError("workspace listing limit must be a positive integer");
     }
     const entries = new Map<string, WorkspaceEntry>();
     const directoryPrefix = absolute === ROOT ? prefix : `${key(absolute)}/`;
@@ -103,10 +101,6 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
         if (await stat(absolute) === "directory") throw error("EISDIR", `${absolute} is a directory`);
         throw error("ENOENT", `brain workspace file not found: ${absolute}`);
       }
-      if (object.size > MAX_FILE_BYTES) {
-        await object.body.cancel();
-        throw new RangeError("workspace file exceeds the 64 MiB read bound");
-      }
       return new Uint8Array(await object.arrayBuffer());
     },
     async writeFile(path, contents) {
@@ -117,7 +111,6 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
       const bytes = typeof contents === "string" ? new TextEncoder().encode(contents)
         : contents instanceof ArrayBuffer ? new Uint8Array(contents)
         : new Uint8Array(contents.buffer, contents.byteOffset, contents.byteLength);
-      if (bytes.byteLength > MAX_FILE_BYTES) throw new RangeError("workspace file exceeds the 64 MiB write bound");
       await ancestors(absolute);
       await mkdir(absolute.slice(0, absolute.lastIndexOf("/")));
       await bucket.put(key(absolute), bytes);
@@ -132,7 +125,7 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
         await bucket.delete(key(absolute));
         return;
       }
-      const entries = await list(absolute, { recursive: true, maxEntries: MAX_ENTRIES });
+      const entries = await list(absolute, { recursive: true });
       if (!options.recursive && entries.length) throw error("ENOTEMPTY", `${absolute} is not empty`);
       const keys = entries.map((entry) => `${key(entry.path)}${entry.kind === "directory" ? "/" : ""}`);
       keys.push(`${key(absolute)}/`);

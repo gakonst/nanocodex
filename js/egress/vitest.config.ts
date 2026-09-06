@@ -1,3 +1,4 @@
+import { gitProvider } from "../test-fixtures/git-provider.mjs";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
@@ -97,6 +98,8 @@ export default defineConfig({
           durableObjects: { CHATGPT_EGRESS: "ChatGptEgress" },
         }],
         outboundService: async (request) => {
+          const gitResponse = await gitProvider(request);
+          if (gitResponse) return gitResponse;
           const url = new URL(request.url);
           if (request.method === "POST" && url.hostname === "slack.com"
             && url.pathname === "/api/oauth.v2.access") {

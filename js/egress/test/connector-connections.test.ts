@@ -22,6 +22,38 @@ const workerEnv = env as unknown as EgressEnv;
 const redirectUri = "https://nanocodex.test/v1/connectors/callback";
 
 describe("provider-neutral connector identities", () => {
+  it("streams authenticated Git packs beyond 16 MiB and fences a disconnected connection", async () => {
+    const user = "large-git-egress";
+    const subject = "L".repeat(43);
+    const connection = await connect(user, "github", "github-code");
+    await bindSubject(subject, user);
+    const headers = {
+      authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL",
+      "x-nanocodex-subject": subject,
+      "x-nanocodex-connector-connection": connection,
+    };
+    const metadata = await (await SELF.fetch("https://api.github.com/repos/fixture/large", { headers })).json() as { head: string };
+    const refs = await SELF.fetch("https://github.com/fixture/large.git/info/refs?service=git-upload-pack", { headers });
+    expect(refs.status).toBe(200);
+    expect(await refs.text()).toContain(metadata.head);
+    const want = `want ${metadata.head} side-band-64k ofs-delta\n`;
+    const body = `${(want.length + 4).toString(16).padStart(4, "0")}${want}00000009done\n`;
+    const response = await SELF.fetch("https://github.com/fixture/large.git/git-upload-pack", {
+      method: "POST", headers: { ...headers, "content-type": "application/x-git-upload-pack-request" }, body,
+    });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    let bytes = 0;
+    for (;;) { const part = await reader.read(); if (part.done) break; bytes += part.value.byteLength; }
+    expect(bytes).toBeGreaterThan(16 * 1024 * 1024);
+    expect((await SELF.fetch(`https://broker.test/users/${user}/connectors/github/connections/${connection}`, {
+      method: "DELETE",
+    })).status).toBe(204);
+    const revoked = await SELF.fetch("https://github.com/fixture/large.git/info/refs?service=git-upload-pack", { headers });
+    expect(revoked.status).toBe(404);
+    expect(await revoked.json()).toEqual({ error: "connector_connection_not_found" });
+  }, 60_000);
+
   it("requests the full Google Workspace catalog while decoding partial consent", () => {
     const authorization = buildGoogleAuthorizationUrl({
       clientId: "client", redirectUri, state: "state", codeChallenge: "A".repeat(43),
@@ -282,7 +314,7 @@ type PublicConnection = {
 };
 type PublicStatus = Record<string, { connected: boolean; connections: PublicConnection[] }>;
 
-async function connect(user: string, provider: "google" | "slack", code: string): Promise<string> {
+async function connect(user: string, provider: "github" | "google" | "slack", code: string): Promise<string> {
   const started = await control(`/users/${user}/connectors/${provider}`, "POST", {
     redirect_uri: redirectUri,
     return_to: `/agent?provider=${provider}`,

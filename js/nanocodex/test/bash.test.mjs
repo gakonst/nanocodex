@@ -17,8 +17,7 @@ test("Just Bash advertises its cloud workspace execution", async () => {
   assert.equal(descriptor.pty, false);
   assert.equal(descriptor.sessions, false);
   assert.equal(descriptor.sandboxEscalation, false);
-  assert.equal(descriptor.limits.maxFileSystemBytes, 64 * 1024 * 1024);
-  assert.equal(descriptor.limits.maxTraversalEntries, 2_000);
+  assert.deepEqual(descriptor.limits, {});
   assert(descriptor.commands.includes("grep"));
   assert(!descriptor.commands.includes("curl"));
   assert(!descriptor.commands.includes("wget"));
@@ -196,7 +195,7 @@ test("initial metadata, mutations, and returned output stay within configured bo
   });
   assert.deepEqual(defaultScan, {
     path: ".",
-    options: { recursive: true, maxEntries: 2_000 },
+    options: { recursive: true },
   });
 
   let initialScan;

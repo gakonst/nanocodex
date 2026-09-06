@@ -16,10 +16,15 @@ export type ShellFetchResult = Readonly<{
   url: string;
 }>;
 
-export type ShellFetch = (
+export type ShellFetch = ((
   url: string,
   options?: ShellFetchOptions,
-) => Promise<ShellFetchResult>;
+) => Promise<ShellFetchResult>) & Readonly<{
+  /** Optional streaming transport for Git packfiles, without a buffered shell response. */
+  stream?: (url: string, options?: ShellFetchOptions) => Promise<
+    Omit<ShellFetchResult, "body"> & { body: AsyncIterable<Uint8Array> }
+  >;
+}>;
 
 type CommandContext = Readonly<{ cwd?: unknown; signal?: AbortSignal }>;
 type CommandResult = Readonly<{
@@ -34,8 +39,6 @@ type GitClone = (
 
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const GITHUB_REPOSITORY = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
-const MAX_GIT_HTTP_BODY_BYTES = 16 * 1024 * 1024;
-const MAX_GIT_ENTRIES = 20_000;
 
 /** gh compatibility command backed by the connected GitHub account. */
 export function createGhCommand(
@@ -176,7 +179,7 @@ function ghRepoCloneArguments(args: string[]): string[] {
   ];
 }
 
-/** Git compatibility command backed by durable workspace storage and public Git smart HTTP. */
+/** Git compatibility command backed by durable storage and host-authorized Git smart HTTP. */
 export function createGitCommand(
   fetch: ShellFetch,
   workspace: () => Workspace,
@@ -274,7 +277,6 @@ function logDepth(args: string[]): number {
   const value = explicit ?? compact?.slice(1);
   if (value === undefined) return 20;
   const depth = positiveInteger(value, "log depth");
-  if (depth > 200) throw new Error("log depth cannot exceed 200");
   return depth;
 }
 
@@ -335,7 +337,7 @@ function managedGitHttp(fetch: ShellFetch, signal?: AbortSignal): HttpClient {
       const body = request.body === undefined
         ? undefined
         : await collectGitBody(request.body);
-      const response = await fetch(request.url, {
+      const response = await (fetch.stream ?? fetch)(request.url, {
         method: request.method,
         headers: request.headers,
         body,
@@ -346,7 +348,10 @@ function managedGitHttp(fetch: ShellFetch, signal?: AbortSignal): HttpClient {
         statusCode: response.status,
         statusMessage: response.statusText,
         headers: response.headers,
-        body: (async function* () { yield response.body; })(),
+        body: (async function* () {
+          if (response.body instanceof Uint8Array) yield response.body;
+          else yield* response.body;
+        })(),
       };
     },
   };
@@ -357,7 +362,6 @@ async function collectGitBody(body: AsyncIterable<Uint8Array>): Promise<Uint8Arr
   let size = 0;
   for await (const chunk of body) {
     size += chunk.byteLength;
-    if (size > MAX_GIT_HTTP_BODY_BYTES) throw new Error("git HTTP request body is too large");
     chunks.push(chunk);
   }
   const joined = new Uint8Array(size);
@@ -379,7 +383,7 @@ function workspaceFs(workspace: Workspace) {
     },
     writeFile: async (path: string, contents: Uint8Array | string) => workspace.writeFile(resolve(path), contents),
     unlink: async (path: string) => workspace.remove(resolve(path)),
-    readdir: async (path: string) => (await workspace.list(resolve(path), { maxEntries: MAX_GIT_ENTRIES }))
+    readdir: async (path: string) => (await workspace.list(resolve(path)))
       .map(({ path: child }) => child.slice(child.lastIndexOf("/") + 1)),
     mkdir: async (path: string, options?: { recursive?: boolean }) => {
       path = resolve(path);
@@ -436,7 +440,7 @@ async function workspaceEntry(workspace: Workspace, path: string): Promise<Works
   const parent = path.slice(0, separator) || workspace.root;
   const target = path.slice(separator + 1);
   try {
-    return (await workspace.list(parent, { maxEntries: MAX_GIT_ENTRIES }))
+    return (await workspace.list(parent))
       .find((entry) => entry.path === target || entry.path.endsWith(`/${target}`));
   } catch (error) {
     if ((error as { code?: unknown })?.code === "ENOENT") return undefined;

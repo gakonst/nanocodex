@@ -122,6 +122,11 @@ type VaultEgressEnvelope = Readonly<{
 const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
   {
     id: "github",
+    origin: "https://github.com",
+    paths: [/^\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\/(?:info\/refs|git-upload-pack|git-receive-pack)$/],
+  },
+  {
+    id: "github",
     origin: "https://api.github.com",
     paths: [/^\//],
   },
@@ -300,6 +305,10 @@ export async function handleEgress(
   let url: URL;
   try { url = new URL(request.url); } catch { return jsonError(400, "invalid_url"); }
   if (url.username || url.password || url.hash) return jsonError(403, "destination_denied");
+
+  if (url.origin === "https://public-egress.internal" && url.pathname === "/v1/request" && !url.search) {
+    return handlePublicEgress(request, env, upstreamFetch);
+  }
 
   if (url.protocol === "https:" && url.hostname === "vault-egress.internal" && !url.port
     && url.pathname === "/v1/request" && !url.search) {
@@ -658,6 +667,69 @@ function vaultTemplatePlaceholders(template: string): Set<VaultPlaceholder> {
     throw new EgressFailure(400, "invalid_vault_placeholder");
   }
   return placeholders;
+}
+
+/** Public traffic takes the same service binding as credentialed traffic. */
+async function handlePublicEgress(
+  request: Request,
+  env: EgressEnv,
+  upstreamFetch: typeof fetch,
+): Promise<Response> {
+  if (!VAULT_EGRESS_METHODS.has(request.method)) return jsonError(403, "method_denied");
+  const subject = request.headers.get(SUBJECT_HEADER);
+  if (subject !== null) {
+    if (!SUBJECT.test(subject)) return jsonError(403, "agent_subject_required");
+    try { await resolveSubject(env, subject); }
+    catch (error) { const problem = egressFailure(error); return jsonError(problem.status, problem.code); }
+  }
+  let target: URL;
+  try { target = vaultEgressTarget(new URL(request.headers.get("x-nanocodex-target-url") ?? "")); }
+  catch { return jsonError(403, "destination_denied"); }
+  const headers = new Headers(request.headers);
+  headers.delete(SUBJECT_HEADER);
+  headers.delete("x-nanocodex-target-url");
+  for (const name of headers.keys()) {
+    if (VAULT_PRIVATE_HEADER.test(name) || VAULT_FORBIDDEN_HEADERS.has(name)
+      || name.startsWith("x-nanocodex-")) return jsonError(403, "credential_header_denied");
+  }
+  let method = request.method;
+  let body = request.body;
+  const visited = new Set<string>();
+  for (;;) {
+    const key = `${method} ${target.href}`;
+    if (visited.has(key)) return jsonError(502, "redirect_cycle");
+    visited.add(key);
+    let response: Response;
+    try {
+      response = await upstreamFetch(new Request(target, {
+        method,
+        headers,
+        ...(method === "GET" || method === "HEAD" || !body ? {} : { body }),
+        signal: request.signal,
+        redirect: "manual",
+      }));
+    } catch { return jsonError(request.signal.aborted ? 499 : 502, "upstream_unavailable"); }
+    if (![301, 302, 303, 307, 308].includes(response.status)) return sanitizeUpstreamResponse(response);
+    const location = response.headers.get("location");
+    try {
+      if (!location) throw new Error("missing redirect");
+      target = vaultEgressTarget(new URL(location, target));
+    } catch {
+      await response.body?.cancel();
+      return jsonError(502, "redirect_denied");
+    }
+    if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST")) {
+      method = "GET";
+      body = null;
+      headers.delete("content-type");
+      headers.delete("content-length");
+    } else if (body) {
+      // The upload has already streamed. Leave replay to the client's native
+      // redirect handling instead of buffering every upload speculatively.
+      return sanitizeUpstreamResponse(response);
+    }
+    await response.body?.cancel();
+  }
 }
 
 function vaultEgressTarget(url: URL): URL {

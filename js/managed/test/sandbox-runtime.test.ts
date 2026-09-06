@@ -22,12 +22,12 @@ describe("sandbox runtime egress", () => {
     expect(Sandbox.outbound).toBe(handleSandboxEgress);
   });
 
-  it("allows policy-validated public HTTPS without using account credentials", async () => {
+  it("routes policy-validated public HTTPS through the broker", async () => {
     const upstream = vi.fn(async () => new Response("ok", {
       headers: { "content-type": "text/plain" },
     }));
     vi.stubGlobal("fetch", upstream);
-    const broker = { fetch: vi.fn() } as unknown as Fetcher;
+    const broker = { fetch: vi.fn(async () => new Response("ok")) } as unknown as Fetcher;
 
     const response = await handleSandboxEgress(
       new Request("https://github.com/dtolnay/anyhow.git/info/refs?service=git-upload-pack", {
@@ -38,8 +38,8 @@ describe("sandbox runtime egress", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("ok");
-    expect(upstream).toHaveBeenCalledTimes(1);
-    expect(broker.fetch).not.toHaveBeenCalled();
+    expect(upstream).not.toHaveBeenCalled();
+    expect(broker.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("rejects account connector destinations and private network targets", async () => {
@@ -57,6 +57,34 @@ describe("sandbox runtime egress", () => {
     )).status).toBe(403);
     expect(upstream).not.toHaveBeenCalled();
     expect(broker.fetch).not.toHaveBeenCalled();
+  });
+
+  it("authenticates native gh and git using trusted outbound params, not caller identity", async () => {
+    const requests: Request[] = [];
+    const broker = { async fetch(request: Request) { requests.push(request); return new Response("ok"); } } as unknown as Fetcher;
+    const subject = "s".repeat(43);
+    for (const [url, authorization] of [
+      ["https://api.github.com/user", "token NANOCODEX_PROVIDER_CREDENTIAL"],
+      ["https://github.com/owner/private.git/info/refs?service=git-upload-pack", undefined],
+      ["https://github.com/owner/private.git/git-upload-pack", `Basic ${btoa("x-access-token:NANOCODEX_PROVIDER_CREDENTIAL")}`],
+    ]) {
+      const response = await handleSandboxEgress(new Request(url!, {
+        headers: { host: new URL(url!).hostname, ...(authorization ? { authorization } : {}) },
+      }), { NANOCODEX: broker }, { params: { subject } });
+      expect(response.status).toBe(200);
+      expect(requests.at(-1)!.headers.get("x-nanocodex-subject")).toBe(subject);
+      expect(requests.at(-1)!.headers.get("authorization")).toBe("Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+    }
+    const forgedHeaders: Record<string, string>[] = [
+      { "x-nanocodex-subject": "a".repeat(43) },
+      { authorization: "Bearer real-user-token" },
+    ];
+    for (const headers of forgedHeaders) {
+      const denied = await handleSandboxEgress(new Request("https://api.github.com/user", { headers }),
+        { NANOCODEX: broker }, { params: { subject } });
+      expect(denied.status).toBe(403);
+    }
+    expect(requests).toHaveLength(3);
   });
 
   it("blocks the Sandbox SDK cross-binding copy prefix escape", () => {

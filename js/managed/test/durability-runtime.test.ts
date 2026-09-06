@@ -3,9 +3,8 @@ import { expect, it } from "vitest";
 import { Agent } from "nanocodex/cloudflare";
 import { Subagents } from "nanocodex/host";
 import { createTools } from "nanocodex/tools";
-import { MANAGED_SUBAGENT_MAX_CONCURRENCY } from "../src/index";
 
-it("bounds a delegation storm with prepared tools and keeps checkpointed messaging usable", async () => {
+it("admits more than eight children with prepared tools and keeps checkpointed messaging usable", async () => {
   const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
   await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
     const owner = { ctx, env: { NANOCODEX: { async fetch() {
@@ -16,20 +15,15 @@ it("bounds a delegation storm with prepared tools and keeps checkpointed messagi
     } } } };
     const tools = await createTools({ tools: [] });
     const options = { tools, eventPersistence: "caller" as const };
-    Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), { value: {
-      subagentMaxConcurrency: MANAGED_SUBAGENT_MAX_CONCURRENCY,
-    } });
     const agent = await Agent.create(owner, options);
     try {
-      const attempts = await Promise.allSettled(Array.from({ length: 104 }, (_, index) => Subagents.spawn(agent, {
+      const attempts = await Promise.allSettled(Array.from({ length: 16 }, (_, index) => Subagents.spawn(agent, {
         role: `researcher-${index}`, task: "Research fixture without further delegation", outputSchema: { type: "object" },
       })));
-      expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(MANAGED_SUBAGENT_MAX_CONCURRENCY);
-      const rejected = attempts.filter((attempt) => attempt.status === "rejected");
-      expect(rejected).toHaveLength(104 - MANAGED_SUBAGENT_MAX_CONCURRENCY);
-      for (const attempt of rejected) expect(String(attempt.reason)).toContain("sub-agent concurrency limit of 8");
+      expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(16);
+      expect(attempts.filter((attempt) => attempt.status === "rejected")).toHaveLength(0);
       const directory = await Subagents.list(agent);
-      expect(directory.agents).toHaveLength(MANAGED_SUBAGENT_MAX_CONCURRENCY);
+      expect(directory.agents).toHaveLength(16);
       await expect(Subagents.send(agent, {
         agentId: directory.agents[0]!.agent_id, priority: "urgent", purpose: "question", message: "Still available?",
       })).resolves.toMatchObject({ to_agent_id: directory.agents[0]!.agent_id });

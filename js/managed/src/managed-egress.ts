@@ -12,8 +12,6 @@ const MAX_VAULT_HEADERS = 64;
 const MAX_VAULT_HEADER_BYTES = 32 * 1024;
 const MAX_VAULT_HEADER_NAME_BYTES = 128;
 const MAX_VAULT_HEADER_VALUE_BYTES = 4 * 1024;
-const MAX_REDIRECTS = 5;
-const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const ORDINARY_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 const BLOCKED_RESPONSE_HEADERS = new Set([
   "clear-site-data",
@@ -31,6 +29,7 @@ const BLOCKED_RESPONSE_HEADERS = new Set([
   "upgrade",
   "x-nanocodex-connector-connection",
   "x-nanocodex-subject",
+  "x-nanocodex-target-url",
 ]);
 
 export type ManagedEgressConnectorId =
@@ -61,9 +60,15 @@ export function exactConnectorAccess(
 type ProviderPolicy = Readonly<{
   connector: ManagedEgressConnectorId;
   path: (pathname: string) => boolean;
+  publicWithoutSubject?: boolean;
 }>;
 
 const PROVIDERS = new Map<string, readonly ProviderPolicy[]>([
+  ["github.com", [{
+    connector: "github",
+    path: (path) => /^\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\/(?:info\/refs|git-upload-pack|git-receive-pack)$/.test(path),
+    publicWithoutSubject: true,
+  }]],
   ["api.github.com", [{
     connector: "github",
     path: (path) => path.startsWith("/"),
@@ -122,7 +127,7 @@ const PRIVATE_HEADER = /(?:^|[-_])(?:auth(?:orization)?|cookie|credential|passwo
 const FORBIDDEN_HEADERS = new Set([
   "connection", "host", "origin", "proxy-connection", "referer", "te", "trailer",
   "transfer-encoding", "upgrade", CONNECTOR_CONNECTION_HEADER, "x-nanocodex-subject",
-  VAULT_ID_HEADER,
+  VAULT_ID_HEADER, "x-nanocodex-target-url",
 ]);
 const VAULT_FORBIDDEN_HEADERS = new Set([
   "content-length", "cookie", "expect", "proxy-authorization", "via",
@@ -166,12 +171,15 @@ export async function handleManagedEgress(
 
   let url: URL;
   try { url = validateUrl(new URL(request.url)); } catch { return failure(403, "destination_denied"); }
-  const provider = providerFor(url);
+  const candidate = providerFor(url);
+  const provider = candidate?.publicWithoutSubject && subject === undefined ? undefined : candidate;
   const headerFailure = forbiddenHeader(request.headers, {
     allowConnectorConnection: provider !== undefined,
   });
   if (headerFailure) return failure(403, "credential_header_denied");
-  if (!provider && PROVIDERS.has(url.hostname)) return failure(403, "destination_denied");
+  if (!provider && PROVIDERS.has(url.hostname) && url.hostname !== "github.com") {
+    return failure(403, "destination_denied");
+  }
   if (provider) {
     const selected = request.headers.get(CONNECTOR_CONNECTION_HEADER) ?? undefined;
     if (selected !== undefined && !CONNECTOR_CONNECTION.test(selected)) {
@@ -200,10 +208,16 @@ export async function handleManagedEgress(
     })));
   }
 
-  const body = method === "GET" || method === "HEAD" || !request.body
-    ? undefined
-    : await request.arrayBuffer();
-  return fetchPublic(url, request, body);
+  const headers = new Headers(request.headers);
+  headers.set("x-nanocodex-target-url", url.href);
+  if (subject !== undefined) headers.set("x-nanocodex-subject", subject);
+  return projectResponse(await binding.fetch(new Request("https://public-egress.internal/v1/request", {
+    method,
+    headers,
+    ...(method === "GET" || method === "HEAD" || !request.body ? {} : { body: request.body }),
+    redirect: "manual",
+    signal: request.signal,
+  })));
 }
 
 async function handleVaultEgress(
@@ -275,48 +289,6 @@ function canonicalProviderPath(provider: ProviderPolicy, pathname: string): bool
     || (!pathname.includes("\\") && !/%(?:2e|2f|5c|25)/i.test(pathname));
 }
 
-async function fetchPublic(
-  initialUrl: URL,
-  request: Request,
-  originalBody: ArrayBuffer | undefined,
-): Promise<Response> {
-  let url = initialUrl;
-  let method = request.method.toUpperCase();
-  let body = originalBody;
-  for (let redirects = 0; ; redirects += 1) {
-    if (redirects > MAX_REDIRECTS) return failure(502, "too_many_redirects");
-    const headers = new Headers(request.headers);
-    if (method === "GET" || method === "HEAD") {
-      headers.delete("content-length");
-      headers.delete("content-type");
-      body = undefined;
-    }
-    try {
-      const response = await fetch(url, {
-        method,
-        headers,
-        body,
-        redirect: "manual",
-        signal: request.signal,
-      });
-      if (!REDIRECTS.has(response.status)) return projectResponse(response);
-      const location = response.headers.get("location");
-      await response.body?.cancel();
-      if (!location) return failure(502, "invalid_redirect");
-      try { url = validateUrl(new URL(location, url)); } catch { return failure(502, "redirect_denied"); }
-      if (providerFor(url) || PROVIDERS.has(url.hostname)) {
-        return failure(502, "redirect_to_connector_denied");
-      }
-      if (response.status === 303
-        || ((response.status === 301 || response.status === 302) && method === "POST")) {
-        method = "GET";
-        body = undefined;
-      }
-    } catch {
-      return failure(request.signal.aborted ? 499 : 502, "upstream_unavailable");
-    }
-  }
-}
 
 function validateUrl(url: URL): URL {
   if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password

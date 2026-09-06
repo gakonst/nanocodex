@@ -21,8 +21,6 @@ type DisposableComputerWorkspace = WorkspaceStorageClient & Readonly<{
   [Symbol.dispose](): void;
 }>;
 
-const MAX_SHELL_RESPONSE_BYTES = 16 * 1024 * 1024;
-
 export type ManagedComputerRuntime = ComputerRuntime & Readonly<{
   dispose(): void;
 }>;
@@ -108,7 +106,7 @@ function createManagedShellFetch(
   ) => ManagedEgressConnectorAccess,
   vaultAllowed: () => boolean = () => true,
 ): ShellFetch {
-  return async (url, options = {}) => {
+  const stream: NonNullable<ShellFetch["stream"]> = async (url, options = {}) => {
     const method = (options.method ?? "GET").toUpperCase();
     const request = new Request(url, {
       method,
@@ -128,42 +126,41 @@ function createManagedShellFetch(
       status: response.status,
       statusText: response.statusText,
       headers,
-      body: await readShellResponse(response, options.signal),
+      body: shellResponseChunks(response, options.signal),
       url: response.url || request.url,
     };
   };
+  return Object.assign(async (url: string, options: Parameters<ShellFetch>[1] = {}) => {
+    const response = await stream(url, options);
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of response.body) { chunks.push(chunk); size += chunk.byteLength; }
+    const body = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    return { ...response, body };
+  }, { stream });
 }
 
-async function readShellResponse(response: Response, signal?: AbortSignal): Promise<Uint8Array> {
-  if (Number(response.headers.get("content-length")) > MAX_SHELL_RESPONSE_BYTES) {
-    await response.body?.cancel();
-    throw new RangeError("brain HTTP response exceeds 16 MiB; request a smaller response or use a hand");
-  }
-  if (response.body === null) return new Uint8Array();
+async function* shellResponseChunks(response: Response, signal?: AbortSignal): AsyncIterable<Uint8Array> {
+  if (response.body === null) { signal?.throwIfAborted(); return; }
   const reader = response.body.getReader();
   const abort = () => { void reader.cancel(signal?.reason).catch(() => {}); };
   signal?.addEventListener("abort", abort, { once: true });
-  const chunks: Uint8Array[] = [];
-  let size = 0;
+  let complete = false;
   try {
     for (;;) {
       signal?.throwIfAborted();
       const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_SHELL_RESPONSE_BYTES) throw new RangeError("brain HTTP response exceeds 16 MiB; request a smaller response or use a hand");
-      chunks.push(value);
+      if (done) { complete = true; break; }
+      yield value;
     }
     signal?.throwIfAborted();
-  } catch (error) {
-    try { await reader.cancel(); } catch { /* Preserve the read failure. */ }
-    throw error;
   } finally {
+    if (!complete) {
+      try { await reader.cancel(signal?.reason); } catch { /* Preserve the read failure. */ }
+    }
     signal?.removeEventListener("abort", abort);
     reader.releaseLock();
   }
-  const body = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-  return body;
 }
