@@ -1,4 +1,4 @@
-import { getSandbox } from "@cloudflare/sandbox";
+import { getSandbox, type ProcessOptions } from "@cloudflare/sandbox";
 import type { ToolMap } from "nanocodex";
 import {
   EXEC_COMMAND_PARAMETERS,
@@ -125,7 +125,7 @@ type SandboxToolClient = {
   }>;
   startProcess(
     command: string,
-    options: { cwd: string; processId: string; autoCleanup: false; envVars?: Record<string, string> },
+    options: ProcessOptions & { cwd: string; processId: string; autoCleanup: false },
   ): Promise<SandboxProcess>;
   getProcess(id: string): Promise<SandboxProcess | null>;
   tunnels: {
@@ -305,7 +305,7 @@ export function createCloudflareSandboxTools(
             cwd,
             processId: sandboxProcessId(sessionId),
             autoCleanup: false,
-            envVars: {
+            env: {
               GH_TOKEN: "NANOCODEX_PROVIDER_CREDENTIAL",
               GH_PROMPT_DISABLED: "1",
               GIT_TERMINAL_PROMPT: "0",
