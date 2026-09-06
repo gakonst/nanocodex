@@ -298,7 +298,9 @@ function replaceExecutionResult(original: unknown, structured: Record<string, un
   return Object.freeze({
     [TOOL_RESULT]: true,
     metadata: original.metadata,
-    output: original.output,
+    // Direct model calls read output; Code Mode reads structuredResult.
+    // Both must expose the namespace session, never the Hand's local ID.
+    output: JSON.stringify(structured),
     structuredResult: structured,
     success: original.success,
     value: structured,
