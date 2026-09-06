@@ -1321,6 +1321,8 @@ where
                                 break execution.as_mut().await;
                             }
                             Some(command @ (Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
+                                let inherit_active_turn = matches!(&command,
+                                    Command::Spawn { agent_name: Some(_), .. });
                                 if let Some(snapshot) =
                                     fork_snapshot_rx.borrow_and_update().clone()
                                 {
@@ -1337,8 +1339,8 @@ where
                                     &self.spawner,
                                     TurnDefaults {
                                         model: thread_model,
-                                        thinking: default_thinking,
-                                        fast_mode: default_fast_mode,
+                                        thinking: if inherit_active_turn { thinking } else { default_thinking },
+                                        fast_mode: if inherit_active_turn { fast_mode } else { default_fast_mode },
                                     },
                                     session_id.as_str(),
                                     self.workspace.clone(),

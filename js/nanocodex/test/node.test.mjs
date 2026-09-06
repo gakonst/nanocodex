@@ -1350,6 +1350,10 @@ for (const forkTurns of [undefined, "1"]) {
       await bounded(first, "first result");
       const second = agent.turn.prompt({ input: "recent-fork-marker" }).result();
       await bounded(reader.next(), "second generation");
+      // New defaults apply to later parent turns. A fork of this active turn
+      // must retain its reasoning and service tier rather than those defaults.
+      await agent.session.setThinking("high");
+      await agent.session.setFastMode(true);
       const childConnection = new Promise((resolve) => server.websocketServer.once("connection", (socket, request) => { socket.request = request; resolve(socket); }));
       sendCompleted(socket, "spawn-fork", [{ type: "function_call", call_id: "fork-call", namespace: "collaboration", name: "spawn_agent",
         arguments: JSON.stringify({ task_name: "fork_check", message: "Report the inherited markers.", ...(forkTurns ? { fork_turns: forkTurns } : {}) }),
@@ -1359,6 +1363,8 @@ for (const forkTurns of [undefined, "1"]) {
         const childReader = messageReader(child);
         const request = await bounded(childReader.next(), "child generation");
         assert.equal(request.model, "gpt-6-astra");
+        assert.equal(request.reasoning.effort, initial.reasoning.effort);
+        assert.equal(request.service_tier, initial.service_tier);
         assert.equal(request.prompt_cache_key, initial.prompt_cache_key);
         assert.match(JSON.stringify(request.input), /recent-fork-marker/);
         if (forkTurns === "1") {

@@ -15,8 +15,8 @@ the core agent depend on orchestration policy:
 
 Model-directed children inherit all safe history by default and return their
 final assistant text to their parent. `fork_turns` accepts `none`, `all`, or a
-positive integer string. Full-history forks inherit the parent's model and
-reasoning effort; other forks may supply explicit overrides. Targets accept
+positive integer string. Full-history forks inherit the active parent turn's
+model, reasoning effort, and fast mode; other forks may supply explicit overrides. Targets accept
 canonical task paths, direct-child names, or agent IDs.
 
 `start_agent`, `start_agents`, and the numeric registry API preserve their
