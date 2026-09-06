@@ -424,6 +424,14 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
         "wait_agent",
       ],
     );
+    const collaboration = rootWarmup.input[0].tools.find((tool) => tool.type === "namespace" && tool.name === "collaboration");
+    const spawnSchema = collaboration.tools.find((tool) => tool.name === "spawn_agent").parameters;
+    assert.deepEqual(spawnSchema.required, ["task_name", "message"]);
+    assert.equal(spawnSchema.properties.reasoning_effort.type, "string");
+    assert.equal(spawnSchema.properties.reasoning_effort.enum, undefined);
+    const waitSchema = collaboration.tools.find((tool) => tool.name === "wait_agent").parameters;
+    assert.equal(waitSchema.properties.timeout_ms.type, "number");
+    assert.equal(waitSchema.required, undefined);
     sendWarmup(rootSocket, "root-warmup");
 
     const rootGeneration = await rootReader.next();

@@ -88,7 +88,7 @@ impl Tool for CollaborationTool {
                     "message":{"type":"string","description":"Initial plain-text task for the new agent."},
                     "fork_turns":{"type":"string","description":"Optional number of turns to fork. Defaults to all. Use none, all, or a positive integer string such as 3."},
                     "model":{"type":"string","description":"Optional model override: gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra, or gpt-5.6-luna. Omit to inherit the parent model."},
-                    "reasoning_effort":{"type":"string","enum":["none","low","medium","high","xhigh","max"],"description":"Optional reasoning effort override. Omit to inherit the parent effort."}
+                    "reasoning_effort":{"type":"string","description":"Reasoning effort override for the new agent. Omit to inherit the parent effort."}
                 }),
                 vec!["task_name", "message"],
             ),
@@ -109,7 +109,7 @@ impl Tool for CollaborationTool {
             ),
             "wait_agent" => (
                 "Wait for a mailbox update from any agent, including messages and final-status notifications. Returns a summary of agents with updates or a timeout; message content is delivered into the conversation.",
-                json!({"timeout_ms":{"type":"integer","description":"Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000."}}),
+                json!({"timeout_ms":{"type":"number","description":"Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000."}}),
                 vec![],
             ),
             "interrupt_agent" => (
@@ -122,10 +122,17 @@ impl Tool for CollaborationTool {
         if let Some(message) = properties.get_mut("message") {
             message["encrypted"] = json!(true);
         }
+        // Reserved Astra tools require the upstream wire schema, even when the
+        // handler supports a narrower set of values (for example effort names).
+        let mut parameters =
+            json!({"type":"object","properties":properties,"additionalProperties":false});
+        if !required.is_empty() {
+            parameters["required"] = json!(required);
+        }
         let definition = ToolDefinition::function(
             format!("collaboration__{}", self.name),
             description,
-            json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}),
+            parameters,
         );
         match self.name {
             "spawn_agent" => {
