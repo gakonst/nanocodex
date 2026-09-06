@@ -204,6 +204,15 @@
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
+.agent-composer-dock { position: relative; min-width: 0; }
+.agent-jump-latest { position: absolute; z-index: 2; bottom: calc(100% + 12px); left: 50%; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; transform: translateX(-50%); color: var(--terminal-foreground, #111); background: var(--terminal-background, #fff); border: 1px solid var(--terminal-border, #ddd); border-radius: 50%; box-shadow: 0 2px 8px rgb(0 0 0 / .06); cursor: pointer; }
+.agent-jump-latest svg { width: 18px; height: 18px; }
+.agent-response-actions { display: flex; min-height: 32px; align-items: center; gap: 6px; margin: 10px 0 0 -7px; color: var(--terminal-muted, #6b6b6b); font: 12px/1.4 var(--terminal-font-sans, system-ui, sans-serif); }
+.agent-response-actions button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; color: inherit; background: transparent; cursor: pointer; }
+.agent-response-actions button:hover { color: var(--terminal-foreground, #111); background: var(--terminal-hover, #f4f4f4); }
+.agent-response-actions svg { width: 16px; height: 16px; }
+.agent-response-actions button:focus-visible, .agent-jump-latest:focus-visible { outline: 2px solid var(--terminal-muted, #6b6b6b); outline-offset: 2px; }
+
 .agent-terminal-standby {
   margin: 0;
   padding: 12px;
@@ -302,6 +311,16 @@
   border-radius: 0;
   white-space: pre;
 }
+
+.agent-terminal-markdown [data-streamdown="code-block"] { display: grid; grid-template-columns: minmax(0, 1fr) auto; margin: 18px 0; overflow: hidden; background: var(--terminal-hover, #f4f4f4); border: 1px solid var(--terminal-border, #ddd); border-radius: 14px; }
+.agent-terminal-markdown [data-streamdown="code-block-header"] { display: flex; align-items: center; min-height: 42px; padding: 8px 16px; grid-column: 1; grid-row: 1; color: var(--terminal-muted, #6b6b6b); font: 12px/1.4 var(--terminal-font-sans, system-ui, sans-serif); }
+.agent-terminal-markdown [data-streamdown="code-block-header"] + div { display: flex; align-items: center; padding-right: 8px; grid-column: 2; grid-row: 1; }
+.agent-terminal-markdown [data-streamdown="code-block-actions"] { display: flex; align-items: center; }
+.agent-terminal-markdown [data-streamdown="code-block-copy-button"] { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; color: var(--terminal-muted, #6b6b6b); background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
+.agent-terminal-markdown [data-streamdown="code-block-copy-button"]:hover { color: var(--terminal-foreground, #111); background: var(--terminal-background, #fff); }
+.agent-terminal-markdown [data-streamdown="code-block-body"] { grid-column: 1 / -1; overflow-x: auto; padding: 16px; border-top: 1px solid var(--terminal-border, #ddd); }
+.agent-terminal-markdown [data-streamdown="code-block-body"] pre { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.agent-terminal-markdown [data-streamdown="code-block-body"] pre > code > span { display: block; }
 
 .agent-terminal-markdown a {
   color: inherit;

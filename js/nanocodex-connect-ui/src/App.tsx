@@ -423,7 +423,7 @@ export function ConnectOnboarding({
         data-testid={complete ? "device-connect-complete" : "device-connect-error"}
       >
         {!wizard ? <header className="dialog-header">
-          <span className="wordmark">nanocodex/connect</span>
+          <span className="wordmark">Nanocodex Connect</span>
           <span className="secure-label"><span aria-hidden="true" /> device</span>
         </header> : null}
         <div className={wizard ? "wizard-content wizard-complete" : "dialog-content"}>
@@ -1264,7 +1264,7 @@ export function ConnectOnboarding({
       data-testid={wizard ? "device-connect-wizard" : "remote-connect-dialog"}
     >
       {!wizard ? <header className="dialog-header">
-        <span className="wordmark">nanocodex/connect</span>
+        <span className="wordmark">Nanocodex Connect</span>
           <span className="secure-label"><span aria-hidden="true" /> {hostPrincipalRequest
             ? "host identity"
             : "SMS account"}</span>
@@ -1540,22 +1540,16 @@ function ConnectionWizard({
   const requester = presentation === "wizard" ? "Nanocodex CLI" : request.app.name;
   const hostedAuthorization = request.auth.resources.includes(hostedAuthorizationResource);
   if (!request.hostPrincipalExchange && !connectorStatuses && !accountAddress) {
-    const requestContext = <RequestedConnectionContext
-      appVisibility={appVisibility}
-      request={request}
-      requester={requester}
-    />;
     return (
       <AccountChooser
         authOrigin={nanocodexOriginFor(request.apiUrl)}
         confirmationCode={confirmationCode}
         description={reauthenticationRequired
-          ? `Your session expired. Sign in by SMS, then connect your account to approve ${requester}.`
-          : `Sign in by SMS, then connect your account to approve ${requester}.`}
+          ? `Your session expired. Sign in to continue to ${requester}. You’ll review its requested access next.`
+          : `Sign in to continue to ${requester}. You’ll review its requested access next.`}
         disabled={disabled}
         onCancel={onCancel}
         onChooseAccount={onChooseAccount}
-        requestContext={requestContext}
       />
     );
   }
@@ -1634,53 +1628,6 @@ function ConnectionWizard({
           <WizardRequestSummary appVisibility={appVisibility} request={request} />
         </AccountConnectionSection> : null}
     </AccountConnectionSurface>
-  );
-}
-
-function RequestedConnectionContext({ appVisibility, request, requester }: Readonly<{
-  appVisibility: ReturnType<typeof appVisibilityPermissions>;
-  request: ConnectionView;
-  requester: string;
-}>) {
-  const hostedAuthorization = request.auth.resources.includes(hostedAuthorizationResource);
-  return (
-    <>
-      {request.permission.connectors.length ? <AccountConnectionSection
-        eyebrow="Requested service"
-        meta={`${request.permission.connectors.length} requested`}
-        title="Connections"
-        titleId="requested-services-heading"
-      >
-        <WizardConnectorList
-          connectorStatuses={undefined}
-          disabled
-          onConnectConnector={() => undefined}
-          request={request}
-        />
-      </AccountConnectionSection> : null}
-      {request.mcpConnections.length ? <AccountConnectionSection
-        eyebrow="Requested MCP"
-        meta={`${request.mcpConnections.length} requested`}
-        title="MCP connections"
-        titleId="requested-mcp-heading"
-      >
-        <McpConnectionList
-          connections={request.mcpConnections}
-          disabled
-          onConnect={() => undefined}
-        />
-      </AccountConnectionSection> : null}
-      <AccountConnectionSection
-        eyebrow="Requested access"
-        meta={hostedAuthorization
-          ? "No delegated key"
-          : request.accessKey ? "New delegated key" : "Active delegated key"}
-        title={`${requester} permissions`}
-        titleId="requested-access-heading"
-      >
-        <WizardRequestSummary appVisibility={appVisibility} request={request} />
-      </AccountConnectionSection>
-    </>
   );
 }
 

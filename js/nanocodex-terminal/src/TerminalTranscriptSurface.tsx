@@ -8,8 +8,10 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import type { AgentEntry, ToolActivity } from "nanocodex-react/agent";
+import { ArrowDown, Check, Copy } from "lucide-react";
 import { Streamdown } from "streamdown";
 
 import type { AgentStatus, AgentTerminalMode } from "./types.js";
@@ -55,6 +57,7 @@ export function TerminalTranscriptSurface({
 }) {
   const transcript = useRef<HTMLDivElement>(null);
   const followTail = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
   const handledFollowTailRequest = useRef(followTailRequest);
   const loadOlderArmed = useRef(false);
   const preserveScroll = useRef<{ scrollHeight: number; scrollTop: number } | undefined>(undefined);
@@ -105,6 +108,7 @@ export function TerminalTranscriptSurface({
         onScroll={(event) => {
           const element = event.currentTarget;
           followTail.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+          setShowLatest(!followTail.current);
           const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight) || 22;
           const nearTop = element.scrollTop <= lineHeight * 12;
           if (!nearTop) {
@@ -141,7 +145,15 @@ export function TerminalTranscriptSurface({
           <div className="agent-transcript-keyboard-spacer" aria-hidden="true" />
         </div>
       </div>
-      {composer}
+      <div className="agent-composer-dock">
+        {showLatest ? <button className="agent-jump-latest" type="button" aria-label="Jump to latest response" title="Jump to latest response" onClick={() => {
+          const element = transcript.current;
+          if (!element) return;
+          followTail.current = true;
+          element.scrollTo({ top: element.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+        }}><ArrowDown aria-hidden="true" /></button> : null}
+        {composer}
+      </div>
     </section>
   );
 }
@@ -275,12 +287,13 @@ const TerminalEntryView = memo(function TerminalEntryView({
       <Streamdown
         caret={entry.streaming ? "block" : undefined}
         components={MARKDOWN_COMPONENTS}
-        controls={false}
+        controls={MARKDOWN_CONTROLS}
         isAnimating={entry.streaming}
         linkSafety={LINK_SAFETY}
         mode={entry.streaming ? "streaming" : "static"}
         skipHtml
       >{entry.text}</Streamdown>
+      {entry.kind === "assistant" && !entry.streaming && entry.text.trim() ? <ResponseActions text={entry.text} /> : null}
     </article>
   );
   if (entry.kind === "error") return <p className="agent-terminal-error" role="alert">! {entry.text}</p>;
@@ -294,6 +307,22 @@ const TerminalEntryView = memo(function TerminalEntryView({
   return null;
 });
 
+function ResponseActions({ text }: { text: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "error">("idle");
+  useEffect(() => {
+    if (state === "idle") return;
+    const timer = setTimeout(() => setState("idle"), 2000);
+    return () => clearTimeout(timer);
+  }, [state]);
+  return <div className="agent-response-actions">
+    <button type="button" aria-label={state === "copied" ? "Copied response" : "Copy response"} title={state === "copied" ? "Copied" : "Copy response"} onClick={async () => {
+      try { await navigator.clipboard.writeText(text); setState("copied"); }
+      catch { setState("error"); }
+    }}>{state === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}</button>
+    <span role="status">{state === "copied" ? "Copied" : state === "error" ? "Couldn’t copy. Select the text to copy it." : ""}</span>
+  </div>;
+}
+
 function MarkdownInput({
   node: _node,
   ref: _ref,
@@ -306,6 +335,7 @@ function MarkdownInput({
 }
 
 const MARKDOWN_COMPONENTS = { input: MarkdownInput };
+const MARKDOWN_CONTROLS = { code: { copy: true, download: false }, table: false, mermaid: false } as const;
 const LINK_SAFETY = { enabled: true } as const;
 
 function TerminalToolView({ isChild = false, tool }: { isChild?: boolean; tool: ToolActivity }) {

@@ -38,6 +38,7 @@ export function AgentTerminalView({
   agent,
   agentError,
   composer,
+  composerPlaceholder,
   controls,
   inactiveMessage,
   maxEntries,
@@ -57,6 +58,7 @@ export function AgentTerminalView({
   agentError: string | undefined;
   /** Replaces the default composer without detaching the transcript controller. */
   composer?: ReactNode;
+  composerPlaceholder?: string;
   controls?(controls: Pick<AgentTerminalAccessory, "agentReady">): ReactNode;
   inactiveMessage?(state: Readonly<{
     agentError: string | undefined;
@@ -231,6 +233,7 @@ export function AgentTerminalView({
             {controls?.({ agentReady: agentStatus === "ready" })}
           </> : undefined}
           draft={touchDraft}
+          placeholder={composerPlaceholder}
           pending={pendingTouchSubmission !== undefined}
           running={terminalRunning}
           status={agentStatus}

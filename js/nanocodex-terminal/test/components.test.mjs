@@ -67,6 +67,7 @@ test("controller-backed terminal remains caller-owned when no Agent is attached"
       agent: undefined,
       agentError: undefined,
       mode: "preview",
+      composerPlaceholder: "Ask your agent",
       onConversationActivity() {},
       onStateChange(state) { states.push(state); },
       retryAgent() {},
@@ -80,6 +81,7 @@ test("controller-backed terminal remains caller-owned when no Agent is attached"
   });
   assert.equal(renderer.root.findByProps({ role: "log" }).props["aria-live"], "off");
   assert.equal(renderer.root.findByType("form").props["aria-label"], "Nanocodex message composer");
+  assert.equal(renderer.root.findByType("textarea").props.placeholder, "Ask your agent");
   assert.equal(renderer.root.findAllByProps({ "aria-label": "Start voice" }).length, 0);
   assert.equal(states.at(-1).status, "starting");
   await act(async () => renderer.update(React.createElement(AgentTerminalView, {
@@ -295,7 +297,7 @@ test("composer keeps stop available beside send throughout an active turn", asyn
     renderer.root.findAllByType("button").map((button) => button.props["aria-label"]),
     ["Stop response", "Send message"],
   );
-  assert.equal(renderer.root.findByProps({ "aria-label": "Send message" }).props.disabled, false);
+  assert.equal(renderer.root.findByProps({ "aria-label": "Send message" }).props.disabled, true);
   await act(async () => renderer.root.findByProps({ "aria-label": "Stop response" }).props.onClick());
   assert.equal(cancelled, 2);
   await act(async () => renderer.unmount());

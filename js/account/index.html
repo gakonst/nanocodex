@@ -4,16 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <link rel="icon" href="/paradigm-favicon.svg" type="image/svg+xml" sizes="any" />
-    <meta name="theme-color" content="#161616" />
+    <meta name="theme-color" content="#212121" />
     <script>
       (() => {
         try {
           const stored = localStorage.getItem("nanocodex-theme");
-          const theme = stored === "light" ? "light" : "dark";
+          const theme = stored === "light" || stored === "dark" ? stored
+            : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
           document.documentElement.dataset.theme = theme;
           document
             .querySelector('meta[name="theme-color"]')
-            ?.setAttribute("content", theme === "dark" ? "#161616" : "#ffffff");
+            ?.setAttribute("content", theme === "dark" ? "#212121" : "#ffffff");
         } catch {
           document.documentElement.dataset.theme = "dark";
         }

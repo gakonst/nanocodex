@@ -5,11 +5,12 @@ import { useEffect, useRef, type ReactNode } from "react";
 import type { AgentStatus } from "./types.js";
 import { COARSE_POINTER_QUERY, terminalComposerAction } from "./policy.js";
 
-/** One native, paste-capable composer shared by desktop and touch terminals. */
+/** One paste-capable composer shared by desktop and touch terminals. */
 export function TerminalComposer({
   controls,
   draft,
   pending,
+  placeholder,
   running,
   status,
   onCancel,
@@ -19,6 +20,7 @@ export function TerminalComposer({
   controls?: ReactNode;
   draft: string;
   pending: boolean;
+  placeholder?: string;
   running: boolean;
   status: AgentStatus;
   onCancel(): void;
@@ -42,7 +44,7 @@ export function TerminalComposer({
 
   const submit = () => {
     const value = textarea.current?.value ?? draft;
-    if (pending || !value.trim()) return;
+    if (pending || status !== "ready" || !value.trim()) return;
     onSubmit(value);
   };
   const action = terminalComposerAction(running, draft);
@@ -62,6 +64,7 @@ export function TerminalComposer({
           aria-label="Message Nanocodex"
           enterKeyHint="send"
           rows={1}
+          placeholder={placeholder}
           value={draft}
           onChange={(event) => onChange(event.currentTarget.value)}
           onCompositionStart={() => { composing.current = true; }}
@@ -78,11 +81,11 @@ export function TerminalComposer({
         <div className="agent-touch-actions">
           {controls}
           {action === "stop" ? (
-            <button type="button" aria-label="Stop response" disabled={status !== "ready"} onClick={onCancel}>
+            <button type="button" aria-label="Stop response" title="Stop response" disabled={status !== "ready"} onClick={onCancel}>
               <Square aria-hidden="true" />
             </button>
           ) : null}
-          <button type="submit" aria-label="Send message" disabled={pending || status !== "ready"}>
+          <button type="submit" aria-label="Send message" title="Send message" disabled={pending || status !== "ready" || !draft.trim()}>
             <ArrowUp aria-hidden="true" />
           </button>
         </div>

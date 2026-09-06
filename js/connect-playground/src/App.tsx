@@ -198,18 +198,16 @@ export function App() {
     });
   }
 
-  if (connect.connectionStatus === "connecting" && !connect.isPending) return null;
-
   return (
     <main className={`app-shell${connection ? " is-connected" : ""}`} data-testid="connect-playground">
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-product">Nanocodex Connect</span>
+          <span className="brand-product">Atlas<span className="brand-caption">Workspace</span></span>
         </div>
         <div className="environment">
           <span className="environment-dot" aria-hidden="true" />
-          <span>{connection ? "Atlas connected" : "Playground · mainnet"}</span>
+          <span>{connection ? "Connected with Nanocodex" : "A Nanocodex Connect playground"}</span>
         </div>
       </header>
 
@@ -219,16 +217,17 @@ export function App() {
               <section className="panel panel-dark connect-method">
                 <header className="panel-heading">
                   <div>
-                    <h1>Connect Atlas</h1>
-                    <p className="panel-kicker">wallet_connect</p>
+                    <h1>Your Atlas workspace</h1>
+                    <p className="panel-kicker">Bring your agent. Make yourself at home.</p>
                   </div>
-                  <span className="status-pill" data-testid="connection-status">Not connected</span>
+                  <span className="status-pill" data-testid="connection-status">{isMutating ? "Connecting…" : "Welcome"}</span>
                 </header>
                 <div className="panel-body empty-state">
                   <div className="empty-orbit" aria-hidden="true" />
                   <div className="connect-copy">
-                    <h2>One approval.</h2>
-                    <p>Sign in and grant this app the capabilities configured at right.</p>
+                    <span className="hero-eyebrow">A little space for big ideas</span>
+                    <h2>Your next idea<br />starts here.</h2>
+                    <p>Bring your Nanocodex agent and connected apps into Atlas. Think something through, explore a question, or get a little work done.</p>
                   </div>
                   {error ? (
                     <div className="error-banner connect-error" data-testid="error-message" role="alert">
@@ -243,16 +242,18 @@ export function App() {
                     onClick={startConnect}
                     type="button"
                   >
-                    Connect
+                    {isMutating ? "Connecting…" : "Continue with Nanocodex"}
+                    <span aria-hidden="true">↗</span>
                   </button>
+                  <p className="connect-reassurance">You’ll review what Atlas can access before connecting.</p>
                 </div>
               </section>
               <aside className="playground-config">
                 <section className="panel configuration-panel">
                   <header className="panel-heading">
                     <div>
-                      <h2>Configuration</h2>
-                      <p className="panel-kicker">Requested capabilities</p>
+                      <h2>Make it yours</h2>
+                      <p className="panel-kicker">Choose what you’d like to bring into Atlas.</p>
                     </div>
                   </header>
                   <div className="panel-body">
@@ -360,13 +361,13 @@ function AppProjectionPanel({ audit, observation, visibility }: Readonly<{
       <header className="panel-heading">
         <div>
           <h2>Atlas can see</h2>
-          <p className="panel-kicker">Grant-enforced projection</p>
+          <p className="panel-kicker">Only what you approved</p>
         </div>
         <span className="status-pill">Scoped</span>
       </header>
       <VisibilityInspector observation={observation} visibility={visibility} />
       <details className="audit-details">
-        <summary>Audit · {audit.length}</summary>
+        <summary>Connection activity · {audit.length}</summary>
         <ol className="audit-list" data-testid="audit-events">
           {audit.map((event) => (
             <li className="audit-event" key={event.id}>
@@ -425,7 +426,7 @@ function PermissionBuilder({ disabled, onChange, request }: Readonly<{
   return (
     <div className="permission-builder" data-testid="permission-builder">
       <fieldset>
-        <legend>Connectors</legend>
+        <legend>Your connected apps</legend>
         <div className="permission-options">
           {connectors.map((item) => (
             <label key={item.id} title={item.required ? "Required to run this embedded agent" : item.label}>
@@ -446,7 +447,7 @@ function PermissionBuilder({ disabled, onChange, request }: Readonly<{
         </div>
       </fieldset>
       <fieldset>
-        <legend>Atlas sees</legend>
+        <legend>What Atlas can see</legend>
         <div className="permission-options">
           {visibility.map((item) => (
             <label key={item.id} title={item.detail}>
@@ -456,7 +457,7 @@ function PermissionBuilder({ disabled, onChange, request }: Readonly<{
                 onChange={(event) => setVisibility(item.id, event.target.checked)}
                 type="checkbox"
               />
-              <span>{item.label}</span>
+              <span>{item.label}<small>{item.detail}</small></span>
             </label>
           ))}
         </div>
