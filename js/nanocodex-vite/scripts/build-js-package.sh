@@ -84,6 +84,7 @@ fingerprint="$({
   wasm-bindgen --version
   printf 'build-mode=%s\n' "$build_mode"
   printf 'worker-bundler-v1-simd\n'
+  cksum < js/nanocodex-vite/scripts/wasm-memory-views.mjs
   if [[ "$build_mode" == release ]]; then
     "$binaryen" --version
   fi
@@ -121,6 +122,10 @@ wasm-bindgen "$wasm_artifact" \
 cmp "$worker_bindings/nanocodex_bg.wasm" js/nanocodex/pkg-web/nanocodex_bg.wasm
 cp "$worker_bindings/nanocodex_bg.js" js/nanocodex/pkg-web/nanocodex_bg.js
 cp "$worker_bindings/nanocodex.js" js/nanocodex/pkg-web/nanocodex_worker.js
+node js/nanocodex-vite/scripts/wasm-memory-views.mjs \
+  js/nanocodex/pkg-web/nanocodex.js \
+  js/nanocodex/pkg-web/nanocodex_bg.js \
+  js/nanocodex/pkg-node/nanocodex.js
 generated_wasm="js/nanocodex/pkg-web/nanocodex_bg.wasm"
 if [[ "$build_mode" == release ]]; then
   optimized_wasm="$generated_dir/nanocodex.wasm"
