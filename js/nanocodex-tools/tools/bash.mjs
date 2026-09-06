@@ -308,6 +308,8 @@ Use exec_command for shell work. When the user requests an explicit shell operat
 available command, call exec_command immediately and once with the complete command. Do not inspect the runtime,
 account, or workspace, search for another tool, or split the operation into exploratory calls before trying it.
 For an ordinary clone request, use exactly gh repo clone OWNER/REPO DESTINATION or git clone URL DESTINATION.
+By default these commands download and extract a source archive: all current files, without .git or history.
+Use --branch for a requested revision. An explicit --depth requests a Git checkout with that history depth.
 Do not add depth, filter, branch, or other flags unless the user requests them, and do not inspect a successful clone.
 Only investigate after that direct command fails or when the user explicitly asks for investigation.
 Available commands: ${descriptor.commands.join(", ")}. Use ${descriptor.cwd}/tmp, not /tmp, for temporary files. Commands run without a host process, container, PTY, session, or sandbox

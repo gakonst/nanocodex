@@ -22,6 +22,34 @@ const workerEnv = env as unknown as EgressEnv;
 const redirectUri = "https://nanocodex.test/v1/connectors/callback";
 
 describe("provider-neutral connector identities", () => {
+  it("keeps source archive redirects inside the broker and fences credentials and destinations", async () => {
+    const user = "source-archive-egress";
+    const subject = "A".repeat(43);
+    await bindSubject(subject, user);
+    const headers: Record<string, string> = {
+      authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL",
+      "x-nanocodex-subject": subject,
+    };
+    const archive = "https://api.github.com/repos/fixture/large/tarball/";
+    for (const connected of [false, true]) {
+      if (connected) headers["x-nanocodex-connector-connection"] = await connect(user, "github", "github-code");
+      const response = await SELF.fetch(`${archive}HEAD`, { headers });
+      expect(response.status).toBe(200);
+      expect(response.headers.has("location")).toBe(false);
+      expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(16 * 1024 * 1024);
+    }
+    for (const ref of ["foreign", "external", "redirect"]) {
+      const response = await SELF.fetch(`${archive}${ref}`, { headers });
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({ error: "connector_redirect_blocked" });
+    }
+    const reflected = await SELF.fetch(`${archive}reflect`, { headers });
+    await expect(reflected.text()).rejects.toThrow();
+    const connection = headers["x-nanocodex-connector-connection"]!;
+    await SELF.fetch(`https://broker.test/users/${user}/connectors/github/connections/${connection}`, { method: "DELETE" });
+    expect((await SELF.fetch(`${archive}HEAD`, { headers })).status).toBe(404);
+  }, 60_000);
+
   it("streams authenticated Git packs beyond 16 MiB and fences a disconnected connection", async () => {
     const user = "large-git-egress";
     const subject = "L".repeat(43);

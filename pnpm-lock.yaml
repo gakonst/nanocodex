@@ -705,6 +705,9 @@ importers:
       just-bash:
         specifier: ^3.4.0
         version: 3.4.2(supports-color@10.2.2)
+      modern-tar:
+        specifier: 0.7.7
+        version: 0.7.7
     devDependencies:
       typescript:
         specifier: 5.9.3

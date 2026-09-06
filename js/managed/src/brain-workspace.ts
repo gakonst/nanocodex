@@ -8,6 +8,11 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
     throw new TypeError("brain workspace has an invalid resource id");
   }
   const prefix = `brains/${resourceId}/`;
+  // Just Bash refreshes the complete namespace before each command. Reuse that
+  // snapshot for metadata probes during the command; Git otherwise turns every
+  // stat/mkdir into repeated R2 HEAD/LIST calls. File contents stay in R2.
+  let snapshot: Map<string, WorkspaceEntry> | undefined;
+  let markers = new Set<string>();
   const resolve = (path: string): string => {
     const absolute = resolveNamespaceCwd(ROOT, path);
     if (absolute !== ROOT && !absolute.startsWith(`${ROOT}/`)) {
@@ -18,6 +23,7 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
   const key = (path: string): string => `${prefix}${path.slice(ROOT.length + 1)}`;
   const stat = async (path: string): Promise<"file" | "directory" | undefined> => {
     if (path === ROOT) return "directory";
+    if (snapshot) return snapshot.get(path)?.kind;
     if (await bucket.head(key(path))) return "file";
     const page = await bucket.list({ prefix: `${key(path)}/`, limit: 1 });
     return page.objects.length ? "directory" : undefined;
@@ -26,7 +32,9 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
     let current = ROOT;
     for (const segment of path.slice(ROOT.length + 1).split("/").slice(0, -1)) {
       current += `/${segment}`;
-      if (await bucket.head(key(current))) throw error("ENOTDIR", `${current} is not a directory`);
+      if (snapshot ? snapshot.get(current)?.kind === "file" : await bucket.head(key(current))) {
+        throw error("ENOTDIR", `${current} is not a directory`);
+      }
     }
   };
   const mkdir = async (path: string): Promise<void> => {
@@ -39,19 +47,36 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
     let current = ROOT;
     for (const segment of absolute.slice(ROOT.length + 1).split("/")) {
       current += `/${segment}`;
-      if (!await bucket.head(`${key(current)}/`)) await bucket.put(`${key(current)}/`, new Uint8Array(), {
-        httpMetadata: { contentType: "application/x-directory" },
-      });
+      if (snapshot ? !markers.has(current) : !await bucket.head(`${key(current)}/`)) {
+        await bucket.put(`${key(current)}/`, new Uint8Array(), {
+          httpMetadata: { contentType: "application/x-directory" },
+        });
+      }
+      markers.add(current);
+      snapshot?.set(current, { path: current, kind: "directory" });
     }
   };
   const list: Workspace["list"] = async (path = ".", options = {}) => {
     const absolute = resolve(path);
+    const refresh = absolute === ROOT && options.recursive === true;
+    if (refresh) {
+      snapshot = undefined;
+      markers = new Set();
+    }
     await ancestors(absolute);
     const kind = await stat(absolute);
     if (kind !== "directory") throw error(kind === "file" ? "ENOTDIR" : "ENOENT", `${absolute} is not a directory`);
     const maximum = options.maxEntries ?? Infinity;
     if (options.maxEntries !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) {
       throw new RangeError("workspace listing limit must be a positive integer");
+    }
+    if (snapshot) {
+      const children = [...snapshot.values()].filter((entry) => {
+        if (!entry.path.startsWith(`${absolute}/`)) return false;
+        return options.recursive || !entry.path.slice(absolute.length + 1).includes("/");
+      });
+      if (children.length > maximum) throw new RangeError(`workspace listing exceeds ${maximum} entries`);
+      return children.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
     }
     const entries = new Map<string, WorkspaceEntry>();
     const directoryPrefix = absolute === ROOT ? prefix : `${key(absolute)}/`;
@@ -82,10 +107,15 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
         }
         if (entries.size > maximum) throw new RangeError(`workspace listing exceeds ${maximum} entries`);
       };
-      for (const object of page.objects) add(object.key, object.key.endsWith("/") ? "directory" : "file", object);
+      for (const object of page.objects) {
+        const directory = object.key.endsWith("/");
+        if (directory) markers.add(`${ROOT}/${object.key.slice(prefix.length, -1)}`);
+        add(object.key, directory ? "directory" : "file", object);
+      }
       for (const directory of page.delimitedPrefixes) add(directory, "directory");
       cursor = page.truncated ? page.cursor : undefined;
     } while (cursor !== undefined);
+    if (refresh) snapshot = new Map(entries);
     return [...entries.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   };
   return Object.freeze({
@@ -96,6 +126,11 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
       const absolute = resolve(path);
       if (absolute === ROOT) throw error("EISDIR", "cannot read the workspace root as a file");
       await ancestors(absolute);
+      if (snapshot) {
+        const kind = snapshot.get(absolute)?.kind;
+        if (kind === "directory") throw error("EISDIR", `${absolute} is a directory`);
+        if (kind === undefined) throw error("ENOENT", `brain workspace file not found: ${absolute}`);
+      }
       const object = await bucket.get(key(absolute));
       if (!object) {
         if (await stat(absolute) === "directory") throw error("EISDIR", `${absolute} is a directory`);
@@ -114,6 +149,7 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
       await ancestors(absolute);
       await mkdir(absolute.slice(0, absolute.lastIndexOf("/")));
       await bucket.put(key(absolute), bytes);
+      snapshot?.set(absolute, { path: absolute, kind: "file", size: bytes.byteLength, modifiedAt: Date.now() });
     },
     async remove(path, options = {}) {
       const absolute = resolve(path);
@@ -123,6 +159,7 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
       if (kind === undefined) throw error("ENOENT", `${absolute} does not exist`);
       if (kind === "file") {
         await bucket.delete(key(absolute));
+        snapshot?.delete(absolute);
         return;
       }
       const entries = await list(absolute, { recursive: true });
@@ -130,6 +167,10 @@ export function createBrainWorkspace(bucket: R2Bucket, resourceId: string): Work
       const keys = entries.map((entry) => `${key(entry.path)}${entry.kind === "directory" ? "/" : ""}`);
       keys.push(`${key(absolute)}/`);
       for (let offset = 0; offset < keys.length; offset += 1_000) await bucket.delete(keys.slice(offset, offset + 1_000));
+      for (const entry of [...entries, { path: absolute }]) {
+        snapshot?.delete(entry.path);
+        markers.delete(entry.path);
+      }
     },
   } satisfies Workspace);
 }
