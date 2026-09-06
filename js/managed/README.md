@@ -33,9 +33,15 @@ storage ownership.
   storage byte counts, hot receipt counts, and archive counts without loading
   the runtime or returning conversation contents.
 - Managed agents execute Just Bash in durable `/brain` without a hand.
-  `exec_command` defaults there; `/brain` and `.` also select the brain. Its R2
-  prefix is shared with the native hand mounts, and listings refresh between
-  commands. Text/file processing, HTTP, and supported Git/GitHub commands run
+  `exec_command` defaults there; `/brain` and `.` also select the brain. File
+  metadata and small bodies live in the owning agent's SQLite storage. Bodies
+  above 1 MiB and streaming uploads remain in R2; this selects storage and does
+  not reject larger files. Existing R2 trees are indexed without copying their
+  bodies. Native hand mounts use the SDK's S3 protocol through trusted RPC to
+  that same actor, preserving prefix and read-only fences without a remote R2
+  request for every filesystem stat. Listings refresh between commands. Local
+  Sandbox SDK replication continues using its existing R2 binding. Text/file
+  processing, HTTP, and supported Git/GitHub commands run
   here; native binaries, package installs, builds, and process sessions need a
   hand. The agent reuses a suitable attached hand or mounts one when needed.
   Known native work such as `cargo test` can go directly to a hand; an

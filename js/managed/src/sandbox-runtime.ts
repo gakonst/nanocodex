@@ -4,6 +4,7 @@ import {
 } from "@cloudflare/sandbox";
 
 import { handleManagedEgress } from "./managed-egress";
+import { BRAIN_INLINE_BYTES } from "./brain-bucket";
 
 export type SandboxRuntimeEnv = Readonly<{
   NANOCODEX: Fetcher;
@@ -70,8 +71,47 @@ export class ContainerProxy extends CloudflareContainerProxy {
     if (isCrossBindingR2Copy(request)) {
       return Promise.resolve(new Response("Cross-binding R2 copy is forbidden", { status: 403 }));
     }
+    const url = new URL(request.url);
+    if (url.hostname === "r2.internal" && bucketBinding(url.pathname) === "NANOCODEX_BRAIN") {
+      const props = this.ctx.props as { outboundByHostOverrides?: Record<string, {
+        method: string; params?: { buckets?: Record<string, { prefix?: string; readOnly?: boolean }> };
+      }> };
+      const override = props.outboundByHostOverrides?.["r2.internal"];
+      const mount = override?.method === "r2EgressMount" ? override.params?.buckets?.NANOCODEX_BRAIN : undefined;
+      const match = /^\/?brains\/([A-Za-z0-9._:-]{1,256})\/?$/.exec(mount?.prefix ?? "");
+      if (!match) return Promise.resolve(new Response("Brain mount is not authorized", { status: 403 }));
+      const sessions = (this.env as { NANOCODEX_SESSIONS?: {
+        getByName(name: string): { brainFilesystem(request: Request, readOnly: boolean): Promise<Response> };
+      } }).NANOCODEX_SESSIONS;
+      if (!sessions) return Promise.resolve(new Response("Brain storage binding is unavailable", { status: 503 }));
+      // The actor id comes only from the SDK's trusted mount configuration.
+      return sessions.getByName(match[1]!).brainFilesystem(request, mount?.readOnly === true);
+    }
     return super.fetch(request);
   }
+}
+
+/** Reuse the SDK's S3 protocol, prefix and read-only checks over actor-local storage. */
+export function serveBrainFilesystem(request: Request, bucket: R2Bucket, resourceId: string, readOnly: boolean): Promise<Response> {
+  if (isCrossBindingR2Copy(request)) return Promise.resolve(new Response("Cross-binding R2 copy is forbidden", { status: 403 }));
+  const context = { props: { outboundByHostOverrides: {
+    "r2.internal": { method: "r2EgressMount", params: {
+      buckets: { NANOCODEX_BRAIN: { prefix: `brains/${resourceId}`, readOnly } },
+    } },
+  } } } as unknown as ExecutionContext;
+  const length = Number(request.headers.get("Content-Length") ?? NaN);
+  const inline = request.method === "PUT" && !request.headers.has("x-amz-copy-source")
+    && !new URL(request.url).searchParams.has("uploadId")
+    && Number.isSafeInteger(length) && length >= 0 && length <= BRAIN_INLINE_BYTES;
+  const selected = inline ? {
+    ...bucket,
+    async put(key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob | null, options?: R2PutOptions) {
+      // The SDK validates Content-Length and bounds this stream with
+      // FixedLengthStream before invoking put. Larger bodies stay streaming.
+      return bucket.put(key, value instanceof ReadableStream ? await new Response(value).arrayBuffer() : value, options);
+    },
+  } as R2Bucket : bucket;
+  return new CloudflareContainerProxy(context, { NANOCODEX_BRAIN: selected }).fetch(request);
 }
 
 export function isCrossBindingR2Copy(request: Request): boolean {
