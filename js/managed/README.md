@@ -49,6 +49,24 @@ storage ownership.
 - `/v1/history/*` and `/v1/memory` expose organization- and team-scoped
   retained context. `/v1/credentials` and `/v1/connectors` manage brokered
   credentials, OAuth connections, and MCP connections without exposing secrets.
+- Managed agents can search completed team conversations with `find_session`
+  (`find_sessions` remains available) and verify exact turns with `read_session`.
+  Each call requires its own agent's `history:read` capability.
+- The first admitted prompt automatically calls `find_session` and `memory`
+  (`operation: "scan"`) before the model starts, using a bounded query from
+  that prompt. The normal tool handlers enforce the caller's capabilities.
+  Results appear as initial tool events and untrusted model context; durable
+  receipts prevent completed lookups from repeating on recovery or reconnect.
+  The original user prompt stays unchanged in the UI and history index.
+  Subsequent turns use `memory` to scan, read, put/replace, and delete team facts;
+  mutations require root-agent `memory:write` authority and puts require a scan.
+- `create_cron` saves a recurring prompt through the same durable scheduler as
+  `/v1/agents/:id/triggers/:triggerId`. Supply a stable `id`, five-field `cron`,
+  and `input`; optional `timezone`, `enabled`, and `session_mode` default to UTC,
+  true, and `new`. Identical retries return the saved schedule; conflicting IDs
+  fail without replacement. Creation requires account `agents:write` and
+  `tools:use` authority; Connect grants and shared rooms cannot create schedules.
+  Use the triggers API or UI to edit, pause, or delete a saved schedule.
 - `/v1/rooms` creates, joins, observes, and deletes multiplayer rooms. A
   `MultiplayerRoom` owns room chat and its private agent; `MultiplayerQuota`
   enforces deployment-wide room and turn limits. Room WebSockets use their own
