@@ -138,13 +138,16 @@ pub struct OpenAiBuilder<F = StandardServiceFactory> {
 }
 
 impl<F> OpenAiBuilder<F> {
-    /// Selects the default GPT-5.6 coding model for new sessions and agents.
+    /// Selects the default coding model for new sessions and agents.
     ///
     /// A higher-level session or agent builder may override this reusable
     /// client default without mutating the `OpenAi` recipe.
     #[must_use]
     pub const fn model(mut self, model: Model) -> Self {
         self.config.model = model;
+        if !self.config.thinking_explicit {
+            self.config.thinking = model.default_thinking();
+        }
         if self.config.context_window_tokens > model.max_context_window_tokens() {
             self.config.context_window_tokens = model.max_context_window_tokens();
         }
@@ -231,6 +234,17 @@ impl<F> OpenAiBuilder<F> {
     #[must_use]
     pub const fn thinking(mut self, thinking: Thinking) -> Self {
         self.config.thinking = thinking;
+        self.config.thinking_explicit = true;
+        self
+    }
+
+    /// Enables Codex's experimental context management for eligible subscriptions.
+    ///
+    /// Enabled by default. API keys, custom endpoints, unsupported models, and
+    /// hosts without a history/notes backend retain remote compaction.
+    #[must_use]
+    pub const fn experimental_context(mut self, enabled: bool) -> Self {
+        self.config.experimental_context = enabled;
         self
     }
 
@@ -642,6 +656,42 @@ mod tests {
     };
 
     use super::{OpenAi, apply_mode_defaults};
+
+    #[test]
+    fn model_defaults_respect_explicit_effort_in_either_builder_order() {
+        use crate::Thinking;
+        for model in [Model::Astra, Model::Sol, Model::Terra, Model::Luna] {
+            let implicit = OpenAi::builder("test-key").model(model).build().unwrap();
+            assert_eq!(implicit.config.thinking, model.default_thinking());
+            let explicit = OpenAi::builder("test-key")
+                .thinking(Thinking::Low)
+                .model(model)
+                .build()
+                .unwrap();
+            assert_eq!(explicit.config.thinking, Thinking::Low);
+            let explicit = OpenAi::builder("test-key")
+                .model(model)
+                .thinking(Thinking::High)
+                .build()
+                .unwrap();
+            assert_eq!(explicit.config.thinking, Thinking::High);
+        }
+        assert!(
+            OpenAi::builder("test-key")
+                .build()
+                .unwrap()
+                .config
+                .experimental_context
+        );
+        assert!(
+            !OpenAi::builder("test-key")
+                .experimental_context(false)
+                .build()
+                .unwrap()
+                .config
+                .experimental_context
+        );
+    }
 
     #[derive(Clone)]
     struct NeverCalled;

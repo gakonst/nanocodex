@@ -15,7 +15,17 @@ pub struct RequestProfile {
     prompt_cache_key: String,
     prefix: Arc<[ResponseItem]>,
     code_mode_tool_names: Arc<BTreeMap<String, CodeModeToolName>>,
+    tool_namespaces_info: Arc<BTreeMap<String, serde_json::Value>>,
+    context_window: Option<ContextWindowIdentity>,
+    logical_turn: u64,
     retained_config: Option<RetainedRequestConfig>,
+}
+
+#[derive(Clone)]
+struct ContextWindowIdentity {
+    agent_name: String,
+    context_window_id: String,
+    window_number: u64,
 }
 
 #[derive(Clone)]
@@ -34,14 +44,19 @@ impl RequestProfile {
         prefix: Arc<[ResponseItem]>,
     ) -> Self {
         let session_id = session_id.into();
-        Self {
+        let mut profile = Self {
             thread_id: session_id.clone(),
             session_id,
             prompt_cache_key: prompt_cache_key.into(),
             prefix,
             code_mode_tool_names: Arc::default(),
+            tool_namespaces_info: Arc::default(),
+            context_window: None,
+            logical_turn: 0,
             retained_config: None,
-        }
+        };
+        profile.tool_namespaces_info = Arc::new(tool_namespaces_info(&profile));
+        profile
     }
 
     /// Returns the client-owned session identity used in request metadata.
@@ -63,6 +78,28 @@ impl RequestProfile {
         self
     }
 
+    pub(crate) const fn with_logical_turn(mut self, logical_turn: u64) -> Self {
+        self.logical_turn = logical_turn;
+        self
+    }
+
+    /// Attaches context identity for the Codex history and notes backend.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_context_window(
+        mut self,
+        agent_name: String,
+        context_window_id: String,
+        window_number: u64,
+    ) -> Self {
+        self.context_window = Some(ContextWindowIdentity {
+            agent_name,
+            context_window_id,
+            window_number,
+        });
+        self
+    }
+
     /// Returns the stable prompt-cache identity.
     #[must_use]
     pub fn prompt_cache_key(&self) -> &str {
@@ -73,6 +110,13 @@ impl RequestProfile {
     #[must_use]
     pub fn prefix(&self) -> &[ResponseItem] {
         &self.prefix
+    }
+
+    /// Whether requests ingest history for a model-managed context window.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn history_ingest_requested(&self) -> bool {
+        self.context_window.is_some()
     }
 
     /// Shares the byte-stable request prefix with an internal checkpoint.
@@ -92,6 +136,7 @@ impl RequestProfile {
     ) -> Self {
         self.prompt_cache_key = prompt_cache_key;
         self.prefix = prefix;
+        self.tool_namespaces_info = Arc::new(tool_namespaces_info(&self));
         self.retained_config = Some(RetainedRequestConfig {
             model_id_prefix,
             reasoning_mode,
@@ -110,6 +155,7 @@ impl RequestProfile {
                 .map(|(identifier, name)| (identifier, CodeModeToolName::from_flat_name(name)))
                 .collect(),
         );
+        self.tool_namespaces_info = Arc::new(tool_namespaces_info(&self));
         self
     }
 }
@@ -128,6 +174,12 @@ impl CodeModeToolName {
             return Self {
                 name: tool.into(),
                 namespace: Some(format!("mcp__{server}").into()),
+            };
+        }
+        if let Some((namespace, tool)) = name.split_once("__") {
+            return Self {
+                name: tool.into(),
+                namespace: Some(namespace.into()),
             };
         }
         Self {
@@ -666,7 +718,7 @@ impl<'a> ResponseCreate<'a> {
                     .then(|| reasoning_mode.request_value())
                     .flatten(),
                 effort: policy.thinking.as_str(),
-                summary: (policy.model != crate::Model::Astra).then_some("auto"),
+                summary: None,
                 context: "all_turns",
             },
             store: store_responses,
@@ -689,9 +741,14 @@ impl<'a> ResponseCreate<'a> {
                 thread_id: profile.thread_id(),
                 responses_lite: websocket.then_some("true"),
                 turn_state: websocket.then_some(turn_state).flatten(),
-                turn_metadata: (!profile.code_mode_tool_names.is_empty()).then_some(
-                    SerializedCodeModeTurnMetadata(&profile.code_mode_tool_names),
-                ),
+                turn_metadata: Some(SerializedTurnMetadata {
+                    profile,
+                    request_kind: if generate == Some(false) {
+                        "prewarm"
+                    } else {
+                        "turn"
+                    },
+                }),
             },
         }
     }
@@ -748,28 +805,144 @@ struct ClientMetadata<'a> {
     turn_state: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x-codex-turn-metadata")]
-    turn_metadata: Option<SerializedCodeModeTurnMetadata<'a>>,
+    turn_metadata: Option<SerializedTurnMetadata<'a>>,
 }
 
 #[derive(Clone, Copy)]
-struct SerializedCodeModeTurnMetadata<'a>(&'a BTreeMap<String, CodeModeToolName>);
+struct SerializedTurnMetadata<'a> {
+    profile: &'a RequestProfile,
+    request_kind: &'static str,
+}
 
-impl Serialize for SerializedCodeModeTurnMetadata<'_> {
+impl Serialize for SerializedTurnMetadata<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         #[derive(Serialize)]
         struct TurnMetadata<'a> {
-            code_mode_tool_names: &'a BTreeMap<String, CodeModeToolName>,
+            session_id: &'a str,
+            thread_id: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            agent_name: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            context_window_id: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            window_number: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            window_id: Option<String>,
+            turn_id: String,
+            request_kind: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            history_ingest_requested: Option<bool>,
+            tool_namespaces_info: &'a BTreeMap<String, serde_json::Value>,
         }
 
+        let profile = self.profile;
+        let window = profile.context_window.as_ref();
         let value = serde_json::to_string(&TurnMetadata {
-            code_mode_tool_names: self.0,
+            session_id: profile.session_id(),
+            thread_id: profile.thread_id(),
+            agent_name: window.map(|window| window.agent_name.as_str()),
+            context_window_id: window.map(|window| window.context_window_id.as_str()),
+            window_number: window.map(|window| window.window_number),
+            window_id: window
+                .map(|window| format!("{}:{}", profile.thread_id(), window.window_number)),
+            turn_id: format!("{}:{}", profile.thread_id(), profile.logical_turn),
+            request_kind: self.request_kind,
+            history_ingest_requested: window.map(|_| true),
+            tool_namespaces_info: &profile.tool_namespaces_info,
         })
         .map_err(serde::ser::Error::custom)?;
         serializer.serialize_str(&value)
     }
+}
+
+// Codex replaced the legacy flat inventory with effective namespace exposure.
+// Construct it from the same immutable catalog and normalized Code Mode map
+// used by dispatch, so metadata cannot advertise a different tool surface.
+fn tool_namespaces_info(profile: &RequestProfile) -> BTreeMap<String, serde_json::Value> {
+    use super::ToolDefinition;
+    use serde_json::json;
+    fn insert(
+        result: &mut BTreeMap<String, serde_json::Value>,
+        namespace: &str,
+        name: &str,
+        direct: bool,
+        code_name: Option<&str>,
+        deferred: bool,
+    ) {
+        let source = namespace.strip_prefix("mcp__").map_or_else(
+            || json!({"kind":"harness"}),
+            |server| json!({"kind":"mcp", "server_name":server}),
+        );
+        let entry = result
+            .entry(namespace.to_owned())
+            .or_insert_with(|| json!({"name":namespace,"functions":{}}));
+        let function = &mut entry["functions"][name];
+        if function.is_null() {
+            *function = json!({"name":name,"direct":direct,"code_mode_name":code_name,"deferred":deferred,"source":source});
+        } else {
+            if direct {
+                function["direct"] = json!(true);
+            }
+            if let Some(code_name) = code_name {
+                function["code_mode_name"] = json!(code_name);
+            }
+        }
+    }
+    fn direct(
+        result: &mut BTreeMap<String, serde_json::Value>,
+        namespace: &str,
+        definition: &ToolDefinition,
+    ) {
+        match definition {
+            ToolDefinition::Namespace { name, tools, .. } => {
+                for tool in tools {
+                    direct(result, name, tool);
+                }
+            }
+            ToolDefinition::Function {
+                name,
+                defer_loading,
+                ..
+            }
+            | ToolDefinition::Custom {
+                name,
+                defer_loading,
+                ..
+            } => insert(
+                result,
+                namespace,
+                name,
+                true,
+                None,
+                defer_loading.unwrap_or(false),
+            ),
+            ToolDefinition::ToolSearch { .. } => {
+                insert(result, "tool_search", "tool_search_tool", true, None, false)
+            }
+        }
+    }
+    let mut result = BTreeMap::new();
+    for item in profile.prefix() {
+        if let ResponseItem::AdditionalTools { tools, .. } = item {
+            for tool in tools {
+                direct(&mut result, "functions", tool);
+            }
+        }
+    }
+    for (identifier, tool) in profile.code_mode_tool_names.iter() {
+        insert(
+            &mut result,
+            tool.namespace.as_deref().unwrap_or("functions"),
+            &tool.name,
+            false,
+            Some(identifier),
+            false,
+        );
+    }
+    result
 }
 
 #[cfg(test)]
@@ -777,6 +950,49 @@ mod tests {
     use super::*;
     use crate::{ContentItem, MessageRole, Model, ReasoningMode, Thinking};
     use serde_json::json;
+
+    #[test]
+    fn context_window_metadata_rotates_without_changing_the_cached_prefix() {
+        let config = ModelConfig::default();
+        let base = RequestProfile::new("session", "cache", Arc::from([]))
+            .with_thread_id("thread")
+            .with_logical_turn(7);
+        for number in [0, 1] {
+            let profile = base.clone().with_context_window(
+                "/root".into(),
+                format!("context-{number}"),
+                number,
+            );
+            let request = serde_json::to_value(ResponseCreate::generation_with_policy(
+                &config,
+                CreatePolicy::new(
+                    crate::ResponsesTransport::WebSocket,
+                    Model::Astra,
+                    Thinking::Low,
+                    false,
+                ),
+                ResponsesInput::new(profile.prefix(), &[], None),
+                None,
+                &profile,
+                None,
+            ))
+            .unwrap();
+            assert_eq!(request["prompt_cache_key"], "cache");
+            let metadata: serde_json::Value = serde_json::from_str(
+                request["client_metadata"]["x-codex-turn-metadata"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(metadata["history_ingest_requested"], true);
+            assert_eq!(metadata["agent_name"], "/root");
+            assert_eq!(metadata["request_kind"], "turn");
+            assert_eq!(metadata["turn_id"], "thread:7");
+            assert_eq!(metadata["window_id"], format!("thread:{number}"));
+            assert_eq!(metadata["context_window_id"], format!("context-{number}"));
+            assert_eq!(metadata["window_number"], number);
+        }
+    }
 
     #[test]
     fn prompt_cache_key_is_stable_across_the_session() {
@@ -805,7 +1021,7 @@ mod tests {
         assert_eq!(request["parallel_tool_calls"], false);
         assert!(request.get("tools").is_none());
         assert!(request.get("instructions").is_none());
-        assert_eq!(request["reasoning"]["summary"], json!("auto"));
+        assert!(request["reasoning"].get("summary").is_none());
         assert!(request["reasoning"].get("mode").is_none());
         assert!(request.get("context_management").is_none());
     }
@@ -840,13 +1056,16 @@ mod tests {
             .expect("turn metadata should be encoded as JSON");
 
         assert_eq!(
-            metadata["code_mode_tool_names"]["exec_command"],
-            json!({"name": "exec_command", "namespace": null})
+            metadata["tool_namespaces_info"]["functions"]["functions"]["exec_command"],
+            json!({"name": "exec_command", "direct": false, "code_mode_name": "exec_command", "deferred": false, "source": {"kind":"harness"}})
         );
         assert_eq!(
-            metadata["code_mode_tool_names"]["mcp__calendar__lookup"],
-            json!({"name": "lookup", "namespace": "mcp__calendar"})
+            metadata["tool_namespaces_info"]["mcp__calendar"]["functions"]["lookup"],
+            json!({"name": "lookup", "direct": false, "code_mode_name": "mcp__calendar__lookup", "deferred": false, "source": {"kind":"mcp", "server_name":"calendar"}})
         );
+        assert!(metadata.get("code_mode_tool_names").is_none());
+        assert_eq!(metadata["request_kind"], "prewarm");
+        assert!(metadata.get("history_ingest_requested").is_none());
         assert!(
             request["client_metadata"]
                 .get("ws_request_header_x_openai_internal_codex_responses_lite")
@@ -934,8 +1153,8 @@ mod tests {
     }
 
     #[test]
-    fn thinking_defaults_to_high() {
-        assert_eq!(ModelConfig::default().thinking, Thinking::High);
+    fn thinking_defaults_to_low() {
+        assert_eq!(ModelConfig::default().thinking, Thinking::Low);
     }
 
     #[test]

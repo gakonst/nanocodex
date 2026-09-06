@@ -141,7 +141,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
         fastMode: false,
       } : {
         model: "gpt-6-astra" as const,
-        thinking: "high" as const,
+        thinking: "low" as const,
         reasoningMode: "standard" as const,
         fastMode: false,
       }),
@@ -359,7 +359,7 @@ function terminalDefaultSettings(source: CredentialSource | undefined): ManagedC
   }
   return {
     model: "gpt-6-astra",
-    thinking: "high",
+    thinking: "low",
     reasoningMode: "standard",
     fastMode: false,
   };

@@ -1,3 +1,5 @@
+#[cfg(not(target_family = "wasm"))]
+mod context_management;
 mod lifecycle;
 mod responses;
 mod state;
@@ -92,6 +94,10 @@ pub(crate) struct ModelRun<S> {
     host_context: Option<Arc<str>>,
     global_instructions: Option<Arc<str>>,
     force_compaction: bool,
+    #[cfg(not(target_family = "wasm"))]
+    context_management: Option<nanocodex_tools::context_management::ContextManagement>,
+    #[cfg(not(target_family = "wasm"))]
+    context_management_checked: bool,
     pending_developer_messages: Vec<ResponseItem>,
     execution_steps: Option<ExecutionSteps>,
 }
@@ -258,6 +264,10 @@ impl<S> ModelRun<S> {
             host_context,
             global_instructions,
             force_compaction: false,
+            #[cfg(not(target_family = "wasm"))]
+            context_management: None,
+            #[cfg(not(target_family = "wasm"))]
+            context_management_checked: false,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
         }
@@ -334,6 +344,10 @@ impl<S> ModelRun<S> {
             host_context,
             global_instructions,
             force_compaction: false,
+            #[cfg(not(target_family = "wasm"))]
+            context_management: None,
+            #[cfg(not(target_family = "wasm"))]
+            context_management_checked: false,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
         }
@@ -408,7 +422,14 @@ impl<S> ModelRun<S> {
             .context_source
             .project_instructions(&workspace)
             .map(Arc::<str>::from);
-        let tools = tool_runtime(&workspace, &self.config, &self.tools);
+        #[allow(unused_mut)]
+        let mut tools = tool_runtime(&workspace, &self.config, &self.tools);
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(context) = &self.context_management {
+            context
+                .install(&mut tools)
+                .map_err(NanocodexError::InvalidExecutionPolicy)?;
+        }
         let tool_control = tools.control();
         self.active_tools = Some(tool_control);
         let factory = self.attempt_factory(&tools)?;

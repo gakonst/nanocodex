@@ -1069,7 +1069,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       url: "https://demo.test/api/tools/web-search",
       body: {
         commands: { search_query: [{ q: "browser tools" }] },
-        model: "gpt-5.6-sol",
+        model: "gpt-6-astra",
         session_id: agent.sessionId,
       },
     }]);

@@ -42,8 +42,6 @@ try {
   });
   agent = await Agent.create({
     transport: Transport.chatGpt({ subscription }),
-    model: "gpt-5.6-luna",
-    thinking: "medium",
     workspace: LOGICAL_WORKSPACE,
     instructions: [
       "You are exercising a browser-computer-compatible Code Mode boundary.",
@@ -52,6 +50,7 @@ try {
     ].join(" "),
     tools: [{
       name: "exec_command",
+      supportsParallelToolCalls: true,
       description: "Run a bash command in the persistent workspace.",
       parameters: {
         type: "object",

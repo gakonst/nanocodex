@@ -117,7 +117,7 @@ pub mod __private {
     pub mod compaction {
         pub use crate::session::compaction::{
             auto_compact_token_limit, install_history, trigger,
-            trim_tool_outputs_to_fit_context_window,
+            trim_tool_outputs_to_fit_context_window, truncate_retained_messages,
         };
     }
 
@@ -139,7 +139,7 @@ pub mod __private {
 }
 
 /// The default Responses model used by this SDK.
-pub const MODEL: &str = Model::Sol.as_str();
+pub const MODEL: &str = Model::Astra.as_str();
 
 /// Supported OpenAI coding models.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -147,17 +147,25 @@ pub const MODEL: &str = Model::Sol.as_str();
 #[non_exhaustive]
 pub enum Model {
     /// GPT-5.6 Sol.
-    #[default]
     Sol,
     /// GPT-5.6 Terra.
     Terra,
     /// GPT-5.6 Luna.
     Luna,
     /// GPT-6 Astra.
+    #[default]
     Astra,
 }
 
 impl Model {
+    /// Default reasoning effort from the pinned Codex model catalog.
+    #[must_use]
+    pub const fn default_thinking(self) -> Thinking {
+        match self {
+            Self::Sol | Self::Astra => Thinking::Low,
+            Self::Terra | Self::Luna => Thinking::Medium,
+        }
+    }
     /// Returns the Responses API model identifier.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -616,11 +624,11 @@ pub enum Thinking {
     /// Disable reasoning when supported.
     None,
     /// Low reasoning effort.
+    #[default]
     Low,
     /// Medium reasoning effort.
     Medium,
     /// High reasoning effort.
-    #[default]
     High,
     /// Extra-high reasoning effort.
     Xhigh,
@@ -686,7 +694,7 @@ mod tests {
         assert_eq!("gpt-5.6-luna".parse(), Ok(Model::Luna));
         assert_eq!("astra".parse(), Ok(Model::Astra));
         assert_eq!("gpt-6-astra".parse(), Ok(Model::Astra));
-        assert_eq!(Model::default().as_str(), "gpt-5.6-sol");
+        assert_eq!(Model::default().as_str(), "gpt-6-astra");
         assert!(Model::Astra.supports_thinking(Thinking::Low));
         assert!(!Model::Astra.supports_thinking(Thinking::None));
         assert!(Model::Astra.supports_reasoning_mode(ReasoningMode::Standard));

@@ -30,10 +30,16 @@ pub struct ModelConfig {
     pub reasoning_mode: ReasoningMode,
     /// Requested reasoning effort.
     pub thinking: Thinking,
+    /// Whether an embedding selected an effort instead of model defaults.
+    #[doc(hidden)]
+    pub thinking_explicit: bool,
     /// Whether requests use priority processing.
     pub fast_mode: bool,
     /// Resolved context window used for accounting and automatic compaction.
     pub context_window_tokens: u64,
+    /// Enable model-managed context windows for eligible Codex subscriptions.
+    /// Unsupported models, providers, and hosts retain remote summarization.
+    pub experimental_context: bool,
     /// Preferred initial streaming transport.
     pub responses_transport: ResponsesTransport,
     /// Whether a WebSocket session sends an optional non-generating prewarm
@@ -100,8 +106,10 @@ impl Default for ModelConfig {
             auth: OpenAiAuth::api_key(String::new()),
             reasoning_mode: ReasoningMode::default(),
             thinking: Thinking::default(),
+            thinking_explicit: false,
             fast_mode: false,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
+            experimental_context: true,
             responses_transport: ResponsesTransport::default(),
             websocket_warmup: true,
             responses_history: ResponsesHistory::default(),

@@ -1880,7 +1880,7 @@ async fn run_inner(
 fn new_agent_settings() -> AgentSettings {
     AgentSettings {
         model: Model::Astra,
-        thinking: Thinking::High,
+        thinking: Thinking::Low,
         reasoning_mode: ManagedReasoningMode::Standard,
         fast_mode: false,
     }
@@ -2548,7 +2548,7 @@ mod tests {
             new_agent_settings(),
             AgentSettings {
                 model: Model::Astra,
-                thinking: Thinking::High,
+                thinking: Thinking::Low,
                 reasoning_mode: ManagedReasoningMode::Standard,
                 fast_mode: false,
             }

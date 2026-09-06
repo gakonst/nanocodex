@@ -4,7 +4,7 @@ Nanocodex recognizes the provider model ID `gpt-6-astra`. Callers can explicitly
 create Astra agents. New native ChatGPT, `nanocodex2`, and account-app conversations
 select Astra directly and treat an explicit provider rejection as the availability
 signal. Existing managed agents keep their retained settings, native API-key and
-generic SDK defaults remain Sol, and sponsored homepage sessions remain Luna.
+generic SDK defaults now select Astra, and sponsored homepage sessions remain Luna.
 
 This support is based on OpenAI's current contracts:
 
@@ -25,8 +25,8 @@ This support is based on OpenAI's current contracts:
 | Contract | Nanocodex behavior |
 | --- | --- |
 | Model ID | Accepts and serializes `gpt-6-astra` across Rust, WASM, JS, managed settings, and retained Durable Object state. |
-| Reasoning | Accepts `low`, `medium`, `high`, `xhigh`, and `max`. Rejects Astra with `none` or Pro mode before dispatch, including dynamic settings and subagent overrides. Astra requests omit `reasoning.mode` and the default reasoning summary, matching the Codex Astra request policy. Nanocodex retains its existing `high` effort default; Codex's bundled Astra catalog defaults to `low`. |
-| Context | OpenAI documents a 1,050,000-token API context window. Nanocodex follows the current Codex catalog: 272,000 by default, configurable to 872,000, with explicit provider compaction at 90% of the configured prompt budget. |
+| Reasoning | Accepts `low`, `medium`, `high`, `xhigh`, and `max`. Rejects Astra with `none` or Pro mode before dispatch, including dynamic settings and subagent overrides. Astra requests omit `reasoning.mode` and the default reasoning summary, matching the Codex Astra request policy. Nanocodex defaults to `low`, matching the bundled Codex Astra catalog. Explicit effort overrides remain authoritative. |
+| Context | OpenAI documents a 1,050,000-token API context window. Nanocodex follows the current Codex catalog: 272,000 by default, configurable to 872,000, with model-managed context windows for eligible native Codex subscriptions and provider compaction for other transports. See [Codex alignment](CODEX_ALIGNMENT.md). |
 | Output | The provider documents a 128,000-token maximum. Nanocodex does not raise its own output limit beyond caller/provider limits. |
 | Knowledge cutoff | April 30, 2026; this is documentation only and does not affect request encoding. |
 | Base token rates | Estimates $10 input, $1 cached input, $12.50 cache write, and $50 output per million tokens. |

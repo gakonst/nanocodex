@@ -63,13 +63,13 @@ def fresh_import_times(rounds: int = 7) -> list[float]:
 
 
 def construction_metrics(rounds: int = 20) -> tuple[list[float], int, int]:
-    first, first_events = Nanocodex("benchmark-only", thinking="none")
+    first, first_events = Nanocodex("benchmark-only", thinking="low")
     threads_after_first = native_thread_count()
     agents: list[tuple[Nanocodex, Any]] = []
     times = []
     for _ in range(rounds):
         started = time.perf_counter_ns()
-        agents.append(Nanocodex("benchmark-only", thinking="none"))
+        agents.append(Nanocodex("benchmark-only", thinking="low"))
         times.append(elapsed_ms(started))
     threads_after_all = native_thread_count()
     for agent, _ in agents:
@@ -86,7 +86,7 @@ def sequential_turn_metrics(
     with MockResponsesServer() as server:
         agent, events = Nanocodex(
             "benchmark-only",
-            thinking="none",
+            thinking="low",
             prompt_cache_key="python-binding-benchmark",
             websocket_url=server.endpoint,
         )
@@ -138,7 +138,7 @@ def concurrent_agent_wall_ms(agent_count: int = 8) -> float:
         agents = [
             Nanocodex(
                 "benchmark-only",
-                thinking="none",
+                thinking="low",
                 websocket_url=server.endpoint,
             )[0]
             for _ in range(agent_count)

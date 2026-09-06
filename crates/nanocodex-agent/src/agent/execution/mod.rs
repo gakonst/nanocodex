@@ -781,6 +781,14 @@ pub(crate) enum ExecutionStep<O> {
 }
 
 impl ExecutionSteps {
+    #[cfg(test)]
+    pub(crate) fn for_test(policy: Arc<dyn ExecutionPolicy>) -> Self {
+        Self {
+            policy,
+            operation_id: "test".to_owned(),
+        }
+    }
+
     pub(crate) async fn retained_input(
         &self,
         step_id: &str,

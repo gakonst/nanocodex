@@ -25,9 +25,9 @@ def native_thread_count() -> int:
 
 class RuntimeTests(unittest.TestCase):
     def test_independent_agents_share_one_bounded_runtime(self) -> None:
-        first, first_events = Nanocodex("test-key", thinking="none")
+        first, first_events = Nanocodex("test-key", thinking="low")
         baseline = native_thread_count()
-        agents = [Nanocodex("test-key", thinking="none") for _ in range(8)]
+        agents = [Nanocodex("test-key", thinking="low") for _ in range(8)]
         growth = native_thread_count() - baseline
         self.assertLessEqual(
             growth,
@@ -58,7 +58,7 @@ def threads():
     return max(0, len(output.splitlines()) - 1)
 
 before = threads()
-agents = [Nanocodex("test-key", thinking="none") for _ in range(16)]
+agents = [Nanocodex("test-key", thinking="low") for _ in range(16)]
 after = threads()
 print(json.dumps({"before": before, "after": after}))
 for agent, _ in agents:
@@ -101,7 +101,7 @@ before = threads()
 agents = [
     Nanocodex(
         "test-key",
-        thinking="none",
+        thinking="low",
         websocket_url={server.endpoint!r},
     )[0]
     for _ in range(8)
@@ -165,7 +165,7 @@ print(json.dumps({{"before": before, "during": during, "after": after}}))
             agents = [
                 Nanocodex(
                     "test-key",
-                    thinking="none",
+                    thinking="low",
                     websocket_url=server.endpoint,
                 )[0]
                 for _ in range(4)

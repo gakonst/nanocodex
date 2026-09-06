@@ -25,6 +25,10 @@ pub mod code_mode;
 mod code_mode_description;
 #[cfg(feature = "native")]
 mod code_mode_order;
+#[cfg(all(not(target_family = "wasm"), feature = "native"))]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod context_management;
 #[cfg(feature = "native")]
 pub mod embedded;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]

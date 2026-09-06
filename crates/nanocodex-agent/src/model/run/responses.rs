@@ -127,6 +127,22 @@ where
             conversation.reset_for_full_request();
         }
         let (prompt_history, prompt_repaired) = conversation.prompt_history_with_repair();
+        #[cfg(not(target_family = "wasm"))]
+        let context_factory = self.context_management.as_ref().map(|context| {
+            context.restore(&conversation.flattened_history());
+            context.set_remaining(
+                (self.config.context_window_tokens * 9 / 10)
+                    .saturating_sub(conversation.active_context_tokens()),
+            );
+            let window = context.window();
+            factory.with_context_window(
+                context.agent_name().to_owned(),
+                window.context_window_id,
+                window.window_number,
+            )
+        });
+        #[cfg(not(target_family = "wasm"))]
+        let factory = context_factory.as_ref().unwrap_or(factory);
         let previous_response_id = if prompt_repaired {
             None
         } else {
@@ -174,12 +190,16 @@ where
                 None => {
                     let mut recorded_prompt_history =
                         prompt_history.iter().cloned().collect::<Vec<_>>();
-                    for item in &mut recorded_prompt_history {
-                        item.strip_unbound_id();
-                    }
                     let mut recorded_request_prefix = factory.profile().prefix().to_vec();
-                    for item in &mut recorded_request_prefix {
-                        item.strip_unbound_id();
+                    // Notes refer to item IDs in the ingested context window.
+                    // Replaying the retained request must preserve those IDs.
+                    if !factory.profile().history_ingest_requested() {
+                        for item in recorded_prompt_history
+                            .iter_mut()
+                            .chain(&mut recorded_request_prefix)
+                        {
+                            item.strip_unbound_id();
+                        }
                     }
                     let step_input = RecordedModelCall {
                         call_index,

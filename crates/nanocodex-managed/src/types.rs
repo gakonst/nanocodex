@@ -325,8 +325,8 @@ pub struct AgentSettings {
 impl Default for AgentSettings {
     fn default() -> Self {
         Self {
-            model: Model::Sol,
-            thinking: Thinking::High,
+            model: Model::default(),
+            thinking: Thinking::default(),
             reasoning_mode: ReasoningMode::Standard,
             fast_mode: false,
         }
@@ -642,8 +642,8 @@ mod settings_tests {
         assert_eq!(
             serde_json::to_value(AgentSettings::default()).expect("settings should serialize"),
             json!({
-                "model": "gpt-5.6-sol",
-                "thinking": "high",
+                "model": "gpt-6-astra",
+                "thinking": "low",
                 "reasoning_mode": "standard",
                 "fast_mode": false
             })

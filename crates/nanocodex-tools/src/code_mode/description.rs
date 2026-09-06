@@ -6,8 +6,7 @@ use serde_json::Value;
 
 #[cfg(not(target_family = "wasm"))]
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r"Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
-To find one, filter `ALL_TOOLS` by `name` and `description`.
-Call independent nested tools concurrently in one cell with `Promise.all`.";
+To find one, filter `ALL_TOOLS` by `name` and `description`.";
 // Based on https://modelcontextprotocol.io/specification/draft/schema#calltoolresult.
 #[cfg(not(target_family = "wasm"))]
 const MCP_TYPESCRIPT_PREAMBLE: &str = r#"type Role = "user" | "assistant";
@@ -88,7 +87,7 @@ type CallToolResult<TStructured = { [key: string]: unknown }> = {
 };"#;
 #[cfg(not(target_family = "wasm"))]
 const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose tool calls
-- Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.
+- Evaluates the provided JavaScript code in a fresh JavaScript context as an async module.
 - All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.
 - Nested tool methods take either a string or an object as their input argument.
 - Nested tools return either an object or a string, based on the description.

@@ -123,7 +123,7 @@ test("an empty account creates its first durable conversation with Astra setting
   assert.deepEqual(creationBody, {
     settings: {
       model: "gpt-6-astra",
-      thinking: "high",
+      thinking: "low",
       reasoning_mode: "standard",
       fast_mode: false,
     },

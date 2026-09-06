@@ -20,6 +20,7 @@ const SESSION_IDS = Object.freeze({
 });
 
 const createWarmAgent = ({ apiKey, websocketUrl, ...options }) => Agent.create({
+  model: "gpt-5.6-sol", // Legacy fixtures exercise none/pro reasoning and Sol pricing.
   ...options,
   transport: Transport.openAi({ apiKey, websocketUrl, websocketWarmup: true }),
 });

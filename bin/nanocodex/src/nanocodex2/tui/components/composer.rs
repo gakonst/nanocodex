@@ -261,7 +261,7 @@ impl Composer {
             context_tokens: 0,
             workspace: shorten_home(workspace),
             thinking,
-            model: Model::Sol,
+            model: Model::default(),
             reasoning_mode: ReasoningMode::Standard,
             fast_mode: false,
             input_mode: None,

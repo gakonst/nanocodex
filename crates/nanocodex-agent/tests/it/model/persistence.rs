@@ -191,6 +191,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     let rollout_home = temporary_workspace("serialized-resume-rollout")?;
     let openai = || {
         OpenAi::builder("test-key")
+            .model(Model::Sol)
             .websocket_url(endpoint.clone())
             .build()
     };
