@@ -79,10 +79,7 @@ implementation is already linked into `nanocodex.wasm`; Rust installs fresh
 agent-relative tools for every root, spawn, and fork. JavaScript does not load a
 second WASM plugin or maintain a parallel scheduler.
 
-The extension exposes `spawn_agent`, `send_message`, `followup_task`,
-`list_agents`, `wait_agent`, and `interrupt_agent`, plus `submit_result` for
-SDK-created structured children. Model-directed spawns use task names and
-inherited history. The explicit SDK retains its numeric IDs and structured
-results. Root shutdown
+The extension exposes `spawn_agent`, `submit_result`, `send_agent_message`,
+`list_agents`, `wait_agent`, `interrupt_agent`, and `close_agent`. Root shutdown
 closes its children. Read the [binding guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex/README.md#standard-web-and-browser-tools)
 and [branches and subagents](/core/branching).

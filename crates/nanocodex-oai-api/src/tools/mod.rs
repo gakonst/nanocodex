@@ -324,7 +324,6 @@ pub struct ToolContext<'a> {
     history: &'a [ResponseItem],
     output_token_budget: usize,
     host_context: Option<&'a str>,
-    encrypted_arguments: Option<bool>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -344,7 +343,6 @@ impl<'a> ToolContext<'a> {
             history,
             output_token_budget,
             host_context: None,
-            encrypted_arguments: None,
         }
     }
 
@@ -386,43 +384,6 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub const fn history(self) -> &'a [ResponseItem] {
         self.history
-    }
-
-    /// Preserves the invoking function's encryption metadata across dispatch.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn with_encrypted_arguments(mut self, encrypted: bool) -> Self {
-        self.encrypted_arguments = Some(encrypted);
-        self
-    }
-
-    /// Whether the invoking function carries provider-encrypted arguments.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn has_encrypted_arguments(self) -> bool {
-        if let Some(encrypted) = self.encrypted_arguments {
-            return encrypted;
-        }
-        self.history
-            .iter()
-            .rev()
-            .find_map(|item| match item {
-                ResponseItem::FunctionCall {
-                    call_id,
-                    namespace,
-                    name,
-                    encrypted_function_args,
-                    ..
-                } if call_id.as_ref() == self.call_id => {
-                    Some(crate::responses::function_arguments_are_encrypted(
-                        namespace.as_deref(),
-                        name,
-                        encrypted_function_args.as_deref(),
-                    ))
-                }
-                _ => None,
-            })
-            .unwrap_or(false)
     }
 
     /// Returns the maximum model-visible tool-output budget.

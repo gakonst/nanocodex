@@ -333,10 +333,10 @@ pub(super) fn handle_idle_command<S>(
                 .and_then(|checkpoint| {
                     spawner.spawn_fork(
                         &checkpoint,
-                        ForkTurns::All,
-                        None,
                         session_id,
-                        defaults,
+                        defaults.model,
+                        defaults.thinking,
+                        defaults.fast_mode,
                         spawner.host_context.as_ref().map(Arc::clone),
                     )
                 });
@@ -344,41 +344,20 @@ pub(super) fn handle_idle_command<S>(
         }
         Command::Spawn {
             options,
-            fork_turns,
-            agent_name,
             host_context,
             result,
         } => {
             let model = options.model.unwrap_or(defaults.model);
             let thinking = options.thinking.unwrap_or(defaults.thinking);
-            let child_defaults = TurnDefaults {
-                model,
-                thinking,
-                fast_mode: defaults.fast_mode,
-            };
             let outcome = validate_model_thinking(model, thinking).and_then(|()| {
-                let host_context =
-                    host_context.or_else(|| spawner.host_context.as_ref().map(Arc::clone));
-                match fork_turns {
-                    ForkTurns::None => spawner.spawn_clean(
-                        agent_name,
-                        workspace,
-                        session_id,
-                        child_defaults,
-                        host_context,
-                    ),
-                    ForkTurns::All | ForkTurns::Last(_) => {
-                        let checkpoint = latest.ok_or(NanocodexError::ForkBeforeCompletedTurn)?;
-                        spawner.spawn_fork(
-                            checkpoint,
-                            fork_turns,
-                            agent_name,
-                            session_id,
-                            child_defaults,
-                            host_context,
-                        )
-                    }
-                }
+                spawner.spawn_clean(
+                    workspace,
+                    session_id,
+                    model,
+                    thinking,
+                    defaults.fast_mode,
+                    host_context.or_else(|| spawner.host_context.as_ref().map(Arc::clone)),
+                )
             });
             drop(result.send(outcome));
         }

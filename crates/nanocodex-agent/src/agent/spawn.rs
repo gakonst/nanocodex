@@ -145,17 +145,11 @@ where
 {
     let session_id_text = session_id.to_string();
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
-    let (user_inputs, user_input_updates) = watch::channel(0_u64);
-    let activity = Arc::new(std::sync::Mutex::new(serde_json::json!("pending_init")));
     let shutdown = DriverShutdown::default();
     let tools = spawner
         .tools
         .materialize(AgentHandle {
             commands: commands.downgrade(),
-            depth: spawner.depth,
-            user_inputs: Arc::new(std::sync::Mutex::new(user_input_updates)),
-            activity: Arc::clone(&activity),
-            task_name: spawner.config.agent_name.clone(),
             shutdown: shutdown.clone(),
             session_id: Arc::from(session_id_text.as_str()),
         })?
@@ -213,8 +207,6 @@ where
     tools.start_providers();
     let driver = AgentDriver {
         commands: receiver,
-        user_inputs,
-        activity,
         events,
         client: ResponsesClient::new(service),
         transport_stats,

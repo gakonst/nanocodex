@@ -828,14 +828,3 @@ test("Code Mode text content arrays have readable tool summaries", async () => {
   assert.equal(presentTool(tool).outputSummary, "Script completed Output: astra-managed-6sep-cobalt");
   assert.equal(presentTool({ ...tool, output: [{ value: 42 }] }).outputSummary, '[{"value":42}]');
 });
-
-test("canonical collaboration summaries identify the task without echoing opaque messages", async () => {
-  const { presentTool } = await import("../dist/toolPresentation.js");
-  const presentation = presentTool({
-    callId: "followup", name: "collaboration__followup_task", status: "completed", children: [],
-    input: JSON.stringify({ target: "/root/e2e_math", message: "opaque-provider-payload" }),
-  });
-  assert.equal(presentation.title, "Follow up /root/e2e_math");
-  assert.equal(presentation.source, "Subagent");
-  assert.equal(presentation.subject, undefined);
-});

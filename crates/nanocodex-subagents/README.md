@@ -1,29 +1,20 @@
 # nanocodex-subagents
 
 `nanocodex-subagents` is an optional extension above `nanocodex-agent`. It adds
-a shared task tree and six tools in the `collaboration` namespace without making
-the core agent depend on orchestration policy:
+a shared task tree and seven agent-relative tools without making the core agent
+depend on orchestration policy:
 
-- `spawn_agent` (`task_name`, `message`, optional `fork_turns`, `model`, `reasoning_effort`)
-- `send_message` (`target`, `message`), which does not wake an idle agent
-- `followup_task` (`target`, `message`), which can start an idle child
-- `list_agents` (optional `path_prefix`)
-- `wait_agent` (optional `timeout_ms`), which waits for mailbox updates
-- `interrupt_agent` (`target`), which interrupts only that agent
+- `spawn_agent`
+- `submit_result`
+- `send_agent_message`
+- `list_agents`
+- `wait_agent`
+- `interrupt_agent`
+- `close_agent`
 
-`submit_result` is additionally retained for structured children created through the SDK.
-
-Model-directed children inherit all safe history by default and return their
-final assistant text to their parent. `fork_turns` accepts `none`, `all`, or a
-positive integer string. Full-history forks inherit the active parent turn's
-model, reasoning effort, and fast mode; other forks may supply explicit overrides. Targets accept
-canonical task paths, direct-child names, or agent IDs.
-
-`start_agent`, `start_agents`, and the numeric registry API preserve their
-structured-result contracts. Embeddings requiring the old model tool schemas
-can explicitly use `install_structured_tools`. Existing resident limits and cold-restored
-child tombstones remain embedding-owned; retained topology alone does not reopen a
-child driver for model-directed messages or follow-up tasks.
+`spawn_agent` accepts optional `model` (`sol`, `terra`, `luna`, or `astra`) and
+`thinking` (`none` through `max`) overrides. Omitted values inherit the
+invoking agent's current settings; an override configures only the new child.
 
 Create one channel for an application-owned agent family, then install fresh
 tools for every driver with `NanocodexBuilder::tools_factory`:

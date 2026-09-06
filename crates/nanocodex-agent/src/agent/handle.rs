@@ -45,63 +45,10 @@ pub struct AgentHandle {
     pub(super) commands: mpsc::WeakSender<Command>,
     pub(super) shutdown: DriverShutdown,
     pub(super) session_id: Arc<str>,
-    pub(super) depth: u32,
-    pub(super) task_name: Option<Arc<str>>,
-    pub(super) user_inputs: Arc<std::sync::Mutex<watch::Receiver<u64>>>,
-    pub(super) activity: Arc<std::sync::Mutex<serde_json::Value>>,
 }
 
 #[cfg(feature = "openai")]
 impl AgentHandle {
-    /// Returns the current lifecycle status for model-facing orchestration.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn collaboration_status(&self) -> serde_json::Value {
-        if self
-            .commands
-            .upgrade()
-            .is_none_or(|commands| commands.is_closed())
-        {
-            return serde_json::json!("shutdown");
-        }
-        self.activity
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Waits for accepted user steering without retaining the driver itself.
-    #[doc(hidden)]
-    pub async fn wait_for_user_input(&self) -> bool {
-        let mut receiver = self
-            .user_inputs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if receiver.changed().await.is_err() {
-            return false;
-        }
-        self.user_inputs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .borrow_and_update();
-        true
-    }
-
-    /// Returns the nesting depth of this driver (zero for a root).
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn depth(&self) -> u32 {
-        self.depth
-    }
-
-    /// Returns the canonical task name of a model-directed child.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn task_name(&self) -> Option<&str> {
-        self.task_name.as_deref()
-    }
-
     /// Returns the session owned by this weak driver capability.
     #[must_use]
     pub fn session_id(&self) -> &str {
@@ -143,26 +90,6 @@ impl AgentHandle {
     ) -> Result<(Nanocodex, AgentEvents)> {
         let commands = self.commands()?;
         request_spawn_with_host_context(&commands, &self.shutdown, options, host_context).await
-    }
-
-    /// Starts a named child with the selected inherited conversation boundary.
-    #[doc(hidden)]
-    pub async fn spawn_task(
-        &self,
-        options: SpawnOptions,
-        fork_turns: ForkTurns,
-        agent_name: Arc<str>,
-        host_context: Option<Arc<str>>,
-    ) -> Result<(Nanocodex, AgentEvents)> {
-        let commands = self.commands()?;
-        request_command(&commands, &self.shutdown, |result| Command::Spawn {
-            options,
-            fork_turns,
-            agent_name: Some(agent_name),
-            host_context,
-            result,
-        })
-        .await
     }
 
     /// Starts several clean agents in the order requested.
@@ -230,25 +157,6 @@ impl AgentHandle {
     pub async fn fork(&self) -> Result<(Nanocodex, AgentEvents)> {
         let commands = self.commands()?;
         request_fork(&commands, &self.shutdown, None).await
-    }
-
-    /// Delivers runtime-owned agent communication without starting an idle turn.
-    /// Active delivery uses the durable steering queue at the next model boundary.
-    #[doc(hidden)]
-    pub async fn queue_message(&self, prompt: Prompt) -> Result<()> {
-        let text = prompt.agent_message().ok_or_else(|| {
-            NanocodexError::InvalidRequest("expected typed agent communication".into())
-        })?;
-        let commands = self.commands()?;
-        request_command(&commands, &self.shutdown, |result| {
-            Command::AppendDeveloperMessage {
-                text,
-                steer_active: true,
-                result,
-            }
-        })
-        .await
-        .map(|_| ())
     }
 
     fn commands(&self) -> Result<mpsc::Sender<Command>> {
@@ -632,8 +540,6 @@ async fn request_spawn_with_host_context(
 ) -> Result<(Nanocodex, AgentEvents)> {
     request_command(commands, shutdown, |result| Command::Spawn {
         options,
-        fork_turns: ForkTurns::None,
-        agent_name: None,
         host_context,
         result,
     })

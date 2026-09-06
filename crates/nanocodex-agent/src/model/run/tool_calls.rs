@@ -559,8 +559,7 @@ where
                 &[],
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             )
-            .with_host_context(host_context)
-            .with_encrypted_arguments(call.has_encrypted_arguments());
+            .with_host_context(host_context);
             let mut execution = match call.kind {
                 CodeCallKind::Function => match RawValue::from_string(call.input.clone()) {
                     Ok(input) => {

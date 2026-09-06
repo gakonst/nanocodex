@@ -160,7 +160,6 @@ fn host_context_tool_generation() -> ResponsesOutput {
         final_message: None,
         output_items: vec![item],
         code_calls: vec![CodeCall {
-            encrypted_function_args: None,
             call_id: "call-host-context".to_owned(),
             name: "host_context_probe".to_owned(),
             namespace: None,

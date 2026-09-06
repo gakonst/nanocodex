@@ -412,26 +412,19 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     const rootReader = messageReader(rootSocket);
     const rootWarmup = await rootReader.next();
     assert.deepEqual(
-      rootWarmup.input[0].tools.flatMap((tool) => tool.tools ?? [tool]).map((tool) => tool.name).sort(),
+      rootWarmup.input[0].tools.map((tool) => tool.name).sort(),
       [
+        "close_agent",
         "exec",
-        "followup_task",
         "interrupt_agent",
         "list_agents",
-        "send_message",
+        "send_agent_message",
         "spawn_agent",
+        "submit_result",
         "wait",
         "wait_agent",
       ],
     );
-    const collaboration = rootWarmup.input[0].tools.find((tool) => tool.type === "namespace" && tool.name === "collaboration");
-    const spawnSchema = collaboration.tools.find((tool) => tool.name === "spawn_agent").parameters;
-    assert.deepEqual(spawnSchema.required, ["task_name", "message"]);
-    assert.equal(spawnSchema.properties.reasoning_effort.type, "string");
-    assert.equal(spawnSchema.properties.reasoning_effort.enum, undefined);
-    const waitSchema = collaboration.tools.find((tool) => tool.name === "wait_agent").parameters;
-    assert.equal(waitSchema.properties.timeout_ms.type, "number");
-    assert.equal(waitSchema.required, undefined);
     sendWarmup(rootSocket, "root-warmup");
 
     const rootGeneration = await rootReader.next();
@@ -444,12 +437,16 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     sendCompleted(rootSocket, "root-spawn", [{
       type: "function_call",
       call_id: "call-spawn",
-      namespace: "collaboration", name: "spawn_agent",
-      encrypted_function_args: [],
+      name: "spawn_agent",
       arguments: JSON.stringify({
-        task_name: "reviewer",
-        message: "Return the word portable.",
-        fork_turns: "none",
+        role: "reviewer",
+        task: "Return the word portable.",
+        output_schema: {
+          type: "object",
+          properties: { report: { type: "string" } },
+          required: ["report"],
+          additionalProperties: false,
+        },
       }),
     }]);
 
@@ -460,7 +457,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     assert.notEqual(childSessionId, rootProviderSessionId);
     const childReader = messageReader(childSocket);
     const childWarmup = await childReader.next();
-    assert.equal(childWarmup.input[0].tools.flatMap((tool) => tool.tools ?? [tool]).some((tool) => tool.name === "send_message"), true);
+    assert.equal(childWarmup.input[0].tools.some((tool) => tool.name === "send_agent_message"), true);
     assert.match(childWarmup.input[0].tools[0].description, /rootOnly/);
     assert.doesNotMatch(childWarmup.input[0].tools[0].description, /decoyOnly/);
     sendWarmup(childSocket, "child-warmup");
@@ -468,25 +465,15 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     const rootSpawned = await rootReader.next();
     assert.equal(rootSpawned.input[0].call_id, "call-spawn");
     assert.deepEqual(JSON.parse(rootSpawned.input[0].output), {
-      task_name: "/root/reviewer",
+      agent_id: 1,
+      role: "reviewer",
+      status: { state: "running" },
     });
-    sendCompleted(rootSocket, "root-list", [{
-      type: "function_call", call_id: "call-list", namespace: "collaboration", name: "list_agents",
-      arguments: JSON.stringify({ path_prefix: "/root" }),
-    }]);
-    const directory = JSON.parse((await rootReader.next()).input[0].output);
-    assert.deepEqual(directory.agents.map((entry) => entry.agent_name), ["/root", "/root/reviewer"]);
-    assert.equal(directory.agents[0].agent_status, "running");
-    sendCompleted(rootSocket, "root-invalid-wait", [{
-      type: "function_call", call_id: "call-invalid-wait", namespace: "collaboration", name: "wait_agent",
-      arguments: JSON.stringify({ timeout_ms: 3_600_001 }),
-    }]);
-    assert.match(JSON.stringify((await rootReader.next()).input), /timeout_ms must be at most 3600000/);
     sendCompleted(rootSocket, "root-wait", [{
       type: "function_call",
       call_id: "call-wait",
-      namespace: "collaboration", name: "wait_agent",
-      arguments: JSON.stringify({ timeout_ms: 1 }),
+      name: "wait_agent",
+      arguments: JSON.stringify({ agent_ids: [1], timeout_ms: 5_000 }),
     }]);
 
     await childReader.next();
@@ -499,70 +486,38 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     const childExecuted = await childReader.next();
     assert.equal(childExecuted.input[0].call_id, "call-child-exec");
     assert.match(JSON.stringify(childExecuted.input[0].output), /root/);
-    sendFinal(childSocket, "child-final", "portable");
+    sendCompleted(childSocket, "child-submit", [{
+      type: "function_call",
+      call_id: "call-submit",
+      name: "submit_result",
+      arguments: JSON.stringify({ turn_token: 1, output: { report: "portable" } }),
+    }]);
+    const childSubmitted = await childReader.next();
+    assert.deepEqual(JSON.parse(childSubmitted.input[0].output), { accepted: true });
+    sendFinal(childSocket, "child-final", "submitted");
 
     const rootWaited = await rootReader.next();
     const waited = JSON.parse(rootWaited.input[0].output);
     assert.equal(waited.timed_out, false);
-    assert.equal(waited.message, "Wait completed.\n\nRequested timeout of 1ms was clamped to the minimum of 10000ms.");
-    assert.match(JSON.stringify(rootWaited.input), /portable/);
-
-    // A queued message must not start the idle child. The follow-up starts it,
-    // retaining that message and the child's prior turn.
-    sendCompleted(rootSocket, "root-message", [{
-      type: "function_call", call_id: "call-message", namespace: "collaboration", name: "send_message",
-      encrypted_function_args: ["message"],
-      arguments: JSON.stringify({ target: "reviewer", message: "opaque-idle-mailbox-payload" }),
-    }]);
-    let unexpectedChildRequest = false;
-    const observeIdle = () => { unexpectedChildRequest = true; };
-    childSocket.on("message", observeIdle);
-    await rootReader.next();
-    assert.equal(unexpectedChildRequest, false);
-    childSocket.off("message", observeIdle);
-    sendCompleted(rootSocket, "root-followup", [{
-      type: "function_call", call_id: "call-followup", namespace: "collaboration", name: "followup_task",
-      // Live Astra omits the marker for encrypted messages. An absent marker
-      // must not turn opaque content into model-visible plaintext.
-      arguments: JSON.stringify({ target: "/root/reviewer", message: "opaque-followup-payload" }),
-    }]);
-    const childFollowup = await childReader.next();
-    const encryptedMessage = childFollowup.input.find((item) => item.type === "agent_message"
-      && item.content.some((part) => part.type === "encrypted_content"));
-    assert.equal(encryptedMessage.author, "/root");
-    assert.equal(encryptedMessage.recipient, "/root/reviewer");
-    assert.equal(encryptedMessage.content.find((part) => part.type === "encrypted_content").encrypted_content, "opaque-idle-mailbox-payload");
-    assert.ok(encryptedMessage.content.filter((part) => part.type === "input_text").every((part) => !part.text.includes("opaque-idle-mailbox-payload")));
-    const followupMessage = childFollowup.input.find((item) => item.type === "agent_message"
-      && item.content.some((part) => part.encrypted_content === "opaque-followup-payload"));
-    assert.ok(followupMessage);
-    assert.ok(followupMessage.content.filter((part) => part.type === "input_text")
-      .every((part) => !part.text.includes("opaque-followup-payload")));
-    const followed = await rootReader.next();
-    assert.equal(followed.input.find((item) => item.call_id === "call-followup").type, "function_call_output");
-    sendCompleted(rootSocket, "root-wait-again", [{
-      type: "function_call", call_id: "call-wait-again", namespace: "collaboration", name: "wait_agent",
-      arguments: JSON.stringify({ timeout_ms: 10_000 }),
-    }]);
-    sendFinal(childSocket, "child-final-again", "portable again");
-    const waitedAgain = await rootReader.next();
-    assert.match(JSON.stringify(waitedAgain.input), /portable again/);
+    assert.equal(waited.agents[0].parent_agent_id, null);
+    assert.deepEqual(waited.agents[0].status, {
+      state: "completed",
+      output: { report: "portable" },
+    });
     sendFinal(rootSocket, "root-final", "portable");
   })();
 
   try {
-    const [result] = await Promise.all([
-      bounded(agent.turn.prompt({ input: "Delegate this check." }).result(), "root collaboration result"),
-      bounded(scenario, "collaboration scenario"),
-    ]);
+    const result = await agent.turn.prompt({ input: "Delegate this check." }).result();
     assert.equal(result.finalMessage, "portable");
+    await scenario;
     assert.equal(rootToolContexts.length, 1);
     assert.equal(rootToolContexts[0].sessionId, childSessionId);
     assert.deepEqual(rootToolContexts[0].subagent, {
       agentId: "1",
       parentAgentId: null,
       sessionId: childSessionId,
-      role: "/root/reviewer",
+      role: "reviewer",
       task: "Return the word portable.",
     });
     const childEvents = events.filter((event) => event.request_id === childSessionId);
@@ -576,13 +531,13 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
       childEvents
         .filter((event) => event.type === "run.started" || event.type === "run.completed")
         .map((event) => event.type),
-      ["run.started", "run.completed", "run.started", "run.completed"],
+      ["run.started", "run.completed"],
     );
     assert.deepEqual(
       childEvents
         .filter((event) => event.type === "tool.call")
         .map((event) => event.payload.tool),
-      ["exec", "rootOnly"],
+      ["exec", "rootOnly", "submit_result"],
     );
     assert.deepEqual(
       childEvents.map((event) => event.seq),
@@ -591,11 +546,11 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     assert.ok(events.some((event) =>
       event.request_id === agent.sessionId
       && event.type === "tool.call"
-      && event.payload.tool === "collaboration__spawn_agent"));
+      && event.payload.tool === "spawn_agent"));
     assert.ok(events.some((event) =>
       event.request_id === agent.sessionId
       && event.type === "tool.call"
-      && event.payload.tool === "collaboration__wait_agent"));
+      && event.payload.tool === "wait_agent"));
     const childState = durability.load(childSessionId);
     assert.notEqual(childState.revision, "0");
     assert.match(childState.payload, /nanocodex_durable_state/);
@@ -754,7 +709,7 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
       /unknown agent_id/,
     );
     const siblingChildConnection = new Promise((resolve) =>
-      server.websocketServer.once("connection", (socket, request) => { socket.request = request; resolve(socket); }));
+      server.websocketServer.once("connection", resolve));
     const siblingStartedPromise = Subagents.spawn(nonRoot, {
       role: "independent-root-child",
       task: "Wait until the owning root closes this child.",
@@ -779,7 +734,7 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
     await bounded(siblingChildClosed, "sibling child socket close");
 
     const disposedChildConnection = new Promise((resolve) =>
-      server.websocketServer.once("connection", (socket, request) => { socket.request = request; resolve(socket); }));
+      server.websocketServer.once("connection", resolve));
     const disposedChildStarted = Subagents.spawn(nonRoot, {
       role: "dispose-cleanup-child",
       task: "Remain active until the owning agent is disposed.",
@@ -1337,100 +1292,3 @@ function sendCompleted(socket, responseId, output) {
     },
   }));
 }
-
-for (const forkTurns of [undefined, "1"]) {
-  test(`model-directed durable subagents inherit ${forkTurns ?? "all"} safe turns`, async () => {
-    const server = await startServer();
-    const durabilityId = `named-fork-${forkTurns ?? "all"}`;
-    const durability = createMemoryDurabilityStore(durabilityId);
-    const agent = await Agent.create({
-      transport: Transport.openAi({ apiKey: "test", websocketUrl: server.url, websocketWarmup: false }),
-      durability, durabilityId,
-    });
-    let reader;
-    try {
-      const first = agent.turn.prompt({ input: "old-fork-marker" }).result();
-      const socket = await bounded(server.connection, "root connection");
-      reader = messageReader(socket);
-      const initial = await bounded(reader.next(), "first generation");
-      sendFinal(socket, "before-fork", "old answer");
-      await bounded(first, "first result");
-      const second = agent.turn.prompt({ input: "recent-fork-marker" }).result();
-      await bounded(reader.next(), "second generation");
-      // New defaults apply to later parent turns. A fork of this active turn
-      // must retain its reasoning and service tier rather than those defaults.
-      await agent.session.setThinking("high");
-      await agent.session.setFastMode(true);
-      const childConnection = new Promise((resolve) => server.websocketServer.once("connection", (socket, request) => { socket.request = request; resolve(socket); }));
-      sendCompleted(socket, "spawn-fork", [{ type: "function_call", call_id: "fork-call", namespace: "collaboration", name: "spawn_agent",
-        encrypted_function_args: [],
-        arguments: JSON.stringify({ task_name: "fork_check", message: "Report the inherited markers.", ...(forkTurns ? { fork_turns: forkTurns } : {}) }),
-      }]);
-      const scenario = (async () => {
-        const child = await bounded(childConnection, "forked child");
-        const childReader = messageReader(child);
-        const request = await bounded(childReader.next(), "child generation");
-        assert.equal(request.model, "gpt-6-astra");
-        assert.equal(request.reasoning.effort, initial.reasoning.effort);
-        assert.equal(request.service_tier, initial.service_tier);
-        assert.equal(request.prompt_cache_key, initial.prompt_cache_key);
-        assert.match(JSON.stringify(request.input), /recent-fork-marker/);
-        if (forkTurns === "1") {
-          assert.doesNotMatch(JSON.stringify(request.input), /old-fork-marker/);
-          assert.equal(request.previous_response_id, undefined);
-        } else {
-          assert.ok(request.previous_response_id === "before-fork" || JSON.stringify(request.input).includes("old-fork-marker"));
-        }
-        const spawned = await bounded(reader.next(), "spawn result");
-        const report = JSON.parse(spawned.input.find((item) => item.call_id === "fork-call").output);
-        assert.equal(report.task_name, "/root/fork_check");
-        sendCompleted(socket, "wait-fork", [{ type: "function_call", call_id: "fork-wait", namespace: "collaboration", name: "wait_agent", arguments: "{}" }]);
-        sendFinal(child, "child-fork-final", "inherited successfully");
-        const waited = await bounded(reader.next(), "child notification");
-        assert.match(JSON.stringify(waited.input), /inherited successfully/);
-        sendFinal(socket, "root-fork-final", "done");
-        assert.notEqual(durability.load(child.request.headers["thread-id"]).revision, "0");
-      })();
-      const [result] = await Promise.all([bounded(second, "root result"), scenario]);
-      assert.equal(result.finalMessage, "done");
-    } finally {
-      await agent.session.shutdown();
-      await server.close();
-    }
-  });
-}
-
-test("user steering releases a model-directed mailbox wait", async () => {
-  const server = await startServer();
-  const agent = await Agent.create({
-    transport: Transport.openAi({ apiKey: "test", websocketUrl: server.url, websocketWarmup: false }),
-  });
-  let resolveWaiting;
-  const waiting = new Promise((resolve) => { resolveWaiting = resolve; });
-  const watch = agent.events.watch();
-  watch.onEvent((event) => {
-    if (event.type === "tool.call" && event.payload.tool === "collaboration__wait_agent") resolveWaiting();
-  });
-  try {
-    const turn = agent.turn.prompt({ input: "Wait for an update." });
-    const socket = await bounded(server.connection, "mailbox connection");
-    const reader = messageReader(socket);
-    await bounded(reader.next(), "mailbox generation");
-    sendCompleted(socket, "mailbox-wait", [{ type: "function_call", call_id: "wait-input",
-      namespace: "collaboration", name: "wait_agent", arguments: JSON.stringify({ timeout_ms: 60_000 }),
-    }]);
-    await bounded(waiting, "mailbox tool call");
-    await turn.steer({ input: "Stop waiting and answer now." });
-    const resumed = await bounded(reader.next(), "steered mailbox request");
-    const output = JSON.parse(resumed.input.find((item) => item.call_id === "wait-input").output);
-    assert.equal(output.message, "Wait interrupted by new input.");
-    assert.equal(output.timed_out, false);
-    assert.match(JSON.stringify(resumed.input), /Stop waiting and answer now/);
-    sendFinal(socket, "mailbox-final", "ready");
-    assert.equal((await bounded(turn.result(), "mailbox result")).finalMessage, "ready");
-  } finally {
-    watch.off();
-    await agent.session.shutdown();
-    await server.close();
-  }
-});

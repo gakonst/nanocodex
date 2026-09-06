@@ -50,32 +50,18 @@ where
     pub(super) fn spawn_fork(
         &self,
         checkpoint: &CommittedSession,
-        fork_turns: ForkTurns,
-        agent_name: Option<Arc<str>>,
         parent_session_id: &str,
-        defaults: TurnDefaults,
+        model: Model,
+        thinking: Thinking,
+        fast_mode: bool,
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
-        let TurnDefaults {
-            model,
-            thinking,
-            fast_mode,
-        } = defaults;
         let session_id = SessionId::new();
         let workspace = Some(Arc::<str>::from(checkpoint.model().workspace()));
-        let mut inherited = checkpoint.model().clone();
-        if let ForkTurns::Last(turns) = fork_turns {
-            inherited.retain_recent_turns(turns.get());
-        }
-        let mut spawner = self.for_new_thread(if agent_name.is_some() {
-            "spawn"
-        } else {
-            "fork"
-        })?;
+        let mut spawner = self.for_new_thread("fork")?;
         spawner.context_source = spawner.context_config.build();
         spawner.host_context = host_context;
         let mut config = (*spawner.config).clone();
-        config.agent_name = agent_name;
         config.model = model;
         config.thinking = thinking;
         config.fast_mode = fast_mode;
@@ -87,7 +73,7 @@ where
             session_id,
             workspace,
             service,
-            Some(InitialResume::Exact(Box::new(inherited))),
+            Some(InitialResume::Exact(Box::new(checkpoint.model().clone()))),
             AgentOrigin {
                 kind: "fork",
                 depth: self.depth.saturating_add(1),
@@ -98,22 +84,17 @@ where
 
     pub(super) fn spawn_clean(
         &self,
-        agent_name: Option<Arc<str>>,
         workspace: Option<Arc<str>>,
         parent_session_id: &str,
-        defaults: TurnDefaults,
+        model: Model,
+        thinking: Thinking,
+        fast_mode: bool,
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
-        let TurnDefaults {
-            model,
-            thinking,
-            fast_mode,
-        } = defaults;
         let session_id = SessionId::new();
         let session_id_text = session_id.to_string();
         let depth = self.depth.saturating_add(1);
         let mut config = (*self.config).clone();
-        config.agent_name = agent_name;
         config.model = model;
         config.thinking = thinking;
         config.fast_mode = fast_mode;
@@ -162,10 +143,11 @@ where
         let mut children = Vec::with_capacity(count);
         for _ in 0..count {
             let child = self.spawn_clean(
-                None,
                 workspace.clone(),
                 parent_session_id,
-                defaults,
+                defaults.model,
+                defaults.thinking,
+                defaults.fast_mode,
                 host_context
                     .as_ref()
                     .or(self.host_context.as_ref())

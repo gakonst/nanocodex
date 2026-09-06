@@ -88,20 +88,20 @@ export type MessageReceipt = Readonly<{
 
 /** Returns a spreadable Rust-backed tool extension for an Agent's tools array. */
 export function create(options?: Options): Subagents;
-/** Starts a structured SDK child through the Rust registry. */
+/** Directly invokes the canonical Rust spawn_agent handler. */
 export function spawn(agent: SubagentOwner, options: SpawnOptions): Promise<SpawnReport>;
 /** Atomically reserves and starts an ordered batch of canonical Rust subagents. */
 export function spawnMany(
   agent: SubagentOwner,
   options: readonly BatchSpawnOptions[],
 ): Promise<readonly SpawnReport[]>;
-/** Waits on numeric SDK child IDs through the Rust registry. */
+/** Directly invokes the canonical Rust wait_agent handler. */
 export function wait(agent: SubagentOwner, options: WaitOptions): Promise<WaitReport>;
-/** Lists the SDK task tree through the Rust registry. */
+/** Directly invokes the canonical Rust list_agents handler. */
 export function list(agent: SubagentOwner, options?: DirectoryOptions): Promise<DirectoryReport>;
-/** Delivers a structured SDK message through the Rust registry. */
+/** Directly invokes the canonical Rust send_agent_message handler. */
 export function send(agent: SubagentOwner, options: SendOptions): Promise<MessageReceipt>;
-/** Interrupts the SDK child and its descendants. */
+/** Directly invokes the canonical Rust interrupt_agent handler. */
 export function interrupt(agent: SubagentOwner, agentId: AgentId): Promise<LifecycleReport>;
-/** Closes the SDK child and its descendants. */
+/** Directly invokes the canonical Rust close_agent handler. */
 export function close(agent: SubagentOwner, agentId: AgentId): Promise<LifecycleReport>;

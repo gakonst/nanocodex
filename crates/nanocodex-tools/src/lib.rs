@@ -62,8 +62,6 @@ mod shell;
 #[cfg(feature = "workspace-runtime")]
 #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
 pub mod standard;
-#[cfg(feature = "native")]
-mod tool_namespaces;
 #[cfg(all(not(target_family = "wasm"), feature = "workspace-runtime"))]
 mod view_image;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]

@@ -318,18 +318,6 @@ impl From<&str> for PromptRequest {
     }
 }
 
-/// Conversation inherited by a model-directed child agent.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ForkTurns {
-    /// Start with only the delegated task.
-    #[default]
-    None,
-    /// Inherit the complete safe conversation boundary.
-    All,
-    /// Inherit the most recent user turns, excluding startup context.
-    Last(std::num::NonZeroUsize),
-}
-
 /// Optional model policy for a newly spawned clean agent.
 ///
 /// Omitted values inherit the invoking agent's settings at the model boundary
@@ -415,8 +403,6 @@ pub(super) enum Command {
     },
     Spawn {
         options: SpawnOptions,
-        fork_turns: ForkTurns,
-        agent_name: Option<Arc<str>>,
         host_context: Option<Arc<str>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },
@@ -443,8 +429,7 @@ pub(super) enum Command {
         result: oneshot::Sender<Result<()>>,
     },
     AppendDeveloperMessage {
-        text: nanocodex_oai_api::responses::ResponseItem,
-        steer_active: bool,
+        text: String,
         result: oneshot::Sender<Result<AgentSessionContext>>,
     },
     Context {

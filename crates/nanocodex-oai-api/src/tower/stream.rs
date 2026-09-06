@@ -103,25 +103,10 @@ pub struct CodeCall {
     pub name: String,
     /// Optional tool namespace.
     pub namespace: Option<String>,
-    /// Provider markers for encrypted function arguments.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encrypted_function_args: Option<Vec<String>>,
     /// Complete function/search arguments or custom-tool input.
     pub input: String,
     /// Wire-level call representation.
     pub kind: CodeCallKind,
-}
-
-impl CodeCall {
-    /// Resolves the provider's explicit markers and default collaboration encryption.
-    #[must_use]
-    pub fn has_encrypted_arguments(&self) -> bool {
-        crate::responses::function_arguments_are_encrypted(
-            self.namespace.as_deref(),
-            &self.name,
-            self.encrypted_function_args.as_deref(),
-        )
-    }
 }
 
 /// Wire-level representation used by a completed callable output.
@@ -581,7 +566,6 @@ fn code_calls(items: &[ResponseItem]) -> Vec<CodeCall> {
                     name: name.to_string(),
                     namespace: namespace.as_deref().map(str::to_owned),
                     input: input.to_string(),
-                    encrypted_function_args: None,
                     kind: CodeCallKind::Custom,
                 });
             }
@@ -590,7 +574,6 @@ fn code_calls(items: &[ResponseItem]) -> Vec<CodeCall> {
                 name,
                 namespace,
                 arguments,
-                encrypted_function_args,
                 ..
             } => {
                 calls.push(CodeCall {
@@ -598,9 +581,6 @@ fn code_calls(items: &[ResponseItem]) -> Vec<CodeCall> {
                     name: name.to_string(),
                     namespace: namespace.as_deref().map(str::to_owned),
                     input: arguments.to_string(),
-                    encrypted_function_args: encrypted_function_args
-                        .as_ref()
-                        .map(|arguments| arguments.iter().map(ToString::to_string).collect()),
                     kind: CodeCallKind::Function,
                 });
             }
@@ -615,7 +595,6 @@ fn code_calls(items: &[ResponseItem]) -> Vec<CodeCall> {
                     name: "tool_search".to_owned(),
                     namespace: None,
                     input: arguments.as_value().to_string(),
-                    encrypted_function_args: None,
                     kind: CodeCallKind::ToolSearch,
                 });
             }
@@ -660,72 +639,6 @@ mod tests {
         CodeCallKind, ContentItem, MessageRole, ResponseItem, StreamTiming, code_calls,
         final_message,
     };
-
-    #[test]
-    fn function_encryption_metadata_survives_callable_extraction_and_replay() {
-        let item = serde_json::from_value(serde_json::json!({
-            "type":"function_call", "namespace":"collaboration", "name":"send_message",
-            "call_id":"encrypted-call", "arguments":"{}", "encrypted_function_args":["message"]
-        }))
-        .unwrap();
-        let calls = super::code_calls(&[item]);
-        assert_eq!(
-            calls[0].encrypted_function_args.as_deref(),
-            Some(["message".to_owned()].as_slice())
-        );
-        let restored: super::CodeCall =
-            serde_json::from_slice(&serde_json::to_vec(&calls[0]).unwrap()).unwrap();
-        assert_eq!(
-            restored.encrypted_function_args,
-            calls[0].encrypted_function_args
-        );
-        let legacy: super::CodeCall = serde_json::from_value(serde_json::json!({
-            "call_id":"legacy", "name":"exec_command", "namespace":null, "input":"{}", "kind":"function"
-        })).unwrap();
-        assert!(legacy.encrypted_function_args.is_none());
-    }
-
-    #[test]
-    fn collaboration_messages_require_explicit_plaintext_markers() {
-        for name in [
-            "spawn_agent",
-            "send_message",
-            "followup_task",
-            "list_agents",
-        ] {
-            for markers in [None, Some(json!([])), Some(json!(["message"]))] {
-                let expected = match &markers {
-                    None => name != "list_agents",
-                    Some(markers) => !markers.as_array().unwrap().is_empty(),
-                };
-                let mut item = json!({
-                    "type":"function_call", "namespace":"collaboration", "name":name,
-                    "call_id":"message-call", "arguments":"{}"
-                });
-                if let Some(markers) = markers {
-                    item["encrypted_function_args"] = markers;
-                }
-                let history = [serde_json::from_value(item).unwrap()];
-                let call = super::code_calls(&history).remove(0);
-                let restored: super::CodeCall =
-                    serde_json::from_slice(&serde_json::to_vec(&call).unwrap()).unwrap();
-                assert_eq!(restored.has_encrypted_arguments(), expected);
-                let context = crate::tools::ToolContext::new(
-                    "gpt-6-astra",
-                    "session",
-                    "message-call",
-                    &history,
-                    1024,
-                );
-                assert_eq!(context.has_encrypted_arguments(), expected);
-                assert!(
-                    !context
-                        .with_encrypted_arguments(false)
-                        .has_encrypted_arguments()
-                );
-            }
-        }
-    }
 
     #[test]
     fn display_delta_cadence_records_gaps_and_stalls() {

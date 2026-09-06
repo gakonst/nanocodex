@@ -34,10 +34,7 @@ export function presentTool(tool: ToolActivity): ToolPresentation {
   const family = decodedName.family;
   const semanticWrapper = tool.name === "exec" && tool.children.length > 0;
   const previewUrl = family === "sandbox_preview" ? safeHttpUrl(field(output, "url")) : undefined;
-  // Canonical collaboration messages may be opaque provider ciphertext. The
-  // task path in the title identifies these calls without echoing the payload.
-  const collaboration = tool.name.startsWith("collaboration__") && SUBAGENT_TOOLS.has(family);
-  const subject = semanticWrapper || collaboration ? undefined : summarizeInput(family, input);
+  const subject = semanticWrapper ? undefined : summarizeInput(family, input);
   const outputSummary = semanticWrapper ? undefined : summarizeOutput(family, output);
   const source = toolSource(decodedName.sources, family, input, semanticWrapper);
   const executionDetails = semanticWrapper ? undefined : semanticExecutionDetails(family, input, output);
@@ -80,13 +77,11 @@ function semanticExecutionDetails(
 
 function toolTitle(tool: ToolActivity, family: string, input: unknown, output: unknown): string {
   if (family === "spawn_agent") {
-    const role = recordString(output, "task_name") ?? recordString(input, "task_name")
-      ?? recordString(output, "role") ?? recordString(input, "role");
+    const role = recordString(output, "role") ?? recordString(input, "role");
     if (role) return `${tool.status === "completed" ? "Spawned" : "Spawn"} ${compact(role)}`;
   }
   if (family === "wait_agent") return `Waiting on ${subagentTarget(input, output, true)}`;
-  if (family === "send_agent_message" || family === "send_message") return `Message ${subagentTarget(input, output)}`;
-  if (family === "followup_task") return `Follow up ${subagentTarget(input, output)}`;
+  if (family === "send_agent_message") return `Message ${subagentTarget(input, output)}`;
   if (family === "interrupt_agent") return `Interrupt ${subagentTarget(input, output)}`;
   if (family === "close_agent") return `Close ${subagentTarget(input, output)}`;
   return TITLE_OVERRIDES[family] ?? humanize(
@@ -111,9 +106,6 @@ function decodeToolName(name: string, metadata: unknown): { family: string; sour
     ?? metadataString(metadata, ["machine_id", "machineId"]);
   const machineAlias = name.startsWith("user_");
   let family = metadataName ?? (machineAlias ? OPAQUE_MACHINE_TOOL : name);
-  if (family.startsWith("collaboration__") && SUBAGENT_TOOLS.has(family.slice("collaboration__".length))) {
-    family = family.slice("collaboration__".length);
-  }
   if (metadataMachine || machineAlias) {
     sources.push(metadataMachine ? `Machine ${metadataMachine}` : "Machine");
   }
@@ -146,8 +138,6 @@ const SUBAGENT_TOOLS = new Set([
   "interrupt_agent",
   "list_agents",
   "send_agent_message",
-  "send_message",
-  "followup_task",
   "spawn_agent",
   "submit_result",
   "wait_agent",
@@ -176,11 +166,11 @@ function toolSource(
 
 function summarizeInput(family: string, input: unknown): string | undefined {
   if (isRecord(input)) {
-    if (family === "spawn_agent") return compact(stringField(input, "message") ?? stringField(input, "task") ?? "");
+    if (family === "spawn_agent") return compact(stringField(input, "task") ?? "");
     if (family === "wait_agent" || family === "interrupt_agent" || family === "close_agent") {
       return undefined;
     }
-    if (family === "send_agent_message" || family === "send_message" || family === "followup_task") return compact(stringField(input, "message") ?? "");
+    if (family === "send_agent_message") return compact(stringField(input, "message") ?? "");
     if (family === "sandbox_preview" && typeof input.port === "number") return `Port ${input.port}`;
     const command = stringField(input, family === "exec_command" ? "cmd" : "command");
     if (command) return compact(command);
@@ -284,8 +274,6 @@ function summarizeSubagentOutput(family: string, output: JsonRecord): string | u
   }
   if (family === "wait_agent") {
     if (output.timed_out === true) return "Timed out";
-    const message = stringField(output, "message");
-    if (message) return compact(message);
     const agents = arrayField(output, "agents");
     if (!agents?.length) return undefined;
     return agents.slice(0, 3).flatMap((agent) => {
@@ -304,8 +292,6 @@ function summarizeSubagentOutput(family: string, output: JsonRecord): string | u
 }
 
 function subagentTarget(input: unknown, output: unknown, allowMany = false): string {
-  const target = recordString(output, "task_name") ?? recordString(input, "target");
-  if (target) return compact(target);
   if (isRecord(output)) {
     const role = stringField(output, "role");
     const id = numberField(output, "agent_id");

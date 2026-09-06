@@ -226,7 +226,6 @@ fn pending_tool_generation() -> ResponsesOutput {
         final_message: None,
         output_items: vec![item],
         code_calls: vec![CodeCall {
-            encrypted_function_args: None,
             call_id: "call-pending".to_owned(),
             name: "pending".to_owned(),
             namespace: Some("trace__".to_owned()),

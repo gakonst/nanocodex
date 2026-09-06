@@ -170,23 +170,6 @@ impl ModelCheckpoint {
         self.conversation.history_revision()
     }
 
-    pub(crate) fn retain_recent_turns(&mut self, count: usize) {
-        let mut history = self.snapshot_history();
-        let boundaries: Vec<_> = history
-            .iter()
-            .enumerate()
-            .filter_map(|(index, item)| is_fork_turn_boundary(item).then_some(index))
-            .collect();
-        let start = boundaries
-            .get(boundaries.len().saturating_sub(count))
-            .copied()
-            .unwrap_or(history.len());
-        self.conversation
-            .managed
-            .start_context_window(history.split_off(start), &self.request_prefix);
-        self.preserve_inherited_delta = false;
-    }
-
     pub(crate) fn request_prefix(&self) -> &[ResponseItem] {
         &self.request_prefix
     }
@@ -384,11 +367,17 @@ impl<S> ModelRun<S> {
         }
     }
 
-    pub(crate) fn append_context_item(
+    pub(crate) fn append_developer_message(
         &mut self,
-        item: ResponseItem,
+        text: String,
         requested_workspace: Option<&str>,
     ) -> Result<ModelCheckpoint> {
+        let item = ResponseItem::message(
+            MessageRole::Developer,
+            [ContentItem::InputText {
+                text: text.into_boxed_str(),
+            }],
+        );
         if self.session.is_none() {
             self.session = Some(self.empty_session(requested_workspace)?);
         }
@@ -575,42 +564,4 @@ pub(crate) fn prepare_history_checkpoint(
         context_source,
         selected_agents_md,
     })
-}
-
-fn is_fork_turn_boundary(item: &ResponseItem) -> bool {
-    if let ResponseItem::AgentMessage { content, .. } = item {
-        return content.iter().any(|part| matches!(part, nanocodex_oai_api::responses::AgentMessageContent::InputText { text } if text.starts_with("Message Type: NEW_TASK\n")));
-    }
-    if !item.is_user_message() || nanocodex_oai_api::__private::is_contextual_user_message(item) {
-        return false;
-    }
-    let ResponseItem::Message { content, .. } = item else {
-        return false;
-    };
-    !content.iter().any(|part| matches!(part, ContentItem::InputText { text }
-        if text.starts_with("<agent_communication>\n") && !text.contains("\nMessage type: followup_task\n")))
-}
-
-#[cfg(test)]
-mod fork_boundary_tests {
-    use super::*;
-    #[test]
-    fn queued_agent_messages_do_not_count_as_forked_turns() {
-        let message = |text: &str| {
-            ResponseItem::message(
-                MessageRole::User,
-                [ContentItem::InputText { text: text.into() }],
-            )
-        };
-        assert!(is_fork_turn_boundary(&message("ordinary task")));
-        assert!(is_fork_turn_boundary(&message(
-            "<agent_communication>\nMessage type: followup_task\nnext task"
-        )));
-        assert!(!is_fork_turn_boundary(&message(
-            "<agent_communication>\nMessage type: message\nFYI"
-        )));
-        assert!(!is_fork_turn_boundary(&message(
-            "<agent_communication>\nMessage type: final_answer\nresult"
-        )));
-    }
 }

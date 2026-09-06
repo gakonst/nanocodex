@@ -137,16 +137,6 @@ fn json_output(value: &impl Serialize) -> ToolResult {
 
 pub type AgentToolResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
-fn initial_agent_prompt(registry: &Registry, session_id: &str, id: AgentId, task: &str) -> String {
-    if registry.uses_collaboration(session_id) {
-        format!(
-            "Act as a specialist subagent. You have no inherited conversation context. Your agent ID is {id}; other agents share your workspace. Use list_agents and send_message with task paths or string agent IDs to coordinate. send_message does not wake an idle agent; followup_task does. Complete the task using the required structured result.\n\nDelegated task:\n{task}"
-        )
-    } else {
-        agent_prompt(id, task)
-    }
-}
-
 pub async fn start_agent(
     parent: &AgentHandle,
     registry: &Arc<Registry>,
@@ -266,7 +256,7 @@ pub async fn start_agents_observed(
         .into_iter()
         .map(|(root_session_id, id, prompt, capacity)| async move {
             registry
-                .launch_initial_turn(&root_session_id, id, prompt.into(), capacity)
+                .launch_initial_turn(&root_session_id, id, prompt, capacity)
                 .await
         });
     if let Some(error) = join_all(launches).await.into_iter().find_map(Result::err) {
@@ -356,7 +346,7 @@ async fn start_agent_with_host_context(
         .launch_initial_turn(
             &reservation.root_session_id,
             id,
-            initial_agent_prompt(registry, parent.session_id(), id, &task).into(),
+            agent_prompt(id, &task),
             capacity,
         )
         .await?;
@@ -728,20 +718,7 @@ impl Tool for ChangeAgentLifecycle {
     }
 }
 
-mod collaboration;
-
-/// Installs Codex's current model-facing collaboration tools.
-/// The structured embedding API retains submit_result as an additional capability.
 pub fn install_tools(
-    tools: Tools,
-    parent: AgentHandle,
-    registry: Arc<Registry>,
-) -> Result<Tools, ToolsBuildError> {
-    collaboration::install(tools, parent, registry)
-}
-
-/// Installs the legacy structured-result model protocol for existing embeddings.
-pub fn install_structured_tools(
     tools: Tools,
     parent: AgentHandle,
     registry: Arc<Registry>,

@@ -391,7 +391,7 @@ fn group_direct_code_mode_definitions(
         } else {
             grouped.push(ToolDefinition::namespace(
                 namespace,
-                crate::tool_namespaces::namespace_description(namespace)
+                crate::context_management::namespace_description(namespace)
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("Tools in the {namespace} namespace.")),
                 [definition],

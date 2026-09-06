@@ -50,9 +50,7 @@ where
             .as_ref()
             .map_or_else(Vec::new, |session| session.conversation.flattened_history());
         // All branches share the provider session, but each thread owns its notes.
-        let agent_name = if let Some(name) = &self.config.agent_name {
-            name.to_string()
-        } else if self.provider_session_id.as_ref() == self.events.request_id() {
+        let agent_name = if self.provider_session_id.as_ref() == self.events.request_id() {
             "/root".to_owned()
         } else {
             format!("/root/{}", self.events.request_id())

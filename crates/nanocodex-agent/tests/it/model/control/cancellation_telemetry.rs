@@ -132,7 +132,6 @@ fn recovered_nested_tool_generation() -> ResponsesOutput {
         final_message: None,
         output_items: vec![output_item],
         code_calls: vec![CodeCall {
-            encrypted_function_args: None,
             call_id: "call-recovered".to_owned(),
             name: "exec".to_owned(),
             namespace: None,
@@ -184,7 +183,6 @@ text("unreachable");
         final_message: None,
         output_items: vec![output_item],
         code_calls: vec![CodeCall {
-            encrypted_function_args: None,
             call_id: "call-exec".to_owned(),
             name: "exec".to_owned(),
             namespace: None,
