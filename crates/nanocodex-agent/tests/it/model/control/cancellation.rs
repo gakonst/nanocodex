@@ -171,18 +171,33 @@ text(command.session_id);"#,
                 (4, ResponsesAttemptKind::Generation) => tool_generation(
                     "resp-write",
                     "call-write",
-                    r#"const result = await tools.write_stdin({
+                    r#"let result = await tools.write_stdin({
   session_id: 1,
   chars: "hello\n",
   yield_time_ms: 250
 });
-text(result.output);"#,
+let output = result.output;
+const deadline = Date.now() + 5000;
+// PTYs may return terminal echo before the command's output under load.
+while (!output.includes("got:hello") && result.session_id !== undefined && Date.now() < deadline) {
+  result = await tools.write_stdin({ session_id: 1, chars: "", yield_time_ms: 5000 });
+  output += result.output;
+}
+text(output);"#,
                 ),
                 (5, ResponsesAttemptKind::Generation) => {
                     assert!(
                         request.input_items().any(|item| serde_json::to_string(item)
                             .is_ok_and(|item| item.contains("got:hello"))),
-                        "write_stdin could not reach the shell retained from turn one"
+                        "write_stdin could not reach the shell retained from turn one: {:?}",
+                        request
+                            .input_items()
+                            .filter(|item| matches!(
+                                item,
+                                ResponseItem::CustomToolCallOutput { .. }
+                                    | ResponseItem::FunctionCallOutput { .. }
+                            ))
+                            .collect::<Vec<_>>()
                     );
                     final_generation("resp-third-final")
                 }
