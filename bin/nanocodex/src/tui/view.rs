@@ -168,7 +168,7 @@ fn render_reasoning_picker(frame: &mut Frame<'_>, app: &App) {
                 STANDARD_THINKING_OPTIONS.iter().enumerate()
             {
                 let mut label = (*label).to_owned();
-                if *thinking == nanocodex::Thinking::default() {
+                if *thinking == app.model().default_thinking() {
                     label.push_str(" (default)");
                 }
                 if *thinking == app.thinking() {
@@ -910,7 +910,7 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(footer.ends_with("gpt-5.6-sol · high · fast "));
+        assert!(footer.ends_with("gpt-6-astra · low · fast "));
     }
 
     #[test]
@@ -925,7 +925,7 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(footer.contains("Ready · $0.012345"));
-        assert!(footer.ends_with("gpt-5.6-sol · high "));
+        assert!(footer.ends_with("gpt-6-astra · low "));
     }
 
     #[test]
@@ -936,14 +936,14 @@ mod tests {
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Select Reasoning Level for gpt-5.6-sol"));
+        assert!(rendered.contains("Select Reasoning Level for gpt-6-astra"));
         assert!(rendered.contains("Low"));
-        assert!(rendered.contains("High (default) (current)"));
+        assert!(rendered.contains("Low (default) (current)"));
         assert!(rendered.contains("Extra high"));
         assert!(rendered.contains("More reasoning…"));
         assert!(!rendered.contains("Maximum reasoning depth"));
 
-        app.move_reasoning_picker(3);
+        app.move_reasoning_picker(4);
         assert!(matches!(
             app.confirm_reasoning_picker(),
             Some(crate::tui::app::ReasoningPickerAction::OpenedAdvanced)
@@ -961,7 +961,7 @@ mod tests {
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("gpt-5.6-sol"));
+        assert!(rendered.contains("gpt-6-astra"));
     }
 
     #[test]
@@ -1476,7 +1476,7 @@ mod tests {
                 "\"┌ Message → Main ──────────────────────────────┐\"\n",
                 "\"│                                              │\"\n",
                 "\"└──────────────────────────────────────────────┘\"\n",
-                "\" Ready  /simplify [          gpt-5.6-sol · high \"\n",
+                "\" Ready  /simplify [           gpt-6-astra · low \"\n",
             )
         );
     }

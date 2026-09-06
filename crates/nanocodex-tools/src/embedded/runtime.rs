@@ -212,6 +212,38 @@ impl EmbeddedToolRuntime {
                 )
             })
             .collect();
+        let resumable = self.host.as_ref().is_some_and(|host| host.supports_cells());
+        if resumable {
+            let visible_definitions = code_mode_definitions
+                .into_iter()
+                .filter(|definition| {
+                    !matches!(
+                        definition,
+                        ToolDefinition::Function {
+                            defer_loading: Some(true),
+                            ..
+                        } | ToolDefinition::Custom {
+                            defer_loading: Some(true),
+                            ..
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut exec = crate::code_mode_spec::exec_spec(
+                &visible_definitions,
+                &[],
+                has_deferred_tools,
+                true,
+            );
+            if let ToolDefinition::Custom { description, .. } = &mut exec {
+                *description = description
+                    .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.")
+                    .replace("When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.", "The cell owns its nested tool calls until they finish or are cancelled. Await every nested tool call before completing the script.").into_boxed_str();
+            }
+            let mut model_definitions = vec![exec, crate::code_mode_spec::wait_spec()];
+            model_definitions.extend(direct_definitions);
+            return (model_definitions, code_mode_tool_names);
+        }
         let mut description = EXEC_DESCRIPTION.to_owned();
         for definition in code_mode_definitions {
             if matches!(
@@ -361,28 +393,32 @@ impl EmbeddedToolRuntime {
         }
     }
 
-    /// Returns a failed result because embedded cells cannot currently yield.
-    #[allow(
-        clippy::unused_async,
-        reason = "matches the native tool-runtime contract"
-    )]
-    pub async fn wait_for_code(
-        &self,
-        _input: &str,
-        _context: ToolContext<'_>,
-    ) -> CodeModeExecution {
-        failed("background code-mode cells are unavailable in an embedded runtime")
+    /// Observes a yielded cell through a capable embedding host.
+    pub async fn wait_for_code(&self, input: &str, context: ToolContext<'_>) -> CodeModeExecution {
+        self.wait_for_code_with_updates(input, context, &mut IgnoreUpdates)
+            .await
     }
 
-    /// Waits for embedded Code Mode, which cannot currently yield nested work.
+    /// Observes newly completed nested work without repeating previous output.
     pub async fn wait_for_code_with_updates(
         &self,
         input: &str,
         context: ToolContext<'_>,
-        _observer: &mut dyn CodeModeObserver,
+        observer: &mut dyn CodeModeObserver,
     ) -> CodeModeExecution {
-        self.wait_for_code(input, context).await
+        let Some(host) = &self.host else {
+            return failed("no embedded Code Mode adapter is configured");
+        };
+        match host.wait_with_updates(input, context, observer).await {
+            Ok(execution) => execution,
+            Err(error) => failed(&error.to_string()),
+        }
     }
+}
+
+struct IgnoreUpdates;
+impl CodeModeObserver for IgnoreUpdates {
+    fn update(&mut self, _update: super::CodeModeUpdate<'_>) {}
 }
 
 fn is_standard_workspace_tool(name: &str) -> bool {
@@ -416,11 +452,19 @@ fn normalize_identifier(name: &str) -> String {
 
 impl EmbeddedToolRuntimeControl {
     /// Begins a new logical agent turn.
-    pub const fn begin_turn(&self) {}
+    pub fn begin_turn(&self) {
+        if let (Some(host), Some(session_id)) = (&self.host, &self.session_id) {
+            host.begin_turn(session_id);
+        }
+    }
 
     /// Cancels work owned by the current logical turn.
     pub async fn cancel_turn(&self) {
-        self.cancel().await;
+        if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
+            && let Err(error) = host.cancel_turn(session_id).await
+        {
+            tracing::warn!(target: "nanocodex_tools", %error, "embedded Code Mode turn cancellation failed");
+        }
     }
 
     /// Cancels active work.

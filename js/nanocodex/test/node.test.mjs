@@ -285,7 +285,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     assert.equal(warmup.reasoning.mode, "pro");
     assert.equal(warmup.reasoning.effort, "none");
     assert.equal(warmup.input[0].tools[0].name, "exec");
-    assert.match(warmup.input[0].tools[0].description, /tools\.multiply/);
+    assert.match(warmup.input[0].tools[0].description, /multiply\(args:/);
     sendWarmup(socket, "resp-warmup");
 
     const generation = await reader.next();
@@ -420,6 +420,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
         "send_agent_message",
         "spawn_agent",
         "submit_result",
+        "wait",
         "wait_agent",
       ],
     );
@@ -456,8 +457,8 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     const childReader = messageReader(childSocket);
     const childWarmup = await childReader.next();
     assert.equal(childWarmup.input[0].tools.some((tool) => tool.name === "send_agent_message"), true);
-    assert.match(childWarmup.input[0].tools[0].description, /tools\.rootOnly/);
-    assert.doesNotMatch(childWarmup.input[0].tools[0].description, /tools\.decoyOnly/);
+    assert.match(childWarmup.input[0].tools[0].description, /rootOnly/);
+    assert.doesNotMatch(childWarmup.input[0].tools[0].description, /decoyOnly/);
     sendWarmup(childSocket, "child-warmup");
 
     const rootSpawned = await rootReader.next();
@@ -978,8 +979,8 @@ test("independent agents keep their host connections isolated", async () => {
     assert.equal(socket.request.headers["session-id"], sessionId);
     const reader = messageReader(socket);
     const warmup = await reader.next();
-    assert.match(warmup.input[0].tools[0].description, new RegExp(`tools\\.${visibleTool}`));
-    assert.doesNotMatch(warmup.input[0].tools[0].description, new RegExp(`tools\\.${hiddenTool}`));
+    assert.match(warmup.input[0].tools[0].description, new RegExp(visibleTool));
+    assert.doesNotMatch(warmup.input[0].tools[0].description, new RegExp(hiddenTool));
     sendWarmup(socket, `${sessionId}-warmup`);
     await reader.next();
     sendFinal(socket, `${sessionId}-final`, message);
@@ -1002,6 +1003,86 @@ test("independent agents keep their host connections isolated", async () => {
   left.dispose();
   right.dispose();
   await Promise.all([leftServer.close(), rightServer.close()]);
+});
+
+test("WASM advertises and resumes Code Mode cells through function wait", async () => {
+  const server = await startServer();
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const agent = await Agent.create({
+    transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url, websocketWarmup: true }),
+    sessionId: "018f1f9a-7b3c-7a07-8000-000000000007",
+    tools: { delayed: { async handler() { await blocked; return "cell-completed-marker"; } } },
+  });
+  try {
+    const scenario = (async () => {
+      const socket = await server.connection;
+      const reader = messageReader(socket);
+      const warmup = await reader.next();
+      const specs = warmup.input[0].tools;
+      const wait = specs.find((tool) => tool.name === "wait");
+      assert.deepEqual(wait.parameters.required, ["cell_id"]);
+      assert.match(specs.find((tool) => tool.name === "exec").description, /yield_control/);
+      assert.equal(warmup.model, "gpt-6-astra");
+      assert.equal(warmup.reasoning.effort, "low");
+      sendWarmup(socket, "cell-warmup");
+      await reader.next();
+      sendCompleted(socket, "cell-start", [{
+        type: "custom_tool_call", name: "exec", call_id: "exec-cell",
+        input: '// @exec: {"yield_time_ms":0}\ntext("first-cell-chunk"); text(await tools.delayed({}));',
+      }]);
+      const yielded = await reader.next();
+      const output = yielded.input.find((item) => item.type === "custom_tool_call_output");
+      const encoded = JSON.stringify(output);
+      const cellId = encoded.match(/Script running with cell ID ([a-f0-9-]+:\d+)/)[1];
+      assert.match(encoded, /first-cell-chunk/);
+      release();
+      sendCompleted(socket, "cell-wait", [{
+        type: "function_call", name: "wait", call_id: "wait-cell",
+        arguments: JSON.stringify({ cell_id: cellId }),
+      }]);
+      const completed = await reader.next();
+      const result = completed.input.find((item) => item.type === "function_call_output");
+      assert.equal(result.call_id, "wait-cell");
+      assert.match(JSON.stringify(result), /Script completed/);
+      assert.match(JSON.stringify(result), /cell-completed-marker/);
+      assert.doesNotMatch(JSON.stringify(result), /first-cell-chunk/);
+      sendFinal(socket, "cell-final", "done");
+    })();
+    const [turn] = await bounded(Promise.all([
+      agent.turn.prompt({ input: "Run delayed in a yielding cell, then wait for it." }).result(),
+      scenario,
+    ]), "WASM exec/wait continuation");
+    assert.equal(turn.finalMessage, "done");
+  } finally {
+    release();
+    await agent.session.shutdown();
+    await server.close();
+  }
+});
+
+for (const [options, effort] of [
+  [{ model: "gpt-5.6-luna" }, "medium"],
+  [{ model: "gpt-6-astra", thinking: "high" }, "high"],
+]) test(`WASM resolves catalog effort and preserves explicit effort: ${JSON.stringify(options)}`, async () => {
+  const server = await startServer();
+  const agent = await createWarmAgent({ ...options, apiKey: "test-key", websocketUrl: server.url });
+  try {
+    const scenario = (async () => {
+      const socket = await server.connection;
+      const reader = messageReader(socket);
+      const request = await reader.next();
+      assert.equal(request.model, options.model);
+      assert.equal(request.reasoning.effort, effort);
+      sendWarmup(socket, "defaults-warmup");
+      await reader.next();
+      sendFinal(socket, "defaults-final", "done");
+    })();
+    await bounded(Promise.all([agent.turn.prompt({ input: "Reply done." }).result(), scenario]), "model defaults");
+  } finally {
+    await agent.session.shutdown();
+    await server.close();
+  }
 });
 
 async function startServer() {

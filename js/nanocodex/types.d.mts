@@ -459,6 +459,11 @@ export type CodeEvaluatorEnvironment = {
   text(value: unknown): void;
   image(value: unknown, detail?: string): void;
   generatedImage(value: unknown): void;
+  audio(value: unknown): void;
+  notify(value: unknown): void;
+  yield_control(): void;
+  setTimeout(callback: () => void, delayMs?: number): number;
+  clearTimeout(timerId?: number): void;
   store(key: string, value: unknown): void;
   load(key: string): unknown;
   exit(): never;

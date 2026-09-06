@@ -22,11 +22,11 @@ Tools, shell sessions, and Code Mode storage remain alive. Window transitions ar
 
 ## Tool compatibility and remaining gaps
 
-Native and embedded hosts already default to Code Mode. The native `exec`/`wait`, shell, patch, plan, and image contracts use the existing Codex-compatible implementations. Direct-only tools are now also fenced at nested dispatch. Native Code Mode uses QuickJS; its description names a JavaScript context instead of claiming V8.
+Native and embedded hosts default to Code Mode. Node, browser Worker, and QuickJS hosts now share the native `exec`/`wait` schemas and typed tool declarations. Cells yield by timeout or `yield_control()`, stream notifications, resume without duplicating output, and preserve original nested-call IDs. Session cancellation terminates their work; a host restart invalidates old cell IDs without replaying side effects. MCP images/audio and owned timers work across all three evaluators. Existing custom Rust hosts opt into resumable cells explicitly. The shell, patch, plan, and image contracts use the existing Codex-compatible implementations. Direct-only tools are now also fenced at nested dispatch. Native Code Mode uses QuickJS; its description names a JavaScript context instead of claiming V8.
 
 Two larger migrations remain before full parity:
 
-1. Embedded WASM has no authenticated HTTP boundary for history/notes and no resumable `exec`/`wait` cells. It retains provider compaction and its existing host Code Mode contract. Browser hosts may explicitly select CSP-compatible direct tools.
+1. Embedded WASM has no authenticated HTTP boundary for history/notes and retains provider compaction. Browser hosts may explicitly select CSP-compatible direct tools. Embedded cells retain ownership of unawaited nested tool calls until completion or cancellation; they do not orphan host-side effects when guest evaluation ends.
 2. The optional subagent extension retains its structured-result API (`role`, `task`, `output_schema`, numeric IDs, and `send_agent_message`). Codex's newer named-task, mailbox, and history-forking protocol is not a naming alias: migrating it requires lifecycle and durability changes while preserving public embedding contracts.
 
 Codex-only capabilities such as its sandbox approval service, skills discovery, installation/plugin management, and app-server configuration are not implemented by copying their tool declarations. Embeddings continue to own their actual capabilities.
@@ -39,7 +39,7 @@ The transport resolves an `invalid_function_parameters` path against the exact f
 
 ## Validation
 
-Focused Rust tests exercise context eligibility, native backend request headers and context binding, encrypted outputs, reset acknowledgement loss and replay, persistent window and item identity, pre-turn reminder delivery, retained tools/storage/cache, and the imported discovery repair. Transport and agent integration suites exercise ordinary compaction and reconnect/recovery behavior. JS contract, package, type, and runtime checks use generated release WASM from the worktree. Python binding tests cover default model/effort, explicit overrides, lifecycle, snapshots, and costs.
+Focused Rust tests exercise context eligibility, native backend request headers and context binding, encrypted outputs, reset acknowledgement loss and replay, persistent window and item identity, pre-turn reminder delivery, retained tools/storage/cache, and the imported discovery repair. Transport and agent integration suites exercise ordinary compaction and reconnect/recovery behavior. JS contract, package, type, and runtime checks use generated release WASM from the worktree. Cell checks cover the Node evaluator, real browser Worker module, QuickJS, and the WASM agent transport, including session fencing, termination, output budgets, and observer ownership. Python binding tests cover default model/effort, explicit overrides, lifecycle, snapshots, and costs.
 
 The long-history benchmark passes the existing 64 MiB limit. Immutable tool-namespace metadata is cached once per profile. Cold recovery decodes payloads directly into shared allocations and restores checkpoint sharing lost during serialization. Stored state, replay receipts, and their format are unchanged.
 
