@@ -34,7 +34,10 @@ export function presentTool(tool: ToolActivity): ToolPresentation {
   const family = decodedName.family;
   const semanticWrapper = tool.name === "exec" && tool.children.length > 0;
   const previewUrl = family === "sandbox_preview" ? safeHttpUrl(field(output, "url")) : undefined;
-  const subject = semanticWrapper ? undefined : summarizeInput(family, input);
+  // Canonical collaboration messages may be opaque provider ciphertext. The
+  // task path in the title identifies these calls without echoing the payload.
+  const collaboration = tool.name.startsWith("collaboration__") && SUBAGENT_TOOLS.has(family);
+  const subject = semanticWrapper || collaboration ? undefined : summarizeInput(family, input);
   const outputSummary = semanticWrapper ? undefined : summarizeOutput(family, output);
   const source = toolSource(decodedName.sources, family, input, semanticWrapper);
   const executionDetails = semanticWrapper ? undefined : semanticExecutionDetails(family, input, output);
@@ -108,6 +111,9 @@ function decodeToolName(name: string, metadata: unknown): { family: string; sour
     ?? metadataString(metadata, ["machine_id", "machineId"]);
   const machineAlias = name.startsWith("user_");
   let family = metadataName ?? (machineAlias ? OPAQUE_MACHINE_TOOL : name);
+  if (family.startsWith("collaboration__") && SUBAGENT_TOOLS.has(family.slice("collaboration__".length))) {
+    family = family.slice("collaboration__".length);
+  }
   if (metadataMachine || machineAlias) {
     sources.push(metadataMachine ? `Machine ${metadataMachine}` : "Machine");
   }
@@ -190,6 +196,14 @@ function summarizeInput(family: string, input: unknown): string | undefined {
 }
 
 function summarizeOutput(family: string, output: unknown): string | undefined {
+  if (Array.isArray(output)) {
+    const textParts = output.filter((part) => isRecord(part)
+      && ["input_text", "output_text", "text"].includes(String(part.type))
+      && typeof part.text === "string");
+    return compact(textParts.length === output.length
+      ? textParts.map((part) => part.text).join("\n")
+      : stringify(output));
+  }
   if (isRecord(output)) {
     if (SUBAGENT_TOOLS.has(family)) {
       const summary = summarizeSubagentOutput(family, output);

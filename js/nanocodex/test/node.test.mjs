@@ -445,6 +445,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
       type: "function_call",
       call_id: "call-spawn",
       namespace: "collaboration", name: "spawn_agent",
+      encrypted_function_args: [],
       arguments: JSON.stringify({
         task_name: "reviewer",
         message: "Return the word portable.",
@@ -521,7 +522,9 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     childSocket.off("message", observeIdle);
     sendCompleted(rootSocket, "root-followup", [{
       type: "function_call", call_id: "call-followup", namespace: "collaboration", name: "followup_task",
-      arguments: JSON.stringify({ target: "/root/reviewer", message: "Return portable again." }),
+      // Live Astra omits the marker for encrypted messages. An absent marker
+      // must not turn opaque content into model-visible plaintext.
+      arguments: JSON.stringify({ target: "/root/reviewer", message: "opaque-followup-payload" }),
     }]);
     const childFollowup = await childReader.next();
     const encryptedMessage = childFollowup.input.find((item) => item.type === "agent_message"
@@ -530,7 +533,11 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     assert.equal(encryptedMessage.recipient, "/root/reviewer");
     assert.equal(encryptedMessage.content.find((part) => part.type === "encrypted_content").encrypted_content, "opaque-idle-mailbox-payload");
     assert.ok(encryptedMessage.content.filter((part) => part.type === "input_text").every((part) => !part.text.includes("opaque-idle-mailbox-payload")));
-    assert.match(JSON.stringify(childFollowup.input), /Return portable again/);
+    const followupMessage = childFollowup.input.find((item) => item.type === "agent_message"
+      && item.content.some((part) => part.encrypted_content === "opaque-followup-payload"));
+    assert.ok(followupMessage);
+    assert.ok(followupMessage.content.filter((part) => part.type === "input_text")
+      .every((part) => !part.text.includes("opaque-followup-payload")));
     const followed = await rootReader.next();
     assert.equal(followed.input.find((item) => item.call_id === "call-followup").type, "function_call_output");
     sendCompleted(rootSocket, "root-wait-again", [{
@@ -1356,6 +1363,7 @@ for (const forkTurns of [undefined, "1"]) {
       await agent.session.setFastMode(true);
       const childConnection = new Promise((resolve) => server.websocketServer.once("connection", (socket, request) => { socket.request = request; resolve(socket); }));
       sendCompleted(socket, "spawn-fork", [{ type: "function_call", call_id: "fork-call", namespace: "collaboration", name: "spawn_agent",
+        encrypted_function_args: [],
         arguments: JSON.stringify({ task_name: "fork_check", message: "Report the inherited markers.", ...(forkTurns ? { fork_turns: forkTurns } : {}) }),
       }]);
       const scenario = (async () => {

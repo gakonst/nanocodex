@@ -112,6 +112,18 @@ pub struct CodeCall {
     pub kind: CodeCallKind,
 }
 
+impl CodeCall {
+    /// Resolves the provider's explicit markers and default collaboration encryption.
+    #[must_use]
+    pub fn has_encrypted_arguments(&self) -> bool {
+        crate::responses::function_arguments_are_encrypted(
+            self.namespace.as_deref(),
+            &self.name,
+            self.encrypted_function_args.as_deref(),
+        )
+    }
+}
+
 /// Wire-level representation used by a completed callable output.
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -671,6 +683,48 @@ mod tests {
             "call_id":"legacy", "name":"exec_command", "namespace":null, "input":"{}", "kind":"function"
         })).unwrap();
         assert!(legacy.encrypted_function_args.is_none());
+    }
+
+    #[test]
+    fn collaboration_messages_require_explicit_plaintext_markers() {
+        for name in [
+            "spawn_agent",
+            "send_message",
+            "followup_task",
+            "list_agents",
+        ] {
+            for markers in [None, Some(json!([])), Some(json!(["message"]))] {
+                let expected = match &markers {
+                    None => name != "list_agents",
+                    Some(markers) => !markers.as_array().unwrap().is_empty(),
+                };
+                let mut item = json!({
+                    "type":"function_call", "namespace":"collaboration", "name":name,
+                    "call_id":"message-call", "arguments":"{}"
+                });
+                if let Some(markers) = markers {
+                    item["encrypted_function_args"] = markers;
+                }
+                let history = [serde_json::from_value(item).unwrap()];
+                let call = super::code_calls(&history).remove(0);
+                let restored: super::CodeCall =
+                    serde_json::from_slice(&serde_json::to_vec(&call).unwrap()).unwrap();
+                assert_eq!(restored.has_encrypted_arguments(), expected);
+                let context = crate::tools::ToolContext::new(
+                    "gpt-6-astra",
+                    "session",
+                    "message-call",
+                    &history,
+                    1024,
+                );
+                assert_eq!(context.has_encrypted_arguments(), expected);
+                assert!(
+                    !context
+                        .with_encrypted_arguments(false)
+                        .has_encrypted_arguments()
+                );
+            }
+        }
     }
 
     #[test]

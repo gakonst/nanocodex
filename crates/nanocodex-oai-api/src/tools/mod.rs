@@ -324,7 +324,7 @@ pub struct ToolContext<'a> {
     history: &'a [ResponseItem],
     output_token_budget: usize,
     host_context: Option<&'a str>,
-    encrypted_arguments: bool,
+    encrypted_arguments: Option<bool>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -344,7 +344,7 @@ impl<'a> ToolContext<'a> {
             history,
             output_token_budget,
             host_context: None,
-            encrypted_arguments: false,
+            encrypted_arguments: None,
         }
     }
 
@@ -392,7 +392,7 @@ impl<'a> ToolContext<'a> {
     #[doc(hidden)]
     #[must_use]
     pub const fn with_encrypted_arguments(mut self, encrypted: bool) -> Self {
-        self.encrypted_arguments = encrypted;
+        self.encrypted_arguments = Some(encrypted);
         self
     }
 
@@ -400,8 +400,8 @@ impl<'a> ToolContext<'a> {
     #[doc(hidden)]
     #[must_use]
     pub fn has_encrypted_arguments(self) -> bool {
-        if self.encrypted_arguments {
-            return true;
+        if let Some(encrypted) = self.encrypted_arguments {
+            return encrypted;
         }
         self.history
             .iter()
@@ -409,13 +409,17 @@ impl<'a> ToolContext<'a> {
             .find_map(|item| match item {
                 ResponseItem::FunctionCall {
                     call_id,
+                    namespace,
+                    name,
                     encrypted_function_args,
                     ..
-                } if call_id.as_ref() == self.call_id => Some(
-                    encrypted_function_args
-                        .as_ref()
-                        .is_some_and(|arguments| !arguments.is_empty()),
-                ),
+                } if call_id.as_ref() == self.call_id => {
+                    Some(crate::responses::function_arguments_are_encrypted(
+                        namespace.as_deref(),
+                        name,
+                        encrypted_function_args.as_deref(),
+                    ))
+                }
                 _ => None,
             })
             .unwrap_or(false)

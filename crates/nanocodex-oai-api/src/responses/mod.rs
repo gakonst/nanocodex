@@ -23,3 +23,19 @@ pub(crate) use request::{CreatePolicy, ResponseCreate};
 #[cfg(feature = "client")]
 pub use request::{RequestProfile, ResponseHistory, ResponsesInput};
 pub use tool::{CustomToolFormat, JsonSchema, JsonValue, ToolDefinition};
+
+pub(crate) fn function_arguments_are_encrypted<T>(
+    namespace: Option<&str>,
+    name: &str,
+    markers: Option<&[T]>,
+) -> bool {
+    // Codex collaboration messages are encrypted by default. Only an explicit
+    // empty marker list selects the provider's plaintext message contract.
+    markers.map_or_else(
+        || {
+            namespace == Some("collaboration")
+                && matches!(name, "spawn_agent" | "send_message" | "followup_task")
+        },
+        |markers| !markers.is_empty(),
+    )
+}
