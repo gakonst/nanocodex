@@ -50,7 +50,9 @@ where
             .as_ref()
             .map_or_else(Vec::new, |session| session.conversation.flattened_history());
         // All branches share the provider session, but each thread owns its notes.
-        let agent_name = if self.provider_session_id.as_ref() == self.events.request_id() {
+        let agent_name = if let Some(name) = &self.config.agent_name {
+            name.to_string()
+        } else if self.provider_session_id.as_ref() == self.events.request_id() {
             "/root".to_owned()
         } else {
             format!("/root/{}", self.events.request_id())
@@ -79,7 +81,7 @@ where
                     return Err(error);
                 }
             };
-            if !has_context_window(&history) {
+            if !context.has_saved_window(&history) {
                 session.conversation.append(context.initial_context().await);
             }
             session.conversation.reset_for_full_request();
@@ -244,9 +246,6 @@ fn developer_message(text: String) -> ResponseItem {
         MessageRole::Developer,
         [ContentItem::InputText { text: text.into() }],
     )
-}
-fn has_context_window(history: &[ResponseItem]) -> bool {
-    contains_text(history, "<context_window>\n")
 }
 fn contains_text(history: &[ResponseItem], needle: &str) -> bool {
     history.iter().any(|item| matches!(item, ResponseItem::Message { content, .. } if content.iter().any(|part| matches!(part, ContentItem::InputText { text } if text.contains(needle)))))

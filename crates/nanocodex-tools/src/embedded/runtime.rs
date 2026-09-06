@@ -152,7 +152,7 @@ impl EmbeddedToolRuntime {
     ) -> (Vec<ToolDefinition>, Vec<(String, String)>) {
         let (definitions, names) = self.ungrouped_model_contract(session_id);
         (
-            crate::context_management::group_definitions(definitions),
+            crate::tool_namespaces::group_definitions(definitions),
             names,
         )
     }

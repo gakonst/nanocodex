@@ -45,7 +45,10 @@ pub(in crate::model) fn prompt_messages(
         };
         ResponseItem::message(role, [content])
     }));
-    input.push(ResponseItem::message(MessageRole::User, user_content));
+    input.extend(prompt.agent_message());
+    if !prompt.instruction.is_empty() {
+        input.push(ResponseItem::message(MessageRole::User, user_content));
+    }
     input
 }
 

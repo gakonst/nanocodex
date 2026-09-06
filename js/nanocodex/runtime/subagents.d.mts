@@ -92,13 +92,13 @@ export function spawnMany(
   agent: DefaultAgent,
   options: readonly BatchSpawnOptions[],
 ): Promise<readonly SpawnReport[]>;
-/** Directly invokes the canonical Rust wait_agent handler. */
+/** Waits on numeric SDK child IDs through the Rust registry. */
 export function wait(agent: DefaultAgent, options: WaitOptions): Promise<WaitReport>;
-/** Directly invokes the canonical Rust list_agents handler. */
+/** Lists the SDK task tree through the Rust registry. */
 export function list(agent: DefaultAgent, options?: DirectoryOptions): Promise<DirectoryReport>;
-/** Directly invokes the canonical Rust send_agent_message handler. */
+/** Delivers a structured SDK message through the Rust registry. */
 export function send(agent: DefaultAgent, options: SendOptions): Promise<MessageReceipt>;
-/** Directly invokes the canonical Rust interrupt_agent handler. */
+/** Interrupts the SDK child and its descendants. */
 export function interrupt(agent: DefaultAgent, agentId: AgentId): Promise<LifecycleReport>;
-/** Directly invokes the canonical Rust close_agent handler. */
+/** Closes the SDK child and its descendants. */
 export function close(agent: DefaultAgent, agentId: AgentId): Promise<LifecycleReport>;

@@ -116,6 +116,7 @@ fn panic_generation() -> ResponsesOutput {
         final_message: None,
         output_items: vec![item],
         code_calls: vec![CodeCall {
+            encrypted_function_args: None,
             call_id: "call-panic".to_owned(),
             name: "boom".to_owned(),
             namespace: Some("panic__".to_owned()),

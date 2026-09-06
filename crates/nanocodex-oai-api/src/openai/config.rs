@@ -40,6 +40,9 @@ pub struct ModelConfig {
     /// Enable model-managed context windows for eligible Codex subscriptions.
     /// Unsupported models, providers, and hosts retain remote summarization.
     pub experimental_context: bool,
+    /// Canonical task path for a model-directed child.
+    #[doc(hidden)]
+    pub agent_name: Option<Arc<str>>,
     /// Preferred initial streaming transport.
     pub responses_transport: ResponsesTransport,
     /// Whether a WebSocket session sends an optional non-generating prewarm
@@ -110,6 +113,7 @@ impl Default for ModelConfig {
             fast_mode: false,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
             experimental_context: true,
+            agent_name: None,
             responses_transport: ResponsesTransport::default(),
             websocket_warmup: true,
             responses_history: ResponsesHistory::default(),

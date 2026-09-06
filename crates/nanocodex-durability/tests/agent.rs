@@ -1226,6 +1226,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for RemovedToolR
                         final_message: None,
                         output_items: vec![item],
                         code_calls: vec![CodeCall {
+                            encrypted_function_args: None,
                             call_id: "call-recorded-hidden-tool".to_owned(),
                             name: "recorded_hidden_tool".to_owned(),
                             namespace: None,
@@ -1322,6 +1323,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for DurableToolS
                         final_message: None,
                         output_items: vec![item],
                         code_calls: vec![CodeCall {
+                            encrypted_function_args: None,
                             call_id: "call-count-once".to_owned(),
                             name: "count_once".to_owned(),
                             namespace: None,
@@ -1415,6 +1417,7 @@ impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ReplayContin
                         final_message: None,
                         output_items: vec![item],
                         code_calls: vec![CodeCall {
+                            encrypted_function_args: None,
                             call_id: "call-replay-fence".to_owned(),
                             name: "count_once".to_owned(),
                             namespace: None,

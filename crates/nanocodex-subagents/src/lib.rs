@@ -18,8 +18,8 @@ pub use runtime::{
     AgentDirectoryEntry, AgentSummary, MessageReceipt, Registry, SubagentControl, channel,
 };
 pub use tools::{
-    AgentStartReport, AgentTask, AgentToolResult, install_tools, start_agent, start_agent_with,
-    start_agents, start_agents_observed,
+    AgentStartReport, AgentTask, AgentToolResult, install_structured_tools, install_tools,
+    start_agent, start_agent_with, start_agents, start_agents_observed,
 };
 
 /// Unlimited active turns by default. Explicit finite limits remain supported.

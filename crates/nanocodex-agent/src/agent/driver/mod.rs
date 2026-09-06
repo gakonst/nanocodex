@@ -17,6 +17,8 @@ use telemetry::{ReasoningSettings, agent_compact_span, agent_turn_span, emit_rep
 /// Sole owner of mutable run state and the Responses service stack.
 pub(super) struct AgentDriver<S> {
     pub(super) commands: mpsc::Receiver<Command>,
+    pub(super) user_inputs: watch::Sender<u64>,
+    pub(super) activity: Arc<std::sync::Mutex<serde_json::Value>>,
     pub(super) events: EventSink,
     pub(super) client: ResponsesClient<S>,
     pub(super) transport_stats: Arc<TransportStats>,
@@ -92,6 +94,15 @@ where
         let mut commands_open = true;
         let mut shutdown_failures = Vec::new();
         loop {
+            {
+                let mut activity = self
+                    .activity
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if activity.as_str() == Some("running") {
+                    *activity = serde_json::json!({"completed":null});
+                }
+            }
             let command = loop {
                 if let Some((parent, result)) = pending_compact.take() {
                     break Command::Compact { parent, result };
@@ -359,43 +370,42 @@ where
                     drop(result.send(Ok(())));
                     continue;
                 }
-                if let Command::AppendDeveloperMessage { text, result } = command {
+                if let Command::AppendDeveloperMessage { text, result, .. } = command {
                     if !pending_developer_messages.is_empty() {
                         pending_developer_messages.push((text, result));
                         continue;
                     }
-                    let outcome =
-                        match model.append_developer_message(text, self.workspace.as_deref()) {
-                            Ok(snapshot) => {
-                                let checkpoint = Arc::new(CommittedSession::new(
-                                    Arc::clone(&self.spawner.lineage_id),
-                                    thread_model,
-                                    snapshot,
-                                ));
-                                match self.execution.commit_checkpoint(&checkpoint).await {
-                                    Ok(()) => {
-                                        latest_fork_checkpoint = Some(checkpoint);
-                                        agent_session_context(
-                                            latest_fork_checkpoint.as_deref(),
-                                            self.workspace.as_deref(),
-                                            &self.spawner.context_source,
-                                        )
-                                    }
-                                    Err(error) => {
-                                        model = model_from_checkpoint(
-                                            &self.events,
-                                            &self.transport_stats,
-                                            &self.tools,
-                                            &self.spawner,
-                                            &prompt_cache,
-                                            latest_fork_checkpoint.as_deref(),
-                                        );
-                                        Err(error)
-                                    }
+                    let outcome = match model.append_context_item(text, self.workspace.as_deref()) {
+                        Ok(snapshot) => {
+                            let checkpoint = Arc::new(CommittedSession::new(
+                                Arc::clone(&self.spawner.lineage_id),
+                                thread_model,
+                                snapshot,
+                            ));
+                            match self.execution.commit_checkpoint(&checkpoint).await {
+                                Ok(()) => {
+                                    latest_fork_checkpoint = Some(checkpoint);
+                                    agent_session_context(
+                                        latest_fork_checkpoint.as_deref(),
+                                        self.workspace.as_deref(),
+                                        &self.spawner.context_source,
+                                    )
+                                }
+                                Err(error) => {
+                                    model = model_from_checkpoint(
+                                        &self.events,
+                                        &self.transport_stats,
+                                        &self.tools,
+                                        &self.spawner,
+                                        &prompt_cache,
+                                        latest_fork_checkpoint.as_deref(),
+                                    );
+                                    Err(error)
                                 }
                             }
-                            Err(error) => Err(error),
-                        };
+                        }
+                        Err(error) => Err(error),
+                    };
                     let reopen = outcome_requires_reopen(&outcome);
                     drop(result.send(outcome));
                     if reopen {
@@ -419,6 +429,11 @@ where
                     continue;
                 }
                 if let Command::Compact { parent, result } = command {
+                    *self
+                        .activity
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        serde_json::json!("running");
                     logical_turn_index = logical_turn_index.saturating_add(1);
                     let span = agent_compact_span(
                         parent.as_ref(),
@@ -534,83 +549,20 @@ where
                             break execution.as_mut().await;
                         }
                         tokio::select! {
-                            biased;
-                            outcome = &mut execution => break outcome,
-                            command = self.commands.recv() => {
-                                let mut reopen = false;
-                                let command = match command {
-                                    Some(command) => accept_execution_command(
-                                        &self.execution,
-                                        &self.spawner.config,
-                                        default_thinking,
-                                        command,
-                                        &mut reopen,
-                                    ).await,
-                                    None => None,
-                                };
-                                if reopen {
-                                    if let Some(cancel) = cancel_compaction.take() {
-                                        let _ = cancel.send(());
-                                    }
-                                    begin_shutdown(
-                                        &mut self.commands,
-                                        &mut queued_turns,
-                                        default_thinking,
-                                        default_fast_mode,
-                                    )
-                                    .await;
-                                    commands_open = false;
-                                    break execution.as_mut().await;
-                                }
-                                match command {
-                                    Some(Command::Prompt {
-                                        key,
-                                        prompt,
-                                        execution_operation,
-                                        accepted: _,
-                                        cancel_on_admission,
-                                        thinking: _,
-                                        fast_mode: _,
-                                        parent,
-                                        events,
-                                        result,
-                                    }) => {
-                                        let execution_operation =
-                                            execution_operation.map(ExecutionOperation::into_id);
-                                        queued_turns.push_back(queued_prompt(
-                                            key,
-                                            prompt,
-                                            execution_operation,
-                                            cancel_on_admission,
-                                            default_thinking,
-                                            default_fast_mode,
-                                            parent,
-                                            events,
-                                            result,
-                                        ));
-                                    }
-                                    Some(command @ Command::RoutePrompt { .. }) => {
-                                        let mut reopen = false;
-                                        let Some(Command::Prompt {
-                                            key,
-                                            prompt,
-                                            execution_operation,
-                                            accepted: _,
-                                            cancel_on_admission,
-                                            thinking: _,
-                                            fast_mode: _,
-                                            parent,
-                                            events,
-                                            result,
-                                        }) = accept_idle_route(
-                                            &self.execution,
-                                            &self.spawner.config,
-                                            default_thinking,
-                                            command,
-                                            &mut reopen,
-                                        )
-                                        .await
-                                        else {
+                                        biased;
+                                        outcome = &mut execution => break outcome,
+                                        command = self.commands.recv() => {
+                                            let mut reopen = false;
+                                            let command = match command {
+                                                Some(command) => accept_execution_command(
+                                                    &self.execution,
+                                                    &self.spawner.config,
+                                                    default_thinking,
+                                                    command,
+                                                    &mut reopen,
+                                                ).await,
+                                                None => None,
+                                            };
                                             if reopen {
                                                 if let Some(cancel) = cancel_compaction.take() {
                                                     let _ = cancel.send(());
@@ -625,145 +577,208 @@ where
                                                 commands_open = false;
                                                 break execution.as_mut().await;
                                             }
-                                            continue;
-                                        };
-                                        queued_turns.push_back(queued_prompt(
-                                            key,
-                                            prompt,
-                                            execution_operation.map(ExecutionOperation::into_id),
-                                            cancel_on_admission,
-                                            default_thinking,
-                                            default_fast_mode,
-                                            parent,
-                                            events,
-                                            result,
-                                        ));
-                                    }
-                                    Some(Command::Compact { parent, result }) => {
-                                        compact_replaced = true;
-                                        pending_compact = Some((parent, result));
-                                        if let Some(cancel) = cancel_compaction.take() {
-                                            let _ = cancel.send(());
-                                        }
-                                        break execution.as_mut().await;
-                                    }
-                                    Some(Command::Cancel { key, result }) => {
-                                        let outcome = match queued_execution_operation(
-                                            &queued_turns,
-                                            key,
-                                        ) {
-                                            Some((operation_id, prompt)) => {
-                                                let persisted = match operation_id {
-                                                    Some(operation_id) => {
-                                                        self.execution
-                                                            .cancel_operation(
-                                                                &operation_id,
-                                                                &prompt,
-                                                            )
-                                                            .await
-                                                    }
-                                                    None => Ok(()),
-                                                };
-                                                persisted.and_then(|()| {
-                                                    if cancel_queued_turn(
-                                                        &mut queued_turns,
+                        match command {
+                                                Some(Command::Prompt {
+                                                    key,
+                                                    prompt,
+                                                    execution_operation,
+                                                    accepted: _,
+                                                    cancel_on_admission,
+                                                    thinking: _,
+                                                    fast_mode: _,
+                                                    parent,
+                                                    events,
+                                                    result,
+                                                }) => {
+                                                    let execution_operation =
+                                                        execution_operation.map(ExecutionOperation::into_id);
+                                                    queued_turns.push_back(queued_prompt(
                                                         key,
-                                                        true,
-                                                    ) {
-                                                        Ok(())
-                                                    } else {
-                                                        Err(NanocodexError::TurnNotCancellable)
+                                                        prompt,
+                                                        execution_operation,
+                                                        cancel_on_admission,
+                                                        default_thinking,
+                                                        default_fast_mode,
+                                                        parent,
+                                                        events,
+                                                        result,
+                                                    ));
+                                                }
+                                                Some(command @ Command::RoutePrompt { .. }) => {
+                                                    let mut reopen = false;
+                                                    let Some(Command::Prompt {
+                                                        key,
+                                                        prompt,
+                                                        execution_operation,
+                                                        accepted: _,
+                                                        cancel_on_admission,
+                                                        thinking: _,
+                                                        fast_mode: _,
+                                                        parent,
+                                                        events,
+                                                        result,
+                                                    }) = accept_idle_route(
+                                                        &self.execution,
+                                                        &self.spawner.config,
+                                                        default_thinking,
+                                                        command,
+                                                        &mut reopen,
+                                                    )
+                                                    .await
+                                                    else {
+                                                        if reopen {
+                                                            if let Some(cancel) = cancel_compaction.take() {
+                                                                let _ = cancel.send(());
+                                                            }
+                                                            begin_shutdown(
+                                                                &mut self.commands,
+                                                                &mut queued_turns,
+                                                                default_thinking,
+                                                                default_fast_mode,
+                                                            )
+                                                            .await;
+                                                            commands_open = false;
+                                                            break execution.as_mut().await;
+                                                        }
+                                                        continue;
+                                                    };
+                                                    queued_turns.push_back(queued_prompt(
+                                                        key,
+                                                        prompt,
+                                                        execution_operation.map(ExecutionOperation::into_id),
+                                                        cancel_on_admission,
+                                                        default_thinking,
+                                                        default_fast_mode,
+                                                        parent,
+                                                        events,
+                                                        result,
+                                                    ));
+                                                }
+                                                Some(Command::Compact { parent, result }) => {
+                                                    compact_replaced = true;
+                                                    pending_compact = Some((parent, result));
+                                                    if let Some(cancel) = cancel_compaction.take() {
+                                                        let _ = cancel.send(());
                                                     }
-                                                })
+                                                    break execution.as_mut().await;
+                                                }
+                                                Some(Command::Cancel { key, result }) => {
+                                                    let outcome = match queued_execution_operation(
+                                                        &queued_turns,
+                                                        key,
+                                                    ) {
+                                                        Some((operation_id, prompt)) => {
+                                                            let persisted = match operation_id {
+                                                                Some(operation_id) => {
+                                                                    self.execution
+                                                                        .cancel_operation(
+                                                                            &operation_id,
+                                                                            &prompt,
+                                                                        )
+                                                                        .await
+                                                                }
+                                                                None => Ok(()),
+                                                            };
+                                                            persisted.and_then(|()| {
+                                                                if cancel_queued_turn(
+                                                                    &mut queued_turns,
+                                                                    key,
+                                                                    true,
+                                                                ) {
+                                                                    Ok(())
+                                                                } else {
+                                                                    Err(NanocodexError::TurnNotCancellable)
+                                                                }
+                                                            })
+                                                        }
+                                                        None => Err(NanocodexError::TurnNotCancellable),
+                                                    };
+                                                    let reopen = outcome_requires_reopen(&outcome);
+                                                    drop(result.send(outcome));
+                                                    if reopen {
+                                                        if let Some(cancel) = cancel_compaction.take() {
+                                                            let _ = cancel.send(());
+                                                        }
+                                                        begin_shutdown(
+                                                            &mut self.commands,
+                                                            &mut queued_turns,
+                                                            default_thinking,
+                                                            default_fast_mode,
+                                                        )
+                                                        .await;
+                                                        commands_open = false;
+                                                        break execution.as_mut().await;
+                                                    }
+                                                }
+                                                Some(Command::Steer { result, .. }) => {
+                                                    drop(result.send(Err(NanocodexError::TurnNotSteerable)));
+                                                }
+                                                Some(command @ (Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
+                                                    handle_idle_command(
+                                                        command,
+                                                        latest_fork_checkpoint.as_ref(),
+                                                        &self.spawner,
+                                                        TurnDefaults {
+                                                            model: thread_model,
+                                                            thinking: default_thinking,
+                                                            fast_mode: default_fast_mode,
+                                                        },
+                                                        session_id.as_str(),
+                                                        self.workspace.clone(),
+                                                    );
+                                                }
+                                                Some(Command::SetThinking { thinking, result }) => {
+                                                    let outcome = validate_model_thinking(
+                                                        thread_model,
+                                                        thinking,
+                                                    )
+                                                    .map(|()| {
+                                                        default_thinking = thinking;
+                                                    });
+                                                    drop(result.send(outcome));
+                                                }
+                                                Some(Command::SetFastMode { enabled, result }) => {
+                                                    default_fast_mode = enabled;
+                                                    drop(result.send(Ok(())));
+                                                }
+                                                Some(Command::SetModel { result, .. }) => {
+                                                    drop(result.send(Err(model_change_locked())));
+                                                }
+                                                Some(Command::AppendDeveloperMessage { text, result, .. }) => {
+                                                    pending_developer_messages.push((text, result));
+                                                }
+                                                Some(Command::Context { result }) => {
+                                                    drop(result.send(agent_session_context(
+                                                        latest_fork_checkpoint.as_deref(),
+                                                        self.workspace.as_deref(),
+                                                        &self.spawner.context_source,
+                                                    )));
+                                                }
+                                                Some(Command::Shutdown) => {
+                                                    if let Some(cancel) = cancel_compaction.take() {
+                                                        let _ = cancel.send(());
+                                                    }
+                                                    begin_shutdown(
+                                                        &mut self.commands,
+                                                        &mut queued_turns,
+                                                        default_thinking,
+                                                        default_fast_mode,
+                                                    )
+                                                    .await;
+                                                    commands_open = false;
+                                                    break execution.as_mut().await;
+                                                }
+                                                None => {
+                                                    commands_open = false;
+                                                    mark_all_queued_turns_cancelled(&mut queued_turns);
+                                                    if let Some(cancel) = cancel_compaction.take() {
+                                                        let _ = cancel.send(());
+                                                    }
+                                                    break execution.as_mut().await;
+                                                }
                                             }
-                                            None => Err(NanocodexError::TurnNotCancellable),
-                                        };
-                                        let reopen = outcome_requires_reopen(&outcome);
-                                        drop(result.send(outcome));
-                                        if reopen {
-                                            if let Some(cancel) = cancel_compaction.take() {
-                                                let _ = cancel.send(());
-                                            }
-                                            begin_shutdown(
-                                                &mut self.commands,
-                                                &mut queued_turns,
-                                                default_thinking,
-                                                default_fast_mode,
-                                            )
-                                            .await;
-                                            commands_open = false;
-                                            break execution.as_mut().await;
                                         }
                                     }
-                                    Some(Command::Steer { result, .. }) => {
-                                        drop(result.send(Err(NanocodexError::TurnNotSteerable)));
-                                    }
-                                    Some(command @ (Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
-                                        handle_idle_command(
-                                            command,
-                                            latest_fork_checkpoint.as_ref(),
-                                            &self.spawner,
-                                            TurnDefaults {
-                                                model: thread_model,
-                                                thinking: default_thinking,
-                                                fast_mode: default_fast_mode,
-                                            },
-                                            session_id.as_str(),
-                                            self.workspace.clone(),
-                                        );
-                                    }
-                                    Some(Command::SetThinking { thinking, result }) => {
-                                        let outcome = validate_model_thinking(
-                                            thread_model,
-                                            thinking,
-                                        )
-                                        .map(|()| {
-                                            default_thinking = thinking;
-                                        });
-                                        drop(result.send(outcome));
-                                    }
-                                    Some(Command::SetFastMode { enabled, result }) => {
-                                        default_fast_mode = enabled;
-                                        drop(result.send(Ok(())));
-                                    }
-                                    Some(Command::SetModel { result, .. }) => {
-                                        drop(result.send(Err(model_change_locked())));
-                                    }
-                                    Some(Command::AppendDeveloperMessage { text, result }) => {
-                                        pending_developer_messages.push((text, result));
-                                    }
-                                    Some(Command::Context { result }) => {
-                                        drop(result.send(agent_session_context(
-                                            latest_fork_checkpoint.as_deref(),
-                                            self.workspace.as_deref(),
-                                            &self.spawner.context_source,
-                                        )));
-                                    }
-                                    Some(Command::Shutdown) => {
-                                        if let Some(cancel) = cancel_compaction.take() {
-                                            let _ = cancel.send(());
-                                        }
-                                        begin_shutdown(
-                                            &mut self.commands,
-                                            &mut queued_turns,
-                                            default_thinking,
-                                            default_fast_mode,
-                                        )
-                                        .await;
-                                        commands_open = false;
-                                        break execution.as_mut().await;
-                                    }
-                                    None => {
-                                        commands_open = false;
-                                        mark_all_queued_turns_cancelled(&mut queued_turns);
-                                        if let Some(cancel) = cancel_compaction.take() {
-                                            let _ = cancel.send(());
-                                        }
-                                        break execution.as_mut().await;
-                                    }
-                                }
-                            }
-                        }
                     };
                     drop(execution);
                     let mut compact_checkpoint_committed = false;
@@ -969,6 +984,10 @@ where
                 );
                 continue;
             };
+            *self
+                .activity
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::json!("running");
             let execution_operation = execution_operation.map(ExecutionOperation::into_id);
             let thinking = thinking.unwrap_or(default_thinking);
             let fast_mode = fast_mode.unwrap_or(default_fast_mode);
@@ -1186,6 +1205,7 @@ where
                                     drop(result.send(Err(NanocodexError::TurnNotSteerable)));
                                     continue;
                                 }
+                                let user_input = !prompt.is_agent_communication();
                                 let outcome = accept_turn_steer(
                                     &steers,
                                     &execution_turn,
@@ -1193,6 +1213,7 @@ where
                                     prompt,
                                 )
                                 .await;
+                                if user_input && outcome.is_ok() { self.user_inputs.send_modify(|revision| *revision = revision.wrapping_add(1)); }
                                 let reopen = outcome_requires_reopen(&outcome);
                                 drop(result.send(outcome));
                                 if reopen {
@@ -1215,6 +1236,7 @@ where
                                 route_result,
                                 ..
                             }) => {
+                                let user_input = !prompt.is_agent_communication();
                                 let outcome = accept_turn_steer(
                                     &steers,
                                     &execution_turn,
@@ -1223,6 +1245,7 @@ where
                                 )
                                 .await
                                 .map(|()| PromptRouteKind::Steered);
+                                if user_input && outcome.is_ok() { self.user_inputs.send_modify(|revision| *revision = revision.wrapping_add(1)); }
                                 let reopen = outcome_requires_reopen(&outcome);
                                 drop(route_result.send(outcome));
                                 if reopen {
@@ -1338,8 +1361,32 @@ where
                             Some(Command::SetModel { result, .. }) => {
                                 drop(result.send(Err(model_change_locked())));
                             }
-                            Some(Command::AppendDeveloperMessage { text, result }) => {
-                                pending_developer_messages.push((text, result));
+                            Some(Command::AppendDeveloperMessage { text, steer_active, result }) => {
+                                if !steer_active {
+                                    pending_developer_messages.push((text, result));
+                                    continue;
+                                }
+                                let nanocodex_oai_api::responses::ResponseItem::AgentMessage { author, recipient, content, .. } = text else {
+                                    drop(result.send(Err(NanocodexError::InvalidRequest("expected agent communication".into()))));
+                                    continue;
+                                };
+                                let prompt = Prompt::agent_communication(author.into(), recipient.into(), content.into_iter().collect());
+                                let outcome = accept_turn_steer(
+                                    &steers, &execution_turn, &model_call_index, prompt,
+                                ).await.and_then(|()| agent_session_context(
+                                    latest_fork_checkpoint.as_deref(),
+                                    self.workspace.as_deref(),
+                                    &self.spawner.context_source,
+                                ));
+                                let reopen = outcome_requires_reopen(&outcome);
+                                drop(result.send(outcome));
+                                if reopen {
+                                    if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
+                                    begin_shutdown(&mut self.commands, &mut queued_turns,
+                                        default_thinking, default_fast_mode).await;
+                                    commands_open = false;
+                                    break execution.as_mut().await;
+                                }
                             }
                             Some(Command::Context { result }) => {
                                 let checkpoint = fork_snapshot_rx
@@ -1580,6 +1627,14 @@ where
                 .await;
                 commands_open = false;
             }
+            *self
+                .activity
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = match &outcome {
+                Ok(_) => serde_json::json!({"completed":null}),
+                Err(NanocodexError::TurnCancelled) => serde_json::json!("interrupted"),
+                Err(error) => serde_json::json!({"errored":error.to_string()}),
+            };
             drop(result.send(outcome));
             if reopen_after_turn {
                 for (_, message_result) in pending_developer_messages.drain(..) {
@@ -1712,7 +1767,7 @@ async fn commit_developer_message<S>(
     execution: &Execution,
     lineage_id: Arc<str>,
     model_name: Model,
-    text: String,
+    text: nanocodex_oai_api::responses::ResponseItem,
     workspace: Option<&str>,
 ) -> Result<Option<Arc<CommittedSession>>>
 where
@@ -1720,7 +1775,7 @@ where
     S::Error: Into<ResponseError>,
     S::Future: AgentSend,
 {
-    let snapshot = model.append_developer_message(text, workspace)?;
+    let snapshot = model.append_context_item(text, workspace)?;
     let checkpoint = Arc::new(CommittedSession::new(lineage_id, model_name, snapshot));
     execution.commit_checkpoint(&checkpoint).await?;
     Ok(Some(checkpoint))

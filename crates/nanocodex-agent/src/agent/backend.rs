@@ -414,7 +414,14 @@ impl LifecycleBackend for LocalLifecycle {
         let shutdown = self.shutdown.clone();
         Box::pin(async move {
             request_command(&commands, &shutdown, |result| {
-                Command::AppendDeveloperMessage { text, result }
+                Command::AppendDeveloperMessage {
+                    text: nanocodex_oai_api::responses::ResponseItem::message(
+                        nanocodex_oai_api::responses::MessageRole::Developer,
+                        [nanocodex_oai_api::responses::ContentItem::input_text(text)],
+                    ),
+                    steer_active: false,
+                    result,
+                }
             })
             .await
         })

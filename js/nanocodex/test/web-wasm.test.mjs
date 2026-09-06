@@ -10,13 +10,12 @@ import * as datasets from "../tools/dataset.mjs";
 import * as standard from "../tools/standard.mjs";
 
 const SUBAGENT_TOOL_NAMES = Object.freeze([
-  "submit_result",
   "spawn_agent",
-  "send_agent_message",
+  "send_message",
+  "followup_task",
   "list_agents",
   "wait_agent",
   "interrupt_agent",
-  "close_agent",
 ]);
 
 const createWarmAgent = ({
@@ -202,15 +201,14 @@ test("web-target WASM directly dispatches a CSP-safe application tool", async ()
     const reader = messageReader(socket);
     const warmup = await reader.next();
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
-    assert.deepEqual(toolPrefix.tools.map((tool) => tool.name), [
-      "close_agent",
+    assert.deepEqual(toolPrefix.tools.flatMap((tool) => tool.tools ?? [tool]).map((tool) => tool.name), [
+      "runtimeInfo",
+      "followup_task",
       "interrupt_agent",
       "list_agents",
-      "runtimeInfo",
-      "send_agent_message",
+      "send_message",
       "spawn_agent",
-      "submit_result",
-      "wait_agent",
+          "wait_agent",
     ]);
     send(socket, { type: "response.completed", response: { id: "direct-warmup", usage: null } });
     const generation = await reader.next();
@@ -319,7 +317,7 @@ test("web-target WASM exposes browser bash and Rust apply_patch as standard tool
     const reader = messageReader(socket);
     const warmup = await reader.next();
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
-    assert.deepEqual(toolPrefix.tools.map((tool) => tool.name), [
+    assert.deepEqual(toolPrefix.tools.flatMap((tool) => tool.tools ?? [tool]).map((tool) => tool.name), [
       "exec",
       "wait",
       "exec_command",
@@ -428,7 +426,7 @@ test("web-target WASM keeps remote MCP deferred behind tool_search and Code Mode
     const reader = messageReader(socket);
     const warmup = await reader.next();
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
-    assert.deepEqual(toolPrefix.tools.map((tool) => tool.name ?? tool.type), [
+    assert.deepEqual(toolPrefix.tools.flatMap((tool) => tool.tools ?? [tool]).map((tool) => tool.name ?? tool.type), [
       "exec",
       "wait",
       "tool_search",
@@ -460,7 +458,7 @@ test("web-target WASM keeps remote MCP deferred behind tool_search and Code Mode
     assert.equal(searched.input[0].type, "tool_search_output");
     assert.equal(searched.input[0].tools[0].type, "namespace");
     assert.equal(searched.input[0].tools[0].name, "mcp__fixture__");
-    assert.deepEqual(searched.input[0].tools[0].tools.map((tool) => tool.name), ["echo"]);
+    assert.deepEqual(searched.input[0].tools[0].tools.flatMap((tool) => tool.tools ?? [tool]).map((tool) => tool.name), ["echo"]);
     send(socket, {
       type: "response.completed",
       response: {
@@ -839,7 +837,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
     const reader = messageReader(socket);
     const warmup = await reader.next();
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
-    assert.deepEqual(toolPrefix.tools.map((tool) => tool.name ?? tool.type), [
+    assert.deepEqual(toolPrefix.tools.flatMap((tool) => tool.tools ?? [tool]).map((tool) => tool.name ?? tool.type), [
       "exec",
       "wait",
       "exec_command",
@@ -937,7 +935,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
     assert.deepEqual(
       searched.input[0].tools.map((namespace) => ({
         name: namespace.name,
-        tools: namespace.tools.map((tool) => tool.name),
+        tools: namespace.tools.flatMap((tool) => tool.tools ?? [tool]).map((tool) => tool.name),
       })),
       [{ name: "mcp__fixture__", tools: ["echo"] }],
     );

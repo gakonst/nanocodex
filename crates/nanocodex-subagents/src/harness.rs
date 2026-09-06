@@ -9,6 +9,7 @@ use super::{
     platform::{self, Task, TaskError},
     runtime::{DelegationChange, Registry, completion_instructions},
 };
+use nanocodex_agent::input::Prompt;
 use nanocodex_agent::{Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult};
 use std::{collections::VecDeque, sync::Weak};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -57,8 +58,12 @@ impl EnqueuedDelivery {
 }
 
 enum HarnessCommand {
+    Followup {
+        prompt: Prompt,
+        response: oneshot::Sender<std::io::Result<()>>,
+    },
     Start {
-        prompt: String,
+        prompt: Prompt,
         capacity: TurnCapacity,
         response: oneshot::Sender<std::io::Result<()>>,
     },
@@ -101,9 +106,14 @@ enum HarnessEvent {
 }
 
 impl HarnessHandle {
+    pub(super) async fn followup(&self, prompt: Prompt) -> std::io::Result<()> {
+        self.request(|response| HarnessCommand::Followup { prompt, response })
+            .await
+    }
+
     pub(super) async fn start(
         &self,
-        prompt: String,
+        prompt: Prompt,
         capacity: TurnCapacity,
     ) -> std::io::Result<()> {
         self.request(|response| HarnessCommand::Start {
@@ -265,6 +275,11 @@ impl Harness {
 
     async fn handle(&mut self, command: HarnessCommand) -> bool {
         match command {
+            HarnessCommand::Followup { prompt, response } => {
+                let result = self.followup(prompt).await;
+                let _ = response.send(result);
+                false
+            }
             HarnessCommand::Start {
                 prompt,
                 capacity,
@@ -363,7 +378,10 @@ impl Harness {
             && let Ok(capacity) = self.capacity.reserve()
         {
             let delegation = self.begin_delegation(command.message.id).await;
-            if let Err(error) = self.start_turn(command.message.prompt(), capacity).await {
+            if let Err(error) = self
+                .start_turn(command.message.prompt().into(), capacity)
+                .await
+            {
                 self.rollback_delegation(delegation).await;
                 self.reject(command, error.to_string()).await;
                 return;
@@ -423,7 +441,7 @@ impl Harness {
             }
             .expect("a pending message should still exist");
             let delegation = self.begin_delegation(id).await;
-            match self.start_turn(message.prompt(), capacity).await {
+            match self.start_turn(message.prompt().into(), capacity).await {
                 Ok(()) => {
                     if let Some(registry) = self.registry.upgrade() {
                         registry
@@ -518,7 +536,54 @@ impl Harness {
             .await;
     }
 
-    async fn start_turn(&mut self, prompt: String, capacity: TurnCapacity) -> std::io::Result<()> {
+    async fn followup(&mut self, prompt: Prompt) -> std::io::Result<()> {
+        if self.active.is_some() {
+            let registry = self
+                .registry
+                .upgrade()
+                .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
+            let steer = registry
+                .begin_turn_steer(&self.root_session_id, self.id)
+                .await;
+            let steered_prompt = if self.output_schema.is_empty() {
+                prompt.clone()
+            } else if let Some(steer) = &steer {
+                prompt
+                    .clone()
+                    .with_instruction_suffix(completion_instructions(
+                        &self.output_schema,
+                        steer.token(),
+                    ))
+            } else {
+                return Err(std::io::Error::other(
+                    "agent cannot accept a follow-up task",
+                ));
+            };
+            let result = self
+                .active
+                .as_ref()
+                .expect("active turn")
+                .control
+                .steer(steered_prompt)
+                .await;
+            if let Some(steer) = steer {
+                registry
+                    .finish_turn_steer(&self.root_session_id, steer, result.is_ok())
+                    .await;
+            }
+            match result {
+                Ok(()) => return Ok(()),
+                Err(NanocodexError::TurnNotSteerable | NanocodexError::TurnStopped) => {
+                    self.finish_active().await
+                }
+                Err(error) => return Err(std::io::Error::other(error.to_string())),
+            }
+        }
+        let capacity = self.capacity.reserve()?;
+        self.start_turn(prompt, capacity).await
+    }
+
+    async fn start_turn(&mut self, prompt: Prompt, capacity: TurnCapacity) -> std::io::Result<()> {
         if self.active.is_some() {
             return Err(std::io::Error::other(format!(
                 "agent {} is not idle",
@@ -542,10 +607,11 @@ impl Harness {
                 self.id
             )));
         };
-        let prompt = format!(
-            "{prompt}\n\n{}",
-            completion_instructions(&self.output_schema, turn_token)
-        );
+        let prompt = if self.output_schema.is_empty() {
+            prompt
+        } else {
+            prompt.with_instruction_suffix(completion_instructions(&self.output_schema, turn_token))
+        };
         let turn = match agent.prompt(prompt).await {
             Ok(turn) => turn,
             Err(error) => {

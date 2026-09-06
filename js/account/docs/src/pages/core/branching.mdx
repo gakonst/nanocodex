@@ -44,8 +44,8 @@ conversation state, not a database or complete product configuration. See the
 ## Optional structured subagents
 
 `nanocodex-subagents` installs seven canonical tools: `spawn_agent`,
-`submit_result`, `send_agent_message`, `list_agents`, `wait_agent`,
-`interrupt_agent`, and `close_agent`. It adds a shared task tree, capacity,
+`send_message`, `followup_task`, `list_agents`, `wait_agent`,
+`interrupt_agent`, plus `submit_result` for structured SDK children. It adds a shared task tree, capacity,
 typed updates, schema-validated results, and directed coordination without
 putting a scheduler into core.
 

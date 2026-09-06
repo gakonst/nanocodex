@@ -106,7 +106,8 @@ pub mod __private {
         },
         session::{
             context::{
-                ContextManager, assign_missing_response_item_id, responses_lite_request_prefix,
+                ContextManager, assign_missing_response_item_id, is_contextual_user_message,
+                responses_lite_request_prefix,
             },
             state::{ManagedSessionState, ManagedSessionStateError},
         },
@@ -256,15 +257,84 @@ pub struct Prompt {
     /// Synthetic text-only conversation supplied before this turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     transcript: Vec<PromptMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_message: Option<AgentPromptMessage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AgentPromptMessage {
+    author: String,
+    recipient: String,
+    content: Vec<responses::AgentMessageContent>,
 }
 
 impl Prompt {
+    /// Creates typed agent communication without converting encrypted content to text.
+    #[doc(hidden)]
+    pub fn agent_communication(
+        author: String,
+        recipient: String,
+        content: Vec<responses::AgentMessageContent>,
+    ) -> Self {
+        Self {
+            instruction: PromptInput::Text(String::new()),
+            transcript: Vec::new(),
+            agent_message: Some(AgentPromptMessage {
+                author,
+                recipient,
+                content,
+            }),
+        }
+    }
+
+    /// Whether this input carries typed agent communication.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn is_agent_communication(&self) -> bool {
+        self.agent_message.is_some()
+    }
+
+    /// Returns the typed runtime-authored message, when present.
+    #[doc(hidden)]
+    pub fn agent_message(&self) -> Option<responses::ResponseItem> {
+        let message = self.agent_message.as_ref()?;
+        Some(responses::ResponseItem::AgentMessage {
+            id: None,
+            author: message.author.clone().into(),
+            recipient: message.recipient.clone().into(),
+            content: message.content.clone().into_iter().collect(),
+            internal_chat_message_metadata_passthrough: None,
+        })
+    }
+
+    /// Appends embedding-owned completion instructions to the same input message.
+    #[doc(hidden)]
+    pub fn with_instruction_suffix(mut self, suffix: String) -> Self {
+        if let Some(message) = &mut self.agent_message {
+            message
+                .content
+                .push(responses::AgentMessageContent::InputText {
+                    text: suffix.into(),
+                });
+        } else {
+            match &mut self.instruction {
+                PromptInput::Text(text) => {
+                    text.push_str("\n\n");
+                    text.push_str(&suffix);
+                }
+                PromptInput::Content(items) => items.push(UserInput::Text { text: suffix }),
+            }
+        }
+        self
+    }
     /// Creates a text-only prompt.
     #[must_use]
     pub fn new(instruction: impl Into<String>) -> Self {
         Self {
             instruction: PromptInput::Text(instruction.into()),
             transcript: Vec::new(),
+            agent_message: None,
         }
     }
 
@@ -274,6 +344,7 @@ impl Prompt {
         Self {
             instruction: PromptInput::Content(input.into_iter().collect()),
             transcript: Vec::new(),
+            agent_message: None,
         }
     }
 
@@ -302,12 +373,28 @@ impl Prompt {
             .map(PromptMessage::text_bytes)
             .sum::<usize>()
             .saturating_add(self.instruction.text_bytes())
+            .saturating_add(self.agent_message.as_ref().map_or(0, |message| {
+                message
+                    .content
+                    .iter()
+                    .map(|part| match part {
+                        responses::AgentMessageContent::InputText { text } => text.len(),
+                        responses::AgentMessageContent::EncryptedContent { encrypted_content } => {
+                            encrypted_content.len()
+                        }
+                    })
+                    .sum()
+            }))
     }
 
     /// Returns whether the turn instruction contains no usable content.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.instruction.is_empty()
+            && self
+                .agent_message
+                .as_ref()
+                .is_none_or(|message| message.content.is_empty())
     }
 
     /// Validates the instruction and synthetic transcript invariants.
@@ -319,7 +406,7 @@ impl Prompt {
     /// user instruction. Consecutive messages with the same role are retained
     /// because benchmark transcripts may contain them intentionally.
     pub fn validate(&self) -> Result<(), PromptValidationError> {
-        if self.instruction.is_empty() {
+        if self.is_empty() {
             return Err(PromptValidationError::EmptyInstruction);
         }
         if self.transcript.iter().any(PromptMessage::is_empty) {
@@ -683,6 +770,27 @@ mod tests {
         MAX_CONTEXT_WINDOW_TOKENS, Model, Prompt, PromptMessage, PromptValidationError,
         ReasoningMode, Thinking,
     };
+
+    #[test]
+    fn typed_agent_communication_survives_prompt_and_steer_serialization() {
+        let prompt = super::Prompt::agent_communication(
+            "/root".into(),
+            "/root/check".into(),
+            vec![super::responses::AgentMessageContent::EncryptedContent {
+                encrypted_content: "opaque".into(),
+            }],
+        );
+        assert!(prompt.validate().is_ok());
+        assert!(!prompt.is_empty());
+        assert_eq!(prompt.text_bytes(), 6);
+        let decoded: super::Prompt =
+            serde_json::from_slice(&serde_json::to_vec(&prompt).unwrap()).unwrap();
+        let item = serde_json::to_value(decoded.agent_message().unwrap()).unwrap();
+        assert_eq!(item["type"], "agent_message");
+        assert_eq!(item["content"][0]["encrypted_content"], "opaque");
+        let ordinary = serde_json::to_value(super::Prompt::new("hello")).unwrap();
+        assert!(ordinary.get("agent_message").is_none());
+    }
 
     #[test]
     fn model_parses_short_and_api_names() {

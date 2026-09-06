@@ -279,8 +279,12 @@ header allowlisting, and no public route.
 
 Task-tree orchestration is an optional extension over the core agent. Both
 native and WASM consumers run the same Rust implementation and receive the
-same seven tools: `spawn_agent`, `submit_result`, `send_agent_message`,
-`list_agents`, `wait_agent`, `interrupt_agent`, and `close_agent`.
+Codex collaboration tools: `spawn_agent`, `send_message`, `followup_task`,
+`list_agents`, `wait_agent`, and `interrupt_agent`. Model-directed spawns use
+`task_name`/`message`, default to inherited history, and return plain text to
+the parent. The explicit `Subagents` SDK keeps its numeric IDs, structured
+results, and recursive lifecycle operations; `submit_result` remains an
+additional capability for these SDK-created children.
 
 Inside a caller-owned Worker or server isolate, host capabilities stay as
 ordinary functions without crossing another compatibility protocol:

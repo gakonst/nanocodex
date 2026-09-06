@@ -31,6 +31,9 @@ use std::{
 use tokio::sync::{mpsc, oneshot, watch};
 use web_time::Instant;
 
+mod collaboration;
+pub(crate) use collaboration::ModelMessage;
+
 pub(super) struct ChildSession {
     pub(super) descriptor: AgentDescriptor,
     pub(super) host_context: Option<Arc<str>>,
@@ -40,6 +43,7 @@ pub(super) struct ChildSession {
     pub(super) status: AgentStatus,
     pub(super) active: bool,
     pub(super) output_validator: Validator,
+    pub(super) plain_result: bool,
     pub(super) next_turn_token: u64,
     pub(super) active_turn_token: Option<u64>,
     pub(super) steering: bool,
@@ -55,6 +59,13 @@ pub(super) struct OutputContract {
 }
 
 impl OutputContract {
+    pub(super) fn plain() -> Self {
+        Self {
+            validator: jsonschema::validator_for(&Value::Bool(true)).expect("valid schema"),
+            schema: String::new(),
+        }
+    }
+
     pub(super) fn compile(schema: &Value) -> std::io::Result<Self> {
         let validator = jsonschema::validator_for(schema)
             .map_err(|error| std::io::Error::other(format!("invalid output_schema: {error}")))?;
@@ -65,6 +76,10 @@ impl OutputContract {
 }
 
 pub(super) fn completion_instructions(schema: &str, turn_token: u64) -> String {
+    if schema.is_empty() {
+        return "Return your final answer as assistant text. It will be delivered to your parent."
+            .into();
+    }
     format!(
         "Your contractual result is not prose. Before finishing, call `submit_result` exactly \
          once with `{{ turn_token: {turn_token}, output: ... }}` and a JSON value matching the \
@@ -83,6 +98,7 @@ pub struct Registry {
     max_resident: AtomicUsize,
     residency_lock: tokio::sync::Mutex<()>,
     message_lock: tokio::sync::Mutex<()>,
+    collaboration: collaboration::Collaboration,
 }
 
 #[derive(Default)]
@@ -984,6 +1000,7 @@ impl Registry {
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
             residency_lock: tokio::sync::Mutex::new(()),
             message_lock: tokio::sync::Mutex::new(()),
+            collaboration: collaboration::Collaboration::default(),
         }
     }
 
@@ -1166,6 +1183,7 @@ impl Registry {
         contract: OutputContract,
     ) -> std::io::Result<()> {
         let OutputContract { validator, schema } = contract;
+        let plain_result = schema.is_empty();
         let mut state = self.state.lock().await;
         state.validate_insert(&root_session_id, &descriptor)?;
         let (harness, harness_task) = harness::spawn(
@@ -1189,6 +1207,7 @@ impl Registry {
                 status: AgentStatus::Pending,
                 active: false,
                 output_validator: validator,
+                plain_result,
                 next_turn_token: 0,
                 active_turn_token: None,
                 steering: false,
@@ -1207,7 +1226,7 @@ impl Registry {
         self: &Arc<Self>,
         root_session_id: &str,
         id: AgentId,
-        prompt: String,
+        prompt: nanocodex_agent::input::Prompt,
         capacity: TurnCapacity,
     ) -> std::io::Result<()> {
         let harness = self
@@ -1311,7 +1330,14 @@ impl Registry {
                 session.status.clone()
             } else {
                 match result {
-                    Ok(_) => complete_session(session, submitted_output),
+                    Ok(result) => {
+                        let output = if session.plain_result {
+                            Some(Value::String(result.final_message().to_owned()))
+                        } else {
+                            submitted_output
+                        };
+                        complete_session(session, output)
+                    }
                     Err(NanocodexError::TurnCancelled) => AgentStatus::Interrupted,
                     Err(error) => AgentStatus::Failed {
                         error: error.to_string(),
@@ -1321,8 +1347,15 @@ impl Registry {
             .clone_into(&mut session.status);
             session.status.clone()
         };
-        self.send(root_session_id, AgentUpdate::Status { id, status });
+        self.send(
+            root_session_id,
+            AgentUpdate::Status {
+                id,
+                status: status.clone(),
+            },
+        );
         self.changed();
+        self.notify_parent(root_session_id, id, &status).await;
         let registry = Arc::clone(self);
         let root_session_id = root_session_id.to_owned();
         drop(platform::spawn(async move {
@@ -1843,6 +1876,7 @@ fn complete_session(session: &mut ChildSession, output: Option<Value>) -> AgentS
 }
 
 fn restored_tombstone(descriptor: AgentDescriptor, host_context: Option<Arc<str>>) -> ChildSession {
+    let plain_result = descriptor.role.starts_with("/root/");
     ChildSession {
         descriptor,
         host_context,
@@ -1851,6 +1885,7 @@ fn restored_tombstone(descriptor: AgentDescriptor, host_context: Option<Arc<str>
         harness_task: None,
         status: AgentStatus::Interrupted,
         active: false,
+        plain_result,
         output_validator: jsonschema::validator_for(&Value::Bool(false))
             .expect("the false JSON Schema is valid"),
         next_turn_token: 0,
@@ -2533,6 +2568,7 @@ mod tests {
             harness_task: None,
             status: AgentStatus::Pending,
             active: false,
+            plain_result: false,
             output_validator: test_contract().validator,
             next_turn_token: 0,
             active_turn_token: None,
@@ -2849,7 +2885,7 @@ mod tests {
                 .launch_initial_turn(
                     "main",
                     id,
-                    format!("active turn for {id}"),
+                    format!("active turn for {id}").into(),
                     registry.reserve_turn().unwrap(),
                 )
                 .await
@@ -2885,7 +2921,7 @@ mod tests {
             .launch_initial_turn(
                 &parent.root_session_id,
                 parent.id,
-                "parent work".to_owned(),
+                "parent work".into(),
                 registry.reserve_turn().unwrap(),
             )
             .await
@@ -2905,7 +2941,7 @@ mod tests {
             .launch_initial_turn(
                 &child.root_session_id,
                 child.id,
-                "child work".to_owned(),
+                "child work".into(),
                 registry.reserve_turn().unwrap(),
             )
             .await
@@ -2918,7 +2954,7 @@ mod tests {
             .launch_initial_turn(
                 &sibling.root_session_id,
                 sibling.id,
-                "sibling work".to_owned(),
+                "sibling work".into(),
                 registry.reserve_turn().unwrap(),
             )
             .await
@@ -3165,7 +3201,7 @@ mod tests {
             .launch_initial_turn(
                 "main",
                 target,
-                "Keep working until interrupted.".to_owned(),
+                "Keep working until interrupted.".into(),
                 registry.reserve_turn().unwrap(),
             )
             .await
@@ -3203,7 +3239,7 @@ mod tests {
             .launch_initial_turn(
                 "main",
                 target,
-                "Keep working until interrupted.".to_owned(),
+                "Keep working until interrupted.".into(),
                 registry.reserve_turn().unwrap(),
             )
             .await
@@ -3249,7 +3285,7 @@ mod tests {
             .launch_initial_turn(
                 "main",
                 target,
-                "Keep working until interrupted.".to_owned(),
+                "Keep working until interrupted.".into(),
                 registry.reserve_turn().unwrap(),
             )
             .await

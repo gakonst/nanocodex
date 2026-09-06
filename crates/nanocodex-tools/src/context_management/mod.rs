@@ -56,7 +56,7 @@ impl ContextWindow {
         }
     }
 
-    fn from_history(history: &[ResponseItem]) -> Option<Self> {
+    fn from_history(history: &[ResponseItem], agent_name: &str) -> Option<Self> {
         history.iter().rev().find_map(|item| {
             let ResponseItem::Message {
                 role: MessageRole::Developer,
@@ -78,6 +78,9 @@ impl ContextWindow {
                         .find_map(|line| line.strip_prefix(name))
                         .map(str::to_owned)
                 };
+                if field("Agent name: ")?.as_str() != agent_name {
+                    return None;
+                }
                 Some(Self {
                     first_window_id: field("First context window id: ")?,
                     previous_window_id: field("Previous context window id: "),
@@ -127,6 +130,8 @@ impl ContextManagement {
     ) -> Self {
         #[cfg(not(target_family = "wasm"))]
         nanocodex_oai_api::transport::install_default_rustls_crypto_provider();
+        let window =
+            ContextWindow::from_history(history, &agent_name).unwrap_or_else(ContextWindow::new);
         Self {
             backend: Backend {
                 #[cfg(not(target_family = "wasm"))]
@@ -139,9 +144,7 @@ impl ContextManagement {
                 agent_name,
             },
             state: Arc::new(State {
-                window: Mutex::new(
-                    ContextWindow::from_history(history).unwrap_or_else(ContextWindow::new),
-                ),
+                window: Mutex::new(window),
                 requested: AtomicBool::new(false),
                 remaining: AtomicU64::new(u64::MAX),
             }),
@@ -251,13 +254,17 @@ impl ContextManagement {
     }
     /// Restores a request's retained identity during durable replay.
     pub fn restore(&self, history: &[ResponseItem]) {
-        if let Some(window) = ContextWindow::from_history(history) {
+        if let Some(window) = ContextWindow::from_history(history, self.agent_name()) {
             *self
                 .state
                 .window
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = window;
         }
+    }
+    /// Whether history contains an identity belonging to this agent.
+    pub fn has_saved_window(&self, history: &[ResponseItem]) -> bool {
+        ContextWindow::from_history(history, self.agent_name()).is_some()
     }
     /// Produces the canonical context-window and model guidance messages.
     pub async fn initial_context(&self) -> Vec<ResponseItem> {
@@ -318,41 +325,6 @@ pub(crate) fn namespace_description(namespace: &str) -> Option<&'static str> {
         .into_iter()
         .find(|action| action.namespace() == namespace)
         .map(|action| action.namespace_description())
-}
-
-pub(crate) fn group_definitions(definitions: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
-    let mut grouped = Vec::new();
-    for mut definition in definitions {
-        let canonical = definition.name().to_owned();
-        let Some((namespace, name)) = canonical.rsplit_once("__") else {
-            grouped.push(definition);
-            continue;
-        };
-        let Some(description) = namespace_description(namespace) else {
-            grouped.push(definition);
-            continue;
-        };
-        let ToolDefinition::Function {
-            name: direct_name, ..
-        } = &mut definition
-        else {
-            grouped.push(definition);
-            continue;
-        };
-        *direct_name = name.into();
-        if let Some(ToolDefinition::Namespace { tools, .. }) = grouped.iter_mut().find(
-            |group| matches!(group, ToolDefinition::Namespace { name, .. } if &**name == namespace),
-        ) {
-            tools.push(definition);
-        } else {
-            grouped.push(ToolDefinition::namespace(
-                namespace,
-                description,
-                [definition],
-            ));
-        }
-    }
-    grouped
 }
 
 fn developer(text: String) -> ResponseItem {
@@ -482,6 +454,31 @@ fn output(mut result: Value) -> ToolOutput {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fork_cannot_restore_its_parents_context_window() {
+        let history = [ResponseItem::message(MessageRole::Developer, [ContentItem::InputText {
+            text: "<context_window>\nAgent name: /root\nFirst context window id: first\nCurrent context window id: current\nContext window number: 2\n</context_window>".into(),
+        }])];
+        assert_eq!(
+            ContextWindow::from_history(&history, "/root")
+                .unwrap()
+                .window_number,
+            2
+        );
+        assert!(ContextWindow::from_history(&history, "/root/reviewer").is_none());
+        let child = ContextManagement::new(
+            OpenAiAuth::api_key("test"),
+            "http://127.0.0.1:1".into(),
+            "session".into(),
+            "/root/reviewer".into(),
+            &history,
+        );
+        assert_ne!(child.window().context_window_id, "current");
+        assert!(!child.has_saved_window(&history));
+        child.restore(&history);
+        assert_eq!(child.window().window_number, 0);
+    }
 
     #[tokio::test]
     async fn context_controls_are_direct_and_do_not_leak_into_code_mode() {
