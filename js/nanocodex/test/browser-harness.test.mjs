@@ -6,6 +6,7 @@ import { ToolRouter, toolMapSource } from "../runtime/tool-router.mjs";
 import * as datasets from "../tools/dataset.mjs";
 import { namedTool } from "../tools/namedTool.mjs";
 import * as standard from "../tools/standard.mjs";
+import { X_API } from "nanocodex-tools/x";
 
 const context = Object.freeze({
   callId: "browser-harness-call",
@@ -147,6 +148,7 @@ test("the account-action browser harness exposes one exact model-visible tool se
     "runtimeInfo",
     "accountInfo",
     "requestAccountConnection",
+    "browseX",
     "web__run",
     "image_gen__imagegen",
     "view_image",
@@ -164,6 +166,7 @@ test("the account-action browser harness exposes one exact model-visible tool se
   const accountInfo = await byName.accountInfo.handler({}, context);
   assert.deepEqual(accountInfo, {
     status: "ready",
+    apis: [X_API],
     authenticated: ["github", "gdrive", "gcalendar", "slack", "x"],
     accounts: {
       github: "Nano Cat (nanocat)",
@@ -273,6 +276,41 @@ test("the account-action browser harness exposes one exact model-visible tool se
   await router.reset();
 });
 
+test("browser browseX reaches the app origin for profiles and posts without X authorization", async () => {
+  const requests = [];
+  const result = { markdown: "Public X data", data: { posts: [] } };
+  const runtime = bindBrowser({
+    ...preparedBrowser(),
+    fetch: async (input, init) => {
+      requests.push(new Request(input, init));
+      return Response.json(result);
+    },
+  });
+  const tool = runtime.tools.find(({ name }) => name === "browseX");
+  assert.ok(tool, "the browser tool catalog must expose browseX");
+  assert.deepEqual(await tool.handler({ action: "profile", handle: "gakonst", limit: 1 }, context), result);
+  assert.deepEqual(await tool.handler({ action: "post", url: "https://x.com/jack/status/20" }, context), result);
+  assert.deepEqual(requests.map(({ url }) => url), [
+    "https://demo.test/api/tools/x/browse?resource=profile&handle=gakonst&limit=1&format=json",
+    "https://demo.test/api/tools/x/convert?url=https%3A%2F%2Fx.com%2Fjack%2Fstatus%2F20&format=json",
+  ]);
+  assert.ok(requests.every((request) => request.credentials === "same-origin"));
+  const aborted = AbortSignal.abort();
+  await assert.rejects(tool.handler({ action: "profile", handle: "gakonst" }, { ...context, signal: aborted }));
+  assert.equal(requests.length, 2, "cancelled tool calls must not fetch");
+});
+
+test("browser browseX preserves provider failure and retry information", async () => {
+  const runtime = bindBrowser({
+    ...preparedBrowser(),
+    fetch: async () => Response.json({ error: "rate limited", retry_after: 60 }, { status: 429 }),
+  });
+  const tool = runtime.tools.find(({ name }) => name === "browseX");
+  assert.deepEqual(await tool.handler({ action: "profile", handle: "gakonst" }, context), {
+    status: "unavailable", http_status: 429, error: "rate limited", retry_after: 60,
+  });
+});
+
 test("account connection links reject unexpected provider and callback URLs", async () => {
   for (const authorization_url of [
     "https://attacker.test/oauth?client_id=x&state=y&scope=z&redirect_uri=https%3A%2F%2Fdemo.test%2Fv1%2Fconnectors%2Fgoogle%2Fcallback",
@@ -379,6 +417,7 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
 
   assert.deepEqual(await accountInfo.handler({}, context), {
     status: "ready",
+    apis: [X_API],
     authenticated: ["chatgpt"],
     accounts: { chatgpt: "Subscription" },
     connectorAccounts: {},
@@ -438,6 +477,7 @@ test("accountInfo projects a bounded host identity and hosted authorization", as
 
   assert.deepEqual(await accountInfo.handler({}, context), {
     status: "ready",
+    apis: [X_API],
     authenticated: ["github"],
     accounts: { github: "Host GitHub" },
     connectorAccounts: {},
@@ -505,6 +545,7 @@ test("accountInfo includes an empty required Vault field in login and unavailabl
 
     assert.deepEqual(await accountInfo.handler({}, context), {
       status: expectedStatus,
+      apis: [X_API],
       authenticated: [],
       accounts: {},
       connectorAccounts: {},

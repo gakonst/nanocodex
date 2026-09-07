@@ -8,7 +8,9 @@ or a second agent backend.
 
 ## User surfaces
 
-- **Home** shows an ephemeral browser-agent demo. **Durable Agent** retains a
+- **Home** shows an ephemeral browser-agent demo. Both browser chats and durable
+  agents include native `browseX` public X browsing, listed in `accountInfo.apis`
+  without an X connection. **Durable Agent** retains a
   thread only after the user connects their own ChatGPT or OpenAI credential.
 - **Attached Tools**, **Multiplayer**, and **World** demonstrate browser-hosted
   tools, a shared managed-agent room, and an agent-populated world.

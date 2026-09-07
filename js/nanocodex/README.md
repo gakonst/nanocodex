@@ -454,6 +454,11 @@ const agent = await Agent.create({
 use the individual factories in server-side Cloudflare Workers. Vite integration
 is provided separately by `nanocodex-vite`.
 
+The browser composition includes native `browseX` public X browsing, advertised
+by `accountInfo().apis` without an X connector. The embedding app serves
+`/api/tools/x/browse` and `/api/tools/x/convert`; Nanocodex's account app forwards
+these requests to the private X Worker.
+
 The browser composition includes `render_artifact` as a normal typed tool. For
 other hosts, compose the same factory with any workspace implementing the
 Nanocodex workspace contract:

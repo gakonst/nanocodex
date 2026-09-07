@@ -1,10 +1,13 @@
 # Nanocodex X API
 
 `nanocodex-x` is a private Cloudflare Worker for reading public X data. Managed
-agents call the native `browseX` tool; `accountInfo().apis` advertises it even
-when no X connector is authorized. The managed Worker reaches it through the
-`NANOCODEX_X` Service Binding. There is no public route, workers.dev endpoint,
-API key, or dependency on the x.md hosted service.
+agents and browser chats call the native `browseX` tool; `accountInfo().apis`
+advertises it even when no X connector is authorized. Managed agents use the
+`NANOCODEX_X` Service Binding directly. Browser chats use the account Worker's
+same-origin `/api/tools/x/browse` and `/api/tools/x/convert` routes, which apply
+rate limits and forward through the same binding without account credentials.
+The X Worker has no public route or workers.dev endpoint and requires no API
+key or dependency on the x.md hosted service.
 
 The shared tool and request contract live at `nanocodex-tools/x`. The Worker
 owns provider access, conversion, rendering, caching, and the HTTP interface.
