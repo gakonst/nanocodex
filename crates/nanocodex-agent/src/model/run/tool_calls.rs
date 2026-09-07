@@ -556,7 +556,7 @@ where
                 model.as_str(),
                 session_id,
                 &call.call_id,
-                &[],
+                history.as_deref().map_or(&[][..], Vec::as_slice),
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             )
             .with_host_context(host_context);

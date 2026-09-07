@@ -29,6 +29,10 @@ mod code_mode_order;
 #[path = "code_mode/spec.rs"]
 mod code_mode_spec;
 #[cfg(feature = "native")]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod context_management;
+#[cfg(feature = "native")]
 pub mod embedded;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]
 #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]

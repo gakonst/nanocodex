@@ -109,6 +109,7 @@ async fn missing_stored_checkpoint_replays_local_history_once() -> Result<()> {
 
     let workspace = temporary_workspace("checkpoint-miss")?;
     let openai = OpenAi::builder("test-key")
+        .experimental_context(false)
         .websocket_url(endpoint)
         .store(true)
         .build()?;

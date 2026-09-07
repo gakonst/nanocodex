@@ -51,4 +51,4 @@ impl ExecutionEnvironment {
 }
 
 pub(crate) use platform::ContextSource;
-pub(super) use platform::ContextSourceConfig;
+pub(crate) use platform::ContextSourceConfig;

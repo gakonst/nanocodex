@@ -238,6 +238,16 @@ impl<F> OpenAiBuilder<F> {
         self
     }
 
+    /// Enables model-managed context windows with durable workspace recovery.
+    ///
+    /// Enabled by default for Astra when the host has context storage. Other
+    /// models and hosts without storage retain provider compaction.
+    #[must_use]
+    pub const fn experimental_context(mut self, enabled: bool) -> Self {
+        self.config.experimental_context = enabled;
+        self
+    }
+
     /// Sets the default reasoning execution mode for new sessions and agents.
     ///
     /// A higher-level agent builder may override this reusable client default.

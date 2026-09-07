@@ -89,6 +89,7 @@ export function create(owner: create.Owner, options?: create.Options): Promise<c
 export declare namespace create {
   type Owner = DurableObjectOwner;
   type Options = Readonly<{
+    contextStorage?: AgentOptions["contextStorage"];
     /** Stable portable state identity. It cannot change after first construction or import. */
     durabilityId?: string | undefined;
     /**

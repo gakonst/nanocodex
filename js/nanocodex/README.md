@@ -936,6 +936,20 @@ rebuilds the current prefix from the supplied instructions and JavaScript tools
 while preserving the rollout's workspace, lineage, cache key, canonical user
 context, and typed history.
 
+Astra uses experimental context windows when workspace storage is available.
+Before resetting, it saves progress through `context_notes`; `context_history`
+retrieves exact earlier conversation items afterward. `new_context` keeps live
+tools and Code Mode state while discarding the old model context. Node uses its
+workspace by default. Browser hosts use their supplied filesystem, and managed
+agents use durable `/brain` storage. Custom inline hosts can supply
+`contextStorage: Workspace` independently of their tool filesystem. Other models
+and hosts without storage continue to use provider compaction.
+
+Context archives and notes live under `.nanocodex/context` in that workspace.
+Copy them with the workspace when migrating durable session state; exporting a
+session alone does not export its files. Managed `find_session` and `read_session`
+continue to search other completed conversations.
+
 `Agent` and `Actions` are module namespaces, not classes. `Agent.create` returns
 an owned client decorated with matching domain actions:
 

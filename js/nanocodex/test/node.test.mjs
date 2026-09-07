@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
 
-import { Actions, Agent, Subagents, Transport } from "../node/index.mjs";
+import { Actions, Agent, ChatGptSubscription, Subagents, Transport } from "../node/index.mjs";
+import { createMemoryChatGptSubscriptionStore } from "../index.mjs";
 import { createNodeHost } from "../node/host.mjs";
 import { createMemoryDurabilityStore } from "../runtime/durability-store.mjs";
 import { createWorkspace } from "../runtime/workspace.mjs";
@@ -1083,6 +1086,91 @@ for (const [options, effort] of [
     await agent.session.shutdown();
     await server.close();
   }
+});
+
+test("WASM context reset archives exact history and retains notes, tools and cache across reopen", async () => {
+  const sessionId = "018f1f9a-7b3c-7a08-8000-000000000008";
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-context-"));
+  const durability = createMemoryDurabilityStore("context-window-durable");
+  let windowId;
+  let previousId;
+  let cacheKey;
+  const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
+  const metadata = (request) => JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
+  try {
+    for (const reopened of [false, true]) {
+      const server = await startServer();
+      const agent = await Agent.create({
+        sessionId, workspace, durability, durabilityId: "context-window-durable",
+        transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url, websocketWarmup: true }),
+        tools: { echo: { handler: (input) => input } },
+      });
+      try {
+        const scenario = (async () => {
+          const socket = await server.connection;
+          const reader = messageReader(socket);
+          const warmup = await reader.next();
+          const specs = warmup.input[0].tools;
+          assert.ok(specs.some((tool) => tool.name === "new_context"));
+          assert.equal(specs.find((tool) => tool.name === "context_history").tools.length, 4);
+          assert.equal(specs.find((tool) => tool.name === "context_notes").tools.length, 5);
+          assert.doesNotMatch(specs.find((tool) => tool.name === "exec").description, /new_context|context_history__read_item/);
+          let first = warmup;
+          if (warmup.generate === false) {
+            sendWarmup(socket, `context-warmup-${reopened}`);
+            first = await reader.next();
+          }
+          assert.equal(metadata(first).history_ingest_requested, undefined);
+          assert.equal(metadata(first).agent_name, "/root");
+          assert.equal(metadata(first).window_id, `${sessionId}:${reopened ? 1 : 0}`);
+          if (!reopened) {
+            previousId = metadata(first).context_window_id;
+            cacheKey = first.prompt_cache_key;
+            sendCompleted(socket, "store-cell", [{ type: "custom_tool_call", name: "exec", call_id: "store-before-reset", input: 'store("retained", "live-cell-marker"); if (typeof tools.new_context !== "undefined" || typeof tools.context_history__read_item !== "undefined") throw new Error("context controls exposed inside Code Mode"); text("context-controls-direct-only");' }]);
+            assert.match(JSON.stringify((await reader.next()).input), /context-controls-direct-only/);
+            sendCompleted(socket, "notes-write", [{ type: "function_call", namespace: "context_notes", name: "write_file", call_id: "write-note", arguments: '{"path":"progress","text":"durable-notes-marker"}' }]);
+            assert.match(JSON.stringify((await reader.next()).input), /written/);
+            sendCompleted(socket, "context-reset", [{ type: "function_call", name: "new_context", call_id: "reset", arguments: "{}" }]);
+            const reset = await reader.next();
+            assert.equal(reset.prompt_cache_key, cacheKey);
+            assert.equal(metadata(reset).window_number, 1);
+            assert.equal(metadata(reset).turn_id, metadata(first).turn_id);
+            windowId = metadata(reset).context_window_id;
+            assert.notEqual(windowId, previousId);
+            assert.doesNotMatch(JSON.stringify(reset.input), /original-user-marker/);
+            sendCompleted(socket, "load-cell", [{ type: "custom_tool_call", name: "exec", call_id: "load-after-reset", input: 'text(load("retained"));' }]);
+            assert.match(JSON.stringify((await reader.next()).input), /live-cell-marker/);
+          } else {
+            assert.equal(metadata(first).context_window_id, windowId);
+            assert.equal(first.prompt_cache_key, cacheKey);
+          }
+          sendCompleted(socket, `notes-read-${reopened}`, [{ type: "function_call", namespace: "context_notes", name: "read_file", call_id: "read-note", arguments: '{"path":"progress"}' }]);
+          assert.match(JSON.stringify((await reader.next()).input), /durable-notes-marker/);
+          sendCompleted(socket, `history-current-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "search_contents", call_id: "current-history", arguments: JSON.stringify({ window_id: windowId, query: "durable-notes-marker" }) }]);
+          const current = (await reader.next()).input.find((item) => item.call_id === "current-history").output;
+          const currentItems = JSON.parse(current.find((part) => part.type === "input_text").text).items;
+          assert.ok(currentItems.length > 0);
+          assert.ok(currentItems.every((item) => item.window_id === windowId));
+          sendCompleted(socket, `history-read-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "search_contents", call_id: "recover-request", arguments: JSON.stringify({ window_id: previousId, query: "original-user-marker" }) }]);
+          const found = (await reader.next()).input.find((item) => item.call_id === "recover-request");
+          const foundText = typeof found.output === "string" ? found.output : found.output.find((part) => part.type === "input_text").text;
+          const original = JSON.parse(foundText).items.find((item) => item.role === "user");
+          assert.match(original.truncated_content, /original-user-marker/);
+          sendCompleted(socket, `history-item-${reopened}`, [{ type: "function_call", namespace: "context_history", name: "read_item", call_id: "recover-item", arguments: JSON.stringify({ window_id: previousId, item_id: original.item_id }) }]);
+          const recovered = (await reader.next()).input.find((item) => item.call_id === "recover-item").output;
+          assert.ok(recovered.some((part) => part.type === "input_image" && part.image_url === imageUrl));
+          sendFinal(socket, `context-final-${reopened}`, "done");
+        })();
+        await bounded(Promise.all([agent.turn.prompt({ input: reopened ? "Recover the prior task." : [
+          { type: "text", text: "original-user-marker" },
+          { type: "image", image_url: imageUrl },
+        ] }).result(), scenario]), "WASM context reset and recovery");
+      } finally {
+        await agent.session.shutdown();
+        await server.close();
+      }
+    }
+  } finally { await rm(workspace, { recursive: true }); }
 });
 
 async function startServer() {

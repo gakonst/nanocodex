@@ -6598,6 +6598,7 @@ export class DurableAgentSession extends DurableComputerSession {
       } catch { /* The adapter creates its identity table on first construction. */ }
       const agentOptions: NonNullable<Parameters<typeof CloudflareAgent.create>[1]> = {
         durabilityId,
+        contextStorage: computer.filesystem,
         eventPersistence: "caller",
         terminalReceiptRetention: MANAGED_TERMINAL_RECEIPT_RETENTION,
         // Astra's model prompt owns general behavior; these rules describe its host.

@@ -26,7 +26,7 @@ This support is based on OpenAI's current contracts:
 | --- | --- |
 | Model ID | Accepts and serializes `gpt-6-astra` across Rust, WASM, JS, managed settings, and retained Durable Object state. |
 | Reasoning | Accepts `low`, `medium`, `high`, `xhigh`, and `max`. Rejects Astra with `none` or Pro mode before dispatch, including dynamic settings and subagent overrides. Astra requests omit `reasoning.mode` and the default reasoning summary, matching the Codex Astra request policy. Nanocodex defaults to `low`, matching the bundled Codex Astra catalog. Explicit effort overrides remain authoritative. |
-| Context | OpenAI documents a 1,050,000-token API context window. Nanocodex follows the current Codex catalog: 272,000 by default, configurable to 872,000, with explicit provider compaction at 90% of the configured prompt budget. |
+| Context | OpenAI documents a 1,050,000-token API context window. Nanocodex follows the current Codex catalog: 272,000 by default, configurable to 872,000, with model-managed context windows when the host supplies workspace storage and provider compaction otherwise. See [Experimental compaction](EXPERIMENTAL_COMPACTION.md). |
 | Output | The provider documents a 128,000-token maximum. Nanocodex does not raise its own output limit beyond caller/provider limits. |
 | Knowledge cutoff | April 30, 2026; this is documentation only and does not affect request encoding. |
 | Base token rates | Estimates $10 input, $1 cached input, $12.50 cache write, and $50 output per million tokens. |
