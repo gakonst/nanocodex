@@ -1,5 +1,7 @@
 "use client";
 
+export { projectToolOutput, formatToolOutput, generatedOutputUrl } from "./tool-output.mjs";
+
 import {
   createElement,
   useEffect,

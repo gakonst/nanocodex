@@ -161,8 +161,9 @@ test("tool activities retain bounded input, successful output, duration, images,
     assert.equal(JSON.parse(completed[3].tool.output).status, "ready");
     assert.deepEqual(completed[4].tool.images, ["data:image/png;base64,AA=="]);
     assert.deepEqual(JSON.parse(completed[4].tool.output), [
-      { type: "input_image", image_url: "data:image/png;base64,AA==" },
+      { type: "input_image", image_url: "[Embedded attachment]" },
     ]);
+    assert.equal(completed[4].tool.generatedOutput[0].url, "data:image/png;base64,AA==");
     assert.deepEqual(completed[4].tool.metadata, {
       machine_name: "Machine A",
       tool_name: "exec_command",

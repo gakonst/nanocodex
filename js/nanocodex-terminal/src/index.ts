@@ -1,6 +1,7 @@
 export { AgentTerminalView } from "./AgentTerminalView.js";
 export { ConversationHistoryRail } from "./ConversationHistoryRail.js";
 export { TerminalComposer } from "./TerminalComposer.js";
+export { GeneratedOutputView } from "./GeneratedOutputView.js";
 export {
   TerminalTranscriptSurface,
   interleaveTranscriptEntries,
@@ -10,4 +11,4 @@ export type { AgentTerminalAccessory } from "./AgentTerminalView.js";
 export type { ConversationSummary } from "./ConversationHistoryRail.js";
 export type { VoiceTerminalEntry } from "./TerminalTranscriptSurface.js";
 export type { AgentStatus, AgentTerminalMode, AgentTerminalState } from "./types.js";
-export type { AgentEntry, ToolActivity } from "nanocodex-react/agent";
+export type { AgentEntry, ToolActivity, GeneratedOutput } from "nanocodex-react/agent";

@@ -46,6 +46,18 @@ export type Agent = Readonly<{
 
 export type ToolStatus = "running" | "completed" | "cancelled" | "failed";
 
+export type GeneratedOutput = Readonly<
+  | { kind: "text"; text: string }
+  | { kind: "image" | "audio" | "video" | "file"; url: string; name?: string; mimeType?: string }
+>;
+
+/** Normalize emitted code-mode content and MCP resources from both result envelopes. */
+export function projectToolOutput(...values: readonly unknown[]): readonly GeneratedOutput[];
+/** Bounded readable diagnostics with inline binary payloads replaced by attachment labels. */
+export function formatToolOutput(value: unknown): string;
+/** Validate a generated resource URL without resolving local paths against the app origin. */
+export function generatedOutputUrl(value: unknown, kind?: "image" | "audio" | "video" | "file"): string | undefined;
+
 export type ToolActivity = Readonly<{
   callId: string;
   name: string;
@@ -62,6 +74,8 @@ export type ToolActivity = Readonly<{
   startedAtMs?: number | undefined;
   durationNs?: number | undefined;
   images?: readonly string[] | undefined;
+  /** Emitted content retained separately from bounded diagnostic summaries. */
+  generatedOutput?: readonly GeneratedOutput[] | undefined;
   /** Provider-neutral execution metadata retained with the terminal result. */
   metadata?: unknown;
   children: readonly ToolActivity[];

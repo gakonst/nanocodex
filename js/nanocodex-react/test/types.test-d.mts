@@ -15,11 +15,23 @@ import {
 import {
   AgentController,
   useAgentController,
+  projectToolOutput,
+  generatedOutputUrl,
+  formatToolOutput,
+  type GeneratedOutput,
   type Agent,
   type AgentControllerSnapshot,
   type AgentEntry,
   type ToolActivity,
 } from "../agent/index.mjs";
+
+const generated: readonly GeneratedOutput[] = projectToolOutput({ content: [] }, undefined);
+for (const item of generated) {
+  if (item.kind === "text") { const text: string = item.text; void text; }
+  else { const url: string | undefined = generatedOutputUrl(item.url, item.kind); void url; }
+}
+const outputDetail: string = formatToolOutput({ output: "Done" });
+void outputDetail;
 import {
   createConnectAgentSource,
   useConnectAgent,

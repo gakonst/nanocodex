@@ -259,7 +259,9 @@ export function AgentTerminalView({
     />
   );
 
-  return mode === "full" ? (
+  // A retained full terminal keeps its transcript and artifact frame mounted
+  // while its owning route is hidden, preserving scroll and artifact state.
+  return mode !== "preview" ? (
     <div className="agent-terminal-workspace">
       {terminal}
       {accessory?.({ agentReady: agentStatus === "ready", submit: submitAccessoryPrompt })}

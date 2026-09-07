@@ -1,5 +1,13 @@
 # nanocodex-react
 
+The `nanocodex-react/agent` presentation contract exposes `projectToolOutput`,
+`formatToolOutput`, and `GeneratedOutput`. The controller retains emitted content
+from both model-visible and structured tool results in `ToolActivity.generatedOutput`,
+separately from bounded diagnostics. Code-mode content and MCP media/resources
+survive history boundaries; inline binary is omitted from diagnostics. Resources
+need embedded bytes or an HTTP(S) URL; a path on another machine is not resolved
+against the app origin. `generatedOutputUrl` applies the same URL policy in renderers.
+
 React hooks over the headless browser SDK. The vanilla config owns the package
 Worker, Rust/WASM Agent, persistent workspace, and cleanup. React only reads
 that external state and binds event subscriptions.

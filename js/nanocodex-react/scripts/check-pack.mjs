@@ -15,6 +15,7 @@ assert(files.includes("index.d.mts"));
 assert(files.includes("agent/index.mjs"));
 assert(files.includes("agent/index.d.mts"));
 assert(files.includes("agent/transcript.mjs"));
+assert(files.includes("agent/tool-output.mjs"));
 assert(files.includes("cloud/index.mjs"));
 assert(files.includes("cloud/index.d.mts"));
 assert(files.includes("cloud/connectAgentSource.mjs"));

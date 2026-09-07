@@ -1,4 +1,5 @@
 @import "streamdown/styles.css";
+@import "./generated-output.css";
 
 .conversation-workspace {
   position: relative;

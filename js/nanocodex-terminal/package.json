@@ -4,18 +4,25 @@
   "description": "Reusable React terminal presentation for Nanocodex agents",
   "type": "module",
   "sideEffects": [
-    "./styles.css"
+    "./styles.css",
+    "./generated-output.css"
   ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./styles.css": "./styles.css"
+    "./generated-output": {
+      "types": "./dist/GeneratedOutputView.d.ts",
+      "import": "./dist/GeneratedOutputView.js"
+    },
+    "./styles.css": "./styles.css",
+    "./generated-output.css": "./generated-output.css"
   },
   "files": [
     "dist",
     "styles.css",
+    "generated-output.css",
     "README.md"
   ],
   "scripts": {

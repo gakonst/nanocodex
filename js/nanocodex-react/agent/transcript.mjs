@@ -1,3 +1,5 @@
+import { formatToolOutput, projectToolOutput } from "./tool-output.mjs";
+
 export function initialState(status = "Ready") {
   return {
     entries: [], running: false, status, pendingTurns: 0, queuedPrompts: [],
@@ -317,7 +319,9 @@ export function applyAgentEvents(state, events) {
           delete next.terminalPolls[pollKey];
           applyToolResult(mutableEntries(), event, target.turnId, target.callId);
         }
-        applyToolResult(mutableEntries(), event, turnId);
+        if (!target || hasToolCall(next.entries, payload.call_id, turnId)) {
+          applyToolResult(mutableEntries(), event, turnId);
+        }
         next.status = "Working";
         break;
       }
@@ -556,6 +560,26 @@ function applyToolResult(entries, event, turnId, terminalCallId) {
       return;
     }
   }
+  // A paginated history can start with a result whose call is outside the page.
+  // Retain emitted content without recreating every deliberately omitted poll.
+  const generatedOutput = projectToolOutput(payload.structured_result, payload.result);
+  const typedOutput = [payload.structured_result, payload.result].some(value => hasTypedToolOutput(value));
+  if (generatedOutput.some(item => item.kind !== "text") || typedOutput) {
+    entries.push({
+      id: `tool-${callId}`, kind: "tool",
+      tool: completedTool({ callId, name: payloadString(payload, "tool") ?? "exec", arguments: "", children: [] }, payload, status),
+      ...(turnId === undefined ? {} : { turnId }),
+    });
+  }
+}
+
+function hasTypedToolOutput(value, depth = 0) {
+  if (depth > 8) return false;
+  const decoded = decodeJsonString(value);
+  if (Array.isArray(decoded)) return decoded.slice(0, 64).some(item => hasTypedToolOutput(item, depth + 1));
+  if (!isObject(decoded)) return false;
+  if (["input_text", "text", "output_text", "input_image", "image", "resource", "resource_link"].includes(decoded.type)) return true;
+  return ["content", "output", "result", "structuredContent"].some(key => hasTypedToolOutput(decoded[key], depth + 1));
 }
 
 function completedTool(tool, payload, status, terminalPoll = false) {
@@ -586,15 +610,18 @@ function completedTool(tool, payload, status, terminalPoll = false) {
     // Bound the output text before serialization so session/exit fields stay decodable.
     if (typeof result.output === "string") result = { ...result, output: terminalOutputTail(result.output) };
   }
-  const images = extractImageUrls(result);
+  const generatedOutput = projectToolOutput(payload.structured_result, payload.result);
+  const images = generatedOutput.filter(item => item.kind === "image").map(item => item.url);
+  const { images: _previousImages, generatedOutput: _previousOutput, ...previous } = tool;
   return {
-    ...tool, status, durationNs,
-    ...(images ? { images } : {}),
+    ...previous, status, durationNs,
+    ...(images.length ? { images } : {}),
+    ...(generatedOutput.length ? { generatedOutput } : {}),
     ...(payload.metadata === undefined || payload.metadata === null
       ? {}
       : { metadata: payload.metadata }),
-    result: summarizeToolResult(tool.name, result, status),
-    output: terminal && isObject(result) ? JSON.stringify(result) : serializeToolDetail(result),
+    result: summarizeToolResult(tool.name, generatedOutput.some(item => item.kind !== "text") ? formatToolOutput(result) : result, status),
+    output: terminal && isObject(result) ? JSON.stringify(result) : boundedMultiline(formatToolOutput(result)),
   };
 }
 
@@ -653,16 +680,6 @@ function decodePlanUpdate(value) {
   });
   if (plan.length !== value.plan.length) return undefined;
   return { ...(typeof value.explanation === "string" ? { explanation: value.explanation } : {}), plan };
-}
-
-function extractImageUrls(value) {
-  const decoded = decodeJsonString(value);
-  if (!Array.isArray(decoded)) return undefined;
-  const images = decoded.flatMap((item) => (
-    isObject(item) && item.type === "input_image" && typeof item.image_url === "string"
-      ? [item.image_url] : []
-  ));
-  return images.length ? images : undefined;
 }
 
 function sealStreamingTail(entries) {

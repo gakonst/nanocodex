@@ -10,9 +10,10 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AgentEntry, ToolActivity } from "nanocodex-react/agent";
+import { projectToolOutput, type AgentEntry, type GeneratedOutput, type ToolActivity } from "nanocodex-react/agent";
 import { ArrowDown, Check, Copy } from "lucide-react";
 import { Streamdown } from "streamdown";
+import { GeneratedOutputView } from "./GeneratedOutputView.js";
 
 import type { AgentStatus, AgentTerminalMode } from "./types.js";
 import { boundedToolDetail, presentTool } from "./toolPresentation.js";
@@ -27,6 +28,21 @@ export type VoiceTerminalEntry = Readonly<{
 }>;
 
 type TerminalEntry = AgentEntry | VoiceTerminalEntry;
+const EMPTY_VOICE_ENTRIES: readonly VoiceTerminalEntry[] = [];
+
+type ReadingAnchor = { element: Element; top: number };
+
+function readingAnchors(viewport: HTMLElement): ReadingAnchor[] {
+  const bounds = viewport.getBoundingClientRect();
+  const anchors: ReadingAnchor[] = [];
+  for (const element of Array.from(viewport.firstElementChild?.children ?? [])) {
+    const row = element.getBoundingClientRect();
+    if (row.bottom <= bounds.top) continue;
+    anchors.push({ element, top: row.top - bounds.top });
+    if (anchors.length === 2) break;
+  }
+  return anchors;
+}
 
 export function TerminalTranscriptSurface({
   canLoadOlder,
@@ -38,7 +54,7 @@ export function TerminalTranscriptSurface({
   mode,
   showToolCalls = true,
   status,
-  voiceEntries = [],
+  voiceEntries = EMPTY_VOICE_ENTRIES,
   welcome,
   onLoadOlder,
 }: {
@@ -59,8 +75,13 @@ export function TerminalTranscriptSurface({
   const followTail = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   const handledFollowTailRequest = useRef(followTailRequest);
-  const loadOlderArmed = useRef(false);
-  const preserveScroll = useRef<{ scrollHeight: number; scrollTop: number } | undefined>(undefined);
+  const loadOlderArmed = useRef(true);
+  const loadOlderPending = useRef(false);
+  const touchY = useRef<number | undefined>(undefined);
+  const preserveScroll = useRef<{
+    anchors: ReadingAnchor[];
+    firstEntryId: string | undefined;
+  } | undefined>(undefined);
   const transcriptEntries = useMemo(
     () => interleaveTranscriptEntries(entries, voiceEntries),
     [entries, voiceEntries],
@@ -69,18 +90,26 @@ export function TerminalTranscriptSurface({
 
   useLayoutEffect(() => {
     const element = transcript.current;
-    if (!element) return;
+    if (!element || mode === "hidden") return;
     if (handledFollowTailRequest.current !== followTailRequest) {
       handledFollowTailRequest.current = followTailRequest;
       followTail.current = true;
+      preserveScroll.current = undefined;
     }
     const preserved = preserveScroll.current;
-    if (preserved) {
+    // Live tokens must not consume the pending prepend anchor. Restore when
+    // history arrives, using row position rather than
+    // total height, which also includes output streaming below the reader.
+    // The promise may resolve before the controller publishes its next frame.
+    // Live voice rows can precede durable entries, so compare the durable head.
+    if (preserved && preserved.firstEntryId !== entries[0]?.id) {
       preserveScroll.current = undefined;
-      element.scrollTop = preserved.scrollTop + element.scrollHeight - preserved.scrollHeight;
+      const anchor = preserved.anchors.find(({ element: row }) => row.isConnected && element.contains(row));
+      if (anchor) element.scrollTop += anchor.element.getBoundingClientRect().top
+        - element.getBoundingClientRect().top - anchor.top;
     } else if (visibleWelcome) element.scrollTop = 0;
     else if (followTail.current) element.scrollTop = element.scrollHeight;
-  }, [followTailRequest, transcriptEntries, visibleWelcome]);
+  }, [entries, followTailRequest, mode, transcriptEntries, visibleWelcome]);
 
   useEffect(() => {
     const element = transcript.current;
@@ -95,6 +124,41 @@ export function TerminalTranscriptSurface({
     return () => observer.disconnect();
   }, [visibleWelcome]);
 
+  function loadOlderNearTop(element: HTMLElement, upwardGesture = false) {
+    if (mode === "hidden") return;
+    const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight) || 22;
+    if (element.scrollTop > lineHeight * 12) {
+      loadOlderArmed.current = true;
+      return;
+    }
+    // An initial tail scroll never requests history. Explicit upward gestures
+    // also work when a short page cannot scroll beyond the loading threshold.
+    if ((!upwardGesture && followTail.current) || !loadOlderArmed.current
+      || loadOlderPending.current || isLoadingOlder || !canLoadOlder) return;
+    loadOlderArmed.current = false;
+    loadOlderPending.current = true;
+    followTail.current = false;
+    const request = { anchors: readingAnchors(element), firstEntryId: entries[0]?.id };
+    preserveScroll.current = request;
+    void Promise.resolve().then(onLoadOlder).then((loaded) => {
+      if (loaded) loadOlderArmed.current = true;
+      else if (preserveScroll.current === request) preserveScroll.current = undefined;
+    }).catch(() => {
+      if (preserveScroll.current === request) preserveScroll.current = undefined;
+    }).finally(() => {
+      loadOlderPending.current = false;
+    });
+  }
+
+  function rearmShortHistory(element: HTMLElement) {
+    const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight) || 22;
+    // Short content cannot physically leave the threshold. A gesture away from
+    // the top followed by another upward gesture is still an explicit retry.
+    if (!loadOlderPending.current && element.scrollHeight - element.clientHeight <= lineHeight * 12) {
+      loadOlderArmed.current = true;
+    }
+  }
+
   return (
     <section
       className={`agent-terminal-shell is-dom is-${mode}`}
@@ -105,27 +169,29 @@ export function TerminalTranscriptSurface({
         className="agent-dom-transcript"
         role="log"
         aria-live="off"
+        onWheel={(event) => {
+          if (event.deltaY < 0) loadOlderNearTop(event.currentTarget, true);
+          else if (event.deltaY > 0) rearmShortHistory(event.currentTarget);
+        }}
+        onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY; }}
+        onTouchMove={(event) => {
+          const y = event.touches[0]?.clientY;
+          if (y !== undefined && touchY.current !== undefined && y > touchY.current) {
+            loadOlderNearTop(event.currentTarget, true);
+          } else if (y !== undefined && touchY.current !== undefined && y < touchY.current) {
+            rearmShortHistory(event.currentTarget);
+          }
+          touchY.current = y;
+        }}
+        onTouchEnd={() => { touchY.current = undefined; }}
+        onTouchCancel={() => { touchY.current = undefined; }}
         onScroll={(event) => {
+          if (mode === "hidden") return;
           const element = event.currentTarget;
           followTail.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
           setShowLatest(!followTail.current);
-          const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight) || 22;
-          const nearTop = element.scrollTop <= lineHeight * 12;
-          if (!nearTop) {
-            if (!isLoadingOlder) loadOlderArmed.current = true;
-            return;
-          }
-          if (!loadOlderArmed.current || isLoadingOlder || !canLoadOlder) return;
-          loadOlderArmed.current = false;
-          preserveScroll.current = {
-            scrollHeight: element.scrollHeight,
-            scrollTop: element.scrollTop,
-          };
-          void onLoadOlder().then((loaded) => {
-            if (!loaded) preserveScroll.current = undefined;
-          }).catch(() => {
-            preserveScroll.current = undefined;
-          });
+          if (preserveScroll.current) preserveScroll.current.anchors = readingAnchors(element);
+          loadOlderNearTop(element);
         }}
       >
         <div className="agent-dom-transcript-inner">
@@ -150,6 +216,7 @@ export function TerminalTranscriptSurface({
           const element = transcript.current;
           if (!element) return;
           followTail.current = true;
+          preserveScroll.current = undefined;
           element.scrollTo({ top: element.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
         }}><ArrowDown aria-hidden="true" /></button> : null}
         {composer}
@@ -235,9 +302,16 @@ function voiceEntryKey(entry: Pick<VoiceTerminalEntry, "kind" | "text">): string
 }
 
 function projectRealtimeTranscript(entry: AgentEntry): VoiceTerminalEntry[] | undefined {
-  if (entry.kind !== "user" || !entry.text.startsWith("<realtime_delegation>")) return undefined;
-  const encoded = /<transcript_delta>([\s\S]*?)<\/transcript_delta>/.exec(entry.text)?.[1];
-  if (!encoded) return [];
+  if (entry.kind !== "user") return undefined;
+  const envelope = entry.text.trimStart();
+  if (/^<realtime_conversation(?:\s|>|$)/.test(envelope)) return [];
+  if (!/^<realtime_delegation(?:\s|>|$)/.test(envelope)) return undefined;
+  const encoded = /<transcript_delta>([\s\S]*?)<\/transcript_delta>/.exec(envelope)?.[1];
+  if (!encoded?.trim()) {
+    const input = /<input>([\s\S]*?)<\/input>/.exec(envelope)?.[1];
+    if (!input?.trim() || /<(?:source|soruce)>/.test(envelope)) return [];
+    return [{ id: `${entry.id}-voice-0`, kind: "user", source: "voice", streaming: false, text: decodeRealtimeText(input) }];
+  }
 
   const projected: Array<{ kind: "user" | "assistant"; text: string }> = [];
   const unlabelled: string[] = [];
@@ -266,6 +340,8 @@ function decodeRealtimeText(text: string): string {
   return text
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
     .replaceAll("&amp;", "&");
 }
 
@@ -303,9 +379,31 @@ const TerminalEntryView = memo(function TerminalEntryView({
       {step.step}
     </li>)}
   </ol>;
-  if (entry.kind === "tool") return showToolCalls ? <TerminalToolView tool={entry.tool} /> : null;
+  if (entry.kind === "tool") return <div className="agent-terminal-tool-entry">
+    {showToolCalls ? <TerminalToolView tool={entry.tool} /> : null}
+    <GeneratedOutputView items={generatedToolOutput(entry.tool)} />
+  </div>;
   return null;
 });
+
+function generatedToolOutput(tool: ToolActivity): GeneratedOutput[] {
+  const items: GeneratedOutput[] = [];
+  const seen = new Set<string>();
+  function append(tool: ToolActivity) {
+    const output = tool.generatedOutput ?? projectToolOutput(tool.images?.map((image_url, index) => ({
+      type: "input_image", image_url, name: `${presentTool(tool).title} result ${index + 1}`,
+    })));
+    const emitsText = ["exec", "wait"].includes(tool.name.split(".").at(-1) ?? "");
+    for (const item of output) {
+      if (item.kind === "text" && !emitsText) continue;
+      const key = item.kind === "text" ? `text:${item.text}` : `${item.kind}:${item.url}`;
+      if (!seen.has(key)) { seen.add(key); items.push(item); }
+    }
+    tool.children.forEach(append);
+  }
+  append(tool);
+  return items;
+}
 
 function ResponseActions({ text }: { text: string }) {
   const [state, setState] = useState<"idle" | "copied" | "error">("idle");
@@ -389,14 +487,6 @@ function TerminalToolView({ isChild = false, tool }: { isChild?: boolean; tool: 
       {presentation.previewUrl ? <p className="agent-terminal-tool-preview">
         <a href={presentation.previewUrl} rel="noopener noreferrer" target="_blank">Open preview</a>
       </p> : null}
-      {!semanticWrapper && tool.images?.length ? <div className="agent-terminal-tool-images">
-        {tool.images.map((source, index) => <img
-          alt={`${presentation.title} result ${index + 1}`}
-          key={`${tool.callId}-image-${index}`}
-          loading="lazy"
-          src={source}
-        />)}
-      </div> : null}
       {tool.children.map((child) => <TerminalToolView isChild key={child.callId} tool={child} />)}
     </div>
   </details>;
