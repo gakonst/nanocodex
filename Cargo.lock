@@ -6063,6 +6063,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocodex-voice-ffi"
+version = "0.5.0"
+dependencies = [
+ "nanocodex-voice-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "nanocodex-voice-protocol"
 version = "0.5.0"
 dependencies = [
@@ -6074,6 +6082,7 @@ dependencies = [
 name = "nanocodex-wasm"
 version = "0.5.0"
 dependencies = [
+ "futures-util",
  "js-sys",
  "nanocodex",
  "nanocodex-subagents",

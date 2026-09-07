@@ -2,7 +2,11 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionContext, PromptInput } from "nanocodex";
 import type { DurableAgentSession } from "../src/index";
-import { ManagedStartupContext, startupQuery, type StartupEnvironment } from "../src/startup-context";
+import { ManagedStartupContext, type StartupEnvironment } from "../src/startup-context";
+
+import { Agent } from "nanocodex/cloudflare";
+import { promptInputText } from "nanocodex-tools/session";
+const plan = (input: PromptInput) => Agent.bootstrapPlan(promptInputText(input));
 
 const firstPrompt = "Find the copper finch deployment preference";
 
@@ -47,23 +51,62 @@ const contextText = (state: DurableObjectState) => state.storage.sql.exec<{ cont
 ).one().content;
 
 describe("managed first-prompt bootstrap boundary", () => {
-  it("bounds Unicode queries and excludes attachment URLs", () => {
-    const long = startupQuery(`  ${"😀".repeat(200)} tail`);
+  it("bounds Unicode queries and excludes attachment URLs in the Rust plan", async () => {
+    const long = (await plan(`  ${"😀".repeat(200)} tail`)).query;
     expect(new TextEncoder().encode(long).length).toBe(512);
     expect(long).not.toContain("�");
-    expect(startupQuery([{ type: "text", text: " copper\n finch " }, {
+    expect((await plan([{ type: "text", text: " copper\n finch " }, {
       type: "image", image_url: "https://private.example/secret",
-    }])).toBe("copper finch [image]");
-    expect(startupQuery([])).toBe("conversation context");
+    }])).query).toBe("copper finch [image]");
+    expect((await plan([])).query).toBe("conversation context");
+  });
+
+  it("preserves completed lookup receipts from the previous startup schema", async () => {
+    await withStartup(async (_startup, state) => {
+      for (const name of ["find_session", "memory"]) {
+        state.storage.sql.exec(`INSERT INTO managed_startup_tools
+          (name, turn_id, input_json, result_json, success, duration_ns, published)
+          VALUES (?, 'first', '{}', '{"retained":true}', 1, 1, 1)`, name);
+      }
+      const restored = new ManagedStartupContext(state.storage);
+      const execute = vi.fn();
+      await restored.prepare("first", execute, async () => environment, assertActive);
+      expect(execute).not.toHaveBeenCalled();
+      expect(contextText(state)).toContain('"retained":true');
+    });
+  });
+
+  it("retrieves each voice call from its first question in an existing chat", async () => {
+    await withStartup(async (startup, state) => {
+      state.storage.sql.exec("UPDATE session_state SET accepted_turns = 3");
+      const input = "<realtime_delegation>\n  <source>voice_bootstrap</source>\n  <input>When is Elena's birthday?</input>\n</realtime_delegation>";
+      const search = await plan(input);
+      expect(search.voice_bootstrap).toBe(true);
+      expect(search.query).toBe("When is Elena's birthday?");
+      startup.reserve("voice-first", search, "call-one");
+      const execute = vi.fn(async (_name: string, args: unknown) => ({ args, candidates: [] }));
+      await startup.prepare("voice-first", execute, async () => undefined, assertActive);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(execute.mock.calls[0]![1]).toEqual({ query: search.query, limit: 5 });
+      expect(startup.enrich("voice-first", input)[0]).toEqual({ type: "text", text: input });
+      expect(JSON.stringify(startup.enrich("voice-first", input))).toContain("retrieved_context");
+      const restored = new ManagedStartupContext(state.storage);
+      restored.reserve("duplicate", search, "call-one");
+      await restored.prepare("duplicate", execute, async () => undefined, assertActive);
+      expect(execute).toHaveBeenCalledTimes(2);
+      restored.reserve("new-call", search, "call-two");
+      await restored.prepare("new-call", execute, async () => undefined, assertActive);
+      expect(execute).toHaveBeenCalledTimes(4);
+    });
   });
 
   it("prepares retrieval and environment concurrently, then durably injects developer context once before the unchanged user prompt", async () => {
     await withStartup(async (startup, state) => {
       const input: PromptInput = [{ type: "text", text: firstPrompt }, { type: "image", image_url: "data:image/png;base64,test" }];
       const original = structuredClone(input);
-      startup.reserve("first", input);
+      startup.reserve("first", await plan(input));
       state.storage.sql.exec("UPDATE session_state SET accepted_turns = 1");
-      startup.reserve("second", "different question");
+      startup.reserve("second", await plan("different question"));
       const entered: string[] = [];
       let release!: () => void;
       const allEntered = new Promise<void>((resolve) => { release = resolve; });
@@ -107,7 +150,7 @@ describe("managed first-prompt bootstrap boundary", () => {
       state.storage.sql.exec(kind === "existing"
         ? "UPDATE session_state SET accepted_turns = 3"
         : "UPDATE session_state SET runtime_profile = 'multiplayer'");
-      startup.reserve("later", firstPrompt);
+      startup.reserve("later", await plan(firstPrompt));
       const execute = vi.fn();
       const prepareEnvironment = vi.fn();
       await startup.prepare("later", execute, prepareEnvironment, assertActive);
@@ -119,7 +162,7 @@ describe("managed first-prompt bootstrap boundary", () => {
 
   it("keeps authorized results when the other lookup fails without leaking internal errors", async () => {
     await withStartup(async (startup, state) => {
-      startup.reserve("first", firstPrompt);
+      startup.reserve("first", await plan(firstPrompt));
       await startup.prepare("first", async (name) => {
         if (name === "memory") throw Object.assign(new Error("provider token SECRET https://internal"), { code: "forbidden" });
         return { sessions: [{ session_id: "candidate" }] };
@@ -133,7 +176,7 @@ describe("managed first-prompt bootstrap boundary", () => {
 
   it("does not persist late results after the owning agent is fenced", async () => {
     await withStartup(async (startup, state) => {
-      startup.reserve("first", firstPrompt);
+      startup.reserve("first", await plan(firstPrompt));
       let active = true;
       await expect(startup.prepare("first", async () => {
         active = false;
@@ -146,7 +189,7 @@ describe("managed first-prompt bootstrap boundary", () => {
 
   it("recovers a lost injection acknowledgement without appending the developer message twice", async () => {
     await withStartup(async (startup, state) => {
-      startup.reserve("first", firstPrompt);
+      startup.reserve("first", await plan(firstPrompt));
       await startup.prepare("first", async () => ({}), async () => environment, assertActive);
       const runtime = developerSession();
       const append = runtime.appendDeveloperMessage.getMockImplementation()!;
@@ -163,7 +206,7 @@ describe("managed first-prompt bootstrap boundary", () => {
 
   it("does not accept a user or tool message as an injection receipt", async () => {
     await withStartup(async (startup, state) => {
-      startup.reserve("first", firstPrompt);
+      startup.reserve("first", await plan(firstPrompt));
       await startup.prepare("first", async () => ({}), async () => environment, assertActive);
       const text = contextText(state);
       const runtime = developerSession(["user", "tool"].map((role) => ({ role,

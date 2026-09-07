@@ -82,7 +82,7 @@ export function observeManagedAgentEvents(agent, listener) {
       })) {
         if (controller.signal.aborted) return;
         if (envelope.data.type === "event") {
-          listener(Object.freeze({ event: envelope.data.event, turnId: envelope.turnId }));
+          listener(Object.freeze({ event: envelope.data.event, turnId: envelope.turnId, cursor: envelope.cursor }));
         }
       }
     } catch (error) {

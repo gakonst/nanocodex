@@ -24,6 +24,14 @@ export type DurableObjectContext = Readonly<{
 /** The owning Cloudflare Durable Object instance. Runtime fields remain adapter-private. */
 export type DurableObjectOwner = object;
 
+/** Rust-owned first-prompt retrieval policy; the host owns authenticated execution. */
+export type BootstrapPlan = Readonly<{
+  query: string;
+  voice_bootstrap: boolean;
+  calls: readonly Readonly<{ name: "find_session" | "memory"; arguments: unknown }>[];
+}>;
+export function bootstrapPlan(input: string): Promise<BootstrapPlan>;
+
 export type EventFrame = Readonly<{
   cursor: string;
   event: AgentEvent;

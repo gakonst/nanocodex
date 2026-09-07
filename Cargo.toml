@@ -12,6 +12,7 @@ members = [
     "crates/experimental/nanocodex-egress",
     "crates/experimental/nanocodex-voice",
     "crates/experimental/nanocodex-voice-protocol",
+    "crates/experimental/nanocodex-voice-ffi",
     "crates/experimental/nanocodex-eval",
     "crates/experimental/nanocodex-eval-adapters",
     "crates/experimental/nanocodex-vm",

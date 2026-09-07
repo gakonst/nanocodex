@@ -1,0 +1,22 @@
+[package]
+name = "nanocodex-voice-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+nanocodex-voice-protocol = { path = "../nanocodex-voice-protocol" }
+serde_json.workspace = true
+
+# This crate is only the C ABI. The protocol crate retains the workspace
+# prohibition on unsafe code; pointer conversion does not enter the shared core.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "warn"

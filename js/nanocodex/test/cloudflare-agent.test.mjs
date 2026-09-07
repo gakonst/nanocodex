@@ -255,6 +255,7 @@ test("Cloudflare Agent owns credentials, transport, and durability options", asy
   for (const name of [
     "model", "thinking", "reasoningMode", "fastMode",
     "filesystem", "mcp", "codeEvaluator", "toolMode",
+    "waitForPreconnect",
   ]) {
     await assert.rejects(
       create(module, durableOwner(new MemoryStorage()), { [name]: "forbidden" }),
@@ -296,6 +297,12 @@ test("Cloudflare Agent owns credentials, transport, and durability options", asy
       [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentMaxConcurrency: 0 },
     }),
     /subagentMaxConcurrency must be a positive safe integer/,
+  );
+  await assert.rejects(
+    create(module, durableOwner(new MemoryStorage()), {
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { waitForPreconnect: "false" },
+    }),
+    /waitForPreconnect must be a boolean/,
   );
   await assert.rejects(
     create(module, { env: { NANOCODEX: egressBinding() } }),
@@ -390,6 +397,82 @@ test("Cloudflare ephemeral Agent validates adapter-owned startup", async () => {
     createEphemeral(module, owner, { transport: {} }),
     /createEphemeral does not accept transport/,
   );
+});
+
+test("managed voice admission does not wait for a cold Responses preconnection", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const release = deferred();
+  let requests = 0;
+  const socket = new UpstreamSocket();
+  const owner = durableOwner(new MemoryStorage(), {
+    async fetch(_input, init) {
+      requests += 1;
+      assert.equal(init.headers.get("x-nanocodex-subject"), FIRST_OBJECT_ID);
+      assert.equal(init.headers.get("authorization"), "Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+      await release.promise;
+      return { status: 101, headers: new Headers(), webSocket: socket };
+    },
+  });
+  const options = { eventPersistence: "caller" };
+  Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
+    value: { waitForPreconnect: false },
+  });
+  let agent;
+  try {
+    // Keep the text relay unavailable through both voice lifecycle operations.
+    // Its container allows 20 seconds to become ready; the old creation gate
+    // rejected this otherwise healthy voice session after just 10 seconds.
+    agent = await create(module, owner, options);
+    const context = await agent.session.realtime.start();
+    assert.ok(Array.isArray(context.history));
+    await agent.session.realtime.end();
+    assert.equal(requests, 1, "Warm the owned Responses transport speculatively");
+    await agent.session.shutdown();
+    agent = undefined;
+  } finally {
+    release.resolve();
+    await agent?.session.shutdown();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(socket.closed, true, "Shutdown closes a preconnection that finishes late");
+});
+
+test("public durable creation still validates credentials before returning", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const owner = durableOwner(new MemoryStorage(), {
+    async fetch() { return { status: 403, headers: new Headers() }; },
+  });
+  await assert.rejects(create(module, owner), /EGRESS broker rejected.*HTTP 403/);
+});
+
+test("a failed speculative connection does not authorize a later managed text turn", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  let requests = 0;
+  const owner = durableOwner(new MemoryStorage(), {
+    async fetch(_input, init) {
+      requests += 1;
+      assert.equal(init.headers.get("x-nanocodex-subject"), FIRST_OBJECT_ID);
+      assert.equal(init.headers.get("authorization"), "Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+      return { status: 403, headers: new Headers() };
+    },
+  });
+  const agent = await create(module, owner, {
+    eventPersistence: "caller",
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { waitForPreconnect: false },
+  });
+  try {
+    // Let the speculative denial settle; the actual turn must request its own
+    // brokered transport and still surface the credential rejection.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests, 1);
+    await assert.rejects(
+      agent.turn.prompt({ input: "Check transport authorization" }).result(),
+      /WebSocket handshake was rejected with HTTP 403: credential_broker_rejected/,
+    );
+    assert.ok(requests > 1, "A model turn must still cross the credential broker");
+  } finally {
+    await agent.session.shutdown();
+  }
 });
 
 test("Cloudflare Agent isolates states per Durable Object and can recreate after shutdown", async () => {

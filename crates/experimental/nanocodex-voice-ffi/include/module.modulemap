@@ -1,0 +1,4 @@
+module NanocodexVoiceCore {
+    header "NanocodexVoiceCore.h"
+    export *
+}

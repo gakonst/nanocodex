@@ -33,6 +33,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
         });
       }
       if (url.pathname.endsWith("/realtime/delegate")) {
+        voice.agentEvent({ turnId: "voice-turn", event: { type: "assistant.message", payload: { text: "December 22." } } });
         return Response.json({ route: "started", turn_id: "voice-turn" });
       }
       if (url.pathname.endsWith("/turns/voice-turn/cancel")) {
@@ -61,6 +62,29 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   assert.equal(sideband.searchParams.get("session_id"), call.session_id);
   assert.equal(sideband.searchParams.get("thread_id"), call.session_id);
 
+  const context = { cursor: "9007199254740993", event: { type: "managed.voice.context", payload: {
+    voice_session_id: call.session_id, result: { operation: "delete", key: { id: 5, version: 1 } },
+  } } };
+  const effects = (event) => JSON.parse(voice.agentEvent(event));
+  assert.deepEqual(effects({ ...context, event: { ...context.event, payload: { ...context.event.payload, voice_session_id: "other-call" } } }).frames, []);
+  const update = effects(context);
+  const frame = JSON.parse(update.frames[0]);
+  assert.equal(frame.type, "session.context.append");
+  assert.equal(frame.channel, "commentary");
+  assert.match(frame.content[0].text, /delete/);
+  assert.equal(update.acknowledge_frames, true);
+  assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, update.frames);
+  voice.framesSent(1);
+  assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+  assert.deepEqual(effects(context).frames, [], "replay cannot restore obsolete facts");
+  assert.deepEqual(effects({ ...context, cursor: "9007199254740992" }).frames, []);
+  assert.equal(JSON.parse(voice.sidebandOpened()).playback_enabled, false);
+  const reply = JSON.parse(await voice.realtimeMessage(JSON.stringify({ type: "turn.done", turn: { role: "user", transcript: "When is Elena's birthday?" } })));
+  assert.equal(reply.playback_enabled, true, "buffered durable output must release the Rust playback gate");
+  assert.match(reply.frames.join(""), /December 22/);
+  assert.match(requests[1].body.input, /voice_bootstrap/);
+  assert.match(requests[1].body.input, /When is Elena's birthday/);
+
   const delegation = JSON.stringify({
     type: "delegation.created",
     item: {
@@ -72,7 +96,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   });
   await voice.realtimeMessage(delegation);
   await voice.realtimeMessage(delegation);
-  assert.equal(requests[1].body.operation_id, requests[2].body.operation_id);
+  assert.equal(requests.length, 2, "a replayed delegation must not repeat admission");
   assert.equal(voice.agentEvent({ turnId: "typed-turn", event: { type: "run.started" } }), undefined);
   assert.equal(typeof voice.agentEvent({ turnId: "voice-turn", event: { type: "run.started" } }), "string");
   assert.equal(await voice.cancel(), true);
@@ -82,7 +106,6 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   assert.deepEqual(requests.map(({ method, path }) => [method, path]), [
     ["POST", `/v1/agents/${AGENT_ID}/realtime/start`],
     ["POST", `/v1/agents/${AGENT_ID}/realtime/delegate`],
-    ["POST", `/v1/agents/${AGENT_ID}/realtime/delegate`],
     ["POST", `/v1/agents/${AGENT_ID}/turns/voice-turn/cancel`],
     ["POST", `/v1/agents/${AGENT_ID}/realtime/stop`],
   ]);
@@ -90,7 +113,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   assert.equal(requests[1].body.voice_session_id, call.session_id);
   assert.equal(typeof requests[1].body.operation_id, "string");
   assert.equal(typeof requests[0].body.operation_id, "string");
-  assert.equal(typeof requests[4].body.operation_id, "string");
+  assert.equal(typeof requests[3].body.operation_id, "string");
 });
 
 test("managed Agent voice uses its configured same-origin realtime routes", async () => {

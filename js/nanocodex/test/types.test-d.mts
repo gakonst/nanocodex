@@ -135,6 +135,8 @@ declare const cloudflareStorage: CloudflareDurableObjectStorage;
 declare const cloudflareBinding: import("../cloudflare/egress.mjs").CloudflareEgressBinding;
 declare const cloudflareContext: CloudflareAgent.DurableObjectContext;
 declare const cloudflareOwner: CloudflareAgent.DurableObjectOwner;
+const bootstrapPlan: Promise<CloudflareAgent.BootstrapPlan> = CloudflareAgent.bootstrapPlan("Elena birthday");
+void bootstrapPlan;
 
 // @ts-expect-error durability-only types are exported from nanocodex/durability.
 type RootDurabilityStore = RootPublicTypes.DurabilityStore;

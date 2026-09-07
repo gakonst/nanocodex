@@ -77,6 +77,15 @@ storage ownership.
   or `Last-Event-ID`; same-origin browser WebSockets carry the typed
   prompt/steer/cancel protocol. Realtime calls and sideband transport have
   separate agent-scoped WebSocket routes.
+- Voice admission does not wait for the independent Responses preconnection.
+  The shared Rust protocol delegates the first spoken question and gates reply
+  playback until durable output is delivered. Its WASM plan searches memory and
+  prior sessions using that question, including new calls in existing chats.
+  Durable receipts retain each call's bounded lookups across retries. Existing
+  first-turn environment and account context remains developer context.
+  Successful memory puts and deletes emit authorized `managed.voice.context`
+  events; Rust validates call scope, deduplicates cursors, and queues background
+  context through reconnects. Retrieved context is data, never instructions.
 - `/v1/history/*` and `/v1/memory` expose organization- and team-scoped
   retained context. `/v1/credentials` and `/v1/connectors` manage brokered
   credentials, OAuth connections, and MCP connections without exposing secrets.

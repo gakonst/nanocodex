@@ -88,6 +88,9 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
     },
     agentEvent(envelope) {
       const value = typeof envelope === "string" ? JSON.parse(envelope) : envelope;
+      if (value?.event?.type === "managed.voice.context") {
+        return raw.managedEvent(JSON.stringify(value));
+      }
       if (routePending && activeTurnId === undefined) {
         pendingEvents.push(value);
         return undefined;
@@ -172,6 +175,7 @@ function mergeVoiceEffects(base, encoded) {
   if (effects.length === 0) return base;
   return {
     ...effects[0],
+    playback_enabled: effects.findLast((value) => value.playback_enabled !== undefined)?.playback_enabled,
     acknowledge_frames: effects.some((value) => value.acknowledge_frames),
     frames: effects.flatMap((value) => value.frames ?? []),
     transcripts: effects.flatMap((value) => value.transcripts ?? []),

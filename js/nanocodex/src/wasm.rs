@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     path::PathBuf,
     rc::Rc,
     sync::{Arc, Mutex, Weak},
@@ -2193,7 +2193,7 @@ struct WasmManagedBrowserVoiceUpdate {
 /// transports, the managed Agent lifecycle, and routing returned delegations.
 #[wasm_bindgen(js_name = ManagedBrowserVoice)]
 pub struct WasmManagedBrowserVoice {
-    protocol: RefCell<BrowserVoiceProtocol>,
+    protocol: RefCell<nanocodex_voice_protocol::ManagedVoiceProtocol>,
     startup_context: RefCell<Option<String>>,
     started: Cell<bool>,
 }
@@ -2208,7 +2208,9 @@ impl WasmManagedBrowserVoice {
     #[wasm_bindgen(constructor)]
     pub fn new(voice: &str) -> Result<Self, JsValue> {
         Ok(Self {
-            protocol: RefCell::new(BrowserVoiceProtocol::new(voice).map_err(js_error)?),
+            protocol: RefCell::new(
+                nanocodex_voice_protocol::ManagedVoiceProtocol::new(voice).map_err(js_error)?,
+            ),
             startup_context: RefCell::new(None),
             started: Cell::new(false),
         })
@@ -2246,6 +2248,7 @@ impl WasmManagedBrowserVoice {
             return Err(js_error("managed browser voice has not started"));
         }
         let session_id = managed_voice_session_id(managed_session_id)?;
+        self.protocol.borrow_mut().bind_session(&session_id);
         let protocol = self.protocol.borrow();
         let call_body = build_chatgpt_realtime_call(
             sdp,
@@ -2328,7 +2331,7 @@ impl WasmManagedBrowserVoice {
     /// Reports whether one sideband event may produce a managed Agent delegation.
     #[wasm_bindgen(js_name = requiresAgentAdmission)]
     pub fn requires_agent_admission(&self, payload: &str) -> bool {
-        realtime_message_requires_agent_admission(payload)
+        self.protocol.borrow().requires_agent_admission(payload)
     }
 
     /// Applies one sideband event and returns effects plus canonical delegation text.
@@ -2343,7 +2346,7 @@ impl WasmManagedBrowserVoice {
         let update = self.protocol.borrow_mut().realtime_message(payload);
         let delegation = update
             .delegation
-            .map(|delegation| realtime_delegation(&delegation.input, &delegation.transcript));
+            .map(|delegation| nanocodex_voice_protocol::format_delegation(&delegation));
         encode_managed_voice_update(update.effects, delegation)
     }
 
@@ -2355,6 +2358,16 @@ impl WasmManagedBrowserVoice {
     #[wasm_bindgen(js_name = agentEvent)]
     pub fn agent_event(&self, event_json: &str) -> Result<String, JsValue> {
         encode_voice_effects(&self.protocol.borrow_mut().agent_event(event_json))
+    }
+
+    /// Applies a scoped managed context envelope using the shared Rust queue.
+    ///
+    /// # Errors
+    /// Rejects malformed JSON or effects that cannot be serialized.
+    #[wasm_bindgen(js_name = managedEvent)]
+    pub fn managed_event(&self, envelope_json: &str) -> Result<String, JsValue> {
+        let envelope = serde_json::from_str(envelope_json).map_err(js_error)?;
+        encode_voice_effects(&self.protocol.borrow_mut().managed_event(&envelope))
     }
 
     /// Drains one Codex-paced streamed or final managed Agent handoff chunk.
@@ -2404,6 +2417,12 @@ fn managed_voice_session_id(value: &str) -> Result<String, JsValue> {
         .map_err(|error| js_error(format!("invalid managed session ID: {error}")))
 }
 
+/// Returns the shared bounded first-prompt retrieval plan for a managed host.
+#[wasm_bindgen(js_name = managedBootstrapPlan)]
+pub fn managed_bootstrap_plan(input: &str) -> String {
+    nanocodex_voice_protocol::bootstrap_plan(input).to_string()
+}
+
 fn encode_managed_voice_update(
     effects: BrowserVoiceEffects,
     delegation: Option<String>,
@@ -2422,73 +2441,72 @@ struct WasmWorkspaceEntry {
 }
 
 async fn browser_workspace_tree(_workspace: &str, session_id: &str) -> Vec<String> {
-    const TREE_DEPTH: usize = 2;
     const TREE_ENTRIES: usize = 20;
-    enum Task {
-        List(String, usize),
-        Render(WasmWorkspaceEntry, usize),
-        Omitted(usize, usize),
-    }
+    let roots = browser_workspace_entries(".", session_id).await;
+    // The second level consists of independent host requests. Bound fan-out to
+    // the same twenty entries as the rendered tree, and retain sorted order.
+    let children =
+        futures_util::future::join_all(roots.iter().take(TREE_ENTRIES).map(|entry| async {
+            if entry.kind == "directory" {
+                browser_workspace_entries(&entry.path, session_id).await
+            } else {
+                Vec::new()
+            }
+        }))
+        .await;
     let mut output = Vec::new();
-    let mut pending = VecDeque::from([Task::List(String::from("."), 0_usize)]);
-    while let Some(task) = pending.pop_back() {
-        match task {
-            Task::List(path, depth) => {
-                if depth >= TREE_DEPTH {
-                    continue;
-                }
-                let Ok(promise) = host_list_workspace(&path, session_id) else {
-                    continue;
-                };
-                let Ok(value) = JsFuture::from(promise).await else {
-                    continue;
-                };
-                let Some(encoded) = value.as_string() else {
-                    continue;
-                };
-                let Ok(mut entries) = serde_json::from_str::<Vec<WasmWorkspaceEntry>>(&encoded)
-                else {
-                    continue;
-                };
-                entries.retain(|entry| !noisy_workspace_entry(&entry.path));
-                entries.sort_by(|left, right| {
-                    (left.kind == "file")
-                        .cmp(&(right.kind == "file"))
-                        .then_with(|| left.path.cmp(&right.path))
-                });
-                let omitted = entries.len().saturating_sub(TREE_ENTRIES);
-                if omitted > 0 {
-                    pending.push_back(Task::Omitted(omitted, depth));
-                }
-                for entry in entries.into_iter().take(TREE_ENTRIES).rev() {
-                    if entry.kind == "directory" {
-                        pending.push_back(Task::List(entry.path.clone(), depth + 1));
-                    }
-                    pending.push_back(Task::Render(entry, depth));
-                }
-            }
-            Task::Render(entry, depth) => {
-                let name = entry
-                    .path
-                    .rsplit('/')
-                    .find(|part| !part.is_empty())
-                    .unwrap_or(&entry.path);
-                output.push(format!(
-                    "{}- {}{}",
-                    "  ".repeat(depth),
-                    name,
-                    if entry.kind == "directory" { "/" } else { "" }
-                ));
-            }
-            Task::Omitted(omitted, depth) => {
-                output.push(format!(
-                    "{}- ... {omitted} more entries",
-                    "  ".repeat(depth)
-                ));
-            }
+    for (entry, children) in roots.iter().take(TREE_ENTRIES).zip(children) {
+        render_workspace_entry(&mut output, entry, 0);
+        for child in children.iter().take(TREE_ENTRIES) {
+            render_workspace_entry(&mut output, child, 1);
+        }
+        if children.len() > TREE_ENTRIES {
+            output.push(format!(
+                "  - ... {} more entries",
+                children.len() - TREE_ENTRIES
+            ));
         }
     }
+    if roots.len() > TREE_ENTRIES {
+        output.push(format!("- ... {} more entries", roots.len() - TREE_ENTRIES));
+    }
     output
+}
+
+async fn browser_workspace_entries(path: &str, session_id: &str) -> Vec<WasmWorkspaceEntry> {
+    let Ok(promise) = host_list_workspace(path, session_id) else {
+        return Vec::new();
+    };
+    let Ok(value) = JsFuture::from(promise).await else {
+        return Vec::new();
+    };
+    let Some(encoded) = value.as_string() else {
+        return Vec::new();
+    };
+    let Ok(mut entries) = serde_json::from_str::<Vec<WasmWorkspaceEntry>>(&encoded) else {
+        return Vec::new();
+    };
+    entries.retain(|entry| !noisy_workspace_entry(&entry.path));
+    entries.sort_by(|left, right| {
+        (left.kind == "file")
+            .cmp(&(right.kind == "file"))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    entries
+}
+
+fn render_workspace_entry(output: &mut Vec<String>, entry: &WasmWorkspaceEntry, depth: usize) {
+    let name = entry
+        .path
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or(&entry.path);
+    output.push(format!(
+        "{}- {}{}",
+        "  ".repeat(depth),
+        name,
+        if entry.kind == "directory" { "/" } else { "" }
+    ));
 }
 
 fn noisy_workspace_entry(path: &str) -> bool {

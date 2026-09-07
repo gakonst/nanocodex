@@ -1,6 +1,14 @@
 //! Shared, transport-neutral Codex Realtime adapter policy.
 
 mod browser;
+mod managed;
+mod transcript;
+
+pub use managed::{
+    ManagedVoiceProtocol, bootstrap_plan, format_delegation, managed_startup_context,
+};
+
+pub use transcript::project_transcript;
 
 /// Exact Codex Realtime side-agent instructions before user-name substitution.
 pub const CHATGPT_REALTIME_BACKEND_PROMPT_TEMPLATE: &str = include_str!("backend_prompt.md");

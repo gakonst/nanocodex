@@ -6,7 +6,6 @@ import { Actions, Voice } from "../browser/index.mjs";
 import {
   BrowserVoiceSession,
   capturePreferredMicrophone,
-  ICE_GATHERING_TIMEOUT_MS,
   MICROPHONE_CAPTURE_TIMEOUT_MS,
   REALTIME_CALL_TIMEOUT_MS,
   SpeakerPlayback,
@@ -22,6 +21,80 @@ test("browser voice exposes Codex's ChatGPT V3 catalog and default", () => {
   assert.equal(Voice.defaultVoice, "cove");
   assert.equal(Voice.VoiceError, VoiceError);
   assert.throws(() => Voice.create({}), /Nanocodex Agent/);
+});
+
+test("starts the call while local ICE gathering is still in progress", async () => {
+  const fixture = installBrowserVoiceFixture({ boundary: "ice" });
+  const calls = [];
+  const session = new BrowserVoiceSession({
+    core: fakeVoiceCore(calls), voice: "cove",
+    captureMicrophone: async () => fakeMicrophone(calls),
+    onStatus() {}, onTranscript() {}, onTerminated() {},
+  });
+  try {
+    await session.start();
+    assert.equal(fixture.peer.iceGatheringState, "gathering");
+    assert.equal(JSON.parse(fixture.request.call_body).sdp, "v=offer");
+  } finally {
+    await session.close();
+    fixture.restore();
+  }
+});
+
+test("both transcript rows stream while delegation admission is blocked", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  let releaseAdmission;
+  const admission = new Promise((resolve) => { releaseAdmission = resolve; });
+  let fences = 0;
+  const core = fakeVoiceCore(calls, {
+    async sidebandClosed() {
+      return JSON.stringify({ frames: [], transcripts: [], reconnect_after_ms: 0 });
+    },
+    async realtimeMessage(payload) {
+      const event = JSON.parse(payload);
+      calls.push(["realtimeMessage", event.type]);
+      return JSON.stringify({ frames: [], transcripts: event.transcripts ?? [] });
+    },
+  });
+  const { agent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, {
+    captureMicrophone: async () => fakeMicrophone(calls),
+    async beforeAgentTurn() { if (++fences === 2) await admission; },
+  });
+  try {
+    await voice.start();
+    fixture.sideband.message({ type: "delegation.created" });
+    await waitFor(() => fences === 2);
+    const update = (speaker, text, is_partial) => fixture.sideband.message({
+      type: "transcript", transcripts: [{ speaker, text, id: 0, is_partial }],
+    });
+    update("user", "Check", true);
+    update("assistant", "I will", true);
+    update("user", "Check the build", true);
+    await waitFor(() => voice.getSnapshot().transcripts[0]?.text === "Check the build");
+    assert.equal(voice.getSnapshot().transcripts.length, 2);
+    assert.equal(voice.getSnapshot().transcripts[1].text, "I will");
+    assert.equal(voice.getSnapshot().transcripts[0].isPartial, true);
+    const id = voice.getSnapshot().transcripts[0].id;
+    update("user", "Check the build.", false);
+    await waitFor(() => voice.getSnapshot().transcripts[0]?.isPartial === false);
+    assert.equal(voice.getSnapshot().transcripts[0].id, id);
+    assert.equal(voice.getSnapshot().transcripts.length, 2);
+    const previousSideband = fixture.sideband;
+    previousSideband.close();
+    await waitFor(() => fixture.sideband !== previousSideband);
+    await waitFor(() => calls.filter(([kind]) => kind === "sidebandOpened").length === 2);
+    const stopping = voice.stop();
+    releaseAdmission();
+    await stopping;
+    assert.equal(calls.filter(([kind, type]) => kind === "realtimeMessage" && type === "delegation.created").length, 1);
+  } finally {
+    releaseAdmission();
+    await voice.destroy();
+    agent.dispose();
+    fixture.restore();
+  }
 });
 
 test("the public resource is a thin binding over the Rust voice controller", async () => {
@@ -116,6 +189,79 @@ test("requests the microphone before waiting for the Rust controller", async () 
   } finally {
     fixture.restore();
   }
+});
+
+test("negotiates media during admission and opens the sideband while applying the answer", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  let admit, answer;
+  const admission = new Promise((resolve) => { admit = resolve; });
+  const appliedAnswer = new Promise((resolve) => { answer = resolve; });
+  const session = new BrowserVoiceSession({
+    core: fakeVoiceCore(calls), voice: "cove",
+    captureMicrophone: async () => fakeMicrophone(calls),
+    beforeAgentTurn: () => admission,
+    onStatus() {}, onTranscript() {}, onTerminated() {},
+  });
+  try {
+    const starting = session.start();
+    await waitFor(() => fixture.peer?.localDescription !== undefined);
+    assert.equal(fixture.request, undefined, "provider call must wait for admitted context");
+    assert.equal(calls.some(([kind]) => kind === "start"), false);
+    fixture.peer.setRemoteDescription = () => appliedAnswer;
+    admit();
+    await waitFor(() => calls.some(([kind]) => kind === "sidebandOpened"));
+    answer();
+    await starting;
+    await session.close();
+  } finally {
+    admit(); answer(); session.abort(); fixture.restore();
+  }
+});
+
+test("failed admission stops late microphone capture without creating a peer", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  let captured;
+  const session = new BrowserVoiceSession({
+    core: fakeVoiceCore(calls), voice: "cove",
+    captureMicrophone: () => new Promise((resolve) => { captured = resolve; }),
+    beforeAgentTurn: async () => { throw new Error("admission rejected"); },
+    onStatus() {}, onTranscript() {}, onTerminated() {},
+  });
+  try {
+    await assert.rejects(session.start(), /admission rejected/);
+    captured(fakeMicrophone(calls));
+    await waitFor(() => calls.some(([kind]) => kind === "track.stop"));
+    assert.equal(fixture.peer, undefined);
+    assert.equal(fixture.request, undefined);
+  } finally { session.abort(); fixture.restore(); }
+});
+
+test("stop waits for an in-flight lifecycle start before stopping and freeing its controller", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  let started;
+  const core = fakeVoiceCore(calls);
+  core.start = () => {
+    calls.push(["start"]);
+    return new Promise((resolve) => { started = resolve; });
+  };
+  const session = new BrowserVoiceSession({
+    core, voice: "cove", captureMicrophone: async () => fakeMicrophone(calls),
+    onStatus() {}, onTranscript() {}, onTerminated() {},
+  });
+  try {
+    const starting = session.start();
+    await waitFor(() => fixture.peer?.localDescription !== undefined);
+    const closing = session.close();
+    assert.equal(calls.some(([kind]) => kind === "track.stop"), true);
+    assert.equal(calls.some(([kind]) => kind === "free" || kind === "stop"), false);
+    started();
+    await Promise.all([starting, closing]);
+    assert.deepEqual(calls.filter(([kind]) => ["start", "stop", "free"].includes(kind)), [["start"], ["stop"], ["free"]]);
+    assert.equal(fixture.request, undefined);
+  } finally { started?.(); session.abort(); fixture.restore(); }
 });
 
 test("explains browser and embed microphone denials", async () => {
@@ -254,7 +400,6 @@ test("bounds stalled microphone acquisition with an actionable typed error", asy
 
 test("bounds each browser voice startup boundary with typed cleanup errors", async (t) => {
   const boundaries = [
-    ["ice", ICE_GATHERING_TIMEOUT_MS, "ice_gathering_timeout", "network negotiation", "peer"],
     ["fetch", REALTIME_CALL_TIMEOUT_MS, "realtime_call_timeout", "connection request", "request"],
     ["sideband", SIDEBAND_OPEN_TIMEOUT_MS, "sideband_open_timeout", "sideband", "sideband"],
   ];
@@ -293,7 +438,6 @@ test("bounds each browser voice startup boundary with typed cleanup errors", asy
       await assert.rejects(starting, (error) => (
         error instanceof VoiceError && error.code === code && error.message.includes(message)
       ));
-      if (boundary === "ice") assert.equal(fixture.peer.signalingState, "closed");
       if (boundary === "fetch") assert.equal(fixture.requestSignal.aborted, true);
       if (boundary === "sideband") assert.equal(fixture.sideband.readyState, fixture.sideband.constructor.CLOSED);
       await session.close();
@@ -362,6 +506,7 @@ test("a replacement resource does not wait on the previous pending microphone", 
 test("refreshes an asynchronous sideband authorization before reconnecting", async () => {
   const fixture = installBrowserVoiceFixture();
   const calls = [];
+  const statuses = [];
   let tickets = 0;
   try {
     const session = new BrowserVoiceSession({
@@ -376,17 +521,19 @@ test("refreshes an asynchronous sideband authorization before reconnecting", asy
         tickets += 1;
         return `wss://connect.example/sideband?call_id=${callId}&ticket=${tickets}`;
       },
-      onStatus() {},
+      onStatus(status) { statuses.push(status); },
       onTranscript() {},
       onTerminated() {},
     });
     await session.start();
     assert.match(fixture.sidebandUrls[0], /ticket=1$/);
     const first = fixture.sideband;
+    statuses.length = 0;
     first.close();
     await new Promise((resolve) => setTimeout(resolve, 210));
     await waitFor(() => fixture.sideband !== first);
     assert.match(fixture.sidebandUrls[1], /ticket=2$/);
+    await waitFor(() => statuses.includes("Voice active (cove)"));
     await session.close();
   } finally {
     fixture.restore();
@@ -478,13 +625,52 @@ test("speaker playback resumes from the next user gesture when autoplay is block
     removeEventListener(_type, listener) { if (resume === listener) resume = undefined; },
   };
   const playback = new SpeakerPlayback(speaker, () => {}, gestures);
+  playback.setEnabled(false);
   playback.attach({});
+  assert.equal(speaker.muted, true);
+  playback.setEnabled(true);
+  assert.equal(speaker.muted, false);
   await Promise.resolve();
   await Promise.resolve();
   resume();
   await Promise.resolve();
   assert.equal(attempts, 2);
   playback.close();
+});
+
+test("Rust playback permission follows successful frame delivery and reconnect replay", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const previousAudio = Object.getOwnPropertyDescriptor(globalThis, "Audio");
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const speaker = { muted: false, play: async () => {}, pause() {} };
+  globalThis.Audio = class { constructor() { return speaker; } };
+  globalThis.document = new EventTarget();
+  const calls = [];
+  const frame = JSON.stringify({ type: "session.context.append", content: [{ type: "input_text", text: "Retrieved answer" }] });
+  let pending = false;
+  const core = fakeVoiceCore(calls, {
+    async sidebandOpened() { return JSON.stringify({ frames: pending ? [frame] : [], acknowledge_frames: pending, playback_enabled: pending }); },
+    async framesSent(count) { calls.push(["framesSent", count]); pending = false; },
+    async agentEvent() { pending = true; return JSON.stringify({ frames: [frame], acknowledge_frames: true, playback_enabled: true }); },
+  });
+  const { agent, emitAgentEvent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, { captureMicrophone: async () => fakeMicrophone(calls) });
+  try {
+    await voice.start();
+    fixture.peer.emit("track", { track: {}, streams: [{}] });
+    assert.equal(speaker.muted, true);
+    fixture.sideband.close();
+    emitAgentEvent({ type: "assistant.message" });
+    await waitFor(() => pending);
+    assert.equal(speaker.muted, true, "unsent context must keep playback gated");
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    await waitFor(() => fixture.sideband.sent.includes(frame));
+    assert.equal(speaker.muted, false);
+    assert.deepEqual(calls.filter(([name]) => name === "framesSent"), [["framesSent", 1]]);
+  } finally {
+    await voice.destroy(); agent.dispose(); fixture.restore();
+    restoreGlobal("Audio", previousAudio); restoreGlobal("document", previousDocument);
+  }
 });
 
 function fakeVoiceCore(calls, overrides = {}) {
@@ -602,9 +788,14 @@ function installBrowserVoiceFixture({ boundary } = {}) {
     iceGatheringState = boundary === "ice" ? "gathering" : "complete";
     localDescription;
     signalingState = "stable";
+    listeners = new Map();
     constructor() { fixture.peer = this; }
-    addEventListener() {}
-    removeEventListener() {}
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) ?? new Set();
+      listeners.add(listener); this.listeners.set(type, listeners);
+    }
+    removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
+    emit(type, event) { for (const listener of this.listeners.get(type) ?? []) listener(event); }
     addTrack() {}
     close() { this.signalingState = "closed"; }
     createDataChannel() { return { close() {} }; }

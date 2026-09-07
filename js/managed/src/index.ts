@@ -4866,7 +4866,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#deleting || this.#agent !== agent) {
       throw retryableError("agent ownership changed while applying settings");
     }
-    const input = request.input!;
+    let input = request.input!;
     this.#assertRealtimeRouteAvailable();
     let release!: () => void;
     const previous = this.#realtimeRouteTail;
@@ -4878,14 +4878,39 @@ export class DurableAgentSession extends DurableComputerSession {
       // Waiting for the prior routed operation yields to export. Recheck
       // immediately before the Rust route can create any model/tool effect.
       this.#assertRealtimeRouteAvailable();
+      const epoch = this.#session()?.authorization_epoch;
+      const plan = await CloudflareAgent.bootstrapPlan(input);
+      const assertActive = () => {
+        this.#assertRealtimeRouteAvailable();
+        if (this.#agent !== agent || this.#session()?.authorization_epoch !== epoch
+          || this.#managedRealtimeSession()?.voice_session_id !== request.voiceSessionId) {
+          throw retryableError("voice ownership changed during startup lookups");
+        }
+      };
+      assertActive();
+      const key = `realtime:${request.voiceSessionId}:${request.operationId}`;
+      const id = `realtime:${await hashManagedInput(key)}`;
+      assertActive();
       if (this.#session()?.accepted_turns === 0) {
         // The first voice delegation takes normal durable admission so its
         // history/memory lookups complete before any model request begins.
-        const key = `realtime:${request.voiceSessionId}:${request.operationId}`;
-        const id = `realtime:${await hashManagedInput(key)}`;
-        const submitted = await this.#submitManagedTurn(id, input, requestHash, key, true, authorization);
+        const submitted = await this.#submitManagedTurn(id, input, requestHash, key, true, authorization,
+          assertActive, plan.voice_bootstrap ? request.voiceSessionId : undefined);
         return { operation_id: request.operationId, route: "started", turn_id: submitted.row.id,
           voice_session_id: request.voiceSessionId };
+      }
+      if (plan.voice_bootstrap) {
+        // Each call retrieves from its first utterance, including when joining
+        // an existing conversation. The usual Rust start/steer decision follows.
+        this.#startupContext.reserve(id, plan, request.voiceSessionId);
+        const tools = this.#memoryTools({ id, authorization_json: JSON.stringify(authorization) });
+        await this.#startupContext.prepare(id,
+          async (name, args, signal) => tools.find((tool) => tool.name === name)!.handler(args, {
+            callId: `startup_${id}_${name}`, parentCallId: "", sessionId: agent.sessionId,
+            model: this.#settings().model, signal,
+          }), async () => undefined, assertActive);
+        input = promptInputText(this.#startupContext.enrich(id, input));
+        assertActive();
       }
       this.#realtimeEventBuffer = [];
       let turn: Turn | undefined;
@@ -4922,9 +4947,9 @@ export class DurableAgentSession extends DurableComputerSession {
           throw new Error("durable routed turn did not return an operation id");
         }
         turnId = acceptedTurnId;
-        await this.#acceptRoutedTurn(turnId, input, requestHash, request, authorization);
+        await this.#acceptRoutedTurn(turnId, request.input!, requestHash, request, authorization);
         this.#turns.set(turnId, turn);
-        this.#turnInputs.set(turnId, input);
+        this.#turnInputs.set(turnId, request.input!);
         this.#eventTurnQueue.push(turnId);
         const buffered = this.#takeRealtimeEventBuffer();
         for (const event of buffered) this.#recordAgentEvent(event, agent.sessionId);
@@ -5209,6 +5234,7 @@ export class DurableAgentSession extends DurableComputerSession {
     explicitId = true,
     authorization: TurnAuthorization = { capabilities: [] },
     beforeAdmission?: () => void,
+    voiceSessionId?: string,
   ): Promise<ManagedTurnSubmission> {
     await this.#settingsMutationTail;
     if (this.#deleting || this.#deleted) {
@@ -5217,6 +5243,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#durabilityExported || this.#durabilityImportState === "pending") {
       throw new ManagedRequestError(409, "durability_transfer_pending", "durability transfer fenced admission");
     }
+    const bootstrapPlan = await CloudflareAgent.bootstrapPlan(promptInputText(input));
     const archived = await Promise.all([
       this.#managedTurn(id) ? Promise.resolve(undefined) : this.#archivedTurnById(id),
       requestKey === null || this.#managedTurnByRequestKey(requestKey)
@@ -5312,7 +5339,7 @@ export class DurableAgentSession extends DurableComputerSession {
           id,
         );
       }
-      this.#startupContext.reserve(id, input);
+      this.#startupContext.reserve(id, bootstrapPlan, voiceSessionId);
       this.ctx.storage.sql.exec(
         `UPDATE session_state
          SET accepted_turns = accepted_turns + 1,
@@ -5935,6 +5962,7 @@ export class DurableAgentSession extends DurableComputerSession {
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_tools");
+      this.ctx.storage.sql.exec("DELETE FROM managed_prompt_startup_tools");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_context");
       this.ctx.storage.sql.exec("DELETE FROM managed_subagent_authorizations");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
@@ -6669,6 +6697,8 @@ export class DurableAgentSession extends DurableComputerSession {
       };
       Object.defineProperty(agentOptions, internalRuntime, { value: {
         ...hostedRuntime,
+        // Voice and session control can start while the owned Responses relay warms up.
+        waitForPreconnect: false,
       } });
       Object.defineProperty(agentOptions, internalConfiguration, { value: this.#settings() });
       phaseStartedAt = performance.now();
@@ -6738,7 +6768,7 @@ export class DurableAgentSession extends DurableComputerSession {
     };
   }
 
-  #memoryTools(startupTurn?: ManagedTurnRow): readonly NamedTool[] {
+  #memoryTools(startupTurn?: Pick<ManagedTurnRow, "id" | "authorization_json">): readonly NamedTool[] {
     return memorySessionTools({
       findSessions: (input) => this.#findSessions(input),
       readSession: (input) => this.#readHistorySession(input),
@@ -6830,6 +6860,7 @@ export class DurableAgentSession extends DurableComputerSession {
   async #memoryOperation(operation: MemoryOperation): Promise<MemoryResult> {
     const session = this.#session();
     if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
+    const voiceSession = this.#managedRealtimeSession();
     const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
     const initialized = await initializeMemoryScope(memory, session.organization_id);
     if (!initialized.ok) {
@@ -6861,7 +6892,24 @@ export class DurableAgentSession extends DurableComputerSession {
           : `memory operation failed with HTTP ${response.status}`,
       );
     }
-    return parseMemoryResult(await response.json<unknown>(), operation.operation);
+    const result = parseMemoryResult(await response.json<unknown>(), operation.operation);
+    try {
+      const currentVoice = this.#managedRealtimeSession();
+      if (mutating && voiceSession && currentVoice?.voice_session_id === voiceSession.voice_session_id
+        && currentVoice.authorization_json === voiceSession.authorization_json
+        && this.#session()?.authorization_epoch === session.authorization_epoch
+        && parseTurnAuthorization(currentVoice.authorization_json).capabilities.includes("memory:read")) {
+        this.#recordAndBroadcast({ type: "event", event: {
+          protocol_version: 1, request_id: `voice-context:${crypto.randomUUID()}`, seq: 0,
+          type: "managed.voice.context", payload: { voice_session_id: voiceSession.voice_session_id, result },
+        } }, this.#eventTurnId ?? null);
+      }
+    } catch {
+      // The memory write already committed; a voice notification cannot turn
+      // it into a failed tool result and cause the model to retry the write.
+      this.#observe("managed.voice.context_unavailable", { outcome: "failure" });
+    }
+    return result;
   }
 
   #activeTurnAuthorization(): TurnAuthorization | undefined {

@@ -106,6 +106,7 @@ export function create(agent, options = {}) {
       ? createManagedBrowserVoice(agent, selectedVoice)
       : createBrowserVoice(agent, selectedVoice));
     const transport = managedTransport;
+    const transcriptRows = new Map();
     const next = new BrowserVoiceSession({
       core,
       sessionId,
@@ -121,12 +122,23 @@ export function create(agent, options = {}) {
           publish({ ...snapshot, statusText: text });
         }
       },
-      onTranscript(speaker, text) {
+      onTranscript(speaker, text, metadata = {}) {
         if (session !== next || generation !== current) return;
-        if (!text.trim()) return;
-        const entry = Object.freeze({ speaker, text });
-        publish({ ...snapshot, transcripts: Object.freeze([...snapshot.transcripts, entry]) });
-        emit(Object.freeze({ type: "transcript", ...entry }));
+        const key = metadata.id === undefined ? undefined : `${speaker}:${metadata.id}`;
+        const index = key === undefined ? undefined : transcriptRows.get(key);
+        if (!text.trim() && index === undefined) return;
+        const entry = Object.freeze({ speaker, text, ...(key === undefined ? {} : {
+          id: `${current}:${key}`, isPartial: metadata.is_partial === true,
+        }) });
+        const transcripts = [...snapshot.transcripts];
+        if (index === undefined) {
+          if (key !== undefined) transcriptRows.set(key, transcripts.length);
+          transcripts.push(entry);
+        } else {
+          transcripts[index] = entry;
+        }
+        publish({ ...snapshot, transcripts: Object.freeze(transcripts) });
+        emit(Object.freeze({ type: metadata.is_partial ? "transcript.delta" : "transcript", ...entry }));
       },
       onTerminated(message) {
         if (session !== next || destroyed || generation !== current) return;

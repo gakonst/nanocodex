@@ -18,7 +18,12 @@ export declare class VoiceError extends Error {
   readonly code: VoiceErrorCode;
   constructor(code: VoiceErrorCode, message: string, options?: { cause?: unknown });
 }
-export type Transcript = Readonly<{ speaker: "user" | "assistant"; text: string }>;
+export type Transcript = Readonly<{
+  speaker: "user" | "assistant";
+  text: string;
+  id?: string;
+  isPartial?: boolean;
+}>;
 export type Snapshot = Readonly<{
   error: Error | undefined;
   status: "idle" | "connecting" | "active" | "error";
@@ -29,7 +34,8 @@ export type Snapshot = Readonly<{
 export type Event =
   | Readonly<{ type: "connecting"; voice: VoiceName }>
   | Readonly<{ type: "started"; voice: VoiceName }>
-  | Readonly<{ type: "transcript"; speaker: "user" | "assistant"; text: string }>
+  | Readonly<{ type: "transcript"; speaker: "user" | "assistant"; text: string; id?: string; isPartial?: false }>
+  | Readonly<{ type: "transcript.delta"; speaker: "user" | "assistant"; text: string; id: string; isPartial: true }>
   | Readonly<{ type: "error"; error: Error }>
   | Readonly<{ type: "stopped" }>;
 export type Options = Readonly<{
