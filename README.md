@@ -623,6 +623,7 @@ client projection, and sandbox policy while reusing one agent lifecycle:
 | [React + Vite Worker](examples/react-vite/README.md) | A browser Worker owns one persistent session and React consumes ordered events without reshaping the contract. |
 | [Cloudflare managed agents + Multiplayer](js/managed/README.md) | Signed room objects add ordered N-human chat, bounded replay, a tool-free host-owned agent, and a global durable spend/allocation quota; provider credentials stay behind a private broker binding. |
 | [Cloudflare credential broker](js/egress/README.md) | Two ordinary Workers use a private Service Binding for exact API-key or OAuth replacement and a singleton rotating Codex OAuth broker. |
+| [Cloudflare X API](js/x-api/README.md) | First-party public X conversion and browsing Worker, exposed to agents as `browseX` and advertised by `accountInfo`. Deploy with `pnpm deploy:x` before managed agents. |
 | [Cloudflare fetch + MCP](examples/cloudflare-fetch-mcp/README.md) | CSP-safe QuickJS Code Mode, deferred remote MCP, and caller-owned paid transport inside a serialized Durable Object. |
 | [Rivet Actor](examples/rivet-actors/README.md) | Durable SQLite snapshots and idempotent turns around the WASM driver, with an actor-owned AgentOS workspace and previews. |
 | [Vercel Workflow actor](examples/vercel-workflows/README.md) | A Rust-owned journal between stateless steps, replayable multi-client streams rendered through a replaceable wterm agent UI, and a persistent caller-owned Vercel Sandbox with a separate ephemeral wterm operator shell. |

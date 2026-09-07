@@ -90,6 +90,8 @@ jobs:
       - name: Validate egress Worker
         working-directory: js/egress
         run: npx wrangler deploy --dry-run --config wrangler.broker.jsonc
+      - name: Validate X Worker
+        run: pnpm --filter @nanocodex/x-api run build
       - name: Validate managed Worker
         working-directory: js/managed
         run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}"
@@ -183,6 +185,8 @@ jobs:
       - name: Deploy egress broker
         working-directory: js/egress
         run: npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
+      - name: Deploy X Worker
+        run: pnpm deploy:x
       - name: Deploy managed agent service
         working-directory: js/managed
         run: npx wrangler deploy --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}" --message "$DEPLOY_MESSAGE"

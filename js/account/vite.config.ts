@@ -126,6 +126,7 @@ export default defineConfig({
       cloudflare: {
         inspectorPort: 0,
         auxiliaryWorkers: [
+          { configPath: "../x-api/wrangler.jsonc", devOnly: true },
           { configPath: "../egress/wrangler.broker.jsonc", devOnly: true },
           { configPath: "../managed/wrangler.jsonc", devOnly: true },
           { configPath: "../chief-of-staff/wrangler.jsonc", devOnly: true },

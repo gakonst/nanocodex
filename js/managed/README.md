@@ -4,6 +4,11 @@ This Worker is Nanocodex's account-owned hosted-agent surface on Cloudflare. It
 authenticates public requests, projects the caller's authority, and routes work
 to durable, account-scoped services.
 
+Managed agents have a native `browseX` tool for public X posts, profiles, search,
+followers, and following. `accountInfo().apis` advertises the tool independently
+of connector authentication. It calls the private [X Worker](../x-api/README.md)
+through `NANOCODEX_X`; deploy it with `pnpm deploy:x` before `pnpm deploy:managed`.
+
 ## Ownership and security
 
 `DurableAgentSession` exclusively owns an agent's mutable runtime: retained

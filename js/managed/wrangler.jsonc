@@ -25,6 +25,7 @@
     }
   },
   "services": [
+    { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
     {
       "binding": "NANOCODEX",
       "service": "nanocodex-egress"
@@ -170,6 +171,7 @@
     "development": {
       "name": "nanocodex-durable-agent",
       "services": [
+        { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
         { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false },
         {
           "binding": "NANOCODEX_CHIEF_EGRESS",

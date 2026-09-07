@@ -24,6 +24,7 @@ import { createWorkspaceFilesystem } from "nanocodex-tools";
 import { SessionAttachments } from "./attachments";
 import { createBrainWorkspace } from "./brain-workspace";
 import { createBrainBucket } from "./brain-bucket";
+import { browseX, X_API } from "nanocodex-tools/x";
 import { managedCodeEvaluator } from "./code-evaluator";
 import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
 import { createCronTool } from "./cron-tool";
@@ -339,6 +340,7 @@ export interface Env extends
   NANOCODEX_MEMORY: DurableObjectNamespace<MemoryScope>;
   NANOCODEX_SANDBOXES: DurableObjectNamespace<Sandbox>;
   NANOCODEX: Fetcher;
+  NANOCODEX_X?: Fetcher;
   NANOCODEX_HISTORY: R2Bucket;
   NANOCODEX_WORKSPACES: R2Bucket;
   NANOCODEX_ADMIN_TOKEN: string;
@@ -5656,6 +5658,7 @@ export class DurableAgentSession extends DurableComputerSession {
               runtime: "cloudflare-durable-object", default_cwd: "/brain",
               accountInfo: {
                 ...account,
+                apis: this.env.NANOCODEX_X ? [X_API] : [],
                 machines: this.#accountMachines(authorization, { sessionId: agent.sessionId }),
               },
             };
@@ -6520,6 +6523,7 @@ export class DurableAgentSession extends DurableComputerSession {
             ? {}
             : accountConnectionProjection(authorization),
           enabled: !multiplayer,
+          apis: this.env.NANOCODEX_X ? [X_API] : [],
           machines: this.#accountMachines(authorization, context),
           signal: context.signal,
         },
@@ -6653,7 +6657,7 @@ export class DurableAgentSession extends DurableComputerSession {
       ...(namespaceRuntime?.tools ?? []),
       ...(multiplayer ? [] : [{
         name: "accountInfo",
-        description: "Report live machine hands, account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Vault references may show usernames, addresses, phone numbers, and card last four, but never passwords or complete card data.",
+        description: "Report native public APIs, live machine hands, account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Vault references may show usernames, addresses, phone numbers, and card last four, but never passwords or complete card data.",
         parameters: { type: "object", additionalProperties: false },
         handler: (_input: unknown, context: ToolContext) => currentAccountInfo(context),
       }]),
@@ -6677,6 +6681,9 @@ export class DurableAgentSession extends DurableComputerSession {
           return authorization === undefined ? {} : accountConnectionProjection(authorization);
         },
       })]),
+      ...(this.env.NANOCODEX_X ? [browseX({
+        fetch: (input, init) => this.env.NANOCODEX_X!.fetch(String(input), init),
+      })] : []),
       web({
         url: "https://managed-tools.internal/web-search",
         fetch: managedWebFetch(this.env, this.ctx.id.toString()),

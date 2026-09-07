@@ -1,0 +1,23 @@
+{
+  "name": "@nanocodex/x-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --env=\"\" --dry-run --outdir dist",
+    "deploy": "wrangler deploy --env=\"\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.19.0",
+    "@cloudflare/workers-types": "^5.20260730.1",
+    "typescript": "5.9.3",
+    "vitest": "^4.0.18",
+    "wrangler": "4.127.1"
+  },
+  "dependencies": {
+    "nanocodex-tools": "workspace:*"
+  }
+}

@@ -178,6 +178,11 @@ jobs:
           npm run build --prefix examples/privy
           npm test --prefix examples/better-auth
           npm run build --prefix examples/better-auth
+      - name: Check native X integration
+        run: |
+          pnpm --filter @nanocodex/x-api run typecheck
+          pnpm --filter @nanocodex/x-api run test
+          pnpm --filter nanocodex-managed-service exec vitest run test/account-info.test.ts test/default-mcp.test.ts test/startup-context.test.ts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nanocodex-web-wasm

@@ -9,6 +9,7 @@ import {
 } from "../src/default-mcp";
 import { memorySessionTools } from "../src/memory-session-tools";
 import { createCronTool } from "../src/cron-tool";
+import { browseX } from "nanocodex-tools/x";
 
 describe("durable managed default MCP catalog", () => {
   it("matches the canonical five public MCP servers", () => {
@@ -148,6 +149,7 @@ describe("durable managed default MCP catalog", () => {
       ]),
     );
     const tools = await createDefaultManagedTools([
+      browseX({ fetch: async () => Response.json({ markdown: "public X post" }) }),
       {
         name: "accountInfo",
         description: "Account information.",
@@ -178,6 +180,7 @@ describe("durable managed default MCP catalog", () => {
         "accountInfo",
         "create_cron",
         "find_session",
+        "browseX",
         "find_sessions",
         "memory",
         "mcp__cloudflare__search",

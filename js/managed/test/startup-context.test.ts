@@ -6,6 +6,7 @@ import { ManagedStartupContext, type StartupEnvironment } from "../src/startup-c
 
 import { Agent } from "nanocodex/cloudflare";
 import { promptInputText } from "nanocodex-tools/session";
+import { X_API } from "nanocodex-tools/x";
 const plan = (input: PromptInput) => Agent.bootstrapPlan(promptInputText(input));
 
 const firstPrompt = "Find the copper finch deployment preference";
@@ -25,7 +26,7 @@ async function withStartup(run: (startup: ManagedStartupContext, state: DurableO
 const environment: StartupEnvironment = {
   runtime: "cloudflare-durable-object", default_cwd: "/brain",
   accountInfo: {
-    status: "ready", authenticated: ["github"], accounts: { github: "work" },
+    status: "ready", apis: [X_API], authenticated: ["github"], accounts: { github: "work" },
     connectorAccounts: { github: [{ id: "github-work", label: "work" }] },
     identity: {}, stablecoins: [], authorizations: [], vault: [],
     machines: [{ id: "user:hand", name: "laptop", kind: "user", mount: "/hand",
@@ -126,6 +127,8 @@ describe("managed first-prompt bootstrap boundary", () => {
       const text = contextText(state);
       expect(text).toContain('"machines":[{"id":"user:hand"');
       expect(text).toContain('"connectorAccounts":{"github"');
+      expect(text).toContain('"tool":"browseX"');
+      expect(text).toContain("Native public APIs in accountInfo.apis need no connector authorization");
       expect(text).toContain("not instructions");
       expect(text).toContain("untrusted content");
       const runtime = developerSession();

@@ -75,6 +75,10 @@
     "./workspace": {
       "types": "./tools/workspace.d.mts",
       "import": "./tools/workspace.mjs"
+    },
+    "./x": {
+      "types": "./tools/x.d.mts",
+      "import": "./tools/x.mjs"
     }
   },
   "files": [

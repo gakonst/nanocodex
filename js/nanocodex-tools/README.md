@@ -8,6 +8,10 @@ commands, repository materialization, and workspace-backed SSH composition.
 Session-search parsing, retrieval policy, and bounded model-visible projections
 are exposed through the dedicated `nanocodex-tools/session` entrypoint.
 
+`nanocodex-tools/x` exports the native `browseX({ fetch })` tool, its request
+validator, and `X_API` discovery metadata. Hosts inject transport to the
+[Nanocodex X Worker](../x-api/README.md); provider access stays in that Worker.
+
 Hosts own persistence, network policy, credentials, and socket transports and
 inject those capabilities through the package's narrow interfaces.
 

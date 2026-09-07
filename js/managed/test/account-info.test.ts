@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { accountInfo, projectAccountInfo } from "../src/account-info";
+import { X_API } from "nanocodex-tools/x";
 
 const A = "a".repeat(43);
 const B = "b".repeat(43);
@@ -10,6 +11,16 @@ const ADDRESS_ID = "a".repeat(22);
 const PHONE_ID = "p".repeat(22);
 
 describe("managed account info", () => {
+  it("discovers native public APIs without granting X connector access", async () => {
+    for (const enabled of [true, false]) {
+      const info = await accountInfo({ fetch: async () => new Response(null, { status: 503 }) },
+        "user", { enabled, apis: [X_API], allowedConnectors: [] });
+      expect(info.apis).toEqual([X_API]);
+      expect(info.authenticated).toEqual([]);
+      expect(projectAccountInfo(info, [], {}).apis).toEqual([X_API]);
+    }
+  });
+
   it("forwards cancellation to every broker request and preserves its reason", async () => {
     const controller = new AbortController();
     const reason = new Error("turn cancelled");
@@ -51,6 +62,7 @@ describe("managed account info", () => {
 
     expect(info).toEqual({
       status: "ready",
+      apis: [],
       authenticated: ["gmail", "gdrive", "slack"],
       accounts: { gdrive: "work@example.com", slack: "Acme (U123)" },
       connectorAccounts: {
@@ -204,6 +216,7 @@ describe("managed accountInfo vault projection", () => {
 
     expect(result).toEqual({
       status: "ready",
+      apis: [],
       authenticated: ["github"],
       accounts: { github: "octocat" },
       connectorAccounts: {},
@@ -314,6 +327,7 @@ describe("managed accountInfo vault projection", () => {
 
     expect(result).toMatchObject({
       status: "ready",
+      apis: [],
       authenticated: ["github"],
       accounts: { github: "octocat" },
       vault: [],
@@ -323,6 +337,7 @@ describe("managed accountInfo vault projection", () => {
   it("normalizes a retained legacy snapshot without Vault metadata", () => {
     const legacy = {
       status: "ready",
+      apis: [],
       authenticated: ["github"],
       accounts: { github: "octocat" },
       identity: {},

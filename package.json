@@ -15,6 +15,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "deploy:egress": "pnpm --filter nanocodex-egress-service run deploy:broker",
+    "deploy:x": "pnpm --filter @nanocodex/x-api run deploy",
     "deploy:managed": "turbo run build --filter=nanocodex-managed-service && pnpm --filter nanocodex-managed-service run deploy",
     "deploy:connect-dialog": "turbo run build --filter=@nanocodex/connect-dialog && pnpm --filter @nanocodex/connect-dialog run deploy",
     "deploy:connect-api": "turbo run build --filter=@nanocodex/connect-api && pnpm --filter @nanocodex/connect-api run deploy",

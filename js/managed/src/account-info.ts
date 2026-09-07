@@ -1,3 +1,4 @@
+import type { X_API } from "nanocodex-tools/x";
 import type { HostedMachine } from "./hosted-tools-protocol";
 
 import {
@@ -61,6 +62,8 @@ export type AccountMachine = Readonly<HostedMachine & {
 
 export type AccountInfo = Readonly<{
   status: "disabled" | "ready" | "unavailable";
+  /** Native public APIs available independently of account connectors. */
+  apis: readonly (typeof X_API)[];
   /** Legacy capability-level summary retained for existing agents. */
   authenticated: readonly ConnectorCapabilityId[];
   /** Legacy single-account labels retained when a capability has one visible account. */
@@ -81,6 +84,7 @@ export type AccountInfoOptions = Readonly<{
   allowedConnectors?: readonly ConnectorCapabilityId[];
   allowedConnections?: ConnectorConnectionSelection;
   enabled: boolean;
+  apis?: readonly (typeof X_API)[];
   machines?: readonly AccountMachine[];
   signal?: AbortSignal;
 }>;
@@ -92,11 +96,12 @@ export async function accountInfo(
     allowedConnectors,
     allowedConnections,
     enabled,
+    apis = [],
     machines = [],
     signal,
   }: AccountInfoOptions,
 ): Promise<AccountInfo> {
-  if (!enabled) return emptyInfo("disabled", machines);
+  if (!enabled) return emptyInfo("disabled", machines, apis);
   signal?.throwIfAborted();
   try {
     const encodedUserId = encodeURIComponent(userId);
@@ -108,7 +113,7 @@ export async function accountInfo(
     ]);
     if (!response.ok) {
       await response.body?.cancel();
-      return emptyInfo("unavailable", machines);
+      return emptyInfo("unavailable", machines, apis);
     }
     const statuses = connectorStatuses(await response.json());
     const allowed = allowedConnectors === undefined ? undefined : new Set(allowedConnectors);
@@ -133,6 +138,7 @@ export async function accountInfo(
     }
     return {
       status: "ready",
+      apis,
       authenticated,
       accounts,
       connectorAccounts,
@@ -144,7 +150,7 @@ export async function accountInfo(
     };
   } catch {
     signal?.throwIfAborted();
-    return emptyInfo("unavailable", machines);
+    return emptyInfo("unavailable", machines, apis);
   }
 }
 
@@ -157,6 +163,7 @@ export function projectAccountInfo(
   if (allowedConnectors === undefined) {
     return {
       ...info,
+      apis: info.apis ?? [],
       connectorAccounts: info.connectorAccounts ?? {},
       machines: info.machines ?? [],
       vault,
@@ -191,6 +198,7 @@ export function projectAccountInfo(
   }
   return {
     ...info,
+    apis: info.apis ?? [],
     authenticated,
     accounts,
     connectorAccounts,
@@ -202,9 +210,11 @@ export function projectAccountInfo(
 function emptyInfo(
   status: "disabled" | "unavailable",
   machines: readonly AccountMachine[],
+  apis: readonly (typeof X_API)[],
 ): AccountInfo {
   return {
     status,
+    apis,
     authenticated: [],
     accounts: {},
     connectorAccounts: {},
