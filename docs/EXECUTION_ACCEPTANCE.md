@@ -179,9 +179,9 @@ of retained evidence. An assistant summary, green tool-transport status, or
    the ambiguous-submit and Stop cases, before an explicitly authorized live
    order is used as evidence.
 
-The local web/iPhone progress patch and its passing tests do not yet satisfy
-the deployed acceptance cases. The original workspace Cargo run lost its
-process after approximately 38m 42s and produced no terminal Cargo result.
+Command progress is deployed; the web and iPhone observations are recorded
+below. Process recovery remains open: the original workspace Cargo run lost
+its process after approximately 38m 42s and produced no terminal Cargo result.
 
 ## itoa baseline — 2026-09-07
 
@@ -218,18 +218,17 @@ Rust toolchain or sandbox image digest, and dependency download time was not
 separately instrumented. It ran ordinary debug-profile `cargo test`; release,
 feature variants, Miri, fuzzing, and the rest of itoa's CI were not exercised.
 
-The deployed UI still displayed the initial Cargo yield as “Succeeded 1.56 s”
+Before the E12 fix, the deployed UI displayed the initial Cargo yield as “Succeeded 1.56 s”
 with empty output, even while compilation continued. The final assistant
 message and durable tool result correctly reported success. This confirms B01's
 execution path while leaving E12's progress presentation acceptance open.
 
-The local progress patch now derives elapsed time from persisted command-call
+The progress patch now derives elapsed time from persisted command-call
 and result timestamps. Replaying this run produces a single Cargo card that
 remains Running during compilation and completes with 112.089 s, exit 0, and
 the final test output. Summing poll RPC durations would incorrectly show
 65.107 s because the process also runs between polls. Live reduction and full
-history replay agree. This patch is not deployed or verified on an installed
-iPhone yet.
+history replay agree. The deployed verification is recorded below.
 
 ### itoa reruns — 2026-09-07
 
@@ -271,3 +270,70 @@ Implementation owners: [namespace routing](../js/managed/src/namespace-tools.ts)
 [managed runtime policy](../js/managed/README.md),
 [React projection](../js/nanocodex-react/agent/transcript.mjs), and
 [iPhone projection](../apple/InboxCore/Sources/InboxCore/Protocol.swift).
+
+## Terminal command presentation — 2026-09-07
+
+[PR #290](https://github.com/gakonst/nanocodex/pull/290) retains yielded commands
+as Running, folds later `write_stdin` output into the original command, and
+measures elapsed time from its persisted start through observed completion.
+[PR #291](https://github.com/gakonst/nanocodex/pull/291) exposes the actual exit
+code in expanded web results. Production revision
+`f7f7b80a8826db185b7daf1d8adaa56017f1f9fd` completed its account deployment at
+09:44:34 UTC. The deployment job succeeded; that does not imply all longer CI
+or service tests finished.
+
+On the deployed web app, reopening the original itoa thread now shows the cold
+command as Succeeded 112 s with final test output. The two warm commands show
+4.63 s and 4.48 s. The `cargocargo` typo correctly shows Failed with exit 127.
+
+The fresh [E12 progress 09B5D4C9 thread](https://nanocodex.gakonst.workers.dev/agent/01a07b41-da6a-73ff-94aa-7df8dee07245)
+used one Cloudflare sandbox, `01a07b42-147d-7de0-81e9-f76f009887b9`, mounted at
+`/mnt-e12-009887b9`. Both commands used this environment.
+
+| Fixture | Durable receipt | Result |
+| --- | --- | --- |
+| Print `E12_START`, sleep 60 s, print `E12_MID`, sleep 60 s, print `E12_DONE`; yield after 1 s and poll the original session. | Turn `59cfbaca-2f82-40f7-9227-c958016e77b0`, process session `492682587`. | First output after 1.283 s; completion observed after 121.316 s; exit 0; all three lines retained. |
+| Print a start marker, sleep 30 s, emit 300 numbered stdout lines and 300 numbered stderr lines, print `E12_EXPECTED_FAILURE` to stderr, exit 7; poll without retrying the command. | Turn `2607ae86-0d21-48d7-bca2-3b4b3d897472`, process session `2067236829`. | First output after 1.262 s; completion observed after 30.868 s; exit 7. |
+
+The web command stayed Running with initial output across reload, then became
+Succeeded 121 s with exit 0 and all three lines in the original card. Reopening
+the failure showed Failed 30.9 s, exit 7, and the output tail through
+`E12_STDOUT_0300`, `E12_STDERR_0300`, and `E12_EXPECTED_FAILURE`. Empty polling
+calls did not create separate command cards. Card output is bounded; this does
+not claim all 600 lines remain visible at once. The durable receipt retains
+the full fixture output.
+
+The signed Centaur app (`xyz.paradigm.centaur`) was installed on a physical
+iPhone 17 Pro. Its live fixture showed Running with initial output, restored
+Running after relaunch, and displayed Completed with exit 0, elapsed 121.316 s,
+and all three output lines. The native follow-up makes tool status visible in
+the Activity list and deduplicates replayed calls/results by their original
+turn and call identity, preserving the original elapsed-time start.
+
+Validation includes the original 76 focused tests (42 React, 12 terminal,
+20 Swift, 2 account runtime), React type/package checks, terminal package
+checks, account typecheck, and a signed iPhone build. The exit-code follow-up
+passed all 12 terminal tests. The native replay policy passed all 8 focused
+`ToolPresentationTests`. Physical history verification is recorded separately
+from the live observations so a reopened receipt is not described as a fresh
+successful execution.
+
+### Remaining recovery failures
+
+The full fresh live XCTest is not green. An earlier rollout-time fixture lost
+process session `770702757` after retaining its initial and middle output:
+[thread](https://nanocodex.gakonst.workers.dev/agent/01a07b1d-6675-76c7-85e8-ecf2d7a1a283),
+cursors 13–47. A later [Centaur fixture](https://nanocodex.gakonst.workers.dev/agent/01a07b46-97da-7d3b-b35e-a70d509528b9)
+lost session `2050295544` at 09:51:39 UTC, after the recorded account deployment
+had completed. Its command began at cursor 13, recovered events were replayed
+at cursors 29–45, and cursor 46 returned
+`unknown or stale namespace process session`, 57.517 s after the original call.
+Neither run recovered the command's terminal exit receipt. The later failure's
+cause is not established. E13/E14 remain open; UI deduplication does not restore
+the backend process.
+
+The successful fixture also exposed a separate Code Mode receipt gap: a
+yielding `exec` containing `tools.mount` returned the mounted result through
+`wait`, but emitted no inner mount `tool.result`. Consequently the web Mount
+card remained Running after the turn ended. This receipt gap remains open;
+the command progress fix does not infer a successful mount receipt.
