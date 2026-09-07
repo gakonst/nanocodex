@@ -108,7 +108,7 @@ final class InboxUITests: XCTestCase {
         try openThread()
         try require(command("E12_FAIL_START").waitForExistence(timeout: 15) && command("E12_FAIL_START").label.contains("Failed"), "Failed status was lost after relaunch")
         command("E12_FAIL_START").tap()
-        let output = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'E12_STDOUT_0300' AND label CONTAINS 'E12_STDERR_0300' AND label ENDSWITH 'E12_EXPECTED_FAILURE\n'")).firstMatch
+        let output = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'E12_STDOUT_0300' AND label CONTAINS 'E12_STDERR_0300' AND label ENDSWITH %@", "E12_EXPECTED_FAILURE\n")).firstMatch
         try require(output.waitForExistence(timeout: 5), "Large stdout/stderr lost their final output")
         try require(app.staticTexts["7"].exists, "The final exit code was not retained")
         try require(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Command progress,'")).count == 0, "Empty polls created separate cards")
