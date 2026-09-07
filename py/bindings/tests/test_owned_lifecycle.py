@@ -277,6 +277,7 @@ class OwnedLifecycleTests(unittest.TestCase):
         with MockResponsesServer(handle) as server:
             agent, _ = Nanocodex(
                 "test-key",
+                model="gpt-5.6-sol",
                 thinking="low",
                 websocket_url=server.endpoint,
             )

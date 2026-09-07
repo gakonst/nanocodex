@@ -50,6 +50,31 @@ pub struct EmbeddedToolRuntimeControl {
 }
 
 impl EmbeddedToolRuntime {
+    /// Returns the host's authenticated context backend, when available.
+    #[doc(hidden)]
+    pub fn history_notes_host(
+        &self,
+    ) -> Option<Arc<dyn crate::context_management::HistoryNotesHost>> {
+        self.host
+            .as_ref()
+            .and_then(|host| host.history_notes_host())
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub(crate) const fn default_exposure(&self) -> ToolExposure {
+        // Rust-local embedded tools use direct dispatch; the host owns nested execution.
+        ToolExposure::DirectOnly
+    }
+
+    /// Installs an agent-owned tool without replacing live host cells.
+    #[doc(hidden)]
+    pub fn add_context_tool(&mut self, handler: Arc<dyn Tool>, exposure: ToolExposure) {
+        self.local.push(LocalTool {
+            name: Arc::from(handler.definition().name()),
+            handler,
+            model_visible: exposure != ToolExposure::Hidden,
+        });
+    }
     /// Creates a runtime without an application host. HTTP tool configurations
     /// are accepted for parity with the native runtime and ignored.
     pub fn new(
@@ -122,6 +147,17 @@ impl EmbeddedToolRuntime {
     }
 
     pub(crate) fn model_contract(
+        &self,
+        session_id: &str,
+    ) -> (Vec<ToolDefinition>, Vec<(String, String)>) {
+        let (definitions, names) = self.ungrouped_model_contract(session_id);
+        (
+            crate::context_management::group_definitions(definitions),
+            names,
+        )
+    }
+
+    fn ungrouped_model_contract(
         &self,
         session_id: &str,
     ) -> (Vec<ToolDefinition>, Vec<(String, String)>) {

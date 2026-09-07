@@ -24,6 +24,14 @@ pub struct ToolRuntimeControl {
 }
 
 impl ToolRuntime {
+    pub(crate) fn default_exposure(&self) -> ToolExposure {
+        self.exposure.unwrap_or_default()
+    }
+    /// Adds an agent-owned context tool without recreating live execution state.
+    #[doc(hidden)]
+    pub fn add_context_tool(&mut self, tool: Arc<dyn Tool>, exposure: ToolExposure) {
+        Arc::make_mut(&mut self.registry).extend([(tool, exposure)]);
+    }
     /// Creates a runtime with the standard workspace tools enabled.
     ///
     /// Pass `None` for web search or image generation to omit that built-in
@@ -383,7 +391,9 @@ fn group_direct_code_mode_definitions(
         } else {
             grouped.push(ToolDefinition::namespace(
                 namespace,
-                format!("Tools in the {namespace} namespace."),
+                crate::context_management::namespace_description(namespace)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Tools in the {namespace} namespace.")),
                 [definition],
             ));
         }

@@ -342,6 +342,18 @@ impl ManagedSessionState {
     pub const fn history_revision(&self) -> u64 {
         self.history_revision
     }
+
+    /// Replaces the active model window without summarization, retaining the
+    /// independent tool runtime and forcing a full request on the next call.
+    pub fn start_context_window(
+        &mut self,
+        items: Vec<ResponseItem>,
+        request_prefix: &[ResponseItem],
+    ) {
+        self.context.replace_and_recompute(items, request_prefix);
+        self.reset_for_full_request();
+        self.history_revision = self.history_revision.saturating_add(1);
+    }
 }
 
 /// Invalid state supplied to or produced by the managed session state engine.

@@ -213,7 +213,10 @@ fn is_client_developer_message(item: &ResponseItem) -> bool {
     })
 }
 
-fn truncate_retained_messages(items: Vec<ResponseItem>, max_tokens: usize) -> Vec<ResponseItem> {
+pub fn truncate_retained_messages(
+    items: Vec<ResponseItem>,
+    max_tokens: usize,
+) -> Vec<ResponseItem> {
     let mut remaining = max_tokens;
     let mut retained = Vec::with_capacity(items.len());
     for item in items.into_iter().rev() {

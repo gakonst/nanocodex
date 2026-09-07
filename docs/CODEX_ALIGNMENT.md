@@ -22,7 +22,7 @@ Codex-only capabilities such as its sandbox approval service, skills discovery, 
 
 ## Invalid discovery-schema recovery
 
-This work incorporates [PR #274](https://github.com/gakonst/nanocodex/pull/274). Provider compaction remains the context-management policy. Experimental context windows and workspace history/notes are split into a follow-up PR.
+This work incorporates [PR #274](https://github.com/gakonst/nanocodex/pull/274). Experimental context windows and workspace history/notes are documented separately in [Experimental compaction](EXPERIMENTAL_COMPACTION.md). Other models and hosts without storage retain provider compaction.
 
 The transport resolves an `invalid_function_parameters` path against the exact failed request. Before checkpointing failure, the agent removes only matching definitions from saved discovery outputs, including namespace children, clears continuation, and advances the history revision. It preserves the original error and does not silently rerun the failed turn. Tests cover durable reload, corrected rediscovery, checkpoint loss, HTTP/SSE/WebSocket errors, and unrelated history.
 

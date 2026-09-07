@@ -37,6 +37,9 @@ pub struct ModelConfig {
     pub fast_mode: bool,
     /// Resolved context window used for accounting and automatic compaction.
     pub context_window_tokens: u64,
+    /// Enable model-managed context windows for eligible Codex subscriptions.
+    /// Unsupported models, providers, and hosts retain remote summarization.
+    pub experimental_context: bool,
     /// Preferred initial streaming transport.
     pub responses_transport: ResponsesTransport,
     /// Whether a WebSocket session sends an optional non-generating prewarm
@@ -106,6 +109,7 @@ impl Default for ModelConfig {
             thinking_explicit: false,
             fast_mode: false,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
+            experimental_context: true,
             responses_transport: ResponsesTransport::default(),
             websocket_warmup: true,
             responses_history: ResponsesHistory::default(),

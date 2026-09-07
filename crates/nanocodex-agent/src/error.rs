@@ -150,6 +150,11 @@ pub enum NanocodexError {
     #[error("identified prompt submission requires a configured execution policy")]
     ExecutionPolicyNotConfigured,
 
+    /// Saving or recovering a model context window failed.
+    #[cfg(feature = "openai")]
+    #[error("context storage failed: {0}")]
+    ContextStorage(String),
+
     /// An attached execution policy violated the agent integration contract.
     #[cfg(feature = "openai")]
     #[error("invalid execution policy state: {0}")]

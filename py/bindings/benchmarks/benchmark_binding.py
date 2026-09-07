@@ -194,7 +194,14 @@ def run() -> dict[str, Any]:
         event_count,
     ) = sequential_turn_metrics()
     concurrent_wall = concurrent_agent_wall_ms()
-    threads_after_shutdown = native_thread_count()
+    # Workspace I/O uses Tokio's shared blocking pool (10s idle timeout).
+    # Measure retained threads after idle workers have had time to retire.
+    deadline = time.monotonic() + 15
+    while True:
+        threads_after_shutdown = native_thread_count()
+        if threads_after_shutdown - threads_before <= 5 or time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
     retained_shared_thread_growth = threads_after_shutdown - threads_before
     return {
         "environment": {
