@@ -4,12 +4,12 @@ public enum CaptureError: LocalizedError {
     case unavailable, disabled, accountChanged, empty, tooLarge, full, unsupported, unreadable
     public var errorDescription: String? {
         switch self {
-        case .unavailable: return "Context storage is unavailable. Open Centaur and try again."
-        case .disabled: return "Open Context in Centaur and enable capture for your account first."
-        case .accountChanged: return "The connected account changed. Open Centaur and try again."
+        case .unavailable: return "Context storage is unavailable. Open Nanocodex and try again."
+        case .disabled: return "Open Context in Nanocodex and enable capture for your account first."
+        case .accountChanged: return "The connected account changed. Open Nanocodex and try again."
         case .empty: return "Add some text or a web link to capture."
         case .tooLarge: return "This item is too large. Capture up to 24 KB of text or a file up to 8 MB."
-        case .full: return "Context storage is full. Remove some captures in Centaur and try again."
+        case .full: return "Context storage is full. Remove some captures in Nanocodex and try again."
         case .unsupported: return "Share text, a web link, an image, a PDF, or a plain text file."
         case .unreadable: return "No readable text was found. Share text or a link instead."
         }

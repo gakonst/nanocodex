@@ -114,7 +114,7 @@ final class InboxModel: ObservableObject {
     private var eventBytes: [Int] = []
     private var retainedBytes = 0
     private var projection: Task<Void, Never>?
-    private var navigation: [(id: String, seen: String?)] = []
+    @Published private var navigation: [(id: String, seen: String?, deferred: Cursor?, filter: Filter)] = []
     private var deferred: [String: Cursor] = [:]
     private var cursor = Cursor.zero
     private var olderBefore: Cursor?
@@ -183,7 +183,7 @@ final class InboxModel: ObservableObject {
         }
     }
     func closeThread() { pinnedThreadID = nil; reconcile() }
-    var canGoBack: Bool { !navigation.isEmpty }
+    var canGoBack: Bool { navigation.contains { previous in cards.contains { $0.id == previous.id } } }
     var canRetry: Bool { focused.flatMap { retries[$0.id] }?.kind == .followUp }
     var draft: String {
         get { focused.flatMap { drafts[$0.id] } ?? "" }
@@ -392,7 +392,7 @@ final class InboxModel: ObservableObject {
             let origin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
             if smsAuth == nil || smsOrigin != origin {
                 try await smsAuth?.cancel()
-                smsAuth = try SMSAuth(origin: origin, deviceName: "Nanocodex Inbox")
+                smsAuth = try SMSAuth(origin: origin, deviceName: "Nanocodex")
                 smsOrigin = origin
             }
             let next = try await smsAuth?.start(phone: phone)
@@ -630,7 +630,7 @@ final class InboxModel: ObservableObject {
         let request = BGAppRefreshTaskRequest(identifier: Self.handRefreshIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         do { try BGTaskScheduler.shared.submit(request); handBackgroundError = nil }
-        catch { handBackgroundError = "Background refresh is unavailable. Open Centaur to reconnect this Hand." }
+        catch { handBackgroundError = "Background refresh is unavailable. Open Nanocodex to reconnect this Hand." }
         #endif
     }
     #if os(iOS)
@@ -779,7 +779,7 @@ final class InboxModel: ObservableObject {
     }
     func advance(reviewed: Bool) {
         guard let card = focused else { return }
-        navigation.append((card.id, seen[card.id])); if navigation.count > 50 { navigation.removeFirst() }
+        navigation.append((card.id, seen[card.id], deferred[card.id], filter)); if navigation.count > 50 { navigation.removeFirst() }
         if reviewed { seen[card.id] = card.latestCursor.rawValue; persist() }
         deferred[card.id] = card.latestCursor
         prioritizeNext()
@@ -788,8 +788,15 @@ final class InboxModel: ObservableObject {
         notice = nil
     }
     func back() {
-        guard let previous = navigation.popLast() else { return }
-        seen[previous.id] = previous.seen; deferred.removeValue(forKey: previous.id); persist(); reconcile(); deck.focus(previous.id); observeFocused()
+        while let previous = navigation.popLast() {
+            guard cards.contains(where: { $0.id == previous.id }) else { continue }
+            seen[previous.id] = previous.seen; deferred[previous.id] = previous.deferred
+            persist(); filter = previous.filter
+            // A running agent may have finished since the swipe. Still bring it back.
+            if !deck.order.contains(previous.id) { filter = .all }
+            deck.focus(previous.id); observeFocused()
+            return
+        }
     }
     func refreshScheduledJobs() async {
         await startScheduledJobsRefresh()?.value
@@ -1104,7 +1111,7 @@ final class InboxModel: ObservableObject {
             try Task.checkCancellation()
             guard self.generation == epoch, let client = self.client else { throw CancellationError() }
             if let failed = self.pending.first(where: { $0.id == message.id && $0.phase == .failed }) {
-                throw HandTaskError.delivery(failed.error ?? "Delivery unconfirmed. Retry in Centaur.")
+                throw HandTaskError.delivery(failed.error ?? "Delivery unconfirmed. Retry in Nanocodex.")
             }
             let agentID = self.resolvedAgentID(message.agentID)
             // Start at this turn's admission, not the conversation's entire history.
@@ -1132,7 +1139,7 @@ final class InboxModel: ObservableObject {
                     switch turn["state"].string {
                     case "completed": return turn["terminal"]["final_message"].string
                     case "cancelled": throw CancellationError()
-                    case "failed": throw HandTaskError.delivery("The agent task failed. Open the conversation in Centaur for details.")
+                    case "failed": throw HandTaskError.delivery("The agent task failed. Open the conversation in Nanocodex for details.")
                     default: break
                     }
                 } catch let error as APIError {
@@ -1567,7 +1574,7 @@ final class InboxModel: ObservableObject {
         }
         if isDemo { demoRows[id] = demoRows.removeValue(forKey: localID) ?? [] }
         if pinnedThreadID == localID { pinnedThreadID = id }
-        navigation = navigation.map { ($0.id == localID ? id : $0.id, $0.seen) }
+        navigation = navigation.map { ($0.id == localID ? id : $0.id, $0.seen, $0.deferred, $0.filter) }
         cards = cards.filter { $0.id != id }.map { $0.id == localID ? newConversationCard(id) : $0 }
         for source in contextRoutes.keys where contextRoutes[source] == localID {
             do { try ContextStore.shared().route(source: source, agentID: id, scope: scope) }

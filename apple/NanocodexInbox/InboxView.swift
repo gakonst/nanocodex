@@ -113,6 +113,8 @@ struct InboxView: View {
                         .frame(width: width, height: geometry.size.height)
                         .background(Ink.background.ignoresSafeArea())
                         .offset(x: reduceMotion ? 0 : -24 * (1 - progress))
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(sidebarGesture(width: width, closing: true))
                         .accessibilityHidden(!showAgents)
                         .allowsHitTesting(showAgents)
                         .transition(.opacity)
@@ -149,8 +151,28 @@ struct InboxView: View {
     }
     private var inboxContent: some View {
         VStack(spacing: 10) {
-            if let card = model.focused { deck(card) }
-            else { emptyState.frame(maxHeight: .infinity) }
+            Group {
+                if let card = model.focused { deck(card) }
+                else { emptyState.frame(maxHeight: .infinity) }
+            }
+            .overlay(alignment: .bottomLeading) {
+                if model.canGoBack {
+                    Button(action: undoSwipe) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 17, weight: .medium))
+                            .frame(width: 44, height: 44)
+                            .background(.regularMaterial, in: Circle())
+                            .shadow(color: .black.opacity(0.09), radius: 12, y: 4)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Undo swipe")
+                    .accessibilityHint("Restore the previous agent and its review state.")
+                    .accessibilityIdentifier("undo-swipe")
+                    .padding(.leading, 18)
+                    .padding(.bottom, model.focused == nil ? 10 : composerFocused ? 22 : 34)
+                    .transition(.opacity)
+                }
+            }
             if let error = model.error {
                 HStack(alignment: .top) {
                     Text(error).font(.caption).foregroundStyle(Ink.amber)
@@ -196,7 +218,7 @@ struct InboxView: View {
     }
     private var accountRestoration: some View {
         VStack(spacing: 20) {
-            Text("Centaur").font(.system(size: 20, weight: .medium))
+            Text("Nanocodex").font(.system(size: 20, weight: .medium))
                 .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
             Image(systemName: "tray").font(.system(size: 38)).foregroundStyle(Ink.muted)
@@ -278,7 +300,7 @@ struct InboxView: View {
                             if cardDrag == nil {
                                 if abs(value.translation.width) > abs(value.translation.height) * 1.3 {
                                     cardDrag = .horizontal
-                                } else if value.translation.height < 0,
+                                } else if !composerFocused, value.translation.height < 0,
                                           abs(value.translation.height) > abs(value.translation.width) * 1.3,
                                           !previewGeometry.isScrollable || !previewGeometry.viewport.contains(value.startLocation)
                                             || previewGeometry.gestureRegion.contains(value.startLocation) {
@@ -409,18 +431,21 @@ struct InboxView: View {
                     }
             }
             .modifier(CardScrollAnchors(isComposing: composerFocused))
+            .scrollDismissesKeyboard(.interactively)
+            .scrollBounceBehavior(.always, axes: .vertical)
             .background {
                 GeometryReader { geometry in
-                    Color.clear.preference(key: CardPreviewGeometryKey.self, value: CardPreviewGeometry(viewport: geometry.frame(in: .named("agent-card-deck"))))
+                    let frame = geometry.frame(in: .named("agent-card-deck"))
+                    Color.clear.preference(key: CardPreviewGeometryKey.self, value: CardPreviewGeometry(
+                        viewport: frame,
+                        gestureRegion: CGRect(x: frame.minX, y: frame.maxY - 54, width: frame.width, height: 54)
+                    ))
                 }
             }
             .scrollIndicators(.hidden).accessibilityIdentifier("card-content")
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Ink.card, in: RoundedRectangle(cornerRadius: 28))
         .clipShape(RoundedRectangle(cornerRadius: 28))
-        .overlay(alignment: .bottom) {
-            cardStatus(card).padding(.horizontal, 18).padding(.bottom, 10)
-        }
         .overlay(RoundedRectangle(cornerRadius: 28).stroke(Ink.border, lineWidth: 0.75))
         .accessibilityElement(children: .contain)
         .onTapGesture { composerFocused = false; model.openThread(); showThread = true }
@@ -431,30 +456,6 @@ struct InboxView: View {
         .accessibilityAction(named: "Mark update seen") { advance(reviewed: true) }
         .accessibilityAction(named: "New agent") { createAgent() }
         .accessibilityIdentifier("agent-card")
-    }
-    private func cardStatus(_ card: AgentCard) -> some View {
-        HStack(spacing: 8) {
-            Label(card.status, systemImage: card.isRunning ? "waveform" : card.status == "Failed" ? "exclamationmark.circle" : "checkmark.circle")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(card.isRunning || card.error != nil ? Ink.amber : Ink.accent)
-            Text(card.model).font(.system(size: 11)).foregroundStyle(Ink.muted).lineLimit(1)
-            Spacer(minLength: 4)
-            Image(systemName: "chevron.up").font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.muted)
-            Text("\(model.deck.order.firstIndex(of: card.id).map { $0 + 1 } ?? 1) / \(model.deck.order.count)")
-                .font(.system(size: 13).monospacedDigit()).foregroundStyle(Ink.muted)
-        }
-        .padding(.horizontal, 12).frame(minHeight: 36)
-        .background(.regularMaterial, in: Capsule())
-        .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
-        .background {
-            GeometryReader { geometry in
-                Color.clear.preference(key: CardPreviewGeometryKey.self, value: CardPreviewGeometry(gestureRegion: geometry.frame(in: .named("agent-card-deck"))))
-            }
-        }
-        .contentShape(Capsule())
-        .accessibilityElement(children: .contain)
-        .accessibilityHint("Pull up until the new thread indicator fills, then release. Pull back to cancel.")
-        .accessibilityIdentifier("agent-card-header")
     }
     private var emptyState: some View {
         VStack(spacing: 18) {
@@ -469,16 +470,9 @@ struct InboxView: View {
     private var agentList: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Centaur").font(.system(size: 23, weight: .semibold))
+                Text("Nanocodex").font(.system(size: 23, weight: .semibold))
                 Spacer()
-                Button { setSidebar(false) } label: {
-                    Image(systemName: "sidebar.left").font(.system(size: 20)).frame(width: 44, height: 44)
-                        .background(.regularMaterial, in: Circle())
-                }
-                .accessibilityLabel("Close sidebar")
-                .accessibilityIdentifier("inbox-sidebar-close")
-                .keyboardShortcut(.cancelAction)
-            }.padding(.leading, 20).padding(.trailing, 8).padding(.top, 4)
+            }.frame(height: 44).padding(.leading, 20).padding(.trailing, 8).padding(.top, 4)
             VStack(spacing: 2) {
                 Button { setSidebar(false); showScheduledJobs = true } label: {
                     Label("Scheduled jobs", systemImage: "clock")
@@ -528,7 +522,7 @@ struct InboxView: View {
     private var settings: some View {
         Form {
             Section("Account") {
-                Text(model.isDemo ? "Demo · sample agents" : model.connection == "Sign in again" ? "Sign in again to reconnect your account." : "Centaur account connected")
+                Text(model.isDemo ? "Demo · sample agents" : model.connection == "Sign in again" ? "Sign in again to reconnect your account." : "Nanocodex account connected")
                 Text("Agents keep running when you swipe away or close the app.").foregroundStyle(.secondary)
                 Button(model.isDemo ? "Connect account" : model.connection == "Sign in again" ? "Sign in again" : "Disconnect account") {
                     do { try model.disconnect(); showSettings = false } catch { model.error = error.localizedDescription }
@@ -541,14 +535,14 @@ struct InboxView: View {
                     Label(model.deviceHandStatus, systemImage: "hand.raised")
                         .accessibilityIdentifier("device-hand-status")
                     Text("Connects automatically to your account unless disabled. Agents can work with workspace files and query captured messages when capture is enabled.").font(.caption).foregroundStyle(.secondary)
-                    Text("Tasks you start can keep this Hand connected in the background on iOS 26 or later. iOS shows progress and lets you stop the task. When idle, this phone connects only during brief background windows or while Centaur is open. Force-quitting ends background work.").font(.caption).foregroundStyle(.secondary)
+                    Text("Tasks you start can keep this Hand connected in the background on iOS 26 or later. iOS shows progress and lets you stop the task. When idle, this phone connects only during brief background windows or while Nanocodex is open. Force-quitting ends background work.").font(.caption).foregroundStyle(.secondary)
                     if let error = model.handBackgroundError { Text(error).font(.caption).foregroundStyle(.secondary) }
                 }
             }
             Section("Controls") {
                 Text("Swipe left: revisit later\nSwipe right: mark this update seen\nSwipe up: create a new agent\nTap card: read the conversation\nSend: queue a message\nSteer now: stop the current turn so the queued message can start")
-                Text("Long previews scroll vertically. Pull up on the floating status bar to start a new agent. Release when the indicator fills, or pull back to cancel.").font(.caption)
-                Text("Long-press a card to go back. ⌘Return sends your message.").font(.caption)
+                Text("Long previews scroll vertically. Pull up from the bottom edge of a card to start a new agent. Release when the indicator fills, or pull back to cancel.").font(.caption)
+                Text("Undo swipe brings the previous agent back and restores its review state. You can undo several swipes in order. ⌘Return sends your message.").font(.caption)
             }
         }
         .formStyle(.grouped)
@@ -561,6 +555,11 @@ struct InboxView: View {
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
         #endif
         withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { model.advance(reviewed: reviewed); drag = 0 }
+    }
+    private func undoSwipe() {
+        composerFocused = false
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { model.back(); drag = 0 }
     }
     private func setSidebar(_ visible: Bool) {
         composerFocused = false
@@ -780,7 +779,7 @@ private struct AgentComposerView: View {
                 } label: {
                     Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.menuStyle(.borderlessButton).accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
-                TextField("Ask Centaur", text: $model.draft, axis: .vertical)
+                TextField("Ask Nanocodex", text: $model.draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).font(.body).focused($focused)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.vertical, 8).accessibilityIdentifier("composer")
@@ -1070,7 +1069,7 @@ private struct ConnectView: View {
             Text(model.challenge == nil ? "What are we working on?" : "Check your messages")
                 .font(.system(size: 34, weight: .semibold))
             Text(model.challenge.map { "Enter the 6-digit code sent to \($0.phone)." }
-                 ?? "Sign in with the same phone number you use on Centaur. Your agents will be here.")
+                 ?? "Sign in with the same phone number you use on Nanocodex. Your agents will be here.")
                 .foregroundStyle(Ink.muted)
             VStack(alignment: .leading, spacing: 14) {
                 Text(model.challenge == nil ? "Phone number" : "Verification code").font(.subheadline.weight(.medium))
@@ -1319,6 +1318,7 @@ private struct ConversationView: View {
             }
             .modifier(ChatScrollAnchors())
             .scrollDismissesKeyboard(.interactively)
+            .scrollBounceBehavior(.always, axes: .vertical)
             .coordinateSpace(name: "conversation-viewport")
             .onPreferenceChange(ConversationRowFrames.self) {
                 rowFrames = $0
@@ -1401,6 +1401,8 @@ private struct ConversationView: View {
 
         }.foregroundStyle(Ink.text).frame(minWidth: 340)
             .presentationDetents([.large]).presentationDragIndicator(.visible)
+            // A downward drag while typing belongs to the keyboard, not the sheet.
+            .interactiveDismissDisabled(composerFocused)
             .sheet(isPresented: $model.showContext) { ContextInboxView(model: model) }
     }
 }

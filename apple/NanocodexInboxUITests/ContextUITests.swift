@@ -185,7 +185,7 @@ final class ContextUITests: XCTestCase {
         XCTAssertTrue(sheet.waitForExistence(timeout: 10))
         let destinations = sheet.scrollViews.containing(.cell, identifier: "shareCell").firstMatch
         XCTAssertTrue(destinations.waitForExistence(timeout: 5))
-        let shareName = ProcessInfo.processInfo.environment["NANOCODEX_CONTEXT_SHARE_NAME"] ?? "Centaur"
+        let shareName = ProcessInfo.processInfo.environment["NANOCODEX_CONTEXT_SHARE_NAME"] ?? "Nanocodex"
         let destination = sheet.descendants(matching: .any).matching(NSPredicate(format: "label == %@", shareName)).firstMatch
         let moreApps = destinations.cells.matching(NSPredicate(format: "label BEGINSWITH %@", "More")).firstMatch
         for _ in 0..<15 {

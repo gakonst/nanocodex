@@ -130,13 +130,13 @@ private struct MessagingSetupView: View {
             if source == .messages {
                 Section("Incoming messages") {
                     Text("1. Open Shortcuts → Automation and create a Message automation. Choose the senders or message text to match, then choose Run Immediately.")
-                    Text("2. Add Centaur → Capture iMessage. Set Message to Shortcut Input's message content. Set Sender if the automation provides it.")
+                    Text("2. Add Nanocodex → Capture iMessage. Set Message to Shortcut Input's message content. Set Sender if the automation provides it.")
                     Text("3. Test with one incoming message, then check for it in Context. This includes iMessage and SMS messages matching your automation.")
                     Link("Open Shortcuts", destination: URL(string: "shortcuts://")!)
                 }
             } else {
                 Section("Capture availability") {
-                    Text("Centaur cannot read \(source.title)'s inbox directly. On iOS 26, use the screenshot shortcut below to capture visible messages.")
+                    Text("Nanocodex cannot read \(source.title)'s inbox directly. On iOS 26, use the screenshot shortcut below to capture visible messages.")
                     Text("If your version of Shortcuts offers a Notification automation, you can pass notification text to \(source.actionTitle) for automatic capture. Only text provided by that notification is available; hidden previews and messages in an open conversation may be missing.").font(.footnote).foregroundStyle(.secondary)
                 }
             }
@@ -146,7 +146,7 @@ private struct MessagingSetupView: View {
                 Text("For example: ‘What did Alex say about Friday on \(source.title)?’").font(.footnote).foregroundStyle(.secondary)
             }
             Section("Capture a conversation on screen") {
-                Text("Share a screenshot to Centaur and set Source to \(source.rawValue). Text is extracted on this device.")
+                Text("Share a screenshot to Nanocodex and set Source to \(source.rawValue). Text is extracted on this device.")
                 Text("For a shortcut you can run from the Action button: Take Screenshot → Extract Text from Image → \(source.actionTitle). This works for the messages visible on screen.")
                 Link("Open Shortcuts", destination: URL(string: "shortcuts://")!)
             }
@@ -278,7 +278,7 @@ private struct ContextSetupView: View {
                 }
                 Section("Messages & SMS") {
                     Text("In Shortcuts, create a Message automation. Choose the senders or text you want to match and when it should run.")
-                    Text("Add Centaur → Capture iMessage. Set Message to the incoming message's content. The generic Capture Context action also accepts sender, conversation, date, and item ID when Shortcuts supplies them.")
+                    Text("Add Nanocodex → Capture iMessage. Set Message to the incoming message's content. The generic Capture Context action also accepts sender, conversation, date, and item ID when Shortcuts supplies them.")
                     Text("Test it with one message before enabling automatic runs. This captures what Shortcuts passes in; it does not read your Messages database.").foregroundStyle(.secondary)
                 }
                 Section("WhatsApp, Instagram & Signal") {
@@ -286,7 +286,7 @@ private struct ContextSetupView: View {
                     Text("If Shortcuts offers a Notification trigger on your iOS version, pass its notification text to the corresponding capture action for automatic capture. Test an incoming notification first. Neither path imports complete account history.").foregroundStyle(.secondary)
                 }
                 Section("Share from any app") {
-                    Text("Open the system share sheet and choose Centaur. Review the text and source, then save. Use More to enable Centaur if it is not visible.")
+                    Text("Open the system share sheet and choose Nanocodex. Review the text and source, then save. Use More to enable Nanocodex if it is not visible.")
                     Text("Safari includes selected text or readable page content and the original link. Other apps share the content they provide; a link alone stays a link. Screenshots use on-device text recognition. PDFs and text files provide extracted text; original files are not retained. Scanned PDFs and images without readable text are not supported.").foregroundStyle(.secondary)
                     Text("You can also use Capture Text from File in Shortcuts, or add context directly here.")
                 }

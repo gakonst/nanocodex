@@ -27,7 +27,7 @@ struct HandAgentQuery: EntityStringQuery {
 
 struct RunAgentTaskIntent: ForegroundContinuableIntent {
     static var title: LocalizedStringResource = "Run Agent Task"
-    static var description = IntentDescription("Send a request to an agent using this device's Hand. On iOS 27, work can finish in the background with progress and a Stop control. Earlier iOS versions open Centaur to start the task.")
+    static var description = IntentDescription("Send a request to an agent using this device's Hand. On iOS 27, work can finish in the background with progress and a Stop control. Earlier iOS versions open Nanocodex to start the task.")
     static var openAppWhenRun = false
     @available(iOS 26.0, macOS 26.0, *)
     static var supportedModes: IntentModes = [.background, .foreground(.dynamic)]
@@ -61,7 +61,7 @@ struct RunAgentTaskIntent: ForegroundContinuableIntent {
         #endif
         let id = UUID().uuidString
         _ = try await InboxModel.shared.runShortcutTask(agent: agent, input: request, id: id)
-        return .result(value: "Task started in Centaur.", dialog: "Task started in Centaur.")
+        return .result(value: "Task started in Nanocodex.", dialog: "Task started in Nanocodex.")
     }
 }
 
@@ -88,8 +88,8 @@ enum HandTaskError: LocalizedError {
     case signIn, disabled, accountChanged, emptyRequest, delivery(String)
     var errorDescription: String? {
         switch self {
-        case .signIn: "Open Centaur and sign in before running this shortcut."
-        case .disabled: "This device's Hand is disabled. Enable it in Centaur Settings to run this task."
+        case .signIn: "Open Nanocodex and sign in before running this shortcut."
+        case .disabled: "This device's Hand is disabled. Enable it in Nanocodex Settings to run this task."
         case .accountChanged: "This shortcut's agent belongs to a different account. Choose an agent from the connected account."
         case .emptyRequest: "Enter a request for the agent."
         case .delivery(let message): message

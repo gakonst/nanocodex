@@ -40,7 +40,7 @@ final class HandTaskExecution {
         if let existing = runs[id]?.work { return existing }
         let run = Run(id: id, progress: progress, hasRuntime: runtimeProvided, cancel: cancel)
         runs[id] = run
-        progress.localizedDescription = "Centaur task"
+        progress.localizedDescription = "Nanocodex task"
         progress.localizedAdditionalDescription = "Submitting request"
         #if os(iOS)
         if !runtimeProvided, #available(iOS 26.0, *), UIApplication.shared.applicationState == .active {
@@ -127,7 +127,7 @@ final class HandTaskExecution {
                 run.update = {
                     task.progress.totalUnitCount = run.progress.totalUnitCount
                     task.progress.completedUnitCount = run.progress.completedUnitCount
-                    task.updateTitle("Centaur task", subtitle: run.progress.localizedAdditionalDescription ?? "Working")
+                    task.updateTitle("Nanocodex task", subtitle: run.progress.localizedAdditionalDescription ?? "Working")
                 }
                 run.finish = { task.setTaskCompleted(success: $0) }
                 task.expirationHandler = { [weak self] in
@@ -137,13 +137,13 @@ final class HandTaskExecution {
             }
         }
         guard registered else {
-            failed("Background execution is unavailable. Keep Centaur open for this device's tools.")
+            failed("Background execution is unavailable. Keep Nanocodex open for this device's tools.")
             return
         }
-        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Centaur task", subtitle: String(title.prefix(80)))
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "Nanocodex task", subtitle: String(title.prefix(80)))
         request.strategy = .fail
         do { try BGTaskScheduler.shared.submit(request) }
-        catch { failed("iOS couldn't grant background time. Keep Centaur open for this device's tools.") }
+        catch { failed("iOS couldn't grant background time. Keep Nanocodex open for this device's tools.") }
     }
     #endif
 }

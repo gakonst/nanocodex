@@ -535,7 +535,7 @@ final class InboxUITests: XCTestCase {
                     if locations.exists { locations.tap() }
                 }
                 XCTAssertTrue(onDevice.waitForExistence(timeout: 5)); onDevice.tap()
-                let folder = app.cells.containing(NSPredicate(format: "label == %@ OR label == %@", "Centaur", "Nanocodex Inbox")).firstMatch
+                let folder = app.cells.containing(NSPredicate(format: "label == %@", "Nanocodex")).firstMatch
                 XCTAssertTrue(folder.waitForExistence(timeout: 5)); folder.tap()
             }
         }
@@ -557,7 +557,7 @@ final class InboxUITests: XCTestCase {
         capture(app, "video-03-restored-draft")
         queue(app, "Use tools to compute the SHA-256 of the attached original video at its /brain path. Reply ORIGINAL_FILE_OK and the computed digest. Do not infer bytes from the filename or metadata.")
         let answer = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            let text = app.scrollViews["card-content"].staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: "\n").lowercased()
+            let text = app.descendants(matching: .any)["agent-card"].staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: "\n").lowercased()
             return app.staticTexts["agent-title"].label == title && text.contains("original_file_ok") && text.contains("5e9ac6c51375c596547b61d338fd72623e03f2b861a4c45b62f08bc1ef253ca1")
         }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [answer], timeout: 120), .completed)
@@ -1060,10 +1060,10 @@ final class InboxUITests: XCTestCase {
         let original = app.staticTexts["agent-title"].label
         composer(app).tap(); composer(app).typeText("Check the reconnect boundary")
         capture(app, "02-agent-draft")
-        app.otherElements["agent-card"].swipeLeft()
+        app.descendants(matching: .any)["agent-card"].swipeLeft()
         XCTAssertNotEqual(app.staticTexts["agent-title"].label, original)
-        app.otherElements["agent-card"].press(forDuration: 1)
-        app.buttons["Previous agent"].tap()
+        XCTAssertTrue(app.buttons["undo-swipe"].waitForExistence(timeout: 5))
+        app.buttons["undo-swipe"].tap()
         XCTAssertEqual(app.staticTexts["agent-title"].label, original)
         XCTAssertEqual(composer(app).value as? String, "Check the reconnect boundary")
         capture(app, "03-draft-restored")
@@ -1083,7 +1083,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertLessThanOrEqual(pending.frame.maxY, input.frame.minY + 1)
         XCTAssertLessThanOrEqual(input.frame.minY - pending.frame.maxY, 2, "Queue touches the composer")
         capture(app, "07-queued-message")
-        app.otherElements["agent-card"].swipeLeft()
+        app.descendants(matching: .any)["agent-card"].swipeLeft()
         XCTAssertFalse(app.staticTexts["pending-message"].exists)
         selectInbox(app)
         thread(app, contains: "Prioritize reconnect and keep the UI minimal")
@@ -1094,15 +1094,50 @@ final class InboxUITests: XCTestCase {
         thread(app, contains: "Prioritize reconnect and keep the UI minimal")
         app.buttons["Done"].tap()
         let current = app.staticTexts["agent-title"].label
-        app.otherElements["agent-card"].swipeRight()
+        app.descendants(matching: .any)["agent-card"].swipeRight()
         XCTAssertNotEqual(app.staticTexts["agent-title"].label, current)
         capture(app, "06-next-running-agent")
+    }
+    func testUndoSwipesRestoresReviewStateAndEmptyInbox() {
+        let app = launch()
+        let undo = app.buttons["undo-swipe"]
+        XCTAssertFalse(undo.exists)
+        let original = app.staticTexts["agent-title"].label
+        let inbox = app.buttons["filter-Inbox"]
+        let originalCount = inbox.label
+
+        app.descendants(matching: .any)["agent-card"].swipeRight()
+        XCTAssertTrue(undo.waitForExistence(timeout: 5))
+        XCTAssertEqual(undo.frame.midX, app.buttons["add-attachments"].frame.midX, accuracy: 2)
+        XCTAssertLessThan(undo.frame.maxY, app.buttons["add-attachments"].frame.minY)
+        XCTAssertNotEqual(inbox.label, originalCount, "Marking seen removes the update from the inbox count")
+        capture(app, "undo-swipe-seen")
+        undo.tap()
+        XCTAssertEqual(app.staticTexts["agent-title"].label, original)
+        XCTAssertEqual(inbox.label, originalCount, "Undo restores the unread update")
+        XCTAssertFalse(undo.exists)
+
+        var dismissed: [String] = []
+        for _ in 0..<6 {
+            if !app.descendants(matching: .any)["agent-card"].exists { break }
+            dismissed.append(app.staticTexts["agent-title"].label)
+            app.descendants(matching: .any)["agent-card"].swipeLeft()
+        }
+        XCTAssertTrue(app.staticTexts["Nothing in your inbox"].waitForExistence(timeout: 5))
+        XCTAssertTrue(undo.isHittable, "Undo remains available after the last card")
+        capture(app, "undo-swipe-empty-inbox")
+        for title in dismissed.reversed() {
+            undo.tap()
+            XCTAssertEqual(app.staticTexts["agent-title"].label, title)
+        }
+        XCTAssertEqual(inbox.label, originalCount)
+        XCTAssertFalse(undo.exists, "Undo disappears when the swipe history is exhausted")
     }
     func testFailedSubmissionRetainsMessageAndRetriesOnce() {
         let app = launch(["NANOCODEX_DEMO_FAIL_ONCE": "submit"])
         selectInbox(app); queue(app, "Retry only once")
         XCTAssertTrue(app.buttons["retry-pending"].waitForExistence(timeout: 5))
-        app.otherElements["agent-card"].swipeLeft(); selectInbox(app)
+        app.descendants(matching: .any)["agent-card"].swipeLeft(); selectInbox(app)
         app.buttons["retry-pending"].doubleTap()
         XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
         thread(app, contains: "Retry only once")
@@ -1287,7 +1322,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Existing draft.")
         app.buttons["Done"].tap()
         XCTAssertFalse(app.staticTexts["pending-message"].exists)
-        app.otherElements["agent-card"].swipeLeft(); selectInbox(app)
+        app.descendants(matching: .any)["agent-card"].swipeLeft(); selectInbox(app)
         XCTAssertEqual(composer(app).value as? String, "Existing draft.")
         capture(app, "09-voice-draft-preserved")
     }
@@ -1402,7 +1437,7 @@ final class InboxUITests: XCTestCase {
         sidebarButton(app, "New agent").tap()
         queue(app, "Reply exactly with this Markdown, without an enclosing code fence:\n# Markdown verified\n\n**Bold text** and `inline code`.\n\n- First item\n- Second item\n\n```swift\nlet answer = 42\n```\n\n| Name | Value |\n| --- | --- |\n| Answer | 42 |")
         gone(app.keyboards.firstMatch)
-        let card = app.scrollViews["card-content"]
+        let card = app.descendants(matching: .any)["agent-card"]
         XCTAssertTrue(card.staticTexts["Markdown verified"].waitForExistence(timeout: 90))
         let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             app.buttons["send"].label == "Send message" && !app.buttons["send"].isEnabled
@@ -1432,7 +1467,7 @@ final class InboxUITests: XCTestCase {
 
     func testMarkdownRendersInInboxAndConversation() {
         let app = launch(["NANOCODEX_DEMO_MARKDOWN": "1"])
-        let card = app.scrollViews["card-content"]
+        let card = app.descendants(matching: .any)["agent-card"]
         let heading = card.staticTexts["Markdown check"]
         XCTAssertTrue(heading.waitForExistence(timeout: 5), "Keep the start of replies longer than 1,400 characters")
         XCTAssertTrue(card.staticTexts["Read bold, italic, and inline code with a link."].exists)
@@ -1547,6 +1582,47 @@ final class InboxUITests: XCTestCase {
         capture(app, "thinking-highlighted-swift")
         detail.buttons["Copy code"].tap()
         XCTAssertTrue(detail.buttons["Copied"].waitForExistence(timeout: 3))
+    }
+
+    func testSwipeDownDismissesKeyboardAndKeepsDraft() {
+        for longPreview in [false, true] {
+            let app = launch(longPreview ? ["NANOCODEX_DEMO_LONG_PREVIEW": "1"] : [:])
+            let original = app.staticTexts["agent-title"].label
+            let draft = "Keep this draft after swiping down"
+            composer(app).tap(); composer(app).typeText(draft)
+            XCTAssertTrue(app.keyboards.firstMatch.exists)
+            let card = app.descendants(matching: .any)["agent-card"]
+            let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+            start.press(forDuration: 0.01,
+                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)),
+                withVelocity: .slow, thenHoldForDuration: 0)
+            gone(app.keyboards.firstMatch)
+            XCTAssertEqual(app.staticTexts["agent-title"].label, original)
+            XCTAssertEqual(composer(app).value as? String, draft)
+            XCTAssertTrue(app.buttons["Browse agents"].isHittable)
+            XCTAssertFalse(app.scrollViews["conversation"].exists)
+            XCTAssertFalse(app.buttons["undo-swipe"].exists, "Keyboard dismissal must not swipe away the card")
+            capture(app, longPreview ? "swipe-down-long-card" : "swipe-down-short-card")
+
+            app.staticTexts["agent-title"].tap()
+            let conversation = app.scrollViews["conversation"]
+            XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+            composer(app).tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            // The sheet's accessibility scroll frame can extend behind its composer.
+            // Start in the visible transcript, above the keyboard and input field.
+            let visibleBottom = min(conversation.frame.maxY, composer(app).frame.minY - 20)
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: conversation.frame.midX, dy: (conversation.frame.minY + visibleBottom) / 2))
+                .press(forDuration: 0.01,
+                    thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)),
+                    withVelocity: .slow, thenHoldForDuration: 0)
+            gone(app.keyboards.firstMatch)
+            XCTAssertTrue(conversation.exists, "Dismiss the keyboard while staying in the conversation")
+            XCTAssertEqual(composer(app).value as? String, draft)
+            capture(app, longPreview ? "swipe-down-long-conversation" : "swipe-down-short-conversation")
+            app.terminate()
+        }
     }
 
     func testSendingDismissesKeyboardInInboxAndConversation() {
@@ -1686,11 +1762,11 @@ final class InboxUITests: XCTestCase {
         selectAgentFromList(app, title: original)
         XCTAssertEqual(app.staticTexts["card-user-message"].label, originalInput)
         for index in 0..<3 {
-            // Drag the floating status bar so a reply's horizontal code/table scroller
+            // Drag the bottom edge so a reply's horizontal code/table scroller
             // cannot consume the navigation gesture.
-            let status = app.otherElements["agent-card-header"]
-            status.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
-                .press(forDuration: 0.01, thenDragTo: status.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
+            let card = app.descendants(matching: .any)["agent-card"]
+            card.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.97))
+                .press(forDuration: 0.01, thenDragTo: card.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.97)))
             XCTAssertNotEqual(app.staticTexts["agent-title"].label, original)
             selectAgentFromList(app, title: original)
             XCTAssertEqual(app.staticTexts["agent-title"].label, original)
@@ -1704,44 +1780,44 @@ final class InboxUITests: XCTestCase {
         let app = launch(["NANOCODEX_DEMO_LONG_PREVIEW": "1"])
         app.buttons["filter-All"].tap()
         let title = app.staticTexts["agent-title"].label
-        app.scrollViews["card-content"].swipeUp(); app.scrollViews["card-content"].swipeDown()
+        app.descendants(matching: .any)["agent-card"].swipeUp(); app.descendants(matching: .any)["agent-card"].swipeDown()
         XCTAssertEqual(app.staticTexts["agent-title"].label, title)
         XCTAssertFalse(app.buttons["Done"].exists, "Scrolling the card must not open the thread")
         capture(app, "16-card-scroll")
         for _ in 0..<6 {
             let original = app.staticTexts["agent-title"].label
-            let card = app.otherElements["agent-card"]
+            let card = app.descendants(matching: .any)["agent-card"]
             let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
             start.press(forDuration: 0.01, thenDragTo: card.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
             XCTAssertNotEqual(app.staticTexts["agent-title"].label, original)
             XCTAssertTrue(app.staticTexts["agent-preview"].exists)
         }
         capture(app, "17-rapid-swipes")
-        let status = app.otherElements["agent-card-header"]
-        let start = status.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let card = app.descendants(matching: .any)["agent-card"]
+        let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.97))
         start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -180)))
         XCTAssertFalse(app.buttons["Done"].exists)
-        XCTAssertEqual(app.staticTexts["agent-title"].label, "New agent", "The floating status bar creates an agent even when the preview scrolls")
+        XCTAssertEqual(app.staticTexts["agent-title"].label, "New agent", "Pulling the bottom edge creates an agent even when the preview scrolls")
     }
 
     func testNewThreadPullIgnoresShortDragsAndFlicks() {
         let app = launch(["NANOCODEX_DEMO_LONG_PREVIEW": "1"])
         let original = app.staticTexts["agent-title"].label
-        let status = app.otherElements["agent-card-header"]
+        let card = app.descendants(matching: .any)["agent-card"]
         for distance in [CGFloat(45), 95, 140] {
-            let start = status.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.97))
             start.press(forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -distance)),
                 withVelocity: .fast, thenHoldForDuration: 0)
             XCTAssertEqual(app.staticTexts["agent-title"].label, original, "Short flicks must not create a thread")
             gone(app.otherElements["new-thread-pull-indicator"])
         }
-        let partial = status.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let partial = card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.97))
         partial.press(forDuration: 0.01, thenDragTo: partial.withOffset(CGVector(dx: 0, dy: -140)),
             withVelocity: .slow, thenHoldForDuration: 1)
         XCTAssertEqual(app.staticTexts["agent-title"].label, original, "A partial pull can be held and released safely")
         capture(app, "new-thread-pull-cancelled")
 
-        let deliberate = status.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let deliberate = card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.97))
         deliberate.press(forDuration: 0.01, thenDragTo: deliberate.withOffset(CGVector(dx: 0, dy: -210)),
             withVelocity: .slow, thenHoldForDuration: 1)
         XCTAssertEqual(app.staticTexts["agent-title"].label, "New agent")
@@ -1759,7 +1835,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Refresh agents"].exists)
         XCTAssertFalse(app.buttons["New agent"].exists)
         XCTAssertFalse(app.buttons["Account settings"].exists)
-        app.otherElements["agent-card"].swipeUp()
+        app.descendants(matching: .any)["agent-card"].swipeUp()
         XCTAssertEqual(app.staticTexts["agent-title"].label, "New agent")
         XCTAssertEqual(app.staticTexts["agent-preview"].label, "Send a message to begin.")
         XCTAssertFalse(app.scrollViews["conversation"].exists)
@@ -1772,8 +1848,14 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.buttons["New agent"].isHittable)
         XCTAssertTrue(app.buttons["inbox-scheduled-jobs"].isHittable)
         capture(app, "left-sidebar-navigation")
-        app.buttons["Close sidebar"].tap()
+        XCTAssertFalse(app.buttons["Close sidebar"].exists)
+        sidebar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+            .press(forDuration: 0.01, thenDragTo: sidebar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)))
+        XCTAssertTrue(sidebar.exists, "Vertical list scrolling must leave the sidebar open")
+        sidebar.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.4))
+            .press(forDuration: 0.01, thenDragTo: sidebar.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.4)))
         gone(sidebar)
+        XCTAssertEqual(app.staticTexts["agent-title"].label, "New agent", "Swiping over an agent row must not select it")
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.45))
             .press(forDuration: 0.01, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.45)))
         XCTAssertTrue(sidebar.waitForExistence(timeout: 5), "An edge swipe reveals the sidebar")
@@ -1795,10 +1877,10 @@ final class InboxUITests: XCTestCase {
         app.buttons["filter-Inbox"].tap()
         for _ in 0..<6 {
             if app.staticTexts["Nothing in your inbox"].exists { break }
-            app.otherElements["agent-card"].swipeLeft()
+            app.descendants(matching: .any)["agent-card"].swipeLeft()
         }
         XCTAssertTrue(app.staticTexts["Nothing in your inbox"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.otherElements["agent-card"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["agent-card"].exists)
         capture(app, "27-inbox-zero")
         app.buttons["View all agents"].tap()
         XCTAssertTrue(app.staticTexts["agent-title"].waitForExistence(timeout: 5))

@@ -16,7 +16,7 @@ private func captureMessage(_ text: String, from source: MessagingSource, sender
 
 struct CaptureIMessageIntent: AppIntent {
     static var title: LocalizedStringResource = "Capture iMessage"
-    static var description = IntentDescription("Save the message text supplied by a Shortcuts Message automation to Centaur. Works with iMessage and SMS.")
+    static var description = IntentDescription("Save the message text supplied by a Shortcuts Message automation to Nanocodex. Works with iMessage and SMS.")
     static var openAppWhenRun = false
     @Parameter(title: "Message") var text: String
     @Parameter(title: "Sender", default: "") var sender: String
@@ -29,7 +29,7 @@ struct CaptureIMessageIntent: AppIntent {
 
 struct CaptureWhatsAppIntent: AppIntent {
     static var title: LocalizedStringResource = "Capture WhatsApp"
-    static var description = IntentDescription("Save WhatsApp text supplied by a shortcut, such as notification text or text extracted from a screenshot, to Centaur.")
+    static var description = IntentDescription("Save WhatsApp text supplied by a shortcut, such as notification text or text extracted from a screenshot, to Nanocodex.")
     static var openAppWhenRun = false
     @Parameter(title: "Message") var text: String
     static var parameterSummary: some ParameterSummary { Summary("Capture WhatsApp \(\.$text)") }
@@ -41,7 +41,7 @@ struct CaptureWhatsAppIntent: AppIntent {
 
 struct CaptureInstagramIntent: AppIntent {
     static var title: LocalizedStringResource = "Capture Instagram"
-    static var description = IntentDescription("Save Instagram text supplied by a shortcut, such as notification text or text extracted from a screenshot, to Centaur.")
+    static var description = IntentDescription("Save Instagram text supplied by a shortcut, such as notification text or text extracted from a screenshot, to Nanocodex.")
     static var openAppWhenRun = false
     @Parameter(title: "Message") var text: String
     static var parameterSummary: some ParameterSummary { Summary("Capture Instagram \(\.$text)") }
@@ -65,7 +65,7 @@ struct CaptureSignalIntent: AppIntent {
 
 struct CaptureContextIntent: AppIntent {
     static var title: LocalizedStringResource = "Capture Context"
-    static var description = IntentDescription("Save text or a link to your Centaur Context inbox for agents to query through this device's Hand. Enable capture in Centaur first.")
+    static var description = IntentDescription("Save text or a link to your Nanocodex Context inbox for agents to query through this device's Hand. Enable capture in Nanocodex first.")
     static var openAppWhenRun = false
     @Parameter(title: "Text") var text: String
     @Parameter(title: "Source", default: "Shared") var source: String
@@ -90,7 +90,7 @@ struct CaptureContextIntent: AppIntent {
 
 struct CaptureFileContextIntent: AppIntent {
     static var title: LocalizedStringResource = "Capture Text from File"
-    static var description = IntentDescription("Extract text on this device from an image, screenshot, PDF, or text file and save it in Centaur. The original file is not saved or uploaded. Images without readable text and scanned PDFs aren't supported.")
+    static var description = IntentDescription("Extract text on this device from an image, screenshot, PDF, or text file and save it in Nanocodex. The original file is not saved or uploaded. Images without readable text and scanned PDFs aren't supported.")
     static var openAppWhenRun = false
     @Parameter(title: "File") var file: IntentFile
     @Parameter(title: "Source", default: "Shared") var source: String

@@ -1,9 +1,9 @@
-# Centaur
+# Nanocodex for iPhone and iPad
 
 A native SwiftUI app for iPhone and iPad. One managed agent per card:
 review the latest update, steer its current turn, then move to the next agent.
 The interface uses ChatGPT-style neutral surfaces, native typography, a rounded
-composer, and right-aligned user message bubbles, with Centaur branding and
+composer, and right-aligned user message bubbles, with Nanocodex naming and
 the agent card deck, review actions, and live steering controls.
 Appearance follows the system light/dark setting, including cards, the composer,
 and voice controls.
@@ -44,7 +44,10 @@ and repeated inner/outer tool outputs share a stable content identity.
 ## App identity
 
 The App Store Connect listing is [Centaur by Paradigm](https://appstoreconnect.apple.com/apps/6809176380),
-and the installed app is named **Centaur**.
+while the installed app is named **Nanocodex**. The product is `Nanocodex.app`;
+the internal Xcode target and Swift module remain `NanocodexInbox`. Existing
+bundle IDs and the App Group stay unchanged so this updates the current app
+without creating another install.
 
 - Main bundle: `xyz.paradigm.centaur`
 - Share extension: `xyz.paradigm.centaur.share`
@@ -90,7 +93,9 @@ agents and simulated actions.
 | --- | --- |
 | Swipe left | Revisit after a new update; keep the agent in All |
 | Swipe right | Mark this update seen and advance |
-| Pull up and release | Fill the new-thread indicator to start an agent; pull back to cancel. Use the floating status bar when the preview is long enough to scroll |
+| Undo swipe | Restore the previous card and its seen/later state; available even with an empty inbox |
+| Drag down while typing | Interactively dismiss the keyboard in cards and conversations, keeping the current agent and draft |
+| Pull up and release | Fill the new-thread indicator to start an agent; pull back to cancel. Use the bottom edge of the card when the preview is long enough to scroll |
 | Long-press card → Previous agent | Return to the previous agent |
 | Tap card | Read messages, reasoning, and expandable tool details; keep composing while reading history |
 | Plus → Camera / Photos & Videos / Files | Take a photo or attach up to four photos/videos; preview or remove attachments before sending |
@@ -283,7 +288,7 @@ execution while durable cloud work remains available in the conversation. A
 saved shortcut cannot silently follow an account switch or re-enable a disabled
 Hand. Shortcuts can expose the action through Siri or a Shortcuts widget.
 Earlier iOS versions request foreground continuation and queue the task in
-Centaur; iOS 26 then uses continued processing. No separate widget extension is
+Nanocodex; iOS 26 then uses continued processing. No separate widget extension is
 required. The SDK 27-specific conformance is guarded by
 `CENTAUR_APP_INTENTS_27`, selected by the Xcode project's SDK 27 build settings.
 SDK 26 builds contain the foreground fallback, including when installed on iOS 27.
@@ -355,7 +360,7 @@ OAuth. Search supports source, text, sender, conversation, dates and pagination;
 reads preserve provenance and return additional chunks using `nextOffset`.
 Counts describe retained captures, not complete app history. Missing sender or
 conversation metadata is unknown. All returned content is untrusted reference
-material. The Hand is available while Centaur is active and during granted
+material. The Hand is available while Nanocodex is active and during granted
 background execution; turning capture off
 blocks message queries as well as new imports.
 
@@ -387,7 +392,7 @@ attachments. Assigning an agent includes up to 12 unused captures (within a
 The conversation shows the request and expandable context; retry retains the
 same captured content and durable turn identity, even after relaunch.
 
-The iOS **Centaur** share extension accepts web links, text, images, PDFs,
+The iOS **Nanocodex** share extension accepts web links, text, images, PDFs,
 and plain text files through the system share sheet. Safari shares the selected
 text, or readable page content when there is no selection, together with its
 original URL. Long pages are capped at 24 KB with an explicit excerpt marker.

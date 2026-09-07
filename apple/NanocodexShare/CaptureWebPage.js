@@ -1,4 +1,4 @@
-// Safari runs this only when the user chooses Centaur in the share sheet.
+// Safari runs this only when the user chooses Nanocodex in the share sheet.
 var ExtensionPreprocessingJS = {
     run: function (arguments) {
         var selection = String(window.getSelection() || "").trim();

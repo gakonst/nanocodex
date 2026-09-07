@@ -5,7 +5,7 @@ struct NanocodexInboxApp: App {
     @StateObject private var model = InboxModel.shared
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
-        WindowGroup("Centaur", id: "inbox") {
+        WindowGroup("Nanocodex", id: "inbox") {
             InboxView(model: model)
                 .onAppear { Task { await model.start() } }
                 .onChange(of: scenePhase, initial: true) { _, phase in

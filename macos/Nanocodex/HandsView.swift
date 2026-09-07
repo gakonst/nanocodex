@@ -91,7 +91,7 @@ struct AccountHandRow: View {
                     .font(.system(size: 11)).foregroundStyle(hand.isConnected ? Color.green : .secondary)
                 if !compact {
                     Text(hand.isPhone
-                         ? "iOS limits background availability. Open Centaur on this phone to reconnect."
+                         ? "iOS limits background availability. Open Nanocodex on this phone to reconnect."
                          : "Open the app on this device to reconnect.")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                     Text(hand.workspace).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)

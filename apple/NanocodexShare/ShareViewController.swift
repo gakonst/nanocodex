@@ -55,7 +55,7 @@ private struct ShareCaptureView: View {
                 }
                 if let error { Section { Text(error).foregroundStyle(.red).accessibilityIdentifier("capture-error") } }
             }
-            .navigationTitle("Save to Centaur")
+            .navigationTitle("Save to Nanocodex")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: finish) }
