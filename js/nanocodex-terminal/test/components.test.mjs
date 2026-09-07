@@ -405,7 +405,7 @@ test("transcript renders semantic reasoning, plans, and accessible nested tools"
     "Authorize Google",
   );
   assert.deepEqual(renderer.root.findAllByType("h4").map((heading) => heading.children.join("")), [
-    "Command", "Stdout", "Stderr",
+    "Command", "Exit code", "Stdout", "Stderr",
   ]);
   assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-brand" }).length, 0);
   await act(async () => renderer.update(React.createElement(TerminalTranscriptSurface, {
@@ -532,7 +532,10 @@ test("all-tool renderer adapts known families and keeps unknown tools excellent"
   assert.ok(renderer.root.findAllByProps({ className: "agent-terminal-tool-meta" })[0]
     .children.some((node) => node.children?.join("") === "1.25 s"));
   const detailHeadings = renderer.root.findAllByType("h4").map((node) => node.children.join(""));
-  assert.deepEqual(detailHeadings.slice(0, 3), ["Command", "Stdout", "Stderr"]);
+  assert.deepEqual(detailHeadings.slice(0, 4), ["Command", "Exit code", "Stdout", "Stderr"]);
+  assert.deepEqual(renderer.root.findAllByProps({ className: "agent-terminal-tool-detail agent-terminal-tool-result" })
+    .filter((section) => section.findByType("h4").children.join("") === "Exit code")
+    .map((section) => section.findByType("pre").children.join("")), ["0", "1", "7"]);
   assert.equal(detailHeadings.filter((label) => label === "Stdout").length, 2);
   assert.equal(detailHeadings.filter((label) => label === "Stderr").length, 2);
   const links = renderer.root.findAllByType("a");

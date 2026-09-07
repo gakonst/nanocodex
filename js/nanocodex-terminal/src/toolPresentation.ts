@@ -65,10 +65,12 @@ function semanticExecutionDetails(
     ? stringField(outputRecord, family === "exec_command" || family === "write_stdin" ? "output" : "stdout")
     : undefined;
   const stderr = outputRecord ? stringField(outputRecord, "stderr") : undefined;
+  const exitCode = outputRecord ? numberField(outputRecord, "exit_code") : undefined;
   return {
     ...(command ? { inputDetail: { label: "Command", value: command } } : {}),
-    ...(stdout === undefined && stderr === undefined ? {} : {
+    ...(stdout === undefined && stderr === undefined && exitCode === undefined ? {} : {
       outputDetails: [
+        ...(exitCode === undefined ? [] : [{ label: "Exit code", value: String(exitCode) }]),
         ...(stdout === undefined ? [] : [{ label: family === "exec_command" || family === "write_stdin" ? "Output" : "Stdout", value: stdout || "(empty)" }]),
         ...(stderr === undefined ? [] : [{ label: "Stderr", value: stderr || "(empty)" }]),
       ],
