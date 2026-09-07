@@ -10,7 +10,7 @@ license.workspace = true
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-nanocodex-voice-protocol = { path = "../nanocodex-voice-protocol" }
+nanocodex-voice-protocol.workspace = true
 serde_json.workspace = true
 
 # This crate is only the C ABI. The protocol crate retains the workspace
