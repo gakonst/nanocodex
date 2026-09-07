@@ -41,6 +41,16 @@ final class InboxUITests: XCTestCase {
 
     @MainActor
     func testLiveTerminalProgressAndFailure() async throws {
+        try await verifyLiveTerminal(historyOnly: false)
+    }
+
+    @MainActor
+    func testLiveTerminalReceiptHistory() async throws {
+        try await verifyLiveTerminal(historyOnly: true)
+    }
+
+    @MainActor
+    private func verifyLiveTerminal(historyOnly: Bool) async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let key = environment["NANOCODEX_LIVE_TEST_API_KEY"], !key.isEmpty else {
             throw XCTSkip("Requires an explicitly supplied managed account key and a live service.")
@@ -74,26 +84,37 @@ final class InboxUITests: XCTestCase {
             app.buttons["Connect account"].tap()
         }
         try require(app.buttons["Browse agents"].waitForExistence(timeout: 30), "The inbox did not connect")
-        let created = try await request("/v1/agents")
-        let agentID = try XCTUnwrap(created["agent_id"] as? String)
-        let marker = "E12 progress " + String(UUID().uuidString.prefix(8))
-        print("E12_LIVE_AGENT \(agentID) \(marker)")
-        _ = try await request("/v1/agents/\(agentID)/turns", body: [
-            "id": UUID().uuidString.lowercased(),
-            "input": "\(marker). In one Cloudflare Linux sandbox, run exactly: printf 'E12_START\\n'; sleep 60; printf 'E12_MID\\n'; sleep 60; printf 'E12_DONE\\n'. Use exec_command with yield_time_ms 1000, then poll the same process until exit. Do not use a connected device."
-        ])
-        func openThread() throws {
+        let agentID: String, marker: String, successTurnID: String, failureTurnID: String
+        if historyOnly {
+            guard let savedAgent = environment["NANOCODEX_LIVE_TEST_HISTORY_AGENT"],
+                  let savedMarker = environment["NANOCODEX_LIVE_TEST_HISTORY_MARKER"],
+                  let savedSuccess = environment["NANOCODEX_LIVE_TEST_SUCCESS_TURN"],
+                  let savedFailure = environment["NANOCODEX_LIVE_TEST_FAILURE_TURN"] else {
+                throw XCTSkip("Requires an explicitly selected completed success/failure fixture.")
+            }
+            agentID = savedAgent; marker = savedMarker; successTurnID = savedSuccess; failureTurnID = savedFailure
+            print("E12_HISTORY_AGENT \(agentID) \(marker)")
+        } else {
+            let created = try await request("/v1/agents")
+            agentID = try XCTUnwrap(created["agent_id"] as? String)
+            marker = "E12 progress " + String(UUID().uuidString.prefix(8))
+            successTurnID = UUID().uuidString.lowercased(); failureTurnID = UUID().uuidString.lowercased()
+            print("E12_LIVE_AGENT \(agentID) \(marker)")
+            _ = try await request("/v1/agents/\(agentID)/turns", body: [
+                "id": successTurnID,
+                "input": "\(marker). In one Cloudflare Linux sandbox, run exactly: printf 'E12_START\\n'; sleep 60; printf 'E12_MID\\n'; sleep 60; printf 'E12_DONE\\n'. Use exec_command with yield_time_ms 1000, then poll the same process until exit. Do not use a connected device."
+            ])
+        }
+        func openThread(turnID: String, commandText: String) throws {
             app.terminate(); app.launch()
             try require(app.buttons["Browse agents"].waitForExistence(timeout: 30), "The inbox did not connect")
-            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["Refresh agents"])
-            try require(XCTWaiter.wait(for: [ready], timeout: 30) == .completed, "The inbox did not finish loading")
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: app.buttons["Browse agents"])
+            try require(XCTWaiter.wait(for: [ready], timeout: 10) == .completed, "The inbox did not finish loading")
             let title = app.staticTexts["agent-title"]
             if !title.label.contains(marker) {
                 app.buttons["Browse agents"].tap()
+                try require(app.otherElements["inbox-sidebar"].waitForExistence(timeout: 10), "The agent sidebar did not open")
                 let listing = app.collectionViews.firstMatch
-                if !listing.waitForExistence(timeout: 5) {
-                    app.buttons["Browse agents"].tap()
-                }
                 try require(listing.waitForExistence(timeout: 5), "The agent list did not open")
                 let entry = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch
                 for _ in 0..<30 {
@@ -106,46 +127,109 @@ final class InboxUITests: XCTestCase {
                     throw NSError(domain: "E12", code: 1)
                 }
                 entry.tap()
+                let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@ AND hittable == true", marker), object: title)
+                try require(XCTWaiter.wait(for: [selected], timeout: 10) == .completed, "The requested agent did not open")
             }
             title.tap()
-            try require(app.scrollViews["conversation"].waitForExistence(timeout: 5), "The conversation did not open")
+            let conversation = app.scrollViews["conversation"]
+            try require(conversation.waitForExistence(timeout: 5), "The conversation did not open")
+            let group = app.otherElements["message-activity-" + turnID]
+            let activity = group.buttons["activity-disclosure"]
+            for _ in 0..<10 {
+                if activity.exists && activity.isHittable { break }
+                conversation.swipeDown()
+            }
+            try require(activity.waitForExistence(timeout: 10) && activity.isHittable, "The turn's Activity did not appear")
+            activity.tap()
+            let timeline = group.scrollViews["activity-timeline"]
+            try require(timeline.waitForExistence(timeout: 5), "Activity did not expand")
+            for _ in 0..<30 {
+                if command(commandText).exists && command(commandText).isHittable { break }
+                timeline.swipeUp()
+            }
         }
         func command(_ text: String) -> XCUIElement {
             app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Run command,' AND label CONTAINS %@", text)).firstMatch
         }
-        try openThread()
+        func revealOutput(_ predicate: NSPredicate, command: XCUIElement) throws {
+            let detailID = command.identifier.replacingOccurrences(of: "activity-step-", with: "activity-detail-")
+            let detail = app.scrollViews[detailID]
+            let turnID = command.identifier.replacingOccurrences(of: "activity-step-", with: "").components(separatedBy: "::")[0]
+            let group = app.otherElements["message-activity-" + turnID]
+            let timeline = group.scrollViews["activity-timeline"]
+            let conversation = app.scrollViews["conversation"]
+            try require(detail.waitForExistence(timeout: 5), "Command details did not expand")
+            // Drag the outer margin, then the timeline margin, so nested scroll views
+            // cannot forward a gesture to the conversation and hide the result.
+            func drag(x: CGFloat, from: CGFloat, to: CGFloat) {
+                let origin = app.coordinate(withNormalizedOffset: .zero)
+                origin.withOffset(CGVector(dx: x, dy: from)).press(forDuration: 0.01,
+                    thenDragTo: origin.withOffset(CGVector(dx: x, dy: to)))
+            }
+            for _ in 0..<6 {
+                let top = timeline.frame.minY
+                let target = max(conversation.frame.minY + 110, 180)
+                if abs(top - target) < 30 { break }
+                let start = app.frame.midY
+                drag(x: 8, from: start, to: start + max(-250, min(250, target - top)))
+            }
+            for _ in 0..<8 {
+                let viewport = timeline.frame.intersection(conversation.frame).intersection(app.frame)
+                let delta = detail.frame.maxY - viewport.maxY + 8
+                if delta <= 12 && detail.frame.minY >= viewport.minY { break }
+                let movement = delta > 0 ? -min(180, delta) : min(180, viewport.minY - detail.frame.minY)
+                drag(x: timeline.frame.minX + 12, from: viewport.midY, to: viewport.midY + movement)
+            }
+            let output = detail.staticTexts.matching(predicate).firstMatch
+            try require(output.waitForExistence(timeout: 5), "The command result did not contain the expected output")
+            func visibleTail() -> Bool {
+                let viewport = detail.frame.intersection(timeline.frame).intersection(conversation.frame).intersection(app.frame)
+                return !viewport.isNull && output.frame.maxY > viewport.minY && output.frame.maxY <= viewport.maxY + 4
+            }
+            for _ in 0..<40 {
+                if visibleTail() { break }
+                let viewport = detail.frame.intersection(timeline.frame).intersection(conversation.frame).intersection(app.frame)
+                try require(viewport.height > 50, "The command detail viewport was not visible")
+                drag(x: viewport.midX, from: viewport.maxY - 15, to: viewport.minY + 15)
+            }
+            try require(visibleTail(), "The command output tail was not visible")
+        }
+        try openThread(turnID: successTurnID, commandText: "E12_START")
         let success = command("E12_START")
         try require(success.waitForExistence(timeout: 90), "The command card did not appear")
-        try require(success.label.contains("Running"), "The yielded command must remain Running")
-        success.tap()
-        try require(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "E12_START\n")).firstMatch.waitForExistence(timeout: 10), "Initial command output was not visible")
-        capture(app, "E12-live-running")
-        try openThread()
-        try require(command("E12_START").waitForExistence(timeout: 15), "The command was lost after relaunch")
-        try require(command("E12_START").label.contains("Running"), "Running status was lost after relaunch")
+        if !historyOnly {
+            try require(success.label.contains("Running"), "The yielded command must remain Running")
+            success.tap()
+            try revealOutput(NSPredicate(format: "label BEGINSWITH %@", "E12_START\n"), command: success)
+            capture(app, "E12-live-running")
+            try openThread(turnID: successTurnID, commandText: "E12_START")
+            try require(command("E12_START").waitForExistence(timeout: 15), "The command was lost after relaunch")
+            try require(command("E12_START").label.contains("Running"), "Running status was lost after relaunch")
+        }
         let completed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS 'Completed'"), object: command("E12_START"))
         await fulfillment(of: [completed], timeout: 180)
         try require(command("E12_START").label.contains("Completed"), "The command did not complete")
         command("E12_START").tap()
-        try require(app.staticTexts["E12_START\nE12_MID\nE12_DONE\n"].waitForExistence(timeout: 5), "Polling output was not folded into the original command")
+        try revealOutput(NSPredicate(format: "label == %@", "E12_START\nE12_MID\nE12_DONE\n"), command: command("E12_START"))
         try require(app.staticTexts["Elapsed (seconds)"].exists, "Final elapsed time was missing")
         capture(app, "E12-live-completed")
-        _ = try await request("/v1/agents/\(agentID)/turns", body: [
-            "id": UUID().uuidString.lowercased(),
-            "input": "In the same sandbox, run exactly: printf 'E12_FAIL_START\\n'; sleep 30; for i in $(seq 1 300); do printf 'E12_STDOUT_%04d\\n' \"$i\"; printf 'E12_STDERR_%04d\\n' \"$i\" >&2; done; printf 'E12_EXPECTED_FAILURE\\n' >&2; exit 7. Use exec_command with yield_time_ms 1000 and max_output_tokens 10000, then poll until exit. This is an intentional failure fixture; do not retry or fix it."
-        ])
-        try openThread()
-        let failed = command("E12_FAIL_START")
-        try require(failed.waitForExistence(timeout: 60), "The failure fixture command did not appear")
-        try require(failed.label.contains("Running") || failed.label.contains("Failed"), "The failure fixture reported an unexpected status")
-        let failure = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS 'Failed'"), object: failed)
-        await fulfillment(of: [failure], timeout: 90)
-        try require(failed.label.contains("Failed"), "Nonzero exit did not produce Failed status")
-        try openThread()
+        if !historyOnly {
+            _ = try await request("/v1/agents/\(agentID)/turns", body: [
+                "id": failureTurnID,
+                "input": "In the same sandbox, run exactly: printf 'E12_FAIL_START\\n'; sleep 30; for i in $(seq 1 300); do printf 'E12_STDOUT_%04d\\n' \"$i\"; printf 'E12_STDERR_%04d\\n' \"$i\" >&2; done; printf 'E12_EXPECTED_FAILURE\\n' >&2; exit 7. Use exec_command with yield_time_ms 1000 and max_output_tokens 10000, then poll until exit. This is an intentional failure fixture; do not retry or fix it."
+            ])
+            try openThread(turnID: failureTurnID, commandText: "E12_FAIL_START")
+            let failed = command("E12_FAIL_START")
+            try require(failed.waitForExistence(timeout: 60), "The failure fixture command did not appear")
+            try require(failed.label.contains("Running") || failed.label.contains("Failed"), "The failure fixture reported an unexpected status")
+            let failure = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS 'Failed'"), object: failed)
+            await fulfillment(of: [failure], timeout: 90)
+            try require(failed.label.contains("Failed"), "Nonzero exit did not produce Failed status")
+        }
+        try openThread(turnID: failureTurnID, commandText: "E12_FAIL_START")
         try require(command("E12_FAIL_START").waitForExistence(timeout: 15) && command("E12_FAIL_START").label.contains("Failed"), "Failed status was lost after relaunch")
         command("E12_FAIL_START").tap()
-        let output = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'E12_STDOUT_0300' AND label CONTAINS 'E12_STDERR_0300' AND label ENDSWITH %@", "E12_EXPECTED_FAILURE\n")).firstMatch
-        try require(output.waitForExistence(timeout: 5), "Large stdout/stderr lost their final output")
+        try revealOutput(NSPredicate(format: "label CONTAINS 'E12_STDOUT_0300' AND label CONTAINS 'E12_STDERR_0300' AND label ENDSWITH %@", "E12_EXPECTED_FAILURE\n"), command: command("E12_FAIL_START"))
         try require(app.staticTexts["7"].exists, "The final exit code was not retained")
         try require(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Command progress,'")).count == 0, "Empty polls created separate cards")
         capture(app, "E12-live-failed-after-relaunch")

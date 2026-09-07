@@ -2,6 +2,26 @@ import XCTest
 @testable import InboxCore
 
 final class ToolPresentationTests: XCTestCase {
+    func testRecoveryReplayKeepsOneCommandAndItsOriginalStartTime() throws {
+        func event(_ cursor: String, _ time: Double, _ type: String, _ payload: JSON) throws -> AgentEvent {
+            try AgentEvent(.object(["cursor": .string(cursor), "created_at": .number(time), "type": .string("event"), "turn_id": .string("t"), "event": .object(["type": .string(type), "payload": payload])]))
+        }
+        let call: JSON = .object(["call_id": .string("c"), "tool": .string("exec_command"), "arguments": .object(["cmd": .string("sleep 120")])])
+        let initial: JSON = .object(["call_id": .string("c"), "tool": .string("exec_command"), "status": .string("completed"), "structured_result": .object(["session_id": .number(42), "output": .string("START\n")])])
+        let poll: JSON = .object(["call_id": .string("p"), "tool": .string("write_stdin"), "arguments": .object(["session_id": .number(42)])])
+        let rows = try transcript([
+            event("1", 1000, "tool.call", call), event("2", 2000, "tool.result", initial),
+            event("3", 3000, "tool.call", poll),
+            event("4", 57000, "tool.call", call), event("5", 57000, "tool.result", initial),
+            event("6", 57000, "tool.call", poll),
+            event("7", 58000, "tool.result", .object(["call_id": .string("p"), "tool": .string("write_stdin"), "status": .string("failed"), "structured_result": .string("unknown or stale namespace process session")]))
+        ])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].tool?.status, "Failed")
+        XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Output" && $0.value == "START\nunknown or stale namespace process session" })
+        XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Elapsed (seconds)" && $0.value == "57" })
+        XCTAssertFalse(rows[0].tool!.output.contains { $0.label == "Exit code" })
+    }
     func testCommandElapsedTimeIncludesExecutionBetweenPolls() throws {
         func event(_ cursor: String, _ time: Double, _ type: String, _ payload: JSON) throws -> AgentEvent {
             try AgentEvent(.object(["cursor": .string(cursor), "created_at": .number(time), "type": .string("event"), "turn_id": .string("t"), "event": .object(["type": .string(type), "payload": payload])]))

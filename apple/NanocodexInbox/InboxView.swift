@@ -1552,7 +1552,12 @@ private struct ConversationActivityStep: View {
                     Image(systemName: failed ? "exclamationmark.circle" : row.role == "Tool" ? "terminal" : "text.alignleft")
                         .font(.system(size: 12)).frame(width: 18, height: 18).foregroundStyle(failed ? Ink.amber : Ink.muted)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.text).lineLimit(1)
+                        HStack(spacing: 8) {
+                            Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.text).lineLimit(1)
+                            if let status = row.tool?.status {
+                                Text(status).font(.system(size: 11)).foregroundStyle(failed ? Ink.amber : Ink.muted)
+                            }
+                        }
                         if !subject.isEmpty { Text(subject).font(.system(size: 12)).foregroundStyle(Ink.muted).lineLimit(1) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     if live { ProgressView().controlSize(.mini) }

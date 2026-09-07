@@ -144,6 +144,8 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
 public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
     var rows: [TranscriptRow] = []
     var seen = Set<String>()
+    var seenToolCalls = Set<String>()
+    var seenToolResults = Set<String>()
     var terminalSessions: [String: Int] = [:]
     var terminalPolls: [String: Int] = [:]
     var toolStartedAt: [String: Double] = [:]
@@ -217,8 +219,10 @@ public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
                     rows[last].running = false
                 } else { rows.append(.init(id: id, role: "Agent", text: p["text"].string)) }
             case "tool.call":
+                let toolID = prefix + ":tool:" + p["call_id"].string
+                guard seenToolCalls.insert(toolID).inserted, !seenToolResults.contains(toolID) else { continue }
                 if case .number(let time) = d["created_at"], time.isFinite, time >= 0 {
-                    toolStartedAt[prefix + ":tool:" + p["call_id"].string] = time
+                    toolStartedAt[toolID] = time
                 }
                 if p["tool"].string == "write_stdin",
                    let index = terminalSessions[d["agent_id"].pretty + ":" + p["arguments"]["session_id"].pretty] {
@@ -229,6 +233,7 @@ public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
                 rows.append(.init(id: prefix + ":tool:" + p["call_id"].string, role: "Tool", text: tool.title, running: true, tool: tool))
             case "tool.result":
                 let toolID = prefix + ":tool:" + p["call_id"].string
+                guard seenToolResults.insert(toolID).inserted else { continue }
                 guard let result = envelope.preparedToolResult else { break }
                 if result.terminalCommand == true {
                     let result = p["structured_result"] == .null ? p["result"] : p["structured_result"]
