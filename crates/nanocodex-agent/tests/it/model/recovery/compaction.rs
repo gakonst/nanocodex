@@ -289,7 +289,7 @@ async fn manual_compaction_uses_current_defaults_and_a_fresh_logical_turn() -> R
             "warmup and generation belong to one logical turn"
         );
         assert_eq!(first["reasoning"]["effort"], "low");
-        assert!(first.get("service_tier").is_none());
+        assert_eq!(first["service_tier"], "default");
         send_final(&mut socket, "resp-first").await?;
 
         let compact = next_json(&mut socket).await?;

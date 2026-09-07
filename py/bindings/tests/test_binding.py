@@ -77,7 +77,7 @@ class BindingTests(unittest.TestCase):
             Nanocodex("test-key", session_id="not-a-uuid-v7")
 
     def test_spawn_returns_independent_agent_without_network(self) -> None:
-        agent, events = Nanocodex("test-key", thinking="none")
+        agent, events = Nanocodex("test-key", thinking="low")
         child, child_events = agent.spawn()
         self.assertTrue(callable(child.prompt))
         self.assertTrue(callable(child_events.recv_json))
@@ -89,14 +89,14 @@ class BindingTests(unittest.TestCase):
         drain(events)
 
     def test_fork_before_safe_boundary_is_typed(self) -> None:
-        agent, events = Nanocodex("test-key", thinking="none")
+        agent, events = Nanocodex("test-key", thinking="low")
         with self.assertRaises(RuntimeError):
             agent.fork()
         agent.shutdown()
         drain(events)
 
     def test_empty_steer_is_rejected(self) -> None:
-        agent, events = Nanocodex("test-key", thinking="none")
+        agent, events = Nanocodex("test-key", thinking="low")
         turn = agent.prompt("queued for steer rejection")
         with self.assertRaisesRegex(
             RuntimeError, "steer instruction must not be empty"
@@ -109,7 +109,7 @@ class BindingTests(unittest.TestCase):
         drain(events)
 
     def test_fork_from_requires_a_typed_result(self) -> None:
-        agent, events = Nanocodex("test-key", thinking="none")
+        agent, events = Nanocodex("test-key", thinking="low")
         turn = agent.prompt("incomplete")
         with self.assertRaises(TypeError):
             agent.fork_from(turn)

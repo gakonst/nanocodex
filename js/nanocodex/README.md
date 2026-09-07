@@ -718,6 +718,20 @@ it creates and leaves caller-owned clients open. Connection failures are
 reported by `tool_search` so one unavailable server does not prevent the agent
 from starting.
 
+Code Mode is the default. Model-facing `exec` cells can yield with a first-line
+`// @exec: {"yield_time_ms": 1000, "max_output_tokens": 1000}` directive or
+`yield_control()`. The model resumes the returned cell ID through `wait`, which
+returns only new output and can terminate the cell. Cells belong to their agent
+session and are invalidated when the host shuts down; a persisted `wait` never
+restarts missing work. Embedded cells retain ownership of all nested tool calls
+until they finish or are cancelled.
+
+Custom evaluators receive `audio`, `notify`, `yield_control`, `setTimeout`, and
+`clearTimeout` alongside the existing globals in `CodeEvaluatorEnvironment`.
+Forward those helpers into the guest environment to preserve the model-visible
+contract. `image` accepts individual MCP image blocks and honors explicit detail
+before MCP metadata; `audio` accepts MCP audio blocks. Both accept data URLs.
+
 Runtimes whose content-security policy rejects `eval`/`new Function` can supply
 a Code Mode evaluator. `createQuickJsEvaluator` accepts an asyncified
 `quickjs-emscripten-core` module, serializes Asyncify execution, and exposes only

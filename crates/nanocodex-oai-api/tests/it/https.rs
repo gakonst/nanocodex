@@ -1,5 +1,9 @@
 use eyre::{Result, eyre};
-use nanocodex_oai_api::{OpenAi, transport::ResponsesTransport};
+use nanocodex_oai_api::{
+    OpenAi,
+    session::ResponseInput,
+    transport::{ResponsesError, ResponsesTransport},
+};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -8,6 +12,92 @@ use tokio::{
 };
 
 const TURN_STATE_HEADER: &str = "x-codex-turn-state";
+
+#[tokio::test]
+async fn https_invalid_tool_schema_identifies_the_failed_request_definition() -> Result<()> {
+    let definition = json!({
+        "type": "function", "name": "lookup", "strict": true,
+        "parameters": {
+            "type": "object", "properties": { "limit": { "type": "integer" } },
+            "required": [], "additionalProperties": false
+        }
+    });
+    for streamed_error in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let api_base_url = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let mut request = read_http_json(&listener).await?;
+            let index = request.body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|item| item["type"] == "tool_search_output")
+                .unwrap();
+            let error = json!({
+                "code": "invalid_function_parameters",
+                "param": format!("input[{index}].tools[0].parameters"),
+                "message": "The required array must include limit."
+            });
+            if streamed_error {
+                send_http_events(
+                    request.stream,
+                    None,
+                    [json!({
+                        "type": "response.failed", "response": { "error": error }
+                    })],
+                )
+                .await?;
+            } else {
+                let body = json!({ "error": error }).to_string();
+                request
+                    .stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                request.stream.shutdown().await?;
+            }
+            Result::<()>::Ok(())
+        });
+        let openai = OpenAi::builder("test-key")
+            .transport(ResponsesTransport::Https)
+            .api_base_url(api_base_url)
+            .build()?;
+        let mut session = openai.instructions("Use discovered tools.").build()?;
+        let items: Vec<nanocodex_oai_api::responses::ResponseItem> =
+            serde_json::from_value(json!([
+                { "type": "tool_search_call", "call_id": "search", "execution": "client",
+                    "arguments": { "query": "lookup" } },
+                { "type": "tool_search_output", "call_id": "search", "execution": "client",
+                    "status": "completed", "tools": [definition] }
+            ]))?;
+        let error = session
+            .turn()
+            .create(ResponseInput::items(items))
+            .await
+            .expect_err("the provider must reject the invalid schema");
+        assert_eq!(
+            error
+                .responses_error()
+                .and_then(ResponsesError::invalid_tool_schema),
+            Some(&definition)
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("The required array must include limit.")
+        );
+        timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .map_err(|_| eyre!("mock HTTPS schema server did not finish"))???;
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn https_turn_state_is_scoped_to_one_logical_turn_and_survives_retry() -> Result<()> {

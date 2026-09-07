@@ -516,7 +516,7 @@ impl ResponsesAttemptFactory {
     /// Returns an attempt factory scoped to one client-side logical turn.
     pub fn for_logical_turn(&self, logical_turn: u64) -> Self {
         Self {
-            profile: Arc::clone(&self.profile),
+            profile: Arc::new((*self.profile).clone().with_logical_turn(logical_turn)),
             observer: self.observer.clone(),
             logical_turn,
             session_transport: Arc::clone(&self.session_transport),

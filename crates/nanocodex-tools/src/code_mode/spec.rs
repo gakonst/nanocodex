@@ -1,7 +1,7 @@
 use nanocodex_oai_api::{responses::CustomToolFormat, tools::ToolDefinition};
 use serde_json::json;
 
-use super::description;
+use crate::code_mode_description as description;
 
 const GRAMMAR: &str = r"
 start: pragma_source | plain_source

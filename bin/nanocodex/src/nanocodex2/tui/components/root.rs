@@ -3427,13 +3427,13 @@ mod live_control_tests {
 
     #[test]
     fn slash_model_command_routes_as_a_hosted_setting_instead_of_a_prompt() {
-        let mut root = root_with_draft("/model astra");
+        let mut root = root_with_draft("/model sol");
 
         let update = root.update(key(KeyCode::Enter));
 
         assert!(matches!(
             update.effects.as_slice(),
-            [RootEffect::SetModel(Model::Astra)]
+            [RootEffect::SetModel(Model::Sol)]
         ));
         assert!(matches!(root.thread, super::ThreadState::New));
         assert!(root.composer.component().draft().is_empty());
@@ -3444,7 +3444,7 @@ mod live_control_tests {
     fn slash_action_overlay_routes_direct_model_command() {
         let mut root = root_with_draft("");
         let _ = root.update(key(KeyCode::Char('/')));
-        for character in "model astra".chars() {
+        for character in "model sol".chars() {
             let _ = root.update(key(KeyCode::Char(character)));
         }
 
@@ -3452,7 +3452,7 @@ mod live_control_tests {
 
         assert!(matches!(
             update.effects.as_slice(),
-            [RootEffect::SetModel(Model::Astra)]
+            [RootEffect::SetModel(Model::Sol)]
         ));
         assert!(matches!(root.thread, super::ThreadState::New));
         assert_eq!(root.in_flight_turns, 0);
@@ -3471,7 +3471,7 @@ mod live_control_tests {
             projection,
         );
         let _ = root.update(key(KeyCode::Char('/')));
-        for character in "model astra".chars() {
+        for character in "model sol".chars() {
             let _ = root.update(key(KeyCode::Char(character)));
         }
 
@@ -3479,7 +3479,7 @@ mod live_control_tests {
 
         assert!(matches!(
             update.effects.as_slice(),
-            [RootEffect::SetModel(Model::Astra)]
+            [RootEffect::SetModel(Model::Sol)]
         ));
     }
 

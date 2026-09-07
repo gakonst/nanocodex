@@ -3983,7 +3983,7 @@ mod tests {
         app.open_reasoning_picker();
 
         handle_key(
-            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
             &mut app,
             "main-session",
             &commands,
@@ -4004,7 +4004,7 @@ mod tests {
                 thinking: Thinking::Medium
             })
         ));
-        assert_eq!(app.thinking(), Thinking::High);
+        assert_eq!(app.thinking(), Thinking::Low);
 
         handle_worker_update(
             &mut app,

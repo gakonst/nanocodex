@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use super::api_error::{api_error_has_code, api_error_is_checkpoint_missing, retryable_api_error};
+use super::api_error::{
+    api_error_has_code, api_error_is_checkpoint_missing, invalid_tool_schema_path,
+    retryable_api_error,
+};
 
 /// Errors produced by the standard `OpenAI` Responses transports.
 ///
@@ -133,6 +136,15 @@ pub enum ResponsesError {
         /// Complete retained provider event.
         event: String,
     },
+    /// The provider identified an invalid function schema in discovery history.
+    #[error("{source}")]
+    InvalidToolSchema {
+        /// Original provider failure, including its complete error detail.
+        #[source]
+        source: Box<Self>,
+        /// Exact discovered definition selected by the provider's parameter path.
+        definition: Box<serde_json::Value>,
+    },
     /// Sending or reading an HTTPS request failed.
     #[error("Responses HTTPS request failed: {detail}")]
     HttpRequest {
@@ -247,6 +259,7 @@ impl ResponsesError {
             Self::Api { .. } => "api",
             Self::ContextWindowExceeded { .. } => "context_window_exceeded",
             Self::InvalidImageRequest { .. } => "invalid_image_request",
+            Self::InvalidToolSchema { .. } => "invalid_tool_schema",
             Self::HttpRequest { timeout: true, .. } => "https_timeout",
             Self::HttpRequest { .. } => "https_transport",
             Self::HttpRejected { body, .. }
@@ -271,6 +284,59 @@ impl ResponsesError {
     #[must_use]
     pub const fn is_context_window_exceeded(&self) -> bool {
         matches!(self, Self::ContextWindowExceeded { .. })
+    }
+
+    /// Returns the rejected discovery definition identified on the failed request.
+    #[must_use]
+    pub fn invalid_tool_schema(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::InvalidToolSchema { definition, .. } => Some(definition),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn with_request_input<'a>(
+        self,
+        mut input: impl Iterator<Item = &'a crate::ResponseItem>,
+    ) -> Self {
+        let event = match &self {
+            Self::Api { event } => event,
+            Self::HttpRejected {
+                status: 400, body, ..
+            } => body,
+            _ => return self,
+        };
+        let Some(indices) = invalid_tool_schema_path(event) else {
+            return self;
+        };
+        let Some(crate::ResponseItem::ToolSearchOutput { tools, .. }) = input.nth(indices[0])
+        else {
+            return self;
+        };
+        let Some(tool) = tools.get(indices[1]) else {
+            return self;
+        };
+        let mut definition = tool.as_value();
+        for index in &indices[2..] {
+            if definition["type"] != "namespace" {
+                return self;
+            }
+            let Some(child) = definition
+                .get("tools")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|tools| tools.get(*index))
+            else {
+                return self;
+            };
+            definition = child;
+        }
+        if definition["type"] != "function" || !definition["parameters"].is_object() {
+            return self;
+        }
+        Self::InvalidToolSchema {
+            source: Box::new(self),
+            definition: Box::new(definition.clone()),
+        }
     }
 
     /// Returns whether Astra's misalignment monitor stopped the conversation.
@@ -307,8 +373,140 @@ pub struct RetryAdvice {
 mod tests {
     use std::time::Duration;
 
+    use serde_json::json;
+
     use super::ResponsesError;
     use crate::transport::api_error::retryable_api_error;
+
+    #[test]
+    fn invalid_tool_schema_resolves_discovery_paths_and_preserves_provider_errors() {
+        let definition = json!({
+            "type": "function", "name": "lookup", "parameters": { "type": "object" }
+        });
+        let input: Vec<crate::ResponseItem> = serde_json::from_value(json!([
+            { "type": "message", "role": "user", "content": [] },
+            {
+                "type": "tool_search_output", "call_id": "search", "status": "completed",
+                "execution": "client", "tools": [definition, {
+                    "type": "namespace", "name": "outer", "tools": [{
+                        "type": "namespace", "name": "inner", "tools": [definition]
+                    }]
+                }]
+            }
+        ]))
+        .unwrap();
+
+        for param in [
+            "input[1].tools[0].parameters",
+            "input[1].tools[0].parameters.required",
+            "input[1].tools[1].tools[0].tools[0].parameters.properties.limit",
+        ] {
+            let detail = json!({
+                "code": "invalid_function_parameters", "param": param,
+                "message": "Invalid lookup schema."
+            });
+            for event in [
+                json!({ "type": "error", "error": detail }),
+                json!({ "type": "response.failed", "response": { "error": detail } }),
+                json!({
+                    "type": "error", "code": "invalid_function_parameters",
+                    "param": param, "message": "Invalid lookup schema."
+                }),
+            ] {
+                for error in [
+                    ResponsesError::Api {
+                        event: event.to_string(),
+                    },
+                    ResponsesError::HttpRejected {
+                        status: 400,
+                        body: event.to_string(),
+                        retry_after: None,
+                    },
+                ] {
+                    let original = error.to_string();
+                    let error = error.with_request_input(input.iter());
+                    assert_eq!(error.invalid_tool_schema(), Some(&definition), "{param}");
+                    assert_eq!(error.to_string(), original);
+                    assert_eq!(error.class(), "invalid_tool_schema");
+                    assert!(error.retry_advice().is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_tool_schema_leaves_unrelated_or_ambiguous_failures_unchanged() {
+        let input: Vec<crate::ResponseItem> = serde_json::from_value(json!([
+            { "type": "message", "role": "user", "content": [] },
+            {
+                "type": "tool_search_output", "call_id": "search", "status": "completed",
+                "execution": "client", "tools": [
+                    { "type": "function", "name": "lookup", "parameters": {} },
+                    { "type": "namespace", "name": "empty", "tools": [] },
+                    { "type": "custom", "name": "edit" }
+                ]
+            }
+        ]))
+        .unwrap();
+        for param in [
+            "tools[0].parameters",
+            "input[0].tools[0].parameters",
+            "input[9].tools[0].parameters",
+            "input[1].tools[9].parameters",
+            "input[1].tools[1].parameters",
+            "input[1].tools[2].parameters",
+            "input[1].tools[0].tools[0].parameters",
+            "input[1].tools[0].name",
+            "input[1].tools[0].parameters_extra",
+            "input[-1].tools[0].parameters",
+            "input[+1].tools[0].parameters",
+            "input[9999999999999999999999999].tools[0].parameters",
+            "input[1].tools[].parameters",
+            "input[1].parameters",
+            "",
+        ] {
+            let error = ResponsesError::Api {
+                event: json!({ "error": {
+                    "code": "invalid_function_parameters", "param": param
+                }})
+                .to_string(),
+            }
+            .with_request_input(input.iter());
+            assert!(matches!(error, ResponsesError::Api { .. }), "{param}");
+        }
+        for event in [
+            json!({ "error": {
+                "code": "invalid_function_parameters", "param": null,
+                "message": "input[1].tools[0].parameters"
+            }}),
+            json!({ "error": {
+                "code": "invalid_request_error", "param": "input[1].tools[0].parameters",
+                "message": "invalid_function_parameters"
+            }}),
+            json!({ "code": "invalid_function_parameters", "error": {
+                "code": "invalid_request_error", "param": "input[1].tools[0].parameters"
+            }}),
+        ] {
+            let error = ResponsesError::Api {
+                event: event.to_string(),
+            }
+            .with_request_input(input.iter());
+            assert!(matches!(error, ResponsesError::Api { .. }));
+        }
+        let error = ResponsesError::HttpRejected {
+            status: 500,
+            body: json!({ "error": {
+                "code": "invalid_function_parameters", "param": "input[1].tools[0].parameters"
+            }})
+            .to_string(),
+            retry_after: None,
+        }
+        .with_request_input(input.iter());
+        assert!(matches!(
+            error,
+            ResponsesError::HttpRejected { status: 500, .. }
+        ));
+    }
 
     #[test]
     fn handshake_rejection_retains_provider_retry_delay() {

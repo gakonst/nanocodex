@@ -15,6 +15,8 @@ pub struct RequestProfile {
     prompt_cache_key: String,
     prefix: Arc<[ResponseItem]>,
     code_mode_tool_names: Arc<BTreeMap<String, CodeModeToolName>>,
+    tool_namespaces_info: Arc<BTreeMap<String, serde_json::Value>>,
+    logical_turn: u64,
     retained_config: Option<RetainedRequestConfig>,
 }
 
@@ -34,14 +36,18 @@ impl RequestProfile {
         prefix: Arc<[ResponseItem]>,
     ) -> Self {
         let session_id = session_id.into();
-        Self {
+        let mut profile = Self {
             thread_id: session_id.clone(),
             session_id,
             prompt_cache_key: prompt_cache_key.into(),
             prefix,
             code_mode_tool_names: Arc::default(),
+            tool_namespaces_info: Arc::default(),
+            logical_turn: 0,
             retained_config: None,
-        }
+        };
+        profile.tool_namespaces_info = Arc::new(tool_namespaces_info(&profile));
+        profile
     }
 
     /// Returns the client-owned session identity used in request metadata.
@@ -60,6 +66,11 @@ impl RequestProfile {
     #[must_use]
     pub fn with_thread_id(mut self, thread_id: impl Into<String>) -> Self {
         self.thread_id = thread_id.into();
+        self
+    }
+
+    pub(crate) const fn with_logical_turn(mut self, logical_turn: u64) -> Self {
+        self.logical_turn = logical_turn;
         self
     }
 
@@ -92,6 +103,7 @@ impl RequestProfile {
     ) -> Self {
         self.prompt_cache_key = prompt_cache_key;
         self.prefix = prefix;
+        self.tool_namespaces_info = Arc::new(tool_namespaces_info(&self));
         self.retained_config = Some(RetainedRequestConfig {
             model_id_prefix,
             reasoning_mode,
@@ -110,6 +122,7 @@ impl RequestProfile {
                 .map(|(identifier, name)| (identifier, CodeModeToolName::from_flat_name(name)))
                 .collect(),
         );
+        self.tool_namespaces_info = Arc::new(tool_namespaces_info(&self));
         self
     }
 }
@@ -128,6 +141,12 @@ impl CodeModeToolName {
             return Self {
                 name: tool.into(),
                 namespace: Some(format!("mcp__{server}").into()),
+            };
+        }
+        if let Some((namespace, tool)) = name.split_once("__") {
+            return Self {
+                name: tool.into(),
+                namespace: Some(namespace.into()),
             };
         }
         Self {
@@ -666,7 +685,7 @@ impl<'a> ResponseCreate<'a> {
                     .then(|| reasoning_mode.request_value())
                     .flatten(),
                 effort: policy.thinking.as_str(),
-                summary: (policy.model != crate::Model::Astra).then_some("auto"),
+                summary: None,
                 context: "all_turns",
             },
             store: store_responses,
@@ -689,9 +708,14 @@ impl<'a> ResponseCreate<'a> {
                 thread_id: profile.thread_id(),
                 responses_lite: websocket.then_some("true"),
                 turn_state: websocket.then_some(turn_state).flatten(),
-                turn_metadata: (!profile.code_mode_tool_names.is_empty()).then_some(
-                    SerializedCodeModeTurnMetadata(&profile.code_mode_tool_names),
-                ),
+                turn_metadata: Some(SerializedTurnMetadata {
+                    profile,
+                    request_kind: if generate == Some(false) {
+                        "prewarm"
+                    } else {
+                        "turn"
+                    },
+                }),
             },
         }
     }
@@ -748,28 +772,127 @@ struct ClientMetadata<'a> {
     turn_state: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x-codex-turn-metadata")]
-    turn_metadata: Option<SerializedCodeModeTurnMetadata<'a>>,
+    turn_metadata: Option<SerializedTurnMetadata<'a>>,
 }
 
 #[derive(Clone, Copy)]
-struct SerializedCodeModeTurnMetadata<'a>(&'a BTreeMap<String, CodeModeToolName>);
+struct SerializedTurnMetadata<'a> {
+    profile: &'a RequestProfile,
+    request_kind: &'static str,
+}
 
-impl Serialize for SerializedCodeModeTurnMetadata<'_> {
+impl Serialize for SerializedTurnMetadata<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         #[derive(Serialize)]
         struct TurnMetadata<'a> {
-            code_mode_tool_names: &'a BTreeMap<String, CodeModeToolName>,
+            session_id: &'a str,
+            thread_id: &'a str,
+            turn_id: String,
+            request_kind: &'static str,
+            tool_namespaces_info: &'a BTreeMap<String, serde_json::Value>,
         }
 
+        let profile = self.profile;
         let value = serde_json::to_string(&TurnMetadata {
-            code_mode_tool_names: self.0,
+            session_id: profile.session_id(),
+            thread_id: profile.thread_id(),
+            turn_id: format!("{}:{}", profile.thread_id(), profile.logical_turn),
+            request_kind: self.request_kind,
+            tool_namespaces_info: &profile.tool_namespaces_info,
         })
         .map_err(serde::ser::Error::custom)?;
         serializer.serialize_str(&value)
     }
+}
+
+// Codex replaced the legacy flat inventory with effective namespace exposure.
+// Construct it from the same immutable catalog and normalized Code Mode map
+// used by dispatch, so metadata cannot advertise a different tool surface.
+fn tool_namespaces_info(profile: &RequestProfile) -> BTreeMap<String, serde_json::Value> {
+    use super::ToolDefinition;
+    use serde_json::json;
+    fn insert(
+        result: &mut BTreeMap<String, serde_json::Value>,
+        namespace: &str,
+        name: &str,
+        direct: bool,
+        code_name: Option<&str>,
+        deferred: bool,
+    ) {
+        let source = namespace.strip_prefix("mcp__").map_or_else(
+            || json!({"kind":"harness"}),
+            |server| json!({"kind":"mcp", "server_name":server}),
+        );
+        let entry = result
+            .entry(namespace.to_owned())
+            .or_insert_with(|| json!({"name":namespace,"functions":{}}));
+        let function = &mut entry["functions"][name];
+        if function.is_null() {
+            *function = json!({"name":name,"direct":direct,"code_mode_name":code_name,"deferred":deferred,"source":source});
+        } else {
+            if direct {
+                function["direct"] = json!(true);
+            }
+            if let Some(code_name) = code_name {
+                function["code_mode_name"] = json!(code_name);
+            }
+        }
+    }
+    fn direct(
+        result: &mut BTreeMap<String, serde_json::Value>,
+        namespace: &str,
+        definition: &ToolDefinition,
+    ) {
+        match definition {
+            ToolDefinition::Namespace { name, tools, .. } => {
+                for tool in tools {
+                    direct(result, name, tool);
+                }
+            }
+            ToolDefinition::Function {
+                name,
+                defer_loading,
+                ..
+            }
+            | ToolDefinition::Custom {
+                name,
+                defer_loading,
+                ..
+            } => insert(
+                result,
+                namespace,
+                name,
+                true,
+                None,
+                defer_loading.unwrap_or(false),
+            ),
+            ToolDefinition::ToolSearch { .. } => {
+                insert(result, "tool_search", "tool_search_tool", true, None, false)
+            }
+        }
+    }
+    let mut result = BTreeMap::new();
+    for item in profile.prefix() {
+        if let ResponseItem::AdditionalTools { tools, .. } = item {
+            for tool in tools {
+                direct(&mut result, "functions", tool);
+            }
+        }
+    }
+    for (identifier, tool) in profile.code_mode_tool_names.iter() {
+        insert(
+            &mut result,
+            tool.namespace.as_deref().unwrap_or("functions"),
+            &tool.name,
+            false,
+            Some(identifier),
+            false,
+        );
+    }
+    result
 }
 
 #[cfg(test)]
@@ -805,7 +928,7 @@ mod tests {
         assert_eq!(request["parallel_tool_calls"], false);
         assert!(request.get("tools").is_none());
         assert!(request.get("instructions").is_none());
-        assert_eq!(request["reasoning"]["summary"], json!("auto"));
+        assert!(request["reasoning"].get("summary").is_none());
         assert!(request["reasoning"].get("mode").is_none());
         assert!(request.get("context_management").is_none());
     }
@@ -840,13 +963,15 @@ mod tests {
             .expect("turn metadata should be encoded as JSON");
 
         assert_eq!(
-            metadata["code_mode_tool_names"]["exec_command"],
-            json!({"name": "exec_command", "namespace": null})
+            metadata["tool_namespaces_info"]["functions"]["functions"]["exec_command"],
+            json!({"name": "exec_command", "direct": false, "code_mode_name": "exec_command", "deferred": false, "source": {"kind":"harness"}})
         );
         assert_eq!(
-            metadata["code_mode_tool_names"]["mcp__calendar__lookup"],
-            json!({"name": "lookup", "namespace": "mcp__calendar"})
+            metadata["tool_namespaces_info"]["mcp__calendar"]["functions"]["lookup"],
+            json!({"name": "lookup", "direct": false, "code_mode_name": "mcp__calendar__lookup", "deferred": false, "source": {"kind":"mcp", "server_name":"calendar"}})
         );
+        assert!(metadata.get("code_mode_tool_names").is_none());
+        assert_eq!(metadata["request_kind"], "prewarm");
         assert!(
             request["client_metadata"]
                 .get("ws_request_header_x_openai_internal_codex_responses_lite")
@@ -931,11 +1056,6 @@ mod tests {
             Some("server-item-id"),
             "outbound preparation must not mutate authoritative history"
         );
-    }
-
-    #[test]
-    fn thinking_defaults_to_high() {
-        assert_eq!(ModelConfig::default().thinking, Thinking::High);
     }
 
     #[test]

@@ -35,8 +35,8 @@ impl Nanocodex {
         api_key = None,
         *,
         auth_file = None,
-        model = "gpt-5.6-sol",
-        thinking = "high",
+        model = "gpt-6-astra",
+        thinking = None,
         reasoning_mode = "standard",
         fast_mode = false,
         workspace = None,
@@ -56,7 +56,7 @@ impl Nanocodex {
         api_key: Option<String>,
         auth_file: Option<String>,
         model: &str,
-        thinking: &str,
+        thinking: Option<&str>,
         reasoning_mode: &str,
         fast_mode: bool,
         workspace: Option<String>,
@@ -69,7 +69,7 @@ impl Nanocodex {
     ) -> PyResult<(Self, AgentEvents)> {
         let auth = parse_auth(api_key, auth_file)?;
         let model = parse_model(model)?;
-        let thinking = parse_thinking(thinking)?;
+        let thinking = thinking.map(parse_thinking).transpose()?;
         let reasoning_mode = parse_reasoning_mode(reasoning_mode)?;
         let session_id = session_id
             .map(|session_id| session_id.parse::<SessionId>())
@@ -78,10 +78,12 @@ impl Nanocodex {
         let resume = resume.map(|snapshot| snapshot.borrow(py).inner().clone());
         let mut openai = OpenAi::builder(auth)
             .model(model)
-            .thinking(thinking)
             .reasoning_mode(reasoning_mode)
             .fast_mode(fast_mode)
             .http_client(shared_http_client());
+        if let Some(thinking) = thinking {
+            openai = openai.thinking(thinking);
+        }
         if let Some(websocket_url) = websocket_url {
             openai = openai.websocket_url(websocket_url);
         }

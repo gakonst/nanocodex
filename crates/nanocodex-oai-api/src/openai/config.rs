@@ -30,6 +30,9 @@ pub struct ModelConfig {
     pub reasoning_mode: ReasoningMode,
     /// Requested reasoning effort.
     pub thinking: Thinking,
+    /// Whether an embedding selected an effort instead of model defaults.
+    #[doc(hidden)]
+    pub thinking_explicit: bool,
     /// Whether requests use priority processing.
     pub fast_mode: bool,
     /// Resolved context window used for accounting and automatic compaction.
@@ -100,6 +103,7 @@ impl Default for ModelConfig {
             auth: OpenAiAuth::api_key(String::new()),
             reasoning_mode: ReasoningMode::default(),
             thinking: Thinking::default(),
+            thinking_explicit: false,
             fast_mode: false,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
             responses_transport: ResponsesTransport::default(),

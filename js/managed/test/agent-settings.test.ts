@@ -12,8 +12,8 @@ import {
 describe("managed agent settings", () => {
   it("uses the canonical durable defaults", () => {
     expect(parseAgentSettingsQuery(new URLSearchParams())).toEqual({
-      model: "gpt-5.6-sol",
-      thinking: "high",
+      model: "gpt-6-astra",
+      thinking: "low",
       reasoning_mode: "standard",
       fast_mode: false,
     });

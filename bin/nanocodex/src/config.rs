@@ -287,7 +287,9 @@ impl AgentArgs {
     }
 
     pub(crate) fn thinking(&self) -> Thinking {
-        self.model_policy.thinking.unwrap_or_default()
+        self.model_policy
+            .thinking
+            .unwrap_or_else(|| self.model.unwrap_or_default().default_thinking())
     }
 
     pub(crate) fn web_search(&self) -> bool {
@@ -698,7 +700,7 @@ fn direct_websocket_url(explicit: Option<String>, auth_mode: OpenAiAuthMode) -> 
 const fn connected_account_default_model(auth_mode: OpenAiAuthMode) -> Model {
     match auth_mode {
         OpenAiAuthMode::ChatGpt => Model::Astra,
-        OpenAiAuthMode::ApiKey => Model::Sol,
+        OpenAiAuthMode::ApiKey => Model::Astra,
     }
 }
 
@@ -848,14 +850,14 @@ mod tests {
     use nanocodex::{Model, oai::auth::OpenAiAuthMode};
 
     #[test]
-    fn default_model_follows_the_selected_auth_mode() {
+    fn default_model_is_astra_for_every_auth_mode() {
         assert_eq!(
             connected_account_default_model(OpenAiAuthMode::ChatGpt),
             Model::Astra
         );
         assert_eq!(
             connected_account_default_model(OpenAiAuthMode::ApiKey),
-            Model::Sol
+            Model::Astra
         );
     }
 

@@ -10,9 +10,35 @@ const STATE_FORMAT: u8 = 2;
 /// The wrapper preserves the original JSON representation. Consumers recover
 /// concrete Rust types with [`Self::decode`]; hosts treat the containing state
 /// as opaque bytes.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 #[serde(transparent)]
 pub struct EncodedPayload(Arc<str>);
+
+impl<'de> serde::Deserialize<'de> for EncodedPayload {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct PayloadVisitor;
+        impl serde::de::Visitor<'_> for PayloadVisitor {
+            type Value = EncodedPayload;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("retained JSON text")
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                // A streaming JSON decoder already owns its unescape buffer.
+                // Copy straight into the shared allocation instead of first
+                // materializing another full String/Box<str> for Arc's visitor.
+                Ok(EncodedPayload(Arc::from(value)))
+            }
+        }
+        deserializer.deserialize_str(PayloadVisitor)
+    }
+}
 
 impl EncodedPayload {
     pub(crate) fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Self> {
@@ -430,12 +456,28 @@ impl DurableState {
                 )));
             }
         }
+        // Live transitions share the latest checkpoint with their terminal
+        // receipt. Deserialization loses that Arc sharing; restore it before
+        // constructing the agent so a cold reopen does not retain a second
+        // full conversation. Standalone checkpoints can differ and stay intact.
+        let latest_checkpoint = checkpoint.latest_checkpoint.map(|latest| {
+            let shared = checkpoint.operations.values().rev().find_map(|operation| {
+                let candidate = match &operation.status {
+                    OperationStatus::Completed { checkpoint, .. }
+                    | OperationStatus::Failed { checkpoint, .. }
+                    | OperationStatus::Cancelled {
+                        checkpoint: Some(checkpoint),
+                    } => checkpoint,
+                    _ => return None,
+                };
+                (candidate == &latest).then(|| candidate.clone())
+            });
+            (revision, shared.unwrap_or(latest))
+        });
         let state = Self {
             revision,
             operations: checkpoint.operations,
-            latest_checkpoint: checkpoint
-                .latest_checkpoint
-                .map(|checkpoint| (revision, checkpoint)),
+            latest_checkpoint,
         };
         for (operation_id, operation) in &state.operations {
             if matches!(

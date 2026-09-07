@@ -173,6 +173,13 @@ impl ToolRegistry {
         input: Value,
         context: ToolContext<'_>,
     ) -> ToolOutput {
+        if self
+            .by_name
+            .get(name)
+            .is_some_and(|index| !self.exposures[*index].is_available_in_code_mode())
+        {
+            return ToolOutput::error(format!("unsupported nested tool call: {name}"));
+        }
         let Some((handler, definition)) = self.get(name) else {
             let Some(provider) = self.providers.iter().find(|provider| {
                 provider

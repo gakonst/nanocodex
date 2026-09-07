@@ -2,7 +2,7 @@
 
 mod embedded;
 mod output;
-mod spec;
+use crate::code_mode_spec as spec;
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -25,7 +25,6 @@ use tokio::{
 use tracing::{Instrument, info_span};
 
 use super::{ToolContext, ToolOutputBody, ToolOutputContent};
-use crate::code_mode_description as description;
 pub use crate::embedded::{
     CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate, NestedToolCall,
 };

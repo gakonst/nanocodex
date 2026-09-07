@@ -157,7 +157,7 @@
     "check:package": "node scripts/check-package.mjs",
     "prepack": "npm run check:package",
     "test": "node --test test/*.test.mjs && npm run test:performance && npm run test:typecheck && npm run check:package",
-    "test:performance": "node --test test/performance.bench.mjs",
+    "test:performance": "node --expose-gc --test test/performance.bench.mjs",
     "bench:dataset": "node scripts/dataset.bench.mjs",
     "test:typecheck": "tsc -p test/tsconfig.json"
   },

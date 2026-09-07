@@ -15,7 +15,7 @@ const MANAGED_HISTORY_RETRY_INITIAL_MS = 1_000;
 const MANAGED_HISTORY_RETRY_MAX_MS = 30_000;
 const DEFAULT_MANAGED_CREATE_SETTINGS: ManagedCreateSettings = Object.freeze({
   model: "gpt-6-astra",
-  thinking: "high",
+  thinking: "low",
   reasoningMode: "standard",
   fastMode: false,
 });

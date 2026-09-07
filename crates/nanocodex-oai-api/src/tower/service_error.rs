@@ -91,6 +91,17 @@ impl ResponsesServiceError {
         self
     }
 
+    pub(crate) fn with_request_input(self, request: &crate::ResponsesAttempt) -> Self {
+        match self.source {
+            ResponsesServiceErrorSource::Responses(source) => Self::responses(
+                source.with_request_input(request.input_items()),
+                self.phase,
+                self.connection_generation,
+            ),
+            _ => self,
+        }
+    }
+
     /// Returns a stable low-cardinality error class.
     #[must_use]
     pub const fn error_class(&self) -> &'static str {
@@ -157,9 +168,9 @@ impl From<ResponsesError> for ResponsesServiceError {
             ResponsesError::HttpRequest { .. } | ResponsesError::InvalidSseUtf8 { .. } => {
                 FailurePhase::Receive
             }
-            ResponsesError::Api { .. } | ResponsesError::ContextWindowExceeded { .. } => {
-                FailurePhase::Api
-            }
+            ResponsesError::Api { .. }
+            | ResponsesError::ContextWindowExceeded { .. }
+            | ResponsesError::InvalidToolSchema { .. } => FailurePhase::Api,
             ResponsesError::HttpRejected { .. } => FailurePhase::Api,
             ResponsesError::HostUnavailable
             | ResponsesError::HandshakeTimeout { .. }

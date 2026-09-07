@@ -50,8 +50,20 @@ async function evaluate(quickJs, source, environment, options) {
       const payload = JSON.parse(vm.getString(payloadHandle));
       if (kind === "text") environment.text(payload);
       else if (kind === "image") environment.image(payload.value, payload.detail);
+      else if (kind === "audio") environment.audio(payload);
+      else if (kind === "notify") environment.notify(payload);
+      else if (kind === "yield_control") environment.yield_control();
       else if (kind === "generatedImage") environment.generatedImage(payload);
       else throw new Error(`unknown Code Mode output kind: ${kind}`);
+    });
+    expose(vm, "__nanocodex_sleep", (delayHandle) => {
+      const deferred = vm.newPromise();
+      environment.setTimeout(() => {
+        if (closed) return;
+        deferred.resolve();
+        runtime.executePendingJobs().unwrap();
+      }, vm.getNumber(delayHandle));
+      return deferred.handle;
     });
     expose(vm, "__nanocodex_store", (keyHandle, valueHandle) => {
       const key = vm.getString(keyHandle);
@@ -166,8 +178,24 @@ const tools = Object.freeze(Object.fromEntries(
 ));
 const ALL_TOOLS = Object.freeze(${JSON.stringify(toolDefinitions)});
 const text = (value) => __nanocodex_emit("text", JSON.stringify(__nanocodex_stringify(value)));
-const image = (value, detail = "auto") =>
+const image = (value, detail) =>
   __nanocodex_emit("image", JSON.stringify({ value, detail }));
+const audio = (value) => __nanocodex_emit("audio", JSON.stringify(value));
+const notify = (value) => __nanocodex_emit("notify", JSON.stringify(__nanocodex_stringify(value)));
+const yield_control = () => __nanocodex_emit("yield_control", "null");
+const __nanocodex_timers = new Map();
+let __nanocodex_next_timer = 1;
+const setTimeout = (callback, delay = 0) => {
+  const id = __nanocodex_next_timer++;
+  __nanocodex_timers.set(id, callback);
+  __nanocodex_sleep(Number(delay) || 0).then(() => {
+    const callback = __nanocodex_timers.get(id);
+    __nanocodex_timers.delete(id);
+    callback?.();
+  });
+  return id;
+};
+const clearTimeout = (id) => __nanocodex_timers.delete(id);
 const generatedImage = (value) =>
   __nanocodex_emit("generatedImage", JSON.stringify(value));
 const store = (key, value) => {

@@ -65,7 +65,7 @@ class Nanocodex:
         *,
         auth_file: str | None = ...,
         model: str = ...,
-        thinking: str = ...,
+        thinking: str | None = ...,
         reasoning_mode: str = ...,
         fast_mode: bool = ...,
         workspace: str | None = ...,

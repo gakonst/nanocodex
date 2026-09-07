@@ -219,6 +219,49 @@ describe("cwd-root namespace execution", () => {
     )).rejects.toThrow("unknown or stale");
   });
 
+  it("lets agents resume hosted processes using the session ID in model-visible output", async () => {
+    const metadata = { machine_id: "laptop", machine_name: "My Mac" };
+    const hostedResult = (result: Record<string, unknown>) => Object.freeze({
+      [Symbol.for("nanocodex.toolResult")]: true,
+      metadata,
+      output: JSON.stringify(result),
+      structuredResult: result,
+      value: result,
+      success: true,
+    });
+    const writeStdin = vi.fn()
+      .mockResolvedValueOnce(hostedResult({ output: "still running", wall_time_seconds: 0, session_id: 7 }))
+      .mockResolvedValueOnce(hostedResult({ output: "done", wall_time_seconds: 0, exit_code: 0 }));
+    const tools = createRuntimeNamespaceExecutionTools(
+      () => [{ id: "laptop", workspace: "/Users/me" }],
+      (_id, name) => name === "exec_command"
+        ? { handler: async () => hostedResult({ output: "ready", wall_time_seconds: 0, session_id: 7 }) }
+        : name === "write_stdin" ? { handler: writeStdin } : undefined,
+    );
+    const router = new ToolRouter([toolMapSource("namespace", tools)]);
+    const started = await router.execute("exec_command", { cmd: "long", workdir: "/laptop" }, context());
+    const visible = JSON.parse(started.output);
+    expect(visible).toEqual(started.structuredResult);
+    expect(visible).toEqual(started.value);
+    expect(visible.session_id).not.toBe(7);
+    expect(started.metadata).toEqual(metadata);
+    expect(started.success).toBe(true);
+
+    const polled = await router.execute("write_stdin", { session_id: visible.session_id }, context({ callId: "poll" }));
+    const polledVisible = JSON.parse(polled.output);
+    expect(polledVisible).toEqual(polled.structuredResult);
+    expect(polledVisible).toEqual(polled.value);
+    expect(polledVisible.session_id).toBe(visible.session_id);
+    expect(polled.metadata).toEqual(metadata);
+    expect(writeStdin).toHaveBeenLastCalledWith({ session_id: 7 }, expect.anything());
+
+    const completed = await router.execute("write_stdin", { session_id: polledVisible.session_id }, context({ callId: "finish" }));
+    expect(JSON.parse(completed.output)).toEqual({ output: "done", wall_time_seconds: 0, exit_code: 0 });
+    expect(completed.structuredResult).toEqual(JSON.parse(completed.output));
+    await expect(router.execute("write_stdin", { session_id: visible.session_id }, context({ callId: "stale" })))
+      .rejects.toThrow("unknown or stale");
+  });
+
   it("accepts many simultaneously retained process bindings", async () => {
     let providerSessionId = 0;
     const exec = vi.fn(async () => ({

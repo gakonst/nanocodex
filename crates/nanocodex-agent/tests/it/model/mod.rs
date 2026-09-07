@@ -130,17 +130,23 @@ fn assert_warmup_with_store(warmup: &Value, store: bool) {
         .and_then(|metadata| serde_json::from_str::<Value>(metadata).ok())
         .expect("Responses Lite requests include typed Code Mode tool metadata");
     assert_eq!(
-        turn_metadata["code_mode_tool_names"]["view_image"],
+        turn_metadata["tool_namespaces_info"]["functions"]["functions"]["view_image"],
         json!({
             "name": "view_image",
-            "namespace": null,
+            "direct": false,
+            "code_mode_name": "view_image",
+            "deferred": false,
+            "source": { "kind": "harness" },
         })
     );
     assert_eq!(
-        turn_metadata["code_mode_tool_names"]["exec_command"],
+        turn_metadata["tool_namespaces_info"]["functions"]["functions"]["exec_command"],
         json!({
             "name": "exec_command",
-            "namespace": null,
+            "direct": false,
+            "code_mode_name": "exec_command",
+            "deferred": false,
+            "source": { "kind": "harness" },
         })
     );
 }
