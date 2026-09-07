@@ -18,6 +18,7 @@ const TITLE_OVERRIDES: Readonly<Record<string, string>> = {
   requestAccountConnection: "Connect account",
   exec: "Run code",
   exec_command: "Run command",
+  write_stdin: "Command progress",
   sandbox_exec: "Run command",
   sandbox_get_process: "Check process",
   sandbox_kill_process: "Stop process",
@@ -43,7 +44,7 @@ export function presentTool(tool: ToolActivity): ToolPresentation {
     ...(source ? { source } : {}),
     ...(subject ? { subject } : {}),
     ...(outputSummary ? { outputSummary } : {}),
-    ...(tool.durationNs === undefined ? {} : { duration: formatDuration(tool.durationNs) }),
+    ...(tool.durationNs === undefined || tool.status === "running" ? {} : { duration: formatDuration(tool.durationNs) }),
     ...(previewUrl ? { previewUrl } : {}),
     ...executionDetails,
   };
@@ -54,21 +55,21 @@ function semanticExecutionDetails(
   input: unknown,
   output: unknown,
 ): Pick<ToolPresentation, "inputDetail" | "outputDetails"> | undefined {
-  if (family !== "sandbox_exec" && family !== "sandbox_get_process" && family !== "exec_command") return undefined;
+  if (family !== "sandbox_exec" && family !== "sandbox_get_process" && family !== "exec_command" && family !== "write_stdin") return undefined;
   const commandKey = family === "exec_command" ? "cmd" : "command";
   const command = family === "sandbox_get_process"
     ? isRecord(output) ? stringField(output, "command") : undefined
     : isRecord(input) ? stringField(input, commandKey) : undefined;
   const outputRecord = isRecord(output) ? output : undefined;
   const stdout = outputRecord
-    ? stringField(outputRecord, family === "exec_command" ? "output" : "stdout")
+    ? stringField(outputRecord, family === "exec_command" || family === "write_stdin" ? "output" : "stdout")
     : undefined;
   const stderr = outputRecord ? stringField(outputRecord, "stderr") : undefined;
   return {
     ...(command ? { inputDetail: { label: "Command", value: command } } : {}),
     ...(stdout === undefined && stderr === undefined ? {} : {
       outputDetails: [
-        ...(stdout === undefined ? [] : [{ label: family === "exec_command" ? "Output" : "Stdout", value: stdout || "(empty)" }]),
+        ...(stdout === undefined ? [] : [{ label: family === "exec_command" || family === "write_stdin" ? "Output" : "Stdout", value: stdout || "(empty)" }]),
         ...(stderr === undefined ? [] : [{ label: "Stderr", value: stderr || "(empty)" }]),
       ],
     }),

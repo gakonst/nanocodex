@@ -3,11 +3,26 @@ import test from "node:test";
 import {
   listManagedConversations,
   loadManagedConversationSelection,
+  terminalEvent,
 } from "./managedAgentRuntime.ts";
 
 const FIRST_AGENT_ID = "018f0000-0000-7000-8000-000000000001";
 const SECOND_AGENT_ID = "018f0000-0000-7000-8000-000000000002";
 const FORBIDDEN_AGENT_ID = "018f0000-0000-7000-8000-000000000003";
+
+test("terminal projection preserves the persisted event time for command elapsed duration", () => {
+  const projected = terminalEvent({
+    cursor: "26", createdAt: 1788766853390, turnId: "cargo-turn", type: "event",
+    data: {
+      type: "event", cursor: "26", created_at: 1788766853390, turn_id: "cargo-turn",
+      event: { protocol_version: 1, request_id: "internal", seq: 1, type: "tool.call",
+        payload: { call_id: "cargo", tool: "exec_command", arguments: { cmd: "cargo test" } } },
+    },
+  }, "public-session", undefined, 26);
+  assert.equal(projected?.payload.managed_event_created_at, 1788766853390);
+  assert.equal(projected?.payload.managed_event_cursor, "26");
+  assert.equal(projected?.payload.turn_id, "cargo-turn");
+});
 
 test("an exact agent route survives a successful list cached before another client created it", async (t) => {
   const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");

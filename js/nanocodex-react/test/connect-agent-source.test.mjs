@@ -100,6 +100,7 @@ test("history-disabled Connect sources tail latest and expose only source-submit
   ]);
   assert.equal(events.some(({ payload }) => String(payload.text).includes("peer")), false);
   assert.equal(events.every(({ request_id }) => request_id === source.sessionId), true);
+  assert.equal(events.find(({ type }) => type === "assistant.message").payload.managed_event_created_at, 4);
   assert.equal(new Set(events.map(({ seq }) => seq)).size, events.length);
 
   watcher.off();

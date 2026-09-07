@@ -194,7 +194,10 @@ function createController(agent, options) {
           projectedHistoryEntryKeys,
         );
         projectedHistoryEntryKeys = historicalKeys;
-        state = boundedState({ ...state, entries }, options.maxEntries);
+        state = boundedState({
+          ...state, entries,
+          terminalPolls: { ...historical.terminalPolls, ...state.terminalPolls },
+        }, options.maxEntries);
         publish();
       }));
     }

@@ -13,6 +13,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
     public var status: String
     public var input: [ToolField]
     public var output: [ToolField] = []
+    private var terminalCommand: Bool?
 
     public init(name: String, arguments: JSON, metadata: JSON = .null) {
         var family = metadata["tool_name"].string
@@ -20,8 +21,10 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         if family.isEmpty { family = name.hasPrefix("user_") ? "machine_action" : name }
         if family.hasPrefix("mcp__") { family = family.components(separatedBy: "__").dropFirst(2).joined(separator: "_") }
         if family.hasPrefix("functions.") { family = String(family.dropFirst(10)) }
+        terminalCommand = ["exec_command", "write_stdin"].contains(family)
         let names = [
             "exec": "Run code", "exec_command": "Run command", "sandbox_exec": "Run command",
+            "write_stdin": "Command progress",
             "read_file": "Read file", "write_file": "Write file", "apply_patch": "Edit files",
             "search_query": "Search the web", "web_search": "Search the web", "search": "Search",
             "browser_navigate": "Open page", "browser_execute": "Use browser", "browser_screenshot": "Capture page",
@@ -41,17 +44,27 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         status = "Running"
     }
 
-    public mutating func finish(_ value: JSON, failed: Bool = false, state: String = "", metadata: JSON = .null) {
+    public mutating func finish(_ value: JSON, failed: Bool = false, state: String = "", metadata: JSON = .null, elapsedSeconds: Double? = nil) {
         let result = Self.decoded(value)
         let exitFailed: Bool
         if case .number(let code) = result["exit_code"] { exitFailed = code != 0 } else { exitFailed = false }
         let hasError = result["error"] != .null && result["error"] != .bool(false) && result["error"] != .string("")
         let isFailure = failed || state == "failed" || exitFailed || hasError || result["isError"].bool || result["is_error"].bool
-        status = state == "cancelled" ? "Stopped" : isFailure ? "Failed" : "Completed"
+        let processRunning = terminalCommand == true && result["session_id"] != .null && result["exit_code"] == .null
+        status = state == "cancelled" ? "Stopped" : isFailure ? "Failed" : processRunning ? "Running" : "Completed"
         if !metadata["tool_name"].string.isEmpty || !metadata["toolName"].string.isEmpty {
             title = ToolPresentation(name: "", arguments: .null, metadata: metadata).title
         }
-        output = Self.fields(result, label: "Result")
+        var displayedResult = result
+        if terminalCommand == true, case .object(var fields) = result {
+            // This is only the latest poll's wait, not the command's elapsed time.
+            fields.removeValue(forKey: "wall_time_seconds")
+            if !processRunning, let elapsedSeconds, elapsedSeconds.isFinite, elapsedSeconds >= 0 {
+                fields["elapsed_seconds"] = .number(elapsedSeconds)
+            }
+            displayedResult = .object(fields)
+        }
+        output = Self.fields(displayedResult, label: "Result")
         if output.isEmpty { output = [.init(label: "Result", value: isFailure ? "The action failed without an error message." : "No output returned.")] }
     }
 
@@ -95,7 +108,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
             }
             if kind == "text", let text = object["text"] { return fields(text, label: label) }
             let labels = ["cmd": "Command", "command": "Command", "stdout": "Output", "stderr": "Error output",
-                          "workdir": "Folder", "cwd": "Folder", "exit_code": "Exit code", "file_path": "File",
+                          "workdir": "Folder", "cwd": "Folder", "exit_code": "Exit code", "file_path": "File", "elapsed_seconds": "Elapsed (seconds)",
                           "is_error": "Failed", "isError": "Failed", "uri": "Location", "url": "Link"]
             return object.keys.sorted().flatMap { key -> [ToolField] in
                 let field = labels[key] ?? humanize(key)

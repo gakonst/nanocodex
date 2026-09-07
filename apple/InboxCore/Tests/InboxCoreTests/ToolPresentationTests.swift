@@ -2,6 +2,51 @@ import XCTest
 @testable import InboxCore
 
 final class ToolPresentationTests: XCTestCase {
+    func testCommandElapsedTimeIncludesExecutionBetweenPolls() throws {
+        func event(_ cursor: String, _ time: Double, _ type: String, _ payload: JSON) throws -> AgentEvent {
+            try AgentEvent(.object(["cursor": .string(cursor), "created_at": .number(time), "type": .string("event"), "turn_id": .string("t"), "event": .object(["type": .string(type), "payload": payload])]))
+        }
+        let events = try [
+            event("1", 1788766853390, "tool.call", .object(["call_id": .string("c"), "tool": .string("exec_command"), "arguments": .object(["cmd": .string("cargo test")])])),
+            event("2", 1788766854949, "tool.result", .object(["call_id": .string("c"), "tool": .string("exec_command"), "status": .string("completed"), "structured_result": .object(["session_id": .number(42), "output": .string("Compiling\n"), "wall_time_seconds": .number(1.216)])])),
+            event("3", 1788766963000, "tool.call", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "arguments": .object(["session_id": .number(42)])])),
+            event("4", 1788766965479, "tool.result", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "status": .string("completed"), "structured_result": .object(["exit_code": .number(0), "output": .string("13 tests passed"), "wall_time_seconds": .number(1.732)])])),
+        ]
+        let running = transcript(Array(events.prefix(2)))
+        XCTAssertEqual(running[0].tool?.status, "Running")
+        XCTAssertFalse(running[0].tool!.output.contains { $0.label == "Elapsed (seconds)" || $0.label == "Wall time seconds" })
+        let finished = transcript(events)
+        XCTAssertEqual(finished.count, 1)
+        XCTAssertEqual(finished[0].tool?.status, "Completed")
+        XCTAssertTrue(finished[0].tool!.output.contains { $0.label == "Elapsed (seconds)" && $0.value == "112.089" })
+        XCTAssertFalse(finished[0].tool!.output.contains { $0.label == "Wall time seconds" })
+    }
+
+    func testYieldedCommandsRetainProgressUntilTheirActualExit() throws {
+        func event(_ cursor: String, _ type: String, _ payload: JSON, turn: String = "t") throws -> AgentEvent {
+            try AgentEvent(.object(["cursor": .string(cursor), "type": .string("event"), "turn_id": .string(turn), "event": .object(["type": .string(type), "payload": payload])]))
+        }
+        let start = try [
+            event("1", "tool.call", .object(["call_id": .string("c"), "tool": .string("exec_command"), "arguments": .object(["cmd": .string("cargo test --workspace")])])),
+            event("2", "tool.result", .object(["call_id": .string("c"), "tool": .string("exec_command"), "status": .string("completed"), "structured_result": .object(["session_id": .number(42), "output": .string("Compiling first\n")])])),
+            event("3", "tool.call", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "arguments": .object(["session_id": .number(42)])]), turn: "next"),
+        ]
+        let running = transcript(start)
+        XCTAssertEqual(running.count, 1)
+        XCTAssertTrue(running[0].running)
+        XCTAssertEqual(running[0].tool?.status, "Running")
+        let pending = try event("4", "tool.result", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "status": .string("completed"), "structured_result": .object(["session_id": .number(42), "output": .string("Compiling second\n")])]), turn: "next")
+        XCTAssertEqual(transcript(start + [pending])[0].tool?.status, "Running")
+        for code in [0.0, 101.0] {
+            let finished = try event("4", "tool.result", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "status": .string("completed"), "structured_result": .object(["exit_code": .number(code), "output": .string("Final result\n")])]), turn: "next")
+            let rows = transcript(start + [finished])
+            XCTAssertEqual(rows.count, 1)
+            XCTAssertFalse(rows[0].running)
+            XCTAssertEqual(rows[0].tool?.status, code == 0 ? "Completed" : "Failed")
+            XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Output" && $0.value == "Compiling first\nFinal result\n" })
+        }
+    }
+
     func testCommandPreservesInputAndFormatsResult() {
         var tool = ToolPresentation(name: "exec_command", arguments: .string("{\"cmd\":\"swift test\",\"workdir\":\"apple\"}"))
         tool.finish(.string("{\"output\":\"14 tests passed\",\"exit_code\":0}"))

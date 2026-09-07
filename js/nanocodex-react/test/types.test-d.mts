@@ -145,6 +145,7 @@ const detailedTool: ToolActivity = {
   output: "{\"matches\":[1]}",
   status: "completed",
   durationNs: 1_000,
+  startedAtMs: 1_788_766_853_390,
   images: [],
   children: [],
 };

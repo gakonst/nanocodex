@@ -122,6 +122,14 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
 public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
     var rows: [TranscriptRow] = []
     var seen = Set<String>()
+    var terminalSessions: [String: Int] = [:]
+    var terminalPolls: [String: Int] = [:]
+    var toolStartedAt: [String: Double] = [:]
+    func elapsedSeconds(_ id: String, at value: JSON) -> Double? {
+        guard let start = toolStartedAt[id], case .number(let end) = value,
+              end.isFinite, end >= start else { return nil }
+        return (end - start) / 1_000
+    }
     for envelope in events where seen.insert(envelope.cursor.rawValue).inserted {
         let d = envelope.data, turn = envelope.turnID
         let prefix = turn + ":" + d["agent_id"].pretty
@@ -162,19 +170,44 @@ public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
                     rows[last].text = p["text"].string; rows[last].running = false
                 } else { rows.append(.init(id: id, role: "Agent", text: p["text"].string)) }
             case "tool.call":
+                if case .number(let time) = d["created_at"], time.isFinite, time >= 0 {
+                    toolStartedAt[prefix + ":tool:" + p["call_id"].string] = time
+                }
+                if p["tool"].string == "write_stdin",
+                   let index = terminalSessions[d["agent_id"].pretty + ":" + p["arguments"]["session_id"].pretty] {
+                    terminalPolls[prefix + ":tool:" + p["call_id"].string] = index
+                    if p["arguments"]["chars"].string.isEmpty { continue }
+                }
                 let tool = ToolPresentation(name: p["tool"].string, arguments: p["arguments"], metadata: p["metadata"])
                 rows.append(.init(id: prefix + ":tool:" + p["call_id"].string, role: "Tool", text: tool.title, running: true, tool: tool))
             case "tool.result":
                 let toolID = prefix + ":tool:" + p["call_id"].string
                 let result = p["structured_result"] == .null ? p["result"] : p["structured_result"]
+                if let index = terminalPolls.removeValue(forKey: toolID) {
+                    let previous = rows[index].tool?.output.first(where: { $0.label == "Output" })?.value ?? ""
+                    let decoded = ToolPresentation.decoded(result)
+                    var combined: [String: JSON]
+                    if case .object(let object) = decoded { combined = object }
+                    else { combined = ["output": decoded] }
+                    let output = previous + combined["output", default: .null].string
+                    combined["output"] = .string(output.count > 4_000 ? "…\n" + String(output.suffix(3_998)) : output)
+                    let elapsed = elapsedSeconds(rows[index].id, at: d["created_at"])
+                    rows[index].tool?.finish(.object(combined), failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], elapsedSeconds: elapsed)
+                    rows[index].running = rows[index].tool?.status == "Running"
+                    if !rows.contains(where: { $0.id == toolID }) { continue }
+                }
                 if let index = rows.firstIndex(where: { $0.id == toolID }) {
-                    rows[index].running = false
-                    rows[index].tool?.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"])
+                    rows[index].tool?.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], elapsedSeconds: elapsedSeconds(toolID, at: d["created_at"]))
+                    rows[index].running = rows[index].tool?.status == "Running"
+                    let session = ToolPresentation.decoded(result)["session_id"]
+                    if p["tool"].string == "exec_command", session != .null {
+                        terminalSessions[d["agent_id"].pretty + ":" + session.pretty] = index
+                    }
                 } else {
                     // History can start after a call. Its result must remain readable.
                     var tool = ToolPresentation(name: p["tool"].string, arguments: .null, metadata: p["metadata"])
                     tool.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"])
-                    rows.append(.init(id: toolID, role: "Tool", text: tool.title, tool: tool))
+                    rows.append(.init(id: toolID, role: "Tool", text: tool.title, running: tool.status == "Running", tool: tool))
                 }
             case "run.steered": rows.append(.init(id: id, role: "Status", text: "Direction updated"))
             case "run.error": rows.append(.init(id: id, role: "Status", text: p["message"].string))

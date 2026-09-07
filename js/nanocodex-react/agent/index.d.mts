@@ -58,6 +58,8 @@ export type ToolActivity = Readonly<{
   /** Bounded serialized tool output, including successful generic results. */
   output?: string | undefined;
   status: ToolStatus;
+  /** Persisted tool-call event time in Unix milliseconds, when supplied by the source. */
+  startedAtMs?: number | undefined;
   durationNs?: number | undefined;
   images?: readonly string[] | undefined;
   /** Provider-neutral execution metadata retained with the terminal result. */

@@ -3,7 +3,7 @@ export function initialState(status = "Ready") {
     entries: [], running: false, status, pendingTurns: 0, queuedPrompts: [],
     displayedQueuedPrompt: undefined, pendingSteers: [], appliedSteerRuns: [],
     runGeneration: 0, activeTurnId: undefined, streamedThisTurn: false,
-    pendingRunError: undefined, modelCalls: 0, syntheticId: 0,
+    pendingRunError: undefined, modelCalls: 0, syntheticId: 0, terminalPolls: {},
   };
 }
 
@@ -281,7 +281,17 @@ export function applyAgentEvents(state, events) {
       }
       case "tool.call": {
         const tool = payloadString(payload, "tool") ?? "tool";
-        if (isEmptyTerminalPoll(tool, payload.arguments)) break;
+        if (tool === "write_stdin" && isObject(payload.arguments)) {
+          const target = findTerminalSession(next.entries, payload.arguments.session_id);
+          if (target) {
+            const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
+            next.terminalPolls = {
+              ...next.terminalPolls,
+              [terminalPollKey(payload.call_id, turnId)]: target,
+            };
+            if (isEmptyTerminalPoll(tool, payload.arguments)) break;
+          }
+        }
         if (tool === "update_plan") {
           const update = decodePlanUpdate(payload.arguments);
           if (update) {
@@ -298,10 +308,19 @@ export function applyAgentEvents(state, events) {
         next.status = `Running ${tool}`;
         break;
       }
-      case "tool.result":
-        applyToolResult(mutableEntries(), event, payloadString(payload, "turn_id") ?? next.activeTurnId);
+      case "tool.result": {
+        const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
+        const pollKey = terminalPollKey(payload.call_id, turnId);
+        const target = next.terminalPolls[pollKey];
+        if (target) {
+          next.terminalPolls = { ...next.terminalPolls };
+          delete next.terminalPolls[pollKey];
+          applyToolResult(mutableEntries(), event, target.turnId, target.callId);
+        }
+        applyToolResult(mutableEntries(), event, turnId);
         next.status = "Working";
         break;
+      }
       case "model.call.completed": next.modelCalls += 1; break;
       case "run.error": next.pendingRunError = payloadString(payload, "message"); break;
       case "run.completed": {
@@ -486,6 +505,7 @@ function applyToolCall(entries, event, turnId) {
     callId, name,
     arguments: summarizeToolArguments(name, payload.arguments),
     input: serializeToolDetail(payload.arguments),
+    startedAtMs: toolEventTime(payload),
     status: "running", children: [],
   };
   const parentId = callId.split("/code-")[0];
@@ -514,9 +534,9 @@ function hasToolCall(entries, callId, turnId) {
       || entry.tool.children.some((child) => child.callId === callId)));
 }
 
-function applyToolResult(entries, event, turnId) {
+function applyToolResult(entries, event, turnId, terminalCallId) {
   const payload = event.payload ?? {};
-  const callId = payloadString(payload, "call_id");
+  const callId = terminalCallId ?? payloadString(payload, "call_id");
   if (!callId) return;
   const statusValue = payloadString(payload, "status");
   const status = statusValue === "cancelled" ? "cancelled"
@@ -525,31 +545,89 @@ function applyToolResult(entries, event, turnId) {
     const entry = entries[index];
     if (entry?.kind !== "tool" || (turnId !== undefined && entry.turnId !== turnId)) continue;
     if (entry.tool.callId === callId) {
-      entries[index] = { ...entry, tool: completedTool(entry.tool, payload, status) };
+      entries[index] = { ...entry, tool: completedTool(entry.tool, payload, status, terminalCallId !== undefined) };
       return;
     }
     const childIndex = entry.tool.children.findIndex((child) => child.callId === callId);
     if (childIndex >= 0) {
       const children = entry.tool.children.slice();
-      children[childIndex] = completedTool(children[childIndex], payload, status);
+      children[childIndex] = completedTool(children[childIndex], payload, status, terminalCallId !== undefined);
       entries[index] = { ...entry, tool: { ...entry.tool, children } };
       return;
     }
   }
 }
 
-function completedTool(tool, payload, status) {
-  const result = preferredToolResult(payload.structured_result, payload.result);
+function completedTool(tool, payload, status, terminalPoll = false) {
+  let result = preferredToolResult(payload.structured_result, payload.result);
+  let durationNs = payloadNumber(payload, "duration_ns");
+  const terminal = tool.name === "exec_command" || tool.name === "write_stdin";
+  if (terminalPoll) {
+    const previous = decodeJsonString(tool.output);
+    const chunk = isObject(result) ? result : { output: formatValue(result) };
+    result = {
+      ...(isObject(previous) ? previous : {}), ...chunk,
+      output: (isObject(previous) && typeof previous.output === "string" ? previous.output : "")
+        + (typeof chunk.output === "string" ? chunk.output : ""),
+    };
+    // Poll RPC durations omit the time the process runs between polls.
+    // Without persisted event timestamps, omit an aggregate duration.
+    durationNs = undefined;
+  }
+  const observedAt = toolEventTime(payload);
+  if (terminal && tool.startedAtMs !== undefined && observedAt !== undefined && observedAt >= tool.startedAtMs) {
+    durationNs = (observedAt - tool.startedAtMs) * 1_000_000;
+  }
+  if (terminal && isObject(result)) {
+    if (status === "completed") {
+      if (typeof result.exit_code === "number") status = result.exit_code === 0 ? "completed" : "failed";
+      else if (result.session_id !== undefined && result.session_id !== null) status = "running";
+    }
+    // Bound the output text before serialization so session/exit fields stay decodable.
+    if (typeof result.output === "string") result = { ...result, output: terminalOutputTail(result.output) };
+  }
   const images = extractImageUrls(result);
   return {
-    ...tool, status, durationNs: payloadNumber(payload, "duration_ns"),
+    ...tool, status, durationNs,
     ...(images ? { images } : {}),
     ...(payload.metadata === undefined || payload.metadata === null
       ? {}
       : { metadata: payload.metadata }),
     result: summarizeToolResult(tool.name, result, status),
-    output: serializeToolDetail(result),
+    output: terminal && isObject(result) ? JSON.stringify(result) : serializeToolDetail(result),
   };
+}
+
+function terminalPollKey(callId, turnId) {
+  return JSON.stringify([turnId, callId]);
+}
+
+function toolEventTime(payload) {
+  const value = payload.managed_event_created_at;
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function findTerminalSession(entries, sessionId) {
+  if (typeof sessionId !== "number" && typeof sessionId !== "string") return undefined;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind !== "tool") continue;
+    for (const tool of [entry.tool, ...entry.tool.children]) {
+      if (tool.name !== "exec_command") continue;
+      const output = decodeJsonString(tool.output);
+      if (isObject(output) && output.session_id === sessionId) {
+        return { callId: tool.callId, turnId: entry.turnId };
+      }
+    }
+  }
+  return undefined;
+}
+
+function terminalOutputTail(output) {
+  const lines = output.split("\n");
+  const tail = lines.slice(-23).join("\n");
+  const characters = [...tail];
+  return `${lines.length > 23 || characters.length > 3_998 ? "…\n" : ""}${characters.slice(-3_998).join("")}`;
 }
 
 function preferredToolResult(structured, modelVisible) {

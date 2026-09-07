@@ -634,6 +634,7 @@ export function terminalEvent(
           payload: {
             ...event.payload,
             ...(typeof envelope.cursor === "string" ? { managed_event_cursor: envelope.cursor } : {}),
+            managed_event_created_at: envelope.createdAt,
             ...(envelope.turnId ? { turn_id: envelope.turnId } : {}),
           },
         }

@@ -477,6 +477,36 @@ test("retained history projects a repeated tool call once", async () => {
   }
 });
 
+test("a poll started in retained history updates its command when its live result arrives", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  source.history = [
+    event(1, "tool.call", { call_id: "cargo", tool: "exec_command", arguments: { cmd: "cargo test" }, turn_id: "turn-1" }),
+    event(2, "tool.result", { call_id: "cargo", status: "completed", structured_result: { session_id: 42, output: "Compiling\n" }, turn_id: "turn-1" }),
+    event(3, "tool.call", { call_id: "poll", tool: "write_stdin", arguments: { session_id: 42 }, turn_id: "turn-1" }),
+  ];
+  let controller;
+  let root;
+  try {
+    await act(async () => {
+      root = create(createElement(AgentController, {
+        agent: source.agent,
+        children(snapshot) { controller = snapshot; return null; },
+      }));
+    });
+    await flushFrames(frames);
+    assert.equal(controller.entries[0].tool.status, "running");
+    await act(async () => source.emit(event(4, "tool.result", {
+      call_id: "poll", status: "completed", structured_result: { exit_code: 0, output: "Passed\n" }, turn_id: "turn-1",
+    })));
+    await flushFrames(frames);
+    assert.equal(controller.entries.length, 1);
+    assert.equal(controller.entries[0].tool.status, "completed");
+    assert.equal(JSON.parse(controller.entries[0].tool.output).output, "Compiling\nPassed\n");
+    await act(async () => root.unmount());
+  } finally { frames.restore(); }
+});
+
 test("hidden controllers reduce bursts and publish one visible catch-up snapshot", async () => {
   const frames = fakeAnimationFrames();
   const source = fakeAgent();
