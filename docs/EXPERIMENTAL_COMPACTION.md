@@ -24,6 +24,8 @@ The discovery-schema repair in #275 remains required: a subsequent turn can enco
 
 Focused Rust tests cover archive-write failure, reset acknowledgement loss and replay, persistent window and item identity, pre-turn reminders, and retained tools, Code Mode storage, and cache keys. The WASM reset/reopen scenario uses real workspace files and fixture provider responses to check notes, exact history and image recovery, live-window search, and durable reconstruction. Browser-host integration checks activation with and without workspace storage.
 
+The Python benchmark lets Tokio's shared filesystem workers reach their 10-second idle timeout before counting retained threads. Its existing thread ceiling is unchanged.
+
 The implementation and tests are preserved from `3c597019725f6d58a7bcfc8e80432bea1d6460a9`. The following live evidence was collected before the split on September 6, 2026.
 
 The file-backed experimental flow was then exercised on the same Business account in conversation `9dbd5cb5-03ce-8fd4-b32c-98a30291bdf4`. Astra wrote a progress note, called `new_context`, recovered the original user message using `context_history.search_contents` and `read_item`, loaded the live Code Mode value, and read `/brain/context-recovery.txt`. The recovery phrase was absent from the note, so recovering it required the exact archived history. The turn completed without retries or errors, with cache hits before and after reset. An earlier probe exposed Astra's reserved `history` schema; the local namespaces described above resolve that provider rejection.

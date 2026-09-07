@@ -41,7 +41,7 @@ Redundant getter, pointer-identity, metadata-construction, and private presentat
 
 Discovery-schema repair tests remain because they exercise failure and recovery boundaries that successful live turns cannot establish.
 
-Duplicate Python runtime/thread tests are covered by the installed-wheel benchmark, which exercises sequential turns, eight concurrent agents, independent sockets, construction costs, and shutdown. Its existing thread ceiling is unchanged; the measurement now lets Tokio's shared filesystem workers reach their 10-second idle timeout before counting retained threads.
+Duplicate Python runtime/thread tests are covered by the installed-wheel benchmark, which exercises sequential turns, eight concurrent agents, independent sockets, construction costs, and shutdown. Its existing thread ceiling is unchanged.
 
 Before the compaction split, on September 6, the canonical worktree `pnpm dev` stack was exercised through the account browser UI and local Wrangler Workers. The existing development SMS fixture and normal ChatGPT connection flow provided account-session authorization; Astra, private egress, managed turns, and durable storage were real. Conversation `56f7952d-849a-8726-8570-70c65240a8bf` defaulted to Astra/low. The unchanged subagent protocol returned 323, and Code Mode wrote/read `astra-core-6sep-indigo` followed by LF in `/brain/alignment-core-e2e.txt`. A second turn recovered the file and answer after reconnect and a browser reload during a live 20-second yielding cell. Both required turns completed without retries or errors, and provider usage reported cache hits on ten follow-on model calls.
 
