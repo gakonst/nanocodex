@@ -10,8 +10,6 @@ allowBuilds:
   "@mongodb-js/zstd": true
   core-js-pure: false
   esbuild: true
-  electron: true
-  electron-winstaller: false
   node-liblzma: false
   workerd: true
 

@@ -51,19 +51,19 @@ events in a native TUI, wterm, xterm.js, React, logs, or something that only
 your product could have. The included renderers are complete consumers, not a
 UI protocol every embedding must adopt.
 
-## Desktop apps
+## Desktop app
 
-Nanocodex has a [native SwiftUI/AppKit macOS app](macos/README.md) and an
-[Electron app](js/desktop/README.md). Both use the managed-agent API, persistent
-sidebar or top tabs, streamed conversations, and local, VM, and cloud Hands.
+The [native SwiftUI/AppKit macOS app](macos/README.md) is Nanocodex's only desktop
+app. It owns the tiled workspace, persistent sidebar or top tabs, streamed
+conversations, agent activity menu bar, and automatic background Mac Hand.
 Choosing a folder and sending automatically connects compute for that thread.
-Their shared transport and Hand lifecycle live in
+Its managed-agent transport and local, VM, and cloud Hand lifecycle live in
 [`@nanocodex/desktop-runtime`](js/desktop-runtime/README.md).
+The separate [mobile Inbox](apple/README.md) targets iPhone and iPad only.
 
-Use `pnpm dev:desktop` for Electron development. Build its app bundle with
-`pnpm --filter @nanocodex/desktop package`; build Swift with `pnpm build:macos`
-after preparing the documented bundled Node runtime. Each app's README describes
-account setup, native controls, and real-service verification.
+Build the desktop app with `pnpm build:macos` after preparing the documented
+bundled Node runtime. The [macOS README](macos/README.md) describes account setup,
+native controls, and real-service verification.
 
 ## Install
 
