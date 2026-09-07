@@ -55,7 +55,6 @@ native = [
     "dep:rmcp",
     "dep:sha1",
     "dep:tokio-util",
-    "dep:web-time",
 ]
 
 [dependencies]
@@ -63,13 +62,11 @@ nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.5.0", default-
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-web-time = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
-async-trait = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
-uuid = { workspace = true, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+async-trait = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 bm25 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
@@ -88,6 +85,7 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "proce
 tokio-util = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, optional = true }

@@ -54,8 +54,6 @@ export function createBrowserHost(options?: {
   WebSocketImpl?: typeof WebSocket;
   hostAuth?: boolean;
   hostManagedProtocol?: boolean;
-  apiBaseUrl?: string;
-  contextStorage?: Workspace;
   createWebSocket?: (
     endpoint: string,
     sessionId: string,

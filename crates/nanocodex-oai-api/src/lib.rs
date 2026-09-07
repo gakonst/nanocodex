@@ -117,7 +117,7 @@ pub mod __private {
     pub mod compaction {
         pub use crate::session::compaction::{
             auto_compact_token_limit, install_history, trigger,
-            trim_tool_outputs_to_fit_context_window, truncate_retained_messages,
+            trim_tool_outputs_to_fit_context_window,
         };
     }
 

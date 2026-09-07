@@ -5998,7 +5998,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "web-time",
 ]
 
 [[package]]

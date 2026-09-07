@@ -99,8 +99,6 @@ export async function create(options = {}) {
   const tempoMcp = mpp?.[Symbol.for("nanocodex.tempo.mcp")];
   let hostDefinitionId;
   const host = createBrowserHost({
-    contextStorage: options.contextStorage,
-    apiBaseUrl,
     WebSocketImpl,
     createWebSocket,
     hostAuth: hostAuth === true

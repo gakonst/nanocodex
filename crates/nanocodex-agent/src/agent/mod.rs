@@ -140,7 +140,7 @@ use builder::{CodexCompatibility, PromptCacheConfig};
 #[cfg(feature = "openai")]
 pub(crate) use context_source::ContextSource;
 #[cfg(feature = "openai")]
-pub(crate) use context_source::ContextSourceConfig;
+use context_source::ContextSourceConfig;
 #[cfg(feature = "openai")]
 use driver::{AgentDriver, AgentOrigin, BranchSpawner, DriverShutdown};
 #[cfg(feature = "openai")]

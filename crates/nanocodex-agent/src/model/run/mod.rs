@@ -1,4 +1,3 @@
-mod context_management;
 mod lifecycle;
 mod responses;
 mod state;
@@ -93,8 +92,6 @@ pub(crate) struct ModelRun<S> {
     host_context: Option<Arc<str>>,
     global_instructions: Option<Arc<str>>,
     force_compaction: bool,
-    context_management: Option<nanocodex_tools::context_management::ContextManagement>,
-    context_management_checked: bool,
     pending_developer_messages: Vec<ResponseItem>,
     execution_steps: Option<ExecutionSteps>,
 }
@@ -261,8 +258,6 @@ impl<S> ModelRun<S> {
             host_context,
             global_instructions,
             force_compaction: false,
-            context_management: None,
-            context_management_checked: false,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
         }
@@ -339,8 +334,6 @@ impl<S> ModelRun<S> {
             host_context,
             global_instructions,
             force_compaction: false,
-            context_management: None,
-            context_management_checked: false,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
         }
@@ -415,13 +408,7 @@ impl<S> ModelRun<S> {
             .context_source
             .project_instructions(&workspace)
             .map(Arc::<str>::from);
-        #[allow(unused_mut)]
-        let mut tools = tool_runtime(&workspace, &self.config, &self.tools);
-        if let Some(context) = &self.context_management {
-            context
-                .install(&mut tools)
-                .map_err(NanocodexError::InvalidExecutionPolicy)?;
-        }
+        let tools = tool_runtime(&workspace, &self.config, &self.tools);
         let tool_control = tools.control();
         self.active_tools = Some(tool_control);
         let factory = self.attempt_factory(&tools)?;

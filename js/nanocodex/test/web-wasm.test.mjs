@@ -325,10 +325,6 @@ test("web-target WASM exposes browser bash and Rust apply_patch as standard tool
       "exec_command",
       "apply_patch",
       ...SUBAGENT_TOOL_NAMES,
-      "new_context",
-      "get_context_remaining",
-      "context_history",
-      "context_notes",
     ]);
     const execCommand = toolPrefix.tools.find((tool) => tool.name === "exec_command");
     assert.match(execCommand.description, /^Run browser bash\./);
@@ -852,10 +848,6 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       "view_image",
       "tool_search",
       ...SUBAGENT_TOOL_NAMES,
-      "new_context",
-      "get_context_remaining",
-      "context_history",
-      "context_notes",
     ]);
     assert.equal(toolPrefix.tools[0].type, "custom");
     assert.equal(

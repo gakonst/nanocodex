@@ -55,7 +55,6 @@ use nanocodex_voice_protocol::{
     valid_realtime_call_id,
 };
 
-mod context;
 mod transport;
 
 use transport::JavaScriptResponsesHost;
@@ -502,11 +501,6 @@ impl JavaScriptCodeModeHost {
 }
 
 impl CodeModeHost for JavaScriptCodeModeHost {
-    fn history_notes_host(
-        &self,
-    ) -> Option<Arc<dyn nanocodex::tools::context_management::HistoryNotesHost>> {
-        Some(context::host())
-    }
     fn supports_cells(&self) -> bool {
         true
     }
