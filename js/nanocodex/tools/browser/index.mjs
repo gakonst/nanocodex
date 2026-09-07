@@ -138,7 +138,9 @@ export function bindBrowser(prepared, options = {}) {
           const source = new URL(input);
           const url = new URL(`/api/tools/x/${source.pathname.slice("/api/".length)}`, prepared.origin);
           url.search = source.search;
-          return fetch(url, { ...init, credentials: "same-origin" });
+          const headers = new Headers(init?.headers);
+          headers.set("x-nanocodex-request", "1");
+          return fetch(url, { ...init, headers, credentials: "same-origin" });
         },
       }),
       standard.web(web),

@@ -295,6 +295,8 @@ test("browser browseX reaches the app origin for profiles and posts without X au
     "https://demo.test/api/tools/x/convert?url=https%3A%2F%2Fx.com%2Fjack%2Fstatus%2F20&format=json",
   ]);
   assert.ok(requests.every((request) => request.credentials === "same-origin"));
+  assert.ok(requests.every((request) => request.headers.get("x-nanocodex-request") === "1"));
+  assert.ok(requests.every((request) => request.headers.get("accept") === "application/json"));
   const aborted = AbortSignal.abort();
   await assert.rejects(tool.handler({ action: "profile", handle: "gakonst" }, { ...context, signal: aborted }));
   assert.equal(requests.length, 2, "cancelled tool calls must not fetch");
