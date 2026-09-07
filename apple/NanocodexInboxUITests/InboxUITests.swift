@@ -2,6 +2,118 @@ import XCTest
 
 final class InboxUITests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false }
+
+    @MainActor
+    func testLiveTerminalProgressAndFailure() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let key = environment["NANOCODEX_LIVE_TEST_API_KEY"], !key.isEmpty else {
+            throw XCTSkip("Requires an explicitly supplied managed account key and a live service.")
+        }
+        let origin = environment["NANOCODEX_LIVE_TEST_ORIGIN"] ?? "https://nanocodex.gakonst.workers.dev"
+        func request(_ path: String, body: [String: Any]? = nil) async throws -> [String: Any] {
+            var request = URLRequest(url: URL(string: origin + path)!)
+            request.httpMethod = "POST"
+            request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+            request.setValue("Nanocodex-E12-iPhone", forHTTPHeaderField: "User-Agent")
+            if let body {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            XCTAssertTrue((200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0))
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+        let app = XCUIApplication()
+        app.launch()
+        func require(_ condition: Bool, _ message: String) throws {
+            guard condition else {
+                capture(app, "E12-failure")
+                XCTFail(message)
+                throw NSError(domain: "E12", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        }
+        let credential = app.secureTextFields["Account API key"]
+        if credential.waitForExistence(timeout: 5) {
+            credential.tap(); credential.typeText(key)
+            app.buttons["Connect account"].tap()
+        }
+        try require(app.buttons["Browse agents"].waitForExistence(timeout: 30), "The inbox did not connect")
+        let created = try await request("/v1/agents")
+        let agentID = try XCTUnwrap(created["agent_id"] as? String)
+        let marker = "E12 progress " + String(UUID().uuidString.prefix(8))
+        print("E12_LIVE_AGENT \(agentID) \(marker)")
+        _ = try await request("/v1/agents/\(agentID)/turns", body: [
+            "id": UUID().uuidString.lowercased(),
+            "input": "\(marker). In one Cloudflare Linux sandbox, run exactly: printf 'E12_START\\n'; sleep 60; printf 'E12_MID\\n'; sleep 60; printf 'E12_DONE\\n'. Use exec_command with yield_time_ms 1000, then poll the same process until exit. Do not use a connected device."
+        ])
+        func openThread() throws {
+            app.terminate(); app.launch()
+            try require(app.buttons["Browse agents"].waitForExistence(timeout: 30), "The inbox did not connect")
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["Refresh agents"])
+            try require(XCTWaiter.wait(for: [ready], timeout: 30) == .completed, "The inbox did not finish loading")
+            let title = app.staticTexts["agent-title"]
+            if !title.label.contains(marker) {
+                app.buttons["Browse agents"].tap()
+                let listing = app.collectionViews.firstMatch
+                if !listing.waitForExistence(timeout: 5) {
+                    app.buttons["Browse agents"].tap()
+                }
+                try require(listing.waitForExistence(timeout: 5), "The agent list did not open")
+                let entry = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch
+                for _ in 0..<30 {
+                    if entry.exists && entry.isHittable { break }
+                    listing.swipeUp(velocity: .fast)
+                }
+                guard entry.exists && entry.isHittable else {
+                    capture(app, "E12-agent-selection-failure")
+                    XCTFail("The created live agent was not listed")
+                    throw NSError(domain: "E12", code: 1)
+                }
+                entry.tap()
+            }
+            title.tap()
+            try require(app.scrollViews["conversation"].waitForExistence(timeout: 5), "The conversation did not open")
+        }
+        func command(_ text: String) -> XCUIElement {
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Run command,' AND label CONTAINS %@", text)).firstMatch
+        }
+        try openThread()
+        let success = command("E12_START")
+        try require(success.waitForExistence(timeout: 90), "The command card did not appear")
+        try require(success.label.contains("Running"), "The yielded command must remain Running")
+        success.tap()
+        try require(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "E12_START\n")).firstMatch.waitForExistence(timeout: 10), "Initial command output was not visible")
+        capture(app, "E12-live-running")
+        try openThread()
+        try require(command("E12_START").waitForExistence(timeout: 15), "The command was lost after relaunch")
+        try require(command("E12_START").label.contains("Running"), "Running status was lost after relaunch")
+        let completed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS 'Completed'"), object: command("E12_START"))
+        await fulfillment(of: [completed], timeout: 180)
+        try require(command("E12_START").label.contains("Completed"), "The command did not complete")
+        command("E12_START").tap()
+        try require(app.staticTexts["E12_START\nE12_MID\nE12_DONE\n"].waitForExistence(timeout: 5), "Polling output was not folded into the original command")
+        try require(app.staticTexts["Elapsed (seconds)"].exists, "Final elapsed time was missing")
+        capture(app, "E12-live-completed")
+        _ = try await request("/v1/agents/\(agentID)/turns", body: [
+            "id": UUID().uuidString.lowercased(),
+            "input": "In the same sandbox, run exactly: printf 'E12_FAIL_START\\n'; sleep 30; for i in $(seq 1 300); do printf 'E12_STDOUT_%04d\\n' \"$i\"; printf 'E12_STDERR_%04d\\n' \"$i\" >&2; done; printf 'E12_EXPECTED_FAILURE\\n' >&2; exit 7. Use exec_command with yield_time_ms 1000 and max_output_tokens 10000, then poll until exit. This is an intentional failure fixture; do not retry or fix it."
+        ])
+        try openThread()
+        let failed = command("E12_FAIL_START")
+        try require(failed.waitForExistence(timeout: 60), "The failure fixture command did not appear")
+        try require(failed.label.contains("Running"), "The failure fixture must start Running")
+        let failure = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS 'Failed'"), object: failed)
+        await fulfillment(of: [failure], timeout: 90)
+        try require(failed.label.contains("Failed"), "Nonzero exit did not produce Failed status")
+        try openThread()
+        try require(command("E12_FAIL_START").waitForExistence(timeout: 15) && command("E12_FAIL_START").label.contains("Failed"), "Failed status was lost after relaunch")
+        command("E12_FAIL_START").tap()
+        let output = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'E12_STDOUT_0300' AND label CONTAINS 'E12_STDERR_0300' AND label ENDSWITH 'E12_EXPECTED_FAILURE\n'")).firstMatch
+        try require(output.waitForExistence(timeout: 5), "Large stdout/stderr lost their final output")
+        try require(app.staticTexts["7"].exists, "The final exit code was not retained")
+        try require(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Command progress,'")).count == 0, "Empty polls created separate cards")
+        capture(app, "E12-live-failed-after-relaunch")
+    }
     private func launch(_ environment: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
