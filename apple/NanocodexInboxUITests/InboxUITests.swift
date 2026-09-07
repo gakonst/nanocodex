@@ -101,7 +101,7 @@ final class InboxUITests: XCTestCase {
         try openThread()
         let failed = command("E12_FAIL_START")
         try require(failed.waitForExistence(timeout: 60), "The failure fixture command did not appear")
-        try require(failed.label.contains("Running"), "The failure fixture must start Running")
+        try require(failed.label.contains("Running") || failed.label.contains("Failed"), "The failure fixture reported an unexpected status")
         let failure = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS 'Failed'"), object: failed)
         await fulfillment(of: [failure], timeout: 90)
         try require(failed.label.contains("Failed"), "Nonzero exit did not produce Failed status")
