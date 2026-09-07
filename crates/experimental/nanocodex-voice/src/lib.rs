@@ -759,6 +759,7 @@ async fn run_voice(
     voice_commands: mpsc::Receiver<VoiceCommand>,
     stopped: oneshot::Receiver<()>,
 ) -> Result<(), VoiceFailure> {
+    send_event(events, VoiceEvent::Connecting);
     let lifecycle_agent = builder.agent.clone();
     let context = lifecycle_agent
         .append_developer_message(REALTIME_START_INSTRUCTIONS)
@@ -797,7 +798,6 @@ async fn run_active_voice(
     mut voice_commands: mpsc::Receiver<VoiceCommand>,
     mut stopped: oneshot::Receiver<()>,
 ) -> Result<(), VoiceFailure> {
-    send_event(events, VoiceEvent::Connecting);
     let default_version = match builder.openai.auth_mode() {
         OpenAiAuthMode::ChatGpt => RealtimeVersion::V3,
         OpenAiAuthMode::ApiKey => RealtimeVersion::V2,
@@ -1488,6 +1488,23 @@ fn send_transcript(
     speaker: VoiceSpeaker,
     text: String,
 ) {
+    if let Some(turns) = nanocodex_voice_protocol::project_transcript(&text, false) {
+        for turn in turns {
+            let speaker = if turn.role == "user" {
+                VoiceSpeaker::User
+            } else {
+                VoiceSpeaker::Assistant
+            };
+            send_event(
+                events,
+                VoiceEvent::Transcript {
+                    speaker,
+                    text: turn.text,
+                },
+            );
+        }
+        return;
+    }
     if !text.trim().is_empty() {
         send_event(events, VoiceEvent::Transcript { speaker, text });
     }

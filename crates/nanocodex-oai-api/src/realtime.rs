@@ -3042,6 +3042,11 @@ async fn handle_server_message(
                     handle_direct_audio_state(socket, &value, &event, &mut state.output_audio)
                         .await;
                 }
+                if let RealtimeEvent::AgentRequest { call_id, .. } = &event
+                    && !state.active_transcript.accept_delegation(call_id)
+                {
+                    return Ok(false);
+                }
                 state.active_transcript.update(&mut event);
                 if matches!(protocol, RealtimeProtocol::Direct) {
                     match &event {
@@ -3209,9 +3214,21 @@ struct ActiveTranscript {
     entries: Vec<RealtimeTranscriptEntry>,
     new_input_entry: bool,
     new_output_entry: bool,
+    seen_delegations: VecDeque<String>,
 }
 
 impl ActiveTranscript {
+    fn accept_delegation(&mut self, id: &str) -> bool {
+        if self.seen_delegations.iter().any(|seen| seen == id) {
+            return false;
+        }
+        self.seen_delegations.push_back(id.to_owned());
+        if self.seen_delegations.len() > 256 {
+            self.seen_delegations.pop_front();
+        }
+        true
+    }
+
     fn take_tail(&mut self) -> Vec<RealtimeTranscriptEntry> {
         std::mem::take(&mut self.entries)
             .into_iter()
@@ -3237,11 +3254,31 @@ impl ActiveTranscript {
             }
             RealtimeEvent::InputTranscriptDone(text) => {
                 apply_transcript_done(&mut self.entries, "user", text, self.new_input_entry);
-                self.new_input_entry = false;
+                self.new_input_entry = true;
             }
             RealtimeEvent::OutputTranscriptDone(text) => {
+                // Frameless turn boundaries can start after already-spoken
+                // output. Preserve an exact missing prefix, never unheard tails.
+                if !self.new_output_entry
+                    && !text.trim().is_empty()
+                    && let Some(last) = self
+                        .entries
+                        .iter()
+                        .rev()
+                        .find(|entry| entry.role == "assistant")
+                    && !last.text.starts_with(TRUNCATED_TRANSCRIPT_PREFIX)
+                    && last
+                        .text
+                        .trim_end()
+                        .strip_suffix(text.trim())
+                        .is_some_and(|prefix| {
+                            prefix.is_empty() || prefix.ends_with(char::is_whitespace)
+                        })
+                {
+                    text.clone_from(&last.text);
+                }
                 apply_transcript_done(&mut self.entries, "assistant", text, self.new_output_entry);
-                self.new_output_entry = false;
+                self.new_output_entry = true;
             }
             RealtimeEvent::AgentRequest {
                 prompt, transcript, ..
@@ -3304,10 +3341,7 @@ fn append_transcript_delta(
     if delta.is_empty() {
         return;
     }
-    if !force_new
-        && let Some(last) = entries.last_mut()
-        && last.role == role
-    {
+    if !force_new && let Some(last) = entries.iter_mut().rev().find(|entry| entry.role == role) {
         last.text.push_str(delta);
         return;
     }
@@ -3326,10 +3360,7 @@ fn apply_transcript_done(
     if text.is_empty() {
         return;
     }
-    if !force_new
-        && let Some(last) = entries.last_mut()
-        && last.role == role
-    {
+    if !force_new && let Some(last) = entries.iter_mut().rev().find(|entry| entry.role == role) {
         last.text = text.to_owned();
         return;
     }
@@ -3785,6 +3816,31 @@ mod tests {
     }
 
     #[test]
+    fn final_output_preserves_only_an_exact_spoken_prefix() {
+        for (streamed, completed, expected) in [
+            (
+                " Sure thing. Starting now. One...",
+                " thing. Starting now. One...",
+                " Sure thing. Starting now. One...",
+            ),
+            ("One. Two. Three.", "One. Two.", "One. Two."),
+            ("cannot", "not", "not"),
+        ] {
+            let mut transcript = ActiveTranscript::default();
+            transcript.update(&mut RealtimeEvent::OutputTranscriptDelta(
+                streamed.to_owned(),
+            ));
+            let mut done = RealtimeEvent::OutputTranscriptDone(completed.to_owned());
+            transcript.update(&mut done);
+            assert_eq!(
+                done,
+                RealtimeEvent::OutputTranscriptDone(expected.to_owned())
+            );
+            assert_eq!(transcript.take_tail()[0].text, expected);
+        }
+    }
+
+    #[test]
     fn versioned_session_updates_match_codex_shapes() {
         let v1 = configured_session_update(
             "delegate",
@@ -4060,6 +4116,36 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn active_transcript_preserves_interleaved_speakers_and_consecutive_turns() {
+        let mut transcript = ActiveTranscript::default();
+        for mut event in [
+            RealtimeEvent::InputTranscriptDelta("Check ".to_owned()),
+            RealtimeEvent::OutputTranscriptDelta("I will ".to_owned()),
+            RealtimeEvent::InputTranscriptDelta("the build".to_owned()),
+            RealtimeEvent::OutputTranscriptDelta("check".to_owned()),
+            RealtimeEvent::InputTranscriptDone("Check the build.".to_owned()),
+            RealtimeEvent::OutputTranscriptDone("I will check.".to_owned()),
+            RealtimeEvent::InputTranscriptDone("Then test.".to_owned()),
+        ] {
+            transcript.update(&mut event);
+        }
+        let tail = transcript.take_tail();
+        assert_eq!(
+            tail.iter()
+                .map(|entry| (entry.role.as_str(), entry.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("user", "Check the build."),
+                ("assistant", "I will check."),
+                ("user", "Then test.")
+            ]
+        );
+        assert!(transcript.accept_delegation("d1"));
+        assert!(!transcript.accept_delegation("d1"));
+        assert!(transcript.accept_delegation("d2"));
     }
 
     #[test]
