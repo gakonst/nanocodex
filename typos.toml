@@ -13,6 +13,10 @@ extend-exclude = [
 extend-glob = ["*.pbxproj"]
 extend-ignore-re = ['\b[0-9A-F]{24}\b']
 
+[type.rust.extend-words]
+# The voice transcript parser deliberately recognizes this legacy XML tag.
+soruce = "soruce"
+
 [default.extend-words]
 ratatui = "ratatui"
 serde = "serde"
