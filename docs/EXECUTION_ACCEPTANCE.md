@@ -220,8 +220,8 @@ feature variants, Miri, fuzzing, and the rest of itoa's CI were not exercised.
 
 Before the E12 fix, the deployed UI displayed the initial Cargo yield as “Succeeded 1.56 s”
 with empty output, even while compilation continued. The final assistant
-message and durable tool result correctly reported success. This confirms B01's
-execution path while leaving E12's progress presentation acceptance open.
+message and durable tool result correctly reported success. This confirmed
+B01's execution path; E12's later verification is recorded below.
 
 The progress patch now derives elapsed time from persisted command-call
 and result timestamps. Replaying this run produces a single Cargo card that
@@ -318,6 +318,17 @@ passed all 12 terminal tests. The native replay policy passed all 8 focused
 from the live observations so a reopened receipt is not described as a fresh
 successful execution.
 
+The final physical iPhone `testLiveTerminalReceiptHistory` passed in 212.080 s
+at 10:07 UTC. It created no agents or turns: it reopened the two receipts above,
+expanded each turn's Activity and command details, and verified the completed
+output, elapsed field, failure output tail, and exit 7 after app relaunch.
+Both final screenshots were visually inspected. Local evidence is retained in
+`/tmp/nanocodex-progress-live-centaur-history-3.xcresult`; its device diagnostics
+and account credentials must not be uploaded as a whole bundle. Earlier
+history attempts failed in test navigation, before this corrected scoped
+scrolling check. The full final InboxCore suite also passed: 64 tests passed,
+3 opt-in live tests skipped, 0 failures.
+
 ### Remaining recovery failures
 
 The full fresh live XCTest is not green. An earlier rollout-time fixture lost
@@ -331,6 +342,12 @@ at cursors 29–45, and cursor 46 returned
 Neither run recovered the command's terminal exit receipt. The later failure's
 cause is not established. E13/E14 remain open; UI deduplication does not restore
 the backend process.
+
+The error originates in the [namespace session lookup](../js/managed/src/namespace-tools.ts),
+which currently retains process bindings in an in-memory map and rejects a
+missing binding or mismatched owner session. It does not by itself establish
+that the native sandbox process exited. Recovering that binding and retrieving
+the original provider receipt is the next diagnostic step.
 
 The successful fixture also exposed a separate Code Mode receipt gap: a
 yielding `exec` containing `tools.mount` returned the mounted result through

@@ -4,25 +4,25 @@ Work through these in the order below, one case at a time. Case IDs match the
 [full acceptance criteria](EXECUTION_ACCEPTANCE.md). Each item names the expected
 environment and the result to verify.
 
-**Latest completed baseline: `dtolnay/itoa` clone → Cargo test.**
+**Completed: `dtolnay/itoa` clone → Cargo test, warm reruns, and E12 command progress.**
 
 - [x] **B01 — Small-repository clone and test, selected by the user.** Production Worker host clone: 0.642 s; one Cloudflare sandbox mount: 6.660 s; cold Cargo run: 112.089 s, exit 0, 11 integration tests and 2 doc tests passed. Full prompt-to-completion turns: 9.579 s for clone and 132.429 s for Cargo. All 16 upstream files matched by SHA-256; no `.git`. Both final responses survived browser reload. [Evidence](EXECUTION_ACCEPTANCE.md#itoa-baseline--2026-09-07).
 - [x] **B02 — itoa reruns in the existing sandbox mount.** Immediate warm Cargo: 4.634 s, 13.923 s for the full turn, no downloads/recompilation, all 13 tests passed. The preceding rerun after approximately 45 minutes idle rebuilt dependencies and took 121.510 s. [Evidence](EXECUTION_ACCEPTANCE.md#itoa-reruns--2026-09-07).
 
 B01 demonstrates the basic E01 → E03 path. The full case variants below remain
 pending, including the original larger-repository regression. Next pending
-reliability case: E12; the deployed command card still reports the initial yield
-as success and omits subsequent output.
+reliability case: E13 process recovery. E12's command presentation is verified
+on deployed web and a physical iPhone.
 
 Check an item only after its acceptance criteria have been demonstrated on the
 relevant deployed service or installed app, with evidence recorded below.
-Local patches and passing unit tests count as progress. All 37 cases remain
-unchecked until that verification is recorded. Missing software, a device, or
+Local patches and passing unit tests count as progress. Each case remains
+unchecked until its verification is recorded. Missing software, a device, or
 an integration leaves its case pending with the specific dependency noted.
 
 ## 1. Reliable execution and shared files
 
-- [ ] **E12 — Correct progress and completion.** Cloudflare Linux sandbox → web and iPhone. Keep yielded commands Running, accumulate output in the original card, and retain the actual successful or failing exit code after reload. Measure elapsed time from command call to observed completion, including time between polls.
+- [x] **E12 — Correct progress and completion.** Cloudflare Linux sandbox → web and iPhone. Yielded commands remain Running, subsequent output folds into the original card, and actual successful/failing exit codes survive reload. Elapsed time includes execution between polls. [Evidence](EXECUTION_ACCEPTANCE.md#terminal-command-presentation--2026-09-07). Process recovery and missing Code Mode mount receipts remain open under E13/E14.
 - [ ] **E13 — Long jobs and reconnect.** Same Cloudflare sandbox. Run a 60-minute job through app closure, event reconnect, and Worker reconnection; recover its progress and final result without duplicate execution.
 - [ ] **E14 — Process/container failure.** Isolated Cloudflare sandbox. Exercise termination, resource exhaustion, and restart; retain output and a truthful interrupted/failed outcome.
 - [ ] **E15 — Steering and Stop.** Original Cloudflare sandbox or explicitly selected device. Apply steering to the active turn; stop its work without confirmation or orphaned processes, preserving unrelated work.
@@ -100,8 +100,8 @@ cold/warm cache state and baseline conditions; set budgets from measurements.
 
 | Case | Progress / result | Evidence | Remaining work |
 | --- | --- | --- | --- |
-| E12 | Local web/iPhone progress and elapsed-time patches; 76 tests passed (42 React, 12 terminal, 20 Swift, 2 account runtime), plus package/type checks. | Branch `fix/terminal-command-progress`; saved production events replay as one Cargo card with Running → Completed, final output, exit 0, and 112.089 s. Live and history reduction agree. | Verify the deployed web and installed iPhone behavior, including completion/failure and reload. |
-| E13 / E14 | A production rollout interrupted the two-minute E12 fixture: retained process session `770702757` became unknown/stale during a poll. The original command has no recovered exit receipt. | [Interrupted fixture](https://nanocodex.gakonst.workers.dev/agent/01a07b1d-6675-76c7-85e8-ecf2d7a1a283), cursors 13–47; initial and middle output were retained. | Preserve process-session ownership across Worker replacement and recover the original command’s terminal receipt. |
+| E12 | Verified deployed web and physical iPhone command presentation, including Running across reload/relaunch and completed/failed receipts. The read-only iPhone history XCTest passed for both final receipts. | [Production and native evidence](EXECUTION_ACCEPTANCE.md#terminal-command-presentation--2026-09-07): success 121.316 s / exit 0; intentional failure 30.868 s / exit 7. Original 76 focused tests passed; final InboxCore suite: 64 passed, 3 opt-in live tests skipped. | Command presentation complete. Full fresh live XCTest remains affected by the separate E13/E14 process-recovery failure. |
+| E13 / E14 | Two two-minute fixtures lost their namespace process session; one coincided with a rollout, another failed after the recorded deployment finished. Neither recovered an exit receipt. A yielding Code Mode mount also omitted its inner tool-result event. | [Recovery failures](EXECUTION_ACCEPTANCE.md#remaining-recovery-failures); later session `2050295544` became stale after 57.517 s. | Preserve process-session ownership through runtime recovery, recover terminal receipts, and emit the missing inner mount receipt. Then run the full long-job and failure matrix. |
 | B01 / E01 → E03 | `dtolnay/itoa` production baseline passed, with one host clone and one Cloudflare Cargo invocation. | [Production thread](https://nanocodex.gakonst.workers.dev/agent/01a07acf-461d-70be-8f61-ec5cbe319540); [timings and scope](EXECUTION_ACCEPTANCE.md#itoa-baseline--2026-09-07). | Device-availability variants, iPhone verification, and the full E01/E03 matrix remain separate cases. |
 | B02 / E06 | itoa warm rerun passed in 4.634 s with caches reused; after-idle rerun rebuilt dependencies in 121.510 s. Both used the existing mount and passed 13 tests. | [Rerun timings and receipts](EXECUTION_ACCEPTANCE.md#itoa-reruns--2026-09-07). | Build-cache persistence across idle restarts, larger-repository warm runs, and device-availability variants remain open. |
 | E05 | Prior workspace run lost its process after approximately 38m 42s; no Cargo exit code was recovered. | [Production thread](https://nanocodex.gakonst.workers.dev/agent/01a0788c-a640-734e-bb31-99cb0dafbe23), “Run all” turn. | Diagnose process loss, fix it, and retain a real final result from a fresh run. |
