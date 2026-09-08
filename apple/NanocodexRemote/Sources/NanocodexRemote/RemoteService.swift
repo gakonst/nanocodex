@@ -147,12 +147,14 @@ public final class RemoteSignaling: RemoteSignalingTransport {
     private var sender: Task<Void, Never>?
     private var queuedMessages = 0
     private var closed = false
+    private var publishing = false
 
     public init(service: RemoteService) { self.service = service }
 
     public func connect(hand: RemoteHand? = nil) throws {
         guard socket == nil, !closed else { throw RemoteError.closed }
         let connection = try service.socket(hand: hand)
+        publishing = hand == nil
         socket = connection; connection.resume()
         resetWatchdog()
         reader = Task { [weak self] in
@@ -192,9 +194,21 @@ public final class RemoteSignaling: RemoteSignalingTransport {
 
     public func close(error: Error? = nil) {
         guard !closed else { return }; closed = true
+        let failure = error.map {
+            Self.disconnectError($0, publishing: publishing,
+                                 code: socket?.closeCode.rawValue ?? 0, reason: socket?.closeReason)
+        }
         reader?.cancel(); renewal?.cancel(); watchdog?.cancel(); sender?.cancel()
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
-        onClose(error)
+        onClose(failure)
+    }
+
+    /// A replaced publisher must retire instead of repeatedly evicting its
+    /// replacement. Viewers receive the same close and should reconnect to it.
+    static func disconnectError(_ error: Error, publishing: Bool, code: Int, reason: Data?) -> Error {
+        if publishing, code == URLSessionWebSocketTask.CloseCode.policyViolation.rawValue,
+           reason == Data("Host replaced".utf8) { return RemoteError.hostReplaced }
+        return error
     }
 
     private func startRenewal(_ id: String) {

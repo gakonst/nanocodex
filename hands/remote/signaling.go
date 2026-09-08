@@ -55,6 +55,18 @@ type remoteSurface struct {
 	Transport    string `json:"transport,omitempty"`
 }
 
+var errRemoteHostReplaced = errors.New("remote host replaced by another publisher")
+
+// Only the authenticated publisher socket can retire this daemon. Other policy
+// closes (including authorization expiry during credential rotation) still retry.
+func publisherSocketError(err error, fallback string) error {
+	var closed websocket.CloseError
+	if errors.As(err, &closed) && closed.Code == websocket.StatusPolicyViolation && closed.Reason == "Host replaced" {
+		return errRemoteHostReplaced
+	}
+	return errors.New(fallback)
+}
+
 // A standalone Hand reads its credential from an owner-only file, never argv.
 // Factory guests must receive an allocation-scoped credential from their owner;
 // the VM launcher must not copy the user's account/provider credentials into them.

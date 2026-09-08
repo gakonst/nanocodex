@@ -185,7 +185,10 @@ test("Cloudflare durability stores one state and chunks only oversized payloads"
   assert.throws(() => store.load("agent-large"), /invalid Cloudflare durability chunk head/);
   states.get("agent-large").payload = "";
   chunks.splice(chunks.findLastIndex((chunk) => chunk.stateId === "agent-large"), 1);
-  assert.throws(() => store.load("agent-large"), /missing Cloudflare durability chunks/);
+  const expectedChunks = heads.get("agent-large").chunk_count;
+  assert.throws(() => store.load("agent-large"), {
+    message: `missing Cloudflare durability chunks for revision 1 (expected ${expectedChunks}, found ${expectedChunks - 1})`,
+  });
   assert.ok(transactions >= 6);
   assert.throws(
     () => createCloudflareDurabilityStore({}),

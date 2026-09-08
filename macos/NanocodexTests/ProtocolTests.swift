@@ -72,6 +72,47 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(transcript.documentView?.bounds.height ?? 0, initialHeight, accuracy: 2)
     }
 
+    @MainActor
+    func testNativeTaskStatusClearsReviewedFailureAndShowsCurrentWork() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/native-task-status-" + UUID().uuidString)
+        model.state = try Self.connectedState.decode(DesktopState.self)
+        model.workspaceFilter = .all
+        model.runtime.requestOverride = { _, _ in .null }
+        model.tabs = [WorkspaceTab(id: "task", threadId: "thread", title: "Task status lifecycle")]
+        model.activeTabID = "task"
+        model.snapshots["thread"] = ThreadSnapshot(id: "thread", events: [
+            ManagedEvent(cursor: "10", turnId: "old", data: .object(["type": .string("turn_failed")]))
+        ], hasMore: false, connected: true, activeTurns: [], settings: AgentSettings())
+        let panel = HandControlPanel(model: model, openMainWindow: {})
+        let host = NSHostingView(rootView: panel.frame(width: 720, height: 560))
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        func capture(_ name: String) async throws {
+            try await Task.sleep(for: .milliseconds(100))
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds)); host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent(name))
+        }
+        XCTAssertEqual(panel.agentStatus(model.tabs[0]), "Needs attention")
+        XCTAssertEqual(model.attentionCount, 1)
+        model.review("task", seen: true)
+        try await capture("native-task-reviewed.png")
+        XCTAssertEqual(model.attentionCount, 0)
+        XCTAssertFalse(model.hasAttentionError(model.tabs[0]))
+        XCTAssertEqual(panel.agentStatus(model.tabs[0]), "Idle", "Reviewed historical failure must not keep a task flagged")
+        model.snapshots["thread"]?.activeTurns = ["new"]
+        try await capture("native-task-running.png")
+        XCTAssertFalse(model.hasAttentionError(model.tabs[0]))
+        XCTAssertEqual(panel.agentStatus(model.tabs[0]), "Running", "An old failure must not override a new active turn")
+        model.snapshots["thread"]?.activeTurns = []
+        model.snapshots["thread"]?.events.append(ManagedEvent(cursor: "12", turnId: "new", data: .object(["type": .string("turn_failed")])) )
+        XCTAssertEqual(panel.agentStatus(model.tabs[0]), "Needs attention", "A new failure still needs review")
+        XCTAssertEqual(model.attentionCount, 1)
+    }
+
     func testInboxReviewUsesExactCursorsAndOnlyNewUpdatesReturn() {
         var tab = WorkspaceTab(seenCursor: "9007199254740992")
         let ready = WorkspaceUpdate(cursor: "9007199254740993", running: false, checked: true, failed: false, completed: true)
@@ -86,6 +127,36 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(newer.isInInbox(tab))
         XCTAssertTrue(cursorIsNewer("1000000000000000000000000000000000000000", than: "999999999999999999999999999999999999999"))
         XCTAssertFalse(cursorIsNewer("00012", than: "12"))
+    }
+
+    @MainActor
+    func testUnsentTabKeepsSelectedSettingsAcrossRelaunch() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/native-draft-settings-" + UUID().uuidString)
+        model.tabs = [WorkspaceTab(id: "draft"), WorkspaceTab(id: "other")]
+        model.activeTabID = "draft"
+        var saved: JSONValue = .null
+        model.runtime.requestOverride = { method, args in
+            if method == "saveLayout" { saved = args[0] }
+            return .null
+        }
+        model.updateDraft("Keep this unsent draft")
+        model.changeSettings(tabID: "draft") {
+            $0.selectModel("gpt-5.6-luna"); $0.thinking = "low"; $0.fast_mode = true
+        }
+        await model.prepareToQuit()
+        let restored = AppModel(runtimeDirectory: "/tmp/native-draft-settings-restored-" + UUID().uuidString)
+        restored.runtime.requestOverride = { _, _ in .null }
+        defer { restored.shutdown() }
+        guard case .object(var state) = Self.connectedState else { return XCTFail("Missing state fixture") }
+        state["layout"] = saved
+        var wire = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("state"), "state": .object(state)])])); wire.append(10)
+        restored.runtime.receiveForTesting(wire)
+        for _ in 0..<30 where restored.activeTabID != "draft" { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(restored.activeTab?.draft, "Keep this unsent draft")
+        XCTAssertEqual(restored.settingsForTab("draft"), AgentSettings(model: "gpt-5.6-luna", thinking: "low", fast_mode: true))
+        XCTAssertEqual(restored.settingsForTab("other"), AgentSettings(), "A draft's selection must not alter another tab's defaults")
+        restored.closeTab("draft"); restored.reopenTab()
+        XCTAssertEqual(restored.settingsForTab("draft").model, "gpt-5.6-luna")
     }
 
     @MainActor

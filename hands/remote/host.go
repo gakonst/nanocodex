@@ -96,6 +96,8 @@ func serveWayland(parent context.Context, config hostConfig) error {
 	output := make(chan remoteMessage, 128)
 	events := make(chan hostEvent, 128)
 	failures := make(chan error, 1)
+	readerDone := make(chan struct{})
+	var readerError error // Read only after readerDone closes.
 	fail := func(err error) {
 		select {
 		case failures <- err:
@@ -134,17 +136,19 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				err = socket.Write(writeContext, websocket.MessageText, data)
 				done()
 				if err != nil {
-					fail(errors.New("remote signaling write failed"))
+					fail(publisherSocketError(err, "remote signaling write failed"))
 					return
 				}
 			}
 		}
 	}()
 	go func() {
+		defer close(readerDone)
 		for {
 			kind, data, err := socket.Read(ctx)
 			if err != nil {
-				fail(errors.New("remote signaling closed"))
+				readerError = publisherSocketError(err, "remote signaling closed")
+				fail(readerError)
 				return
 			}
 			var message remoteMessage
@@ -428,6 +432,12 @@ func serveWayland(parent context.Context, config hostConfig) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// A concurrent write can fail as the close frame is read. Preserve
+			// the broker's terminal replacement reason over that generic failure.
+			<-readerDone
+			if errors.Is(readerError, errRemoteHostReplaced) {
+				return readerError
+			}
 			select {
 			case err := <-failures:
 				return err

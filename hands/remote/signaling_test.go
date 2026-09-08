@@ -1,11 +1,41 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/coder/websocket"
 )
+
+func TestPublisherReplacementRequiresExactAuthenticatedClose(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		stop bool
+	}{
+		{"replacement", websocket.CloseError{Code: 1008, Reason: "Host replaced"}, true},
+		{"wrapped replacement", fmt.Errorf("read: %w", websocket.CloseError{Code: 1008, Reason: "Host replaced"}), true},
+		{"authorization rotation", websocket.CloseError{Code: 1008, Reason: "Authorization expired"}, false},
+		{"network failure", errors.New("connection reset"), false},
+		{"wrong code", websocket.CloseError{Code: 1000, Reason: "Host replaced"}, false},
+		{"untyped message", errors.New("Host replaced"), false},
+		{"different policy", websocket.CloseError{Code: 1008, Reason: "Host replaced unexpectedly"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := publisherSocketError(test.err, "remote signaling closed")
+			if errors.Is(err, errRemoteHostReplaced) != test.stop {
+				t.Fatalf("replacement classification: %v", err)
+			}
+			if !test.stop && err.Error() != "remote signaling closed" {
+				t.Fatal("untrusted diagnostic escaped sanitization")
+			}
+		})
+	}
+}
 
 func TestRemoteServiceKeepsAllocationCredentialScoped(t *testing.T) {
 	credential := filepath.Join(t.TempDir(), "credential")

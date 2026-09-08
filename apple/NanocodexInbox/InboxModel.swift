@@ -780,7 +780,9 @@ final class InboxModel: ObservableObject {
             let ar = a.needsAttention(seen: seenCursor(a.id)), br = b.needsAttention(seen: seenCursor(b.id))
             return ar != br ? ar : a.updatedAt != b.updatedAt ? a.updatedAt > b.updatedAt : a.id < b.id
         }
-        deck.reconcile(eligible.map(\.id))
+        var nextDeck = deck
+        nextDeck.reconcile(eligible.map(\.id))
+        if nextDeck != deck { deck = nextDeck }
         if previous != deck.focusedID { observeFocused() }
     }
     private func prioritizeNext() {
@@ -793,7 +795,9 @@ final class InboxModel: ObservableObject {
             let ai = deck.order.firstIndex(of: a.id) ?? 0, bi = deck.order.firstIndex(of: b.id) ?? 0
             return ai < bi
         }
-        deck.prioritize(ranked.map(\.id))
+        var nextDeck = deck
+        nextDeck.prioritize(ranked.map(\.id))
+        if nextDeck != deck { deck = nextDeck }
     }
     func advance(reviewed: Bool) {
         guard let card = focused else { return }

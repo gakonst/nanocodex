@@ -143,8 +143,10 @@ export class RemoteBrowserSession {
       let peer: RTCPeerConnection | undefined;
       if (frames) {
         if (!this.canvas?.getContext("2d")) throw new RemoteError("This browser cannot display this screen.", true);
-      } else {
-        const ice = await request("/ice", "POST", undefined, signal);
+      }
+      // Fetch TURN credentials while the authenticated viewer socket connects.
+      // Offers stay queued until this attempt's credentials and peer are ready.
+      const peerReady = frames ? Promise.resolve() : request("/ice", "POST", undefined, signal).then(ice => {
         if (!this.current(epoch)) return;
         peer = new RTCPeerConnection({ iceServers: ice.iceServers, bundlePolicy: "max-bundle" });
         this.peer = peer;
@@ -163,7 +165,7 @@ export class RemoteBrowserSession {
           else this.ready();
         };
         peer.ondatachannel = ({ channel }) => { if (this.current(epoch)) this.channel(channel, epoch); else channel.close(); };
-      }
+      }).catch(error => { if (this.current(epoch)) this.fail(error); });
       const url = new URL("/v1/account/hands/view", location.origin);
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
       url.search = new URLSearchParams({ machine_id: this.hand.machine_id, surface_id: this.hand.id, generation: this.hand.generation }).toString();
@@ -172,11 +174,13 @@ export class RemoteBrowserSession {
       socket.onerror = () => { if (this.current(epoch)) this.fail(new RemoteError("Could not connect to this screen.")); };
       const candidates: RTCIceCandidateInit[] = [];
       let signalQueue = Promise.resolve();
+      let queuedMessages = 0;
       socket.onmessage = ({ data }) => {
         if (!this.current(epoch)) return;
         let message: any;
         try {
           if (typeof data !== "string" || encoder.encode(data).length > (frames ? 710_000 : 70_000)) throw new RemoteError("Invalid remote signal.", true);
+          if (++queuedMessages > 128) throw new RemoteError("Too many remote signals.", true);
           message = JSON.parse(data);
           if (!message || typeof message !== "object") throw new RemoteError("Invalid remote signal.", true);
           if (frames && message.type === "frame") {
@@ -200,7 +204,10 @@ export class RemoteBrowserSession {
           else if (message.type === "pong") return; // Liveness is not lease authorization.
           else if (frames && message.type === "frame") await this.renderFrame(message, epoch);
           else if (frames && message.type === "control") this.receiveControl(message.data, epoch);
-          else if (!frames && peer && message.type === "signal") {
+          else if (!frames && message.type === "signal") {
+            await peerReady;
+            if (!this.current(epoch)) return;
+            if (!peer) throw new RemoteError("Could not initialize this screen.");
             const offer = message.signal;
             if (!offer || typeof offer !== "object") throw new RemoteError("Invalid remote offer.", true);
             if (offer.type === "candidate") {
@@ -208,10 +215,13 @@ export class RemoteBrowserSession {
               if (peer.remoteDescription) await peer.addIceCandidate(offer);
               else candidates.push(offer);
             } else if (offer.type === "offer" && typeof offer.sdp === "string" && encoder.encode(offer.sdp).length <= 65_536) {
-              // Host ICE restarts also need fresh viewer TURN credentials.
-              const ice = await request("/ice", "POST", undefined, signal);
-              if (!this.current(epoch)) return;
-              peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers });
+              // Initial credentials are already fresh; only subsequent offers
+              // (host ICE restarts) need another authenticated TURN request.
+              if (peer.remoteDescription) {
+                const ice = await request("/ice", "POST", undefined, signal);
+                if (!this.current(epoch)) return;
+                peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers });
+              }
               await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
               if (!this.current(epoch)) return;
               for (const candidate of candidates.splice(0)) await peer.addIceCandidate(candidate);
@@ -222,9 +232,10 @@ export class RemoteBrowserSession {
               if (this.current(epoch)) this.signal({ type: "answer", sdp: peer.localDescription!.sdp });
             } else throw new RemoteError("Invalid remote offer.", true);
           } else throw new RemoteError("Invalid remote signal.", true);
-        }).catch(error => { if (this.current(epoch)) this.fail(error instanceof SyntaxError ? new RemoteError("Invalid remote signal.", true) : error); });
+        }).catch(error => { if (this.current(epoch)) this.fail(error instanceof SyntaxError ? new RemoteError("Invalid remote signal.", true) : error); }).finally(() => { queuedMessages--; });
       };
       this.authorized(epoch);
+      await peerReady;
     } catch (error) { if (this.current(epoch)) this.fail(error); }
   }
 

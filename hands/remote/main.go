@@ -65,7 +65,13 @@ func main() {
 				return serveDesktopSession(ctx, config, *workspace, *desktopConfig, false)
 			}
 		}
-		if err := run(ctx, config); err != nil && !errors.Is(err, context.Canceled) {
+		if err := run(ctx, config); errors.Is(err, errRemoteHostReplaced) {
+			// Cleanup has stopped capture and any owned compositor. Stay idle so
+			// Docker's restart policy cannot reclaim the newer publisher's screen.
+			// An explicit daemon restart enables publishing again.
+			log.Print("Remote host replaced; restart this daemon to share again")
+			<-ctx.Done()
+		} else if err != nil && !errors.Is(err, context.Canceled) {
 			log.Fatal(err)
 		}
 		return

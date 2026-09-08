@@ -63,9 +63,7 @@ public struct RemoteDashboard: View {
                     }
                 HStack {
                     Text(viewer.status).font(.caption).foregroundStyle(.secondary)
-#if DEBUG
-                        .accessibilityValue(ProcessInfo.processInfo.environment["NANOCODEX_REMOTE_DIAGNOSTICS"] == "1" ? viewer.diagnosticRecovery : "")
-#endif
+                        .accessibilityValue(viewer.diagnosticPresentation)
                         .accessibilityIdentifier("remote-status")
                     if !viewer.connected && !viewer.connecting {
                         Button("Reconnect") { Task { await viewer.reconnect() } }

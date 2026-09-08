@@ -3,6 +3,20 @@ import CoreGraphics
 import Combine
 import WebRTC
 
+// Installed only for opt-in diagnostics. Capture one decoded frame on WebRTC's
+// renderer thread; never dispatch or publish work for every video frame.
+final class RemoteFirstFrameProbe: NSObject, RTCVideoRenderer, @unchecked Sendable {
+    private let lock = NSLock()
+    private var receive: (@Sendable (TimeInterval, Int, Int) -> Void)?
+    init(receive: @escaping @Sendable (TimeInterval, Int, Int) -> Void) { self.receive = receive }
+    func setSize(_ size: CGSize) {}
+    func renderFrame(_ frame: RTCVideoFrame?) {
+        guard let frame, frame.width > 0, frame.height > 0 else { return }
+        let callback = lock.withLock { let callback = receive; receive = nil; return callback }
+        callback?(ProcessInfo.processInfo.systemUptime, Int(frame.width), Int(frame.height))
+    }
+}
+
 struct RemoteControlMessage: Codable, Sendable {
     enum Kind: String, Codable, Sendable { case acquire, granted, denied, renew, release, revoked }
     let type: Kind
@@ -104,16 +118,36 @@ public final class RemoteViewer: ObservableObject {
     private var frameTask: Task<Void, Never>?
     private var frameDeadline: Task<Void, Never>?
     private var framePending = false
+    private let diagnosticsEnabled = ProcessInfo.processInfo.environment["NANOCODEX_REMOTE_DIAGNOSTICS"] == "1"
+    private var diagnosticStarted: TimeInterval = 0
+    private var diagnosticEvents: [[String: String]] = []
+    private var frameProbe: RemoteFirstFrameProbe?
+    @Published private var diagnosticFirstFrame: [String: Int]?
 
     public init() { recoveryWindow = .seconds(90) }
     init(recoveryWindow: Duration) { self.recoveryWindow = recoveryWindow }
     var diagnosticState: String { peer?.diagnosticState ?? "no peer" }
     var diagnosticRecovery: String { "\(diagnosticState) ready=\(transportReady)/\(channelsReady) retries=\(retries) last=\(lastFailure)" }
     var connectionEvent: (String) -> Void = { _ in }
+    var diagnosticPresentation: String {
+        guard diagnosticsEnabled else { return "" }
+        let value: [String: Any] = ["connection_id": epoch.uuidString, "state": diagnosticRecovery,
+            "generation": hand?.generation ?? "", "events": diagnosticEvents,
+            "first_frame": diagnosticFirstFrame as Any? ?? NSNull()]
+        return (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]))
+            .map { String(decoding: $0, as: UTF8.self) } ?? ""
+    }
+    private func recordConnectionEvent(_ event: String) {
+        if diagnosticsEnabled, diagnosticEvents.count < 64 {
+            diagnosticEvents.append(["event": event, "elapsed_ms": String(Int((ProcessInfo.processInfo.systemUptime - diagnosticStarted) * 1000))])
+        }
+        connectionEvent(event)
+    }
     func diagnosticICE(includeAddresses: Bool = true) async -> String { await peer?.diagnosticICE(includeAddresses: includeAddresses) ?? "no peer" }
 
     public func connect(service: RemoteService, hand: RemoteHand) async {
         close(); self.service = service; self.hand = hand
+        diagnosticStarted = ProcessInfo.processInfo.systemUptime; diagnosticEvents = []
         await start(refresh: false)
     }
 
@@ -122,6 +156,7 @@ public final class RemoteViewer: ObservableObject {
     public func reconnect() async {
         guard hand != nil, service != nil else { return }
         retries = 0; recoveryDeadline = nil; suspended = false
+        diagnosticStarted = ProcessInfo.processInfo.systemUptime; diagnosticEvents = []
         await start(refresh: true)
     }
 
@@ -138,7 +173,7 @@ public final class RemoteViewer: ObservableObject {
     private func start(refresh: Bool) async {
         guard let service, let selected = hand, !suspended else { return }
         detach(); let attempt = epoch; connecting = true
-        connectionEvent(refresh ? "reconnect" : "connect")
+        recordConnectionEvent(refresh ? "reconnect" : "connect")
         status = refresh ? "Reconnecting…" : "Connecting…"
         let clock = ContinuousClock()
         // Replace a stalled foreground reconnect sooner within the recovery
@@ -148,7 +183,7 @@ public final class RemoteViewer: ObservableObject {
         connectionDeadline = Task { [weak self] in
             do { try await clock.sleep(until: deadline) } catch { return }
             guard let self, self.epoch == attempt, !self.connected else { return }
-            self.connectionEvent("connection deadline")
+            self.recordConnectionEvent("connection deadline")
             self.fail(RemoteError.unavailable)
         }
         do {
@@ -175,25 +210,37 @@ public final class RemoteViewer: ObservableObject {
                 try Task.checkCancellation()
                 guard let self, self.epoch == attempt, let peer else { throw CancellationError() }
                 try peer.updateICE(ice)
-                self.connectionEvent("initial ICE ready")
+                self.recordConnectionEvent("initial ICE ready")
             }
             connectionSetup = setup
             peer.onSignal = { [weak self, weak signaling] signal in
                 guard let self, epoch == attempt else { return }
-                if signal.type != .candidate { connectionEvent("send \(signal.type.rawValue)") }
+                if signal.type != .candidate { recordConnectionEvent("send \(signal.type.rawValue)") }
                 signaling?.send(.init(type: "signal", signal: signal))
             }
             peer.onVideoTrack = { [weak self] track in
-                guard let self, epoch == attempt else { return }; self.track = track
+                guard let self, epoch == attempt else { return }
+                if let frameProbe { self.track?.remove(frameProbe) }
+                diagnosticFirstFrame = nil
+                self.track = track
+                if diagnosticsEnabled {
+                    let probe = RemoteFirstFrameProbe { [weak self, weak track] time, width, height in
+                        Task { @MainActor [weak self, weak track] in
+                            guard let self, let track, epoch == attempt, self.track === track else { return }
+                            diagnosticFirstFrame = ["elapsed_ms": Int((time - diagnosticStarted) * 1000), "width": width, "height": height]
+                        }
+                    }
+                    frameProbe = probe; track.add(probe)
+                }
             }
             peer.onState = { [weak self] state in
                 guard let self, epoch == attempt else { return }
-                connectionEvent("peer state \(state.rawValue)")
+                recordConnectionEvent("peer state \(state.rawValue)")
                 if state == .connected { transportReady = true; updateReady() }
                 if [.failed, .closed, .disconnected].contains(state) { fail(RemoteError.unavailable) }
             }
             peer.onChannelsReady = { [weak self] in
-                guard let self, epoch == attempt else { return }; connectionEvent("channels ready"); channelsReady = true; updateReady()
+                guard let self, epoch == attempt else { return }; recordConnectionEvent("channels ready"); channelsReady = true; updateReady()
             }
             peer.onData = { [weak self] data, motion in
                 guard let self, epoch == attempt, !motion else { return }; receiveControl(data)
@@ -202,9 +249,9 @@ public final class RemoteViewer: ObservableObject {
             var queuedSignals = 0
             signaling.onMessage = { [weak self, weak peer] message in
                 guard let self, epoch == attempt else { return }
-                if message.type == "ready" { connectionEvent("signaling ready") }
+                if message.type == "ready" { recordConnectionEvent("signaling ready") }
                 guard let signal = message.signal, let peer else { return }
-                if signal.type != .candidate { connectionEvent("receive \(signal.type.rawValue)") }
+                if signal.type != .candidate { recordConnectionEvent("receive \(signal.type.rawValue)") }
                 guard queuedSignals < 128 else { fail(RemoteError.invalidMessage); return }
                 queuedSignals += 1
                 let preceding = signalQueue
@@ -227,11 +274,11 @@ public final class RemoteViewer: ObservableObject {
                             receivedOffer = true
                         }
                         try await peer.receive(signal)
-                    } catch { if epoch == attempt { connectionEvent("signal failed"); fail(error) } }
+                    } catch { if epoch == attempt { recordConnectionEvent("signal failed"); fail(error) } }
                 }
             }
             signaling.onClose = { [weak self] error in
-                guard let self, epoch == attempt else { return }; connectionEvent("signaling closed"); fail(error ?? RemoteError.closed)
+                guard let self, epoch == attempt else { return }; recordConnectionEvent("signaling closed"); fail(error ?? RemoteError.closed)
             }
             try signaling.connect(hand: hand)
             try await withTaskCancellationHandler {
@@ -241,7 +288,7 @@ public final class RemoteViewer: ObservableObject {
         } catch {
             guard epoch == attempt else { return }
             if Task.isCancelled { detach(); status = "Disconnected" }
-            else { connectionEvent("setup failed"); fail(error) }
+            else { recordConnectionEvent("setup failed"); fail(error) }
         }
     }
 
@@ -295,6 +342,8 @@ public final class RemoteViewer: ObservableObject {
         connectionDeadline?.cancel(); connectionDeadline = nil
         frameTask?.cancel(); frameTask = nil; frameDeadline?.cancel(); frameDeadline = nil; framePending = false; frame = nil
         let peer = self.peer, signaling = self.signaling
+        if let frameProbe { track?.remove(frameProbe) }
+        frameProbe = nil; diagnosticFirstFrame = nil
         self.peer = nil; self.signaling = nil; track = nil; connected = false; connecting = false
         transportReady = false; channelsReady = false
         peer?.onState = { _ in }; signaling?.onClose = { _ in }
@@ -303,7 +352,7 @@ public final class RemoteViewer: ObservableObject {
 
     private func fail(_ error: Error) {
         let failure = error as NSError
-        connectionEvent("failure \(failure.domain):\(failure.code); \(diagnosticState)")
+        recordConnectionEvent("failure \(failure.domain):\(failure.code); \(diagnosticState)")
         lastFailure = error.localizedDescription
         detach(); status = error.localizedDescription
         guard !suspended, hand != nil, service != nil,
@@ -715,7 +764,8 @@ public final class RemoteMacHost: ObservableObject {
     }
 
     private func stopAfterFailure(_ error: Error) {
-        if error as? RemoteError == .unauthorized || error as? RemoteError == .invalidMessage || error is DecodingError {
+        if error as? RemoteError == .unauthorized || error as? RemoteError == .invalidMessage
+            || error as? RemoteError == .hostReplaced || error is DecodingError {
             automaticSharingBlocked = true
         }
         let previous = detach(), stopped = epoch

@@ -52,6 +52,7 @@ export function startRelay({
   }
   const server = createServer((request, response) => {
     void proxyHttp(request, response, upstream).catch((error) => {
+      if (response.destroyed) return;
       if (response.headersSent) response.destroy(error);
       else {
         response.writeHead(502, { "cache-control": "no-store", "content-type": "text/plain" });
@@ -90,6 +91,11 @@ async function proxyHttp(request, response, upstreamOrigin) {
   const target = new URL(`${incoming.pathname}${incoming.search}`, upstreamOrigin);
   const controller = new AbortController();
   request.once("aborted", () => controller.abort());
+  // The upload is normally already complete when a caller times out waiting
+  // for SDP. IncomingMessage's aborted event does not cover that disconnect.
+  response.once("close", () => {
+    if (!response.writableFinished) controller.abort();
+  });
   const upstream = await fetch(target, {
     method: "POST",
     headers,

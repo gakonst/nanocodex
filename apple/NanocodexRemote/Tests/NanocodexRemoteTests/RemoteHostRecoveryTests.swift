@@ -375,6 +375,41 @@ final class RemoteHostRecoveryTests: XCTestCase {
         }
     }
 
+    @MainActor func testReplacedAutomaticPublisherRetiresUntilExplicitlyEnabledAgain() async throws {
+        let service = try service(), host = RemoteMacHost(), defaults = try automaticDefaults()
+        defer { service.close() }
+        addTeardownBlock { await host.stop() }
+        let surface = automaticSurface(), input = RecoveryInput()
+        var captures: [RecoveryCapture] = [], sockets: [RecoverySocket] = []
+        host.automaticSharingInterval = .milliseconds(5)
+        host.recoveryDelay = { _ in XCTFail("A replaced publisher must not reclaim the screen"); return .zero }
+        host.macSurfaces = { [surface] }
+        host.checkAuthorization = { _ in }
+        host.prepareMacCapture = { _, _ in
+            let capture = RecoveryCapture(); captures.append(capture); return (capture, input)
+        }
+        host.makeSignaling = { _ in let socket = RecoverySocket(); sockets.append(socket); return socket }
+        host.configureAutomaticSharing(service: service, defaults: defaults)
+        try await eventually { host.sharing }
+        let staleClose = sockets[0].onClose, releases = input.releases
+        staleClose(RemoteError.hostReplaced)
+        try await eventually { captures[0].stops == 1 }
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertFalse(host.sharing); XCTAssertFalse(host.reconnecting)
+        XCTAssertTrue(host.automaticSharingEnabled)
+        XCTAssertEqual(host.status, RemoteError.hostReplaced.localizedDescription)
+        XCTAssertEqual(sockets.count, 1); XCTAssertEqual(captures.count, 1)
+        XCTAssertGreaterThan(input.releases, releases)
+
+        await host.setAutomaticSharingEnabled(true)
+        try await eventually { host.sharing && sockets.count == 2 }
+        XCTAssertEqual(captures.count, 2)
+        staleClose(RemoteError.hostReplaced)
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertTrue(host.sharing); XCTAssertEqual(captures[1].stops, 0)
+        await host.stop()
+    }
+
     @MainActor private func automaticDefaults() throws -> UserDefaults {
         let suite = "nanocodex.remote.automatic-test.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

@@ -23,14 +23,18 @@ import (
 // Run inside the desktop image as an unprivileged user. The local fixture owns
 // only signaling; the compositor, screenshot and input are the real binaries.
 func TestServerDesktopLifecycle(t *testing.T) {
-	testServerDesktopLifecycle(t, false)
+	testServerDesktopLifecycle(t, false, false)
 }
 
 func TestFramesDesktopLifecycle(t *testing.T) {
-	testServerDesktopLifecycle(t, true)
+	testServerDesktopLifecycle(t, true, false)
 }
 
-func testServerDesktopLifecycle(t *testing.T, frames bool) {
+func TestFramesDesktopReplacementLifecycle(t *testing.T) {
+	testServerDesktopLifecycle(t, true, true)
+}
+
+func testServerDesktopLifecycle(t *testing.T, frames, replacement bool) {
 	if os.Getenv("NANOCODEX_TEST_SERVER_DESKTOP") != "1" {
 		t.Skip("requires the isolated Linux desktop image")
 	}
@@ -122,6 +126,7 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 	}
 	var diagnostics bytes.Buffer
 	command.Stdout, command.Stderr = &diagnostics, &diagnostics
+	started := time.Now()
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +144,7 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 		return publication{}
 	}
 	first := waitPublished()
+	t.Logf("desktop publication: %s", time.Since(started).Round(time.Millisecond))
 	child := func(name string) string {
 		data, err := exec.Command("pgrep", "-P", fmt.Sprint(command.Process.Pid), name).Output()
 		if err != nil {
@@ -151,7 +157,9 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 	// interactive shell before injecting a click into the center of the desktop.
 	terminalDeadline := time.Now().Add(5 * time.Second)
 	for {
-		shells, _ := exec.Command("pgrep", "-x", "bash").Output()
+		// Numeric SSH users need not exist in the image's passwd database;
+		// foot starts its POSIX shell fallback for those users.
+		shells, _ := exec.Command("pgrep", "-x", "bash|sh").Output()
 		ready := false
 		for _, pid := range strings.Fields(string(shells)) {
 			cwd, _ := os.Readlink("/proc/" + pid + "/cwd")
@@ -168,6 +176,7 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	t.Logf("desktop terminal ready: %s", time.Since(started).Round(time.Millisecond))
 	waitMarker := func(expected string) {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Second)
@@ -205,6 +214,7 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 			return remoteMessage{}
 		}
 		send(remoteMessage{Type: "viewer", ViewerID: owner, SurfaceID: "desktop", Generation: first.generation})
+		frameRequested := time.Now()
 		send(remoteMessage{Type: "frame_request", ViewerID: owner})
 		frame := next()
 		if frame.Type != "frame" || frame.JPEG == "" || frame.Width != 1280 || frame.Height != 720 || frame.Status != "" {
@@ -214,6 +224,7 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 		if _, err := jpeg.Decode(bytes.NewReader(data)); err != nil {
 			t.Fatal(err)
 		}
+		t.Logf("frame request to decoded JPEG: %s", time.Since(frameRequested).Round(time.Millisecond))
 		send(remoteMessage{Type: "control", ViewerID: owner, Data: json.RawMessage(`{"type":"acquire"}`)})
 		granted := next()
 		var control controlMessage
@@ -227,6 +238,7 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 			{Kind: "key", Key: pointer(uint16(40)), Down: pointer(true)},
 			{Kind: "key", Key: pointer(uint16(40)), Down: pointer(false)},
 		}
+		inputStarted := time.Now()
 		for i, input := range inputs {
 			input.Sequence = uint64(i + 1)
 			input.Generation = control.Generation
@@ -244,6 +256,7 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 			}
 			time.Sleep(25 * time.Millisecond)
 		}
+		t.Logf("viewer input to workspace marker: %s", time.Since(inputStarted).Round(time.Millisecond))
 		release, _ := json.Marshal(controlMessage{Type: "release", Generation: control.Generation})
 		send(remoteMessage{Type: "control", ViewerID: owner, Data: release})
 		if reply := next(); reply.Type != "control" {
@@ -290,22 +303,53 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 	perform(first, agentInput{Action: "key", Key: pointer(uint16(40))})
 	waitMarker("server-input")
 
+	rotationStarted := time.Now()
 	token.Store(strings.Repeat("b", 43))
 	writeCredential(token.Load().(string))
 	second := waitPublished()
 	if second.generation == first.generation || child("labwc") != pid || child("waymote-streamd") != capturePID {
 		t.Fatal("credential rotation restarted desktop capture or input")
 	}
+	t.Logf("credential rotation to publication: %s", time.Since(rotationStarted).Round(time.Millisecond))
 	perform(second, agentInput{Action: "observe"})
+	reconnectStarted := time.Now()
 	second.socket.CloseNow()
 	third := waitPublished()
 	if third.generation == second.generation || child("labwc") != pid || child("waymote-streamd") != capturePID {
 		t.Fatal("signaling reconnect restarted desktop capture or input")
 	}
+	t.Logf("signaling disconnect to publication: %s", time.Since(reconnectStarted).Round(time.Millisecond))
 	perform(third, agentInput{Action: "type", Text: pointer("printf reconnected >> server-marker")})
 	perform(third, agentInput{Action: "key", Key: pointer(uint16(40))})
 	waitMarker("server-inputreconnected")
 
+	if replacement {
+		replaced := time.Now()
+		_ = third.socket.Close(websocket.StatusPolicyViolation, "Host replaced")
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			_, readyErr := os.Stat(credential + ".ready")
+			if os.IsNotExist(readyErr) && exec.Command("kill", "-0", pid).Run() != nil && exec.Command("kill", "-0", capturePID).Run() != nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("replaced desktop retained readiness, capture, or compositor")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Logf("host replacement to desktop teardown: %s", time.Since(replaced).Round(time.Millisecond))
+		select {
+		case <-published:
+			t.Fatal("replaced desktop reclaimed the publication")
+		case err := <-finished:
+			finished <- err // Deferred cleanup still owns the final process wait.
+			t.Fatal("replaced daemon exited and could be restarted by its container policy")
+		case <-time.After(1500 * time.Millisecond):
+		}
+		return
+	}
+
+	revocationStarted := time.Now()
 	writeCredential("")
 	select {
 	case err := <-finished:
@@ -316,6 +360,7 @@ func testServerDesktopLifecycle(t *testing.T, frames bool) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("revoked desktop remained running")
 	}
+	t.Logf("credential revocation to exit: %s", time.Since(revocationStarted).Round(time.Millisecond))
 	if _, err := os.Stat(credential + ".ready"); !os.IsNotExist(err) {
 		t.Fatal("readiness survived shutdown")
 	}

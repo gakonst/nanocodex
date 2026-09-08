@@ -247,12 +247,17 @@ struct HandControlPanel: View {
             Text("\(count)").monospacedDigit().foregroundStyle(.tertiary)
         }.font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
     }
+    func agentStatus(_ tab: WorkspaceTab) -> String {
+        let update = model.update(for: tab)
+        let failed = model.hasAttentionError(tab)
+        return !online ? "Offline" : failed ? "Needs attention" : update.running ? (model.running(tab.id) ? "Running" : "Queued") : update.needsAttention(tab) ? "Ready for review" : "Idle"
+    }
     private func agentRow(_ tab: WorkspaceTab) -> some View {
         let update = model.update(for: tab)
         let running = online && update.running
-        let failed = update.failed || model.threadError(tab.id) != nil
+        let failed = model.hasAttentionError(tab)
         let color: Color = failed ? .orange : running ? .green : .secondary
-        let status = !online ? "Offline" : failed ? "Needs attention" : running ? (model.running(tab.id) ? "Running" : "Queued") : update.needsAttention(tab) ? "Ready for review" : "Idle"
+        let status = agentStatus(tab)
         return HStack(spacing: 12) {
             Circle().fill(color).frame(width: 7, height: 7)
             Button {

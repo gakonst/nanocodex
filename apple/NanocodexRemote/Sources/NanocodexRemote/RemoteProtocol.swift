@@ -1,7 +1,7 @@
 import Foundation
 
 public enum RemoteError: LocalizedError, Equatable {
-    case invalidMessage, unavailable, unauthorized, busy, closed, screenPermission, inputPermission, geometryChanged, phoneBridge
+    case invalidMessage, unavailable, unauthorized, busy, closed, hostReplaced, screenPermission, inputPermission, geometryChanged, phoneBridge
 
     public var errorDescription: String? {
         switch self {
@@ -10,6 +10,7 @@ public enum RemoteError: LocalizedError, Equatable {
         case .unauthorized: return "This remote session is no longer authorized."
         case .busy: return "Someone else is controlling this screen."
         case .closed: return "The remote session closed."
+        case .hostReplaced: return "Another Nanocodex instance is sharing this screen."
         case .screenPermission: return "Allow Screen Recording for Nanocodex in System Settings."
         case .inputPermission: return "Allow Accessibility for Nanocodex in System Settings."
         case .geometryChanged: return "The screen size or orientation changed. Start sharing again to use its new layout."

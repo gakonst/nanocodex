@@ -63,7 +63,14 @@ final class RemotePeerTests: XCTestCase {
         viewer.onChannelsReady = { if !opened { opened = true; channels.fulfill() } }
         let rendered = expectation(description: "Encoded video decoded at viewer")
         let renderer = FrameReceiver(rendered)
-        viewer.onVideoTrack = { $0.add(renderer) }
+        let firstDecodedFrame = expectation(description: "Diagnostics report exactly one decoded frame")
+        firstDecodedFrame.assertForOverFulfill = true
+        let probe = RemoteFirstFrameProbe { time, width, height in
+            XCTAssertGreaterThan(time, 0)
+            XCTAssertEqual(width, 320); XCTAssertEqual(height, 240)
+            firstDecodedFrame.fulfill()
+        }
+        viewer.onVideoTrack = { $0.add(renderer); $0.add(probe) }
         let control = expectation(description: "Reliable input reaches publisher")
         let motion = expectation(description: "Disposable motion reaches publisher")
         let reply = expectation(description: "Control acknowledgement reaches viewer")
@@ -92,7 +99,7 @@ final class RemotePeerTests: XCTestCase {
                 try? await Task.sleep(for: .milliseconds(33))
             }
         }
-        await fulfillment(of: [control, motion, reply, rendered], timeout: 10)
+        await fulfillment(of: [control, motion, reply, rendered, firstDecodedFrame], timeout: 10)
         let originalCandidate = await publisher.selectedLocalCandidate()
         if relay != nil { XCTAssertTrue(originalCandidate?.hasPrefix("relay:") == true) }
         let restartedInput = expectation(description: "Existing input channel survives ICE restart")

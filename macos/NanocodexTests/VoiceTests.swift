@@ -169,6 +169,49 @@ final class VoiceTests: XCTestCase {
         try await deleteAgent()
     }
 
+    @MainActor
+    func testNativeVoiceStartStopRestart() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["NANOCODEX_DESKTOP_VOICE_RESTART_LIVE"] == "1" else { throw XCTSkip("Opt-in native voice restart evidence") }
+        let credential = try XCTUnwrap(AccountKeychain.read())
+        let input = try Self.defaultInput()
+        try Self.setDefaultInput(Self.audioDevice(named: "BlackHole 2ch"))
+        defer { try? Self.setDefaultInput(input) }
+        let client = ManagedClient(credential: try AccountCredential(origin: credential.baseUrl, apiKey: credential.apiKey))
+        defer { client.close() }
+        let agentID = try await client.create(requestID: UUID().uuidString)
+        let voice = VoiceSession()
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        var attempts: [[String: Any]] = []
+        func save() throws {
+            try JSONSerialization.data(withJSONObject: ["agent_id": agentID, "attempts": attempts], options: [.prettyPrinted, .sortedKeys])
+                .write(to: evidence.appendingPathComponent("native-voice-restarts.json"))
+        }
+        do {
+            for attempt in 1...3 {
+                let started = Date()
+                print("NATIVE_RESTART \(started.timeIntervalSince1970) attempt=\(attempt) start")
+                voice.start { VoiceConfiguration(baseURL: URL(string: credential.baseUrl)!, apiKey: credential.apiKey, agentID: agentID) }
+                let deadline = started.addingTimeInterval(50)
+                while voice.phase == .connecting, Date() < deadline { try await Task.sleep(for: .milliseconds(40)) }
+                let ready = Date(), active = voice.phase == .active
+                voice.stop(); await voice.finishStopping()
+                let stopped = Date()
+                attempts.append(["attempt": attempt, "utc": started.ISO8601Format(), "active": active,
+                    "startup_ms": ready.timeIntervalSince(started) * 1000, "cleanup_ms": stopped.timeIntervalSince(ready) * 1000])
+                try save()
+                guard active else { throw RuntimeFailure(message: "Voice restart attempt \(attempt) failed; see sanitized transport timing") }
+                print("NATIVE_RESTART \(stopped.timeIntervalSince1970) attempt=\(attempt) stopped")
+            }
+            _ = try await client.json(path: "/v1/agents/\(agentID)", method: "DELETE")
+        } catch {
+            voice.stop(); await voice.finishStopping()
+            _ = try? await client.json(path: "/v1/agents/\(agentID)", method: "DELETE")
+            throw error
+        }
+    }
+
     /// Self-contained speech should answer directly; unknown personal facts must
     /// go through the managed agent and remain explicitly unknown when absent.
     @MainActor
@@ -302,12 +345,29 @@ final class VoiceTests: XCTestCase {
             agentID = requestedID
         } else {
             let matches = try await client.list().filter { $0.title == title }
-            XCTAssertEqual(matches.count, 1, "The exact owned fixture title must select one agent")
+                .sorted { $0.updatedAt > $1.updatedAt }
+            if env["NANOCODEX_DIAGNOSTIC_NEWEST_MATCH"] != "1" {
+                XCTAssertEqual(matches.count, 1, "The exact owned fixture title must select one agent")
+            }
             agentID = try XCTUnwrap(matches.first?.id)
         }
         let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         await Self.captureFailureState(client: client, agentID: agentID, evidence: evidence)
+        if env["NANOCODEX_DIAGNOSTIC_CAPACITY"] == "1" {
+            let capacity = try await client.json(path: ManagedClient.agentPath(agentID) + "/capacity")
+            var counts: [String: Double] = [:]
+            for field in ["database_size_bytes", "known_payload_bytes", "unattributed_database_bytes"] {
+                if case .number(let value) = capacity[field] { counts[field] = value }
+            }
+            for group in ["durable_state", "archived_events", "archived_realtime", "archived_turns", "managed_events", "raw_events", "turns"] {
+                for field in ["bytes", "rows", "archived_bytes", "archived_events", "archived_receipts", "archived_turns", "objects", "total_rows", "unfinished_rows", "retry_rows"] {
+                    if case .number(let value) = capacity[group][field] { counts[group + "." + field] = value }
+                }
+            }
+            counts["durable_state.revision"] = Double(capacity["durable_state"]["revision"].string)
+            try JSONEncoder().encode(counts).write(to: evidence.appendingPathComponent("native-owned-agent-capacity.json"))
+        }
         let report = try JSONDecoder().decode(InboxCore.JSON.self, from: Data(contentsOf:
             evidence.appendingPathComponent("native-memory-voice-failure-state.json")))
         XCTAssertFalse(report["state_read_failed"].bool, "Owned agent state must be readable")
@@ -319,6 +379,30 @@ final class VoiceTests: XCTestCase {
         // tool payloads, headers, or credentials in transport diagnostics.
         func token(_ value: String) -> String {
             value.range(of: "^[A-Za-z0-9._:-]{1,128}$", options: .regularExpression) == nil ? "" : value
+        }
+        func errorMetadata(_ value: InboxCore.JSON) -> [String: Any] {
+            let raw = value.string.isEmpty ? value["message"].string : value.string
+            guard !raw.isEmpty else { return [:] }
+            let text = raw.lowercased()
+            let category: String
+            if text.contains("already has different input") || (text.contains("input") && text.contains("match")) { category = "input_mismatch" }
+            else if text.contains("already completed or been cancelled") { category = "already_finished" }
+            else if text.contains("replayed an incompatible terminal outcome") { category = "incompatible_terminal_replay" }
+            else if text.contains("unknown variant") { category = "unknown_variant" }
+            else if text.contains("terminal projection failed") { category = "terminal_projection_failed" }
+            else if text.contains("invalid durability state") || text.contains("durability state at revision") { category = "invalid_durability_state" }
+            else if text.contains("already terminal") { category = "already_terminal" }
+            else if text.contains("already active") { category = "already_active" }
+            else if text.contains("blocked by unfinished operation") { category = "unfinished_operation" }
+            else if text.contains("durability store") || text.contains("durability driver") { category = "durability_store_or_driver" }
+            else if text.contains("pending"), text.contains("operation") { category = "pending_operation" }
+            else if text.contains("lease") { category = "lease" }
+            else if text.contains("unavailable"), text.contains("runtime") || text.contains("tool") { category = "runtime_or_tool_unavailable" }
+            else if text.contains("cancelled") || text.contains("canceled") { category = "cancelled" }
+            else { category = "other" }
+            let keywords = ["json", "parse", "serialize", "decode", "snapshot", "checkpoint", "schema", "lease", "owner", "fence", "fetch", "network", "timeout", "authorization", "memory", "workspace", "filesystem", "invalid", "unrecognized", "r2", "d1", "wasm", "tool", "disabled", "terminated"]
+            return ["error_category": category, "error_length": raw.count,
+                    "error_keywords": keywords.filter { text.contains($0) }]
         }
         var report: [String: Any] = ["agent_id": agentID, "captured_at": Date().ISO8601Format()]
         var turnIDs = Set<String>()
@@ -337,6 +421,7 @@ final class VoiceTests: XCTestCase {
                 if !turnID.isEmpty { turnIDs.insert(turnID) }
                 var row: [String: Any] = ["cursor": event.cursor.rawValue, "type": token(event.type),
                     "turn_id": turnID, "agent_event_type": token(event.data["event"]["type"].string)]
+                row.merge(errorMetadata(event.data["error"])) { _, value in value }
                 for field in ["timestamp", "created_at"] {
                     if case .number(let timestamp) = event.data[field] { row[field] = timestamp }
                 }
@@ -349,6 +434,7 @@ final class VoiceTests: XCTestCase {
                 let turn = try await client.turn(agentID: agentID, turnID: id)
                 var row: [String: Any] = ["turn_id": id, "state": token(turn["state"].string),
                     "status": token(turn["status"].string), "error_code": token(turn["error"]["code"].string)]
+                row.merge(errorMetadata(turn["error"])) { _, value in value }
                 if case .number(let retryAt) = turn["retry_at"] { row["retry_at"] = retryAt }
                 turns.append(row)
             } catch { turns.append(["turn_id": id, "read_failed": true]) }

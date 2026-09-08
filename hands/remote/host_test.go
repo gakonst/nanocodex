@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +20,55 @@ import (
 	"github.com/coder/websocket"
 	"github.com/pion/webrtc/v4"
 )
+
+type discardedHostInput struct{}
+
+func (discardedHostInput) Write(data []byte) (int, error) { return io.Discard.Write(data) }
+func (discardedHostInput) Close() error                   { return nil }
+
+func TestHostPreservesReplacementCloseFromBroker(t *testing.T) {
+	for _, waitForCatalog := range []bool{false, true} {
+		t.Run(fmt.Sprintf("catalog-%t", waitForCatalog), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/account/hands/host" || r.Header.Get("Authorization") != "Bearer test-publisher" {
+					http.Error(w, "unauthorized", 401)
+					return
+				}
+				socket, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer socket.CloseNow()
+				_ = socket.Write(ctx, websocket.MessageText, []byte(`{"type":"ready","connection_id":"publisher"}`))
+				if waitForCatalog {
+					_, data, err := socket.Read(ctx)
+					var message remoteMessage
+					if err != nil || json.Unmarshal(data, &message) != nil || message.Type != "catalog" {
+						t.Error("publisher did not send its catalog")
+						return
+					}
+				}
+				_ = socket.Close(websocket.StatusPolicyViolation, "Host replaced")
+			}))
+			defer server.Close()
+			credential := filepath.Join(t.TempDir(), "credential")
+			if err := os.WriteFile(credential, []byte("test-publisher"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			// No compositor, physical input or network peer: exercise the real
+			// authenticated WebSocket and publisher cancellation loop only.
+			capture := &waymoteCapture{input: discardedHostInput{}, done: make(chan struct{})}
+			err := serveWayland(ctx, hostConfig{Origin: server.URL, CredentialFile: credential,
+				MachineID: "replacement-test", Name: "Replacement test", Width: 640, Height: 360,
+				Frames: true, quiet: true, capture: capture})
+			if !errors.Is(err, errRemoteHostReplaced) {
+				t.Fatalf("publisher lost terminal broker close: %v", err)
+			}
+		})
+	}
+}
 
 // Exercise the actual host, account broker, compositor, video and input with a
 // short renewal interval. Run in the isolated desktop used for browser evidence.

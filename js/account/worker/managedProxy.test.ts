@@ -98,3 +98,30 @@ test("account Hand discovery uses only the exact managed route", async () => {
   assert.equal(forwarded, request);
   assert.deepEqual(await response?.json(), { data: [] });
 });
+
+
+test("server Hand enrollment and scoped publishers retain their managed boundary", async () => {
+  const owner = "11111111-1111-4111-8111-111111111111";
+  const id = "22222222-2222-4222-8222-222222222222";
+  const management = `/v1/account/hand-hosts/${id}`;
+  const publisher = `/v1/hand-hosts/${owner}/${id}/hands`;
+  for (const path of ["/v1/account/hand-hosts", management, ...["host", "ice", "renew"].map(endpoint => `${publisher}/${endpoint}`)]) {
+    assert.equal(isManagedRoutePath(path), true, path);
+  }
+  for (const path of ["/v1/account/hand-hosts/", `${management}/extra`, "/v1/account/hand-hosts/invalid", `${publisher}/view`, `${publisher}/host/extra`, `${publisher}/`, `/v1/hand-hosts/${owner}/invalid/hands/host`]) {
+    assert.equal(isManagedRoutePath(path), false, path);
+  }
+  for (const request of [
+    new Request(`https://nanocodex.localhost${management}`, { method: "PUT", headers: { authorization: "Bearer account-test", origin: "https://nanocodex.localhost", "content-type": "application/json" }, body: JSON.stringify({ name: "SSH fixture" }) }),
+    new Request(`https://nanocodex.localhost${publisher}/host`, { headers: { authorization: "Bearer publisher-test", upgrade: "websocket" } }),
+    new Request(`https://nanocodex.localhost${publisher}/ice`, { method: "POST", headers: { authorization: "Bearer publisher-test" } }),
+  ]) {
+    let forwarded: Request | undefined;
+    const response = await routeManaged(request, { NANOCODEX_BACKEND: {
+      fetch(candidate: Request) { forwarded = candidate; return Promise.resolve(new Response(null, { status: 204 })); },
+      connect() { throw new Error("unused"); },
+    } }, new URL(request.url));
+    assert.equal(response?.status, 204);
+    assert.equal(forwarded, request);
+  }
+});

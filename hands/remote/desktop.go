@@ -140,6 +140,10 @@ func serveDesktopSession(parent context.Context, config hostConfig, workspace, d
 				<-finished
 				return ctx.Err()
 			case err := <-finished:
+				if errors.Is(err, errRemoteHostReplaced) {
+					stop()
+					return err
+				}
 				if err != nil {
 					_ = os.WriteFile(statusPath, []byte(err.Error()+"\n"), 0600)
 				}
@@ -154,7 +158,9 @@ func serveDesktopSession(parent context.Context, config hostConfig, workspace, d
 				if next.token != service.token {
 					service = next
 					stop()
-					<-finished
+					if err := <-finished; errors.Is(err, errRemoteHostReplaced) {
+						return err
+					}
 					changed = true
 				}
 			}
