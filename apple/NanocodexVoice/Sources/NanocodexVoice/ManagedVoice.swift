@@ -51,7 +51,9 @@ public actor ManagedVoiceTransport {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, input.utf8.count <= 32_768 else { throw ManagedError.invalidResponse }
         let reply = try await lifecycle("delegate", sessionID: sessionID, operationID: operationID, input: input)
         guard ["started", "steered"].contains(reply["route"].string) else { throw ManagedError.invalidResponse }
-        return ManagedVoiceRoute(turnID: try validatedTurnID(reply["turn_id"].string), route: reply["route"].string)
+        let route = ManagedVoiceRoute(turnID: try validatedTurnID(reply["turn_id"].string), route: reply["route"].string)
+        voiceTiming("delegate.receipt agent_id=\(agentID) turn_id=\(route.turnID) route=\(route.route)")
+        return route
     }
     public func cancel(turnID: String) async throws {
         try checkOpen(); try await client.command(AgentCommand(agentID: agentID, turnID: turnID, kind: .stop)); try checkOpen()
@@ -152,6 +154,7 @@ public actor ManagedVoiceTransport {
         guard let position = Cursor(rawValue: after) else { throw ManagedError.invalidResponse }
         endAgentEvents()
         agentCursor = position
+        voiceTiming("events.cursor agent_id=\(agentID) cursor=\(position.rawValue)")
         let epoch = agentStreamID
         return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
             agentContinuation = continuation
@@ -163,22 +166,41 @@ public actor ManagedVoiceTransport {
         var delay = 200
         while !closed, epoch == agentStreamID, !Task.isCancelled {
             do {
-                try await client.stream(agentID, after: agentCursor) { [weak self] frame in
+                let id = agentID, cursor = agentCursor.rawValue
+                voiceTiming("events.connect agent_id=\(id) cursor=\(cursor)")
+                try await client.stream(agentID, after: agentCursor, onOpen: {
+                    voiceTiming("events.opened agent_id=\(id) cursor=\(cursor)")
+                }) { [weak self] frame in
                     await self?.receiveAgentEvent(frame, epoch: epoch)
                 }
+                voiceTiming("events.eof agent_id=\(id)")
                 delay = 200
-            } catch is CancellationError { return }
+            } catch is CancellationError {
+                voiceTiming("events.cancelled agent_id=\(agentID)"); return
+            }
             catch let error as APIError where error == .http(401) || error == .http(403) || error == .http(404) || error == .agentDeleting || error == .invalidResponse {
                 failAgentEvents(error, epoch: epoch); return
             } catch is DecodingError {
                 failAgentEvents(ManagedError.invalidResponse, epoch: epoch); return
-            } catch { /* Resume from the last received cursor after transport failures. */ }
+            } catch {
+                // Resume from the last received cursor after transport failures.
+                voiceTiming("events.retry agent_id=\(agentID) code=\((error as NSError).code) delay_ms=\(delay)")
+            }
             do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
             delay = min(delay * 2, 5_000)
         }
     }
     private func receiveAgentEvent(_ frame: SSEFrame, epoch: UUID) {
         guard !closed, epoch == agentStreamID else { return }
+        if voiceTimingEnabled {
+            if let event = frame.event {
+                let type = event.type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) == nil ? "invalid" : event.type
+                let turnID = event.turnID.range(of: "^[A-Za-z0-9._:-]{1,128}$", options: .regularExpression) == nil ? "none" : event.turnID
+                voiceTiming("events.frame agent_id=\(agentID) type=\(type) cursor=\(event.cursor.rawValue) turn_id=\(turnID)")
+            } else {
+                voiceTiming("events.control agent_id=\(agentID) cursor=\(frame.cursor?.rawValue ?? "none")")
+            }
+        }
         if let event = frame.event, event.cursor > agentCursor {
             if event.type == "stream_failed" {
                 failAgentEvents(ManagedError(code: "stream_failed", message: "This thread’s event stream stopped. Reconnect voice to continue."), epoch: epoch)
@@ -205,6 +227,7 @@ public actor ManagedVoiceTransport {
     }
     private func failAgentEvents(_ error: Error, epoch: UUID) {
         guard !closed, epoch == agentStreamID else { return }
+        voiceTiming("events.failed agent_id=\(agentID) code=\((error as NSError).code)")
         agentContinuation?.finish(throwing: error)
         endAgentEvents(epoch: epoch)
     }

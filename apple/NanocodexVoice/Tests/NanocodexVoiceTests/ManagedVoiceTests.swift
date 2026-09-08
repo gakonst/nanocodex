@@ -325,6 +325,34 @@ final class ManagedVoiceTests: XCTestCase {
         await transport.close()
     }
 
+    func testStreamOpenedReportsValidatedHeadersBeforeDurableEvents() async throws {
+        actor Trace {
+            var values: [String] = []
+            func append(_ value: String) { values.append(value) }
+            func snapshot() -> [String] { values }
+        }
+        for (status, mime, valid) in [(200, "text/event-stream", true), (503, "text/event-stream", false), (200, "application/json", false)] {
+            let fixture = try HTTPFixture { _ in
+                .init(status: status, headers: ["Content-Type": mime],
+                      body: "id: 1\ndata: {\"type\":\"turn_accepted\",\"id\":\"owned-turn\"}\n\n")
+            }
+            defer { fixture.close() }
+            let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+            defer { client.close() }
+            let trace = Trace()
+            do {
+                try await client.stream(agent, after: .zero, onOpen: { await trace.append("opened") }) { frame in
+                    if let event = frame.event { await trace.append("\(event.type):\(event.cursor.rawValue)") }
+                }
+                XCTAssertTrue(valid, "Rejected HTTP response reported a healthy stream")
+            } catch {
+                XCTAssertFalse(valid, "Valid SSE failed: \(error)")
+            }
+            let values = await trace.snapshot()
+            XCTAssertEqual(values, valid ? ["opened", "turn_accepted:1"] : [])
+        }
+    }
+
     func testMalformedEventStreamFailsWithoutReconnectLoop() async throws {
         for (mime, body) in [("application/json", "{}"), ("text/event-stream", "id: 1\ndata: {invalid\n\n")] {
             var requests = 0
