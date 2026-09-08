@@ -422,6 +422,8 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         if voiceTimingEnabled {
             let type = event["type"].string
             if type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) != nil { voiceTiming("realtime.\(type)") }
+            let role = event["turn"]["role"].string
+            if type == "turn.done", ["user", "assistant"].contains(role) { voiceTiming("realtime.turn.done.role.\(role)") }
         }
         guard let update = protocolState?.realtimeMessage(event) else { return }
         if let prefetch = update.prefetch, let transport, let sessionID {
