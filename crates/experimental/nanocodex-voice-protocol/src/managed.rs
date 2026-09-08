@@ -567,6 +567,39 @@ mod tests {
         assert!(!next.delegation.unwrap().bootstrap);
     }
     #[test]
+    fn failed_bootstrap_reports_error_without_waiting_for_provider_delegation() {
+        for failure in [Some("The subscription request failed."), None] {
+            let mut voice = voice();
+            let first = voice.realtime_message(&utterance("Check this request"));
+            assert!(first.delegation.unwrap().bootstrap);
+            assert_eq!(first.effects.playback_enabled, Some(false));
+            voice.agent_event(r#"{"type":"run.started"}"#);
+            if let Some(failure) = failure {
+                voice.agent_event(
+                    &json!({"type":"run.error","payload":{"text":failure}}).to_string(),
+                );
+            }
+            let failed = voice.agent_event(r#"{"type":"run.failed"}"#);
+            assert_eq!(failed.playback_enabled, Some(true));
+            assert_eq!(failed.frames.len(), 1);
+            let frame: Value = serde_json::from_str(&failed.frames[0]).unwrap();
+            assert_eq!(frame["type"], "session.context.append");
+            assert_eq!(
+                frame["content"][0]["text"],
+                failure.unwrap_or("The coding agent failed.")
+            );
+            assert_eq!(voice.sideband_opened().frames, failed.frames);
+            voice.frames_sent(failed.frames.len());
+            assert!(voice.sideband_opened().frames.is_empty());
+            assert!(
+                voice
+                    .agent_event(r#"{"type":"run.failed"}"#)
+                    .frames
+                    .is_empty()
+            );
+        }
+    }
+    #[test]
     fn delegation_before_final_transcript_bootstraps_once_and_preserves_followups() {
         let mut voice = voice();
         voice.realtime_message(
