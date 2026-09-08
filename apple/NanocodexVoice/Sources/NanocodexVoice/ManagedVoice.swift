@@ -13,6 +13,9 @@ public struct ManagedVoiceRoute: Equatable, Sendable {
 /// Account-authenticated media and durable voice lifecycle. Provider credentials
 /// remain at the managed service. Call stop before close to end the durable mode.
 public actor ManagedVoiceTransport {
+    // The managed lifecycle belongs to an agent at one service, regardless of
+    // which account credential is currently authorized to access it.
+    nonisolated let conversationIdentity: String
     private let credential: AccountCredential
     private let agentID: String
     private let http: HTTPTransport
@@ -34,6 +37,7 @@ public actor ManagedVoiceTransport {
         }
         self.credential = credential; self.agentID = agentID
         http = try HTTPTransport(origin: URL(string: credential.origin)!, configuration: configuration)
+        conversationIdentity = http.origin.absoluteString + "/" + agentID
         client = ManagedClient(credential: credential, configuration: configuration)
     }
 
