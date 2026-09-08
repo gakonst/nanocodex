@@ -40,7 +40,8 @@ final class VoiceTests: XCTestCase {
     func testNativeSpeechInterruptFollowUpAndStop() async throws {
         let env = ProcessInfo.processInfo.environment
         guard env["NANOCODEX_DESKTOP_VOICE_LIVE"] == "1" else { throw XCTSkip("Opt-in native voice service evidence") }
-        let credential = try XCTUnwrap(AccountKeychain.environmentCredential())
+        let credential = try XCTUnwrap(env["NANOCODEX_DESKTOP_VOICE_KEYCHAIN"] == "1"
+            ? AccountKeychain.read() : AccountKeychain.environmentCredential())
         let input = try Self.defaultInput()
         let loopback = try Self.audioDevice(named: "BlackHole 2ch")
         try Self.setDefaultInput(loopback)
@@ -86,23 +87,58 @@ final class VoiceTests: XCTestCase {
                 catch APIError.http(503) where attempt < 4 { try await Task.sleep(for: .seconds(2)) }
             }
         }
+        let began = Date()
+        var milestones: [[String: Any]] = []
+        func mark(_ stage: String) {
+            let now = Date()
+            milestones.append(["stage": stage, "utc": now.ISO8601Format(), "elapsed_ms": now.timeIntervalSince(began) * 1000])
+            print("NATIVE_VOICE \(now.timeIntervalSince1970) \(stage)")
+        }
+        func saveFailure(_ error: Error) {
+            let report: [String: Any] = ["status": "failed", "error": error.localizedDescription,
+                "milestones": milestones, "phase": String(describing: model.voice.phase),
+                "input_level": model.voice.inputLevel, "output_level": model.voice.outputLevel,
+                "sent_bytes": model.voice.audioBytesSent, "received_bytes": model.voice.audioBytesReceived,
+                "transcript_speakers": model.voice.transcripts.map(\.speaker)]
+            try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                .write(to: evidence.appendingPathComponent("native-voice-live-failure.json"))
+        }
+        let observer = Task { @MainActor in
+            var seen: Set<String> = []
+            while !Task.isCancelled {
+                for row in model.voice.transcripts where !row.text.isEmpty {
+                    let stage = "first_\(row.speaker)_transcript"
+                    if seen.insert(stage).inserted { mark(stage) }
+                }
+                do { try await Task.sleep(for: .milliseconds(40)) } catch { return }
+            }
+        }
+        defer { observer.cancel() }
         do {
-            let began = Date()
+            mark("call_start")
             model.voice.start { try await model.voiceConfiguration(tabID: "voice") }
             try await wait({ model.voice.phase == .active }, seconds: 50)
+            mark("call_ready")
             let startupMS = Date().timeIntervalSince(began) * 1000
+            mark("count_fixture_start")
             try play("/tmp/nanocodex-voice-count.wav")
             try await wait({ model.voice.outputLevel > 0.015 })
+            mark("count_output")
             try await Task.sleep(for: .milliseconds(1000))
             try await wait({ model.voice.outputLevel > 0.015 })
+            mark("interrupt_fixture_start")
             let interruptedAt = Date()
             try play("/tmp/nanocodex-native-voice-interrupt.wav")
             try await wait({ model.voice.outputLevel < 0.004 }, seconds: 8)
+            mark("interrupt_output_quiet")
             let quietMS = Date().timeIntervalSince(interruptedAt) * 1000
             try await wait({ model.voice.transcripts.contains { $0.speaker == "assistant" && ($0.text.lowercased().contains("thirteen") || $0.text.contains("13")) } })
+            mark("interrupt_answer")
             try await wait({ model.voice.outputLevel < 0.004 && player?.isRunning != true })
+            mark("followup_fixture_start")
             try play("/tmp/nanocodex-native-voice-followup.wav")
             try await wait({ model.voice.transcripts.contains { $0.speaker == "assistant" && $0.text.lowercased().contains("blue") } })
+            mark("followup_answer")
             XCTAssertGreaterThan(model.voice.audioBytesSent, 0); XCTAssertGreaterThan(model.voice.audioBytesReceived, 0)
             XCTAssertFalse(model.voice.transcripts.contains { $0.text.contains("<realtime_") || $0.text.contains("<source>") })
             host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
@@ -122,13 +158,102 @@ final class VoiceTests: XCTestCase {
             try await wait({ model.voice.phase == .active }, seconds: 30)
             let restartMS = Date().timeIntervalSince(restartedAt) * 1000
             model.voice.stop(); await model.voice.finishStopping()
-            try JSONSerialization.data(withJSONObject: ["startup_ms": startupMS, "restart_ms": restartMS, "first_quiet_after_interrupt_ms": quietMS, "stop_ms": stopMS, "transcripts": rows], options: [.prettyPrinted, .sortedKeys]).write(to: evidence.appendingPathComponent("native-voice-live.json"))
+            try JSONSerialization.data(withJSONObject: ["milestones": milestones, "startup_ms": startupMS, "restart_ms": restartMS, "first_quiet_after_interrupt_ms": quietMS, "stop_ms": stopMS, "transcripts": rows], options: [.prettyPrinted, .sortedKeys]).write(to: evidence.appendingPathComponent("native-voice-live.json"))
             print("Native speech PASS: startup \(Int(startupMS)) ms, restart \(Int(restartMS)) ms, quiet after interrupt \(Int(quietMS)) ms, stop \(Int(stopMS)) ms")
         } catch {
+            mark("failed")
+            saveFailure(error)
             model.voice.stop(); await model.voice.finishStopping()
             try? await deleteAgent(); throw error
         }
         try await deleteAgent()
+    }
+
+    /// Self-contained speech should answer directly; unknown personal facts must
+    /// go through the managed agent and remain explicitly unknown when absent.
+    @MainActor
+    func testNativeGreetingAndPersonalMemory() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["NANOCODEX_DESKTOP_MEMORY_VOICE_LIVE"] == "1" else { throw XCTSkip("Opt-in native memory speech evidence") }
+        let credential = try XCTUnwrap(env["NANOCODEX_DESKTOP_VOICE_KEYCHAIN"] == "1"
+            ? AccountKeychain.read() : AccountKeychain.environmentCredential())
+        let timingPath = try XCTUnwrap(env["NANOCODEX_VOICE_TIMING_LOG"])
+        let input = try Self.defaultInput()
+        try Self.setDefaultInput(Self.audioDevice(named: "BlackHole 2ch"))
+        defer { try? Self.setDefaultInput(input) }
+        let client = ManagedClient(credential: try AccountCredential(origin: credential.baseUrl, apiKey: credential.apiKey))
+        defer { client.close() }
+        let agentID = try await client.create(requestID: UUID().uuidString)
+        print("Native memory speech agent: \(agentID)")
+        let voice = VoiceSession()
+        defer { voice.stop() }
+        var player: Process?
+        defer { if player?.isRunning == true { player?.terminate() } }
+        func play(_ path: String) throws {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: env["NANOCODEX_VOICE_SOX"] ?? "/opt/homebrew/bin/sox")
+            process.arguments = ["-q", path, "-t", "coreaudio", "BlackHole 2ch"]
+            process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+            try process.run(); player = process
+        }
+        func wait(_ condition: () -> Bool, seconds: Double = 30) async throws {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !condition(), Date() < deadline, voice.phase != .failed { try await Task.sleep(for: .milliseconds(40)) }
+            guard condition() else { throw RuntimeFailure(message: voice.errorMessage ?? "Native memory speech timed out") }
+        }
+        let began = Date()
+        var milestones: [[String: Any]] = []
+        func mark(_ stage: String) {
+            let now = Date()
+            milestones.append(["stage": stage, "utc": now.ISO8601Format(), "elapsed_ms": now.timeIntervalSince(began) * 1000])
+            print("NATIVE_MEMORY_VOICE \(now.timeIntervalSince1970) \(stage)")
+        }
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        func save(_ status: String, error: String = "") throws {
+            let settings = voice.settings
+            let report: [String: Any] = ["status": status, "error": error, "milestones": milestones,
+                "voice": settings.voice, "pace": settings.pace.rawValue, "updates": settings.updates.rawValue,
+                "handoff_mode": settings.handoffMode.rawValue, "custom_instruction_characters": settings.instructions.count,
+                "transcripts": voice.transcripts.map { ["speaker": $0.speaker, "text": $0.text] }]
+            try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                .write(to: evidence.appendingPathComponent("native-memory-voice-live.json"))
+        }
+        do {
+            mark("call_start")
+            voice.start { VoiceConfiguration(baseURL: URL(string: credential.baseUrl)!, apiKey: credential.apiKey, agentID: agentID) }
+            try await wait({ voice.phase == .active }, seconds: 50)
+            mark("call_ready")
+            mark("greeting_fixture_start")
+            try play("/tmp/nanocodex-native-voice-greeting.wav")
+            try await wait({ voice.outputLevel > 0.015 })
+            mark("greeting_audio")
+            try await wait({ voice.transcripts.contains { $0.speaker == "assistant" && !$0.text.isEmpty } })
+            mark("greeting_transcript")
+            try await wait({ player?.isRunning != true && voice.outputLevel < 0.004 })
+            let previousIDs = Set(voice.transcripts.map(\.id))
+            let before = try Data(contentsOf: URL(fileURLWithPath: timingPath)).count
+            mark("personal_fixture_start")
+            try play("/tmp/nanocodex-native-voice-personal.wav")
+            try await wait({ voice.transcripts.contains { row in
+                guard row.speaker == "assistant", !previousIDs.contains(row.id) else { return false }
+                let text = row.text.lowercased()
+                return ["don't know", "do not know", "couldn't find", "could not find", "can't find", "cannot find", "no record", "don't have", "do not have"].contains { text.contains($0) }
+            } }, seconds: 60)
+            mark("personal_unknown_answer")
+            let trace = String(decoding: try Data(contentsOf: URL(fileURLWithPath: timingPath)).dropFirst(before), as: UTF8.self)
+            guard trace.contains("delegate.begin") else {
+                throw RuntimeFailure(message: "Personal memory was answered without checking the managed agent")
+            }
+            try save("passed")
+            voice.stop(); await voice.finishStopping()
+            _ = try await client.json(path: "/v1/agents/\(agentID)", method: "DELETE")
+        } catch {
+            mark("failed"); try? save("failed", error: error.localizedDescription)
+            voice.stop(); await voice.finishStopping()
+            _ = try? await client.json(path: "/v1/agents/\(agentID)", method: "DELETE")
+            throw error
+        }
     }
 
     private static var connectedState: JSONValue { .object(["connected": .bool(true), "baseUrl": .string("https://service.invalid"), "threads": .array([]), "hands": .array([]), "defaults": .object([:]), "platform": .string("darwin"), "version": .string("0.1.0"), "accountScope": .string("voice-evidence")]) }

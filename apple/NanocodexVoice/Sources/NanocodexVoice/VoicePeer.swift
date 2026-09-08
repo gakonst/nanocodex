@@ -30,6 +30,7 @@ final class VoicePeer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelega
     private var activated = false
     private var playbackEnabled = false
     private var loggedConnectionStats = false
+    private var loggedAudioStatsAt: TimeInterval = 0
     private let captureMicrophone: Bool
     private let onSignal: @Sendable (VoicePeerSignal) -> Void
 
@@ -222,8 +223,24 @@ final class VoicePeer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelega
                     // Timing only: never log candidate addresses, SDP or keys.
                     voiceTiming("network round_trip_ms=\(Int(roundTrip.doubleValue * 1_000))")
                 }
+                let logAudioStats = voiceTimingEnabled && self.lock.withLock {
+                    let now = Date().timeIntervalSince1970
+                    guard now - self.loggedAudioStatsAt > 1 else { return false }
+                    self.loggedAudioStatsAt = now; return true
+                }
+                if logAudioStats {
+                    for receiver in connection.receivers {
+                        if let track = receiver.track as? RTCAudioTrack { voiceTiming("audio.track enabled=\(track.isEnabled) volume=\(track.source.volume)") }
+                    }
+                }
                 for statistic in report.statistics.values {
                     let values = statistic.values
+                    if logAudioStats, ["media-source", "inbound-rtp", "outbound-rtp", "media-playout"].contains(statistic.type) {
+                        let fields = ["audioLevel", "totalAudioEnergy", "totalSamplesDuration", "totalSamplesReceived", "silentConcealedSamples", "concealedSamples", "totalPlayoutDelay", "totalSamplesCount"].map { key in
+                            "\(key)=\((values[key] as? NSNumber)?.stringValue ?? "missing")"
+                        }.joined(separator: " ")
+                        voiceTiming("audio.stats \(statistic.type) \(fields)")
+                    }
                     if statistic.type == "media-source" { result.inputLevel = (values["audioLevel"] as? NSNumber)?.doubleValue ?? result.inputLevel }
                     if statistic.type == "inbound-rtp", values["kind"] as? String == "audio" {
                         result.outputLevel = (values["audioLevel"] as? NSNumber)?.doubleValue ?? result.outputLevel
