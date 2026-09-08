@@ -6114,6 +6114,17 @@ export class DurableAgentSession extends DurableComputerSession {
     const session = this.#session();
     const runtimeProfile = session?.runtime_profile;
     const timeoutMs = this.#ownershipIoTimeoutMs();
+    const credentialBinding = this.#credentialBinding ?? (
+      session && runtimeProfile !== "multiplayer"
+        ? this.#bindingOwnershipForSession(session)
+        : undefined
+    );
+    // The permanent tombstone already makes this agent unreadable. Remove it
+    // from account discovery before external cleanup can stall, while retaining
+    // the local ownership and retry alarm until every resource is released.
+    if (credentialBinding) {
+      await detachAgent(this.env, credentialBinding.owner_id, credentialBinding.session_id, timeoutMs);
+    }
     await this.#releaseRuntimeOwnershipForDeletion(timeoutMs);
     if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
     if (session?.runtime_profile === "managed") {
@@ -6165,11 +6176,6 @@ export class DurableAgentSession extends DurableComputerSession {
       );
     }
     for (const socket of this.ctx.getWebSockets()) closeSocket(socket, 1000, "session deleted");
-    const credentialBinding = this.#credentialBinding ?? (
-      session && runtimeProfile !== "multiplayer"
-        ? this.#bindingOwnershipForSession(session)
-        : undefined
-    );
     if (credentialBinding) {
       await Promise.all([
         credentialBinding.strategy === "session_v1" ? Promise.resolve() : unbindAgentCredential(
