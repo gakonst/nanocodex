@@ -261,9 +261,72 @@ final class VoiceTests: XCTestCase {
             _ = try await client.json(path: "/v1/agents/\(agentID)", method: "DELETE")
         } catch {
             mark("failed"); try? save("failed", error: error.localizedDescription)
+            await Self.captureFailureState(client: client, agentID: agentID, evidence: evidence)
             voice.stop(); await voice.finishStopping()
             _ = try? await client.json(path: "/v1/agents/\(agentID)", method: "DELETE")
             throw error
+        }
+    }
+
+    @MainActor
+    func testNativeOwnedAgentDiagnostics() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let title = env["NANOCODEX_DIAGNOSTIC_AGENT_TITLE"], !title.isEmpty else {
+            throw XCTSkip("Set NANOCODEX_DIAGNOSTIC_AGENT_TITLE to the exact owned test-agent title")
+        }
+        let credential = try XCTUnwrap(AccountKeychain.read())
+        let client = ManagedClient(credential: try AccountCredential(origin: credential.baseUrl, apiKey: credential.apiKey))
+        defer { client.close() }
+        let matches = try await client.list().filter { $0.title == title }
+        XCTAssertEqual(matches.count, 1, "The exact owned fixture title must select one agent")
+        let agentID = try XCTUnwrap(matches.first?.id)
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        await Self.captureFailureState(client: client, agentID: agentID, evidence: evidence)
+    }
+
+    private static func captureFailureState(client: ManagedClient, agentID: String, evidence: URL) async {
+        // Only this fixture's newly created agent; never persist messages,
+        // tool payloads, headers, or credentials in transport diagnostics.
+        func token(_ value: String) -> String {
+            value.range(of: "^[A-Za-z0-9._:-]{1,128}$", options: .regularExpression) == nil ? "" : value
+        }
+        var report: [String: Any] = ["agent_id": agentID, "captured_at": Date().ISO8601Format()]
+        var turnIDs = Set<String>()
+        do {
+            let state = try await client.state(agentID)
+            report["latest_event_cursor"] = token(state["latest_event_cursor"].string)
+            let active = state["active_turns"].array.map { token($0.string) }.filter { !$0.isEmpty }
+            report["active_turns"] = active; turnIDs.formUnion(active)
+        } catch { report["state_read_failed"] = true }
+        do {
+            let page = try await client.history(agentID)
+            report["history_latest_cursor"] = page.latest.rawValue
+            report["history_has_more"] = page.hasMore
+            report["events"] = page.events.map { event -> [String: Any] in
+                let turnID = token(event.turnID)
+                if !turnID.isEmpty { turnIDs.insert(turnID) }
+                var row: [String: Any] = ["cursor": event.cursor.rawValue, "type": token(event.type),
+                    "turn_id": turnID, "agent_event_type": token(event.data["event"]["type"].string)]
+                for field in ["timestamp", "created_at"] {
+                    if case .number(let timestamp) = event.data[field] { row[field] = timestamp }
+                }
+                return row
+            }
+        } catch { report["history_read_failed"] = true }
+        var turns: [[String: Any]] = []
+        for id in turnIDs.sorted().prefix(8) {
+            do {
+                let turn = try await client.turn(agentID: agentID, turnID: id)
+                var row: [String: Any] = ["turn_id": id, "state": token(turn["state"].string),
+                    "status": token(turn["status"].string), "error_code": token(turn["error"]["code"].string)]
+                if case .number(let retryAt) = turn["retry_at"] { row["retry_at"] = retryAt }
+                turns.append(row)
+            } catch { turns.append(["turn_id": id, "read_failed": true]) }
+        }
+        report["turns"] = turns
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: evidence.appendingPathComponent("native-memory-voice-failure-state.json"))
         }
     }
 
