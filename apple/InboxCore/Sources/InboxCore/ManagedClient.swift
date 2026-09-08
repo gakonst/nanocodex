@@ -244,7 +244,9 @@ public final class ManagedClient: @unchecked Sendable {
         return id
     }
     #if !os(Linux)
-    public func stream(_ id: String, after cursor: Cursor, receive: @escaping @Sendable (SSEFrame) async -> Void) async throws {
+    public func stream(_ id: String, after cursor: Cursor,
+                       onOpen: (@Sendable () async -> Void)? = nil,
+                       receive: @escaping @Sendable (SSEFrame) async -> Void) async throws {
         var request = try request(path: Self.agentPath(id) + "/events?cursor=" + cursor.rawValue)
         request.timeoutInterval = 45
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -254,6 +256,7 @@ public final class ManagedClient: @unchecked Sendable {
         guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
         guard response.mimeType == "text/event-stream" else { throw APIError.invalidResponse }
+        await onOpen?()
         // Cancelling observation releases its HTTP stream immediately, including
         // when an idle reader is waiting for the next keepalive.
         try await withTaskCancellationHandler {
