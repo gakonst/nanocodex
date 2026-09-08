@@ -31,16 +31,14 @@ private final class RedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecke
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
-        #if DEBUG
-        guard ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1",
+        guard voiceTimingEnabled,
               let operation = task.originalRequest?.url?.lastPathComponent, ["start", "stop", "delegate", "calls"].contains(operation),
               let transaction = metrics.transactionMetrics.last else { return }
         func milliseconds(_ start: Date?, _ end: Date?) -> Int {
             guard let start, let end else { return 0 }
             return Int(end.timeIntervalSince(start) * 1_000)
         }
-        print("VOICE_HTTP \(operation) reused=\(transaction.isReusedConnection) connect_ms=\(milliseconds(transaction.connectStartDate, transaction.connectEndDate)) server_ms=\(milliseconds(transaction.requestEndDate, transaction.responseStartDate)) total_ms=\(Int(metrics.taskInterval.duration * 1_000))")
-        #endif
+        voiceTiming("http \(operation) status=\((task.response as? HTTPURLResponse)?.statusCode ?? 0) reused=\(transaction.isReusedConnection) connect_ms=\(milliseconds(transaction.connectStartDate, transaction.connectEndDate)) server_ms=\(milliseconds(transaction.requestEndDate, transaction.responseStartDate)) total_ms=\(Int(metrics.taskInterval.duration * 1_000))")
     }
 }
 
@@ -72,6 +70,9 @@ final class HTTPTransport: @unchecked Sendable {
         return request
     }
     func data(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let operation = request.url?.lastPathComponent ?? "unknown"
+        let timingOperation = ["start", "stop", "delegate", "calls", "prefetch", "context"].contains(operation) ? operation : "request"
+        voiceTiming("http.begin \(timingOperation)")
         do {
             let (data, response) = try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
                 group.addTask { try await self.session.data(for: request) }
@@ -83,14 +84,13 @@ final class HTTPTransport: @unchecked Sendable {
             guard (200..<300).contains(http.statusCode) else { throw responseError(data, response: http) }
             return (data, http)
         } catch is CancellationError { throw CancellationError() }
-        catch let error as ManagedError { throw error }
+        catch let error as ManagedError {
+            voiceTiming("http.rejected \(timingOperation) status=\(error.status ?? 0)")
+            throw error
+        }
         catch {
             if Task.isCancelled { throw CancellationError() }
-            #if DEBUG
-            if ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1" {
-                print("VOICE_HTTP_FAILURE operation=\(request.url?.lastPathComponent ?? "unknown") domain=\((error as NSError).domain) code=\((error as NSError).code)")
-            }
-            #endif
+            voiceTiming("http.failure \(timingOperation) code=\((error as NSError).code)")
             throw ManagedError(code: "network_error", message: "We could not reach Nanocodex. Check your connection and try again.")
         }
     }

@@ -8,6 +8,7 @@ enum VoicePeerSignal: Sendable { case connected, controlReady, disconnected, fai
 struct VoiceAudioStats: Sendable {
     var inputLevel: Double = 0
     var outputLevel: Double = 0
+    var playbackEnabled = false
     var bytesSent: UInt64 = 0
     var bytesReceived: UInt64 = 0
 }
@@ -163,11 +164,9 @@ final class VoicePeer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelega
     func setPlaybackEnabled(_ value: Bool) {
         let connection = lock.withLock { playbackEnabled = value; return closed ? nil : peer }
         for receiver in connection?.receivers ?? [] { receiver.track?.isEnabled = value }
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1" {
-            print("VOICE_PLAYBACK enabled=\(value) receivers=\(connection?.receivers.count ?? 0)")
+        if voiceTimingEnabled {
+            voiceTiming("playback enabled=\(value) receivers=\(connection?.receivers.count ?? 0)")
         }
-        #endif
     }
 
     func send(_ frame: JSON) throws {
@@ -176,11 +175,9 @@ final class VoicePeer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelega
         let current = lock.withLock { closed ? nil : channel }
         guard let current, current.readyState == .open, current.bufferedAmount <= 512 * 1024,
               current.sendData(RTCDataBuffer(data: data, isBinary: false)) else { throw VoiceFailure.connection }
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1" {
-            print("VOICE_SEND type=\(frame["type"].string) channel=\(frame["channel"].string) bytes=\(data.count)")
+        if voiceTimingEnabled {
+            voiceTiming("send type=\(frame["type"].string) channel=\(frame["channel"].string) bytes=\(data.count)")
         }
-        #endif
     }
 
     /// The capture track and peer stop before protocol cleanup can suspend.
@@ -215,17 +212,16 @@ final class VoicePeer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelega
         return await withCheckedContinuation { continuation in
             connection.statistics { report in
                 var result = VoiceAudioStats()
-                #if DEBUG
-                if ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1",
+                result.playbackEnabled = self.lock.withLock { self.playbackEnabled && !self.closed }
+                if voiceTimingEnabled,
                    let transport = report.statistics.values.first(where: { $0.type == "transport" }),
                    let pairID = transport.values["selectedCandidatePairId"] as? String,
                    let pair = report.statistics[pairID],
                    let roundTrip = pair.values["currentRoundTripTime"] as? NSNumber,
                    self.lock.withLock({ if self.loggedConnectionStats { return false }; self.loggedConnectionStats = true; return true }) {
                     // Timing only: never log candidate addresses, SDP or keys.
-                    print("VOICE_NETWORK round_trip_ms=\(Int(roundTrip.doubleValue * 1_000))")
+                    voiceTiming("network round_trip_ms=\(Int(roundTrip.doubleValue * 1_000))")
                 }
-                #endif
                 for statistic in report.statistics.values {
                     let values = statistic.values
                     if statistic.type == "media-source" { result.inputLevel = (values["audioLevel"] as? NSNumber)?.doubleValue ?? result.inputLevel }
@@ -290,10 +286,25 @@ enum VoiceFailure: LocalizedError {
     }
 }
 
+let voiceTimingEnabled = ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1"
+private let voiceTimingLock = NSLock()
+
 func voiceTiming(_ stage: String) {
-    #if DEBUG
-    if ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1" {
-        print("VOICE_TIMING \(Date().timeIntervalSince1970) \(stage)")
+    if voiceTimingEnabled {
+        let line = "VOICE_TIMING \(Date().timeIntervalSince1970) \(stage)"
+        print(line)
+        // Opt-in diagnostics survive device tests whose app stdout is unavailable.
+        // Callers pass stage names and numeric metrics, never speech or credentials.
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        let url = ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING_LOG"].map { URL(fileURLWithPath: $0) }
+            ?? directory?.appendingPathComponent("voice-timing.log")
+        guard let url, let data = (line + "\n").data(using: .utf8) else { return }
+        voiceTimingLock.withLock {
+            if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+            guard let handle = try? FileHandle(forWritingTo: url) else { return }
+            defer { try? handle.close() }
+            if let size = try? handle.seekToEnd(), size > 2_000_000 { try? handle.truncate(atOffset: 0); try? handle.seek(toOffset: 0) }
+            try? handle.write(contentsOf: data)
+        }
     }
-    #endif
 }
