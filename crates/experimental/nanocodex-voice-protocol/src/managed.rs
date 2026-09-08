@@ -10,12 +10,6 @@ pub struct ManagedVoiceProtocol {
     protocol: BrowserVoiceProtocol,
     session_id: String,
     context_cursor: String,
-    bootstrap_input: Option<String>,
-    bootstrap_complete: bool,
-    explicit_playback: bool,
-    follow_up: bool,
-    awaiting_first_turn_done: bool,
-    prefetch_query: String,
 }
 
 impl std::ops::Deref for ManagedVoiceProtocol {
@@ -36,12 +30,6 @@ impl ManagedVoiceProtocol {
             protocol: BrowserVoiceProtocol::new(voice)?,
             session_id: String::new(),
             context_cursor: "0".to_owned(),
-            bootstrap_input: None,
-            bootstrap_complete: false,
-            explicit_playback: false,
-            follow_up: false,
-            awaiting_first_turn_done: false,
-            prefetch_query: String::new(),
         })
     }
 
@@ -49,155 +37,20 @@ impl ManagedVoiceProtocol {
         if self.session_id != session_id {
             self.session_id = session_id.to_owned();
             self.context_cursor = "0".to_owned();
-            self.bootstrap_input = None;
-            self.bootstrap_complete = false;
-            self.explicit_playback = false;
-            self.follow_up = false;
-            self.awaiting_first_turn_done = false;
-            self.prefetch_query.clear();
         }
     }
 
-    /// The first completed utterance owns retrieval even if the provider would
-    /// otherwise answer it directly. A later provider delegation adopts the
-    /// handoff channel without admitting that same first request twice.
-    pub fn realtime_message(&mut self, payload: &str) -> crate::BrowserVoiceUpdate {
-        let mut update = self.protocol.realtime_message(payload);
-        if self.session_id.is_empty() {
-            return update;
-        }
-        let event: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
-        let utterance = if event["type"] == "turn.done" && event["turn"]["role"] == "user" {
-            event["turn"]["transcript"]
-                .as_str()
-                .filter(|text| !text.trim().is_empty())
-        } else {
-            None
-        };
-        // A partial transcript can warm retrieval, but can never admit a turn.
-        // The host only reuses these results for an exactly matching final plan.
-        if self.bootstrap_input.is_none()
-            && utterance.is_none()
-            && update.delegation.is_none()
-            && let Some(entry) = update
-                .effects
-                .transcripts
-                .iter()
-                .rev()
-                .find(|entry| entry.speaker == "user")
-        {
-            let plan = bootstrap_plan(&entry.text);
-            let query = plan["query"].as_str().unwrap_or_default();
-            if query.len() >= 12 && query != self.prefetch_query {
-                self.prefetch_query = query.to_owned();
-                update.prefetch = Some(crate::VoicePrefetch {
-                    query: query.to_owned(),
-                    debounce_ms: 250,
-                });
-            }
-        }
-        if !self.bootstrap_complete && !self.explicit_playback {
-            update
-                .effects
-                .transcripts
-                .retain(|entry| entry.speaker == "user");
-        }
-        if self.bootstrap_input.is_some() {
-            if utterance.is_some() {
-                if self.awaiting_first_turn_done {
-                    self.awaiting_first_turn_done = false;
-                } else {
-                    self.follow_up = true;
-                }
-            }
-            if !self.follow_up {
-                update.delegation = None;
-            }
-            return update;
-        }
-        let query = utterance.map(str::to_owned).or_else(|| {
-            update.delegation.as_ref().map(|delegation| {
-                delegation
-                    .transcript
-                    .iter()
-                    .find(|entry| entry.role == "user")
-                    .map_or_else(|| delegation.input.clone(), |entry| entry.text.clone())
-            })
-        });
-        if let Some(input) = query {
-            self.explicit_playback = false;
-            self.awaiting_first_turn_done = utterance.is_none();
-            self.bootstrap_input = Some(input.clone());
-            if let Some(delegation) = &mut update.delegation {
-                delegation.input = input;
-                delegation.bootstrap = true;
-                delegation.transcript.retain(|entry| entry.role == "user");
-            } else {
-                update.delegation = Some(crate::browser::BrowserVoiceDelegation {
-                    id: "voice-bootstrap".to_owned(),
-                    input,
-                    transcript: self
-                        .protocol
-                        .take_transcript_tail()
-                        .into_iter()
-                        .filter(|entry| entry.role == "user")
-                        .collect(),
-                    bootstrap: true,
-                });
-            }
-            update.effects.playback_enabled = Some(false);
-        }
-        update
-    }
-
+    /// Match Codex's provider-requested handoffs. Completed speech and partial
+    /// transcripts do not themselves admit model work or trigger memory reads.
     pub fn requires_agent_admission(&self, payload: &str) -> bool {
-        if crate::realtime_message_requires_agent_admission(payload) {
-            return true;
-        }
-        if self.session_id.is_empty() || self.bootstrap_input.is_some() {
-            return false;
-        }
-        let event: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
-        event["type"] == "turn.done"
-            && event["turn"]["role"] == "user"
-            && event["turn"]["transcript"]
-                .as_str()
-                .is_some_and(|text| !text.trim().is_empty())
+        crate::realtime_message_requires_agent_admission(payload)
     }
 
-    pub fn agent_event(&mut self, payload: &str) -> BrowserVoiceEffects {
-        let effects = self.protocol.agent_event(payload);
-        self.with_playback(effects)
-    }
-
-    pub fn flush(&mut self, final_chunk: bool) -> BrowserVoiceEffects {
-        let effects = self.protocol.flush(final_chunk);
-        self.with_playback(effects)
-    }
-
-    pub fn sideband_opened(&self) -> BrowserVoiceEffects {
-        let mut effects = self.protocol.sideband_opened();
-        effects.playback_enabled =
-            Some(self.session_id.is_empty() || self.bootstrap_complete || self.explicit_playback);
-        effects
-    }
-
-    /// Explicit speech can play before the first utterance without satisfying
-    /// the first-utterance retrieval gate or admitting a coding-agent turn.
+    /// Explicit speech can play independently of a coding-agent handoff.
     pub fn append_speech(&mut self, text: &str) -> Result<BrowserVoiceEffects, String> {
         let mut effects = self.protocol.append_speech(text)?;
-        self.explicit_playback = true;
         effects.playback_enabled = Some(true);
         Ok(effects)
-    }
-
-    const fn with_playback(&mut self, mut effects: BrowserVoiceEffects) -> BrowserVoiceEffects {
-        if self.bootstrap_input.is_some() && !self.bootstrap_complete && !effects.frames.is_empty()
-        {
-            self.bootstrap_complete = true;
-            effects.playback_enabled = Some(true);
-        }
-        effects
     }
 
     /// Ignore stale/replayed context without converting decimal cursors to floats.
@@ -472,51 +325,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn explicit_speech_unlocks_playback_without_skipping_first_utterance_retrieval() {
-        let mut voice = ManagedVoiceProtocol::new("cove").unwrap();
-        voice.bind_session("call-1");
-        assert_eq!(voice.sideband_opened().playback_enabled, Some(false));
-        let speech = voice.append_speech("Voice is connected.").unwrap();
-        assert_eq!(speech.playback_enabled, Some(true));
-        assert_eq!(voice.sideband_opened().frames, speech.frames);
-        assert_eq!(voice.sideband_opened().playback_enabled, Some(true));
-        let transcript = voice.realtime_message(
-            r#"{"type":"output_transcript.added","item":{"text":"Voice is connected."}}"#,
-        );
-        assert_eq!(transcript.effects.transcripts.len(), 1);
-        let first = voice.realtime_message(r#"{"type":"turn.done","turn":{"role":"user","transcript":"What is my project called?"}}"#);
-        assert!(first.delegation.unwrap().bootstrap);
-        assert_eq!(first.effects.playback_enabled, Some(false));
-        assert_eq!(voice.sideband_opened().playback_enabled, Some(false));
-    }
-    #[test]
-    fn partial_speech_only_prefetches_and_final_speech_still_owns_admission() {
-        let mut voice = voice();
-        let partial =
-            r#"{"type":"input_transcript.added","item":{"text":"When is Elena's birthday?"}}"#;
-        let early = voice.realtime_message(partial);
-        assert!(early.delegation.is_none());
-        assert_eq!(
-            early.prefetch.unwrap(),
-            crate::VoicePrefetch {
-                query: "When is Elena's birthday?".to_owned(),
-                debounce_ms: 250,
-            }
-        );
-        assert!(
-            voice
-                .realtime_message(r#"{"type":"input_transcript.added","item":{"text":" "}}"#)
-                .prefetch
-                .is_none()
-        );
-        let completed = voice.realtime_message(&utterance("When is Elena's birthday?"));
-        assert!(completed.delegation.unwrap().bootstrap);
-        assert!(completed.prefetch.is_none());
-        assert!(voice.realtime_message(partial).prefetch.is_none());
-        voice.bind_session("another-call");
-        assert!(voice.realtime_message(partial).prefetch.is_some());
-    }
     fn voice() -> ManagedVoiceProtocol {
         let mut voice = ManagedVoiceProtocol::new("cove").unwrap();
         voice.bind_session("call-1");
@@ -529,97 +337,122 @@ mod tests {
         json!({"type":"delegation.created","item":{"type":"delegation","target":"client","id":id,"content":[{"type":"input_text","text":text}]}}).to_string()
     }
     #[test]
-    fn first_utterance_retrieves_before_playback_and_adopts_provider_handoff_once() {
+    fn conversational_speech_never_forces_retrieval_or_waits_for_agent_output() {
         let mut voice = voice();
-        assert_eq!(voice.sideband_opened().playback_enabled, Some(false));
-        assert!(
-            voice
-                .realtime_message(r#"{"type":"output_transcript.added","item":{"text":"A guess"}}"#)
-                .effects
-                .transcripts
-                .is_empty()
+        assert_eq!(voice.sideband_opened().playback_enabled, Some(true));
+        for text in [
+            "Hi, say hello briefly",
+            "What is two plus two?",
+            "When is Elena's birthday?",
+        ] {
+            let partial = json!({"type":"input_transcript.added","item":{"text":text}}).to_string();
+            for event in [partial, utterance(text)] {
+                assert!(!voice.requires_agent_admission(&event));
+                let update = voice.realtime_message(&event);
+                assert!(update.delegation.is_none());
+                assert!(update.prefetch.is_none());
+            }
+        }
+        let reply = voice.realtime_message(
+            r#"{"type":"output_transcript.added","item":{"text":"Let me check."}}"#,
         );
-        let input = utterance("When is Elena's birthday?");
-        assert!(voice.requires_agent_admission(&input));
-        let first = voice.realtime_message(&input);
-        let delegated = first.delegation.unwrap();
-        assert!(delegated.bootstrap);
-        let plan = bootstrap_plan(&format_delegation(&delegated));
-        assert_eq!(plan["query"], "When is Elena's birthday?");
-        assert!(!format_delegation(&delegated).contains("A guess"));
-        assert!(!voice.requires_agent_admission(&input));
-        assert!(
-            voice
-                .realtime_message(&delegation("provider-1", "Look up the date"))
-                .delegation
-                .is_none()
-        );
+        assert_eq!(reply.effects.transcripts.len(), 1);
+        assert_eq!(voice.sideband_opened().playback_enabled, Some(true));
+        let speech = voice.append_speech("Voice is connected.").unwrap();
+        assert_eq!(speech.playback_enabled, Some(true));
+        assert_eq!(voice.sideband_opened().frames, speech.frames);
+    }
+    #[test]
+    fn provider_handoff_preserves_lookup_and_transcript_without_synthetic_bootstrap() {
+        let mut voice = voice();
+        voice.realtime_message(&utterance("When is Elena's birthday?"));
+        let event = delegation("provider-1", "Look up the saved birthday; do not guess.");
+        assert!(voice.requires_agent_admission(&event));
+        let delegated = voice.realtime_message(&event).delegation.unwrap();
+        assert!(!delegated.bootstrap);
+        assert_eq!(delegated.input, "Look up the saved birthday; do not guess.");
+        let formatted = format_delegation(&delegated);
+        assert!(formatted.contains("When is Elena's birthday?"));
+        assert!(!formatted.contains("voice_bootstrap"));
+        assert!(voice.realtime_message(&event).delegation.is_none());
         let output = voice.agent_event(
-            r#"{"type":"assistant.message","payload":{"text":"The saved date is December 22."}}"#,
+            r#"{"type":"assistant.message","payload":{"text":"No saved birthday was found."}}"#,
         );
-        assert_eq!(output.playback_enabled, Some(true));
         assert!(output.frames[0].contains("provider-1"));
         assert_eq!(voice.sideband_opened().frames, output.frames);
         voice.frames_sent(output.frames.len());
         assert!(voice.sideband_opened().frames.is_empty());
         voice.realtime_message(&utterance("And what should I get her?"));
-        let next = voice.realtime_message(&delegation("provider-2", "Suggest a present"));
-        assert!(!next.delegation.unwrap().bootstrap);
+        assert!(
+            voice
+                .realtime_message(&delegation("provider-2", "Suggest a present"))
+                .delegation
+                .is_some()
+        );
     }
     #[test]
-    fn failed_bootstrap_reports_error_without_waiting_for_provider_delegation() {
-        for failure in [Some("The subscription request failed."), None] {
-            let mut voice = voice();
-            let first = voice.realtime_message(&utterance("Check this request"));
-            assert!(first.delegation.unwrap().bootstrap);
-            assert_eq!(first.effects.playback_enabled, Some(false));
-            voice.agent_event(r#"{"type":"run.started"}"#);
-            if let Some(failure) = failure {
-                voice.agent_event(
-                    &json!({"type":"run.error","payload":{"text":failure}}).to_string(),
+    fn failed_run_reports_error_with_or_without_provider_handoff() {
+        for handoff in [false, true] {
+            for failure in [Some("The subscription request failed."), None] {
+                let mut voice = voice();
+                if handoff {
+                    assert!(
+                        voice
+                            .realtime_message(&delegation("lookup", "Check this request"))
+                            .delegation
+                            .is_some()
+                    );
+                }
+                let _ = voice.agent_event(r#"{"type":"run.started"}"#);
+                if let Some(failure) = failure {
+                    let _ = voice.agent_event(
+                        &json!({"type":"run.error","payload":{"text":failure}}).to_string(),
+                    );
+                }
+                let failed = voice.agent_event(r#"{"type":"run.failed"}"#);
+                assert_eq!(failed.frames.len(), 1);
+                let frame: Value = serde_json::from_str(&failed.frames[0]).unwrap();
+                assert_eq!(
+                    frame["type"],
+                    if handoff {
+                        "delegation.context.append"
+                    } else {
+                        "session.context.append"
+                    }
+                );
+                assert_eq!(
+                    frame["content"][0]["text"],
+                    failure.unwrap_or("The coding agent failed.")
+                );
+                assert_eq!(voice.sideband_opened().frames, failed.frames);
+                voice.frames_sent(failed.frames.len());
+                assert!(voice.sideband_opened().frames.is_empty());
+                assert!(
+                    voice
+                        .agent_event(r#"{"type":"run.failed"}"#)
+                        .frames
+                        .is_empty()
                 );
             }
-            let failed = voice.agent_event(r#"{"type":"run.failed"}"#);
-            assert_eq!(failed.playback_enabled, Some(true));
-            assert_eq!(failed.frames.len(), 1);
-            let frame: Value = serde_json::from_str(&failed.frames[0]).unwrap();
-            assert_eq!(frame["type"], "session.context.append");
-            assert_eq!(
-                frame["content"][0]["text"],
-                failure.unwrap_or("The coding agent failed.")
-            );
-            assert_eq!(voice.sideband_opened().frames, failed.frames);
-            voice.frames_sent(failed.frames.len());
-            assert!(voice.sideband_opened().frames.is_empty());
-            assert!(
-                voice
-                    .agent_event(r#"{"type":"run.failed"}"#)
-                    .frames
-                    .is_empty()
-            );
         }
     }
     #[test]
-    fn delegation_before_final_transcript_bootstraps_once_and_preserves_followups() {
+    fn provider_handoff_before_final_transcript_is_not_replaced_or_repeated() {
         let mut voice = voice();
         voice.realtime_message(
             r#"{"type":"input_transcript.added","item":{"text":"Tell me about Elena"}}"#,
         );
-        let first = voice.realtime_message(&delegation("first", "Search personal memory"));
-        assert_eq!(first.delegation.unwrap().input, "Tell me about Elena");
+        let event = delegation("first", "Search personal memory");
+        let first = voice.realtime_message(&event).delegation.unwrap();
+        assert_eq!(first.input, "Search personal memory");
+        assert!(!first.bootstrap);
         assert!(
             voice
                 .realtime_message(&utterance("Tell me about Elena"))
                 .delegation
                 .is_none()
         );
-        assert!(
-            voice
-                .realtime_message(&delegation("same-request", "Search personal memory"))
-                .delegation
-                .is_none()
-        );
-        voice.realtime_message(&utterance("Tell me about Elena"));
+        assert!(voice.realtime_message(&event).delegation.is_none());
         assert!(
             voice
                 .realtime_message(&delegation("followup", "Tell me again"))
@@ -628,13 +461,13 @@ mod tests {
         );
     }
     #[test]
-    fn search_plan_uses_exact_spoken_text_and_utf8_bounds() {
-        let mut voice = voice();
-        let input = "  Elena <birthday> &\n presents ";
-        let first = voice
-            .realtime_message(&utterance(input))
-            .delegation
-            .unwrap();
+    fn legacy_bootstrap_plan_keeps_exact_spoken_text_and_utf8_bounds() {
+        let first = crate::browser::BrowserVoiceDelegation {
+            id: "legacy".into(),
+            bootstrap: true,
+            input: "  Elena <birthday> &\n presents ".into(),
+            transcript: vec![],
+        };
         let plan = bootstrap_plan(&format_delegation(&first));
         assert_eq!(plan["query"], "Elena <birthday> & presents");
         assert_eq!(
@@ -653,7 +486,7 @@ mod tests {
         assert_eq!(bootstrap_plan("Elena")["voice_bootstrap"], false);
     }
     #[test]
-    fn memory_updates_are_scoped_bounded_replayable_and_do_not_unlock_playback() {
+    fn memory_updates_are_scoped_bounded_replayable_and_do_not_change_playback() {
         let mut voice = voice();
         voice.realtime_message(&utterance("Remember this"));
         let mut event = json!({"cursor":"9007199254740993","event":{"type":"managed.voice.context","payload":{
@@ -666,7 +499,7 @@ mod tests {
         assert_eq!(update.playback_enabled, None);
         assert!(update.transcripts.is_empty());
         assert!(update.frames[0].contains("u003c"));
-        assert_eq!(voice.sideband_opened().playback_enabled, Some(false));
+        assert_eq!(voice.sideband_opened().playback_enabled, Some(true));
         assert_eq!(voice.sideband_opened().frames, update.frames);
         assert!(voice.managed_event(&event).frames.is_empty());
         event["cursor"] = json!("9007199254740992");

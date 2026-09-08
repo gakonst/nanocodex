@@ -119,25 +119,29 @@ mod tests {
         }
     }
     #[test]
-    fn native_abi_owns_handles_and_uses_the_same_bootstrap_reducer() {
+    fn native_abi_owns_handles_and_only_routes_provider_handoffs() {
         // SAFETY: both literal buffers are valid for the call's duration.
         let handle = unsafe { nc_voice_create(b"cove".as_ptr(), 4) };
         assert_ne!(handle, 0);
         apply(handle, r#"{"op":"bind","session_id":"call-1"}"#);
         assert_eq!(
             apply(handle, r#"{"op":"opened"}"#)["value"]["playback_enabled"],
-            false
+            true
         );
         let result = apply(
             handle,
             r#"{"op":"realtime","event":{"type":"turn.done","turn":{"role":"user","transcript":"Elena's birthday?"}}}"#,
         );
-        assert!(
-            result["value"]["delegation"]["formatted_input"]
-                .as_str()
-                .unwrap()
-                .contains("voice_bootstrap")
+        assert!(result["value"]["delegation"].is_null());
+        let handoff = apply(
+            handle,
+            r#"{"op":"realtime","event":{"type":"delegation.created","item":{"type":"delegation","target":"client","id":"lookup","content":[{"type":"input_text","text":"Find the saved birthday"}]}}}"#,
         );
+        let input = handoff["value"]["delegation"]["formatted_input"]
+            .as_str()
+            .unwrap();
+        assert!(input.contains("Find the saved birthday"));
+        assert!(!input.contains("voice_bootstrap"));
         assert!(apply(handle, "bad json")["error"].is_string());
         nc_voice_destroy(handle);
         nc_voice_destroy(handle);
