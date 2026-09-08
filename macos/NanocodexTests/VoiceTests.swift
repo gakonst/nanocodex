@@ -354,6 +354,20 @@ final class VoiceTests: XCTestCase {
         let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         await Self.captureFailureState(client: client, agentID: agentID, evidence: evidence)
+        if env["NANOCODEX_DIAGNOSTIC_CAPACITY"] == "1" {
+            let capacity = try await client.json(path: ManagedClient.agentPath(agentID) + "/capacity")
+            var counts: [String: Double] = [:]
+            for field in ["database_size_bytes", "known_payload_bytes", "unattributed_database_bytes"] {
+                if case .number(let value) = capacity[field] { counts[field] = value }
+            }
+            for group in ["durable_state", "archived_events", "archived_realtime", "archived_turns", "managed_events", "raw_events", "turns"] {
+                for field in ["bytes", "rows", "archived_bytes", "archived_events", "archived_receipts", "archived_turns", "objects", "total_rows", "unfinished_rows", "retry_rows"] {
+                    if case .number(let value) = capacity[group][field] { counts[group + "." + field] = value }
+                }
+            }
+            counts["durable_state.revision"] = Double(capacity["durable_state"]["revision"].string)
+            try JSONEncoder().encode(counts).write(to: evidence.appendingPathComponent("native-owned-agent-capacity.json"))
+        }
         let report = try JSONDecoder().decode(InboxCore.JSON.self, from: Data(contentsOf:
             evidence.appendingPathComponent("native-memory-voice-failure-state.json")))
         XCTAssertFalse(report["state_read_failed"].bool, "Owned agent state must be readable")
