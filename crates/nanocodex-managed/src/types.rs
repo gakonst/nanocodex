@@ -43,6 +43,94 @@ pub enum PromptContent {
     },
 }
 
+/// Whether a scheduled prompt starts a new agent or continues its owning agent.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronSessionMode {
+    /// Start a fresh agent for each occurrence.
+    #[default]
+    New,
+    /// Append the occurrence to the owning agent's retained conversation.
+    Continue,
+}
+
+/// Complete configuration for one durable cron trigger.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CronTriggerConfig {
+    /// Five-field cron expression; the server validates its schedule.
+    pub cron: String,
+    /// IANA timezone, such as `Europe/Athens`.
+    pub timezone: String,
+    /// Prompt submitted on each occurrence, at most 64 KiB of UTF-8.
+    pub input: String,
+    /// Whether future occurrences are scheduled.
+    pub enabled: bool,
+    /// Conversation policy for each occurrence.
+    pub session_mode: CronSessionMode,
+}
+
+impl CronTriggerConfig {
+    pub(crate) fn validate(&self) -> Result<(), ManagedError> {
+        if self.cron.len() > 256
+            || self.cron.split_whitespace().count() != 5
+            || self.input.trim().is_empty()
+            || self.input.len() > 64 * 1024
+            || self.timezone.is_empty()
+            || self.timezone.len() > 128
+        {
+            return Err(ManagedError::Configuration(
+                "expected a five-field cron, timezone, and non-empty input of at most 64 KiB"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Retained schedule configuration and delivery status.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CronTrigger {
+    /// Stable trigger identifier within the owning agent.
+    pub id: String,
+    /// Five-field cron expression.
+    pub cron: String,
+    /// Schedule timezone.
+    pub timezone: String,
+    /// Scheduled prompt.
+    pub input: String,
+    /// Whether the schedule is enabled.
+    pub enabled: bool,
+    /// Conversation policy; older schedules continued the owning agent.
+    #[serde(default = "continued_cron_session")]
+    pub session_mode: CronSessionMode,
+    /// Agent used by the last occurrence, when available.
+    pub last_agent_id: Option<String>,
+    /// Next scheduled occurrence, in Unix milliseconds.
+    pub next_run_at: Option<u64>,
+    /// Last delivered occurrence, in Unix milliseconds.
+    pub last_run_at: Option<u64>,
+    /// Turn created by the last delivered occurrence.
+    pub last_turn_id: Option<String>,
+    /// Last skipped occurrence, in Unix milliseconds.
+    pub last_skipped_at: Option<u64>,
+    /// Creation timestamp in Unix milliseconds.
+    pub created_at: u64,
+    /// Last update timestamp in Unix milliseconds.
+    pub updated_at: u64,
+}
+
+const fn continued_cron_session() -> CronSessionMode {
+    CronSessionMode::Continue
+}
+
+/// All schedules retained by one managed agent.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CronTriggerList {
+    /// Schedules in service order.
+    pub data: Vec<CronTrigger>,
+}
+
 /// Receipt returned when an account-owned agent is created.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentReceipt {

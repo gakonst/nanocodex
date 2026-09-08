@@ -155,7 +155,12 @@ impl ManagedClient {
         validate_agent_receipt(receipt)
     }
 
-    pub(crate) async fn create_with_settings(
+    /// Creates an agent with its initial model and reasoning policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a settings-validation, transport, HTTP, or response-schema failure.
+    pub async fn create_with_settings(
         &self,
         settings: AgentSettings,
     ) -> Result<AgentReceipt, ManagedError> {
@@ -338,6 +343,79 @@ impl ManagedClient {
         validate_id("agent", agent_id)?;
         let response = self
             .request(Method::DELETE, &agent_path(agent_id), None, None)
+            .await?;
+        if !response.status().is_success() {
+            return Err(response_error(response).await);
+        }
+        Ok(())
+    }
+
+    /// Lists an agent's durable cron schedules.
+    ///
+    /// # Errors
+    /// Returns an identifier, transport, HTTP, or response-schema failure.
+    pub async fn triggers(&self, agent_id: &str) -> Result<crate::CronTriggerList, ManagedError> {
+        validate_id("agent", agent_id)?;
+        self.json(
+            Method::GET,
+            &format!("{}/triggers", agent_path(agent_id)),
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Reads one durable cron schedule.
+    ///
+    /// # Errors
+    /// Returns an identifier, transport, HTTP, or response-schema failure.
+    pub async fn trigger(
+        &self,
+        agent_id: &str,
+        trigger_id: &str,
+    ) -> Result<crate::CronTrigger, ManagedError> {
+        self.json(
+            Method::GET,
+            &trigger_path(agent_id, trigger_id)?,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Creates or replaces one named cron schedule with an idempotent PUT.
+    ///
+    /// # Errors
+    /// Returns a configuration, transport, HTTP, or response-schema failure.
+    pub async fn put_trigger(
+        &self,
+        agent_id: &str,
+        trigger_id: &str,
+        config: &crate::CronTriggerConfig,
+    ) -> Result<crate::CronTrigger, ManagedError> {
+        let path = trigger_path(agent_id, trigger_id)?;
+        config.validate()?;
+        let body = serde_json::to_vec(config)
+            .map_err(|_| ManagedError::InvalidResponse("failed to encode cron trigger"))?;
+        self.json(Method::PUT, &path, Some(&body), None).await
+    }
+
+    /// Deletes a durable cron schedule.
+    ///
+    /// # Errors
+    /// Returns an identifier, transport, or HTTP failure.
+    pub async fn delete_trigger(
+        &self,
+        agent_id: &str,
+        trigger_id: &str,
+    ) -> Result<(), ManagedError> {
+        let response = self
+            .request(
+                Method::DELETE,
+                &trigger_path(agent_id, trigger_id)?,
+                None,
+                None,
+            )
             .await?;
         if !response.status().is_success() {
             return Err(response_error(response).await);
@@ -863,6 +941,21 @@ pub(crate) fn validate_idempotency_key(value: &str) -> Result<(), ManagedError> 
         ));
     }
     Ok(())
+}
+
+fn trigger_path(agent_id: &str, trigger_id: &str) -> Result<String, ManagedError> {
+    validate_id("agent", agent_id)?;
+    if trigger_id.is_empty()
+        || trigger_id.len() > 64
+        || !trigger_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(ManagedError::Configuration(
+            "trigger id must be 1-64 letters, digits, underscores or hyphens".to_owned(),
+        ));
+    }
+    Ok(format!("{}/triggers/{trigger_id}", agent_path(agent_id)))
 }
 
 pub(crate) fn agent_path(agent_id: &str) -> String {
