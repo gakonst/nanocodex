@@ -10,20 +10,12 @@ import { Voice } from "../browser/index.mjs";
 const AGENT_ID = "019d2f5d-7491-8000-8000-000000000001";
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-test("Rust partial speech warms retrieval without delaying final admission and stop aborts speculation", { timeout: 5000 }, async () => {
+test("Rust speech waits for a provider handoff before reading memory or admitting agent work", { timeout: 5000 }, async () => {
   const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
   const requests = [];
-  let entered, finish;
-  const prefetched = new Promise((resolve) => { entered = resolve; });
-  const waiting = new Promise((resolve) => { finish = resolve; });
-  let prefetchSignal;
   const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async (input, init) => {
     const path = new URL(input).pathname;
     requests.push({ path, body: JSON.parse(init.body) });
-    if (path.endsWith("/prefetch")) {
-      prefetchSignal = init.signal; entered(); await waiting;
-      return Response.json({ prefetched: true });
-    }
     if (path.endsWith("/delegate")) return Response.json({ route: "started", turn_id: "first" });
     return Response.json({ context: { workspace: "/brain", history: [] } });
   } });
@@ -31,19 +23,23 @@ test("Rust partial speech warms retrieval without delaying final admission and s
   try {
     await voice.start();
     voice.callBody("v=offer");
-    await voice.realtimeMessage(JSON.stringify({ type: "input_transcript.added", item: { text: "When is Elena's" } }));
-    await voice.realtimeMessage(JSON.stringify({ type: "input_transcript.added", item: { text: " birthday?" } }));
-    assert.equal(requests.length, 1, "partials never admit a turn");
-    await prefetched;
-    assert.equal(requests.length, 2, "successive partials debounce into one read");
-    assert.equal(requests[1].body.query, "When is Elena's birthday?");
+    assert.equal(JSON.parse(voice.sidebandOpened()).playback_enabled, true);
+    await voice.realtimeMessage(JSON.stringify({ type: "input_transcript.added", item: { text: "Hi, say hello briefly" } }));
+    await voice.realtimeMessage(JSON.stringify({ type: "turn.done", turn: { role: "user", transcript: "Hi, say hello briefly" } }));
+    const greeting = JSON.parse(await voice.realtimeMessage(JSON.stringify({ type: "output_transcript.added", item: { text: "Hello!" } })));
+    assert.equal(greeting.transcripts.length, 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(requests.length, 1, "speech never schedules speculative memory requests or model work");
     await voice.realtimeMessage(JSON.stringify({ type: "turn.done", turn: { role: "user", transcript: "When is Elena's birthday?" } }));
-    assert.match(requests[2].path, /realtime\/delegate$/);
-    assert.match(requests[2].body.input, /voice_bootstrap/);
-    assert.equal(prefetchSignal.aborted, false, "an in-flight exact query can still finish for admission");
+    assert.equal(requests.length, 1);
+    await voice.realtimeMessage(JSON.stringify({ type: "delegation.created", item: {
+      type: "delegation", target: "client", id: "lookup", content: [{ type: "input_text", text: "Look up Elena's saved birthday" }],
+    } }));
+    assert.match(requests[1].path, /realtime\/delegate$/);
+    assert.doesNotMatch(requests[1].body.input, /voice_bootstrap/);
+    assert.match(requests[1].body.input, /Look up Elena's saved birthday/);
     await voice.stop();
-    assert.equal(prefetchSignal.aborted, true);
-  } finally { finish(); voice.free(); }
+  } finally { voice.free(); }
 });
 
 test("managed Rust queues late startup context once while SDP is already in flight", async () => {
@@ -73,7 +69,7 @@ test("managed Rust queues late startup context once while SDP is already in flig
     const texts = context.frames.map((frame) => JSON.parse(frame).content[0].text);
     assert.ok(texts.join("").length > 8192, "late admission preserves the full startup budget");
     assert.ok(texts.every((text) => new TextEncoder().encode(text).length <= 500));
-    assert.equal(context.playback_enabled, false, "background context cannot release first-response playback");
+    assert.equal(context.playback_enabled, true, "background context does not block conversational playback");
     assert.ok(context.frames.every((frame) => JSON.parse(frame).type === "session.context.append"));
     assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, context.frames, "lost control acknowledgements replay context");
     voice.framesSent(context.frames.length);
@@ -152,23 +148,20 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
   assert.deepEqual(effects(context).frames, [], "replay cannot restore obsolete facts");
   assert.deepEqual(effects({ ...context, cursor: "9007199254740992" }).frames, []);
-  assert.equal(JSON.parse(voice.sidebandOpened()).playback_enabled, false);
-  const reply = JSON.parse(await voice.realtimeMessage(JSON.stringify({ type: "turn.done", turn: { role: "user", transcript: "When is Elena's birthday?" } })));
-  assert.equal(reply.playback_enabled, true, "buffered durable output must release the Rust playback gate");
-  assert.match(reply.frames.join(""), /December 22/);
-  assert.match(requests[1].body.input, /voice_bootstrap/);
-  assert.match(requests[1].body.input, /When is Elena's birthday/);
-
+  assert.equal(JSON.parse(voice.sidebandOpened()).playback_enabled, true);
+  await voice.realtimeMessage(JSON.stringify({ type: "turn.done", turn: { role: "user", transcript: "When is Elena's birthday?" } }));
+  assert.equal(requests.length, 1, "completed speech does not force agent work");
   const delegation = JSON.stringify({
     type: "delegation.created",
     item: {
-      type: "delegation",
-      target: "client",
-      id: "delegation-1",
-      content: [{ type: "input_text", text: "ship it" }],
+      type: "delegation", target: "client", id: "delegation-1",
+      content: [{ type: "input_text", text: "Look up Elena's birthday" }],
     },
   });
-  await voice.realtimeMessage(delegation);
+  const reply = JSON.parse(await voice.realtimeMessage(delegation));
+  assert.match(reply.frames.join(""), /December 22/);
+  assert.doesNotMatch(requests[1].body.input, /voice_bootstrap/);
+  assert.match(requests[1].body.input, /When is Elena's birthday/);
   await voice.realtimeMessage(delegation);
   assert.equal(requests.length, 2, "a replayed delegation must not repeat admission");
   assert.equal(voice.agentEvent({ turnId: "typed-turn", event: { type: "run.started" } }), undefined);

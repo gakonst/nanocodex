@@ -28,26 +28,31 @@ final class ManagedVoiceTests: XCTestCase {
         await transport.close()
     }
 
-    func testFirstUtteranceUsesRustBootstrapAndGatesPlayback() throws {
+    func testSpeechPlaysWithoutBootstrapAndOnlyProviderHandoffsAdmitAgentWork() throws {
         let voice = try ManagedVoiceProtocol()
         voice.bindSession("call-1")
-        XCTAssertEqual(voice.sidebandOpened().playbackEnabled, false)
+        XCTAssertEqual(voice.sidebandOpened().playbackEnabled, true)
         let partial = voice.realtimeMessage(.object(["type": .string("input_transcript.added"), "item": .object([
             "text": .string("When is Elena's birthday?")
         ])]))
         XCTAssertNil(partial.delegation)
-        XCTAssertEqual(partial.prefetch?.query, "When is Elena's birthday?")
-        XCTAssertEqual(partial.prefetch?.debounceMS, 250)
+        XCTAssertNil(partial.prefetch)
         let first = voice.realtimeMessage(.object(["type": .string("turn.done"), "turn": .object([
             "role": .string("user"), "transcript": .string("When is Elena's birthday?")
         ])]))
-        XCTAssertTrue(try XCTUnwrap(first.delegation).formattedInput.contains("voice_bootstrap"))
-        XCTAssertTrue(try XCTUnwrap(first.delegation).formattedInput.contains("Elena's birthday?"))
-        XCTAssertEqual(first.effects.playbackEnabled, false)
+        XCTAssertNil(first.delegation)
+        let handoff = voice.realtimeMessage(.object(["type": .string("delegation.created"), "item": .object([
+            "type": .string("delegation"), "target": .string("client"), "id": .string("lookup"),
+            "content": .array([.object(["type": .string("input_text"), "text": .string("Search saved memory for the birthday")])])
+        ])]))
+        let input = try XCTUnwrap(handoff.delegation).formattedInput
+        XCTAssertFalse(input.contains("voice_bootstrap"))
+        XCTAssertTrue(input.contains("Search saved memory for the birthday"))
+        XCTAssertTrue(input.contains("Elena's birthday?"))
         let result = voice.agentEvent(.object(["type": .string("assistant.message"), "payload": .object([
             "text": .string("The saved date is December 22.")
         ])]))
-        XCTAssertEqual(result.playbackEnabled, true)
+        XCTAssertEqual(voice.sidebandOpened().playbackEnabled, true)
         XCTAssertFalse(result.frames.isEmpty)
         XCTAssertEqual(voice.sidebandOpened().frames, result.frames)
         voice.framesSent(result.frames.count)
