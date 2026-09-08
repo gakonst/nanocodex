@@ -325,17 +325,23 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     private func startMeter(_ audio: VoicePeer, token: UUID) {
         meter = Task { [weak self, audio] in
             var samples = 0
+            var audible = false
             while !Task.isCancelled {
                 let stats = await audio.statistics()
                 guard let self, self.generation == token else { return }
                 self.inputLevel = self.isMuted ? 0 : min(1, max(0, stats.inputLevel))
                 self.outputLevel = min(1, max(0, stats.outputLevel))
                 self.audioBytesSent = stats.bytesSent; self.audioBytesReceived = stats.bytesReceived
-                #if DEBUG
-                if samples.isMultiple(of: 5), ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1" {
-                    print("VOICE_AUDIO sent=\(stats.bytesSent) received=\(stats.bytesReceived) input=\(stats.inputLevel) output=\(stats.outputLevel)")
+                if voiceTimingEnabled {
+                    let outputActive = stats.playbackEnabled && stats.outputLevel > 0.001
+                    if outputActive != audible {
+                        audible = outputActive
+                        voiceTiming(outputActive ? "audio.output.started" : "audio.output.quiet")
+                    }
+                    if samples.isMultiple(of: 5) {
+                        voiceTiming("audio sent=\(stats.bytesSent) received=\(stats.bytesReceived) input=\(stats.inputLevel) playback=\(stats.playbackEnabled) output=\(stats.outputLevel)")
+                    }
                 }
-                #endif
                 samples += 1
                 do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
             }
@@ -406,11 +412,11 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         }
         #if DEBUG
         receivedRealtimeTypesForTesting.insert(event["type"].string)
-        if ProcessInfo.processInfo.environment["NANOCODEX_VOICE_TIMING"] == "1" {
-            let type = event["type"].string
-            if type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) != nil { print("VOICE_EVENT \(type)") }
-        }
         #endif
+        if voiceTimingEnabled {
+            let type = event["type"].string
+            if type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) != nil { voiceTiming("realtime.\(type)") }
+        }
         guard let update = protocolState?.realtimeMessage(event) else { return }
         if let prefetch = update.prefetch, let transport, let sessionID {
             prefetchTask?.cancel()
@@ -458,8 +464,10 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     private func route(_ delegation: ManagedVoiceDelegation, operation: String, transport: ManagedVoiceTransport, sessionID: String, token: UUID) async throws {
         routePending = true; isWorking = true
         defer { if generation == token { routePending = false } }
+        voiceTiming("delegate.begin")
         let route = try await transport.delegate(sessionID: sessionID, operationID: operation, input: delegation.formattedInput)
         try check(token)
+        voiceTiming("delegate.end")
         activeTurnID = route.turnID
         if route.route == "started" { startedTurnID = route.turnID }
         let buffered = bufferedEvents; bufferedEvents = []
@@ -480,6 +488,10 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                 for try await event in events {
                     guard let self else { return }
                     try self.check(token)
+                    if voiceTimingEnabled {
+                        let type = event.data["event"]["type"].string
+                        if type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) != nil { voiceTiming("agent.received.\(type)") }
+                    }
                     if self.routePending && event.turnID != self.activeTurnID
                         && event.data["event"]["type"].string != "managed.voice.context" {
                         guard self.bufferedEvents.count < 256 else { throw VoiceFailure.connection }
@@ -500,6 +512,10 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
             return
         }
         guard event.turnID == activeTurnID, activeTurnID != nil else { return }
+        if voiceTimingEnabled {
+            let type = raw["type"].string
+            if type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) != nil { voiceTiming("agent.applied.\(type)") }
+        }
         if let effects = protocolState?.agentEvent(raw) { apply(effects, token: token) }
         if ["run.completed", "run.failed", "run.cancelled"].contains(raw["type"].string) {
             if startedTurnID == activeTurnID { startedTurnID = nil }
