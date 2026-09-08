@@ -35,6 +35,13 @@ roughly every 200 ms; this is not an external acoustic recording.
 | Voice response audio after input | None within 30 s | 20:56:00.163 | 21:05:41.527 |
 | Speech end to response audio | More than 30 s | **0.808 s** | **1.376 s** |
 
+A third phone repeat after the terminal-failure fix also passed: call tap
+21:18:20.507 UTC, ready 21:18:25.169 (4.662 s startup), fixture end
+21:18:30.588, first input transcript 21:18:30.603, response transcript
+21:18:31.899, and response audio 21:18:32.104 (**1.516 s after speech ended**).
+No main-agent greeting delegation occurred. Three after samples therefore span
+0.808–1.516 s; they are not a percentile benchmark.
+
 Startup varies independently; these samples do not establish a startup improvement.
 The measured removed bottleneck is mandatory dispatch/model work plus playback
 suppression. The baseline model itself took 4.725 s, and dispatch-to-answer took
@@ -113,3 +120,34 @@ Managed voice currently waits for completed assistant messages because the
 managed watcher suppresses assistant deltas. Streaming partial model replies
 requires a deliberate live-event/replay contract. Stop-time transcript persistence
 can also start another agent turn; neither behavior was changed by this fix.
+
+## Follow-up fixes and stage attribution
+
+`fe0a85cb` fixes another reproduced voice failure: an outer durable `turn_failed`
+before model startup was ignored by native and browser subscribers. Shared Rust
+now returns one generic failure for the correlated handoff, and the clients leave
+the working state. Tests cover a failure before the delegation receipt, replacement
+handoffs, prior successful output, duplicates, unrelated turns, and retryable
+states. Before-fix fixtures failed; after-fix checks passed: Rust/FFI 30, actual
+browser/WASM contracts 29, Swift 31 executed with one live skip, package/type checks,
+and all five Apple core builds. The old live stall is not retroactively attributed
+to this bug because its durable trace was not retained before cleanup.
+
+The native no-tools text check's slow reply was a separate model-stage delay:
+accepted 20:29:57.648 UTC, model started 20:30:03.892, assistant output
+20:34:30.752, and completion 20:34:30.789. Admission-to-model was 6.244 s;
+the model-call interval was **266.897 s**. This does not distinguish provider
+queueing, inference, and network time. The native Sol/high defaults were retained;
+there is no controlled evidence here supporting a configuration change.
+
+The shared Apple `ManagedClient.stream` recovery fixture reproduces a stream that
+keeps heartbeating while a newer completion exists durably. The previous client
+never recovered before the fixture deadline. The change checks durable state only
+after 15 s without delivered cursor progress and closes a stale stream with a
+retryable transport error. Consumers reconnect from their last delivered cursor;
+the state snapshot cursor is never adopted. The real HTTP fixture verifies a
+second request from that cursor and exactly one replayed completion, as well as
+healthy idle streams, unavailable/malformed/wrong-agent state, cancellation, and
+progress arriving during the state read. This validates recovery from the observed
+class of missing update; it does not identify why the original server stream fell
+behind.
