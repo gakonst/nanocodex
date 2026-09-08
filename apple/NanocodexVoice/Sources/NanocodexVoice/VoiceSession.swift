@@ -496,15 +496,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                 for try await event in events {
                     guard let self else { return }
                     try self.check(token)
-                    if voiceTimingEnabled {
-                        let type = event.data["event"]["type"].string
-                        if type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) != nil { voiceTiming("agent.received.\(type)") }
-                    }
-                    if self.routePending && event.turnID != self.activeTurnID
-                        && event.data["event"]["type"].string != "managed.voice.context" {
-                        guard self.bufferedEvents.count < 256 else { throw VoiceFailure.connection }
-                        self.bufferedEvents.append(event)
-                    } else { self.observe(event, token: token) }
+                    try self.receiveAgentEvent(event, token: token)
                 }
             } catch is CancellationError {} catch {
                 if !Task.isCancelled, let self, self.generation == token { self.fail(error) }
@@ -512,9 +504,22 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         }
     }
 
+    private func receiveAgentEvent(_ event: AgentEvent, token: UUID) throws {
+        if voiceTimingEnabled {
+            let type = event.data["event"]["type"].string
+            if type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) != nil { voiceTiming("agent.received.\(type)") }
+        }
+        if routePending && event.turnID != activeTurnID
+            && event.data["event"]["type"].string != "managed.voice.context" {
+            guard bufferedEvents.count < 256 else { throw VoiceFailure.connection }
+            bufferedEvents.append(event)
+        } else { observe(event, token: token) }
+    }
+
     private func observe(_ event: AgentEvent, token: UUID) {
-        guard event.data["type"].string == "event" else { return }
-        let raw = event.data["event"]
+        let envelopeType = event.data["type"].string
+        guard envelopeType == "event" || envelopeType == "turn_failed" else { return }
+        let raw = envelopeType == "turn_failed" ? event.data : event.data["event"]
         if raw["type"].string == "managed.voice.context" {
             if let effects = protocolState?.managedEvent(raw, cursor: event.cursor.rawValue) { apply(effects, token: token) }
             return
@@ -525,7 +530,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
             if type.range(of: "^[a-z_.]{1,80}$", options: .regularExpression) != nil { voiceTiming("agent.applied.\(type)") }
         }
         if let effects = protocolState?.agentEvent(raw) { apply(effects, token: token) }
-        if ["run.completed", "run.failed", "run.cancelled"].contains(raw["type"].string) {
+        if ["run.completed", "run.failed", "run.cancelled", "turn_failed"].contains(raw["type"].string) {
             if startedTurnID == activeTurnID { startedTurnID = nil }
             activeTurnID = nil; isWorking = false
         }
@@ -701,6 +706,8 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         startTranscriptPreview(agentID: agentID)
         self.transport = transport; sessionID = ManagedVoiceProtocol.sessionID()
     }
+    func receiveManagedEventForTesting(_ event: AgentEvent) throws { try receiveAgentEvent(event, token: generation) }
+    func finishRoutingForTesting() async { await routing?.value }
     func receiveRealtimeForTesting(_ event: JSON) throws { try realtime(event, token: generation) }
 
     /// Hosted service evidence can negotiate real receive-only WebRTC without

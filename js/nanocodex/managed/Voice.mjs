@@ -25,7 +25,7 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
   const prefetchAbort = new AbortController();
 
   function observe(value) {
-    if (value?.turnId !== activeTurnId) return undefined;
+    if (activeTurnId === undefined || value?.turnId !== activeTurnId) return undefined;
     const effects = raw.agentEvent(JSON.stringify(value.event));
     if (isTerminalAgentEvent(value.event)) {
       if (startedTurnId === activeTurnId) startedTurnId = undefined;
@@ -107,7 +107,7 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
       if (value?.event?.type === "managed.voice.context") {
         return raw.managedEvent(JSON.stringify(value));
       }
-      if (routePending && activeTurnId === undefined) {
+      if (routePending && value?.turnId !== activeTurnId) {
         pendingEvents.push(value);
         return undefined;
       }
@@ -183,7 +183,7 @@ function managedDelegationId(payload) {
 
 function isTerminalAgentEvent(event) {
   return event?.type === "run.completed" || event?.type === "run.failed"
-    || event?.type === "run.cancelled";
+    || event?.type === "run.cancelled" || event?.type === "turn_failed";
 }
 
 function mergeVoiceEffects(base, encoded) {

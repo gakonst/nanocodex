@@ -183,6 +183,44 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   assert.equal(typeof requests[3].body.operation_id, "string");
 });
 
+test("durable failure before a replacement receipt completes only that handoff", async () => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  for (const priorStillActive of [false, true]) {
+    let routes = 0;
+    const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async (input) => {
+      if (new URL(input).pathname.endsWith("/delegate")) {
+        routes += 1;
+        if (routes === 1) return Response.json({ route: "started", turn_id: "prior" });
+        voice.agentEvent({ turnId: "unrelated", event: { type: "turn_failed" } });
+        voice.agentEvent({ turnId: "next", event: { type: "turn_retryable" } });
+        voice.agentEvent({ turnId: "next", event: { type: "turn_failed", error: "private backend error" } });
+        return Response.json({ route: "started", turn_id: "next" });
+      }
+      return Response.json({ context: { workspace: "/brain", history: [] } });
+    } });
+    const voice = await createManagedBrowserVoice(agent, "cove", { module });
+    const handoff = (id) => JSON.stringify({ type: "delegation.created", item: {
+      type: "delegation", target: "client", id, content: [{ type: "input_text", text: "Find my saved note" }],
+    } });
+    try {
+      await voice.start();
+      voice.callBody("v=offer");
+      await voice.realtimeMessage(handoff("prior-handoff"));
+      const output = JSON.parse(voice.agentEvent({ turnId: "prior", event: { type: "assistant.message", payload: { text: "Earlier answer" } } }));
+      voice.framesSent(output.frames.length);
+      if (!priorStillActive) voice.agentEvent({ turnId: "prior", event: { type: "run.completed" } });
+      const failed = JSON.parse(await voice.realtimeMessage(handoff("next-handoff")));
+      assert.equal(failed.frames.length, 1);
+      const frame = JSON.parse(failed.frames[0]);
+      assert.equal(frame.delegation_item_id, "next-handoff");
+      assert.equal(frame.content[0].text, "I couldn't complete that request. Please try again.");
+      assert.equal(voice.agentEvent({ turnId: "next", event: { type: "turn_failed" } }), undefined);
+      assert.equal(await voice.cancel(), false, "terminal failure releases only the completed active turn");
+      await voice.stop();
+    } finally { voice.free(); }
+  }
+});
+
 test("managed Agent voice uses its configured same-origin realtime routes", async () => {
   const requests = [];
   const agent = Agent.open(AGENT_ID, {

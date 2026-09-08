@@ -491,6 +491,25 @@ impl BrowserVoiceProtocol {
             return BrowserVoiceEffects::default();
         };
         match kind {
+            "turn_failed" => {
+                // The managed host can fail admission before run.started. Only
+                // an outstanding provider handoff needs this fallback; a prior
+                // run.failed already completed it. Hosts correlate turn IDs.
+                if self.active_delegation.is_none() {
+                    return BrowserVoiceEffects::default();
+                }
+                self.output = HandoffStream::default();
+                self.streamed_this_message = false;
+                self.output_phase = None;
+                self.run_error = None;
+                let mut effects = BrowserVoiceEffects::default();
+                self.push_output_frames(
+                    "I couldn't complete that request. Please try again.",
+                    &mut effects,
+                );
+                self.active_delegation = None;
+                effects
+            }
             "run.started" => {
                 self.streamed_this_message = false;
                 self.output_sent_this_run = false;

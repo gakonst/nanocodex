@@ -137,13 +137,14 @@ test("a sideband lost during admission cannot publish a ready session", async ()
   }
 });
 
-test("the public managed voice carries exact SSE cursors into Rust memory updates", async () => {
+test("the public managed voice forwards memory updates and durable admission failures", async () => {
   await initializeBrowserEngine({ module: await WebAssembly.compile(
     await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)),
   ) });
   const fixture = installBrowserVoiceFixture();
   let events;
   let voiceSessionId;
+  let delegated = false;
   const agent = ManagedAgent.open("019d2f5d-7491-8000-8000-000000000001", {
     baseUrl: "https://example.test",
     fetch: async (input, init) => {
@@ -153,6 +154,10 @@ test("the public managed voice carries exact SSE cursors into Rust memory update
         return Response.json({ context: { workspace: "/brain", history: [] } });
       }
       if (path.endsWith("/realtime/calls")) return globalThis.fetch(input, init);
+      if (path.endsWith("/realtime/delegate")) {
+        delegated = true;
+        return Response.json({ route: "started", turn_id: "failed-voice-turn" });
+      }
       if (path.endsWith("/realtime/stop")) return Response.json({ stopped: true });
       if (path.endsWith("/events")) return new Response(new ReadableStream({
         start(controller) { events = controller; },
@@ -187,6 +192,15 @@ test("the public managed voice carries exact SSE cursors into Rust memory update
     events.enqueue(new TextEncoder().encode(`id: ${cursor}\nevent: event\ndata: ${JSON.stringify(event)}\n\n`));
     await waitFor(() => fixture.sideband.sent.some((frame) => frame.includes("delete")));
     assert.equal(fixture.sidebandUrls.length, 1);
+    fixture.sideband.message({ type: "delegation.created", item: {
+      type: "delegation", target: "client", id: "failed-handoff", content: [{ type: "input_text", text: "Look up the saved note" }],
+    } });
+    await waitFor(() => delegated);
+    events.enqueue(new TextEncoder().encode('id: 9007199254740994\nevent: turn_failed\ndata: {"type":"turn_failed","id":"failed-voice-turn","turn_id":"failed-voice-turn","error":"private backend error","cursor":"9007199254740994","created_at":2}\n\n'));
+    await waitFor(() => fixture.sideband.sent.some((encoded) => {
+      const frame = JSON.parse(encoded);
+      return frame.delegation_item_id === "failed-handoff" && frame.content[0].text === "I couldn't complete that request. Please try again.";
+    }));
   } finally {
     await voice.destroy();
     fixture.restore();
