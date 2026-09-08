@@ -114,7 +114,7 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
 }
 
 /// Card identity is pinned while live updates arrive. Only user navigation moves it.
-public struct InboxDeck: Sendable {
+public struct InboxDeck: Equatable, Sendable {
     public private(set) var order: [String] = []
     public private(set) var focusedID: String?
     public private(set) var seen: [String: Cursor] = [:]
