@@ -74,7 +74,8 @@ metadata and the served artifact, not that endpoint.
   persistence/send/history, navigation menus, scheduled-job details across relaunch,
   and repeated greeting checks passed. Hand disable/relaunch/background/reconnect
   passed in 73.087 s. Stored original-video playback after relaunch passed in
-  23.362 s; the separate digest-reply journey remains failed.
+  23.362 s; that history also displayed the correct digest. The earlier live
+  digest-reply check still missed its 120 s deadline.
 - Simulator: browser tabs, back/draft retention, last-activity ordering, queued
   steering, voice minimization, long history, setup, and scheduled-job fixtures.
 - iPad: context capture/search, account isolation, and actual Safari share-extension
@@ -93,10 +94,20 @@ A later personal lookup received a 202 acknowledgment but no final answer within
 60 s. Existing logs recorded no nested agent events; they did not log all outer
 SSE events and cannot alone distinguish dispatch failure from event-delivery
 failure. A video attachment was imported, previewed, persisted, and submitted,
-but its requested digest answer also missed the 120 s test deadline. These are
-not passing end-to-end journeys. The Hand task similarly missed its live reply
-window. Investigation must retain these failures rather than hide them with
-larger test timeouts.
+but its requested digest answer missed the 120 s test deadline. A later relaunch
+showed the correct digest and original-video playback passed. This establishes
+retained bytes and eventual completion, not timely live delivery. The Hand task
+similarly missed its live reply window. Investigation must retain these failures
+rather than hide them with larger test timeouts.
+
+The retained video turn accepted at 21:01:56.350 UTC and completed durably at
+21:03:03.595, **67.245 s later**, before the phone's 120 s deadline. Model runs
+started at 21:01:56.398 and again at 21:02:15.550; final assistant output was
+stored at 21:03:03.519. The phone still showed Idle with no answer roughly 53 s
+after completion, while relaunch displayed it. This establishes missed live
+updates, not simply slow model generation. The exact transport/recovery cause
+is not established. Safe metadata is retained in
+`/tmp/native-camera-owned-agent-metadata.json`.
 
 Managed voice currently waits for completed assistant messages because the
 managed watcher suppresses assistant deltas. Streaming partial model replies
