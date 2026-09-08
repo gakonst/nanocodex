@@ -151,3 +151,26 @@ healthy idle streams, unavailable/malformed/wrong-agent state, cancellation, and
 progress arriving during the state read. This validates recovery from the observed
 class of missing update; it does not identify why the original server stream fell
 behind.
+
+Final recovery suites passed: InboxCore 71 executed with three live skips, Voice
+31 with one live skip, zero failures. The final physical-phone text admission
+check also passed without relaunching to obtain its reply.
+
+The final native full personal-question fixture passed in 39.555 s with normal
+20 s call deadlines. Startup was 2.149 s; greeting audio began 1.050 s after its
+fixture started, without delegation. The personal question received a brief
+checking acknowledgment, two actual memory tool calls, and a complete spoken
+unknown answer. Decoded final-answer audio began 20.618 s after the personal fixture started
+(**12.384 s after its 8.234 s recording ended**); the unknown-answer transcript
+matcher fired at 20.870 s, and full speech finished at 26.728 s. These timings show that personal lookup still takes
+main-agent time; the optimization removes that cost from ordinary conversation.
+The hosted native main-window/content test passed. CUA's desktop capture failed
+for unrelated apps too, so no speculative product window fix was retained.
+
+Final personal lookup stage durations: dispatch acknowledgment 0.267 s,
+acknowledgment to first model start 3.451 s, first model to tool calls 4.055 s,
+two memory tools to last result 0.078 s, then second model to final message
+2.821 s, and final message to decoded answer audio 0.702 s. The brief checking
+audio started 1.594 s after the recording ended. This run used one healthy event
+connection with no reconnect: the stale-stream recovery path was verified with
+deterministic HTTP fixtures, not triggered by this live run.
