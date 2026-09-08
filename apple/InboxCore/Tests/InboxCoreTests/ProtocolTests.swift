@@ -150,6 +150,43 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(card.needsAttention(seen: Cursor(rawValue: "20")))
         XCTAssertFalse(card.needsAttention(seen: Cursor(rawValue: "22")))
     }
+    func testCompletedStatusSurvivesLaterInternalEventsAfterRelaunch() throws {
+        var card = AgentCard(id: "agent", title: "Test")
+        try card.apply(state: state("30", turns: []))
+        card.apply(events: [try event("10", "turn_accepted"),
+                            try event("20", "turn_completed", ["final_message": .string("Done")]),
+                            try event("30", "event", ["event": .object(["type": .string("managed.voice.context")])])])
+        XCTAssertEqual(card.status, "Ready", "A later internal event must not hide the finished task on restore")
+        XCTAssertTrue(card.needsAttention(seen: Cursor(rawValue: "19")))
+        XCTAssertFalse(card.needsAttention(seen: Cursor(rawValue: "20")), "Internal activity cannot make an already reviewed reply unread")
+        card.apply(events: [try event("15", "turn_failed")])
+        XCTAssertEqual(card.status, "Ready", "Older history cannot replace the latest outcome")
+    }
+    func testNewTurnDoesNotInheritAnOlderCompletedStatus() throws {
+        var card = AgentCard(id: "agent", title: "Test")
+        try card.apply(state: state("20", turns: []))
+        card.apply(events: [try event("20", "turn_completed")])
+        card.apply(events: [try event("21", "turn_accepted")])
+        XCTAssertEqual(card.status, "Running")
+        try card.apply(state: state("30", turns: []))
+        XCTAssertEqual(card.status, "Idle", "New terminal history is still unknown")
+        card.apply(events: [try event("28", "turn_failed"), try event("30", "event")])
+        XCTAssertEqual(card.status, "Failed")
+        XCTAssertTrue(card.needsAttention(seen: Cursor(rawValue: "20")))
+        XCTAssertFalse(card.needsAttention(seen: Cursor(rawValue: "28")))
+    }
+    func testRunningSnapshotCannotReuseEarlierOutcomeWhenLaterWorkFinishes() throws {
+        var card = AgentCard(id: "agent", title: "Test")
+        try card.apply(state: state("10", turns: []))
+        card.apply(events: [try event("10", "turn_completed")])
+        try card.apply(state: state("20", turns: ["new"]))
+        card.apply(events: [try event("10", "turn_completed")])
+        XCTAssertEqual(card.status, "Running")
+        try card.apply(state: state("30", turns: []))
+        XCTAssertEqual(card.status, "Idle")
+        card.apply(events: [try event("29", "turn_failed"), try event("30", "event")])
+        XCTAssertEqual(card.status, "Failed")
+    }
     func testTranscriptDeduplicatesReplayAndSeparatesSubagents() throws {
         func delta(_ cursor: String, _ agent: String, _ text: String) throws -> AgentEvent {
             try event(cursor, "event", ["agent_id": .string(agent), "event": .object(["type": .string("assistant.delta"), "payload": .object(["text": .string(text)])])])

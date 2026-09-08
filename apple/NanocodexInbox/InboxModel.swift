@@ -1251,6 +1251,9 @@ final class InboxModel: ObservableObject {
                 throw HandTaskError.delivery(failed.error ?? "Delivery unconfirmed. Retry in Nanocodex.")
             }
             let agentID = self.resolvedAgentID(message.agentID)
+            if let title = self.cards.first(where: { $0.id == agentID })?.title {
+                self.handTasks.updateTitle(id: message.id, title: title)
+            }
             // Start at this turn's admission, not the conversation's entire history.
             let admission = try await client.turn(agentID: agentID, turnID: message.id)
             guard self.generation == epoch, !Task.isCancelled else { throw CancellationError() }
@@ -1270,6 +1273,11 @@ final class InboxModel: ObservableObject {
             defer { stream.cancel() }
             while self.generation == epoch {
                 try Task.checkCancellation()
+                // New conversations receive their actual title asynchronously.
+                // Keep the system task label in sync with the existing roster.
+                if let title = self.cards.first(where: { $0.id == agentID })?.title {
+                    self.handTasks.updateTitle(id: message.id, title: title)
+                }
                 do {
                     let turn = try await client.turn(agentID: agentID, turnID: message.id)
                     guard self.generation == epoch else { throw CancellationError() }
@@ -1327,7 +1335,7 @@ final class InboxModel: ObservableObject {
         // The OS can deliver Swift cancellation before the reason callback.
         // A later explicit Stop must still fence the exact remote turn.
         if stopTurn, connected, scope == agent.account { stop(agentID: agent.agentID, turnID: id) }
-        handTasks.cancel(id: id, stopTurn: false)
+        handTasks.cancel(id: id, stopTurn: false, outcome: stopTurn ? .stopped : .paused)
     }
 
     private func submit(_ message: PendingMessage, epoch: UUID) async {

@@ -11,6 +11,8 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public var stateCursor: Cursor = .zero
     public var latestCursor: Cursor = .zero
     public var status = "Checking"
+    private var statusCursor = Cursor.zero
+    private var terminalStatus: String?
     public var model = ""
     private var previewCursor: Cursor = .zero
     /// Last history event actually projected into the card, excluding newer
@@ -48,7 +50,7 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     }
     public var isRunning: Bool { !activeTurns.isEmpty }
     public func needsAttention(seen: Cursor?) -> Bool {
-        checked && !isRunning && latestCursor > (seen ?? .zero) && (status == "Ready" || status == "Failed")
+        checked && !isRunning && (statusCursor == .zero ? latestCursor : statusCursor) > (seen ?? .zero) && (status == "Ready" || status == "Failed")
     }
     public func isInInbox(seen: Cursor?, deferred: Cursor?) -> Bool {
         if let deferred, latestCursor <= deferred { return false }
@@ -64,8 +66,10 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
         stateCursor = cursor; latestCursor = max(latestCursor, cursor)
         model = state["settings"]["model"].string
         checked = true; error = nil
-        if isRunning { status = "Running" }
-        else if status == "Running" || status == "Checking" { status = "Idle" }
+        if isRunning {
+            status = "Running"; terminalStatus = nil
+            statusCursor = max(statusCursor, cursor)
+        } else if status == "Running" || status == "Checking" { status = terminalStatus ?? "Idle" }
     }
     public mutating func apply(events: [AgentEvent], transcriptRows: [TranscriptRow]? = nil) {
         for event in events {
@@ -81,11 +85,20 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
                 if ["turn_completed", "turn_cancelled", "turn_failed"].contains(event.type) { activeTurns.removeAll { $0 == event.turnID } }
                 stateCursor = event.cursor
             }
-            if ["turn_completed", "turn_cancelled", "turn_failed"].contains(event.type), event.cursor == latestCursor, !isRunning {
-                status = event.type == "turn_completed" ? "Ready" : event.type == "turn_failed" ? "Failed" : "Stopped"
+            // Outcome ordering is independent of internal activity: a state
+            // snapshot can include voice/transport events after the last reply.
+            if event.cursor >= statusCursor {
+                if event.type == "turn_accepted" {
+                    statusCursor = event.cursor; terminalStatus = nil
+                } else if ["turn_completed", "turn_cancelled", "turn_failed"].contains(event.type) {
+                    statusCursor = event.cursor
+                    terminalStatus = event.type == "turn_completed" ? "Ready" : event.type == "turn_failed" ? "Failed" : "Stopped"
+                }
             }
         }
         if isRunning { status = "Running" }
+        else if let terminalStatus { status = terminalStatus }
+        else if ["Running", "Ready", "Failed", "Stopped"].contains(status) { status = "Idle" }
         if let position = events.last?.cursor, position >= previewCursor {
             let rows = transcriptRows ?? transcript(events)
             let user = rows.lastIndex(where: { $0.role == "You" })
