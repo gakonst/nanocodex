@@ -2628,6 +2628,7 @@ function audit(
   const safeDetail = {
     ...(typeof detail.code === "string" ? { code: detail.code } : {}),
     ...(typeof detail.status === "number" ? { status: detail.status } : {}),
+    ...(typeof detail.upstream_status === "number" ? { upstream_status: detail.upstream_status } : {}),
     ...(typeof detail.recovered === "boolean" ? { recovered: detail.recovered } : {}),
     ...(typeof detail.connector === "string" ? { connector: detail.connector } : {}),
     ...(typeof detail.deployment_sha === "string" ? { deployment_sha: detail.deployment_sha } : {}),
