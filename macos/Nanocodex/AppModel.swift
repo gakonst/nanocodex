@@ -162,6 +162,11 @@ final class AppModel: ObservableObject {
                                checked: snapshot != nil, failed: terminal?.data["type"].string == "turn_failed" || pendingMessages(tab.id).contains { $0.phase == .failed },
                                completed: terminal?.data["type"].string == "turn_completed")
     }
+    func hasAttentionError(_ tab: WorkspaceTab) -> Bool {
+        let update = update(for: tab)
+        return threadError(tab.id) != nil || pendingMessages(tab.id).contains { $0.phase == .failed }
+            || (update.failed && update.needsAttention(tab))
+    }
     func matchesFilter(_ tab: WorkspaceTab) -> Bool {
         switch workspaceFilter {
         case .all: return true

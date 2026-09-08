@@ -21,7 +21,7 @@ struct WorkspacePane: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Circle().fill(update.failed || model.threadError(tab.id) != nil ? Color.orange : update.running ? Color.green : update.needsAttention(tab) ? Color.accentColor : Color.secondary.opacity(0.35)).frame(width: 6, height: 6)
+                    Circle().fill(model.hasAttentionError(tab) ? Color.orange : update.running ? Color.green : update.needsAttention(tab) ? Color.accentColor : Color.secondary.opacity(0.35)).frame(width: 6, height: 6)
                     Text(status).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     if let snapshot = model.snapshot(tab.id), !snapshot.connected {
                         Text("Reconnecting…").font(.system(size: 10)).foregroundStyle(.secondary)
