@@ -345,7 +345,10 @@ final class VoiceTests: XCTestCase {
             agentID = requestedID
         } else {
             let matches = try await client.list().filter { $0.title == title }
-            XCTAssertEqual(matches.count, 1, "The exact owned fixture title must select one agent")
+                .sorted { $0.updatedAt > $1.updatedAt }
+            if env["NANOCODEX_DIAGNOSTIC_NEWEST_MATCH"] != "1" {
+                XCTAssertEqual(matches.count, 1, "The exact owned fixture title must select one agent")
+            }
             agentID = try XCTUnwrap(matches.first?.id)
         }
         let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
@@ -362,6 +365,30 @@ final class VoiceTests: XCTestCase {
         // tool payloads, headers, or credentials in transport diagnostics.
         func token(_ value: String) -> String {
             value.range(of: "^[A-Za-z0-9._:-]{1,128}$", options: .regularExpression) == nil ? "" : value
+        }
+        func errorMetadata(_ value: InboxCore.JSON) -> [String: Any] {
+            let raw = value.string.isEmpty ? value["message"].string : value.string
+            guard !raw.isEmpty else { return [:] }
+            let text = raw.lowercased()
+            let category: String
+            if text.contains("already has different input") || (text.contains("input") && text.contains("match")) { category = "input_mismatch" }
+            else if text.contains("already completed or been cancelled") { category = "already_finished" }
+            else if text.contains("replayed an incompatible terminal outcome") { category = "incompatible_terminal_replay" }
+            else if text.contains("unknown variant") { category = "unknown_variant" }
+            else if text.contains("terminal projection failed") { category = "terminal_projection_failed" }
+            else if text.contains("invalid durability state") || text.contains("durability state at revision") { category = "invalid_durability_state" }
+            else if text.contains("already terminal") { category = "already_terminal" }
+            else if text.contains("already active") { category = "already_active" }
+            else if text.contains("blocked by unfinished operation") { category = "unfinished_operation" }
+            else if text.contains("durability store") || text.contains("durability driver") { category = "durability_store_or_driver" }
+            else if text.contains("pending"), text.contains("operation") { category = "pending_operation" }
+            else if text.contains("lease") { category = "lease" }
+            else if text.contains("unavailable"), text.contains("runtime") || text.contains("tool") { category = "runtime_or_tool_unavailable" }
+            else if text.contains("cancelled") || text.contains("canceled") { category = "cancelled" }
+            else { category = "other" }
+            let keywords = ["json", "parse", "serialize", "decode", "snapshot", "checkpoint", "schema", "lease", "owner", "fence", "fetch", "network", "timeout", "authorization", "memory", "workspace", "filesystem", "invalid", "unrecognized", "r2", "d1", "wasm", "tool", "disabled", "terminated"]
+            return ["error_category": category, "error_length": raw.count,
+                    "error_keywords": keywords.filter { text.contains($0) }]
         }
         var report: [String: Any] = ["agent_id": agentID, "captured_at": Date().ISO8601Format()]
         var turnIDs = Set<String>()
@@ -380,6 +407,7 @@ final class VoiceTests: XCTestCase {
                 if !turnID.isEmpty { turnIDs.insert(turnID) }
                 var row: [String: Any] = ["cursor": event.cursor.rawValue, "type": token(event.type),
                     "turn_id": turnID, "agent_event_type": token(event.data["event"]["type"].string)]
+                row.merge(errorMetadata(event.data["error"])) { _, value in value }
                 for field in ["timestamp", "created_at"] {
                     if case .number(let timestamp) = event.data[field] { row[field] = timestamp }
                 }
@@ -392,6 +420,7 @@ final class VoiceTests: XCTestCase {
                 let turn = try await client.turn(agentID: agentID, turnID: id)
                 var row: [String: Any] = ["turn_id": id, "state": token(turn["state"].string),
                     "status": token(turn["status"].string), "error_code": token(turn["error"]["code"].string)]
+                row.merge(errorMetadata(turn["error"])) { _, value in value }
                 if case .number(let retryAt) = turn["retry_at"] { row["retry_at"] = retryAt }
                 turns.append(row)
             } catch { turns.append(["turn_id": id, "read_failed": true]) }
