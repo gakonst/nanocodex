@@ -437,6 +437,37 @@ mod tests {
         }
     }
     #[test]
+    fn durable_admission_failure_after_prior_output_finishes_the_handoff_once() {
+        let mut voice = voice();
+        voice.realtime_message(&delegation("prior", "First lookup"));
+        let prior =
+            voice.agent_event(r#"{"type":"assistant.message","payload":{"text":"First answer."}}"#);
+        voice.frames_sent(prior.frames.len());
+        let _ = voice.agent_event(r#"{"type":"run.completed"}"#);
+        voice.realtime_message(&delegation("next", "Second lookup"));
+        assert!(
+            voice
+                .agent_event(r#"{"type":"turn_retryable","id":"second"}"#)
+                .frames
+                .is_empty()
+        );
+        let failure = r#"{"type":"turn_failed","id":"second","error":"private backend error must not be spoken"}"#;
+        let failed = voice.agent_event(failure);
+        assert_eq!(failed.frames.len(), 1);
+        let frame: Value = serde_json::from_str(&failed.frames[0]).unwrap();
+        assert_eq!(frame["type"], "delegation.context.append");
+        assert_eq!(frame["delegation_item_id"], "next");
+        assert_eq!(
+            frame["content"][0]["text"],
+            "I couldn't complete that request. Please try again."
+        );
+        assert_eq!(voice.sideband_opened().frames, failed.frames);
+        voice.frames_sent(failed.frames.len());
+        assert!(voice.agent_event(failure).frames.is_empty());
+        assert!(voice.sideband_opened().frames.is_empty());
+    }
+
+    #[test]
     fn provider_handoff_before_final_transcript_is_not_replaced_or_repeated() {
         let mut voice = voice();
         voice.realtime_message(
