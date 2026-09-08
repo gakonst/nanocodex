@@ -169,6 +169,49 @@ final class VoiceTests: XCTestCase {
         try await deleteAgent()
     }
 
+    @MainActor
+    func testNativeVoiceStartStopRestart() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["NANOCODEX_DESKTOP_VOICE_RESTART_LIVE"] == "1" else { throw XCTSkip("Opt-in native voice restart evidence") }
+        let credential = try XCTUnwrap(AccountKeychain.read())
+        let input = try Self.defaultInput()
+        try Self.setDefaultInput(Self.audioDevice(named: "BlackHole 2ch"))
+        defer { try? Self.setDefaultInput(input) }
+        let client = ManagedClient(credential: try AccountCredential(origin: credential.baseUrl, apiKey: credential.apiKey))
+        defer { client.close() }
+        let agentID = try await client.create(requestID: UUID().uuidString)
+        let voice = VoiceSession()
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        var attempts: [[String: Any]] = []
+        func save() throws {
+            try JSONSerialization.data(withJSONObject: ["agent_id": agentID, "attempts": attempts], options: [.prettyPrinted, .sortedKeys])
+                .write(to: evidence.appendingPathComponent("native-voice-restarts.json"))
+        }
+        do {
+            for attempt in 1...3 {
+                let started = Date()
+                print("NATIVE_RESTART \(started.timeIntervalSince1970) attempt=\(attempt) start")
+                voice.start { VoiceConfiguration(baseURL: URL(string: credential.baseUrl)!, apiKey: credential.apiKey, agentID: agentID) }
+                let deadline = started.addingTimeInterval(50)
+                while voice.phase == .connecting, Date() < deadline { try await Task.sleep(for: .milliseconds(40)) }
+                let ready = Date(), active = voice.phase == .active
+                voice.stop(); await voice.finishStopping()
+                let stopped = Date()
+                attempts.append(["attempt": attempt, "utc": started.ISO8601Format(), "active": active,
+                    "startup_ms": ready.timeIntervalSince(started) * 1000, "cleanup_ms": stopped.timeIntervalSince(ready) * 1000])
+                try save()
+                guard active else { throw RuntimeFailure(message: "Voice restart attempt \(attempt) failed; see sanitized transport timing") }
+                print("NATIVE_RESTART \(stopped.timeIntervalSince1970) attempt=\(attempt) stopped")
+            }
+            _ = try await client.json(path: "/v1/agents/\(agentID)", method: "DELETE")
+        } catch {
+            voice.stop(); await voice.finishStopping()
+            _ = try? await client.json(path: "/v1/agents/\(agentID)", method: "DELETE")
+            throw error
+        }
+    }
+
     /// Self-contained speech should answer directly; unknown personal facts must
     /// go through the managed agent and remain explicitly unknown when absent.
     @MainActor

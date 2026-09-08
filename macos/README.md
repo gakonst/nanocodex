@@ -354,6 +354,12 @@ status/timing, transcript event types, delegation, model-event delivery, playbac
 enablement and audio energy; it does not record speech, credentials, or SDP.
 The speech test retains milestone and audio-state evidence even when a call fails.
 
+`testNativeVoiceStartStopRestart` with
+`TEST_RUNNER_NANOCODEX_DESKTOP_VOICE_RESTART_LIVE=1` uses the existing Keychain
+account for three same-agent starts/stops, with BlackHole input and no speech
+fixture. It restores the input device, deletes its disposable agent, and records
+startup/cleanup timings in `native-voice-restarts.json`.
+
 `testNativeGreetingAndPersonalMemory` separately checks a brief greeting followed
 by an unknown personal fact. Enable it with
 `TEST_RUNNER_NANOCODEX_DESKTOP_MEMORY_VOICE_LIVE=1`, the same account/SoX flags,
