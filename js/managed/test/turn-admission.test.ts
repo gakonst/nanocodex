@@ -6,6 +6,59 @@ import type { DurableAgentSession } from "../src/index";
 const FIXTURE_UNFINISHED_TURNS = 20;
 
 describe("managed durable turn admission", () => {
+  it("retries a failed cold cancellation at its durable alarm", async () => {
+    const sessions = (env as unknown as {
+      NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
+    }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+      const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+      Object.defineProperty(session, "env", { value: {
+        ...runtimeEnv,
+        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+          throw Object.assign(new Error("fixture runtime temporarily unavailable"), { code: "retryable" });
+        } },
+      } });
+      const now = Date.now();
+      state.storage.sql.exec(
+        `INSERT INTO session_state (
+           singleton, session_id, owner_id, organization_id, team_id,
+           authorization_epoch, public_origin, runtime_profile, last_active
+         ) VALUES (1, ?, 'fixture-owner', 'fixture-organization', 'fixture-team',
+                   1, 'https://nanocodex.example/', 'managed', ?)`,
+        crypto.randomUUID(), now,
+      );
+      state.storage.sql.exec(
+        `INSERT INTO managed_turns (
+           id, request_key, request_hash, input_json, authorization_json, state,
+           accepted_cursor, may_have_inner_operation, attempt_count, retry_at,
+           created_at, accepted_at, updated_at
+         ) VALUES ('cancel-retry', 'cancel-retry', 'hash', '"fixture"', '{"capabilities":[]}',
+                   'cancelling', 0, 1, 48, ?, ?, ?, ?)`,
+        now - 1, now - 6 * 60 * 60_000, now - 6 * 60 * 60_000, now - 60_000,
+      );
+      const row = () => state.storage.sql.exec<{
+        state: string; attempt_count: number; retry_at: number;
+      }>("SELECT state, attempt_count, retry_at FROM managed_turns WHERE id = 'cancel-retry'").one();
+      try {
+        for (const attempt of [49, 50]) {
+          await session.alarm();
+          const deadline = Date.now() + 3_000;
+          while (row().attempt_count < attempt && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          expect(row()).toMatchObject({ state: "cancelling", attempt_count: attempt });
+          expect(row().retry_at).toBeGreaterThan(Date.now() + 59_000);
+          const alarm = await state.storage.getAlarm();
+          expect(alarm).not.toBeNull();
+          expect(alarm).toBeLessThanOrEqual(row().retry_at);
+          state.storage.sql.exec("UPDATE managed_turns SET retry_at = ? WHERE id = 'cancel-retry'", Date.now() - 1);
+        }
+      } finally {
+        state.storage.sql.exec("UPDATE managed_turns SET state = 'cancelled', retry_at = NULL WHERE id = 'cancel-retry'");
+      }
+    });
+  });
+
   for (const prior of ["failed", "completed", "cancelled", "missing-dispatch"] as const) {
     it(`reconciles a Rust pending identity against a ${prior} managed projection`, async () => {
       const sessions = (env as unknown as {
