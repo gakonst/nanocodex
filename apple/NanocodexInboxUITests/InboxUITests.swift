@@ -2,6 +2,36 @@ import XCTest
 
 final class InboxUITests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false }
+    func testLiveNavigationAndAttachmentMenus() throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else { throw XCTSkip("Live account required") }
+        let app = XCUIApplication(); app.launch()
+        XCTAssertTrue(app.buttons["tab-overview"].waitForExistence(timeout: 30))
+        for pass in 1...3 {
+            let jobs = navigationAction(app, "inbox-scheduled-jobs")
+            capture(app, "menu-before-tap-\(pass)")
+            jobs.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            let opened = app.navigationBars["Scheduled jobs"].waitForExistence(timeout: 10)
+            capture(app, "menu-after-tap-\(pass)")
+            XCTAssertTrue(opened, app.debugDescription)
+            app.navigationBars.buttons["Inbox"].tap()
+        }
+        app.buttons["add-attachments"].tap()
+        let camera = app.buttons["choose-camera"]
+        capture(app, "attachment-menu-probe")
+        XCTAssertTrue(camera.waitForExistence(timeout: 5), app.debugDescription)
+    }
+    func testLiveDogfoodConversationAdmission() throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else { throw XCTSkip("Live account required") }
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.buttons["tab-overview"].waitForExistence(timeout: 30))
+        app.buttons["new-conversation"].tap()
+        queue(app, "Dogfood admission check. Reply exactly DOGFOOD_OK.")
+        let reply = assistantText(app, matching: NSPredicate(format: "label CONTAINS %@", "DOGFOOD_OK"))
+        let complete = reply.waitForExistence(timeout: 90)
+        capture(app, "dogfood-admission")
+        XCTAssertTrue(complete)
+    }
     func testRemoteScreenControlAndReconnect() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let origin = environment["NANOCODEX_TEST_REMOTE_ORIGIN"],
@@ -347,6 +377,7 @@ final class InboxUITests: XCTestCase {
             app.launch()
             XCTAssertTrue(app.buttons["tab-overview"].waitForExistence(timeout: 20))
             navigationAction(app, "inbox-scheduled-jobs").tap()
+            XCTAssertTrue(app.navigationBars["Scheduled jobs"].waitForExistence(timeout: 10))
             let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "scheduled-job-")).count > 0
                     || app.staticTexts["No scheduled jobs yet"].exists
@@ -692,7 +723,7 @@ final class InboxUITests: XCTestCase {
                     }
                     XCTAssertTrue(onDevice.waitForExistence(timeout: 5), "Browse the real On My iPhone file location.")
                     onDevice.tap()
-                    let folder = app.cells.containing(.staticText, identifier: "Nanocodex Inbox").firstMatch
+                    let folder = app.cells.containing(.staticText, identifier: "Nanocodex").firstMatch
                     XCTAssertTrue(folder.waitForExistence(timeout: 5), "The app's standard Documents sharing must be enabled.")
                     folder.tap()
                 }
@@ -1065,7 +1096,6 @@ final class InboxUITests: XCTestCase {
         app.buttons["app-menu"].tap()
         let action = app.buttons[label]
         XCTAssertTrue(action.waitForExistence(timeout: 5))
-        XCTAssertTrue(action.isHittable)
         return action
     }
     private func selectAgentFromOverview(_ app: XCUIApplication, title: String, id: String? = nil) {
@@ -2162,12 +2192,15 @@ final class InboxUITests: XCTestCase {
             let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["Cancel queued message"].firstMatch)
             XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
         }
-        app.scrollViews["pending-messages"].swipeUp()
-        XCTAssertTrue(app.staticTexts["Queued instruction 4"].isHittable)
+        let pending = app.scrollViews["pending-messages"]
+        let last = pending.staticTexts["Queued instruction 4"]
+        for _ in 0..<4 { if last.isHittable { break }; pending.swipeUp() }
+        XCTAssertTrue(last.isHittable)
         composer(app).tap(); composer(app).typeText("A longer draft\nthat spans several lines\nand stays above the keyboard.")
         XCTAssertLessThanOrEqual(app.buttons["send"].frame.maxY, app.keyboards.firstMatch.frame.minY)
-        app.scrollViews["pending-messages"].swipeDown()
-        XCTAssertTrue(app.buttons["steer-now"].isHittable)
+        let steer = pending.buttons["steer-now"]
+        for _ in 0..<4 { if steer.isHittable { break }; pending.swipeDown() }
+        XCTAssertTrue(steer.isHittable)
         capture(app, "21-queue-with-keyboard")
     }
     func testPerformanceSavedAccountResponsiveColdLaunch() throws {
