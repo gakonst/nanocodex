@@ -379,6 +379,11 @@ run `testNativeOwnedAgentDiagnostics` with
 `TEST_RUNNER_NANOCODEX_DIAGNOSTIC_AGENT_ID` for a known owned test-agent ID). This
 read-only test uses the existing Keychain account and saves the same metadata file.
 
+`testNativeApplicationSceneHasContent` with
+`TEST_RUNNER_NANOCODEX_DESKTOP_WINDOW_LIVE=1` verifies that the actual hosted
+app scene creates a main window with content. It is independent of external
+accessibility automation and does not prove visibility on the user's current desktop.
+
 Voice evidence is saved in `macos/build/evidence/native-voice-live.json` and
 `native-voice-live.png`. These timings include the real provider and local audio
 device; a cold connection still takes seconds. They do not measure an iPhone's

@@ -269,6 +269,23 @@ final class VoiceTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeApplicationSceneHasContent() async throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_DESKTOP_WINDOW_LIVE"] == "1" else {
+            throw XCTSkip("Set NANOCODEX_DESKTOP_WINDOW_LIVE=1 to inspect the hosted app scene")
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !NSApp.windows.contains(where: { $0.title == "Nanocodex" && $0.canBecomeMain }), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Nanocodex" && $0.canBecomeMain })
+        let content = try XCTUnwrap(window.contentView)
+        XCTAssertGreaterThan(content.bounds.width, 0)
+        XCTAssertGreaterThan(content.bounds.height, 0)
+        XCTAssertFalse(content.subviews.isEmpty)
+        print("NATIVE_WINDOW visible=\(window.isVisible) width=\(content.bounds.width) height=\(content.bounds.height) subviews=\(content.subviews.count)")
+    }
+
+    @MainActor
     func testNativeOwnedAgentDiagnostics() async throws {
         let env = ProcessInfo.processInfo.environment
         let requestedID = env["NANOCODEX_DIAGNOSTIC_AGENT_ID"] ?? ""
