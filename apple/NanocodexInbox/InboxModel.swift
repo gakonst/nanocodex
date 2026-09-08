@@ -70,7 +70,7 @@ final class InboxModel: ObservableObject {
     private var createdAgentIDs: [String: String] = [:]
     @Published var pending: [PendingMessage] = []
     @Published private(set) var cancellations: [PendingTurnCancellation] = []
-    private var cancellationTasks: [String: Task<Void, Never>] = [:]
+    private let cancellationTasks = TurnCancellationTasks()
     @Published private(set) var attachmentDrafts: [String: [MessageAttachment]] = [:]
     private var attachmentURLs: [String: URL] = [:]
     private var attachmentMovieURLs: [String: URL] = [:]
@@ -514,8 +514,7 @@ final class InboxModel: ObservableObject {
         scheduledJobs = []; scheduledJobAgents = [:]; schedulesLoading = false; schedulesLoaded = false; schedulesError = nil
         for task in creationTasks.values { task.cancel() }
         creationTasks = [:]; pendingCreations = []; creationErrors = [:]; createdAgentIDs = [:]
-        for task in cancellationTasks.values { task.cancel() }
-        cancellationTasks = [:]; cancellations = []
+        cancellationTasks.cancelAll(); cancellations = []
         deviceHand?.close(); deviceHand = nil; deviceHandConnected = false
         endHandBackgroundTime()
         #if os(iOS)
@@ -561,7 +560,7 @@ final class InboxModel: ObservableObject {
     private func resume(initialListing: [AgentCard]? = nil) {
         guard connected, !isDemo, isActive else { return }
         for id in pendingCreations where creationErrors[id] == nil { prepareAgent(id) }
-        resumeCancellations()
+        resumeCancellations(restart: true)
         updateDeviceHand()
         let previousPolling = polling
         previousPolling?.cancel()
@@ -1417,18 +1416,17 @@ final class InboxModel: ObservableObject {
         } else { cancellations.append(intent) }
         persist(); startCancellation(intent)
     }
-    private func resumeCancellations() {
-        for intent in cancellations where intent.error == nil { startCancellation(intent) }
+    private func resumeCancellations(restart: Bool = false) {
+        for intent in cancellations where intent.error == nil { startCancellation(intent, restart: restart) }
     }
-    private func startCancellation(_ intent: PendingTurnCancellation) {
-        guard cancellationTasks[intent.id] == nil, hasHandExecutionTime else { return }
+    private func startCancellation(_ intent: PendingTurnCancellation, restart: Bool = false) {
+        guard hasHandExecutionTime else { return }
         let epoch = generation
-        cancellationTasks[intent.id] = Task {
-            defer { if generation == epoch { cancellationTasks[intent.id] = nil } }
+        cancellationTasks.start(intent.id, restart: restart) { [self] in
             guard generation == epoch, !Task.isCancelled else { return }
             do {
                 let receipt = try await execute(intent.command)
-                guard generation == epoch else { return }
+                guard generation == epoch, !Task.isCancelled else { return }
                 guard receipt["turn_id"].string == intent.turnID else { throw APIError.invalidResponse }
                 guard let index = cancellations.firstIndex(where: { $0.id == intent.id }) else { return }
                 cancellations[index].acknowledged = true
@@ -1440,6 +1438,7 @@ final class InboxModel: ObservableObject {
                     finishCancellation(intent); return
                 }
                 if finishCancellationIfTerminal(intent, receipt: receipt) { return }
+                var schedule = TurnCancellationPollSchedule()
                 // Poll this exact turn. An account-wide refresh may take many
                 // seconds and active_turns cannot identify a pre-admission stop.
                 while generation == epoch, hasHandExecutionTime, cancellations.contains(where: { $0.id == intent.id }) {
@@ -1447,15 +1446,18 @@ final class InboxModel: ObservableObject {
                     guard let client else { return }
                     do {
                         let current = try await client.turn(agentID: intent.agentID, turnID: intent.turnID)
-                        guard generation == epoch else { return }
+                        guard generation == epoch, !Task.isCancelled else { return }
+                        guard current["turn_id"].string == intent.turnID else { throw APIError.invalidResponse }
                         if finishCancellationIfTerminal(intent, receipt: current) { return }
+                        // Terminal stream/history events still finish immediately.
+                        // Unchanged durable cancellation need not wake HTTP every second.
+                        try await Task.sleep(for: schedule.delay(after: current))
                     } catch APIError.http(404) {
                         // /cancel durably fences this ID even if /turns never
                         // admitted it. A later in-flight POST cannot run it.
-                        guard generation == epoch else { return }
+                        guard generation == epoch, !Task.isCancelled else { return }
                         finishCancellation(intent); return
                     }
-                    try await Task.sleep(for: .seconds(1))
                 }
             } catch {
                 guard generation == epoch, !Task.isCancelled else { return }
@@ -1474,7 +1476,7 @@ final class InboxModel: ObservableObject {
     }
     @discardableResult
     private func finishCancellationIfTerminal(_ intent: PendingTurnCancellation, receipt: JSON) -> Bool {
-        guard ["completed", "cancelled", "failed"].contains(receipt["state"].string) else { return false }
+        guard intent.isTerminal(receipt: receipt) else { return false }
         let event = try? AgentEvent(receipt["terminal"], cursor: receipt["terminal_cursor"].string)
         finishCancellation(intent, event: event)
         return true
@@ -1482,6 +1484,7 @@ final class InboxModel: ObservableObject {
     private func finishCancellation(_ intent: PendingTurnCancellation, event: AgentEvent? = nil) {
         guard cancellations.contains(where: { $0.id == intent.id }) else { return }
         cancellations.removeAll { $0.id == intent.id }
+        cancellationTasks.cancel(intent.id)
         if isDemo { demoFinish(agentID: intent.agentID, turnID: intent.turnID) }
         else {
             if let index = cards.firstIndex(where: { $0.id == intent.agentID }) {
