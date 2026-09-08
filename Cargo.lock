@@ -5635,6 +5635,7 @@ dependencies = [
  "mpp",
  "nanocodex",
  "nanocodex-browser",
+ "nanocodex-cli-auth",
  "nanocodex-durability",
  "nanocodex-egress",
  "nanocodex-eval",
@@ -5709,6 +5710,25 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "v8-heap-parser",
+]
+
+[[package]]
+name = "nanocodex-cli-auth"
+version = "0.5.0"
+dependencies = [
+ "clap",
+ "fs2",
+ "nanocodex-managed",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -6112,13 +6132,16 @@ dependencies = [
  "image",
  "nanocodex",
  "nanocodex-agent",
+ "nanocodex-cli-auth",
  "nanocodex-managed",
  "nanocodex-observability",
  "nanocodex-subagents",
  "nanocodex-tools",
  "nanocodex-vm",
+ "nix 0.31.3",
  "percent-encoding",
  "png 0.18.1",
+ "portable-pty",
  "pulldown-cmark 0.13.4",
  "ratatui 0.30.2",
  "ratatui-image 11.0.6",

@@ -107,17 +107,21 @@ export async function createNodeProcessTools({
       /* Observers cannot interrupt process cleanup. */
     }
   };
-  const read = async (record, input, signal) => {
+  const read = async (record, input, signal, maximumWait = 30_000) => {
     const started = performance.now();
-    const wait = integer(input.yield_time_ms, 1_000, 0, 30_000);
+    const wait = integer(input.yield_time_ms, 1_000, 0, maximumWait);
     const maxBytes = integer(input.max_output_tokens, 10_000, 1, 32_000) * 4;
     if (record.reading)
       throw new Error("A read is already pending for this process.");
     record.reading = true;
+    const timer = new AbortController();
     try {
       await Promise.race([
         record.closed,
-        delay(wait, undefined, { signal, ref: false }),
+        delay(wait, undefined, {
+          signal: signal ? AbortSignal.any([signal, timer.signal]) : timer.signal,
+          ref: false,
+        }),
       ]);
       if (signal?.aborted) throw signal.reason;
       if (record.outputError) throw record.outputError;
@@ -136,6 +140,8 @@ export async function createNodeProcessTools({
       } else result.session_id = record.id;
       return result;
     } finally {
+      // A completed process must not retain a long-poll timer or its abort listener.
+      timer.abort();
       record.reading = false;
     }
   };
@@ -274,7 +280,8 @@ export async function createNodeProcessTools({
         throw new Error("Process session is unavailable for this agent.");
       if (input.chars !== undefined && typeof input.chars !== "string")
         throw new TypeError("chars must be text");
-      integer(input.yield_time_ms, 1_000, 0, 30_000);
+      const maximumWait = input.chars ? 30_000 : 300_000;
+      integer(input.yield_time_ms, 1_000, 0, maximumWait);
       integer(input.max_output_tokens, 10_000, 1, 32_000);
       if (record.reading)
         throw new Error("A read is already pending for this process.");
@@ -288,7 +295,7 @@ export async function createNodeProcessTools({
       };
       context.signal?.addEventListener("abort", abort, { once: true });
       try {
-        return await read(record, input, context.signal);
+        return await read(record, input, context.signal, maximumWait);
       } finally {
         context.signal?.removeEventListener("abort", abort);
       }

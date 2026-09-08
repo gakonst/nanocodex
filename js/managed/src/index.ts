@@ -28,7 +28,7 @@ import { createBrainWorkspace } from "./brain-workspace";
 import { createBrainBucket } from "./brain-bucket";
 import { browseX, X_API } from "nanocodex-tools/x";
 import { managedCodeEvaluator } from "./code-evaluator";
-import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
+import { CronTriggers, CronTriggerLimitError, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
 import { createCronTool } from "./cron-tool";
 import {
   cloudflareSandboxTools,
@@ -4497,9 +4497,16 @@ export class DurableAgentSession extends DurableComputerSession {
       || previous.authorization_epoch !== session.authorization_epoch)) {
       throw new ManagedRequestError(409, "trigger_exists", "cron trigger id already exists with different settings or authorization; choose a new id");
     }
-    const row = this.#cronTriggers.put(id, config, encodedAuthorization, session.authorization_epoch, hash, Date.now());
-    await this.#scheduleNextAlarm();
-    return { trigger: cronTriggerView(row, session.session_id), exists: previous !== undefined };
+    try {
+      const row = this.#cronTriggers.put(id, config, encodedAuthorization, session.authorization_epoch, hash, Date.now());
+      await this.#scheduleNextAlarm();
+      return { trigger: cronTriggerView(row, session.session_id), exists: previous !== undefined };
+    } catch (error) {
+      if (error instanceof CronTriggerLimitError) {
+        throw new ManagedRequestError(429, "cron_trigger_limit", error.message);
+      }
+      throw error;
+    }
   }
 
   async #fireCronTriggers(): Promise<void> {

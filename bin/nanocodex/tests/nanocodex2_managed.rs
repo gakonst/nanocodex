@@ -126,6 +126,8 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
             "98304",
             "--log-format",
             "json",
+            "--log-filter",
+            "warn,nanocodex2=info,nanocodex_tools::attachment=info",
         ])
         .env("NANOCODEX_MANAGED_URL", "http://127.0.0.1:9")
         .env("NC_API_KEY", &api_key)
@@ -1530,4 +1532,134 @@ fn configure_workspace(workspace: &std::path::Path) -> (tempfile::TempDir, tempf
     )
     .unwrap();
     (config_home, decoy)
+}
+
+#[tokio::test]
+async fn headless_settings_and_cron_use_the_managed_contract() {
+    use axum::{Json, extract::Request};
+    use serde_json::{Value, json};
+
+    let key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = requests.clone();
+    let authorization = format!("Bearer {key}");
+    let app = Router::new().fallback(move |request: Request| {
+        let observed = observed.clone();
+        let authorization = authorization.clone();
+        async move {
+            assert_eq!(request.headers()["authorization"], authorization);
+            let method = request.method().clone();
+            let path = request.uri().path().to_owned();
+            let body = axum::body::to_bytes(request.into_body(), 128 * 1024).await.unwrap();
+            let body: Value = if body.is_empty() { Value::Null } else { serde_json::from_slice(&body).unwrap() };
+            observed.lock().unwrap().push((method.to_string(), path.clone(), body));
+            if method == axum::http::Method::DELETE {
+                return StatusCode::NO_CONTENT.into_response();
+            }
+            if path == "/v1/agents" {
+                return Json(json!({
+                    "agent_id": AGENT_ID, "session_id": AGENT_ID,
+                    "events_url": format!("/v1/agents/{AGENT_ID}/events"),
+                    "websocket_url": format!("/v1/agents/{AGENT_ID}/live"),
+                })).into_response();
+            }
+            if path.ends_with("/settings") {
+                return Json(json!({"settings": {
+                    "model": "gpt-6-astra", "thinking": "high", "reasoning_mode": "standard", "fast_mode": false,
+                }})).into_response();
+            }
+            let mut trigger = json!({
+                "id": "daily", "cron": "0 9 * * *", "timezone": "Europe/Athens", "input": "Summarize progress",
+                "enabled": true, "session_mode": "new", "last_agent_id": null,
+                "next_run_at": 1788768000000_u64, "last_run_at": null, "last_turn_id": null,
+                "last_skipped_at": null, "created_at": 1788767000000_u64, "updated_at": 1788767000000_u64,
+            });
+            if method == axum::http::Method::GET && path.ends_with("/daily") {
+                trigger.as_object_mut().unwrap().remove("session_mode");
+                trigger.as_object_mut().unwrap().remove("last_agent_id");
+            }
+            Json(if path.ends_with("/triggers") { json!({"data": [trigger]}) } else { trigger }).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let cwd = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["new", "--model", "sol", "--thinking", "high", "--fast-mode"],
+        vec!["settings", AGENT_ID, "thinking", "high"],
+        vec![
+            "cron",
+            "put",
+            AGENT_ID,
+            "daily",
+            "--cron",
+            "0 9 * * *",
+            "--timezone",
+            "Europe/Athens",
+            "--prompt",
+            "Summarize progress",
+        ],
+        vec!["cron", "list", AGENT_ID],
+        vec!["cron", "get", AGENT_ID, "daily"],
+        vec!["cron", "delete", AGENT_ID, "daily"],
+    ] {
+        let output = tokio::time::timeout(
+            PROCESS_TIMEOUT,
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+                .args(&args)
+                .current_dir(cwd.path())
+                .env("NANOCODEX_MANAGED_URL", &origin)
+                .env("NANOCODEX_API_KEY", &key)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if args[1] != "delete" {
+            let body = serde_json::from_slice::<Value>(&output.stdout).unwrap();
+            if args[1] == "get" {
+                assert_eq!(body["session_mode"], "continue");
+            }
+        }
+    }
+    let before_invalid = requests.lock().unwrap().len();
+    for args in [
+        vec!["run", "hello", "--agent", AGENT_ID, "--model", "sol"],
+        vec!["cron", "get", AGENT_ID, "../escape"],
+        vec!["new", "--model", "astra", "--thinking", "none"],
+    ] {
+        let output = tokio::time::timeout(
+            PROCESS_TIMEOUT,
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+                .args(&args)
+                .current_dir(cwd.path())
+                .env("NANOCODEX_MANAGED_URL", &origin)
+                .env("NANOCODEX_API_KEY", &key)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!output.status.success(), "{args:?}");
+    }
+    server.abort();
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), before_invalid);
+    assert_eq!(
+        requests[0].2["settings"],
+        json!({"model": "gpt-5.6-sol", "thinking": "high", "reasoning_mode": "standard", "fast_mode": true})
+    );
+    assert_eq!(requests[1].2, json!({"thinking": "high"}));
+    assert_eq!(requests[2].0, "PUT");
+    assert_eq!(
+        requests[2].2,
+        json!({"cron": "0 9 * * *", "timezone": "Europe/Athens", "input": "Summarize progress", "enabled": true, "session_mode": "new"})
+    );
+    assert_eq!(requests[5].0, "DELETE");
 }

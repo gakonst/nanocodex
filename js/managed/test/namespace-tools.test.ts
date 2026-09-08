@@ -262,6 +262,32 @@ describe("cwd-root namespace execution", () => {
       .rejects.toThrow("unknown or stale");
   });
 
+  it("keeps a process binding after a failed poll so the agent can retry it", async () => {
+    const failure = Object.freeze({
+      [Symbol.for("nanocodex.toolResult")]: true,
+      output: "RangeError: invalid wait duration",
+      structuredResult: undefined,
+      metadata: { machine_id: "laptop" },
+      success: false,
+    });
+    const writeStdin = vi.fn()
+      .mockResolvedValueOnce(failure)
+      .mockResolvedValueOnce({ output: "still running", wall_time_seconds: 0, session_id: 7 })
+      .mockResolvedValueOnce({ output: "done", wall_time_seconds: 0, exit_code: 0 });
+    const tools = createRuntimeNamespaceExecutionTools(
+      () => [{ id: "laptop", workspace: "/Users/me" }],
+      (_id, name) => name === "exec_command"
+        ? { handler: async () => ({ output: "", wall_time_seconds: 0, session_id: 7 }) }
+        : name === "write_stdin" ? { handler: writeStdin } : undefined,
+    );
+    const started = await tools.exec_command!.handler({ cmd: "long", workdir: "/laptop" }, context()) as { session_id: number };
+    await expect(tools.write_stdin!.handler({ session_id: started.session_id }, context())).resolves.toBe(failure);
+    await expect(tools.write_stdin!.handler({ session_id: started.session_id }, context())).resolves.toMatchObject({ session_id: started.session_id });
+    expect(writeStdin).toHaveBeenLastCalledWith({ session_id: 7 }, expect.anything());
+    await expect(tools.write_stdin!.handler({ session_id: started.session_id }, context())).resolves.toMatchObject({ exit_code: 0 });
+    await expect(tools.write_stdin!.handler({ session_id: started.session_id }, context())).rejects.toThrow("unknown or stale");
+  });
+
   it("accepts many simultaneously retained process bindings", async () => {
     let providerSessionId = 0;
     const exec = vi.fn(async () => ({

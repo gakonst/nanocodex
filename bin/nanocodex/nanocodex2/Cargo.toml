@@ -24,6 +24,7 @@ image.workspace = true
 nanocodex = { path = "../../../crates/nanocodex", version = "0.5.0", default-features = false }
 nanocodex-agent = { path = "../../../crates/nanocodex-agent", version = "0.5.0", default-features = false }
 nanocodex-managed = { path = "../../../crates/nanocodex-managed", version = "0.5.0", default-features = false, features = ["tools"] }
+nanocodex-cli-auth.workspace = true
 nanocodex-observability = { workspace = true, features = ["cli"] }
 nanocodex-tools = { path = "../../../crates/nanocodex-tools", version = "0.5.0", default-features = false, features = ["attachment", "workspace-runtime"] }
 png = "0.18.1"
@@ -54,7 +55,11 @@ whoami.workspace = true
 fs2.workspace = true
 nanocodex-vm.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [dev-dependencies]
+portable-pty.workspace = true
 axum = { workspace = true, features = ["ws"] }
 criterion.workspace = true
 futures-util.workspace = true
@@ -74,6 +79,14 @@ doc = false
 [[test]]
 name = "nanocodex2_managed"
 path = "../tests/nanocodex2_managed.rs"
+
+[[test]]
+name = "account_auth"
+path = "../tests/account_auth.rs"
+
+[[test]]
+name = "nanocodex2_tui_lifecycle"
+path = "../tests/nanocodex2_tui_lifecycle.rs"
 
 [lints]
 workspace = true

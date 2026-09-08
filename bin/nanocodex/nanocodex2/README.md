@@ -1,4 +1,126 @@
-# Nanocodex2 VM hand
+# Nanocodex2
+
+The managed terminal client uses the same durable agents, model settings, and
+scheduled prompts as the web and native apps. Run `nanocodex2 login` to sign in
+with an SMS code. `NANOCODEX_MANAGED_URL` selects another cluster.
+Running `nanocodex2` opens a new interactive session;
+`nanocodex2 attach AGENT_URL_OR_ID` resumes an existing one with local workspace
+tools.
+
+## Account sign-in
+
+```bash
+nanocodex2 login                    # Prompts for your phone number and SMS code
+nanocodex2 status                   # Verifies the selected key; prints account JSON
+nanocodex2 logout                   # Removes this server's saved login locally
+
+# Import an existing account-issued key through stdin, never a command argument.
+cat /path/to/private-api-key | nanocodex2 login --with-api-key
+
+# Select a different server for both authentication and managed commands.
+export NANOCODEX_MANAGED_URL=https://your-cluster.example
+nanocodex2 login --phone '+1 415 555 0123' --label 'Work laptop CLI'
+```
+
+`nanocodex account login/status/logout` uses the same implementation and saved
+account credentials. `nanocodex2 account` (also `auth`) groups those commands.
+The native CLI's existing `nanocodex login/connect/status/logout` commands still
+manage Connect installation grants; `nanocodex auth` manages ChatGPT provider
+credentials. Those credentials are independent of the managed account key.
+
+Connect accepts `chatgpt`, `github`, `gmail`, `gdrive`, `gcalendar`, `gtasks`,
+`gdocs`, `gsheets`, `gslides`, `gcontacts`, `slack`, `x`, and public `mcp.*` hosts.
+For example, `nanocodex connect slack gcalendar` authorizes those services for
+the local installation through the existing browser approval flow.
+
+SMS login exchanges the verified session for an API key and ends the temporary
+session. The phone number, SMS code, and session cookie are never saved. If login
+is cancelled or saving fails after minting, the CLI attempts to revoke the unused
+key before ending that session. Incorrect codes can be retried up to three times;
+run login again to request a fresh code. Rate-limit responses show the retry delay.
+
+The shared credential file is `$CODEX_HOME/nanocodex-account.json`, defaulting to
+`~/.codex/nanocodex-account.json`. It is written atomically with private Unix
+permissions and stores a separate key for each exact server origin. Set
+`NANOCODEX_ACCOUNT_FILE` to use another file (auth commands also accept
+`--account-file`). Only HTTPS and loopback HTTP are accepted; redirects
+are never followed.
+
+For automation, `NANOCODEX_API_KEY` takes precedence over `NC_API_KEY`, which
+takes precedence over the saved login. An explicitly empty or invalid key fails
+instead of falling through to another account. `status` reports the selected
+source and public key ID without printing the secret. Logout removes only the
+selected server's saved key; environment credentials remain active until unset.
+To revoke a key remotely, remove it in the web account's API Keys menu. Logging
+in again replaces the saved key without revoking previous account keys.
+
+## Working in a running session
+
+Press Enter to send steering input during a response, or Tab to queue a
+follow-up for when the current turn finishes. Esc twice interrupts the turn.
+Rapid steering instructions are sent in order. The terminal records its own
+successful acknowledgements as **steering accepted**. This confirms admission,
+not application at a model boundary. Shared steering telemetry can originate
+from another client and is never used to confirm a local instruction.
+Steering takes effect at the next model step, so a running tool can finish its
+current call first. Accepted steering is never automatically retried. If an
+acknowledgement is lost, the instruction stays visible as **delivery unknown**,
+including after the turn finishes. Select it to explicitly edit/retry or dismiss
+it; cancelling the editor preserves its unknown status. Further steering waits
+until that turn ends, then known-unsent follow-ups continue in order. This avoids
+duplicating potentially delivered instructions across clients.
+Queued follow-ups also run when an agent resumed with `attach` finishes work
+that started in another client.
+
+Scrolling back through older history keeps typing and live updates responsive.
+Local `!` commands can also be stopped with Esc twice; captured output remains
+in the transcript and is included with the next prompt. On macOS and Linux,
+cancellation stops the shell's process group, including its child processes.
+
+## Headless controls
+
+```bash
+# Create with explicit initial settings; defaults are Astra, low, standard.
+nanocodex2 new --model astra --thinking high
+nanocodex2 run "Inspect this repository" --model sol --thinking high
+nanocodex2 run "Continue the review" --agent AGENT_ID
+
+# Read settings or update one field for subsequent turns.
+nanocodex2 settings AGENT_ID
+nanocodex2 settings AGENT_ID model astra
+nanocodex2 settings AGENT_ID thinking high
+nanocodex2 settings AGENT_ID reasoning-mode standard
+nanocodex2 settings AGENT_ID fast-mode true
+
+# Create or replace a durable schedule, then inspect or delete it.
+nanocodex2 cron put AGENT_ID daily --cron "0 9 * * *" \
+  --timezone Europe/Athens --prompt "Summarize overnight progress"
+nanocodex2 cron list AGENT_ID
+nanocodex2 cron get AGENT_ID daily
+nanocodex2 cron delete AGENT_ID daily
+```
+
+Creation flags on `run` apply only to new agents. Use `settings` to change an
+existing agent. Astra accepts low through max effort and standard reasoning
+mode; incompatible settings fail before creation. Cron defaults to a new agent
+per occurrence; use `--session-mode continue` to append to the owning agent,
+or `--disabled` to retain an inactive schedule. `cron put` replaces the full
+configuration. The service validates cron expressions and IANA timezones.
+
+Control commands return JSON; `run` and `watch` stream JSONL. The terminal
+retains command output through polling and recovery replay, reports actual
+process exits, and preserves recent diagnostics when a process disappears.
+Expanded tool results retain text and resource URLs alongside media metadata;
+embedded binary payloads are hidden.
+
+Build and test both CLI consumers from the repository root:
+
+```bash
+cargo build -p nanocodex-bin -p nanocodex2-bin
+cargo test -p nanocodex-bin -p nanocodex2-bin -p nanocodex-managed -p nanocodex-cli-auth
+```
+
+## VM hand
 
 `nanocodex2 hand` registers one retained libkrun VM as an account-scoped
 execution hand. Any hosted agent in the account can use the VM through the
@@ -7,7 +129,8 @@ outbound Hosted Tools WebSocket. The logical cwd selects the hand; inside the
 selected VM it is translated to that hand's native workspace.
 
 ```bash
-just build-vm-guest
+cargo build -p nanocodex-vm --no-default-features --features guest-runtime \
+  --bin nanocodex-vm-guest --target x86_64-unknown-linux-musl
 
 NANOCODEX_API_KEY=ncx_live_... \
 nanocodex2 hand \

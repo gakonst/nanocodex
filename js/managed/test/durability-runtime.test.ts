@@ -4,6 +4,70 @@ import { Agent } from "nanocodex/cloudflare";
 import { Subagents } from "nanocodex/host";
 import { createTools } from "nanocodex/tools";
 
+it("persists voice start and end in Worker SQLite while Responses preconnect stays pending", async () => {
+  const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
+  await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
+    let release!: () => void;
+    const handshake = new Promise<void>((resolve) => { release = resolve; });
+    let opened = 0;
+    const sockets: { closed: boolean }[] = [];
+    const owner = { ctx, env: { NANOCODEX: { async fetch(_input: unknown, init?: RequestInit) {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-nanocodex-subject")).toBe(ctx.id.toString());
+      expect(headers.get("authorization")).toBe("Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+      const socket = {
+        closed: false,
+        addEventListener() {}, accept() {}, send() {},
+        close() { this.closed = true; },
+      };
+      sockets.push(socket);
+      await handshake;
+      opened += 1;
+      return { status: 101, headers: new Headers(), webSocket: socket };
+    } } } };
+    const options = { eventPersistence: "caller" as const };
+    Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
+      value: { waitForPreconnect: false },
+    });
+    const revision = () => BigInt(ctx.storage.sql.exec<{ revision: string }>(
+      "SELECT revision FROM nanocodex_durable_states",
+    ).toArray()[0]?.revision ?? "0");
+    let agent: Awaited<ReturnType<typeof Agent.create>> | undefined;
+    try {
+      agent = await Agent.create(owner, options);
+      const initial = await agent.session.context();
+      const initialRevision = revision();
+      const started = await agent.session.realtime.start();
+      expect(started.history.length).toBeGreaterThan(initial.history.length);
+      expect(revision()).toBeGreaterThan(initialRevision);
+      const startedRevision = revision();
+      const ended = await agent.session.realtime.end();
+      expect(ended.history.length).toBeGreaterThan(started.history.length);
+      expect(revision()).toBeGreaterThan(startedRevision);
+      expect(sockets).toHaveLength(1);
+      expect(opened).toBe(0);
+      const sessionId = agent.sessionId;
+
+      // Reconstruct from the actual SQLite checkpoint while neither owned
+      // Responses handshake has completed, rather than reading in-memory state.
+      await agent.session.shutdown();
+      agent = undefined;
+      agent = await Agent.create(owner, options);
+      expect(agent.sessionId).toBe(sessionId);
+      expect(await agent.session.context()).toEqual(ended);
+      expect(sockets).toHaveLength(2);
+      expect(opened).toBe(0);
+      await agent.session.shutdown();
+      agent = undefined;
+    } finally {
+      release();
+      await agent?.session.shutdown();
+    }
+    await expect.poll(() => sockets.every((socket) => socket.closed)).toBe(true);
+    expect(opened).toBe(2);
+  });
+}, 20_000);
+
 it("admits more than eight children with prepared tools and keeps checkpointed messaging usable", async () => {
   const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
   await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {

@@ -1400,6 +1400,37 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Existing draft.")
         capture(app, "09-voice-draft-preserved")
     }
+    func testVoiceDownArrowReturnsToInboxAndKeepsSessionActive() {
+        let app = launch(["NANOCODEX_DEMO_VOICE": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
+        let title = app.staticTexts["agent-title"].label
+        app.buttons["start-voice"].tap()
+        let orb = app.descendants(matching: .any).matching(identifier: "voice-orb").firstMatch
+        XCTAssertTrue(orb.waitForExistence(timeout: 20))
+        app.buttons["mute-voice"].tap()
+        for pass in 1...2 {
+            app.buttons["close-voice"].tap()
+            gone(app.staticTexts["voice-panel"])
+            XCTAssertTrue(app.staticTexts["agent-title"].waitForExistence(timeout: 5))
+            XCTAssertEqual(app.staticTexts["agent-title"].label, title)
+            XCTAssertTrue(app.scrollViews["conversation"].exists)
+            XCTAssertTrue(app.buttons["end-voice-compact"].isHittable)
+            capture(app, "voice-down-arrow-inbox-\(pass)")
+            app.buttons["start-voice"].tap()
+            XCTAssertTrue(orb.waitForExistence(timeout: 5))
+            XCTAssertEqual(app.buttons["mute-voice"].label, "Unmute microphone")
+            if pass == 1 {
+                app.buttons["voice-return-chat"].tap()
+                XCTAssertTrue(app.scrollViews["conversation"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts["agent-title"].waitForExistence(timeout: 5))
+                app.buttons["start-voice"].tap()
+                XCTAssertTrue(orb.waitForExistence(timeout: 5))
+            }
+        }
+        app.buttons["close-voice"].tap()
+        XCTAssertTrue(app.buttons["end-voice-compact"].waitForExistence(timeout: 5))
+        app.buttons["end-voice-compact"].tap()
+        gone(app.buttons["end-voice-compact"])
+    }
     func testVoiceConversationStreamsBothSpeakersWhileMinimized() {
         let app = launch(["NANOCODEX_DEMO_VOICE": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         composer(app).tap(); composer(app).typeText("Keep my typed draft.")
