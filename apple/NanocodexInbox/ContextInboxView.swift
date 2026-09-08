@@ -92,7 +92,7 @@ struct ContextInboxView: View {
                     }
                 }
             }
-            .searchable(text: $query, prompt: "Search context")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search context")
             .navigationTitle("Context")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }

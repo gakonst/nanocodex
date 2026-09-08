@@ -294,7 +294,7 @@ impl PromptRequest {
     /// tool work can start.
     #[doc(hidden)]
     #[must_use]
-    pub fn cancel_on_admission(mut self) -> Self {
+    pub const fn cancel_on_admission(mut self) -> Self {
         self.cancel_on_admission = true;
         self
     }

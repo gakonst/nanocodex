@@ -523,6 +523,7 @@ impl Conversation {
         }
         if payload.tool == "write_stdin"
             && let Some(session_id) = tool_integer_argument(&payload.arguments, "session_id")
+            && self.running_shell_sessions.contains_key(&session_id)
         {
             self.hidden_terminal_calls
                 .insert(payload.call_id, session_id);
@@ -564,10 +565,33 @@ impl Conversation {
     }
 
     fn on_tool_result(&mut self, event: &AgentEvent) -> bool {
-        let Ok(payload) = event.decode_payload::<ToolResultPayload>() else {
+        let Ok(mut payload) = event.decode_payload::<ToolResultPayload>() else {
             return false;
         };
+        payload.structured_result = normalize_tool_result(payload.structured_result);
+        if payload.structured_result.is_null()
+            || payload
+                .structured_result
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty)
+            || payload
+                .structured_result
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        {
+            payload.structured_result =
+                normalize_tool_result(payload.result.clone().unwrap_or_default());
+        }
         let status = match payload.status.as_str() {
+            "completed"
+                if (matches!(
+                    payload.tool.as_deref(),
+                    Some("exec_command" | "write_stdin")
+                ) || self.hidden_terminal_calls.contains_key(&payload.call_id))
+                    && shell_result_failed(&payload.structured_result) =>
+            {
+                ToolStatus::Failed
+            }
             "completed" => ToolStatus::Completed,
             "cancelled" => ToolStatus::Cancelled,
             _ => ToolStatus::Failed,
@@ -589,34 +613,66 @@ impl Conversation {
         if shell_tool
             && status == ToolStatus::Completed
             && let Some(session_id) = result_session_id(&payload.structured_result)
+            && payload
+                .structured_result
+                .get("exit_code")
+                .and_then(Value::as_i64)
+                .is_none()
         {
-            self.running_shell_sessions.insert(
-                session_id,
-                ContinuedTool::new(
-                    payload.call_id,
-                    payload.started_after_ns,
-                    payload.duration_ns,
-                ),
+            let mut continued = ContinuedTool::new(
+                payload.call_id,
+                payload.started_after_ns,
+                payload.duration_ns,
+                self.run_generation,
             );
-            return true;
+            continued.result = merge_terminal_result(Value::Null, payload.structured_result);
+            let result = Some(summarize_tool_result(
+                Some("exec_command"),
+                &continued.result,
+                ToolStatus::Running,
+            ));
+            let changed = self.finish_continued_tool(&continued, ToolStatus::Running, result);
+            self.running_shell_sessions.insert(session_id, continued);
+            return changed;
         }
         if (payload.tool.as_deref() == Some("exec") || pending_code_exec)
             && status == ToolStatus::Completed
             && let Some(cell_id) = payload.result.as_ref().and_then(running_cell_id)
         {
-            let visible = self.pending_code_execs.remove(&payload.call_id).is_none();
-            self.running_cells.insert(
-                cell_id,
-                ContinuedTool::new(
-                    payload.call_id,
-                    payload.started_after_ns,
-                    payload.duration_ns,
-                ),
+            let mut continued = ContinuedTool::new(
+                payload.call_id.clone(),
+                payload.started_after_ns,
+                payload.duration_ns,
+                self.run_generation,
             );
-            return visible;
+            continued.arguments = self
+                .pending_code_execs
+                .remove(&payload.call_id)
+                .map(|pending| pending.arguments);
+            let changed = self.update_continued_code(
+                &mut continued,
+                payload.result.as_ref(),
+                ToolStatus::Running,
+            );
+            self.running_cells.insert(cell_id, continued);
+            return changed;
         }
-        if self.pending_code_execs.remove(&payload.call_id).is_some() {
-            return false;
+        if let Some(pending) = self.pending_code_execs.remove(&payload.call_id) {
+            let output = payload
+                .result
+                .as_ref()
+                .map(|result| summarize_tool_result(Some("exec"), result, status))
+                .unwrap_or_default();
+            if output.is_empty() && matches!(status, ToolStatus::Completed | ToolStatus::Cancelled)
+            {
+                return false;
+            }
+            self.push_output(TranscriptItem::Tool {
+                call_id: payload.call_id.clone(),
+                name: "exec".to_owned(),
+                arguments: pending.arguments,
+                status,
+            });
         }
         let result = if shell_tool {
             Some(&payload.structured_result)
@@ -666,19 +722,31 @@ impl Conversation {
         let Some(mut continued) = self.running_shell_sessions.remove(&session_id) else {
             return false;
         };
-        continued.add_duration(payload.duration_ns);
-        if status == ToolStatus::Completed
-            && result_session_id(&payload.structured_result).is_some()
-        {
-            self.running_shell_sessions.insert(session_id, continued);
-            return false;
-        }
+        continued.add_timing(
+            payload.started_after_ns,
+            payload.duration_ns,
+            self.run_generation,
+        );
+        continued.result =
+            merge_terminal_result(continued.result, payload.structured_result.clone());
+        let running = status == ToolStatus::Completed
+            && result_session_id(&continued.result).is_some()
+            && continued
+                .result
+                .get("exit_code")
+                .and_then(Value::as_i64)
+                .is_none();
+        let status = if running { ToolStatus::Running } else { status };
         let result = Some(summarize_tool_result(
             Some("exec_command"),
-            &payload.structured_result,
+            &continued.result,
             status,
         ));
-        self.finish_continued_tool(&continued, status, result)
+        let changed = self.finish_continued_tool(&continued, status, result);
+        if running {
+            self.running_shell_sessions.insert(session_id, continued);
+        }
+        changed
     }
 
     fn on_cell_transport_result(
@@ -690,18 +758,51 @@ impl Conversation {
         let Some(mut continued) = self.running_cells.remove(cell_id) else {
             return false;
         };
-        continued.add_duration(payload.duration_ns);
-        if status == ToolStatus::Completed
-            && payload.result.as_ref().and_then(running_cell_id).is_some()
-        {
+        continued.add_timing(
+            payload.started_after_ns,
+            payload.duration_ns,
+            self.run_generation,
+        );
+        let running = status == ToolStatus::Completed
+            && payload.result.as_ref().and_then(running_cell_id).is_some();
+        let status = if running { ToolStatus::Running } else { status };
+        let changed = self.update_continued_code(&mut continued, payload.result.as_ref(), status);
+        if running {
             self.running_cells.insert(cell_id.to_owned(), continued);
-            return false;
         }
-        let result = payload
-            .result
-            .as_ref()
-            .map(|result| summarize_tool_result(Some("exec"), result, status));
-        self.finish_continued_tool(&continued, status, result)
+        changed
+    }
+
+    fn update_continued_code(
+        &mut self,
+        continued: &mut ContinuedTool,
+        result: Option<&Value>,
+        status: ToolStatus,
+    ) -> bool {
+        let output = result
+            .map(|result| summarize_tool_result(Some("exec"), result, status))
+            .unwrap_or_default();
+        let previous = continued.result.as_str().unwrap_or_default();
+        let combined = if previous.is_empty() {
+            output
+        } else if output.is_empty() {
+            previous.to_owned()
+        } else {
+            format!("{previous}\n{output}")
+        };
+        let combined = bounded_multiline_text(&combined, 64 * 1024, 128);
+        if (!combined.is_empty() || matches!(status, ToolStatus::Failed | ToolStatus::Cancelled))
+            && let Some(arguments) = continued.arguments.take()
+        {
+            self.push_output(TranscriptItem::Tool {
+                call_id: continued.call_id.clone(),
+                name: "exec".to_owned(),
+                arguments,
+                status,
+            });
+        }
+        continued.result = Value::String(combined.clone());
+        self.finish_continued_tool(continued, status, Some(combined))
     }
 
     fn finish_continued_tool(
@@ -3140,23 +3241,54 @@ struct ContinuedTool {
     call_id: String,
     started_after_ns: Option<u64>,
     duration_ns: Option<u64>,
+    result: Value,
+    run_generation: u64,
+    received_at: Instant,
+    initial_duration_ns: u64,
+    arguments: Option<String>,
 }
 
 impl ContinuedTool {
-    const fn new(call_id: String, started_after_ns: Option<u64>, duration_ns: Option<u64>) -> Self {
+    fn new(
+        call_id: String,
+        started_after_ns: Option<u64>,
+        duration_ns: Option<u64>,
+        run_generation: u64,
+    ) -> Self {
         Self {
             call_id,
             started_after_ns,
             duration_ns,
+            result: Value::Null,
+            run_generation,
+            received_at: Instant::now(),
+            initial_duration_ns: duration_ns.unwrap_or_default(),
+            arguments: None,
         }
     }
 
-    const fn add_duration(&mut self, duration_ns: Option<u64>) {
-        self.duration_ns = match (self.duration_ns, duration_ns) {
-            (Some(total), Some(duration)) => Some(total.saturating_add(duration)),
-            (total, None) => total,
-            (None, duration) => duration,
-        };
+    fn add_timing(
+        &mut self,
+        started_after_ns: Option<u64>,
+        duration_ns: Option<u64>,
+        run_generation: u64,
+    ) {
+        if self.run_generation == run_generation
+            && let (Some(start), Some(next_start), Some(duration)) =
+                (self.started_after_ns, started_after_ns, duration_ns)
+            && next_start >= start
+        {
+            self.duration_ns = Some(next_start.saturating_add(duration).saturating_sub(start));
+            return;
+        }
+        let elapsed = u64::try_from(self.received_at.elapsed().as_nanos())
+            .unwrap_or(u64::MAX)
+            .saturating_add(self.initial_duration_ns);
+        let summed = self
+            .duration_ns
+            .unwrap_or_default()
+            .saturating_add(duration_ns.unwrap_or_default());
+        self.duration_ns = Some(elapsed.max(summed));
     }
 }
 
@@ -3256,6 +3388,9 @@ fn summarize_tool_arguments(tool: &str, arguments: &Value) -> String {
 }
 
 fn present_tool_name(tool: &str, arguments: &Value) -> String {
+    if tool == "write_stdin" {
+        return "Process".to_owned();
+    }
     if tool == "browser" {
         return arguments.get("action").and_then(Value::as_str).map_or_else(
             || "Browser".to_owned(),
@@ -3430,6 +3565,54 @@ fn code_parent_call_id(call_id: &str) -> Option<&str> {
     call_id.split_once("/code-").map(|(parent, _)| parent)
 }
 
+fn normalize_tool_result(value: Value) -> Value {
+    match value {
+        Value::String(ref text) => serde_json::from_str(text).unwrap_or(value),
+        _ => value,
+    }
+}
+
+fn merge_terminal_result(current: Value, next: Value) -> Value {
+    let previous = current
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut next = match next {
+        Value::Object(fields) => fields,
+        other => serde_json::Map::from_iter([("error".to_owned(), other)]),
+    };
+    let output = next
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let output = format!("{previous}{output}");
+    // Keep recent diagnostics without growing every time a long-running process is polled.
+    let mut start = output.len().saturating_sub(64 * 1024);
+    while !output.is_char_boundary(start) {
+        start += 1;
+    }
+    let output = if start == 0 {
+        output
+    } else {
+        format!("…\n{}", &output[start..])
+    };
+    next.insert("output".to_owned(), Value::String(output));
+    Value::Object(next)
+}
+
+fn shell_result_failed(result: &Value) -> bool {
+    if result
+        .get("error")
+        .is_some_and(|error| !error.is_null() && error != false && error != "")
+    {
+        return true;
+    }
+    result
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .map_or_else(|| result_session_id(result).is_none(), |code| code != 0)
+}
+
 fn result_session_id(result: &Value) -> Option<i64> {
     let decoded = result
         .as_str()
@@ -3442,7 +3625,12 @@ fn result_session_id(result: &Value) -> Option<i64> {
 }
 
 fn running_cell_id(result: &Value) -> Option<String> {
-    let text = result.as_str()?;
+    if let Some(items) = result.as_array() {
+        return items.iter().find_map(running_cell_id);
+    }
+    let text = result
+        .as_str()
+        .or_else(|| result.get("text").and_then(Value::as_str))?;
     let marker = "Script running with cell ID ";
     let suffix = text.lines().find_map(|line| line.strip_prefix(marker))?;
     let cell_id = suffix.split_whitespace().next()?;
@@ -3467,7 +3655,20 @@ fn summarize_tool_result(tool: Option<&str>, result: &Value, status: ToolStatus)
                 }
             }
             if !parts.is_empty() {
-                return parts.join(" · ");
+                let mut summary = parts.join(" · ");
+                if let Some(output) = object
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .filter(|output| !output.is_empty())
+                {
+                    summary.push('\n');
+                    summary.push_str(output);
+                }
+                if let Some(error) = object.get("error").and_then(Value::as_str) {
+                    summary.push('\n');
+                    summary.push_str(error);
+                }
+                return summary;
             }
         }
     }
@@ -3478,10 +3679,67 @@ fn summarize_tool_result(tool: Option<&str>, result: &Value, status: ToolStatus)
     {
         return "applied".to_owned();
     }
+    if tool.is_some_and(|tool| {
+        matches!(tool, "exec" | "wait" | "view_image" | "image_gen__imagegen")
+            || tool.starts_with("mcp__")
+    }) {
+        return display_tool_output(result, 0);
+    }
     if matches!(status, ToolStatus::Failed | ToolStatus::Cancelled) {
         return compact_arguments(result);
     }
     String::new()
+}
+
+fn display_tool_output(value: &Value, depth: usize) -> String {
+    if depth > 10 {
+        return "…".to_owned();
+    }
+    match value {
+        Value::Null => String::new(),
+        Value::String(text) => {
+            if text.starts_with("data:") {
+                return "[embedded attachment]".to_owned();
+            }
+            if let Ok(decoded) = serde_json::from_str::<Value>(text) {
+                return display_tool_output(&decoded, depth + 1);
+            }
+            let text = if text.starts_with("Script completed")
+                || text.starts_with("Script running with cell ID")
+            {
+                text.split_once("Output:\n")
+                    .map_or("", |(_, output)| output)
+            } else {
+                text.as_str()
+            };
+            bounded_multiline_text(text, 64 * 1024, 128)
+        }
+        Value::Array(items) => items
+            .iter()
+            .take(64)
+            .map(|item| display_tool_output(item, depth + 1))
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(fields) => {
+            let mut lines = Vec::new();
+            for (key, value) in fields.iter().take(64) {
+                if key == "type" {
+                    continue;
+                }
+                if matches!(key.as_str(), "data" | "blob" | "file_data") {
+                    lines.push(format!("{key}: [embedded attachment]"));
+                } else {
+                    let text = display_tool_output(value, depth + 1);
+                    if !text.is_empty() {
+                        lines.push(format!("{key}: {text}"));
+                    }
+                }
+            }
+            bounded_multiline_text(&lines.join("\n"), 64 * 1024, 128)
+        }
+        _ => value.to_string(),
+    }
 }
 
 fn compact_arguments(arguments: &Value) -> String {
@@ -3564,6 +3822,104 @@ mod tests {
             "payload": payload,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn yielded_code_output_is_visible_when_wait_finishes() {
+        let mut app = App::new(".".into());
+        for (kind, payload) in [
+            (
+                AgentEventKind::ToolCall,
+                json!({"call_id": "code", "tool": "exec", "arguments": "text(await render());"}),
+            ),
+            (
+                AgentEventKind::ToolResult,
+                json!({"call_id": "code", "tool": "exec", "status": "completed", "result": [{"type": "input_text", "text": "Script running with cell ID cell-1\nWall time 1 seconds\nOutput:\n"}]}),
+            ),
+            (
+                AgentEventKind::ToolCall,
+                json!({"call_id": "wait", "tool": "wait", "arguments": {"cell_id": "cell-1"}}),
+            ),
+            (
+                AgentEventKind::ToolResult,
+                json!({"call_id": "wait", "tool": "wait", "status": "completed", "result": [{"type": "input_text", "text": "Script completed\nWall time 2 seconds\nOutput:\nReport ready"}]}),
+            ),
+        ] {
+            app.main.on_agent_event(&event(kind, &payload));
+        }
+        assert_eq!(app.main.transcript.len(), 1);
+        assert!(app.main.running_cells.is_empty());
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("Report ready"), "{rendered}");
+    }
+
+    #[test]
+    fn command_progress_retains_output_and_real_exit_status() {
+        let mut app = App::new(".".into());
+        for (kind, payload) in [
+            (
+                AgentEventKind::ToolCall,
+                json!({"call_id": "build", "tool": "exec_command", "arguments": {"cmd": "cargo test"}}),
+            ),
+            (
+                AgentEventKind::ToolResult,
+                json!({"call_id": "build", "tool": "exec_command", "status": "completed", "started_after_ns": 10, "duration_ns": 5, "structured_result": {"session_id": 7, "output": "Compiling\n"}}),
+            ),
+            (
+                AgentEventKind::ToolCall,
+                json!({"call_id": "poll", "tool": "write_stdin", "arguments": {"session_id": 7}}),
+            ),
+            (
+                AgentEventKind::ToolResult,
+                json!({"call_id": "poll", "tool": "write_stdin", "status": "completed", "started_after_ns": 100, "duration_ns": 10, "structured_result": {"exit_code": 101, "output": "build failed\n"}}),
+            ),
+        ] {
+            app.main.on_agent_event(&event(kind, &payload));
+        }
+        assert_eq!(app.main.transcript.len(), 1);
+        assert!(app.main.running_shell_sessions.is_empty());
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        for expected in ["✗", "exit 101", "Compiling", "build failed"] {
+            assert!(rendered.contains(expected), "{rendered}");
+        }
+        let mut timing = super::ContinuedTool::new("build".to_owned(), Some(10), Some(5), 0);
+        timing.add_timing(Some(100), Some(10), 0);
+        assert_eq!(timing.duration_ns, Some(100));
+    }
+
+    #[test]
+    fn code_output_keeps_text_and_resource_links_without_inline_binary() {
+        let output = super::display_tool_output(
+            &json!([
+                {"type": "input_text", "text": "Chart ready"},
+                {"type": "image", "mimeType": "image/png", "data": "PRIVATE_IMAGE_BYTES"},
+                {"type": "resource_link", "name": "report.pdf", "uri": "https://example.com/report.pdf"},
+            ]),
+            0,
+        );
+        assert!(output.contains("Chart ready"));
+        assert!(output.contains("https://example.com/report.pdf"));
+        assert!(!output.contains("PRIVATE_IMAGE_BYTES"));
     }
 
     #[test]
@@ -4855,7 +5211,7 @@ mod tests {
                     "tool": "exec",
                     "status": "completed",
                     "duration_ns": 10_000_000_000_u64,
-                    "result": "Script completed\nWall time 10 seconds\nOutput:\ndone"
+                    "result": "Script completed\nWall time 10 seconds\nOutput:\n"
                 }),
             ));
         }
@@ -4968,7 +5324,7 @@ mod tests {
         assert!(!rendered.contains("terminal input"));
         assert!(!rendered.contains("session 7"));
         assert!(!rendered.contains("terminal wait"));
-        assert!(!rendered.contains("unknown session 99"));
+        assert!(rendered.contains("unknown session 99"));
         assert!(rendered.contains("sleep 1"));
         assert!(rendered.contains("exit 130"));
         assert!(!app.main.hidden_terminal_calls.contains_key("call-1/code-2"));
@@ -5008,7 +5364,20 @@ mod tests {
             }),
         ));
 
-        assert!(app.main.transcript.is_empty());
+        assert_eq!(app.main.transcript.len(), 1);
+        let area = Rect::new(0, 0, 100, 12);
+        let mut buffer = Buffer::empty(area);
+        app.main
+            .transcript
+            .widget(0, None, None, "empty")
+            .render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("done"));
+        assert!(!rendered.contains("await work()"));
         assert!(!app.main.running_cells.contains_key("3"));
     }
 

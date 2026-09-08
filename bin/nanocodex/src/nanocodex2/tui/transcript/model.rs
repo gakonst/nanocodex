@@ -56,6 +56,7 @@ pub(crate) struct TranscriptModel {
     active_assistants: HashMap<(u32, MessagePhase), EntryId>,
     reasoning: HashMap<ReasoningKey, EntryId>,
     tools: HashMap<String, EntryId>,
+    settled_calls: HashSet<String>,
     shell_sessions: HashMap<ShellSessionKey, EntryId>,
     shell_followups: HashMap<String, EntryId>,
     code_children: HashMap<EntryId, Vec<EntryId>>,
@@ -274,7 +275,9 @@ impl TranscriptModel {
                 self.push(EntryKind::User { text: payload.text });
             }),
             "user.steered" => self.decode_local::<UserSteered>(record).map(|payload| {
-                self.push(EntryKind::User { text: payload.text });
+                self.push(EntryKind::User {
+                    text: format!("[steering accepted]\n{}", payload.text),
+                });
             }),
             "reflection.started" => self.decode_local::<ReflectionStarted>(record).map(|_| {
                 self.push(EntryKind::ReflectionStarted);
@@ -593,6 +596,10 @@ impl TranscriptModel {
             tool,
             arguments,
         } = record.decode_payload::<ToolCallPayload>()?;
+        // Recovery may replay admission for a call whose progress is already visible.
+        if self.tools.contains_key(&call_id) {
+            return Ok(false);
+        }
         let parent = self.code_parent(&call_id);
         if tool == "write_stdin"
             && let Some(session_id) = arguments.get("session_id").and_then(Value::as_i64)
@@ -658,6 +665,9 @@ impl TranscriptModel {
 
     fn tool_result(&mut self, record: &TranscriptRecord) -> Result<bool, serde_json::Error> {
         let payload = record.decode_payload::<ToolResultPayload>()?;
+        if !self.settled_calls.insert(payload.call_id.clone()) {
+            return Ok(false);
+        }
         let resumed_shell = self.shell_followups.remove(&payload.call_id);
         let shell_followup = payload.tool == "write_stdin";
         let result = preferred_result(payload.structured_result, payload.result);
@@ -735,6 +745,8 @@ impl TranscriptModel {
                     } else {
                         merge_shell_result(tool.result.take(), result)
                     }
+                } else if payload.tool == "exec_command" {
+                    merge_shell_result(None, result)
                 } else {
                     result
                 });
@@ -1345,7 +1357,9 @@ fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
             ToolState::Failed
         };
     }
-    if tool_session_id(result).is_some() && result.get("exit_code").is_none() {
+    if tool_session_id(result).is_some()
+        && result.get("exit_code").and_then(Value::as_i64).is_none()
+    {
         return ToolState::Running;
     }
     ToolState::Failed
@@ -1411,20 +1425,33 @@ fn has_useful_result(result: &Value) -> bool {
 }
 
 fn merge_shell_result(current: Option<Value>, next: Value) -> Value {
-    let Some(Value::Object(mut current)) = current else {
-        return next;
-    };
-    let mut next = match next {
-        Value::Object(next) => next,
-        other => return other,
-    };
     let previous_output = current
-        .remove("output")
-        .and_then(|value| value.as_str().map(str::to_owned))
+        .as_ref()
+        .and_then(|value| value.get("output"))
+        .and_then(Value::as_str)
         .unwrap_or_default();
-    if let Some(Value::String(output)) = next.get_mut("output") {
-        output.insert_str(0, &previous_output);
+    if previous_output.is_empty() && next.get("output").is_none() {
+        return next;
     }
+    let mut next = match next {
+        Value::Object(fields) => fields,
+        other => serde_json::Map::from_iter([("error".to_owned(), other)]),
+    };
+    let output = next
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let output = format!("{previous_output}{output}");
+    let mut start = output.len().saturating_sub(64 * 1024);
+    while !output.is_char_boundary(start) {
+        start += 1;
+    }
+    let output = if start == 0 {
+        output
+    } else {
+        format!("…\n{}", &output[start..])
+    };
+    next.insert("output".to_owned(), Value::String(output));
     Value::Object(next)
 }
 
@@ -1518,8 +1545,11 @@ struct ToolResultPayload {
     call_id: String,
     tool: String,
     status: String,
+    #[serde(default)]
     duration_ns: u64,
+    #[serde(default)]
     result: Value,
+    #[serde(default)]
     structured_result: Value,
     metadata: Option<Value>,
 }
@@ -1596,6 +1626,65 @@ mod tests {
                 "metadata": metadata,
             }),
         )
+    }
+
+    #[test]
+    fn command_progress_survives_replayed_calls_and_missing_result_fields() {
+        let mut model = TranscriptModel::default();
+        let start = call(1, "build", "exec_command", json!({"cmd": "cargo test"}));
+        let yielded = result(
+            2,
+            "build",
+            "exec_command",
+            Value::Null,
+            json!({"session_id": 7, "exit_code": null, "output": "Compiling\n"}),
+            Value::Null,
+        );
+        model.apply(&start);
+        model.apply(&yielded);
+        model.apply(&call(3, "poll", "write_stdin", json!({"session_id": 7})));
+        let progress = result(
+            4,
+            "poll",
+            "write_stdin",
+            Value::Null,
+            json!({"session_id": 7, "output": "Testing\n"}),
+            Value::Null,
+        );
+        model.apply(&progress);
+        model.apply(&start);
+        model.apply(&yielded);
+        model.apply(&progress);
+        model.apply(&call(5, "exit", "write_stdin", json!({"session_id": 7})));
+        model.apply(&agent_record(
+            6,
+            AgentEventKind::ToolResult,
+            json!({
+                "call_id": "exit", "tool": "write_stdin", "status": "failed",
+                "result": {"error": "process session unavailable"},
+            }),
+        ));
+        assert_eq!(model.entries().len(), 1);
+        let EntryKind::Tool(tool) = &model.entries()[0].kind else {
+            panic!("expected command")
+        };
+        assert_eq!(tool.state, ToolState::Failed);
+        let output = tool.result.as_ref().unwrap();
+        assert_eq!(output["output"], "Compiling\nTesting\n");
+        assert_eq!(output["error"], "process session unavailable");
+        assert_eq!(tool.duration_ns, Some(50_000_000));
+    }
+
+    #[test]
+    fn long_command_output_retains_the_latest_diagnostics() {
+        let merged = super::merge_shell_result(
+            Some(json!({"output": "α".repeat(40_000)})),
+            json!({"exit_code": 101, "output": "\nlatest failure"}),
+        );
+        let output = merged["output"].as_str().unwrap();
+        assert!(output.starts_with("…\n"));
+        assert!(output.ends_with("latest failure"));
+        assert!(output.len() <= 64 * 1024 + 4);
     }
 
     #[test]

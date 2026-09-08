@@ -1,7 +1,7 @@
 import { env, runInDurableObject, runDurableObjectAlarm, createExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker, { type DurableAgentSession } from "../src/index";
-import type { Principal } from "../src/account-auth";
+import { attachAgent, type AccountAuthEnv, type Principal } from "../src/account-auth";
 import { CronTriggers, nextCronRun, parseCronTrigger } from "../src/cron-triggers";
 
 const now = Date.parse("2026-09-05T12:00:00Z");
@@ -13,12 +13,13 @@ const sessions = () => (env as unknown as {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
 }).NANOCODEX_SESSIONS;
 
-function initialize(state: DurableObjectState) {
+async function initialize(state: DurableObjectState, id = crypto.randomUUID(), owner = "owner") {
   state.storage.sql.exec(`INSERT INTO session_state (
     singleton, session_id, owner_id, organization_id, team_id,
     authorization_epoch, public_origin, runtime_profile, last_active
-  ) VALUES (1, ?, 'owner', 'org', 'team', 1, 'https://nanocodex.example', 'managed', ?)`,
-  crypto.randomUUID(), Date.now());
+  ) VALUES (1, ?, ?, 'org', 'team', 1, 'https://nanocodex.example', 'managed', ?)`,
+  id, owner, Date.now());
+  await attachAgent(env as unknown as AccountAuthEnv, owner, id, undefined, false);
 }
 
 function retainBusyTurn(state: DurableObjectState) {
@@ -58,7 +59,7 @@ describe("cron Durable Object protocol", () => {
   it("persists an idle wakeup, idempotently replaces, pauses, resumes, and deletes", async () => {
     const stub = sessions().getByName(crypto.randomUUID());
     await runInDurableObject(stub, async (session, state) => {
-      initialize(state);
+      await initialize(state);
       const created = await session.fetch(request("daily"));
       expect(created.status).toBe(201);
       const first = await created.json<{ next_run_at: number }>();
@@ -85,7 +86,7 @@ describe("cron Durable Object protocol", () => {
   it("coalesces missed ticks, admits one durable turn, and never duplicates an alarm", async () => {
     const stub = sessions().getByName(crypto.randomUUID());
     await runInDurableObject(stub, async (session, state) => {
-      initialize(state);
+      await initialize(state);
       // Keep execution at the existing durable retry boundary. No model credentials are needed.
       const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
       Object.defineProperty(session, "env", { value: {
@@ -112,7 +113,7 @@ describe("cron Durable Object protocol", () => {
 
   it("skips a busy agent without growing its inbox", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      initialize(state);
+      await initialize(state);
       retainBusyTurn(state);
       await session.fetch(request("daily"));
       state.storage.sql.exec("UPDATE managed_cron_triggers SET next_run_at = ?", Date.now() - 1);
@@ -127,7 +128,7 @@ describe("cron Durable Object protocol", () => {
 
   it("rolls back advancement with turn admission and fences edits, pause, and recreation", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      initialize(state);
+      await initialize(state);
       const triggers = new CronTriggers(state.storage);
       await session.fetch(request("daily"));
       const original = triggers.get("daily")!;
@@ -148,7 +149,7 @@ describe("cron Durable Object protocol", () => {
 
   it("retains retry deadlines across reconstruction and clears them on replacement", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      initialize(state);
+      await initialize(state);
       await session.fetch(request("daily"));
       state.storage.sql.exec("UPDATE managed_cron_triggers SET next_run_at = ?", Date.now() - 60_000);
       const triggers = new CronTriggers(state.storage);
@@ -168,7 +169,7 @@ describe("cron Durable Object protocol", () => {
 
   it("migrates legacy schedules without changing their conversation mode", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      initialize(state);
+      await initialize(state);
       await session.fetch(request("legacy"));
       state.storage.sql.exec("ALTER TABLE managed_cron_triggers DROP COLUMN session_mode");
       state.storage.sql.exec("ALTER TABLE managed_cron_triggers DROP COLUMN last_agent_id");
@@ -184,7 +185,7 @@ describe("cron Durable Object protocol", () => {
 
   it("atomically claims a bounded fresh-session delivery, fences stale edits, and retains it after pause", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      initialize(state);
+      await initialize(state);
       await session.fetch(request("fresh", { ...config, session_mode: "new" }));
       const triggers = new CronTriggers(state.storage);
       const row = triggers.get("fresh")!;
@@ -212,8 +213,8 @@ describe("cron Durable Object protocol", () => {
 
   it("starts a separate session while the source is busy and replays lost admission responses to the same session", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      initialize(state);
       const owner = "11111111-1111-4111-8111-111111111111";
+      await initialize(state, crypto.randomUUID(), owner);
       state.storage.sql.exec("UPDATE session_state SET owner_id = ?, organization_id = ?, team_id = ?", owner, crypto.randomUUID(), crypto.randomUUID());
       retainBusyTurn(state);
       const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
@@ -275,14 +276,29 @@ describe("cron Durable Object protocol", () => {
 
   it("enforces ownership assertions and the per-agent limit", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
-      initialize(state);
+      await initialize(state);
       const wrongOwner = request("daily");
       wrongOwner.headers.set("x-nanocodex-owner-id", "other");
       expect((await session.fetch(wrongOwner)).status).toBe(404);
       for (let index = 0; index < 32; index++) expect((await session.fetch(request(`t${index}`))).status).toBe(201);
-      expect((await session.fetch(request("overflow"))).status).toBe(429);
+      const overflow = await session.fetch(request("overflow"));
+      expect(overflow.status).toBe(429);
+      expect(await overflow.json()).toEqual({ error: "cron_trigger_limit", message: "at most 32 cron triggers per agent" });
+      expect(new CronTriggers(state.storage).list()).toHaveLength(32);
       expect((await session.fetch(request("t0"))).status).toBe(200);
       expect((await session.fetch(request("bad", { ...config, timezone: "invalid" }))).status).toBe(400);
+    });
+  });
+
+  it("does not classify storage failures as a trigger limit", async () => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await initialize(state);
+      state.storage.sql.exec(`CREATE TRIGGER reject_cron_insert BEFORE INSERT ON managed_cron_triggers
+        BEGIN SELECT RAISE(ABORT, 'at most 32 cron triggers per agent'); END`);
+      const response = await session.fetch(request("failed"));
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: "managed_request_failed" });
+      expect(new CronTriggers(state.storage).list()).toHaveLength(0);
     });
   });
 });
@@ -299,7 +315,7 @@ describe("cron HTTP routes", () => {
       authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"],
     };
     await runInDurableObject(sessions().getByName(id), async (_session, state) => {
-      initialize(state);
+      await initialize(state, id, principal.userId);
       state.storage.sql.exec("UPDATE session_state SET session_id = ?, owner_id = ?, organization_id = ?, team_id = ?",
         id, principal.userId, principal.organizationId, principal.teamId);
       retainBusyTurn(state);
@@ -334,7 +350,7 @@ describe("cron HTTP routes", () => {
       authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"],
     };
     await runInDurableObject(sessions().getByName(id), async (_session, state) => {
-      initialize(state);
+      await initialize(state, id, owner);
       state.storage.sql.exec("UPDATE session_state SET session_id = ?, owner_id = ?, organization_id = ?, team_id = ?", id, owner, org, team);
     });
     const call = (method: string, actor = principal, origin?: string, suffix = "/daily") => worker.fetch(

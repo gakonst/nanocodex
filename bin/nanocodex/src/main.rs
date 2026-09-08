@@ -93,6 +93,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Sign in to the managed Nanocodex account shared with nanocodex2.
+    Account(nanocodex_cli_auth::Account),
     /// Manage `ChatGPT` subscription login.
     Auth(auth::Auth),
     /// Sign in to Nanocodex Connect and authorize this installation.
@@ -198,6 +200,7 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Some(Command::Account(command)) => command.run().await.map_err(Into::into),
         Some(Command::Auth(command)) => command.run().await,
         Some(Command::Login(command)) => command.run().await,
         Some(Command::Connect(command)) => command.run().await,

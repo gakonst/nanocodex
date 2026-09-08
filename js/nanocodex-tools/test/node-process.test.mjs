@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { getEventListeners } from "node:events";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
@@ -217,6 +218,72 @@ test("Finder PATH discovers installed Node while preserving inherited executable
   } finally {
     if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
     await Promise.all(runtimes.map(runtime => runtime.close()));
+    await rm(workspace, { recursive: true });
+  }
+});
+
+test("empty process polls accept long waits and clean up when the command exits", { timeout: 5_000 }, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-long-poll-"));
+  const runtime = await createNodeProcessTools({ workspace });
+  const [exec, stdin] = runtime.tools;
+  const context = { sessionId: "owner", signal: new AbortController().signal };
+  try {
+    for (const [chars, yield_time_ms] of [[undefined, 60_000], ["", 300_000]]) {
+      const release = `release-${yield_time_ms}`;
+      const started = await exec.handler({ cmd: `while [ ! -f ${release} ]; do sleep 0.01; done; printf done`, yield_time_ms: 0 }, context);
+      assert.equal(typeof started.session_id, "number");
+      const poll = stdin.handler({ session_id: started.session_id, chars, yield_time_ms }, context);
+      await writeFile(join(workspace, release), "");
+      const finished = await poll;
+      assert.equal(finished.exit_code, 0);
+      assert.equal(started.output + finished.output, "done");
+      assert.equal(getEventListeners(context.signal, "abort").length, 0);
+    }
+  } finally {
+    await runtime.close();
+    await rm(workspace, { recursive: true });
+  }
+});
+
+test("invalid long waits do not write input or consume a retained process", { timeout: 5_000 }, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-poll-limits-"));
+  const runtime = await createNodeProcessTools({ workspace });
+  const [exec, stdin] = runtime.tools;
+  const context = { sessionId: "owner" };
+  try {
+    await assert.rejects(exec.handler({ cmd: "touch forbidden", yield_time_ms: 30_001 }, context), /integer/);
+    await assert.rejects(access(join(workspace, "forbidden")), { code: "ENOENT" });
+    const started = await exec.handler({ cmd: 'read value; printf "%s" "$value"', yield_time_ms: 0 }, context);
+    await assert.rejects(stdin.handler({ session_id: started.session_id, yield_time_ms: 300_001 }, context), /integer/);
+    await assert.rejects(stdin.handler({ session_id: started.session_id, chars: "forbidden\n", yield_time_ms: 30_001 }, context), /integer/);
+    const finished = await stdin.handler({ session_id: started.session_id, chars: "accepted\n", yield_time_ms: 1_000 }, context);
+    assert.equal(finished.output, "accepted");
+    assert.equal(finished.exit_code, 0);
+  } finally {
+    await runtime.close();
+    await rm(workspace, { recursive: true });
+  }
+});
+
+test("a cancelled long poll promptly releases its timer and process", { timeout: 5_000 }, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-poll-abort-"));
+  const runtime = await createNodeProcessTools({ workspace });
+  const [exec, stdin] = runtime.tools;
+  const controller = new AbortController();
+  const context = { sessionId: "owner", signal: controller.signal };
+  try {
+    const started = await exec.handler({ cmd: "read value", yield_time_ms: 0 }, context);
+    const cancelled = assert.rejects(
+      stdin.handler({ session_id: started.session_id, yield_time_ms: 300_000 }, context),
+      { name: "AbortError" },
+    );
+    controller.abort();
+    await cancelled;
+    await runtime.close();
+    assert.equal(getEventListeners(context.signal, "abort").length, 0);
+    await assert.rejects(stdin.handler({ session_id: started.session_id }, { sessionId: "owner" }), /unavailable/);
+  } finally {
+    await runtime.close();
     await rm(workspace, { recursive: true });
   }
 });

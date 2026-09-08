@@ -98,25 +98,27 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
             }
             CodeModeUpdate::NestedCallCompleted(call) => {
                 let (call_id, _) = self.event_context(&call.call_id);
-                let active = {
+                {
                     let mut progress = self
                         .progress
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    progress
+                    if let Some(index) = progress
                         .active_nested_tool_calls
                         .iter()
                         .position(|active| active.call_id == call_id)
-                        .map(|index| progress.active_nested_tool_calls.remove(index))
-                };
-                let Some(active) = active else {
-                    return;
-                };
+                    {
+                        progress.active_nested_tool_calls.remove(index);
+                    }
+                }
+                // A yielded cell can finish a tool in a later wait call, whose
+                // progress does not contain the original start. The completion
+                // update still belongs to that original call and must be emitted.
                 self.events.emit(
                     AgentEventKind::ToolResult,
                     ToolResultEvent {
-                        call_id: &active.call_id,
-                        tool: &active.tool,
+                        call_id: &call_id,
+                        tool: &call.name,
                         status: status(call.success),
                         duration_ns: call.duration_ns,
                         started_after_ns: Some(call.started_after_ns),

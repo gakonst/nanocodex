@@ -442,8 +442,21 @@ decoded frame transition measured 55–71 ms in these samples. The factory was
 left running for the installed Mac app's check; evidence is retained in
 `/tmp/nanocodex-mac-vm-evidence/native-swift.log`.
 
-Phone testing is paused. Prior phone evidence below is historical; the final
-physical-phone-to-VM chat/restart journey is still unverified.
+On September 8, the updated signed Release app passed a physical iPhone 17 Pro
+screen-menu regression against the Mac host: four open/select/back/dismiss
+cycles and a background/foreground recovery, with decoded Mac video and no new
+crash reports. The earlier crash came from publishing viewer state while SwiftUI
+was dismantling its UIKit canvas. Canvas detach now only releases renderer
+references; the dashboard owns session closure. Screen rows also accept taps
+across their full width. This check did not send input or restart the VM; the
+physical-phone-to-VM chat/restart journey remains unverified. Evidence is in
+`/tmp/nanocodex-iphone-screens-20260908/receipt.json`.
+
+The installed Mac app includes the rebuilt command runtime, which retains remote
+process sessions after uncertain polling failures and cancels completed poll
+timers. Both initial and incremental signed builds pass bundle verification.
+After relaunch, the app reconnected and shared its screen automatically with
+login startup and the host Hand still enabled.
 
 - A real managed agent discovered the factory VM's `screen_*` tool, received
   decodable screenshots through Code Mode, clicked its visible terminal, typed

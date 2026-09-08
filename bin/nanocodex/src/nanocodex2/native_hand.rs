@@ -44,7 +44,17 @@ struct Identity {
 
 struct NativeState {
     machine: AttachmentMachine,
-    _lock: File,
+    _lock: NativeStateLock,
+}
+
+struct NativeStateLock(File);
+
+impl Drop for NativeStateLock {
+    fn drop(&mut self) {
+        // Closing alone leaves the lock held by descriptors inherited during a
+        // concurrent fork. Release ownership explicitly, including error paths.
+        let _ = self.0.unlock();
+    }
 }
 
 impl NativeState {
@@ -93,6 +103,7 @@ impl NativeState {
         let lock = options.open(lock_path).map_err(configuration)?;
         lock.try_lock()
             .map_err(|_| configuration("another native Hand is using this state directory"))?;
+        let lock = NativeStateLock(lock);
 
         let path = directory.join("identity.json");
         let identity = match fs::symlink_metadata(&path) {
@@ -309,6 +320,24 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_identity_releases_its_lock_while_an_inherited_descriptor_exists() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = private_state_directory();
+        let state = NativeState::open(workspace.path(), directory.path(), "Server".into()).unwrap();
+        // A duplicated descriptor has the same lock lifetime as one inherited at fork.
+        let inherited = state._lock.0.try_clone().unwrap();
+        drop(state);
+        let reopened = NativeState::open(workspace.path(), directory.path(), "Restarted".into());
+        assert!(
+            reopened.is_ok(),
+            "the owner released the lock: {:?}",
+            reopened.err()
+        );
+        drop(inherited);
     }
 
     #[cfg(unix)]

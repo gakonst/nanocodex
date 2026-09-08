@@ -4,6 +4,10 @@ export const CRON_TRIGGER_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_TRIGGERS = 32;
 const encoder = new TextEncoder();
 
+export class CronTriggerLimitError extends Error {
+  constructor() { super(`at most ${MAX_TRIGGERS} cron triggers per agent`); }
+}
+
 export type CronTriggerConfig = {
   cron: string;
   timezone: string;
@@ -118,7 +122,7 @@ export class CronTriggers {
 
   put(id: string, config: CronTriggerConfig, authorization: string, epoch: number, hash: string, now: number): CronTriggerRow {
     const previous = this.get(id);
-    if (!previous && this.list().length >= MAX_TRIGGERS) throw new Error("at most 32 cron triggers per agent");
+    if (!previous && this.list().length >= MAX_TRIGGERS) throw new CronTriggerLimitError();
     if (previous && previous.cron === config.cron && previous.timezone === config.timezone
       && previous.session_mode === config.session_mode && previous.input === config.input && previous.enabled === Number(config.enabled)
       && previous.authorization_json === authorization && previous.authorization_epoch === epoch) return previous;

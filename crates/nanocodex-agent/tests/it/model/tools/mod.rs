@@ -874,6 +874,15 @@ async fn prepares_images_and_stops_on_invalid_image_requests() -> Result<()> {
 
 #[tokio::test]
 async fn yielded_exec_cell_continues_through_direct_wait_tool() -> Result<()> {
+    assert_yielded_exec_cell(false).await
+}
+
+#[tokio::test]
+async fn yielded_exec_cell_finishes_nested_tool_started_before_yield() -> Result<()> {
+    assert_yielded_exec_cell(true).await
+}
+
+async fn assert_yielded_exec_cell(start_before_yield: bool) -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("ws://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -892,7 +901,11 @@ async fn yielded_exec_cell_continues_through_direct_wait_tool() -> Result<()> {
                     "type": "custom_tool_call",
                     "call_id": "call-exec",
                     "name": "exec",
-                    "input": "text(\"before\"); await yield_control(); const result = await tools.exec_command({cmd: \"printf after\", login: false}); text(result.output);"
+                    "input": if start_before_yield {
+                        "const pending = tools.exec_command({cmd: \"sleep 1; printf after\", login: false, yield_time_ms: 10000}); await new Promise(resolve => setTimeout(resolve, 100)); text(\"before\"); await yield_control(); text((await pending).output);"
+                    } else {
+                        "text(\"before\"); await yield_control(); const result = await tools.exec_command({cmd: \"printf after\", login: false}); text(result.output);"
+                    }
                 })],
             ),
         )
@@ -934,14 +947,47 @@ async fn yielded_exec_cell_continues_through_direct_wait_tool() -> Result<()> {
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;
     assert!(output.contains("\"tool\":\"wait\""));
-    let nested_call = output
+    let events = output
         .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|event| {
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let nested_call_index = events
+        .iter()
+        .position(|event| {
             event["type"] == "tool.call" && event["payload"]["call_id"] == "call-exec/code-1"
         })
         .ok_or_else(|| eyre!("nested call did not retain its original exec lineage"))?;
-    assert_eq!(nested_call["payload"]["model_call_index"], 1);
+    assert_eq!(events[nested_call_index]["payload"]["model_call_index"], 1);
+    if start_before_yield {
+        let yield_index = events
+            .iter()
+            .position(|event| {
+                event["type"] == "tool.result" && event["payload"]["call_id"] == "call-exec"
+            })
+            .ok_or_else(|| eyre!("exec did not yield"))?;
+        assert!(nested_call_index < yield_index);
+    }
+    let nested_results = events
+        .iter()
+        .filter(|event| {
+            event["type"] == "tool.result" && event["payload"]["call_id"] == "call-exec/code-1"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        nested_results.len(),
+        1,
+        "nested tool must finish exactly once"
+    );
+    assert_eq!(nested_results[0]["payload"]["tool"], "exec_command");
+    assert_eq!(nested_results[0]["payload"]["status"], "completed");
+    assert_eq!(
+        nested_results[0]["payload"]["structured_result"]["exit_code"],
+        0
+    );
+    assert_eq!(
+        nested_results[0]["payload"]["structured_result"]["output"],
+        "after"
+    );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

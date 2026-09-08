@@ -20,6 +20,7 @@ use tokio::{
     task::JoinHandle,
     time::timeout,
 };
+use tokio_util::sync::CancellationToken;
 
 const MAX_CAPTURE_BYTES: usize = 16 * 1024;
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(100);
@@ -56,10 +57,15 @@ fn escape_boundary(text: &str) -> String {
     text.replace("</local_shell_result>", "&lt;/local_shell_result&gt;")
 }
 
-pub(crate) async fn execute(id: ShellId, command: String, workspace: PathBuf) -> ShellExecution {
+pub(crate) async fn execute(
+    id: ShellId,
+    command: String,
+    workspace: PathBuf,
+    cancellation: CancellationToken,
+) -> ShellExecution {
     let started = Instant::now();
     let mut process = shell_command(&command, &workspace);
-    let result = run(&mut process).await;
+    let result = run(&mut process, cancellation).await;
     let duration_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     match result {
         Ok(output) => ShellExecution {
@@ -69,7 +75,7 @@ pub(crate) async fn execute(id: ShellId, command: String, workspace: PathBuf) ->
             exit_code: output.exit_code,
             duration_ns,
             truncated: output.truncated,
-            error: None,
+            error: output.cancelled.then(|| "cancelled by user".to_owned()),
         },
         Err(error) => ShellExecution {
             id,
@@ -87,10 +93,31 @@ struct CapturedOutput {
     text: String,
     exit_code: Option<i32>,
     truncated: bool,
+    cancelled: bool,
 }
 
-async fn run(command: &mut Command) -> io::Result<CapturedOutput> {
+// A dropped task must also stop descendants that inherited the shell pipes.
+#[cfg(unix)]
+struct ProcessGroup(Option<nix::unistd::Pid>);
+
+#[cfg(unix)]
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+        }
+    }
+}
+
+async fn run(command: &mut Command, cancellation: CancellationToken) -> io::Result<CapturedOutput> {
     let mut child = command.spawn()?;
+    #[cfg(unix)]
+    let mut process_group = ProcessGroup(
+        child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .map(nix::unistd::Pid::from_raw),
+    );
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
     let remaining = Arc::new(AtomicUsize::new(MAX_CAPTURE_BYTES));
@@ -109,7 +136,21 @@ async fn run(command: &mut Command) -> io::Result<CapturedOutput> {
         Arc::clone(&truncated),
         Arc::clone(&stderr_output),
     ));
-    let status = child.wait().await?;
+    let (status, cancelled) = tokio::select! {
+        status = child.wait() => (status?, false),
+        () = cancellation.cancelled() => {
+            #[cfg(unix)]
+            if let Some(pid) = process_group.0 {
+                let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+            }
+            child.kill().await?;
+            (child.wait().await?, true)
+        }
+    };
+    #[cfg(unix)]
+    {
+        process_group.0 = None;
+    }
     finish_reader(stdout_task).await?;
     finish_reader(stderr_task).await?;
     let stdout = take_output(stdout_output)?;
@@ -132,6 +173,7 @@ async fn run(command: &mut Command) -> io::Result<CapturedOutput> {
         text,
         exit_code: status.code(),
         truncated,
+        cancelled,
     })
 }
 
@@ -203,6 +245,8 @@ fn shell_command(command: &str, workspace: &Path) -> Command {
 }
 
 fn configure(command: &mut Command, workspace: &Path) {
+    #[cfg(unix)]
+    command.process_group(0);
     command
         .current_dir(workspace)
         .stdin(Stdio::null())
@@ -251,6 +295,7 @@ mod tests {
             ShellId::new(1),
             "pwd; printf stderr >&2; exit 7".to_owned(),
             workspace.path().to_path_buf(),
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -270,6 +315,7 @@ mod tests {
                 ShellId::new(2),
                 "sh -c '(sleep 10) & printf done'".to_owned(),
                 workspace.path().to_path_buf(),
+                tokio_util::sync::CancellationToken::new(),
             ),
         )
         .await
@@ -277,5 +323,40 @@ mod tests {
 
         assert_eq!(execution.exit_code, Some(0));
         assert_eq!(execution.output, "done");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_preserves_output_and_stops_descendants() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", "printf 'before cancellation'; (printf ready > ready; sleep 1; printf leaked > survived) & wait"]);
+        super::configure(&mut command, workspace.path());
+        let token = cancellation.clone();
+        let task = tokio::spawn(async move { super::run(&mut command, token).await.unwrap() });
+        timeout(Duration::from_secs(5), async {
+            while !workspace.path().join("ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        cancellation.cancel();
+        let result = timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.cancelled);
+        assert!(
+            result.text.starts_with("before cancellation"),
+            "captured output must survive cancellation: {:?}",
+            result.text
+        );
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(
+            !workspace.path().join("survived").exists(),
+            "cancellation must stop the whole shell process group"
+        );
     }
 }

@@ -159,6 +159,7 @@ pub(crate) enum RootEvent {
     WorkerTurnFinished {
         terminal_expected: bool,
     },
+    ManagedTurnFinished,
     ManagedActiveTurns(usize),
     ShellFinished,
     TurnsCancelled,
@@ -193,7 +194,7 @@ pub(crate) enum RootEvent {
     ConfirmReviewDownload,
     UpdateAvailable(Version),
     SteerAdmitted(QueueId),
-    SteerPromoted(QueueId),
+    SteerUnconfirmed(QueueId),
     SteerFailed {
         id: QueueId,
     },
@@ -205,6 +206,28 @@ pub(crate) struct RestoredSessionProjection {
     context_diagnostics: ContextDiagnostics,
     context_tokens: Option<u64>,
     recent_prompts: Vec<RecentPromptDraft>,
+}
+
+impl RestoredSessionProjection {
+    pub(crate) fn append_records(
+        &mut self,
+        records: impl IntoIterator<Item = Arc<TranscriptRecord>>,
+    ) {
+        for record in records {
+            if let Some(prompt) = recent_prompt(&record) {
+                self.recent_prompts.push(prompt);
+            }
+            let observation = self.context_diagnostics.observe(&record);
+            if observation.completed_tokens.is_some() {
+                self.context_tokens = observation.completed_tokens;
+            }
+            let _ = self.transcript.update(TranscriptEvent::Record(record));
+        }
+    }
+
+    pub(crate) fn close_stream(&mut self) {
+        let _ = self.transcript.update(TranscriptEvent::AgentStreamClosed);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -238,7 +261,10 @@ pub(crate) enum RootEffect {
         id: QueueId,
         prompt: Submission,
     },
-    PersistSteer(String),
+    PersistSteer {
+        id: QueueId,
+        text: String,
+    },
     Copy(String),
     Handoff,
     Review {
@@ -544,29 +570,17 @@ impl RootNode {
         records: Vec<Arc<TranscriptRecord>>,
         stream_closed: bool,
     ) -> RestoredSessionProjection {
-        let mut transcript = Transcript::with_effort(thinking);
-        let mut context_diagnostics = ContextDiagnostics::default();
-        let mut context_tokens = None;
-        let mut recent_prompts = Vec::new();
-        for record in records {
-            if let Some(prompt) = recent_prompt(&record) {
-                recent_prompts.push(prompt);
-            }
-            let observation = context_diagnostics.observe(&record);
-            if observation.completed_tokens.is_some() {
-                context_tokens = observation.completed_tokens;
-            }
-            let _ = transcript.update(TranscriptEvent::Record(record));
-        }
+        let mut projection = RestoredSessionProjection {
+            transcript: Transcript::with_effort(thinking),
+            context_diagnostics: ContextDiagnostics::default(),
+            context_tokens: None,
+            recent_prompts: Vec::new(),
+        };
+        projection.append_records(records);
         if stream_closed {
-            let _ = transcript.update(TranscriptEvent::AgentStreamClosed);
+            projection.close_stream();
         }
-        RestoredSessionProjection {
-            transcript,
-            context_diagnostics,
-            context_tokens,
-            recent_prompts,
-        }
+        projection
     }
 
     fn replay_history(&mut self, mut projection: RestoredSessionProjection) {
@@ -574,6 +588,9 @@ impl RootNode {
             .transcript
             .preserve_viewport_from(self.transcript.component());
         projection.transcript.set_workspace(&self.workspace);
+        projection
+            .transcript
+            .set_effort(self.composer.component().effort());
         self.transcript = Node::new(projection.transcript);
         self.context_diagnostics = projection.context_diagnostics;
         self.recent_prompts = projection.recent_prompts;
@@ -902,7 +919,7 @@ impl RootNode {
                 self.key_confirmation = None;
                 return self.update_transcript(TranscriptEvent::BlurExpandables);
             }
-            if self.has_active_turns() {
+            if self.has_active_turns() || self.in_flight_shells > 0 {
                 return self.update_key_confirmation(ConfirmationAction::Interrupt, Instant::now());
             }
             let cleared = self
@@ -2298,6 +2315,13 @@ impl RootNode {
             if activity.changed {
                 update.render = update.render.max(RenderRequest::Immediate);
             }
+            let timers = self
+                .composer
+                .component_mut()
+                .update(ComposerEvent::TurnsCleared);
+            if timers.changed {
+                update.render = update.render.max(RenderRequest::Immediate);
+            }
         }
         update.render = update.render.max(self.sync_live_controls());
         update
@@ -2325,18 +2349,19 @@ impl RootNode {
     }
 
     fn turns_cancelled(&mut self) -> ComponentUpdate<RootEffect> {
-        self.queue.component_mut().cancel_steers();
+        // Cancellation admission is not a terminal event or a steering acknowledgement.
+        // Keep applied-before-ack evidence until both have resolved.
         self.submit_next_queued()
     }
 
     fn managed_active_turns(&mut self, count: usize) -> ComponentUpdate<RootEffect> {
         self.managed_active_turns = count;
-        let active = self.has_active_turns();
-        let mut update = if active {
+        let mut update = if self.has_active_turns() {
             ComponentUpdate::render(RenderRequest::Immediate)
         } else {
             self.submit_next_queued()
         };
+        let active = self.has_active_turns();
         let activity = self
             .composer
             .component_mut()
@@ -2347,6 +2372,12 @@ impl RootNode {
             });
         if activity.changed {
             update.render = update.render.max(RenderRequest::Immediate);
+        }
+        if !active {
+            let _ = self
+                .composer
+                .component_mut()
+                .update(ComposerEvent::TurnsCleared);
         }
         update.render = update.render.max(self.sync_live_controls());
         update
@@ -2379,15 +2410,13 @@ impl RootNode {
     }
 
     fn steer_admitted(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
-        let applied = self.queue.component_mut().steer_admitted(id);
-        self.finish_applied_steer(applied)
+        let accepted = self.queue.component_mut().steer_admitted(id);
+        self.finish_accepted_steer(accepted)
     }
 
-    fn steer_promoted(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
-        let _ = self.queue.component_mut().steer_promoted(id);
-        self.in_flight_turns = self.in_flight_turns.saturating_add(1);
-        let controls = self.sync_live_controls();
-        ComponentUpdate::render(RenderRequest::Immediate.max(controls))
+    fn steer_unconfirmed(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
+        self.queue.component_mut().steer_unconfirmed(id);
+        self.submit_next_queued()
     }
 
     fn steer_failed(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
@@ -2395,27 +2424,28 @@ impl RootNode {
         self.submit_next_queued()
     }
 
-    fn steer_applied(&mut self) -> ComponentUpdate<RootEffect> {
-        let applied = self.queue.component_mut().steer_applied();
-        self.finish_applied_steer(applied)
-    }
-
-    fn finish_applied_steer(&mut self, applied: Option<Submission>) -> ComponentUpdate<RootEffect> {
+    fn finish_accepted_steer(
+        &mut self,
+        accepted: Option<(QueueId, Submission)>,
+    ) -> ComponentUpdate<RootEffect> {
         let mut update = self.submit_next_queued();
-        if let Some(prompt) = applied {
+        if let Some((id, prompt)) = accepted {
             update.effects.insert(
                 0,
-                RootEffect::PersistSteer(prompt.display_text().to_owned()),
+                RootEffect::PersistSteer {
+                    id,
+                    text: prompt.display_text().to_owned(),
+                },
             );
         }
         update
     }
 
     fn submit_next_queued(&mut self) -> ComponentUpdate<RootEffect> {
-        if !self.interactive
-            || self.has_active_turns()
-            || self.queue.component().has_pending_steer()
-        {
+        if !self.interactive || self.has_active_turns() {
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if self.queue.component().has_pending_steer() {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         let prompts = self.queue.component_mut().drain_ready();
@@ -2458,12 +2488,18 @@ impl RootNode {
         let update = self.transcript.update(event);
         let mut render = update.render;
         for effect in update.effects {
+            // Local submission is rendered before the server starts the run.
+            // An idle transcript must not clear that pending turn's activity.
+            let active = effect.active || self.has_active_turns();
+            let status = effect
+                .status
+                .or_else(|| active.then(|| "Thinking…".to_owned()));
             let composer = self
                 .composer
                 .component_mut()
                 .update(ComposerEvent::Activity {
-                    active: effect.active,
-                    status: effect.status,
+                    active,
+                    status,
                     now: Instant::now(),
                 });
             if composer.changed {
@@ -2617,17 +2653,10 @@ impl RootNode {
         result
     }
 
-    fn transcript_record(
-        &mut self,
-        record: Arc<TranscriptRecord>,
-        track_local_turn: bool,
-    ) -> ComponentUpdate<RootEffect> {
+    fn transcript_record(&mut self, record: Arc<TranscriptRecord>) -> ComponentUpdate<RootEffect> {
         if let Some(prompt) = recent_prompt(&record) {
             self.recent_prompts.push(prompt);
         }
-        let steer_applied = record.kind() == "run.steered";
-        let turn_finished =
-            track_local_turn && matches!(record.kind(), "run.completed" | "run.failed");
         let turn_timer = turn_timer_event(&record);
         let observation = self.context_diagnostics.observe(&record);
         if let Some(Overlay::ContextDiagnostics(panel)) = &mut self.overlay {
@@ -2648,16 +2677,6 @@ impl RootNode {
             );
             update.effects.extend(context.effects);
             update.render = update.render.max(context.render);
-        }
-        if steer_applied {
-            let applied = self.steer_applied();
-            update.effects.extend(applied.effects);
-            update.render = update.render.max(applied.render);
-        }
-        if turn_finished {
-            let finished = self.agent_turn_finished();
-            update.effects.extend(finished.effects);
-            update.render = update.render.max(finished.render);
         }
         update
     }
@@ -2699,8 +2718,9 @@ impl Component for RootNode {
                 ComposerEvent::ContextTokens(tokens),
                 RenderRequest::Streaming,
             ),
-            RootEvent::Transcript(record) => self.transcript_record(record, true),
-            RootEvent::ExternalTranscript(record) => self.transcript_record(record, false),
+            RootEvent::Transcript(record) | RootEvent::ExternalTranscript(record) => {
+                self.transcript_record(record)
+            }
             RootEvent::AgentStreamClosed => self.agent_stream_closed(),
             RootEvent::Subagent(update) => self.apply_subagent_update(update),
             RootEvent::ReplaceDraft(draft) => {
@@ -2840,6 +2860,7 @@ impl Component for RootNode {
             RootEvent::WorkerTurnFinished { terminal_expected } => {
                 self.worker_turn_finished(terminal_expected)
             }
+            RootEvent::ManagedTurnFinished => self.agent_turn_finished(),
             RootEvent::ManagedActiveTurns(count) => self.managed_active_turns(count),
             RootEvent::ShellFinished => {
                 self.in_flight_shells = self.in_flight_shells.saturating_sub(1);
@@ -2924,7 +2945,7 @@ impl Component for RootNode {
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
             RootEvent::SteerAdmitted(id) => self.steer_admitted(id),
-            RootEvent::SteerPromoted(id) => self.steer_promoted(id),
+            RootEvent::SteerUnconfirmed(id) => self.steer_unconfirmed(id),
             RootEvent::SteerFailed { id } => self.steer_failed(id),
             RootEvent::AnimationFrame(now) => self.update_animation(now),
         }
@@ -3391,7 +3412,7 @@ mod history_tests {
 mod live_control_tests {
     use super::{Component, RootEffect, RootEvent, RootNode};
     use crate::config::{ReasoningEffort, ReasoningMode};
-    use crate::tui::transcript::TranscriptRecord;
+    use crate::tui::transcript::{LocalEvent, TranscriptRecord, TurnId};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use nanocodex::{
         Model,
@@ -3423,6 +3444,77 @@ mod live_control_tests {
         );
         assert_eq!(root.in_flight_turns, 1);
         assert!(root.queue.component().is_empty());
+    }
+
+    #[test]
+    fn durable_completion_releases_queue_in_either_callback_order() {
+        for worker_first in [false, true] {
+            let mut root = root_with_draft("start work");
+            root.update(key(KeyCode::Enter));
+            root.queue.component_mut().push("followup".to_owned());
+            let worker = RootEvent::WorkerTurnFinished {
+                terminal_expected: true,
+            };
+            let managed = RootEvent::ManagedTurnFinished;
+            let (first, last) = if worker_first {
+                (worker, managed)
+            } else {
+                (managed, worker)
+            };
+            assert!(root.update(first).effects.is_empty());
+            let update = root.update(last);
+            assert!(
+                matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == "followup")
+            );
+            assert_eq!(root.in_flight_turns, 1);
+            assert_eq!(root.unmatched_worker_turns, 0);
+            assert_eq!(root.unmatched_agent_turns, 0);
+        }
+    }
+
+    #[test]
+    fn local_prompt_keeps_thinking_visible_until_a_pending_submission_fails() {
+        let mut root = root_with_draft("start work");
+        let _ = root.update(key(KeyCode::Enter));
+        let record = TranscriptRecord::from_local(
+            1,
+            1,
+            LocalEvent::UserSubmitted {
+                id: TurnId::new(1),
+                text: "start work".to_owned(),
+            },
+        )
+        .unwrap();
+        let _ = root.update(RootEvent::Transcript(Arc::new(record)));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut rendered = |root: &mut RootNode| {
+            terminal
+                .draw(|frame| {
+                    root.render_focused(
+                        frame,
+                        frame.area(),
+                        &crate::tui::theme::Theme::default(),
+                        true,
+                    )
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let pending = rendered(&mut root);
+        assert!(pending.contains("start work"));
+        assert!(pending.contains("Thinking…"));
+
+        let _ = root.update(RootEvent::WorkerTurnFinished {
+            terminal_expected: false,
+        });
+        assert!(!rendered(&mut root).contains("Thinking…"));
     }
 
     #[test]
@@ -3529,6 +3621,57 @@ mod live_control_tests {
         assert_eq!(root.in_flight_turns, 0);
         assert_eq!(root.managed_active_turns, 1);
         assert!(root.queue.component().has_pending_steer());
+    }
+
+    #[test]
+    fn foreign_steering_never_consumes_local_input_and_unknown_delivery_survives_completion() {
+        let mut root = root_with_draft("my instruction");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let update = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = update.effects.as_slice() else {
+            panic!("expected local steering");
+        };
+        let id = *id;
+        let foreign = |seq| {
+            Arc::new(TranscriptRecord::from_agent(
+                seq,
+                seq,
+                AgentEvent {
+                    protocol_version: 1,
+                    request_id: Arc::from("shared-agent"),
+                    seq,
+                    kind: AgentEventKind::RunSteered,
+                    payload: to_raw_value(&json!({"steer_index": seq, "instruction_bytes": 14}))
+                        .unwrap()
+                        .into(),
+                },
+            ))
+        };
+        assert!(
+            root.update(RootEvent::ExternalTranscript(foreign(1)))
+                .effects
+                .is_empty()
+        );
+        assert_eq!(root.queue.component().len(), 1);
+        assert!(root.queue.component().has_pending_steer());
+        root.update(RootEvent::SteerUnconfirmed(id));
+        assert!(
+            root.update(RootEvent::ExternalTranscript(foreign(2)))
+                .effects
+                .is_empty()
+        );
+        assert_eq!(root.queue.component().len(), 1);
+        root.queue.component_mut().push("known unsent".to_owned());
+        let completion = root.update(RootEvent::ManagedActiveTurns(0));
+        assert!(
+            matches!(completion.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == "known unsent")
+        );
+        assert_eq!(
+            root.queue.component().len(),
+            1,
+            "uncertain input must remain visible after completion"
+        );
+        assert!(root.queue.component_mut().drain_ready().is_empty());
     }
 
     #[test]

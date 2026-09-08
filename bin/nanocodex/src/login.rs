@@ -72,7 +72,20 @@ const REQUIRED_DATA_CAPABILITIES: &[&str] = &[
     "memory:read",
     "memory:write",
 ];
-const CONNECTOR_NAMES: &[&str] = &["chatgpt", "github", "gmail", "gdrive", "x"];
+const CONNECTOR_NAMES: &[&str] = &[
+    "chatgpt",
+    "github",
+    "gmail",
+    "gdrive",
+    "gcalendar",
+    "gtasks",
+    "gdocs",
+    "gsheets",
+    "gslides",
+    "gcontacts",
+    "slack",
+    "x",
+];
 
 #[derive(Args, Clone)]
 pub(crate) struct Login {
@@ -100,7 +113,8 @@ pub(crate) struct Login {
 
 #[derive(Args, Clone)]
 pub(crate) struct Connect {
-    /// Hosted services or remote MCP hosts to connect and grant to this installation.
+    /// Services: chatgpt, github, gmail, gdrive, gcalendar, gtasks, gdocs, gsheets,
+    /// gslides, gcontacts, slack, x; or a public remote MCP host (mcp.example.com).
     #[arg(required = true, num_args = 1.., value_name = "SERVICE")]
     services: Vec<ConnectTarget>,
     /// Override the Codex `auth.json` imported by an explicit ChatGPT connection.
@@ -124,6 +138,13 @@ enum Connector {
     Github,
     Gmail,
     Gdrive,
+    Gcalendar,
+    Gtasks,
+    Gdocs,
+    Gsheets,
+    Gslides,
+    Gcontacts,
+    Slack,
     X,
 }
 
@@ -142,6 +163,13 @@ impl FromStr for ConnectTarget {
             "github" => Some(Connector::Github),
             "gmail" => Some(Connector::Gmail),
             "gdrive" => Some(Connector::Gdrive),
+            "gcalendar" => Some(Connector::Gcalendar),
+            "gtasks" => Some(Connector::Gtasks),
+            "gdocs" => Some(Connector::Gdocs),
+            "gsheets" => Some(Connector::Gsheets),
+            "gslides" => Some(Connector::Gslides),
+            "gcontacts" => Some(Connector::Gcontacts),
+            "slack" => Some(Connector::Slack),
             "x" => Some(Connector::X),
             _ => None,
         };
@@ -212,6 +240,13 @@ impl Connector {
             Self::Github => "github",
             Self::Gmail => "gmail",
             Self::Gdrive => "gdrive",
+            Self::Gcalendar => "gcalendar",
+            Self::Gtasks => "gtasks",
+            Self::Gdocs => "gdocs",
+            Self::Gsheets => "gsheets",
+            Self::Gslides => "gslides",
+            Self::Gcontacts => "gcontacts",
+            Self::Slack => "slack",
             Self::X => "x",
         }
     }
@@ -2676,7 +2711,7 @@ fn print_summary(login: &StoredLogin) {
     println!("Hosted agent  {}", login.agent_id);
     for connector in CONNECTOR_NAMES {
         println!(
-            "{:<13}{}",
+            "{:<16} {}",
             connector_label(connector),
             if capabilities.contains(connector) {
                 "connected"
@@ -2706,6 +2741,13 @@ fn connector_label(name: &str) -> &str {
         "github" => "GitHub",
         "gmail" => "Gmail",
         "gdrive" => "Google Drive",
+        "gcalendar" => "Google Calendar",
+        "gtasks" => "Google Tasks",
+        "gdocs" => "Google Docs",
+        "gsheets" => "Google Sheets",
+        "gslides" => "Google Slides",
+        "gcontacts" => "Google Contacts",
+        "slack" => "Slack",
         "x" => "X",
         _ => name,
     }
@@ -3134,6 +3176,75 @@ mod tests {
                 "unexpected accepted target: {rejected}"
             );
             assert!(ConnectCli::try_parse_from(["connect", rejected]).is_err());
+        }
+    }
+
+    #[test]
+    fn connector_catalog_matches_the_account_service() {
+        let policy = include_str!("../../../js/connect-api/src/connectorPolicy.mts");
+        let (_, catalog) = policy
+            .split_once("connectorCapabilities = Object.freeze([")
+            .unwrap();
+        let (catalog, _) = catalog.split_once("] as const)").unwrap();
+        let server: HashSet<&str> = catalog
+            .lines()
+            .map(|line| line.trim().trim_end_matches(',').trim_matches('"'))
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(
+            server,
+            CONNECTOR_NAMES.iter().copied().collect::<HashSet<_>>()
+        );
+        for name in server {
+            let ConnectTarget::Connector(connector) = ConnectTarget::from_str(name).unwrap() else {
+                panic!("service parsed as MCP host");
+            };
+            assert_eq!(connector.id(), name);
+        }
+    }
+
+    #[test]
+    fn new_connector_scopes_are_preserved_and_require_explicit_authority() {
+        for name in [
+            "gcalendar",
+            "gtasks",
+            "gdocs",
+            "gsheets",
+            "gslides",
+            "gcontacts",
+            "slack",
+        ] {
+            let target = ConnectTarget::from_str(name).unwrap();
+            let request = RequestedCapabilities::connect(&[target]);
+            assert_eq!(request.connectors, vec![name]);
+            assert_eq!(request.focus_connector, Some(name));
+            let account = Address::repeat_byte(0x11);
+            let approved = ApprovedWalletResult::Hosted(ApprovedHostedResult {
+                account,
+                approval_id: "a".repeat(43),
+            });
+            let mut capabilities = REQUIRED_DATA_CAPABILITIES.to_vec();
+            capabilities.extend(["nanocodex.agent", "agent.history.read", name]);
+            let response: ConnectionResponse = serde_json::from_value(hosted_connection_wire(
+                account,
+                unix_timestamp().unwrap() + ACCESS_KEY_LIFETIME,
+                capabilities,
+            ))
+            .unwrap();
+            validate_connection(&response, &approved, &request).unwrap();
+            assert!(
+                validate_connection(
+                    &response,
+                    &approved,
+                    &RequestedCapabilities::login(false, None)
+                )
+                .is_err()
+            );
+            let mut stored = test_stored_login("https://nanocodex-connect-api.gakonst.workers.dev");
+            stored.capabilities.push(name.to_owned());
+            let mut refresh = RequestedCapabilities::login(false, None);
+            refresh.preserve_from(&stored).unwrap();
+            assert!(refresh.connectors.contains(&name));
         }
     }
 

@@ -87,11 +87,12 @@ fn with_emitted_item(
         .as_str()
         .or_else(|| item.get("text").and_then(Value::as_str))
     {
-        return presentation.selectable_plain(
-            code_mode_output_text(text),
+        let (source, details) = super::selectable_result(
+            &Value::String(code_mode_output_text(text).to_owned()),
             width,
-            Style::default().fg(theme.text()),
+            theme,
         );
+        return presentation.selectable_details(source, details);
     }
     if let Some(summary) = media_summary(item) {
         return presentation.selectable_plain(&summary, width, Style::default().fg(theme.accent()));
@@ -102,6 +103,14 @@ fn with_emitted_item(
 
 fn media_summary(item: &Value) -> Option<String> {
     let fields = item.as_object()?;
+    if let Some(url) = fields
+        .get("image_url")
+        .or_else(|| fields.get("audio_url"))
+        .and_then(Value::as_str)
+        && !url.starts_with("data:")
+    {
+        return Some(format!("media output · {url}"));
+    }
     match fields.get("type").and_then(Value::as_str)? {
         "input_image" if fields.get("image_url").and_then(Value::as_str).is_some() => {
             let detail = fields

@@ -217,13 +217,20 @@ impl ToolEntry {
     }
 
     pub(crate) fn family(&self) -> &str {
-        ToolIdentity::decode(
+        let family = ToolIdentity::decode(
             self.metadata
                 .as_ref()
                 .and_then(tool_name)
                 .unwrap_or(&self.name),
         )
-        .family
+        .family;
+        // Polls merge into the original command entry. Their latest host metadata
+        // describes write_stdin, but the retained arguments still describe exec.
+        if self.name == "exec_command" && family == "write_stdin" {
+            "exec_command"
+        } else {
+            family
+        }
     }
 
     pub(crate) fn has_mcp_origin(&self) -> bool {

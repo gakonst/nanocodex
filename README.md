@@ -120,6 +120,14 @@ process protocol that applications must adopt. See
 [`bin/nanocodex`](bin/nanocodex), the [examples index](examples/README.md), and
 the [release switcher documentation](bin/nanocodex/src/update.rs).
 
+For managed agents, `nanocodex2 login` signs in with an SMS code and saves an
+account key; `nanocodex2 status` verifies it, and `nanocodex2 logout` removes the
+local login. `nanocodex account login/status/logout` manages the same saved account. Account
+keys are separate from `nanocodex auth` (ChatGPT provider credentials) and
+`nanocodex login/connect/status/logout` (Connect installation grants). See the
+[CLI account sign-in guide](bin/nanocodex/nanocodex2/README.md#account-sign-in)
+for environment overrides, storage, and key revocation.
+
 ## Rust: start here
 
 Build one agent, submit ordered prompts through its cheap handle, and await a

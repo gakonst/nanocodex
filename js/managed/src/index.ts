@@ -28,7 +28,7 @@ import { createBrainWorkspace } from "./brain-workspace";
 import { createBrainBucket } from "./brain-bucket";
 import { browseX, X_API } from "nanocodex-tools/x";
 import { managedCodeEvaluator } from "./code-evaluator";
-import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
+import { CronTriggers, CronTriggerLimitError, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
 import { createCronTool } from "./cron-tool";
 import {
   cloudflareSandboxTools,
@@ -4497,9 +4497,16 @@ export class DurableAgentSession extends DurableComputerSession {
       || previous.authorization_epoch !== session.authorization_epoch)) {
       throw new ManagedRequestError(409, "trigger_exists", "cron trigger id already exists with different settings or authorization; choose a new id");
     }
-    const row = this.#cronTriggers.put(id, config, encodedAuthorization, session.authorization_epoch, hash, Date.now());
-    await this.#scheduleNextAlarm();
-    return { trigger: cronTriggerView(row, session.session_id), exists: previous !== undefined };
+    try {
+      const row = this.#cronTriggers.put(id, config, encodedAuthorization, session.authorization_epoch, hash, Date.now());
+      await this.#scheduleNextAlarm();
+      return { trigger: cronTriggerView(row, session.session_id), exists: previous !== undefined };
+    } catch (error) {
+      if (error instanceof CronTriggerLimitError) {
+        throw new ManagedRequestError(429, "cron_trigger_limit", error.message);
+      }
+      throw error;
+    }
   }
 
   async #fireCronTriggers(): Promise<void> {
@@ -6107,6 +6114,17 @@ export class DurableAgentSession extends DurableComputerSession {
     const session = this.#session();
     const runtimeProfile = session?.runtime_profile;
     const timeoutMs = this.#ownershipIoTimeoutMs();
+    const credentialBinding = this.#credentialBinding ?? (
+      session && runtimeProfile !== "multiplayer"
+        ? this.#bindingOwnershipForSession(session)
+        : undefined
+    );
+    // The permanent tombstone already makes this agent unreadable. Remove it
+    // from account discovery before external cleanup can stall, while retaining
+    // the local ownership and retry alarm until every resource is released.
+    if (credentialBinding) {
+      await detachAgent(this.env, credentialBinding.owner_id, credentialBinding.session_id, timeoutMs);
+    }
     await this.#releaseRuntimeOwnershipForDeletion(timeoutMs);
     if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
     if (session?.runtime_profile === "managed") {
@@ -6158,11 +6176,6 @@ export class DurableAgentSession extends DurableComputerSession {
       );
     }
     for (const socket of this.ctx.getWebSockets()) closeSocket(socket, 1000, "session deleted");
-    const credentialBinding = this.#credentialBinding ?? (
-      session && runtimeProfile !== "multiplayer"
-        ? this.#bindingOwnershipForSession(session)
-        : undefined
-    );
     if (credentialBinding) {
       await Promise.all([
         credentialBinding.strategy === "session_v1" ? Promise.resolve() : unbindAgentCredential(

@@ -165,7 +165,11 @@ export function createNamespaceExecutionRuntime(
         }, context);
         const structured = executionResult(result);
         if (structured?.session_id === undefined) {
-          sessions.delete(publicSessionId);
+          // A transport/tool error has no execution result. It does not prove that
+          // the process exited; keep the original Hand binding so polling can retry.
+          if (structured !== undefined && (typeof structured.exit_code === "number" || structured.exit_code === null)) {
+            sessions.delete(publicSessionId);
+          }
           return result;
         }
         if (positiveSessionId(structured.session_id) !== binding.providerSessionId) {

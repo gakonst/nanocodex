@@ -22,6 +22,10 @@ final class ContextUITests: XCTestCase {
     }
     private func toggleCapture(_ app: XCUIApplication) {
         let row = app.switches["context-enabled"]
+        for _ in 0..<6 {
+            if row.isHittable { break }
+            app.swipeDown()
+        }
         let control = row.switches.firstMatch
         if control.exists { control.tap() } else { row.tap() }
     }
@@ -111,6 +115,12 @@ final class ContextUITests: XCTestCase {
         let content = app.textViews["capture-text"].exists ? app.textViews["capture-text"] : app.textFields["capture-text"]
         content.tap(); content.typeText(text)
         app.buttons["capture-save"].tap()
+        // The saved captures follow setup and routing controls in the list.
+        // Scroll the actual sheet before looking for a lazily materialized row.
+        for _ in 0..<6 {
+            if app.staticTexts[text].exists { break }
+            app.swipeUp()
+        }
         XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 5))
     }
     func testCaptureSearchSelectAndDurableRetry() {
@@ -121,6 +131,11 @@ final class ContextUITests: XCTestCase {
         capture(app, source: "Messages", text: "Train leaves at six")
         attach(app, name: "context-inbox")
         let search = app.searchFields.firstMatch
+        for _ in 0..<6 {
+            if search.exists && search.isHittable { break }
+            app.swipeDown()
+        }
+        XCTAssertTrue(search.waitForExistence(timeout: 5), app.debugDescription)
         search.tap(); search.typeText("Alex")
         XCTAssertTrue(app.staticTexts["Dinner with Alex on Friday"].exists)
         XCTAssertFalse(app.staticTexts["Train leaves at six"].exists)
@@ -173,7 +188,10 @@ final class ContextUITests: XCTestCase {
         let address = safari.textFields.firstMatch
         XCTAssertTrue(address.waitForExistence(timeout: 20), safari.debugDescription)
         address.tap()
-        address.typeText(link + XCUIKeyboardKey.return.rawValue)
+        // iPad Safari replaces the tab title field with a focused editor.
+        let editor = safari.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@", "SearchFieldItemView")).firstMatch
+        if editor.waitForExistence(timeout: 2) { editor.typeText(link + XCUIKeyboardKey.return.rawValue) }
+        else { address.typeText(link + XCUIKeyboardKey.return.rawValue) }
         let share = safari.buttons["Share"]
         if !share.waitForExistence(timeout: 3) {
             let more = safari.buttons["More"]
@@ -181,6 +199,8 @@ final class ContextUITests: XCTestCase {
             more.tap()
         }
         XCTAssertTrue(share.waitForExistence(timeout: 10), safari.debugDescription)
+        let shareReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: share)
+        XCTAssertEqual(XCTWaiter.wait(for: [shareReady], timeout: 30), .completed, safari.debugDescription)
         share.tap()
         attach(safari, name: "context-system-share-sheet")
         let sheet = safari.otherElements["ActivityListView"]
@@ -216,6 +236,7 @@ final class ContextUITests: XCTestCase {
         save.tap()
         app.activate()
         let captured = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "context-item-")).firstMatch
+        for _ in 0..<6 { if captured.exists { break }; app.swipeUp() }
         XCTAssertTrue(captured.waitForExistence(timeout: 10), app.debugDescription)
         captured.tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Message Contains")).firstMatch.waitForExistence(timeout: 5), app.debugDescription)

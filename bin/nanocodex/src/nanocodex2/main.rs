@@ -8,6 +8,7 @@
 
 #[allow(dead_code)]
 mod config;
+mod control;
 mod hand_observability;
 mod host;
 #[allow(dead_code)]
@@ -32,7 +33,6 @@ mod vm_hand_config;
 mod vm_host;
 
 use std::{
-    env,
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
@@ -43,9 +43,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum, builder::NonEmptyStringValuePars
 use hand_observability::HandObservabilityArgs;
 use host::HostConfig;
 use nanocodex_agent::{AgentEvents, Nanocodex, NanocodexError, PromptRequest, Turn, TurnResult};
+use nanocodex_cli_auth::client_from_environment;
 use nanocodex_managed::{
-    AgentSettings, AgentState, EventCursor, Managed, ManagedApiKey, ManagedClient, ManagedError,
-    ManagedEvent, PromptInput, validate_vm_factory_name,
+    AgentSettings, AgentState, EventCursor, Managed, ManagedClient, ManagedError, ManagedEvent,
+    PromptInput, validate_vm_factory_name,
 };
 use nanocodex_tools::{
     Tools, WorkspaceTools,
@@ -55,15 +56,12 @@ use percent_encoding::percent_decode_str;
 use tracing::Instrument as _;
 use url::Url;
 
-const MANAGED_URL_ENV: &str = "NANOCODEX_MANAGED_URL";
-const API_KEY_ENV: &str = "NANOCODEX_API_KEY";
-const API_KEY_FALLBACK_ENV: &str = "NC_API_KEY";
 const SYSTEM_HOST_TOKEN_ENV: &str = "NANOCODEX_SYSTEM_HOST_TOKEN";
-const DEFAULT_MANAGED_ORIGIN: &str = "https://nanocodex.gakonst.workers.dev";
 
 #[derive(Parser)]
 #[command(
     name = "nanocodex2",
+    version,
     about = "Small managed Nanocodex client with local workspace tools"
 )]
 struct Cli {
@@ -73,6 +71,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Sign in with an SMS code, or import an account API key from stdin.
+    Login(nanocodex_cli_auth::Login),
+    /// Verify the selected account credential without displaying secrets.
+    Status(nanocodex_cli_auth::Options),
+    /// Remove the saved account credential on this machine.
+    Logout(nanocodex_cli_auth::Options),
+    /// Manage account credentials (also available as login, status, and logout).
+    #[command(visible_alias = "auth")]
+    Account(nanocodex_cli_auth::Account),
     /// Attach this machine's workspace to an existing managed agent.
     Attach(Attach),
     /// Register one retained libkrun VM as a compute hand for the account.
@@ -82,7 +89,11 @@ enum Command {
     /// Serve a bounded pool of on-demand libkrun VM hands.
     Host(Host),
     /// Create a managed agent and print its receipt as JSON.
-    New,
+    New(control::InitialSettings),
+    /// Read or update an agent's model and reasoning settings.
+    Settings(control::Settings),
+    /// Manage durable scheduled prompts.
+    Cron(control::Cron),
     /// List account-owned managed agents as JSON.
     List,
     /// Read one managed agent's durable state as JSON.
@@ -291,11 +302,13 @@ struct TurnId {
 
 #[derive(Args)]
 struct Run {
+    #[command(flatten)]
+    settings: control::InitialSettings,
     /// Prompt text.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     prompt: String,
     /// Resume this account-owned agent. A new one is created when omitted.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["model", "thinking", "reasoning_mode", "fast_mode"])]
     agent: Option<String>,
     /// Stable idempotency key. The managed backend generates one when omitted.
     #[arg(long)]
@@ -356,6 +369,20 @@ fn try_main() -> Result<(), ManagedError> {
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
     let command = match cli.command {
+        Some(Command::Login(command)) => return command.run().await.map_err(auth_error),
+        Some(Command::Status(command)) => {
+            return nanocodex_cli_auth::AccountCommand::Status(command)
+                .run()
+                .await
+                .map_err(auth_error);
+        }
+        Some(Command::Logout(command)) => {
+            return nanocodex_cli_auth::AccountCommand::Logout(command)
+                .run()
+                .await
+                .map_err(auth_error);
+        }
+        Some(Command::Account(command)) => return command.run().await.map_err(auth_error),
         Some(Command::VmRunConfig(command)) => return vm_hand::run_config(&command.config),
         Some(Command::Host(command)) => {
             let _observability = command
@@ -372,6 +399,9 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
     };
     let client = client_from_environment(managed_origin)?;
     match command {
+        Some(Command::Login(_) | Command::Status(_) | Command::Logout(_) | Command::Account(_)) => {
+            unreachable!("handled before managed client setup")
+        }
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
         }
@@ -384,7 +414,11 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         }
         Some(Command::NativeHand(command)) => native_hand::serve(&client, command).await,
         Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
-        Some(Command::New) => write_json(&client.create().await?),
+        Some(Command::New(settings)) => {
+            write_json(&client.create_with_settings(settings.resolve()).await?)
+        }
+        Some(Command::Settings(command)) => command.run(&client).await,
+        Some(Command::Cron(command)) => command.run(&client).await,
         Some(Command::List) => write_json(&client.list().await?),
         Some(Command::State(command)) => write_json(&client.state(&command.agent_id).await?),
         Some(Command::Turn(command)) => write_json(
@@ -590,33 +624,12 @@ async fn connect_vm_hand(
     connected.map(|connected| connected.map(|(attachment, _events)| attachment))
 }
 
-fn client_from_environment(url_origin: Option<&str>) -> Result<ManagedClient, ManagedError> {
-    let base_url = managed_url_from_environment(url_origin)?;
-    let api_key = api_key_from_environment().map_err(|_| {
-        ManagedError::Configuration(format!(
-            "{API_KEY_ENV} (or {API_KEY_FALLBACK_ENV}) must be set to an account-issued ncx_live key"
-        ))
-    })?;
-    ManagedClient::new(base_url, ManagedApiKey::parse(api_key)?)
+fn auth_error(error: nanocodex_cli_auth::Error) -> ManagedError {
+    ManagedError::Configuration(error.to_string())
 }
 
-fn api_key_from_environment() -> Result<String, env::VarError> {
-    env::var(API_KEY_ENV).or_else(|_| env::var(API_KEY_FALLBACK_ENV))
-}
-
-fn managed_url_from_environment(fallback_origin: Option<&str>) -> Result<String, ManagedError> {
-    match env::var(MANAGED_URL_ENV) {
-        Ok(value) if !value.trim().is_empty() => Ok(value),
-        Ok(_) => Err(ManagedError::Configuration(format!(
-            "{MANAGED_URL_ENV} must not be empty"
-        ))),
-        Err(env::VarError::NotPresent) => {
-            Ok(fallback_origin.unwrap_or(DEFAULT_MANAGED_ORIGIN).to_owned())
-        }
-        Err(env::VarError::NotUnicode(_)) => Err(ManagedError::Configuration(format!(
-            "{MANAGED_URL_ENV} must be valid Unicode"
-        ))),
-    }
+fn managed_url_from_environment(fallback: Option<&str>) -> Result<String, ManagedError> {
+    nanocodex_cli_auth::managed_url_from_environment(fallback).map_err(auth_error)
 }
 
 fn parse_agent_reference(value: &str) -> Result<AgentReference, String> {
@@ -687,8 +700,14 @@ fn supported_agent_page_origin(url: &Url) -> bool {
 
 async fn run_turn(client: &ManagedClient, command: Run) -> Result<(), ManagedError> {
     let created = command.agent.is_none();
-    let (agent, mut events, agent_id, _) =
-        open_workspace_agent_from(client, command.agent, None, None).await?;
+    let (agent, mut events, agent_id, _) = open_workspace_agent_with_settings(
+        client,
+        command.agent,
+        None,
+        command.settings.resolve(),
+        None,
+    )
+    .await?;
     if created {
         eprintln!("Managed agent: {agent_id}");
     }
