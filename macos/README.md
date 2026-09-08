@@ -375,7 +375,8 @@ Before deleting a failed memory-test agent, the fixture saves
 active turn IDs, and turn status. It excludes message/tool payloads and credentials.
 To inspect a retained owned test agent without starting voice or sending a turn,
 run `testNativeOwnedAgentDiagnostics` with
-`TEST_RUNNER_NANOCODEX_DIAGNOSTIC_AGENT_TITLE` set to its exact unique title; this
+`TEST_RUNNER_NANOCODEX_DIAGNOSTIC_AGENT_TITLE` set to its exact unique title (or
+`TEST_RUNNER_NANOCODEX_DIAGNOSTIC_AGENT_ID` for a known owned test-agent ID). This
 read-only test uses the existing Keychain account and saves the same metadata file.
 
 Voice evidence is saved in `macos/build/evidence/native-voice-live.json` and

@@ -271,18 +271,30 @@ final class VoiceTests: XCTestCase {
     @MainActor
     func testNativeOwnedAgentDiagnostics() async throws {
         let env = ProcessInfo.processInfo.environment
-        guard let title = env["NANOCODEX_DIAGNOSTIC_AGENT_TITLE"], !title.isEmpty else {
-            throw XCTSkip("Set NANOCODEX_DIAGNOSTIC_AGENT_TITLE to the exact owned test-agent title")
+        let requestedID = env["NANOCODEX_DIAGNOSTIC_AGENT_ID"] ?? ""
+        let title = env["NANOCODEX_DIAGNOSTIC_AGENT_TITLE"] ?? ""
+        guard !requestedID.isEmpty || !title.isEmpty else {
+            throw XCTSkip("Set NANOCODEX_DIAGNOSTIC_AGENT_TITLE or NANOCODEX_DIAGNOSTIC_AGENT_ID to one owned test agent")
         }
         let credential = try XCTUnwrap(AccountKeychain.read())
         let client = ManagedClient(credential: try AccountCredential(origin: credential.baseUrl, apiKey: credential.apiKey))
         defer { client.close() }
-        let matches = try await client.list().filter { $0.title == title }
-        XCTAssertEqual(matches.count, 1, "The exact owned fixture title must select one agent")
-        let agentID = try XCTUnwrap(matches.first?.id)
+        let agentID: String
+        if !requestedID.isEmpty {
+            _ = try ManagedClient.agentPath(requestedID)
+            agentID = requestedID
+        } else {
+            let matches = try await client.list().filter { $0.title == title }
+            XCTAssertEqual(matches.count, 1, "The exact owned fixture title must select one agent")
+            agentID = try XCTUnwrap(matches.first?.id)
+        }
         let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
         try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
         await Self.captureFailureState(client: client, agentID: agentID, evidence: evidence)
+        let report = try JSONDecoder().decode(InboxCore.JSON.self, from: Data(contentsOf:
+            evidence.appendingPathComponent("native-memory-voice-failure-state.json")))
+        XCTAssertFalse(report["state_read_failed"].bool, "Owned agent state must be readable")
+        XCTAssertFalse(report["history_read_failed"].bool, "Owned agent history must be readable")
     }
 
     private static func captureFailureState(client: ManagedClient, agentID: String, evidence: URL) async {

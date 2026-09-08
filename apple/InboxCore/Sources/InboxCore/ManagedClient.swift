@@ -247,6 +247,12 @@ public final class ManagedClient: @unchecked Sendable {
     public func stream(_ id: String, after cursor: Cursor,
                        onOpen: (@Sendable () async -> Void)? = nil,
                        receive: @escaping @Sendable (SSEFrame) async -> Void) async throws {
+        try await stream(id, after: cursor, idleCheckInterval: .seconds(15), onOpen: onOpen, receive: receive)
+    }
+
+    func stream(_ id: String, after cursor: Cursor, idleCheckInterval: Duration,
+                onOpen: (@Sendable () async -> Void)? = nil,
+                receive: @escaping @Sendable (SSEFrame) async -> Void) async throws {
         var request = try request(path: Self.agentPath(id) + "/events?cursor=" + cursor.rawValue)
         request.timeoutInterval = 45
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -257,18 +263,70 @@ public final class ManagedClient: @unchecked Sendable {
         guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
         guard response.mimeType == "text/event-stream" else { throw APIError.invalidResponse }
         await onOpen?()
-        // Cancelling observation releases its HTTP stream immediately, including
-        // when an idle reader is waiting for the next keepalive.
-        try await withTaskCancellationHandler {
-            var parser = SSEParser()
-            for try await byte in bytes {
-                try Task.checkCancellation()
-                if let frame = try parser.append(byte: byte) { await receive(frame) }
+        let progress = StreamDeliveryProgress(cursor: cursor)
+        // Keepalives prove the connection is open, not that durable events are
+        // reaching it. An idle stream behind durable state must replay from its
+        // consumer's cursor; the snapshot cursor is never delivered or adopted.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await withTaskCancellationHandler {
+                    var parser = SSEParser()
+                    for try await byte in bytes {
+                        try Task.checkCancellation()
+                        if let frame = try parser.append(byte: byte) {
+                            await progress.beginDelivery(frame)
+                            await receive(frame)
+                            await progress.finishDelivery(frame)
+                        }
+                    }
+                } onCancel: { task.cancel() }
             }
-        } onCancel: { task.cancel() }
+            group.addTask {
+                while !Task.isCancelled {
+                    try await Task.sleep(for: idleCheckInterval)
+                    guard let delivered = await progress.idleCursor(for: idleCheckInterval) else { continue }
+                    let state: JSON
+                    do { state = try await self.state(id) }
+                    catch {
+                        try Task.checkCancellation()
+                        continue // An unavailable snapshot does not invalidate a live stream.
+                    }
+                    guard state["agent_id"].string == id,
+                          let latest = Cursor(rawValue: state["latest_event_cursor"].string),
+                          await progress.isStillBehind(latest, since: delivered) else { continue }
+                    throw URLError(.networkConnectionLost)
+                }
+                throw CancellationError()
+            }
+            defer { group.cancelAll(); task.cancel() }
+            try await group.next()
+        }
     }
     #endif
 }
+
+#if !os(Linux)
+private actor StreamDeliveryProgress {
+    private var cursor: Cursor
+    private var advancedAt = ContinuousClock.now
+    private var deliveringEvent = false
+    init(cursor: Cursor) { self.cursor = cursor }
+    func beginDelivery(_ frame: SSEFrame) { deliveringEvent = frame.event != nil }
+    func finishDelivery(_ frame: SSEFrame) {
+        if let next = frame.cursor, next > cursor {
+            cursor = next
+            advancedAt = .now
+        }
+        deliveringEvent = false
+    }
+    func idleCursor(for interval: Duration) -> Cursor? {
+        !deliveringEvent && advancedAt.duration(to: .now) >= interval ? cursor : nil
+    }
+    func isStillBehind(_ latest: Cursor, since snapshot: Cursor) -> Bool {
+        !deliveringEvent && cursor == snapshot && latest > cursor
+    }
+}
+#endif
 
 public struct EventPage: Sendable {
     public let events: [AgentEvent]
