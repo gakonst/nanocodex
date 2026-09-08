@@ -1102,8 +1102,12 @@ final class InboxModel: ObservableObject {
         if let index = cards.firstIndex(where: { $0.id == id }) {
             var card = cards[index]
             card.apply(events: history, transcriptRows: projected); card.error = nil
-            historyCursors[id] = max(historyCursors[id] ?? .zero, card.appliedHistoryCursor)
             if cards[index] != card { cards[index] = card }
+            // The overview consumed this history, so reconcile exact terminal
+            // controls before its cursor lets the next refresh skip the page.
+            reconcilePending(id: id, events: history, state: card)
+            historyCursors[id] = max(historyCursors[id] ?? .zero, card.appliedHistoryCursor)
+            reconcile()
         }
     }
     private func receive(_ frame: SSEFrame, id: String, epoch: UUID, token: UUID) {
