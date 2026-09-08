@@ -106,6 +106,45 @@ public final class ManagedClient: @unchecked Sendable {
         return "/v1/agents/" + id
     }
     public func state(_ id: String) async throws -> JSON { try await json(path: Self.agentPath(id)) }
+    /// Refresh every unique agent with at most four operations in flight. Resolve
+    /// history policy when a slot opens, so a tab switch can change who owns it.
+    public func refreshAgents(_ agentIDs: [String],
+                              history: @escaping @Sendable (String) async -> AgentRefreshHistory?,
+                              onResult: @escaping @Sendable (String, Result<AgentRefreshResult, Error>) async -> Void) async {
+        let read: @Sendable (String) async -> (String, Result<AgentRefreshResult, Error>?) = { id in
+            do {
+                try Task.checkCancellation()
+                guard let policy = await history(id) else { return (id, nil) }
+                try Task.checkCancellation()
+                switch policy {
+                case .initial:
+                    async let state = self.state(id)
+                    async let page = self.history(id)
+                    return try await (id, .success(AgentRefreshResult(state: state, page: page)))
+                case .changed(let cursor):
+                    let state = try await self.state(id)
+                    let changed = Cursor(rawValue: state["latest_event_cursor"].string).map { $0 > cursor } ?? true
+                    let page = changed ? try await self.history(id) : nil
+                    return (id, .success(AgentRefreshResult(state: state, page: page)))
+                case .stateOnly:
+                    return try await (id, .success(AgentRefreshResult(state: self.state(id), page: nil)))
+                }
+            } catch { return (id, .failure(error)) }
+        }
+        await withTaskGroup(of: (String, Result<AgentRefreshResult, Error>?).self) { group in
+            var seen = Set<String>()
+            var remaining = agentIDs.filter { seen.insert($0).inserted }.makeIterator()
+            for _ in 0..<4 {
+                guard !Task.isCancelled, let id = remaining.next() else { break }
+                group.addTask { await read(id) }
+            }
+            while let (id, result) = await group.next() {
+                guard !Task.isCancelled else { group.cancelAll(); return }
+                if let next = remaining.next() { group.addTask { await read(next) } }
+                if let result { await onResult(id, result) }
+            }
+        }
+    }
     public func scheduledJobs(_ agentID: String) async throws -> [ScheduledJob] {
         let body = try await json(path: Self.agentPath(agentID) + "/triggers")
         guard case .array(let values) = body["data"] else { throw APIError.invalidResponse }
@@ -327,6 +366,17 @@ private actor StreamDeliveryProgress {
     }
 }
 #endif
+
+public enum AgentRefreshHistory: Sendable {
+    case initial
+    case changed(after: Cursor)
+    case stateOnly
+}
+
+public struct AgentRefreshResult: Sendable {
+    public let state: JSON
+    public let page: EventPage?
+}
 
 public struct EventPage: Sendable {
     public let events: [AgentEvent]

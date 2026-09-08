@@ -702,63 +702,53 @@ final class InboxModel: ObservableObject {
             } + created
             if cards != merged { cards = merged }
             reconcile()
-            // The observer owns initial state/history for its card. Other cards
-            // poll state; unchanged exact cursors need no repeated history read.
-            let updateIDs = listing.map(\.id).filter { initialListing == nil || $0 != observedAgentID }
-            for offset in stride(from: 0, to: updateIDs.count, by: 4) {
-                if Task.isCancelled { return }
-                let ids = updateIDs[offset..<min(offset + 4, updateIDs.count)]
-                let updates = await withTaskGroup(of: CardUpdate.self) { group in
-                    for id in ids {
-                        let previous = cards.first { $0.id == id }
-                        let historyCursor = historyCursors[id] ?? .zero
-                        let observed = id == observedAgentID && streaming != nil
-                        group.addTask {
-                            do {
-                                if observed || previous?.checked == true && previous?.error == nil {
-                                    let state = try await client.state(id)
-                                    let changed = Cursor(rawValue: state["latest_event_cursor"].string).map { $0 > historyCursor } ?? true
-                                    let history = !observed && changed ? try await client.history(id) : nil
-                                    return CardUpdate(id: id, state: state, page: history, failure: nil, unavailable: false)
-                                }
-                                async let state = client.state(id)
-                                async let history = client.history(id)
-                                return try await CardUpdate(id: id, state: state, page: history, failure: nil, unavailable: false)
-                            } catch {
-                                let unavailable = (error as? APIError).map { $0 == .agentDeleting || $0 == .http(404) } ?? false
-                                return CardUpdate(id: id, state: nil, page: nil, failure: error.localizedDescription, unavailable: unavailable)
-                            }
-                        }
-                    }
-                    var result: [CardUpdate] = []
-                    for await value in group { result.append(value) }
-                    return result
-                }
-                guard generation == epoch, !Task.isCancelled else { return }
-                for update in updates {
-                    if update.unavailable { forgetUnavailableAgent(update.id); continue }
-                    guard let index = cards.firstIndex(where: { $0.id == update.id }) else { continue }
-                    if let state = update.state {
-                        do {
-                            var card = cards[index]
-                            try card.apply(state: state)
-                            if let page = update.page {
-                                card.apply(events: page.events)
-                                historyCursors[update.id] = max(historyCursors[update.id] ?? .zero, page.latest)
-                            }
-                            if cards[index] != card { cards[index] = card }
-                            reconcilePending(id: update.id, events: update.page?.events ?? [], state: card)
-                        }
-                        catch { cards[index].error = error.localizedDescription }
-                    } else { cards[index].error = update.failure }
-                }
-                reconcile()
-            }
+            // Keep all agents covered: roster timestamps do not version replies
+            // or settings. Prioritize interactive work without waiting for an
+            // entire four-agent batch before publishing completed results.
+            let pendingIDs = Set(pending.map(\.agentID) + cancellations.map(\.agentID)).union(busy)
+            let byID = Dictionary(uniqueKeysWithValues: cards.map { ($0.id, $0) })
+            let updateCards = listing.map { byID[$0.id] ?? $0 }
+                .filter { initialListing == nil || $0.id != observedAgentID }
+            let updateIDs = AgentCard.refreshOrder(updateCards, focusedID: observedAgentID,
+                                                  voiceID: voice.conversationID, pendingIDs: pendingIDs)
+            await client.refreshAgents(updateIDs, history: { [weak self] id in
+                await self?.refreshHistory(id, epoch: epoch)
+            }, onResult: { [weak self] id, result in
+                await self?.applyRefresh(result, id: id, epoch: epoch)
+            })
+            guard generation == epoch, !Task.isCancelled else { return }
             prioritizeNext()
         } catch {
             guard generation == epoch, !Task.isCancelled else { return }
             self.error = error.localizedDescription
         }
+    }
+    private func refreshHistory(_ id: String, epoch: UUID) -> AgentRefreshHistory? {
+        guard generation == epoch, !Task.isCancelled, let card = cards.first(where: { $0.id == id }) else { return nil }
+        // The focused observer owns history. Evaluate this when the operation
+        // starts rather than capturing the old tab at the start of the sweep.
+        if id == observedAgentID && streaming != nil { return AgentRefreshHistory.stateOnly }
+        return card.checked && card.error == nil ? .changed(after: historyCursors[id] ?? .zero) : .initial
+    }
+    private func applyRefresh(_ result: Result<AgentRefreshResult, Error>, id: String, epoch: UUID) {
+        guard generation == epoch, !Task.isCancelled else { return }
+        if case .failure(let error) = result,
+           let apiError = error as? APIError, apiError == .agentDeleting || apiError == .http(404) {
+            forgetUnavailableAgent(id); return
+        }
+        guard let index = cards.firstIndex(where: { $0.id == id }) else { return }
+        do {
+            let update = try result.get()
+            var card = cards[index]
+            try card.apply(state: update.state)
+            if let page = update.page {
+                card.apply(events: page.events)
+                historyCursors[id] = max(historyCursors[id] ?? .zero, page.latest)
+            }
+            if cards[index] != card { cards[index] = card }
+            reconcilePending(id: id, events: update.page?.events ?? [], state: card)
+        } catch { cards[index].error = error.localizedDescription }
+        reconcile()
     }
     private func seenCursor(_ id: String) -> Cursor? { seen[id].flatMap { Cursor(rawValue: $0) } }
     private func forgetUnavailableAgent(_ id: String) {
@@ -1113,6 +1103,7 @@ final class InboxModel: ObservableObject {
         if let index = cards.firstIndex(where: { $0.id == id }) {
             var card = cards[index]
             card.apply(events: history, transcriptRows: projected); card.error = nil
+            historyCursors[id] = max(historyCursors[id] ?? .zero, card.appliedHistoryCursor)
             if cards[index] != card { cards[index] = card }
         }
     }
@@ -1868,7 +1859,6 @@ final class InboxModel: ObservableObject {
     }
 }
 
-private struct CardUpdate: Sendable { let id: String; let state: JSON?; let page: EventPage?; let failure: String?; let unavailable: Bool }
 
 private enum KeychainAccount {
     private static let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "xyz.paradigm.centaur", kSecAttrAccount as String: "managed"]

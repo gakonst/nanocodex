@@ -13,6 +13,9 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public var status = "Checking"
     public var model = ""
     private var previewCursor: Cursor = .zero
+    /// Last history event actually projected into the card, excluding newer
+    /// state snapshots whose events have not been read yet.
+    public var appliedHistoryCursor: Cursor { previewCursor }
     public var preview = ""
     /// Keep the visible exchange together while the focused transcript reloads.
     /// Retain at most the latest user message and reply, not every card's history.
@@ -26,6 +29,22 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     /// Historical conversations follow server activity, with a stable tie break.
     public static func mostRecentFirst(_ lhs: Self, _ rhs: Self) -> Bool {
         lhs.updatedAt != rhs.updatedAt ? lhs.updatedAt > rhs.updatedAt : lhs.id < rhs.id
+    }
+    /// Refresh interactive work first, preserving roster order within each
+    /// priority and retaining every agent, including unchanged idle ones.
+    public static func refreshOrder(_ cards: [Self], focusedID: String?, voiceID: String?, pendingIDs: Set<String>) -> [String] {
+        func priority(_ card: Self) -> Int {
+            if card.id == focusedID { return 0 }
+            if card.id == voiceID { return 1 }
+            if pendingIDs.contains(card.id) { return 2 }
+            if card.isRunning { return 3 }
+            if card.error != nil { return 4 }
+            return 5
+        }
+        return cards.enumerated().sorted {
+            let a = priority($0.element), b = priority($1.element)
+            return a != b ? a < b : $0.offset < $1.offset
+        }.map { $0.element.id }
     }
     public var isRunning: Bool { !activeTurns.isEmpty }
     public func needsAttention(seen: Cursor?) -> Bool {
