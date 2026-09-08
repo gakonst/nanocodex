@@ -117,6 +117,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     private var eventPreparation: Task<Void, Never>?
     private var admission: Task<Void, Never>?
     private var cleanup: Task<Void, Never>?
+    private var conversationCleanups: [UUID: (identity: String, task: Task<Void, Never>)] = [:]
     private var incoming: Task<Void, Never>?
     private var agentEvents: Task<Void, Never>?
     private var meter: Task<Void, Never>?
@@ -199,7 +200,6 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     private func begin(configuration: @escaping @MainActor () async throws -> VoiceConfiguration, captureMicrophone: Bool,
                        timeout: Duration = .seconds(45), transportOverride: ManagedVoiceTransport? = nil) {
         stop()
-        let priorCleanup = cleanup
         let token = UUID(); generation = token
         voiceTiming("tap")
         phase = .connecting; errorMessage = nil; transcripts = []; isMuted = false
@@ -222,7 +222,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                 try self.check(token)
                 self.conversationID = prepared.agentID
                 self.conversationTitle = prepared.conversationTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-                try await self.connect(prepared, captureMicrophone: captureMicrophone, priorCleanup: priorCleanup,
+                try await self.connect(prepared, captureMicrophone: captureMicrophone,
                                        token: token, transportOverride: transportOverride)
             } catch is CancellationError {
                 if self.generation == token { self.stop() }
@@ -234,7 +234,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         stop(); phase = .failed; errorMessage = Self.safeError(error)
     }
 
-    private func connect(_ configuration: VoiceConfiguration, captureMicrophone: Bool, priorCleanup: Task<Void, Never>?, token: UUID,
+    private func connect(_ configuration: VoiceConfiguration, captureMicrophone: Bool, token: UUID,
                          transportOverride: ManagedVoiceTransport?) async throws {
         if captureMicrophone {
             guard await VoicePeer.requestMicrophone() else { throw VoiceFailure.microphone }
@@ -285,7 +285,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         admission = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.prepareConversation(voiceTransport, sessionID: id, priorCleanup: priorCleanup, token: token)
+                try await self.prepareConversation(voiceTransport, sessionID: id, token: token)
                 try self.check(token)
                 self.conversationReady = true
                 self.becomeActiveIfReady()
@@ -299,9 +299,12 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         fail(error)
     }
 
-    private func prepareConversation(_ transport: ManagedVoiceTransport, sessionID: String, priorCleanup: Task<Void, Never>?, token: UUID) async throws {
-        if priorCleanup != nil { voiceTiming("lifecycle.prior-cleanup.wait") }
-        try await waitForCleanup(priorCleanup)
+    private func prepareConversation(_ transport: ManagedVoiceTransport, sessionID: String, token: UUID) async throws {
+        // Independent conversations can connect while a prior call persists its
+        // transcript. Retain every pending cleanup so A → B → A still waits for A.
+        let priorCleanups = conversationCleanups.values.filter { $0.identity == transport.conversationIdentity }.map(\.task)
+        if !priorCleanups.isEmpty { voiceTiming("lifecycle.prior-cleanup.wait") }
+        try await waitForCleanup(priorCleanups)
         try check(token)
         voiceTiming("lifecycle.start.begin")
         let context = try await transport.start(sessionID: sessionID, operationID: UUID().uuidString.lowercased())
@@ -310,11 +313,14 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         startupContextFrames = ManagedVoiceProtocol.startupContextFrames(context)
     }
 
-    private func waitForCleanup(_ prior: Task<Void, Never>?) async throws {
-        guard let prior else { return }
+    private func waitForCleanup(_ prior: [Task<Void, Never>]) async throws {
+        guard !prior.isEmpty else { return }
         // Cancel this wait without cancelling the prior session's durable work.
         let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingOldest(1))
-        let waiter = Task { await prior.value; continuation.yield(()); continuation.finish() }
+        let waiter = Task {
+            for task in prior { await task.value }
+            continuation.yield(()); continuation.finish()
+        }
         defer { waiter.cancel(); continuation.finish() }
         try await withTaskCancellationHandler {
             for await _ in stream { try Task.checkCancellation(); return }
@@ -641,7 +647,8 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         routePending = false; bufferedEvents = []; frameQueue = []; delegationOperations = [:]
         if phase != .idle { phase = .ended }
         if let oldTransport, let oldSessionID {
-            cleanup = Task {
+            let cleanupID = UUID()
+            let task = Task { [weak self] in
                 // Serialize start/stop receipts, without waiting on microphone,
                 // configuration or WebRTC callbacks from an abandoned startup.
                 voiceTiming("cleanup.admission.wait")
@@ -658,7 +665,10 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                 voiceTiming("lifecycle.stop.end")
                 await oldTransport.close()
                 voiceTiming("cleanup.end")
+                self?.conversationCleanups.removeValue(forKey: cleanupID)
             }
+            conversationCleanups[cleanupID] = (oldTransport.conversationIdentity, task)
+            cleanup = task
         }
     }
 

@@ -156,4 +156,60 @@ final class VoiceStartupTests: XCTestCase {
         XCTAssertEqual(voice.phase, .failed)
         XCTAssertFalse(voice.hasNativePeerForTesting)
     }
+
+    @MainActor func testAnotherConversationStartsButReturningWaitsForPreviousStop() async throws {
+        let previousStop = expectation(description: "Previous stop began")
+        let nextStart = expectation(description: "Independent conversation admitted")
+        let returningStart = expectation(description: "Original conversation admitted after its stop")
+        let otherAgent = "22222222-2222-7222-8222-222222222222"
+        var originalSession: String?
+        let fixture = try HTTPFixture { request in
+            if request.path.hasSuffix("/stop") {
+                if originalSession == nil {
+                    originalSession = request.json["voice_session_id"] as? String
+                    previousStop.fulfill(); return self.receipt(request, delay: 1.2)
+                }
+                return self.receipt(request)
+            }
+            if request.path.hasSuffix("/start") {
+                if request.path.contains(otherAgent) { nextStart.fulfill() }
+                else { returningStart.fulfill() }
+                return self.receipt(request)
+            }
+            if request.path.hasSuffix("/calls") {
+                return .init(status: 201, headers: ["Content-Type": "application/sdp", "x-nanocodex-realtime-location": "https://provider.invalid/v1/realtime/calls/rtc_fixture"], body: "v=0\r\nlate-answer", delay: 3)
+            }
+            if request.path.hasSuffix("/events") { return .init(headers: ["Content-Type": "text/event-stream"], body: ": keepalive\n\n", delay: 3) }
+            return .init(body: #"{"latest_event_cursor":"0"}"#)
+        }
+        defer { fixture.close() }
+        let credential = try AccountCredential(origin: fixture.origin, apiKey: fixtureKey)
+        let oldTransport = try ManagedVoiceTransport(credential: credential, agentID: agent, configuration: fixture.configuration)
+        let voice = VoiceSession()
+        voice.prepareRoutingForTesting(transport: oldTransport, agentID: agent)
+        voice.stop()
+        await fulfillment(of: [previousStop], timeout: 1)
+        let newTransport = try ManagedVoiceTransport(credential: credential, agentID: otherAgent, configuration: fixture.configuration)
+        let began = ContinuousClock.now
+        voice.startPreparingForTesting(timeout: .seconds(3), transport: newTransport) {
+            .init(baseURL: URL(string: fixture.origin)!, apiKey: fixtureKey, agentID: otherAgent)
+        }
+        await fulfillment(of: [nextStart], timeout: 2)
+        let elapsed = began.duration(to: .now)
+        print("VOICE_FIXTURE independent_admission_seconds=\(elapsed)")
+        voice.stop()
+        await voice.finishStopping()
+        XCTAssertLessThan(elapsed, .seconds(0.8), "Another agent must not wait for the previous agent's stop receipt")
+
+        // Finishing B's cleanup must not forget A's still-pending stop.
+        let returningTransport = try ManagedVoiceTransport(credential: credential, agentID: agent, configuration: fixture.configuration)
+        let returning = ContinuousClock.now
+        voice.startPreparingForTesting(timeout: .seconds(3), transport: returningTransport) { self.configuration(fixture.origin) }
+        await fulfillment(of: [returningStart], timeout: 2)
+        let returningElapsed = returning.duration(to: .now)
+        print("VOICE_FIXTURE returning_admission_seconds=\(returningElapsed)")
+        voice.stop()
+        await voice.finishStopping()
+        XCTAssertGreaterThan(returningElapsed, .seconds(0.8), "Returning to the original agent must await its still-pending stop")
+    }
 }
