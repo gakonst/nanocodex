@@ -325,6 +325,34 @@ final class ManagedVoiceTests: XCTestCase {
         await transport.close()
     }
 
+    func testStreamOpenedReportsValidatedHeadersBeforeDurableEvents() async throws {
+        actor Trace {
+            var values: [String] = []
+            func append(_ value: String) { values.append(value) }
+            func snapshot() -> [String] { values }
+        }
+        for (status, mime, valid) in [(200, "text/event-stream", true), (503, "text/event-stream", false), (200, "application/json", false)] {
+            let fixture = try HTTPFixture { _ in
+                .init(status: status, headers: ["Content-Type": mime],
+                      body: "id: 1\ndata: {\"type\":\"turn_accepted\",\"id\":\"owned-turn\"}\n\n")
+            }
+            defer { fixture.close() }
+            let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+            defer { client.close() }
+            let trace = Trace()
+            do {
+                try await client.stream(agent, after: .zero, onOpen: { await trace.append("opened") }) { frame in
+                    if let event = frame.event { await trace.append("\(event.type):\(event.cursor.rawValue)") }
+                }
+                XCTAssertTrue(valid, "Rejected HTTP response reported a healthy stream")
+            } catch {
+                XCTAssertFalse(valid, "Valid SSE failed: \(error)")
+            }
+            let values = await trace.snapshot()
+            XCTAssertEqual(values, valid ? ["opened", "turn_accepted:1"] : [])
+        }
+    }
+
     func testMalformedEventStreamFailsWithoutReconnectLoop() async throws {
         for (mime, body) in [("application/json", "{}"), ("text/event-stream", "id: 1\ndata: {invalid\n\n")] {
             var requests = 0
@@ -423,6 +451,47 @@ final class ManagedVoiceTests: XCTestCase {
             let done = voice.realtimeMessage(.object(["type": .string("turn.done"), "turn": .object(["role": .string(role), "transcript": .string(final)])]))
             XCTAssertEqual(done.effects.transcripts, [.init(speaker: role, text: expected)])
             XCTAssertTrue(try XCTUnwrap(voice.takeTranscriptTail()).contains(expected))
+        }
+    }
+
+    @MainActor
+    func testDurableFailureSettlesOnlyItsAcceptedVoiceTurn() async throws {
+        for beforeReceipt in [false, true] {
+            let admitted = expectation(description: "Delegation request entered")
+            let fixture = try HTTPFixture { request in
+                if request.path.hasSuffix("/delegate") { admitted.fulfill() }
+                return .init(body: String(data: try! JSONSerialization.data(withJSONObject: [
+                    "voice_session_id": request.json["voice_session_id"] ?? "", "operation_id": request.json["operation_id"] ?? "",
+                    "route": "started", "turn_id": "owned-turn", "context": []
+                ]), encoding: .utf8)!, delay: 0.1)
+            }
+            defer { fixture.close() }
+            let transport = try ManagedVoiceTransport(credential: .init(origin: fixture.origin, apiKey: fixtureKey), agentID: agent, configuration: fixture.configuration)
+            let voice = VoiceSession()
+            voice.prepareRoutingForTesting(transport: transport, agentID: agent)
+            try voice.receiveRealtimeForTesting(.object(["type": .string("delegation.created"), "item": .object([
+                "type": .string("delegation"), "target": .string("client"), "id": .string("lookup"),
+                "content": .array([.object(["type": .string("input_text"), "text": .string("Look up my saved note")])])])]))
+            await fulfillment(of: [admitted], timeout: 2)
+            if !beforeReceipt { await voice.finishRoutingForTesting() }
+            XCTAssertTrue(voice.isWorking)
+            func event(_ type: String, turn: String) throws -> AgentEvent {
+                try AgentEvent(.object(["type": .string(type), "id": .string(turn), "cursor": .string("1")]))
+            }
+            try voice.receiveManagedEventForTesting(try event("turn_failed", turn: "unrelated"))
+            XCTAssertTrue(voice.isWorking)
+            try voice.receiveManagedEventForTesting(try event("turn_retryable", turn: "owned-turn"))
+            XCTAssertTrue(voice.isWorking, "Retryable admission still owns future work")
+            try voice.receiveManagedEventForTesting(try event("turn_accepted", turn: "owned-turn"))
+            XCTAssertTrue(voice.isWorking)
+            try voice.receiveManagedEventForTesting(try event("turn_failed", turn: "owned-turn"))
+            if beforeReceipt { XCTAssertTrue(voice.isWorking, "The failure must await correlation with its receipt") }
+            await voice.finishRoutingForTesting()
+            XCTAssertFalse(voice.isWorking, "A pre-model failure must finish its accepted handoff")
+            XCTAssertEqual(voice.phase, .active)
+            try voice.receiveManagedEventForTesting(try event("turn_failed", turn: "owned-turn"))
+            XCTAssertFalse(voice.isWorking)
+            voice.stop(); await voice.finishStopping()
         }
     }
 

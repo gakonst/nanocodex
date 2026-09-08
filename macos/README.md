@@ -370,6 +370,14 @@ voice settings and timestamps, restores the original audio input, and removes
 its test agent. Run acoustic phone tests separately to avoid mixing their input
 with the Mac's audible output.
 
+Before deleting a failed memory-test agent, the fixture saves
+`native-memory-voice-failure-state.json`: durable cursors, event types/timestamps,
+active turn IDs, and turn status. It excludes message/tool payloads and credentials.
+To inspect a retained owned test agent without starting voice or sending a turn,
+run `testNativeOwnedAgentDiagnostics` with
+`TEST_RUNNER_NANOCODEX_DIAGNOSTIC_AGENT_TITLE` set to its exact unique title; this
+read-only test uses the existing Keychain account and saves the same metadata file.
+
 Voice evidence is saved in `macos/build/evidence/native-voice-live.json` and
 `native-voice-live.png`. These timings include the real provider and local audio
 device; a cold connection still takes seconds. They do not measure an iPhone's
