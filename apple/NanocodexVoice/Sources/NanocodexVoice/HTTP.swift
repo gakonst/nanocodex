@@ -85,7 +85,7 @@ final class HTTPTransport: @unchecked Sendable {
             return (data, http)
         } catch is CancellationError { throw CancellationError() }
         catch let error as ManagedError {
-            voiceTiming("http.rejected \(timingOperation) status=\(error.status ?? 0)")
+            voiceTiming("http.rejected \(timingOperation) status=\(error.status ?? 0) code=\(error.code)")
             throw error
         }
         catch {
