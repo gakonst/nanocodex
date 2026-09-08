@@ -2,6 +2,34 @@ import XCTest
 
 final class InboxUITests: XCTestCase {
     override func setUp() { super.setUp(); continueAfterFailure = false }
+    func testLiveVoiceGreeting() throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_VOICE_GREETING_LIVE"] == "1" else { throw XCTSkip("Requires a signed-in phone and the synchronized greeting audio fixture.") }
+        let app = XCUIApplication()
+        app.launchEnvironment["NANOCODEX_VOICE_TIMING"] = "1"
+        app.launch()
+        XCTAssertTrue(app.buttons["new-conversation"].waitForExistence(timeout: 30))
+        app.buttons["new-conversation"].tap()
+        XCTAssertTrue(app.buttons["start-voice"].waitForExistence(timeout: 10))
+        app.buttons["start-voice"].tap()
+        defer {
+            if app.buttons["end-voice-compact"].exists { app.buttons["end-voice-compact"].tap() }
+            else if app.buttons["end-voice"].exists { app.buttons["end-voice"].tap() }
+        }
+        let connected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label IN %@", ["Listening", "Speaking", "Working on it", "Voice paused"]), object: app.staticTexts["voice-status"])
+        XCTAssertEqual(XCTWaiter.wait(for: [connected], timeout: 40), .completed)
+        XCTAssertNotEqual(app.staticTexts["voice-status"].label, "Voice paused")
+        app.buttons["close-voice"].tap()
+        XCTAssertTrue(app.buttons["end-voice-compact"].waitForExistence(timeout: 5))
+        let assistantCount = app.staticTexts.matching(identifier: "voice-transcript-assistant").count
+        FileHandle.standardOutput.write(Data("PHONE_VOICE_INPUT_READY at=\(Date().timeIntervalSince1970)\n".utf8))
+        XCTAssertTrue(app.staticTexts["voice-transcript-user"].firstMatch.waitForExistence(timeout: 15))
+        let reply = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.staticTexts.matching(identifier: "voice-transcript-assistant").count > assistantCount
+        }, object: app)
+        let replied = XCTWaiter.wait(for: [reply], timeout: 30)
+        capture(app, "voice-greeting-reply")
+        XCTAssertEqual(replied, .completed)
+    }
     func testLiveNavigationAndAttachmentMenus() throws {
         guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else { throw XCTSkip("Live account required") }
         let app = XCUIApplication(); app.launch()
@@ -320,7 +348,7 @@ final class InboxUITests: XCTestCase {
 
         XCTAssertTrue(app.scrollViews["conversation"].waitForExistence(timeout: 5))
 
-        navigationAction(app, "inbox-scheduled-jobs").tap()
+        navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         let active = app.buttons["scheduled-job-durability/daily-check"]
         let paused = app.buttons["scheduled-job-data/daily-check"]
         XCTAssertTrue(active.waitForExistence(timeout: 10))
@@ -339,7 +367,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep my draft while I check jobs")
 
         XCTAssertEqual(app.staticTexts["agent-title"].label, title)
-        navigationAction(app, "inbox-scheduled-jobs").tap()
+        navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         paused.tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", "Continue source chat")).firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Last skipped"].exists)
@@ -353,7 +381,7 @@ final class InboxUITests: XCTestCase {
 
     func testScheduledJobsEmptyStatePointsToChat() {
         let app = launch(["NANOCODEX_DEMO_EMPTY_SCHEDULES": "1"])
-        navigationAction(app, "inbox-scheduled-jobs").tap()
+        navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["No scheduled jobs yet"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Ask an agent to run a task on a schedule. It will appear here."].exists)
         XCTAssertFalse(app.buttons["New schedule"].exists)
@@ -376,7 +404,7 @@ final class InboxUITests: XCTestCase {
         for pass in 1...2 {
             app.launch()
             XCTAssertTrue(app.buttons["tab-overview"].waitForExistence(timeout: 20))
-            navigationAction(app, "inbox-scheduled-jobs").tap()
+            navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             XCTAssertTrue(app.navigationBars["Scheduled jobs"].waitForExistence(timeout: 10))
             let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                 app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "scheduled-job-")).count > 0
@@ -388,7 +416,14 @@ final class InboxUITests: XCTestCase {
             let first = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "scheduled-job-")).firstMatch
             if first.exists {
                 first.tap()
-                XCTAssertTrue(app.buttons["scheduled-job-source-chat"].waitForExistence(timeout: 5))
+                let detail = app.descendants(matching: .any)["scheduled-job-detail"].firstMatch
+                XCTAssertTrue(detail.waitForExistence(timeout: 5))
+                let source = app.buttons["scheduled-job-source-chat"]
+                for _ in 0..<5 {
+                    if source.exists && source.isHittable { break }
+                    detail.swipeUp()
+                }
+                XCTAssertTrue(source.exists && source.isHittable)
             }
             capture(app, "scheduled-jobs-live-\(pass)")
             app.terminate()
@@ -592,6 +627,30 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(agent.waitForExistence(timeout: 30), shortcuts.debugDescription)
         capture(shortcuts, "hand-task-shortcuts-account-agents")
     }
+    func testLiveVideoAttachmentReopensHistory() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["NANOCODEX_VIDEO_UI_LIVE"] == "1",
+              let title = environment["NANOCODEX_VIDEO_AGENT_TITLE"], !title.isEmpty else {
+            throw XCTSkip("Requires the existing real video-attachment validation conversation.")
+        }
+        let app = XCUIApplication(); app.launch()
+        selectAgentFromOverview(app, title: title)
+        let conversation = app.scrollViews["conversation"]
+        let play = conversation.buttons["play-original-video"].firstMatch
+        for _ in 0..<6 {
+            if play.exists && play.isHittable { break }
+            conversation.swipeDown()
+        }
+        XCTAssertTrue(play.waitForExistence(timeout: 10))
+        capture(app, "video-history-before-playback")
+        play.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["video-player"].waitForExistence(timeout: 30))
+        capture(app, "video-history-original-playback")
+        app.navigationBars["VideoAudioCheck.mp4"].buttons["Done"].tap()
+        conversation.swipeUp()
+        capture(app, "video-history-latest-response")
+    }
+
     func testLiveVideoAttachmentDraftSendAndHistory() throws {
         guard ProcessInfo.processInfo.environment["NANOCODEX_VIDEO_UI_LIVE"] == "1" else {
             throw XCTSkip("Requires a signed-in phone with VideoAudioCheck.mp4 copied into the app Documents folder.")
@@ -859,7 +918,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [named], timeout: 90), .completed)
         print("Live camera UI conversation title: \(title)")
         app.buttons["add-attachments"].tap()
-        XCTAssertTrue(app.buttons["choose-camera"].exists)
+        XCTAssertTrue(app.buttons["choose-camera"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["choose-photos"].exists)
         XCTAssertTrue(app.buttons["choose-files"].exists)
         capture(app, "camera-01-attachment-menu")
@@ -2002,7 +2061,7 @@ final class InboxUITests: XCTestCase {
         navigationAction(app, "Account settings").tap()
         XCTAssertTrue(app.descendants(matching: .any)["inbox-settings"].waitForExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        navigationAction(app, "inbox-scheduled-jobs").tap()
+        navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["Scheduled jobs"].waitForExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         selectAgentFromOverview(app, title: original)
