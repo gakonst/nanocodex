@@ -367,6 +367,7 @@ fn summary_lines(
     let mut error_spans = Vec::new();
     if tool.state == ToolState::Failed
         && let Some(error) = first_error_line(tool.result.as_ref())
+        && presentation.outcome.as_deref() != Some(error.as_str())
     {
         append_span(
             &mut error_spans,
@@ -605,11 +606,7 @@ pub(super) fn selectable_result(
     width: u16,
     theme: &Theme,
 ) -> (String, Vec<Line<'static>>) {
-    if contains_image_data(value) {
-        let source = "image data hidden".to_owned();
-        let details = wrap_plain(&source, width, Style::default().fg(theme.muted()));
-        return (source, details);
-    }
+    let value = display_value(value, 0);
     if let Some(text) = value.as_str() {
         let text = bounded_text(text);
         return (
@@ -617,7 +614,7 @@ pub(super) fn selectable_result(
             wrap_plain(&text, width, Style::default().fg(theme.text())),
         );
     }
-    let source = bounded_json(value);
+    let source = bounded_json(&value);
     let details = wrap_plain(
         &source,
         width,
@@ -792,12 +789,52 @@ fn bounded_section(mut details: Vec<Line<'static>>) -> Vec<Line<'static>> {
     details
 }
 
-fn contains_image_data(value: &Value) -> bool {
+// Preserve text, resource names, and download URLs alongside embedded media.
+fn display_value(value: &Value, depth: usize) -> Value {
+    if depth > 10 {
+        return Value::String("[more output]".to_owned());
+    }
     match value {
-        Value::String(text) => text.starts_with("data:image/"),
-        Value::Array(values) => values.iter().any(contains_image_data),
-        Value::Object(values) => values.values().any(contains_image_data),
-        _ => false,
+        Value::String(text) if text.starts_with("data:") => {
+            Value::String("[embedded attachment]".to_owned())
+        }
+        Value::String(text) => serde_json::from_str::<Value>(text).ok().map_or_else(
+            || Value::String(bounded_text(text)),
+            |value| display_value(&value, depth + 1),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .take(64)
+                .map(|item| display_value(item, depth + 1))
+                .collect(),
+        ),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .take(64)
+                .map(|(key, value)| {
+                    let value = if matches!(key.as_str(), "blob" | "file_data")
+                        || (key == "data"
+                            && (fields.contains_key("mimeType")
+                                || fields.contains_key("mime_type")
+                                || fields.contains_key("format")
+                                || fields.get("type").and_then(Value::as_str).is_some_and(
+                                    |kind| {
+                                        kind.contains("image")
+                                            || kind.contains("audio")
+                                            || kind.contains("video")
+                                    },
+                                ))) {
+                        Value::String("[embedded attachment]".to_owned())
+                    } else {
+                        display_value(value, depth + 1)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
     }
 }
 
@@ -872,6 +909,21 @@ mod tests {
             substeps: Vec::new(),
             child_count: 0,
         }
+    }
+
+    #[test]
+    fn mixed_generated_output_preserves_text_and_resource_links() {
+        let value = json!({"content": [
+            {"type": "text", "text": "Chart ready"},
+            {"type": "image", "mimeType": "image/png", "data": "PRIVATE_IMAGE_BYTES"},
+            {"type": "input_audio", "audio_url": "data:audio/wav;base64,PRIVATE_AUDIO_BYTES"},
+            {"type": "resource_link", "name": "report.pdf", "uri": "https://example.com/report.pdf"},
+        ]});
+        let (source, lines) = super::selectable_result(&value, 100, &Theme::default());
+        assert!(source.contains("Chart ready"));
+        assert!(source.contains("https://example.com/report.pdf"));
+        assert!(!source.contains("PRIVATE_"));
+        assert!(!lines.is_empty());
     }
 
     #[test]
@@ -1233,6 +1285,10 @@ mod tests {
         assert!(rendered.contains("× Shell"));
         assert!(rendered.contains("terminated"));
         assert!(!rendered.contains('✓'));
+
+        shell.result = Some(json!({"output": "", "exit_code": null, "error": "cancelled by user"}));
+        let rendered = render(&shell, 100, &Theme::default())[0].to_string();
+        assert_eq!(rendered.matches("cancelled by user").count(), 1);
     }
 
     #[test]
@@ -1664,6 +1720,21 @@ mod tests {
 
         assert!(direct.contains(" · Local · "), "{direct}");
         assert!(sandbox.contains("Sandbox · /repo"), "{sandbox}");
+    }
+
+    #[test]
+    fn merged_hosted_poll_keeps_the_original_command_summary() {
+        let mut command = tool("exec_command", json!({"cmd": "python3 long_task.py"}));
+        command.substeps.push("polled process".to_owned());
+        command.metadata = Some(json!({"tool_name": "write_stdin", "machine_name": "My Mac"}));
+        command.result = Some(json!({"session_id": 7, "output": "tick"}));
+        command.infer_execution();
+        let rendered = render(&command, 140, &Theme::default())[0].to_string();
+        assert!(
+            rendered.contains("Shell  $ python3 long_task.py"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("session unavailable"));
     }
 
     #[test]

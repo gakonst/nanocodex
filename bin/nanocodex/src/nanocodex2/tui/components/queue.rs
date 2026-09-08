@@ -54,17 +54,17 @@ struct QueueItem {
 enum QueueItemState {
     Queued,
     Editing,
+    EditingUnconfirmed,
     SubmittingSteer,
-    AdmittedSteer,
-    CancelledSteer,
+    UnconfirmedSteer,
 }
 
 pub(super) struct MessageQueue {
     items: Vec<QueueItem>,
     selected: usize,
+    first_visible: usize,
     focused: bool,
     next_id: u64,
-    applied_steers_waiting_for_ack: usize,
     steering_label: WavedText,
 }
 
@@ -73,9 +73,9 @@ impl Default for MessageQueue {
         Self {
             items: Vec::new(),
             selected: 0,
+            first_visible: 0,
             focused: false,
             next_id: 0,
-            applied_steers_waiting_for_ack: 0,
             steering_label: WavedText::new(STEERING_TEXT, Color::Rgb(220, 220, 220)),
         }
     }
@@ -127,25 +127,33 @@ impl MessageQueue {
         let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
             return false;
         };
-        if item.state != QueueItemState::Editing {
+        if !matches!(
+            item.state,
+            QueueItemState::Editing | QueueItemState::EditingUnconfirmed
+        ) {
             return false;
         }
-        item.state = QueueItemState::Queued;
+        item.state = if item.state == QueueItemState::EditingUnconfirmed {
+            QueueItemState::UnconfirmedSteer
+        } else {
+            QueueItemState::Queued
+        };
         true
     }
 
     pub(super) fn drain_ready(&mut self) -> Vec<Submission> {
-        let ready = self
-            .items
-            .iter()
-            .take_while(|item| {
-                matches!(
-                    item.state,
-                    QueueItemState::Queued | QueueItemState::CancelledSteer
-                )
-            })
-            .count();
-        let drained = self.items.drain(..ready).map(|item| item.prompt).collect();
+        let mut drained = Vec::new();
+        let mut blocked = false;
+        for item in std::mem::take(&mut self.items) {
+            if item.state == QueueItemState::Queued && !blocked {
+                drained.push(item.prompt);
+            } else {
+                // Unknown delivery stays visible without replaying it or preventing
+                // explicitly queued, known-unsent instructions from running later.
+                blocked |= item.state != QueueItemState::UnconfirmedSteer;
+                self.items.push(item);
+            }
+        }
         self.repair_selection();
         drained
     }
@@ -164,96 +172,32 @@ impl MessageQueue {
     }
 
     pub(super) fn has_pending_steer(&self) -> bool {
-        self.items.iter().any(|item| {
-            matches!(
-                item.state,
-                QueueItemState::SubmittingSteer | QueueItemState::AdmittedSteer
-            )
-        })
-    }
-
-    pub(super) fn steer_admitted(&mut self, id: QueueId) -> Option<Submission> {
-        let item = self.items.iter_mut().find(|item| item.id == id)?;
-        if item.state == QueueItemState::CancelledSteer {
-            return None;
-        }
-        item.state = QueueItemState::AdmittedSteer;
-        if self.applied_steers_waiting_for_ack == 0 {
-            return None;
-        }
-
-        self.applied_steers_waiting_for_ack -= 1;
-        let text = self.remove_id(id);
-        self.sync_steering_wave();
-        text
-    }
-
-    pub(super) fn steer_applied(&mut self) -> Option<Submission> {
-        if let Some(id) = self
-            .items
-            .iter()
-            .find(|item| {
-                matches!(
-                    item.state,
-                    QueueItemState::AdmittedSteer | QueueItemState::CancelledSteer
-                )
-            })
-            .map(|item| item.id)
-        {
-            let text = self.remove_id(id);
-            self.sync_steering_wave();
-            return text;
-        }
-        if self
-            .items
+        self.items
             .iter()
             .any(|item| item.state == QueueItemState::SubmittingSteer)
-        {
-            self.applied_steers_waiting_for_ack =
-                self.applied_steers_waiting_for_ack.saturating_add(1);
-        }
-        None
     }
 
-    pub(super) fn steer_promoted(&mut self, id: QueueId) -> Option<Submission> {
-        let text = self.remove_id(id);
+    pub(super) fn steer_admitted(&mut self, id: QueueId) -> Option<(QueueId, Submission)> {
+        // Only this request's HTTP acknowledgement confirms admission. Shared
+        // run.steered events do not identify the submitting client or instruction.
+        let text = self.remove_id(id).map(|prompt| (id, prompt));
         self.sync_steering_wave();
         text
+    }
+
+    pub(super) fn steer_unconfirmed(&mut self, id: QueueId) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
+            item.state = QueueItemState::UnconfirmedSteer;
+        }
+        self.sync_steering_wave();
     }
 
     pub(super) fn steer_failed(&mut self, id: QueueId) {
-        let Some(index) = self.items.iter().position(|item| item.id == id) else {
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
             return;
         };
-        let selected = self.items.get(self.selected).map(|item| item.id);
-        let mut item = self.items.remove(index);
+        // Keep the instruction's place even if acknowledgements fail out of order.
         item.state = QueueItemState::Queued;
-        let index = self.steer_lane_len();
-        self.items.insert(index, item);
-        if let Some(selected) = selected {
-            self.selected = self
-                .items
-                .iter()
-                .position(|item| item.id == selected)
-                .unwrap_or(index);
-        }
-        self.sync_steering_wave();
-    }
-
-    pub(super) fn cancel_steers(&mut self) {
-        self.items.sort_by_key(|item| {
-            matches!(item.state, QueueItemState::Queued | QueueItemState::Editing)
-        });
-        for item in &mut self.items {
-            if matches!(
-                item.state,
-                QueueItemState::SubmittingSteer | QueueItemState::AdmittedSteer
-            ) {
-                item.state = QueueItemState::CancelledSteer;
-            }
-        }
-        self.selected = 0;
-        self.applied_steers_waiting_for_ack = 0;
         self.sync_steering_wave();
     }
 
@@ -266,7 +210,10 @@ impl MessageQueue {
             return false;
         }
         let offset = row.saturating_sub(area.y + 1);
-        let index = usize::from(offset / 2).min(self.items.len().saturating_sub(1));
+        let index = self
+            .first_visible
+            .saturating_add(usize::from(offset / 2))
+            .min(self.items.len().saturating_sub(1));
         self.selected = index;
         self.focused = !self.items.is_empty();
         true
@@ -289,7 +236,10 @@ impl MessageQueue {
             return None;
         }
         let index = self.selected;
-        if self.items[index].state != QueueItemState::Queued {
+        if !matches!(
+            self.items[index].state,
+            QueueItemState::Queued | QueueItemState::UnconfirmedSteer
+        ) {
             return None;
         }
         let item = self.items.remove(index);
@@ -298,17 +248,12 @@ impl MessageQueue {
     }
 
     fn steer_lane_len(&self) -> usize {
+        // A failed steer stays in place as queued input. New steering belongs after
+        // every still-pending instruction, including any queued gaps between them.
         self.items
             .iter()
-            .take_while(|item| {
-                matches!(
-                    item.state,
-                    QueueItemState::SubmittingSteer
-                        | QueueItemState::AdmittedSteer
-                        | QueueItemState::CancelledSteer
-                )
-            })
-            .count()
+            .rposition(|item| item.state == QueueItemState::SubmittingSteer)
+            .map_or(0, |index| index + 1)
     }
 
     fn remove_id(&mut self, id: QueueId) -> Option<Submission> {
@@ -381,13 +326,20 @@ impl MessageQueue {
                 let Some(item) = self.items.get_mut(self.selected) else {
                     return ComponentUpdate::none();
                 };
-                if item.state != QueueItemState::Queued {
+                if !matches!(
+                    item.state,
+                    QueueItemState::Queued | QueueItemState::UnconfirmedSteer
+                ) {
                     return ComponentUpdate::none();
                 }
                 if item.prompt.has_images() {
                     return ComponentUpdate::none();
                 }
-                item.state = QueueItemState::Editing;
+                item.state = if item.state == QueueItemState::UnconfirmedSteer {
+                    QueueItemState::EditingUnconfirmed
+                } else {
+                    QueueItemState::Editing
+                };
                 return ComponentUpdate {
                     effects: vec![QueueEffect::Edit {
                         id: item.id,
@@ -449,7 +401,21 @@ impl MessageQueue {
                 &["↑↓ select", "enter steer", "esc back"],
                 &["↑↓ select", "esc back"],
             ]
-        } else if selected.state == QueueItemState::Editing {
+        } else if selected.state == QueueItemState::UnconfirmedSteer && selected.prompt.has_images()
+        {
+            &[
+                &["delivery unknown", "d dismiss", "esc back"],
+                &["d dismiss", "esc back"],
+            ]
+        } else if selected.state == QueueItemState::UnconfirmedSteer {
+            &[
+                &["delivery unknown", "e edit/retry", "d dismiss", "esc back"],
+                &["e edit/retry", "d dismiss", "esc back"],
+            ]
+        } else if matches!(
+            selected.state,
+            QueueItemState::Editing | QueueItemState::EditingUnconfirmed
+        ) {
             &[&["enter save", "esc cancel"], &["esc cancel"]]
         } else {
             &[&["↑↓ navigate", "esc back"]]
@@ -484,15 +450,46 @@ impl Component for MessageQueue {
             return;
         }
 
+        let visible_rows = usize::from(area.height.saturating_sub(1) / 2);
+        if visible_rows > 0 {
+            self.first_visible = self
+                .first_visible
+                .min(self.selected)
+                .max(self.selected.saturating_add(1).saturating_sub(visible_rows))
+                .min(self.items.len().saturating_sub(visible_rows));
+        }
+        let position = if self.items.len() > visible_rows && visible_rows > 0 {
+            format!(
+                " queue {}–{} of {} · ",
+                self.first_visible + 1,
+                (self.first_visible + visible_rows).min(self.items.len()),
+                self.items.len()
+            )
+        } else {
+            " queue · ".to_owned()
+        };
         let border = theme.border();
         let title = if self.steering_label.is_active() {
             let mut spans = Vec::with_capacity(STEERING_TEXT.len() + 2);
-            spans.push(Span::styled(" queue · ", Style::default().fg(border)));
+            spans.push(Span::styled(position, Style::default().fg(border)));
             spans.extend(self.steering_label.spans());
             spans.push(Span::styled(" ", Style::default().fg(border)));
             Line::from(spans)
+        } else if self.items.iter().all(|item| {
+            matches!(
+                item.state,
+                QueueItemState::UnconfirmedSteer | QueueItemState::EditingUnconfirmed
+            )
+        }) {
+            Line::styled(
+                format!("{position}delivery unknown "),
+                Style::default().fg(border),
+            )
         } else {
-            Line::styled(" queue · enter steer latest ", Style::default().fg(border))
+            Line::styled(
+                format!("{position}enter steer latest "),
+                Style::default().fg(border),
+            )
         };
         let mut block = Block::new()
             .borders(Borders::ALL)
@@ -509,10 +506,17 @@ impl Component for MessageQueue {
         frame.render_widget(block, area);
 
         let content_width = usize::from(area.width.saturating_sub(4));
-        for (index, item) in self.items.iter().enumerate() {
-            let offset = u16::try_from(index.saturating_mul(2)).unwrap_or(u16::MAX);
+        for (visible_index, (index, item)) in self
+            .items
+            .iter()
+            .enumerate()
+            .skip(self.first_visible)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let offset = u16::try_from(visible_index.saturating_mul(2)).unwrap_or(u16::MAX);
             let row_y = area.y + 1 + offset;
-            if index > 0 {
+            if visible_index > 0 {
                 let y = row_y - 1;
                 frame
                     .buffer_mut()
@@ -530,9 +534,6 @@ impl Component for MessageQueue {
                 );
             }
 
-            if row_y >= area.bottom().saturating_sub(1) {
-                break;
-            }
             let mut style = if self.focused && index == self.selected {
                 Style::default()
                     .fg(theme.accent())
@@ -543,10 +544,15 @@ impl Component for MessageQueue {
             if item.state != QueueItemState::Queued {
                 style = style.fg(theme.muted()).add_modifier(Modifier::ITALIC);
             }
+            let text = if item.state == QueueItemState::UnconfirmedSteer {
+                Cow::Owned(format!("[delivery unknown] {}", item.prompt.display_text()))
+            } else {
+                Cow::Borrowed(item.prompt.display_text())
+            };
             frame.buffer_mut().set_stringn(
                 area.x + 2,
                 row_y,
-                truncate(item.prompt.display_text(), content_width),
+                truncate(&text, content_width),
                 content_width,
                 style,
             );
@@ -604,6 +610,29 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_queue_keeps_selection_visible_and_maps_clicks_to_visible_rows() {
+        let mut queue = MessageQueue::default();
+        for index in 0..12 {
+            queue.push(format!("entry {index:02}"));
+        }
+        let rendered = rendered_rows(&mut queue, 60, 7).join("\n");
+        assert!(rendered.contains("entry 11"), "{rendered}");
+        assert!(rendered.contains("10–12 of 12"), "{rendered}");
+        assert!(!rendered.contains("entry 00"));
+        assert!(queue.focus_row(1, ratatui::layout::Rect::new(0, 0, 60, 7)));
+        assert_eq!(queue.selected, 9);
+        queue.update(key(KeyCode::Up, KeyModifiers::NONE));
+        let rendered = rendered_rows(&mut queue, 60, 7).join("\n");
+        assert!(rendered.contains("entry 08"), "{rendered}");
+        assert!(!rendered.contains("entry 11"));
+        // Growing the terminal should reveal earlier items without losing selection.
+        let rendered = rendered_rows(&mut queue, 60, 25).join("\n");
+        assert!(rendered.contains("entry 00"));
+        assert!(rendered.contains("entry 11"));
+        assert_eq!(queue.selected, 8);
+    }
+
+    #[test]
     fn queue_accepts_any_number_of_items_and_reorders_the_selected_item() {
         let mut queue = MessageQueue::default();
         for index in 0..100 {
@@ -631,6 +660,77 @@ mod tests {
         assert_eq!(queue.len(), 1);
         assert!(queue.has_pending_steer());
         assert!(queue.drain_ready().is_empty());
+    }
+
+    #[test]
+    fn acknowledged_steering_is_accepted_without_automatic_replay() {
+        let mut queue = MessageQueue::default();
+        let (first, _) = queue.begin_steer("first".to_owned().into());
+        let (second, _) = queue.begin_steer("second".to_owned().into());
+        queue.push("followup".to_owned());
+        assert_eq!(
+            queue.steer_admitted(first).unwrap().1.display_text(),
+            "first"
+        );
+        assert!(queue.drain_ready().is_empty());
+        assert_eq!(
+            queue.steer_admitted(second).unwrap().1.display_text(),
+            "second"
+        );
+        assert_eq!(
+            queue
+                .drain_ready()
+                .iter()
+                .map(Submission::display_text)
+                .collect::<Vec<_>>(),
+            ["followup"]
+        );
+        assert!(!queue.has_pending_steer());
+    }
+
+    #[test]
+    fn unknown_delivery_stays_visible_and_requires_explicit_retry_or_dismissal() {
+        let mut queue = MessageQueue::default();
+        let (id, _) = queue.begin_steer("uncertain".to_owned().into());
+        queue.steer_unconfirmed(id);
+        queue.push("known unsent".to_owned());
+        assert_eq!(
+            queue
+                .drain_ready()
+                .iter()
+                .map(Submission::display_text)
+                .collect::<Vec<_>>(),
+            ["known unsent"]
+        );
+        let rows = rendered_rows(&mut queue, 100, 3);
+        assert!(rows[1].contains("[delivery unknown] uncertain"));
+        assert!(
+            queue
+                .update(key(KeyCode::Enter, KeyModifiers::NONE))
+                .effects
+                .is_empty()
+        );
+        queue.set_focused(true);
+        assert!(rendered_rows(&mut queue, 100, 3)[2].contains("e edit/retry"));
+        assert!(matches!(
+            queue
+                .update(key(KeyCode::Char('e'), KeyModifiers::NONE))
+                .effects
+                .as_slice(),
+            [QueueEffect::Edit { .. }]
+        ));
+        assert!(queue.cancel_edit(id));
+        assert!(
+            queue.drain_ready().is_empty(),
+            "canceling edit must not retry uncertain input"
+        );
+        queue.update(key(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(queue.finish_edit(id, "explicit retry".to_owned()));
+        assert_eq!(queue.drain_ready()[0].display_text(), "explicit retry");
+        let (id, _) = queue.begin_steer("dismiss me".to_owned().into());
+        queue.steer_unconfirmed(id);
+        queue.update(key(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(queue.is_empty());
     }
 
     #[test]
@@ -706,18 +806,16 @@ mod tests {
             panic!("enter should begin the second steer");
         };
 
-        assert!(queue.steer_admitted(*first_id).is_none());
-        assert!(queue.steer_admitted(*second_id).is_none());
         assert_eq!(
             queue
-                .steer_applied()
-                .map(|prompt| prompt.display_text().to_owned()),
+                .steer_admitted(*first_id)
+                .map(|(_, prompt)| prompt.display_text().to_owned()),
             Some("first steer".to_owned())
         );
         assert_eq!(
             queue
-                .steer_applied()
-                .map(|prompt| prompt.display_text().to_owned()),
+                .steer_admitted(*second_id)
+                .map(|(_, prompt)| prompt.display_text().to_owned()),
             Some("second steer".to_owned())
         );
         assert_eq!(
@@ -728,6 +826,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["regular"]
         );
+    }
+
+    #[test]
+    fn failed_steers_keep_their_original_order_regardless_of_failure_order() {
+        for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0]] {
+            let mut queue = MessageQueue::default();
+            queue.push("regular followup".to_owned());
+            let ids = ["first", "second", "third"]
+                .map(|text| queue.begin_steer(text.to_owned().into()).0);
+            for index in order {
+                queue.steer_failed(ids[index]);
+            }
+            assert_eq!(
+                queue
+                    .drain_ready()
+                    .iter()
+                    .map(Submission::display_text)
+                    .collect::<Vec<_>>(),
+                ["first", "second", "third", "regular followup"]
+            );
+        }
     }
 
     #[test]
@@ -745,24 +864,22 @@ mod tests {
         };
 
         queue.steer_failed(*first_id);
-        assert!(queue.steer_admitted(*second_id).is_none());
         queue.push("third steer".to_owned());
         let third = queue.update(key(KeyCode::Enter, KeyModifiers::NONE));
         let [QueueEffect::Steer { id: third_id, .. }] = third.effects.as_slice() else {
             panic!("enter should begin the third steer");
         };
-        assert!(queue.steer_admitted(*third_id).is_none());
 
         assert_eq!(
             queue
-                .steer_applied()
-                .map(|prompt| prompt.display_text().to_owned()),
+                .steer_admitted(*second_id)
+                .map(|(_, prompt)| prompt.display_text().to_owned()),
             Some("second steer".to_owned())
         );
         assert_eq!(
             queue
-                .steer_applied()
-                .map(|prompt| prompt.display_text().to_owned()),
+                .steer_admitted(*third_id)
+                .map(|(_, prompt)| prompt.display_text().to_owned()),
             Some("third steer".to_owned())
         );
         assert_eq!(
@@ -809,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_turns_does_not_reorder_an_item_being_edited() {
+    fn terminal_recovery_does_not_reorder_an_item_being_edited() {
         let mut queue = MessageQueue::default();
         queue.push("first".to_owned());
         queue.push("edit me".to_owned());
@@ -817,7 +934,6 @@ mod tests {
         queue.update(key(KeyCode::Up, KeyModifiers::NONE));
 
         queue.update(key(KeyCode::Char('e'), KeyModifiers::NONE));
-        queue.cancel_steers();
         assert!(queue.finish_edit(QueueId::new(1), "edited".to_owned()));
 
         let prompts = queue
@@ -829,26 +945,18 @@ mod tests {
     }
 
     #[test]
-    fn late_steer_admission_does_not_revive_a_cancelled_steer() {
+    fn pending_acknowledgement_blocks_automatic_queue_drain() {
         let mut queue = MessageQueue::default();
-        queue.push("steer me".to_owned());
-        let update = queue.update(key(KeyCode::Enter, KeyModifiers::NONE));
-        let [QueueEffect::Steer { id, .. }] = update.effects.as_slice() else {
-            panic!("enter should begin a steer");
-        };
-
-        queue.cancel_steers();
-        assert!(queue.steer_admitted(*id).is_none());
-
-        assert!(!queue.has_pending_steer());
+        let (id, _) = queue.begin_steer("steer me".to_owned().into());
+        queue.push("followup".to_owned());
+        assert!(queue.has_pending_steer());
+        assert!(queue.drain_ready().is_empty());
         assert_eq!(
-            queue
-                .drain_ready()
-                .into_iter()
-                .map(|prompt| prompt.display_text().to_owned())
-                .collect::<Vec<_>>(),
-            ["steer me"]
+            queue.steer_admitted(id).unwrap().1.display_text(),
+            "steer me"
         );
+        assert!(!queue.has_pending_steer());
+        assert_eq!(queue.drain_ready()[0].display_text(), "followup");
     }
 
     #[test]
@@ -922,9 +1030,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_ne!(advanced_colors, initial_colors);
 
-        assert!(queue.steer_admitted(id).is_none());
         assert_eq!(
-            queue.steer_applied().as_ref().map(Submission::display_text),
+            queue
+                .steer_admitted(id)
+                .as_ref()
+                .map(|(_, prompt)| prompt.display_text()),
             Some("steer me")
         );
         assert!(queue.animation_deadline().is_none());

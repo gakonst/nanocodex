@@ -237,10 +237,21 @@ final class VoiceTests: XCTestCase {
             try play("/tmp/nanocodex-native-voice-personal.wav")
             try await wait({ voice.transcripts.contains { row in
                 guard row.speaker == "assistant", !previousIDs.contains(row.id) else { return false }
-                let text = row.text.lowercased()
+                let text = row.text.lowercased().replacingOccurrences(of: "’", with: "'")
                 return ["don't know", "do not know", "couldn't find", "could not find", "can't find", "cannot find", "no record", "don't have", "do not have"].contains { text.contains($0) }
             } }, seconds: 60)
             mark("personal_unknown_answer")
+            // Keep listening through the final spoken sentence. A partial
+            // "couldn't find" prefix alone is not evidence of the full answer.
+            try await wait({
+                guard !voice.isWorking, voice.outputLevel < 0.004,
+                      let data = try? Data(contentsOf: URL(fileURLWithPath: timingPath)) else { return false }
+                let current = String(decoding: data.dropFirst(before), as: UTF8.self)
+                guard let done = current.range(of: "realtime.turn.done.role.assistant", options: .backwards),
+                      let output = current.range(of: "realtime.output_transcript.added", options: .backwards) else { return false }
+                return done.lowerBound > output.lowerBound
+            })
+            mark("personal_response_finished")
             let trace = String(decoding: try Data(contentsOf: URL(fileURLWithPath: timingPath)).dropFirst(before), as: UTF8.self)
             guard trace.contains("delegate.begin") else {
                 throw RuntimeFailure(message: "Personal memory was answered without checking the managed agent")
