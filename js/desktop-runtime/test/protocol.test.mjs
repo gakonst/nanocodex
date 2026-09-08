@@ -525,3 +525,16 @@ test("replayed acceptance cannot resurrect a turn already finished in the state 
   assert.equal(snapshot.cursor, "9007199254740994");
   assert.deepEqual(snapshot.activeTurns, []);
 });
+
+
+test("split layouts survive persistence and prune missing, duplicate, and malformed leaves", async () => {
+  const leaf = id => ({ id, children: [], fraction: 0.5 });
+  const tree = { id: "split", axis: "horizontal", fraction: 0.63, children: [leaf("one"), { id: "below", axis: "vertical", fraction: 0.4, children: [leaf("two"), leaf("three")] }] };
+  const value = { tabs: ["one", "two", "three"].map(id => ({ id })), paneLayouts: [tree], tiledTabIDs: ["one", "two", "three"], workspaceMode: "tiles" };
+  assert.deepEqual(restoredLayout(value).paneLayouts, [tree]);
+  const missing = restoredLayout({ ...value, tabs: value.tabs.slice(0, 2) }).paneLayouts;
+  assert.deepEqual(missing[0].children, [leaf("one"), leaf("two")]);
+  assert.deepEqual(restoredLayout({ ...value, paneLayouts: [tree, tree] }).paneLayouts, [tree]);
+  assert.deepEqual(restoredLayout({ ...value, paneLayouts: [{ ...tree, axis: "invalid" }] }).paneLayouts, []);
+  assert.equal(restoredLayout({ ...value, paneLayouts: [{ ...tree, fraction: 999 }] }).paneLayouts[0].fraction, 0.85);
+});

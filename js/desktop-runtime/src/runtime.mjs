@@ -98,6 +98,26 @@ function restoredPendingMessages(value) {
   });
 }
 
+function restoredPaneLayouts(value, ids) {
+  if (!Array.isArray(value)) return [];
+  const used = new Set();
+  function node(raw, depth = 0) {
+    if (!raw || depth > 32 || typeof raw.id !== "string" || !raw.id || raw.id.length > 128) return undefined;
+    if (!Array.isArray(raw.children) || raw.children.length === 0) {
+      if (!ids.has(raw.id) || used.has(raw.id)) return undefined;
+      used.add(raw.id);
+      return { id: raw.id, fraction: 0.5, children: [] };
+    }
+    if (!["horizontal", "vertical"].includes(raw.axis) || raw.children.length !== 2) return undefined;
+    const children = raw.children.map(child => node(child, depth + 1)).filter(Boolean);
+    if (children.length < 2) return children[0];
+    const leaves = child => child.children.length ? child.children.flatMap(leaves) : [child.id];
+    return { id: raw.id, axis: raw.axis, fraction: Number.isFinite(raw.fraction) ? Math.min(0.85, Math.max(0.15, raw.fraction)) : 0.5, children,
+      ...(children.flatMap(leaves).includes(raw.selectedLeaf) ? { selectedLeaf: raw.selectedLeaf } : {}) };
+  }
+  return value.map(raw => node(raw)).filter(tree => tree?.children.length === 2);
+}
+
 export function restoredLayout(value) {
   if (!value || !Array.isArray(value.tabs)) return undefined;
   const ids = new Set();
@@ -120,6 +140,7 @@ export function restoredLayout(value) {
   if (!tabs.length) return undefined;
   return {
     tabs,
+    ...(Array.isArray(value.paneLayouts) ? { paneLayouts: restoredPaneLayouts(value.paneLayouts, ids) } : {}),
     activeTabId: ids.has(value.activeTabId) ? value.activeTabId : tabs[0].id,
     tabPosition: value.tabPosition === "top" ? "top" : "left",
     theme: ["system", "light", "dark"].includes(value.theme) ? value.theme : "system",
@@ -229,7 +250,7 @@ export class DesktopRuntime extends EventEmitter {
       }
       return clean;
     });
-    this.#state.layout = restoredLayout({ tabs, activeTabId: value.activeTabId, tabPosition: value.tabPosition, theme: value.theme, workspaceMode: value.workspaceMode, paneWidth: value.paneWidth, tiledTabIDs: value.tiledTabIDs, pendingMessages: value.pendingMessages });
+    this.#state.layout = restoredLayout({ tabs, activeTabId: value.activeTabId, tabPosition: value.tabPosition, theme: value.theme, workspaceMode: value.workspaceMode, paneWidth: value.paneWidth, tiledTabIDs: value.tiledTabIDs, paneLayouts: value.paneLayouts, pendingMessages: value.pendingMessages });
     await this.#save();
   }
 

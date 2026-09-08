@@ -34,18 +34,22 @@ final class HandBackgroundActivity {
 @MainActor
 final class HandStatusItem: NSObject, NSPopoverDelegate {
     private let model: AppModel
-    private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let popover = NSPopover()
     private var observation: AnyCancellable?
     private var dismissalObservation: AnyCancellable?
     private var eventMonitors: [Any] = []
+    private var currentSymbol = ""
+    private var currentTitle = ""
 
     init(model: AppModel, openMainWindow: @escaping () -> Void) {
         self.model = model
         super.init()
         item.button?.image = NSImage(systemSymbolName: "hand.raised.fill", accessibilityDescription: "Nanocodex")
         item.button?.image?.isTemplate = true
-        item.button?.imagePosition = .imageLeading
+        item.autosaveName = "NanocodexAgentControlPanel"
+        item.isVisible = true
+        item.button?.imagePosition = .imageOnly
         item.button?.font = .systemFont(ofSize: 12, weight: .medium)
         item.button?.target = self; item.button?.action = #selector(toggle)
         item.button?.setAccessibilityIdentifier("hand-control-panel")
@@ -71,10 +75,27 @@ final class HandStatusItem: NSObject, NSPopoverDelegate {
         let hands = model.runtimeFailed || !model.state.connected ? "offline"
             : "\(count) \(count == 1 ? "Hand" : "Hands")"
         let activity = model.runningCount > 0 ? " · \(model.runningCount) running" : ""
-        let title = "  Nanocodex · \(hands)\(activity)"
-        if item.button?.title != title { item.button?.title = title }
-        item.button?.toolTip = "Agent control panel · \(model.backgroundHandStatus)"
+        let title = "Nanocodex · \(hands)\(activity)"
+        // A variable-width name/count label can disappear behind the camera
+        // housing or other menu extras. Keep the entry point a fixed square.
+        item.button?.title = ""
+        if currentTitle != title {
+            currentTitle = title; item.button?.toolTip = title + " · Agent control panel"
+            item.button?.setAccessibilityLabel(title)
+        }
+        let symbol = model.runningCount > 0 ? "waveform.path" : "square.stack.3d.up"
+        if currentSymbol != symbol {
+            currentSymbol = symbol
+            item.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Nanocodex")
+            item.button?.image?.isTemplate = true
+        }
     }
+
+    var statusItemSize: NSSize { item.button?.frame.size ?? .zero }
+    var statusItemVisible: Bool { item.isVisible }
+    var controlPanelIsShown: Bool { popover.isShown }
+    func dismiss() { popover.performClose(nil) }
+    var statusItemTitle: String { item.button?.title ?? "" }
 
     @objc private func toggle() {
         if popover.isShown { popover.performClose(nil) } else { show() }
@@ -112,7 +133,7 @@ final class HandStatusItem: NSObject, NSPopoverDelegate {
         dismissalObservation = nil
     }
 
-    deinit { eventMonitors.forEach(NSEvent.removeMonitor) }
+    deinit { eventMonitors.forEach(NSEvent.removeMonitor); NSStatusBar.system.removeStatusItem(item) }
 }
 
 struct HandControlPanel: View {

@@ -31,7 +31,10 @@ struct ChatView: View {
             }.padding(.horizontal, 26).padding(.vertical, 20) }
             if showingWelcome { Spacer(minLength: 24) }
             if showingWelcome {
-                WelcomeView()
+                ViewThatFits(in: .vertical) {
+                    WelcomeView()
+                    Text("What should we work on?").font(.system(size: 20, weight: .medium)).padding(.horizontal, 24)
+                }
             } else { TranscriptView(initiallyFollowing: model.readingPositions[paneID ?? model.activeTabID]?.followsOutput ?? true) }
             ComposerView().frame(maxWidth: 780).padding(.horizontal, 26).padding(.top, showingWelcome ? 24 : 14).padding(.bottom, 18)
             if showingWelcome { Spacer(minLength: 24) }

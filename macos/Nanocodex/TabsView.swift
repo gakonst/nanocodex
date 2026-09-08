@@ -1,109 +1,87 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct SidebarView: View {
-    @EnvironmentObject private var model: AppModel
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            navButton("New thread", symbol: "square.and.pencil", shortcut: "⌘N") { model.newTab() }.accessibilityIdentifier("new-thread")
-            navButton("Search", symbol: "magnifyingglass", shortcut: "⌘K") { model.showingSearch = true }
-            navButton("Hands", symbol: "hand.raised", selected: model.screen == .hands) { model.screen = .hands }.accessibilityIdentifier("hands-navigation")
-            navButton("Connections", symbol: "link") { model.openAccount() }
-            if model.tabPosition == "left" {
-                HStack {
-                    Text("Open agents").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                    Spacer()
-                    Button { model.newTab() } label: { Image(systemName: "plus").font(.system(size: 11)) }.buttonStyle(.plain).help("New tab")
-                }.padding(.horizontal, 10).padding(.top, 26).padding(.bottom, 4)
-                ScrollView {
-                    LazyVStack(spacing: 3) { ForEach(model.tabs) { tab in TabItem(tab: tab, horizontal: false) } }
-                }.scrollIndicators(.hidden)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Threads").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                    Text("Your open threads are in the tab bar above.").font(.system(size: 12)).foregroundStyle(.secondary)
-                    Button("Browse history") { model.showingSearch = true }.buttonStyle(.link)
-                }.padding(10).padding(.top, 22)
-                Spacer()
-            }
-            Spacer(minLength: 12)
-            Divider().opacity(0.5).padding(.horizontal, 9).padding(.bottom, 7)
-            HStack(spacing: 9) {
-                Image(nsImage: NSImage(named: "icon") ?? NSImage()).resizable().frame(width: 32, height: 32)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Nanocodex").font(.system(size: 12, weight: .medium))
-                    HStack(spacing: 5) {
-                        Circle().fill(model.state.connected ? .green : Color.secondary.opacity(0.5)).frame(width: 5, height: 5)
-                        Text(model.isStarting ? "Connecting…" : model.state.connected ? "Connected" : "Connect account").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                Button { model.showingSettings = true } label: { Image(systemName: "gearshape").foregroundStyle(.secondary) }.buttonStyle(.plain).help("Settings (⌘,)").accessibilityIdentifier("settings-navigation")
-            }.padding(9)
-        }.padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 8).background(Color.primary.opacity(0.018))
-    }
-    private func navButton(_ title: String, symbol: String, shortcut: String = "", selected: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) { Image(systemName: symbol).frame(width: 17); Text(title); Spacer(); Text(shortcut).foregroundStyle(.tertiary).font(.system(size: 11)) }
-                .font(.system(size: 13)).padding(.horizontal, 10).padding(.vertical, 9)
-                .background(selected ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 7))
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain)
-    }
-}
-
 struct TopTabsView: View {
     @EnvironmentObject private var model: AppModel
     var body: some View {
-        HStack(spacing: 3) {
-            ScrollView(.horizontal) { HStack(spacing: 3) { ForEach(model.tabs) { tab in TabItem(tab: tab, horizontal: true).frame(width: 205) } }.padding(6) }.scrollIndicators(.hidden)
-            Button { model.newTab() } label: { Image(systemName: "plus").padding(10) }.buttonStyle(.plain).help("New tab")
-        }.background(Color(nsColor: .windowBackgroundColor)).overlay(alignment: .bottom) { Divider().opacity(0.35) }.accessibilityIdentifier("top-tabs")
+        HStack(spacing: 8) {
+            Button { model.showingSearch = true } label: { Image(systemName: "magnifyingglass") }
+                .help("Search conversations (⌘K)").accessibilityIdentifier("search-threads")
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        ForEach(model.browserTabs) { node in BrowserTab(node: node).id(node.id) }
+                    }.padding(.vertical, 5)
+                }
+                .onChange(of: model.activeTabID) { _, id in
+                    if let node = model.browserTabs.first(where: { $0.leaves.contains(id) }) { proxy.scrollTo(node.id) }
+                }
+            }
+            Button { model.newTab() } label: { Image(systemName: "plus") }
+                .help("New tab (⌘T)").accessibilityIdentifier("new-tab")
+            Menu {
+                Button("Hands", systemImage: "hand.raised") { model.screen = .hands }
+                Button("Remote Screens", systemImage: "display") { model.showingScreens = true }
+                Button("Connections", systemImage: "link") { model.openAccount() }
+                Divider()
+                Button("Search History…", systemImage: "clock") { model.showingSearch = true }
+                Button("Settings…", systemImage: "gearshape") { model.showingSettings = true }
+            } label: { Image(systemName: "ellipsis") }
+            .menuStyle(.borderlessButton).fixedSize().help("Workspace and account")
+        }.buttonStyle(.plain).font(.system(size: 13))
+            .padding(.horizontal, 14).frame(height: 46).background(.ultraThinMaterial)
+            .accessibilityIdentifier("top-tabs")
     }
 }
 
-struct TabItem: View {
+private struct BrowserTab: View {
     @EnvironmentObject private var model: AppModel
-    let tab: WorkspaceTab
-    let horizontal: Bool
+    let node: PaneNode
     @State private var hovering = false
-    var selected: Bool { tab.id == model.activeTabID && model.screen == .chat }
-    var running: Bool { tab.threadId.flatMap { model.snapshots[$0] }.map { !$0.activeTurns.isEmpty } ?? (!model.pendingMessages(tab.id).isEmpty) }
+    private var selected: Bool { node.leaves.contains(model.activeTabID) && model.screen == .chat }
+    private var agent: WorkspaceTab? { model.tab(node.leaves.contains(model.activeTabID) ? model.activeTabID : node.leaves[0]) }
+    private var running: Bool { node.leaves.contains { model.working($0) } }
+    private var attentionColor: Color? {
+        let agents = node.leaves.compactMap { model.tab($0) }
+        if agents.contains(where: model.hasAttentionError) { return .orange }
+        return agents.contains { model.update(for: $0).needsAttention($0) } ? .accentColor : nil
+    }
     var body: some View {
-        HStack(spacing: 7) {
-            Button { model.select(tab.id) } label: {
+        HStack(spacing: 8) {
+            Button { model.selectWorkspace(node) } label: {
                 HStack(spacing: 8) {
-                    if running { ProgressView().controlSize(.mini).frame(width: 13, height: 13) }
-                    else if model.update(for: tab).needsAttention(tab) { Circle().fill(model.update(for: tab).failed ? Color.orange : Color.accentColor).frame(width: 7, height: 7).frame(width: 13) }
-                    else { Image(systemName: tab.threadId == nil ? "square.and.pencil" : "bubble.left").font(.system(size: 12)).foregroundStyle(.secondary).frame(width: 13) }
-                    Text(model.title(tab)).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+                    if running { ProgressView().controlSize(.mini) }
+                    else {
+                        Image(systemName: node.leaves.count > 1 ? "rectangle.split.2x2" : "bubble.left").foregroundStyle(.secondary)
+                            .overlay(alignment: .topTrailing) {
+                                if let attentionColor { Circle().fill(attentionColor).frame(width: 5, height: 5).offset(x: 3, y: -2) }
+                            }
+                    }
+                    Text(agent.map(model.title) ?? "New thread").lineLimit(1).font(.system(size: 12, weight: selected ? .medium : .regular))
+                    if node.leaves.count > 1 { Text("\(node.leaves.count)").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary) }
                     Spacer(minLength: 0)
                 }.contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityIdentifier("tab-\(tab.id)")
-            Button { model.closeTab(tab.id) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .medium)).frame(width: 16, height: 18) }
-                .buttonStyle(.plain).foregroundStyle(.secondary).opacity(hovering || selected ? 1 : 0).help("Close tab").accessibilityLabel("Close \(model.title(tab))")
-        }
-        .padding(.horizontal, 10).padding(.vertical, horizontal ? 9 : 10)
-        .background(selected ? Color.primary.opacity(0.075) : hovering ? Color.primary.opacity(0.035) : .clear, in: RoundedRectangle(cornerRadius: 7))
-        .onHover { hovering = $0 }
-        .onDrag { NSItemProvider(object: tab.id as NSString) }
-        .onDrop(of: [.plainText], isTargeted: nil) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: NSString.self) { value, _ in
-                if let id = value as? String { Task { @MainActor in model.moveTab(id, before: tab.id) } }
+            }.buttonStyle(.plain).accessibilityIdentifier("select-browser-tab-" + node.id)
+            Button { model.closeWorkspace(node) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .medium)) }
+                .opacity(hovering || selected ? 1 : 0).help("Close tab").accessibilityLabel("Close tab")
+        }.padding(.horizontal, 11).frame(width: 192, height: 32)
+            .background(selected ? Color.primary.opacity(0.085) : Color.primary.opacity(hovering ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.primary.opacity(selected ? 0.08 : 0)))
+            .contentShape(Rectangle()).onHover { hovering = $0 }
+            .accessibilityElement(children: .contain).accessibilityIdentifier("browser-tab-" + node.id)
+            .onDrag { NSItemProvider(object: node.leaves[0] as NSString) }
+            .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                guard let provider = providers.first else { return false }
+                _ = provider.loadObject(ofClass: String.self) { value, _ in if let value { Task { @MainActor in model.moveTab(value, before: node.leaves[0]) } } }
+                return true
             }
-            return true
-        }
-        .contextMenu {
-            Button("Open Beside") { model.openBeside(tab.id) }.disabled(tab.id == model.activeTabID)
-            Divider()
-            Button("Rename Tab…") { model.renameTab(tab) }
-            Button("Close Tab") { model.closeTab(tab.id) }
-            Button("New Tab") { model.newTab() }
-            Divider()
-            Button(horizontal ? "Move Tabs to Sidebar" : "Move Tabs to Top") { model.tabPosition = horizontal ? "left" : "top"; model.persistLayout() }
-        }
-        .help(model.title(tab))
+            .contextMenu {
+                Button("Split Right") { model.selectWorkspace(node); model.splitAgent(axis: "horizontal") }
+                Button("Split Below") { model.selectWorkspace(node); model.splitAgent(axis: "vertical") }
+                if let agent { Button("Rename Agent…") { model.renameTab(agent) } }
+                Divider()
+                Button("Close Tab") { model.closeWorkspace(node) }
+            }
     }
 }
 

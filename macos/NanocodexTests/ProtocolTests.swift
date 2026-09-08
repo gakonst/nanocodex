@@ -2,6 +2,115 @@ import XCTest
 @testable import Nanocodex
 
 final class ProtocolTests: XCTestCase {
+    @MainActor
+    func testBrowserSplitLayoutsPersistReopenAndRetainEditors() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-browser-fixture")
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.workspaceFilter = .all
+        var saved: JSONValue?
+        model.runtime.requestOverride = { method, args in if method == "saveLayout" { saved = args.first }; return .null }
+        model.tabs = [WorkspaceTab(id: "one", title: "Plan the release", draft: "First draft"), WorkspaceTab(id: "two", title: "Review the changes", draft: "Second draft"), WorkspaceTab(id: "three", title: "Check the result", draft: "Third draft")]
+        model.activeTabID = "one"; model.openBeside("two")
+        model.splitAxis = "vertical"; model.openBeside("three")
+        let tree = try XCTUnwrap(model.activePaneLayout)
+        XCTAssertEqual(tree.leaves, ["one", "two", "three"])
+        XCTAssertEqual(tree.children[1].axis, "vertical")
+        XCTAssertEqual(model.browserTabs.count, 1)
+        let content = NSHostingView(rootView: ContentView().environmentObject(model).preferredColorScheme(.dark).frame(width: 1440, height: 1000))
+        content.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1000), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = content; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        try await Task.sleep(for: .milliseconds(200)); content.layoutSubtreeIfNeeded()
+        func find(_ view: NSView) -> AgentSplitSurface? { (view as? AgentSplitSurface) ?? view.subviews.lazy.compactMap(find).first }
+        let surface = try XCTUnwrap(find(content))
+        let hosts = surface.hosts
+        let initialWidth = try XCTUnwrap(hosts["one"]).frame.width
+        var timings: [Double] = []
+        for index in 0..<30 {
+            let began = CFAbsoluteTimeGetCurrent()
+            surface.dragSplit(tree.id, fraction: 0.4 + Double(index) / 200, finished: index == 29)
+            content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            timings.append((CFAbsoluteTimeGetCurrent() - began) * 1000)
+        }
+        XCTAssertNotEqual(hosts["one"]?.frame.width, initialWidth)
+        for id in tree.leaves { XCTAssertTrue(hosts[id] === surface.hosts[id], "Resizing retains each native editor and viewport") }
+        XCTAssertGreaterThan(try XCTUnwrap(hosts["three"]).frame.minY, try XCTUnwrap(hosts["two"]).frame.minY)
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent("native-browser-splits.png"))
+        content.rootView = ContentView().environmentObject(model).preferredColorScheme(.dark).frame(width: 820, height: 600)
+        window.setContentSize(NSSize(width: 820, height: 600))
+        try await Task.sleep(for: .milliseconds(100)); content.layoutSubtreeIfNeeded()
+        let narrow = try XCTUnwrap(find(content))
+        XCTAssertGreaterThanOrEqual(narrow.frame.width, 728)
+        XCTAssertGreaterThanOrEqual(narrow.frame.height, 608)
+        XCTAssertTrue(narrow.hosts.values.allSatisfy { $0.frame.width >= 360 && $0.frame.height >= 300 })
+        XCTAssertTrue(narrow.visibleRect.contains(try XCTUnwrap(narrow.hosts["three"]).frame), "Shrinking the window keeps the active pane visible")
+        let narrowBitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: narrowBitmap)
+        try XCTUnwrap(narrowBitmap.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent("native-browser-splits-narrow.png"))
+        model.newTab(); let independent = model.activeTabID
+        XCTAssertFalse(model.isTiled); XCTAssertEqual(model.browserTabs.count, 2)
+        model.selectWorkspace(try XCTUnwrap(model.browserTabs.first { $0.id == tree.id }))
+        XCTAssertEqual(model.activePaneLayout?.leaves, tree.leaves)
+        XCTAssertEqual(model.activeTabID, "three", "Returning to a layout restores its last focused pane")
+        XCTAssertEqual(model.tab("one")?.draft, "First draft")
+        model.moveTab(independent, before: "one")
+        XCTAssertEqual(model.browserTabs.first?.id, independent)
+        model.moveTab("one", before: independent)
+        XCTAssertEqual(model.browserTabs.first?.id, tree.id)
+        model.closeWorkspace(tree); XCTAssertNil(model.tab("one")); XCTAssertNotNil(model.tab(independent))
+        model.reopenTab(); XCTAssertEqual(model.activePaneLayout?.leaves, tree.leaves)
+        XCTAssertEqual(model.tab("two")?.draft, "Second draft")
+        model.resizeSplit(tree.id, fraction: 0.63)
+        try await Task.sleep(for: .milliseconds(450))
+        let layout = try XCTUnwrap(saved).decode(TabLayout.self)
+        XCTAssertEqual(layout.paneLayouts?.first?.fraction, 0.63)
+        let restored = AppModel(runtimeDirectory: "/tmp/nanocodex-browser-restored")
+        restored.runtime.requestOverride = { _, _ in .null }; defer { restored.shutdown() }
+        guard case .object(var state) = Self.connectedState else { return XCTFail("Missing fixture") }
+        state["layout"] = saved
+        var wire = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("state"), "state": .object(state)])])); wire.append(10)
+        restored.runtime.receiveForTesting(wire)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(restored.activePaneLayout, model.activePaneLayout)
+        XCTAssertEqual(restored.tab("three")?.draft, "Third draft")
+        let status = HandStatusItem(model: model, openMainWindow: {})
+        XCTAssertTrue(status.statusItemVisible)
+        XCTAssertEqual(status.statusItemTitle, "")
+        XCTAssertLessThanOrEqual(status.statusItemSize.width, 32)
+        let metrics: [String: Any] = ["timestamp": ISO8601DateFormatter().string(from: Date()), "dividerResizeMedianMs": timings.sorted()[15], "dividerResizeP95Ms": timings.sorted()[28], "menuBarItemWidthPt": status.statusItemSize.width, "network": "none; native window, editors, split layout and persistence"]
+        try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]).write(to: evidence.appendingPathComponent("native-browser-layout-metrics.json"))
+    }
+
+    @MainActor
+    func testNativeMenuBarAfterWindowClose() async throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_DESKTOP_MENU_BAR_LIVE"] == "1" else {
+            throw XCTSkip("Opt-in visible menu-bar check requires an unlocked macOS desktop")
+        }
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-menu-bar-fixture")
+        model.runtime.requestOverride = { _, _ in .null }
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        defer { model.shutdown() }
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ContentView().environmentObject(model))
+        window.makeKeyAndOrderFront(nil)
+        let status = HandStatusItem(model: model, openMainWindow: { window.makeKeyAndOrderFront(nil) })
+        defer { status.dismiss(); window.close() }
+        try await Task.sleep(for: .milliseconds(250))
+        window.close()
+        let started = CFAbsoluteTimeGetCurrent()
+        status.show()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(status.controlPanelIsShown, "The control panel stays available with the workspace window closed")
+        print("BACKGROUND_PANEL visible=\(status.controlPanelIsShown) observed_ms=\((CFAbsoluteTimeGetCurrent() - started) * 1000) width_pt=\(status.statusItemSize.width)")
+        status.dismiss(); XCTAssertFalse(status.controlPanelIsShown)
+    }
+
     func testActivityPreservesAnswerPhasesAndStableTurnIdentity() {
         func event(_ cursor: String, _ phase: String, _ text: String) -> ManagedEvent {
             .init(cursor: cursor, turnId: "turn", data: .object(["type": .string("event"), "event": .object([
@@ -319,8 +428,10 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(model.tab("design")?.draft, "Design draft")
         model.pending = []
         try capture("native-inbox-tiles-light.png")
-        let workspace = try XCTUnwrap(scrolls(content).first { ($0.documentView?.bounds.width ?? 0) > $0.contentSize.width + 300 })
-        let before = workspace.contentView.bounds.minX
+        let workspace = try XCTUnwrap(scrolls(content).first { $0.documentView is AgentSplitSurface })
+        let surface = try XCTUnwrap(workspace.documentView as? AgentSplitSurface)
+        XCTAssertEqual(surface.hosts.count, 3)
+        XCTAssertTrue(surface.hosts.values.allSatisfy { $0.frame.width >= 360 })
         window.makeFirstResponder(first)
         try await Task.sleep(for: .milliseconds(100))
         model.cyclePane(1)
@@ -332,7 +443,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(window.firstResponder is WorkspaceKeyboardView)
         model.cyclePane(1)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertGreaterThan(workspace.contentView.bounds.minX, before + 100, "Keyboard focus reveals an offscreen pane")
+        XCTAssertTrue(workspace.documentVisibleRect.intersects(try XCTUnwrap(surface.hosts["release"]).frame), "Keyboard focus reveals the selected pane")
         XCTAssertTrue(window.firstResponder is WorkspaceKeyboardView, "Tiled navigation stays outside composers")
         model.select("research")
         let order = model.visibleTabs.map(\.id)

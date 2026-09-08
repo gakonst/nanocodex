@@ -88,9 +88,10 @@ account Worker route. Only this Mac's local Hands have start/stop controls.
 iPhone availability remains limited by iOS background execution; retaining its
 row does not wake the phone or keep its socket connected indefinitely.
 
-The Hand item in the macOS menu bar shows **Nanocodex · N Hands**, adds the running
-agent count when tasks are active, and stays
-available after closing the window. Click it for the agent control panel: live
+The compact Nanocodex icon in the macOS menu bar stays available after closing
+the window. It changes to a waveform while agents work; its tooltip and accessible
+label report connection, Hand, and running-agent counts. Its fixed square width
+avoids the expanding text label competing for space with other menu extras. Click it for the agent control panel: live
 counts, open agents with running/queued/review status, and Hands with active call
 counts and Connect/Stop controls. Running agents appear first; click an agent to
 open it, or stop its current turn in place. The agent counts cover the workspace's
@@ -115,68 +116,48 @@ can still turn off. Closing the lid, choosing Sleep, or low battery can still
 suspend the Mac; this option does not run Hands through forced sleep or after
 quitting. Keeping the Mac awake uses more battery.
 
-## Inbox, swiping, and optional panes
+## Browser tabs and agent panes
 
-Start with one spacious conversation. Swipe horizontally through the open agents
-in Inbox, Running, or All; each agent retains its draft and reading position.
-The focused view uses AppKit's
-[horizontal page transitions](https://developer.apple.com/documentation/appkit/nspagecontroller):
-macOS owns gesture tracking, cancellation, edge resistance, and transition
-snapshots. Sidebar, keyboard, and button selection switches immediately, without
-queuing animations through other threads. An explicit cache retains up to eight
-recent conversation views, including their native editors and viewports. Pages
-finish layout before AppKit reveals or snapshots them.
-Navigation never marks an update seen, stops a turn, or deletes history.
-With a mouse, drag a pane's header left or right to switch. Short or vertical
-drags stay put; text selection and the composer keep their normal mouse behavior.
-Existing threads load inside the conversation surface without showing the new-chat
-welcome screen. Failed loads show a pane-local retry state, preserve the draft,
-and leave other agents usable. Tool and reasoning disclosures retain their expansion per pane.
-The optimistic user message keeps its identity when accepted; final responses
-update the streamed row in place. Titles retain the initial prompt until the
-service supplies a title. Tiled content is rebuilt only when its arrangement or
-width changes, and streaming preserves the reading position without per-token
-scroll commands.
+The desktop uses top tabs and a full-width conversation canvas. Each browser tab
+holds one agent or a saved split layout. Search is at the left of the tab strip;
+**+** creates a separate tab. The **…** menu opens Hands, Remote Screens,
+Connections, history, and Settings. Translucent chrome, thin pane headers, and
+subtle focus borders leave more room for conversations.
 
-**Open beside** is the explicit entry into tiling. Choose an existing agent or
-create a new one beside the current conversation. Two panes fit the window;
-additional chosen panes extend horizontally. Opening a normal new tab or selecting
-an agent in the sidebar replaces the focused conversation without adding panes.
-In a tiled layout, selecting an already visible agent focuses its pane; selecting
-another replaces the focused pane. Pane-specific composers and controls retain
-their agent identity throughout.
+**Split Right** (`⌘\`) and **Split Below** (`⌘⌥J`) divide the active agent's pane
+and create another agent. **Open beside** (`⌘⇧\`) brings an existing open agent
+into the layout. Splits can be nested in either direction. Drag the gap between
+panes to resize; double-click it to balance the split. Editors and viewports
+retain their identity throughout resizing. Small windows scroll the layout when
+its panes cannot fit at a usable minimum size.
 
-- Remove a pane with its **×** to keep the agent in the sidebar. Removing the
-  second pane returns to the single conversation. **Focus this agent** temporarily
-  expands one pane; **Resume layout** restores the chosen arrangement.
-- **Inbox / Running / All** returns to the single-agent review flow and preserves
-  the chosen layout for explicit resumption. Inbox prioritizes completed and
-  failed unseen updates on selection. Live output does not reorder conversations.
-- **Seen** (checkmark / `⌘D`) records the current update and advances the Inbox.
-  **Later** (clock / `⌘⇧D`) defers it without marking it seen. New events bring
-  agents back. Inbox Zero retains agents and drafts in All.
-- The active pane has an accent border and an **Active · Navigate / Writing**
-  badge. **Escape** leaves the composer for navigation; repeated Escape stays
-  there and preserves the draft. **Tab / Shift-Tab**, **Left / Right**, and
-  **Up / Down** move between conversations or chosen panes. **Enter** returns
-  to the active composer without sending. While writing, arrows edit text normally.
-  Clicking a header also enters navigation; clicking a composer enters writing.
-- `⌘⌥←` / `⌘⌥→` navigates to the adjacent conversation or chosen pane and
-  preserves the keyboard mode. Navigation stops at either end. Swiping enters
-  navigation when it changes the active agent.
-  `⌘⌥⇧←` / `⌘⌥⇧→` reorders the focused pane; `⌘⇧F` focuses or resumes a layout.
-- The tiled **Layout** menu offers Fit two panes, Compact, and Wide.
-- `⌘\` opens a new agent immediately to the right and focuses its composer.
-  `⌘⇧\` opens the existing-agent picker: type to filter, use Up/Down to choose,
-  and Return to open it to the right. Escape dismisses the picker.
-- `⌘T` / `⌘N` starts a conversation; `⌘W` closes a tab; `⌘⇧T` reopens it;
-  `⌘K` searches durable threads; type to filter, use arrows to select, and Return
-  to open the result. `⌘,` opens Settings. Sidebar/top tabs retain
-  drag reordering and renaming, with **Open Beside** in their context menu.
-- Drafts, Hands, folders, model controls, sending, steering, and history loading
-  target their own agent. Order, drafts, review cursors, selected pane IDs, widths,
-  and focused/tiled layout persist in the existing account-scoped preferences.
-  Legacy layouts open in the single-agent view until tiling is explicitly chosen.
+- Top tabs switch between saved layouts and remember the last focused pane.
+  Drag a tab to reorder the entire group. `⌘⇧[` / `⌘⇧]` cycles browser tabs.
+- `⌘T` / `⌘N` creates a separate conversation. `⌘W` or the tab's **×** closes
+  that browser tab; `⌘⇧T` restores its agents, drafts, and split arrangement.
+  Closing a view does not delete durable conversation history or stop its tasks.
+- A pane's **×** removes it from the layout and keeps its agent in a separate tab.
+  **Focus this agent** temporarily expands it; **Resume layout** restores panes.
+  Each pane's menu offers splitting, renaming, moving, and closing that agent.
+- `⌘⌥←` / `⌘⌥→` navigates panes. Escape enters navigation; Tab and arrows move
+  between agents; Enter returns to the active composer without sending.
+  While writing, arrows edit text normally. `⌘⌥⇧←` / `⌘⌥⇧→` reorders panes.
+- **Inbox / Running / All** keeps the single-agent review flow. Swipe through
+  agents with AppKit's native page transitions and retained editor/scroll cache.
+  Live output never reorders conversations. **Seen** (`⌘D`) records an update;
+  **Later** (`⌘⇧D`) defers it. Neither navigation nor tiling marks an agent seen.
+- `⌘K` searches durable conversations; Up/Down chooses and Return opens a result.
+  Drafts, model controls, Hands, voice sessions, and sending belong to their agent.
+  Voice continues on its originating agent while changing layouts.
+- Layout trees, split proportions, pane focus, drafts, model settings, review
+  cursors, and queued messages use the existing account-scoped preferences.
+  Previous sidebar and horizontal layouts migrate without losing agents or drafts.
+
+The hosted native tests cover mixed splits, resizing with retained editors,
+layout switching, group reordering/closing/reopening, persistence, keyboard
+navigation, queue ownership, and review behavior. See
+[`DESKTOP_BROWSER_DOGFOOD_2026_09_09.md`](../docs/DESKTOP_BROWSER_DOGFOOD_2026_09_09.md)
+for measured comparisons and installed-app evidence.
 
 ## Compute and conversation controls
 

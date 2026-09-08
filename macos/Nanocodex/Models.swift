@@ -83,6 +83,44 @@ struct TabLayout: Codable, Equatable, Sendable {
     var paneWidth: Double?
     var tiledTabIDs: [String]?
     var pendingMessages: [PendingMessage]?
+    var paneLayouts: [PaneNode]?
+}
+
+/// A browser tab is either one agent or a retained tree of agent panes.
+/// Leaf IDs are agent tab IDs; split IDs remain stable while resizing/reordering.
+struct PaneNode: Codable, Equatable, Sendable, Identifiable {
+    var id: String
+    var axis: String? = nil
+    var fraction: Double = 0.5
+    var children: [PaneNode] = []
+    var selectedLeaf: String? = nil
+    var leaves: [String] { children.isEmpty ? [id] : children.flatMap(\.leaves) }
+    static func row(_ ids: [String]) -> PaneNode? {
+        guard let first = ids.first else { return nil }
+        guard ids.count > 1, let rest = row(Array(ids.dropFirst())) else { return PaneNode(id: first) }
+        return PaneNode(id: UUID().uuidString, axis: "horizontal", fraction: 1 / Double(ids.count), children: [PaneNode(id: first), rest])
+    }
+    func inserting(_ leaf: String, after target: String, axis: String) -> PaneNode {
+        if children.isEmpty, id == target {
+            return PaneNode(id: UUID().uuidString, axis: axis, children: [self, PaneNode(id: leaf)])
+        }
+        var copy = self; copy.children = children.map { $0.inserting(leaf, after: target, axis: axis) }; return copy
+    }
+    func replacing(_ old: String, with new: String) -> PaneNode {
+        var copy = self
+        if children.isEmpty, id == old { copy.id = new }
+        copy.children = children.map { $0.replacing(old, with: new) }; return copy
+    }
+    func removing(_ leaf: String) -> PaneNode? {
+        if children.isEmpty { return id == leaf ? nil : self }
+        var copy = self; copy.children = children.compactMap { $0.removing(leaf) }
+        return copy.children.count == 1 ? copy.children[0] : copy.children.isEmpty ? nil : copy
+    }
+    func resizing(_ split: String, to value: Double) -> PaneNode {
+        var copy = self
+        if id == split { copy.fraction = min(0.85, max(0.15, value)) }
+        copy.children = children.map { $0.resizing(split, to: value) }; return copy
+    }
 }
 
 /// Matches Inbox's durable queue: submitting once and stopping its captured

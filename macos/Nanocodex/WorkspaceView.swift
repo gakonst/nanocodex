@@ -19,53 +19,41 @@ struct WorkspacePane: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Circle().fill(model.hasAttentionError(tab) ? Color.orange : update.running ? Color.green : update.needsAttention(tab) ? Color.accentColor : Color.secondary.opacity(0.35)).frame(width: 6, height: 6)
-                    Text(status).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                    if let snapshot = model.snapshot(tab.id), !snapshot.connected {
-                        Text("Reconnecting…").font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Label(model.workspaceFocus == .writing ? "Active · Writing" : "Active · Navigate", systemImage: model.workspaceFocus == .writing ? "pencil" : "arrow.left.arrow.right")
-                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Color.accentColor.opacity(0.10), in: Capsule())
-                        .opacity(selected ? 1 : 0)
-                        .accessibilityHidden(!selected).accessibilityIdentifier("active-pane-mode")
-                    if model.isTiled {
-                        Button { model.removePane(tab.id) } label: { Image(systemName: "xmark").font(.system(size: 10)) }
-                            .buttonStyle(.plain).help("Remove from layout · keep agent in sidebar").accessibilityIdentifier("remove-pane-" + tab.id)
-                    }
-                    Menu {
-                        Button("Rename…") { model.renameTab(tab) }
-                        Button("Move left") { model.select(tab.id); model.movePane(-1) }
-                        Button("Move right") { model.select(tab.id); model.movePane(1) }
-                        Button("Focus this agent") { model.focusOnly(tab.id) }
-                        if model.isTiled { Button("Remove from layout") { model.removePane(tab.id) } }
-                        Divider()
-                        Button("Close pane") { model.closeTab(tab.id) }
-                    } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().help("Pane actions")
+            HStack(spacing: 9) {
+                Circle().fill(model.hasAttentionError(tab) ? Color.orange : update.running ? Color.green : update.needsAttention(tab) ? Color.accentColor : Color.secondary.opacity(0.35)).frame(width: 6, height: 6).help(status)
+                Text(model.title(tab)).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                Spacer(minLength: 4)
+                if update.running { Text("Working").font(.system(size: 10)).foregroundStyle(.secondary) }
+                Button { model.review(tab.id, seen: true) } label: { Image(systemName: "checkmark") }
+                    .help("Mark update seen (⌘D)").accessibilityIdentifier("pane-seen-\(tab.id)")
+                Menu {
+                    Button("Split Right") { model.select(tab.id); model.splitAgent(axis: "horizontal") }
+                    Button("Split Below") { model.select(tab.id); model.splitAgent(axis: "vertical") }
+                    Divider()
+                    Button("Rename…") { model.renameTab(tab) }
+                    Button("Move left") { model.select(tab.id); model.movePane(-1) }
+                    Button("Move right") { model.select(tab.id); model.movePane(1) }
+                    Button("Focus this agent") { model.focusOnly(tab.id) }
+                    Button("Revisit Later") { model.review(tab.id, seen: false) }
+                    if model.isTiled { Button("Move to Separate Tab") { model.removePane(tab.id); model.selectWorkspace(PaneNode(id: tab.id)) } }
+                    Divider()
+                    Button("Close Agent") { model.closeTab(tab.id) }
+                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().help("Pane actions")
+                if model.isTiled {
+                    Button { model.removePane(tab.id) } label: { Image(systemName: "xmark").font(.system(size: 10)) }
+                        .help("Remove pane · keep agent in its own tab").accessibilityIdentifier("remove-pane-" + tab.id)
                 }
-                HStack(alignment: .top, spacing: 12) {
-                    Text(model.title(tab)).font(.system(size: model.isTiled ? 15 : 22, weight: .semibold)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                        .help("Drag left or right to switch agents · click to navigate with the keyboard")
-                    Button { model.review(tab.id, seen: false) } label: { Image(systemName: "clock") }
-                        .help("Later · revisit after a new update").accessibilityIdentifier("pane-later-\(tab.id)")
-                    Button { model.review(tab.id, seen: true) } label: { Image(systemName: "checkmark") }
-                        .help("Mark update seen (⌘D)").accessibilityIdentifier("pane-seen-\(tab.id)")
-                }.buttonStyle(.plain)
-            }.padding(model.isTiled ? 16 : 24)
-                .background(selected ? Color.accentColor.opacity(0.045) : .clear)
+            }.buttonStyle(.plain).foregroundStyle(.secondary).padding(.horizontal, 14).frame(height: 38)
+                .background(selected ? Color.primary.opacity(0.035) : .clear)
                 .contentShape(Rectangle())
                 .onTapGesture { model.select(tab.id); model.enterNavigation() }
                 .gesture(headerSwipe)
             Divider().opacity(0.45)
             ChatView()
         }
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(selected ? Color.accentColor.opacity(0.85) : Color.primary.opacity(0.09), lineWidth: selected ? 2 : 1))
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 11))
+        .clipShape(RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(selected ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.09), lineWidth: 1))
         .offset(x: reduceMotion ? 0 : dragOffset)
         .background(PaneActivation { model.select(tab.id) })
         .accessibilityElement(children: .contain).accessibilityIdentifier("workspace-pane-\(tab.id)")
@@ -137,23 +125,19 @@ struct TiledWorkspaceView: View {
                     Button { model.toggleFocusMode() } label: { Label("Resume layout", systemImage: "rectangle.split.2x1") }
                         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
                 }
-                if model.isTiled {
-                    Menu {
-                        Button("Fit two panes") { model.paneWidth = 0; model.persistLayout() }
-                        Button("Compact · 420 pt") { model.resizePanes(420) }
-                        Button("Wide · 720 pt") { model.resizePanes(720) }
-                        Divider()
-                        Button("Focus this agent") { model.focusOnly(model.activeTabID) }
-                    } label: { Label("Layout", systemImage: "rectangle.split.2x1") }
-                        .menuStyle(.borderlessButton).fixedSize().help("Arrange panes")
-                }
+                Menu {
+                    Button("Split Right") { model.splitAgent(axis: "horizontal") }
+                    Button("Split Below") { model.splitAgent(axis: "vertical") }
+                    if model.isTiled { Button("Focus this agent") { model.focusOnly(model.activeTabID) } }
+                } label: { Image(systemName: "rectangle.split.2x2") }
+                    .menuStyle(.borderlessButton).fixedSize().help("Split layout")
                 Button { model.showingPanePicker = true } label: {
                     Label(model.isTiled ? "Add pane" : "Open beside", systemImage: "rectangle.badge.plus")
                         .font(.system(size: 12, weight: .medium)).padding(.horizontal, 11).padding(.vertical, 7)
                         .background(Color.primary.opacity(0.04), in: Capsule())
                 }.buttonStyle(.plain).help(Text(verbatim: "Open an existing agent to the right (⌘⇧\\) · New agent to the right (⌘\\)")).accessibilityIdentifier("open-beside")
                     .popover(isPresented: $model.showingPanePicker) { PanePickerView() }
-            }.padding(.horizontal, 18).padding(.vertical, 12)
+            }.padding(.horizontal, 14).padding(.vertical, 6)
             if model.canvasTabs.isEmpty {
                 ContentUnavailableView {
                     Label(model.workspaceFilter == .inbox ? "Inbox Zero" : "Nothing running", systemImage: "tray")
@@ -164,10 +148,8 @@ struct TiledWorkspaceView: View {
                     Button("New agent") { model.newTab() }
                 }.accessibilityIdentifier("workspace-empty")
             } else if model.isTiled {
-                GeometryReader { geometry in
-                    let width = model.paneWidth == 0 ? max(420, (geometry.size.width - 36) / 2) : min(model.paneWidth, max(360, geometry.size.width - 24))
-                    TiledCanvas(model: model, paneWidth: width, reduceMotion: reduceMotion)
-                }.accessibilityIdentifier("tiled-workspace")
+                SplitCanvas(model: model).padding(.horizontal, 8).padding(.bottom, 6)
+                    .accessibilityIdentifier("tiled-workspace")
             } else {
                 InboxPager(model: model, reduceMotion: reduceMotion)
                     .padding(.horizontal, 14).padding(.bottom, 2)
@@ -176,11 +158,7 @@ struct TiledWorkspaceView: View {
             HStack(spacing: 12) {
                 Button { model.cyclePane(-1) } label: { Image(systemName: "chevron.left").frame(width: 24, height: 28) }
                     .disabled(position == 0).help("Previous agent (⌘⌥←)").accessibilityIdentifier("previous-agent")
-                VStack(spacing: 2) {
-                    Text("\(navigationTabs.isEmpty ? 0 : position + 1) of \(navigationTabs.count)").font(.system(size: 11, weight: .medium)).monospacedDigit()
-                    Text(model.isTiled ? "Scroll or drag a header to switch" : "Swipe or drag the header to switch")
-                        .font(.system(size: 10)).foregroundStyle(.tertiary)
-                }
+                Text("\(navigationTabs.isEmpty ? 0 : position + 1) / \(navigationTabs.count)").font(.system(size: 10)).monospacedDigit()
                 Button { model.cyclePane(1) } label: { Image(systemName: "chevron.right").frame(width: 24, height: 28) }
                     .disabled(position >= navigationTabs.count - 1).help("Next agent (⌘⌥→)").accessibilityIdentifier("next-agent")
                 Divider().frame(height: 22).padding(.horizontal, 4)
@@ -196,7 +174,7 @@ struct TiledWorkspaceView: View {
                 }.accessibilityIdentifier("workspace-keyboard-mode")
                 Button { model.newTab(beside: true) } label: { Text("⌘\\ New split").font(.system(size: 11)) }
                     .help(Text(verbatim: "New agent to the right (⌘\\)")).accessibilityIdentifier("new-split")
-            }.buttonStyle(.plain).foregroundStyle(.secondary).padding(.vertical, 11)
+            }.buttonStyle(.plain).foregroundStyle(.secondary).padding(.vertical, 5)
         }.background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
             .background(WorkspaceKeyboard(model: model))
             .onExitCommand { model.enterNavigation() }
@@ -462,72 +440,6 @@ private extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
 
-/// A native horizontal scroll view lets nested transcripts forward horizontal
-/// gestures through the responder chain; vertical reading stays in the transcript.
-struct TiledCanvas: NSViewRepresentable {
-    @ObservedObject var model: AppModel
-    var paneWidth: CGFloat
-    var reduceMotion: Bool
-    func makeNSView(context: Context) -> WorkspaceRail {
-        let scroll = WorkspaceRail()
-        scroll.drawsBackground = false; scroll.hasHorizontalScroller = true; scroll.hasVerticalScroller = false
-        scroll.autohidesScrollers = true; scroll.horizontalScrollElasticity = .allowed; scroll.verticalScrollElasticity = .none
-        scroll.documentView = NSHostingView(rootView: AnyView(Color.clear))
-        scroll.wheelRouter = WorkspaceWheelRouter(view: scroll) { [weak scroll] event in scroll?.scrollWheel(with: event) }
-        return scroll
-    }
-    func updateNSView(_ scroll: WorkspaceRail, context: Context) {
-        guard let host = scroll.documentView as? NSHostingView<AnyView> else { return }
-        let ids = model.canvasTabs.map(\.id)
-        if scroll.orderedIDs != ids || scroll.lastWidth != paneWidth {
-            host.rootView = AnyView(HStack(spacing: 12) {
-                ForEach(ids, id: \.self) { id in AgentPage(model: model, id: id).frame(width: paneWidth) }
-            }.padding(.horizontal, 12).padding(.vertical, 2))
-            host.sizingOptions = []
-        }
-        let size = NSSize(width: CGFloat(ids.count) * (paneWidth + 12) + 12, height: max(0, scroll.contentSize.height))
-        if host.frame.size != size { host.setFrameSize(size) }
-        scroll.paneStride = paneWidth + 12
-        scroll.reduceMotion = reduceMotion
-        if scroll.selectedID != model.activeTabID || scroll.orderedIDs != ids || scroll.lastWidth != paneWidth {
-            scroll.selectedID = model.activeTabID; scroll.orderedIDs = ids; scroll.lastWidth = paneWidth
-            if let index = ids.firstIndex(of: model.activeTabID) { scroll.reveal(index: index) }
-        }
-    }
-}
-
-final class WorkspaceRail: NSScrollView {
-    var wheelRouter: WorkspaceWheelRouter?
-    var selectedID = ""
-    var orderedIDs: [String] = []
-    var lastWidth: CGFloat = 0
-    var paneStride: CGFloat = 0
-    var reduceMotion = false
-    private var lastViewportWidth: CGFloat = 0
-    override func wantsForwardedScrollEvents(for axis: NSEvent.GestureAxis) -> Bool { axis == .horizontal }
-    override func layout() {
-        super.layout()
-        if let documentView, abs(documentView.frame.height - contentSize.height) > 1 { documentView.setFrameSize(NSSize(width: documentView.frame.width, height: contentSize.height)) }
-        if abs(lastViewportWidth - contentSize.width) > 1 {
-            lastViewportWidth = contentSize.width
-            if let index = orderedIDs.firstIndex(of: selectedID) { reveal(index: index) }
-        }
-    }
-    func reveal(index: Int) {
-        guard let documentView else { return }
-        let left = CGFloat(index) * paneStride
-        let right = left + paneStride
-        let visible = contentView.bounds
-        guard visible.width > 0 else { return }
-        let target = left < visible.minX ? left : right > visible.maxX ? right - visible.width : visible.minX
-        let x = min(max(0, documentView.frame.width - visible.width), max(0, target))
-        guard abs(x - visible.minX) > 1 else { return }
-        contentView.scroll(to: NSPoint(x: x, y: 0)); reflectScrolledClipView(contentView)
-    }
-}
-
-/// Route only horizontal gestures inside this workspace. This also covers native
-/// text editors, whose scroll views otherwise consume horizontal wheel events.
 final class WorkspaceWheelRouter {
     private var monitor: Any?
     private var horizontal: Bool?
@@ -554,4 +466,119 @@ final class WorkspaceWheelRouter {
         }
     }
     deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+}
+
+/// Keeps the same native editor/viewports while split ratios change. Only frames
+/// change during a divider drag; no SwiftUI tree is rebuilt per mouse event.
+struct SplitCanvas: NSViewRepresentable {
+    @ObservedObject var model: AppModel
+    func makeNSView(context: Context) -> AgentSplitScroll {
+        let scroll = AgentSplitScroll(); scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = true; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        scroll.documentView = AgentSplitSurface(model: model)
+        return scroll
+    }
+    func updateNSView(_ scroll: AgentSplitScroll, context: Context) {
+        guard let surface = scroll.documentView as? AgentSplitSurface, let tree = model.activePaneLayout else { return }
+        surface.synchronize(tree)
+        let minimum = surface.minimumSize(tree)
+        surface.setFrameSize(NSSize(width: max(scroll.contentSize.width, minimum.width), height: max(scroll.contentSize.height, minimum.height)))
+        surface.needsLayout = true
+        if surface.selectedID != model.activeTabID {
+            surface.selectedID = model.activeTabID
+            if let host = surface.hosts[model.activeTabID] { surface.scrollToVisible(host.frame) }
+        }
+    }
+}
+
+final class AgentSplitScroll: NSScrollView {
+    private var previousViewportSize = NSSize.zero
+    override func layout() {
+        super.layout()
+        guard let surface = documentView as? AgentSplitSurface, let tree = surface.tree else { return }
+        let minimum = surface.minimumSize(tree)
+        let size = NSSize(width: max(contentSize.width, minimum.width), height: max(contentSize.height, minimum.height))
+        if surface.frame.size != size { surface.setFrameSize(size); surface.needsLayout = true }
+        if previousViewportSize != contentSize {
+            previousViewportSize = contentSize
+            // Reveal after the child has laid out its new frames; resizing a
+            // window must not strand the active composer below the viewport.
+            DispatchQueue.main.async { [weak surface] in
+                guard let surface, let host = surface.hosts[surface.selectedID] else { return }
+                surface.scrollToVisible(host.frame)
+            }
+        }
+    }
+}
+
+final class AgentSplitSurface: NSView {
+    let model: AppModel
+    var tree: PaneNode?
+    var hosts: [String: NSHostingView<AnyView>] = [:]
+    var dividers: [String: AgentSplitDivider] = [:]
+    var selectedID = ""
+    override var isFlipped: Bool { true }
+    init(model: AppModel) { self.model = model; super.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func synchronize(_ next: PaneNode) {
+        guard tree != next else { return }; tree = next
+        let leaves = Set(next.leaves)
+        for id in Array(hosts.keys) where !leaves.contains(id) { hosts.removeValue(forKey: id)?.removeFromSuperview() }
+        for id in next.leaves where hosts[id] == nil {
+            let host = NSHostingView(rootView: AnyView(AgentPage(model: model, id: id)))
+            host.sizingOptions = []; hosts[id] = host; addSubview(host)
+        }
+        func splitIDs(_ node: PaneNode) -> [String] { node.children.isEmpty ? [] : [node.id] + node.children.flatMap(splitIDs) }
+        let ids = Set(splitIDs(next))
+        for id in Array(dividers.keys) where !ids.contains(id) { dividers.removeValue(forKey: id)?.removeFromSuperview() }
+        for id in ids where dividers[id] == nil {
+            let divider = AgentSplitDivider(); divider.splitID = id; divider.surface = self
+            dividers[id] = divider; addSubview(divider)
+        }
+        needsLayout = true
+    }
+    func minimumSize(_ node: PaneNode) -> NSSize {
+        guard node.children.count == 2 else { return NSSize(width: 360, height: 300) }
+        let a = minimumSize(node.children[0]), b = minimumSize(node.children[1])
+        return node.axis == "horizontal" ? NSSize(width: a.width + b.width + 8, height: max(a.height, b.height)) : NSSize(width: max(a.width, b.width), height: a.height + b.height + 8)
+    }
+    override func layout() {
+        super.layout(); if let tree { place(tree, in: bounds) }
+    }
+    private func place(_ node: PaneNode, in rect: NSRect) {
+        guard node.children.count == 2 else { hosts[node.id]?.frame = rect; return }
+        let horizontal = node.axis == "horizontal"
+        let available = (horizontal ? rect.width : rect.height) - 8
+        let firstMin = minimumSize(node.children[0]), secondMin = minimumSize(node.children[1])
+        let length = max(horizontal ? firstMin.width : firstMin.height, min(available - (horizontal ? secondMin.width : secondMin.height), available * node.fraction))
+        let first = NSRect(x: rect.minX, y: rect.minY, width: horizontal ? length : rect.width, height: horizontal ? rect.height : length)
+        let gap = NSRect(x: horizontal ? first.maxX : rect.minX, y: horizontal ? rect.minY : first.maxY, width: horizontal ? 8 : rect.width, height: horizontal ? rect.height : 8)
+        let second = NSRect(x: horizontal ? gap.maxX : rect.minX, y: horizontal ? rect.minY : gap.maxY, width: horizontal ? available - length : rect.width, height: horizontal ? rect.height : available - length)
+        if let divider = dividers[node.id] { divider.frame = gap; divider.horizontal = horizontal; divider.splitRect = rect }
+        place(node.children[0], in: first); place(node.children[1], in: second)
+    }
+    func dragSplit(_ id: String, fraction: Double, finished: Bool) {
+        if let tree { self.tree = tree.resizing(id, to: fraction); needsLayout = true; layoutSubtreeIfNeeded() }
+        if finished { model.resizeSplit(id, fraction: fraction) }
+    }
+}
+
+final class AgentSplitDivider: NSView {
+    weak var surface: AgentSplitSurface?
+    var splitID = ""
+    var horizontal = true
+    var splitRect = NSRect.zero
+    override func resetCursorRects() { addCursorRect(bounds, cursor: horizontal ? .resizeLeftRight : .resizeUpDown) }
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { surface?.dragSplit(splitID, fraction: 0.5, finished: true); return }
+        track(event, finished: false)
+    }
+    override func mouseDragged(with event: NSEvent) { track(event, finished: false) }
+    override func mouseUp(with event: NSEvent) { track(event, finished: true) }
+    private func track(_ event: NSEvent, finished: Bool) {
+        guard let surface else { return }
+        let point = surface.convert(event.locationInWindow, from: nil)
+        let value = horizontal ? (point.x - splitRect.minX) / max(1, splitRect.width - 8) : (point.y - splitRect.minY) / max(1, splitRect.height - 8)
+        surface.dragSplit(splitID, fraction: value, finished: finished)
+    }
 }

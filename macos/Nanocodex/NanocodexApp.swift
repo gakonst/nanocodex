@@ -64,22 +64,21 @@ struct NanocodexApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") { model.newTab() }.keyboardShortcut("t")
                 Button("New Thread") { model.newTab() }.keyboardShortcut("n")
-                Button("Close Tab") { model.closeTab(model.activeTabID) }.keyboardShortcut("w")
+                Button("Close Tab") { model.closeActiveWorkspace() }.keyboardShortcut("w")
                 Button("Reopen Closed Tab") { model.reopenTab() }.keyboardShortcut("t", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { openWindow(id: "main"); model.showingSettings = true }.keyboardShortcut(",")
             }
             CommandMenu("Tabs") {
-                Button("Next Tab") { model.cyclePane(1) }.keyboardShortcut("]", modifiers: [.command, .shift])
-                Button("Previous Tab") { model.cyclePane(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
-                Divider()
-                Picker("Tab Position", selection: $model.tabPosition) { Text("Sidebar").tag("left"); Text("Top").tag("top") }.onChange(of: model.tabPosition) { model.persistLayout() }
+                Button("Next Tab") { model.cycleWorkspace(1) }.keyboardShortcut("]", modifiers: [.command, .shift])
+                Button("Previous Tab") { model.cycleWorkspace(-1) }.keyboardShortcut("[", modifiers: [.command, .shift])
                 Divider()
                 Button("Search Threads…") { model.showingSearch = true }.keyboardShortcut("k")
             }
             CommandMenu("Workspace") {
-                Button("New Agent to the Right") { model.newTab(beside: true) }.keyboardShortcut("\\")
+                Button("New Agent to the Right") { model.splitAgent(axis: "horizontal") }.keyboardShortcut("\\")
+                Button("New Agent Below") { model.splitAgent(axis: "vertical") }.keyboardShortcut("j", modifiers: [.command, .option])
                 Button("Open Agent to the Right…") { model.showingPanePicker = true }.keyboardShortcut("\\", modifiers: [.command, .shift])
                 Divider()
                 Button("Inbox") { model.setFilter(.inbox) }.keyboardShortcut("1", modifiers: [.command, .option])
@@ -135,9 +134,8 @@ struct ContentView: View {
     }
     private var workspace: some View {
         HStack(spacing: 0) {
-            SidebarView().frame(width: model.tabPosition == "left" ? 250 : 205)
             VStack(spacing: 0) {
-                if model.tabPosition == "top" { TopTabsView() }
+                TopTabsView()
                 if let error = model.error ?? model.state.error {
                     HStack(spacing: 10) {
                         Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
@@ -150,19 +148,9 @@ struct ContentView: View {
                 if model.screen == .hands { HandsView() } else { TiledWorkspaceView() }
             }
             .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(.rect(topLeadingRadius: 14, bottomLeadingRadius: 0))
+
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button { model.tabPosition = model.tabPosition == "left" ? "top" : "left"; model.persistLayout() } label: {
-                    Image(systemName: model.tabPosition == "left" ? "sidebar.left" : "rectangle.topthird.inset.filled")
-                }.help("Move tabs to \(model.tabPosition == "left" ? "the top" : "the sidebar")").accessibilityIdentifier("toggle-tab-position")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { model.newTab() } label: { Image(systemName: "plus") }.help("New tab (⌘T)").accessibilityIdentifier("new-tab")
-            }
-        }
         .sheet(isPresented: $model.showingSearch) { ThreadSearchView() }
         .sheet(isPresented: $model.showingHandSetup) { HandSetupView(hand: model.editingHand) }
         .sheet(isPresented: $model.showingRemoteSetup) { RemoteSetupView() }
