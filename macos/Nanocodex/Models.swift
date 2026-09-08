@@ -72,6 +72,7 @@ struct WorkspaceTab: Codable, Identifiable, Equatable, Sendable {
     var folder = ""
     var seenCursor: String?
     var deferredCursor: String?
+    var draftSettings: AgentSettings?
 }
 struct TabLayout: Codable, Equatable, Sendable {
     var tabs: [WorkspaceTab] = [WorkspaceTab()]

@@ -89,6 +89,36 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
+    func testUnsentTabKeepsSelectedSettingsAcrossRelaunch() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/native-draft-settings-" + UUID().uuidString)
+        model.tabs = [WorkspaceTab(id: "draft"), WorkspaceTab(id: "other")]
+        model.activeTabID = "draft"
+        var saved: JSONValue = .null
+        model.runtime.requestOverride = { method, args in
+            if method == "saveLayout" { saved = args[0] }
+            return .null
+        }
+        model.updateDraft("Keep this unsent draft")
+        model.changeSettings(tabID: "draft") {
+            $0.selectModel("gpt-5.6-luna"); $0.thinking = "low"; $0.fast_mode = true
+        }
+        await model.prepareToQuit()
+        let restored = AppModel(runtimeDirectory: "/tmp/native-draft-settings-restored-" + UUID().uuidString)
+        restored.runtime.requestOverride = { _, _ in .null }
+        defer { restored.shutdown() }
+        guard case .object(var state) = Self.connectedState else { return XCTFail("Missing state fixture") }
+        state["layout"] = saved
+        var wire = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("state"), "state": .object(state)])])); wire.append(10)
+        restored.runtime.receiveForTesting(wire)
+        for _ in 0..<30 where restored.activeTabID != "draft" { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(restored.activeTab?.draft, "Keep this unsent draft")
+        XCTAssertEqual(restored.settingsForTab("draft"), AgentSettings(model: "gpt-5.6-luna", thinking: "low", fast_mode: true))
+        XCTAssertEqual(restored.settingsForTab("other"), AgentSettings(), "A draft's selection must not alter another tab's defaults")
+        restored.closeTab("draft"); restored.reopenTab()
+        XCTAssertEqual(restored.settingsForTab("draft").model, "gpt-5.6-luna")
+    }
+
+    @MainActor
     func testRestoredTiledSelectionIgnoresInboxFiltering() async throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-restored-selection")
         let tabs = [WorkspaceTab(id: "outside"), WorkspaceTab(id: "one", threadId: "thread-one", deferredCursor: "1"), WorkspaceTab(id: "two", threadId: "thread-two", seenCursor: "1", deferredCursor: "1")]

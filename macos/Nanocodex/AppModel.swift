@@ -37,7 +37,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var workspaceFocus: WorkspaceFocus = .navigation
     @Published private(set) var navigationFocusRequest = 1
     @Published var workspaceFilter: WorkspaceFilter = .inbox
-    @Published private var draftSettings: [String: AgentSettings] = [:]
     @Published var screen: Screen = .chat
     @Published var snapshots: [String: ThreadSnapshot] = [:]
     @Published private(set) var threadErrors: [String: String] = [:]
@@ -153,7 +152,7 @@ final class AppModel: ObservableObject {
     func working(_ id: String? = nil) -> Bool { running(id) || pendingMessages(id).contains { $0.phase != .failed } }
     func hasDraft(_ id: String? = nil) -> Bool { !(tab(id)?.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) }
     func handsForTab(_ id: String? = nil) -> [Hand] { connectedHands.filter { $0.agentId == nil || $0.agentId == tab(id)?.threadId } }
-    func settingsForTab(_ id: String) -> AgentSettings { snapshot(id)?.settings ?? draftSettings[id] ?? AgentSettings() }
+    func settingsForTab(_ id: String) -> AgentSettings { snapshot(id)?.settings ?? tab(id)?.draftSettings ?? AgentSettings() }
     func update(for tab: WorkspaceTab) -> WorkspaceUpdate {
         let snapshot = tab.threadId.flatMap { snapshots[$0] }
         let events = tab.threadId.flatMap { reviewEvents[$0] } ?? snapshot?.events ?? []
@@ -691,7 +690,7 @@ final class AppModel: ObservableObject {
     func changeSettings(tabID: String?, _ change: (inout AgentSettings) -> Void) {
         let id = tabID ?? activeTabID
         var copy = settingsForTab(id); change(&copy)
-        draftSettings[id] = copy
+        updateTab(tabID: id) { $0.draftSettings = copy }
         if let threadID = tab(id)?.threadId { snapshots[threadID]?.settings = copy }
         if id == activeTabID { settings = copy }
         guard let threadID = tab(id)?.threadId else { return }
@@ -812,7 +811,7 @@ final class AppModel: ObservableObject {
         resetRemoteSharing(); showingScreens = false
         persistence?.cancel()
         timelineProjections.removeAll()
-        requestedEditorTabID = nil; readingPositions = [:]; expandedMessages = [:]; draftSettings = [:]; inboxOrder = []; pinnedPaneID = nil; workspaceFilter = .inbox; workspaceMode = "single"; tiledTabIDs = []; showingPanePicker = false; paneWidth = 0
+        requestedEditorTabID = nil; readingPositions = [:]; expandedMessages = [:]; inboxOrder = []; pinnedPaneID = nil; workspaceFilter = .inbox; workspaceMode = "single"; tiledTabIDs = []; showingPanePicker = false; paneWidth = 0
         generation += 1; busyMessages = []; snapshots = [:]; reviewEvents = [:]; threadErrors = [:]; messages = [:]; pending = []; observation = []; closedTabs = []; tabs = [WorkspaceTab()]; activeTabID = tabs[0].id; restoredLayout = false
     }
     func useThisMac() async {

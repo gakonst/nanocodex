@@ -64,6 +64,12 @@ export function validateHand(value) {
   return config;
 }
 
+function restoredSettings(settings) {
+  if (!settings || !["model", "thinking", "reasoning_mode"].every(key => typeof settings[key] === "string") || typeof settings.fast_mode !== "boolean") return undefined;
+  try { return validateSettings(Object.fromEntries(["model", "thinking", "reasoning_mode", "fast_mode"].map(key => [key, settings[key]]))); }
+  catch { return undefined; }
+}
+
 function restoredPendingMessages(value) {
   if (!Array.isArray(value)) return [];
   const ids = new Set();
@@ -83,9 +89,9 @@ function restoredPendingMessages(value) {
       clean[key] = message[key];
     }
     if (message.settings) {
-      const settings = message.settings;
-      if (!["model", "thinking", "reasoning_mode"].every(key => typeof settings[key] === "string") || typeof settings.fast_mode !== "boolean") return [];
-      try { clean.settings = validateSettings(Object.fromEntries(["model", "thinking", "reasoning_mode", "fast_mode"].map(key => [key, settings[key]]))); } catch { return []; }
+      const settings = restoredSettings(message.settings);
+      if (!settings) return [];
+      clean.settings = settings;
     }
     ids.add(message.id);
     return [clean];
@@ -102,6 +108,8 @@ export function restoredLayout(value) {
     for (const key of ["threadId", "title", "draft", "target", "folder", "seenCursor", "deferredCursor"]) {
       if (typeof tab[key] === "string" && tab[key].length <= (key === "draft" ? 200_000 : 4096)) clean[key] = tab[key];
     }
+    const settings = restoredSettings(tab.draftSettings);
+    if (settings) clean.draftSettings = settings;
     if (clean.threadId && !/^[A-Za-z0-9._:-]{1,128}$/.test(clean.threadId)) delete clean.threadId;
     if (clean.folder && !isAbsolute(clean.folder)) clean.folder = "";
     for (const key of ["seenCursor", "deferredCursor"]) {
@@ -213,6 +221,11 @@ export class DesktopRuntime extends EventEmitter {
       for (const key of ["threadId", "title", "draft", "target", "folder", "seenCursor", "deferredCursor"]) {
         if (tab[key] !== undefined && (typeof tab[key] !== "string" || tab[key].length > (key === "draft" ? 200_000 : 4096))) throw new Error("Invalid tab content.");
         if (tab[key] !== undefined) clean[key] = tab[key];
+      }
+      if (tab.draftSettings !== undefined) {
+        const settings = restoredSettings(tab.draftSettings);
+        if (!settings) throw new Error("Invalid tab settings.");
+        clean.draftSettings = settings;
       }
       return clean;
     });

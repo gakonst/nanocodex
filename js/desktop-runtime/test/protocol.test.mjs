@@ -455,6 +455,20 @@ test("native workspace review and sizing survive persistence without changing le
   assert.equal(legacy.paneWidth, undefined);
 });
 
+test("unsent tab model settings survive runtime persistence and corrupt settings leave its draft intact", async t => {
+  let saved;
+  const runtime = new DesktopRuntime({ baseUrl: await service(t), apiKey: key, persist: async value => { saved = value; } });
+  t.after(() => runtime.close());
+  const draftSettings = { model: "gpt-5.6-luna", thinking: "low", reasoning_mode: "standard", fast_mode: true };
+  const layout = { tabs: [{ id: "draft", draft: "Unsent", draftSettings }, { id: "other" }], activeTabId: "draft", tabPosition: "left", theme: "system" };
+  await runtime.saveLayout(layout);
+  assert.deepEqual(restoredLayout(saved.layout).tabs[0].draftSettings, draftSettings);
+  assert.equal(restoredLayout(saved.layout).tabs[1].draftSettings, undefined);
+  const corrupt = restoredLayout({ ...layout, tabs: [{ ...layout.tabs[0], draftSettings: { ...draftSettings, fast_mode: "yes" } }] });
+  assert.equal(corrupt.tabs[0].draft, "Unsent");
+  assert.equal(corrupt.tabs[0].draftSettings, undefined);
+});
+
 test("durable queued messages retain their exact retry payload and account scope", async t => {
   let saved;
   const runtime = new DesktopRuntime({ baseUrl: await service(t), apiKey: key, persist: async value => { saved = value; } });
