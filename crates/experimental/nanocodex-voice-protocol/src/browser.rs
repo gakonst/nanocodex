@@ -538,10 +538,10 @@ impl BrowserVoiceProtocol {
             }
             "run.completed" | "run.failed" | "run.cancelled" => {
                 let mut effects = self.flush(true);
-                if kind == "run.failed"
-                    && self.active_delegation.is_some()
-                    && !self.output_sent_this_run
-                {
+                // The managed first utterance can start a run before the
+                // provider emits a delegation ID. Its failures still need
+                // feedback through the session context channel.
+                if kind == "run.failed" && !self.output_sent_this_run {
                     let output = self
                         .run_error
                         .clone()
