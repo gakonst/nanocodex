@@ -130,7 +130,7 @@ function hydrateState(query, stateId, rows) {
     [stateId],
   );
   if (chunks.length !== head.chunk_count) {
-    throw new Error(`missing Cloudflare durability chunks for revision ${row.revision}`);
+    throw new Error(`missing Cloudflare durability chunks for revision ${row.revision} (expected ${head.chunk_count}, found ${chunks.length})`);
   }
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
