@@ -24,15 +24,17 @@ describe("Cloudflare durability chunk atomicity", () => {
       const store = createCloudflareDurabilityStore(storage);
       const stateId = "fixture-chunked-state";
       const owner = await store.acquire(stateId, { ownerId: "fixture-owner" });
-      const original = "original-".repeat(150_000);
-      const replacement = "replacement-".repeat(150_000);
+      // The retained device failure has 13,056,000 bytes, exactly 51 full
+      // chunks. Exercise larger states and interrupt at that same boundary.
+      const original = "o".repeat(13_600_000);
+      const replacement = "r".repeat(14_600_000);
       const write = (expectedRevision: string, payload: string) => store.replace(stateId, {
         ownerId: owner.ownerId, fence: owner.fence, expectedRevision: durabilityRevision(expectedRevision), payload,
       });
       expect(await write("0", original)).toEqual({ status: "replaced", revision: "1" });
       expect(await store.load(stateId)).toEqual({ revision: "1", payload: original });
 
-      failAtChunk = 2;
+      failAtChunk = 51;
       expect(() => write("1", replacement)).toThrow("fixture interrupted chunk write");
       const reopened = createCloudflareDurabilityStore(state.storage);
       expect(await reopened.load(stateId)).toEqual({ revision: "1", payload: original });
