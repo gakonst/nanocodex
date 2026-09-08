@@ -627,6 +627,30 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(agent.waitForExistence(timeout: 30), shortcuts.debugDescription)
         capture(shortcuts, "hand-task-shortcuts-account-agents")
     }
+    func testLiveVideoAttachmentReopensHistory() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["NANOCODEX_VIDEO_UI_LIVE"] == "1",
+              let title = environment["NANOCODEX_VIDEO_AGENT_TITLE"], !title.isEmpty else {
+            throw XCTSkip("Requires the existing real video-attachment validation conversation.")
+        }
+        let app = XCUIApplication(); app.launch()
+        selectAgentFromOverview(app, title: title)
+        let conversation = app.scrollViews["conversation"]
+        let play = conversation.buttons["play-original-video"].firstMatch
+        for _ in 0..<6 {
+            if play.exists && play.isHittable { break }
+            conversation.swipeDown()
+        }
+        XCTAssertTrue(play.waitForExistence(timeout: 10))
+        capture(app, "video-history-before-playback")
+        play.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["video-player"].waitForExistence(timeout: 30))
+        capture(app, "video-history-original-playback")
+        app.navigationBars["VideoAudioCheck.mp4"].buttons["Done"].tap()
+        conversation.swipeUp()
+        capture(app, "video-history-latest-response")
+    }
+
     func testLiveVideoAttachmentDraftSendAndHistory() throws {
         guard ProcessInfo.processInfo.environment["NANOCODEX_VIDEO_UI_LIVE"] == "1" else {
             throw XCTSkip("Requires a signed-in phone with VideoAudioCheck.mp4 copied into the app Documents folder.")

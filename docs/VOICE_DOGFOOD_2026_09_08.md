@@ -72,7 +72,9 @@ metadata and the served artifact, not that endpoint.
 - Native UI/fixture checks: 44 passed; desktop runtime: 33 passed.
 - iPhone: live text admission, camera capture/cancel, image pick/remove/draft
   persistence/send/history, navigation menus, scheduled-job details across relaunch,
-  and repeated greeting checks passed.
+  and repeated greeting checks passed. Hand disable/relaunch/background/reconnect
+  passed in 73.087 s. Stored original-video playback after relaunch passed in
+  23.362 s; the separate digest-reply journey remains failed.
 - Simulator: browser tabs, back/draft retention, last-activity ordering, queued
   steering, voice minimization, long history, setup, and scheduled-job fixtures.
 - iPad: context capture/search, account isolation, and actual Safari share-extension
