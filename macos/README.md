@@ -341,6 +341,35 @@ say -v Samantha -r 185 -o /tmp/nanocodex-native-voice-followup.wav --file-format
 TEST_RUNNER_NANOCODEX_DESKTOP_VOICE_LIVE=1 TEST_RUNNER_NANOCODEX_VOICE_SOX="$(command -v sox)" xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath macos/build -only-testing:NanocodexTests/VoiceTests -parallel-testing-enabled NO test
 ```
 
+For a signed-in subscription account, set
+`TEST_RUNNER_NANOCODEX_DESKTOP_VOICE_KEYCHAIN=1` to use the app's existing
+Keychain credential instead of the development environment. Sign the test host
+with the same development identity as the installed app to preserve its
+Keychain access; isolated test preferences remain separate.
+
+`NANOCODEX_VOICE_TIMING=1` enables timestamped stage and transport diagnostics
+in Debug or Release. The bounded log is `Documents/voice-timing.log` in the app
+container, or the explicit `NANOCODEX_VOICE_TIMING_LOG` path. It records HTTP
+status/timing, transcript event types, delegation, model-event delivery, playback
+enablement and audio energy; it does not record speech, credentials, or SDP.
+The speech test retains milestone and audio-state evidence even when a call fails.
+
+`testNativeGreetingAndPersonalMemory` separately checks a brief greeting followed
+by an unknown personal fact. Enable it with
+`TEST_RUNNER_NANOCODEX_DESKTOP_MEMORY_VOICE_LIVE=1`, the same account/SoX flags,
+and an explicit timing-log path. Prepare the fixed synthetic fixtures first:
+
+```sh
+say -v Samantha -r 175 -o /tmp/nanocodex-native-voice-greeting.wav --file-format=WAVE --data-format=LEI16@24000 'Hi, say hello briefly.'
+say -v Samantha -r 175 -o /tmp/nanocodex-native-voice-personal.wav --file-format=WAVE --data-format=LEI16@24000 "What secret passphrase did I choose for the fictional Project Cedar Comet? Check my stored memory. If you cannot find it, tell me you don't know."
+```
+
+This journey requires a new managed delegation for the personal question and an
+explicit unknown answer. It writes `native-memory-voice-live.json`, including
+voice settings and timestamps, restores the original audio input, and removes
+its test agent. Run acoustic phone tests separately to avoid mixing their input
+with the Mac's audible output.
+
 Voice evidence is saved in `macos/build/evidence/native-voice-live.json` and
 `native-voice-live.png`. These timings include the real provider and local audio
 device; a cold connection still takes seconds. They do not measure an iPhone's
