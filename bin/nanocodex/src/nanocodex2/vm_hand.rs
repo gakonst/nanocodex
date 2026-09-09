@@ -21,6 +21,11 @@ use super::Hand;
 pub(crate) use super::vm_hand_config::VmHandConfig;
 
 const DEFAULT_KRUNFW_DIRECTORY: &str = ".cache/libkrunfw/libkrunfw";
+const FIRMWARE_LIBRARY: &str = if cfg!(target_os = "macos") {
+    "libkrunfw.5.dylib"
+} else {
+    "libkrunfw.so.5"
+};
 const CAPABILITY_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPABILITY_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
 const DESKTOP_CREDENTIAL: &str = "/run/nanocodex-remote/credential";
@@ -131,11 +136,7 @@ impl VmHand {
                     firmware.display()
                 ))
             })?;
-            let library = if cfg!(target_os = "macos") {
-                firmware.join("libkrunfw.5.dylib")
-            } else {
-                firmware.join("libkrunfw.so.5")
-            };
+            let library = firmware.join(FIRMWARE_LIBRARY);
             if !library.is_file() {
                 return Err(configuration(format!(
                     "VM firmware library is missing: {}",
@@ -371,13 +372,27 @@ fn firmware_directory(config: &VmHandConfig) -> Option<PathBuf> {
     if let Some(directory) = &config.vm_firmware {
         return Some(directory.clone());
     }
-    let directory = PathBuf::from(DEFAULT_KRUNFW_DIRECTORY);
-    let library = if cfg!(target_os = "macos") {
-        directory.join("libkrunfw.5.dylib")
-    } else {
-        directory.join("libkrunfw.so.5")
-    };
-    library.is_file().then_some(directory)
+    // Installed VM assets travel together. Resolve relative to the guest
+    // runtime, not the app's working directory or its signed helper cache.
+    config
+        .vm_guest_runtime
+        .as_deref()
+        .and_then(bundled_firmware_directory)
+        .or_else(|| {
+            let directory = PathBuf::from(DEFAULT_KRUNFW_DIRECTORY);
+            directory
+                .join(FIRMWARE_LIBRARY)
+                .is_file()
+                .then_some(directory)
+        })
+}
+
+fn bundled_firmware_directory(runtime: &Path) -> Option<PathBuf> {
+    let directory = runtime.parent()?.join("firmware");
+    directory
+        .join(FIRMWARE_LIBRARY)
+        .is_file()
+        .then_some(directory)
 }
 
 fn lock_writable_rootfs(path: &Path) -> Result<File, ManagedError> {
@@ -402,4 +417,20 @@ fn lock_writable_rootfs(path: &Path) -> Result<File, ManagedError> {
 
 fn configuration(message: impl Into<String>) -> ManagedError {
     ManagedError::Configuration(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_guest_assets_resolve_firmware_without_a_working_directory() {
+        let assets = tempfile::tempdir().unwrap();
+        let runtime = assets.path().join("nanocodex-vm-guest");
+        assert_eq!(bundled_firmware_directory(&runtime), None);
+        let firmware = assets.path().join("firmware");
+        std::fs::create_dir(&firmware).unwrap();
+        std::fs::write(firmware.join(FIRMWARE_LIBRARY), b"firmware fixture").unwrap();
+        assert_eq!(bundled_firmware_directory(&runtime), Some(firmware));
+    }
 }

@@ -213,7 +213,8 @@ nanocodex2 host --factory-name desktop-hands \
 
 Use a guest ELF built for the image architecture. On Apple Silicon, sign the
 host executable with `nanocodex-vm.entitlements` after every Rust rebuild, and
-provide `--vm-firmware` if libkrunfw is outside the system loader path. The
+place libkrunfw in a `firmware/` directory beside the guest runtime, or provide
+`--vm-firmware` for another location outside the system loader path. The
 factory automatically clones a private writable root for each allocation.
 Updating a template affects future allocations; retained VM roots are preserved.
 
