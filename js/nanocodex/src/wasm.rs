@@ -3153,15 +3153,15 @@ fn forward_events(mut events: AgentEvents, forwarding: Rc<Cell<bool>>) {
             if !forwarding.get() {
                 continue;
             }
-            if let Ok(encoded) = serde_json::to_string(&event) {
-                if let Err(error) = host_emit_event(
+            if let Ok(encoded) = serde_json::to_string(&event)
+                && let Err(error) = host_emit_event(
                     event.request_id.as_ref(),
                     &encoded,
                     u32::try_from(encoded.len()).unwrap_or(u32::MAX),
                     None,
-                ) {
-                    let _ = host_console_error("Nanocodex event forwarding failed", &error);
-                }
+                )
+            {
+                let _ = host_console_error("Nanocodex event forwarding failed", &error);
             }
         }
     });

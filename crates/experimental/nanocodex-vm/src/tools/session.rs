@@ -2164,7 +2164,8 @@ mod tracing_tests {
                     ToolInput::Function(to_raw_value(&json!({"cmd": "true"})).unwrap()),
                     ToolContext::new("model", "session", "call", &[], 1_000),
                 )
-                .await;
+                .await
+                .expect("a settled VM failure must remain a tool result");
             assert!(!output.success);
             let ToolOutputBody::Text(model_error) = output.output else {
                 panic!("tool registry should produce a model-visible text error");

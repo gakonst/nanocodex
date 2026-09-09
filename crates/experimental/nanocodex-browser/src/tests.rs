@@ -905,7 +905,7 @@ text({ opened, snapshot, clicked, html, elementContext });
 "#,
             context(),
         )
-        .await;
+        .await?;
 
     let calls = execution
         .nested_calls
@@ -1300,7 +1300,7 @@ text({
 "#,
             context(),
         )
-        .await;
+        .await?;
 
     assert!(execution.success, "{:#?}", execution.output);
     assert_eq!(execution.nested_calls.len(), 1);
@@ -1514,7 +1514,7 @@ async fn managed_browser_executes_code_mode_against_chromium() -> Result<()> {
     let runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
     let execution = runtime
         .execute_code(MANAGED_BROWSER_SOURCE, context())
-        .await;
+        .await?;
 
     if !execution.success {
         let calls = execution
