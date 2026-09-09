@@ -57,6 +57,17 @@ pub enum ExecutionStepAdmission {
     Replay(String),
 }
 
+/// Current execution metadata and the active model context.
+/// Hosts persist context records independently from the small execution position.
+pub struct ExecutionContinuation {
+    /// Serialized execution position and settings, excluding conversation bodies.
+    pub state_json: String,
+    /// Active conversation items in model order.
+    pub history: Vec<nanocodex_oai_api::responses::ResponseItem>,
+    /// Frozen request prefix for the current execution.
+    pub prefix: Vec<nanocodex_oai_api::responses::ResponseItem>,
+}
+
 /// One live steering input retained for deterministic operation recovery.
 #[derive(Clone, Debug)]
 pub struct ExecutionSteer {
@@ -195,13 +206,13 @@ pub trait ExecutionPolicy: Send + Sync {
     fn continuation<'a>(
         &'a self,
         operation_id: String,
-    ) -> ExecutionFuture<'a, Result<Option<String>>>;
+    ) -> ExecutionFuture<'a, Result<Option<ExecutionContinuation>>>;
 
     /// Atomically replaces the current execution state and retires its settled effects.
     fn advance<'a>(
         &'a self,
         operation_id: String,
-        state_json: String,
+        continuation: ExecutionContinuation,
     ) -> ExecutionFuture<'a, Result<()>>;
 
     /// Begins or replays one typed external effect.
@@ -348,13 +359,13 @@ pub trait ExecutionPolicy: Send + Sync {
     fn continuation<'a>(
         &'a self,
         operation_id: String,
-    ) -> ExecutionFuture<'a, Result<Option<String>>>;
+    ) -> ExecutionFuture<'a, Result<Option<ExecutionContinuation>>>;
 
     /// Atomically replaces the current execution state and retires its settled effects.
     fn advance<'a>(
         &'a self,
         operation_id: String,
-        state_json: String,
+        continuation: ExecutionContinuation,
     ) -> ExecutionFuture<'a, Result<()>>;
 
     /// Begins or replays one external effect.
@@ -783,17 +794,37 @@ pub(crate) enum ExecutionStep<O> {
 }
 
 impl ExecutionSteps {
-    pub(crate) async fn continuation<T: DeserializeOwned>(&self) -> Result<Option<T>> {
+    pub(crate) async fn continuation<T: DeserializeOwned>(
+        &self,
+    ) -> Result<
+        Option<(
+            T,
+            Vec<nanocodex_oai_api::responses::ResponseItem>,
+            Vec<nanocodex_oai_api::responses::ResponseItem>,
+        )>,
+    > {
         self.policy
             .continuation(self.operation_id.clone())
             .await?
-            .map(|state| decode(&state))
+            .map(|saved| Ok((decode(&saved.state_json)?, saved.history, saved.prefix)))
             .transpose()
     }
 
-    pub(crate) async fn advance<T: Serialize>(&self, state: &T) -> Result<()> {
+    pub(crate) async fn advance<T: Serialize>(
+        &self,
+        state: &T,
+        history: Vec<nanocodex_oai_api::responses::ResponseItem>,
+        prefix: Vec<nanocodex_oai_api::responses::ResponseItem>,
+    ) -> Result<()> {
         self.policy
-            .advance(self.operation_id.clone(), encode(state)?)
+            .advance(
+                self.operation_id.clone(),
+                ExecutionContinuation {
+                    state_json: encode(state)?,
+                    history,
+                    prefix,
+                },
+            )
             .await
     }
 

@@ -25,6 +25,10 @@ impl SqliteStore {
         connection
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
+                 CREATE TABLE IF NOT EXISTS nanocodex_durable_records (
+                   state_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                   PRIMARY KEY (state_id, key)
+                 ) WITHOUT ROWID;
                  CREATE TABLE IF NOT EXISTS nanocodex_durable_owners (
                    state_id TEXT PRIMARY KEY,
                    owner_id TEXT NOT NULL,
@@ -91,6 +95,7 @@ impl SqliteStore {
         owner: &OwnerToken,
         expected_revision: u64,
         payload: &str,
+        records: &[crate::StoreRecord],
         after_begin: impl FnOnce(),
     ) -> Result<u64, StoreError> {
         let transaction = self
@@ -135,6 +140,12 @@ impl SqliteStore {
         let revision = actual.checked_add(1).ok_or_else(|| {
             StoreError::NotCommitted("SQLite durability revision overflow".to_owned())
         })?;
+        for record in records {
+            transaction.execute(
+                "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (state_id, key) DO NOTHING", params![state_id, record.key, record.value],
+            ).map_err(backend)?;
+        }
         let sql_revision = sql_counter(revision, "SQLite durability revision overflow")?;
         transaction
             .execute(
@@ -151,6 +162,23 @@ impl SqliteStore {
 }
 
 impl StateStore for SqliteStore {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, Result<Option<String>, StoreError>> {
+        let result = self
+            .connection
+            .query_row(
+                "SELECT value FROM nanocodex_durable_records WHERE state_id = ?1 AND key = ?2",
+                params![state_id, key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend);
+        Box::pin(async move { result })
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -166,8 +194,10 @@ impl StateStore for SqliteStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
-        let result = self.replace_transactional(state_id, owner, expected_revision, payload, || {});
+        let result =
+            self.replace_transactional(state_id, owner, expected_revision, payload, records, || {});
         Box::pin(async move { result })
     }
 }
@@ -511,7 +541,7 @@ mod tests {
 
         let mut stale = open_concurrent_store(&path);
         assert_eq!(
-            stale.replace_transactional("state", &first.owner, 0, "stale", || {}),
+            stale.replace_transactional("state", &first.owner, 0, "stale", &[], || {}),
             Err(StoreError::Fenced)
         );
     }
@@ -544,7 +574,7 @@ mod tests {
         let old_owner = old.owner;
         let replace = thread::spawn(move || {
             started_tx.send(()).unwrap();
-            replace_store.replace_transactional("state", &old_owner, 99, "stale", || {})
+            replace_store.replace_transactional("state", &old_owner, 99, "stale", &[], || {})
         });
         assert_contender_waits(started_rx, &replace);
         release_tx.send(()).unwrap();
@@ -575,7 +605,7 @@ mod tests {
         let mut acquire_store = open_concurrent_store(&path);
         let old_owner = old.owner.clone();
         let replace = thread::spawn(move || {
-            replace_store.replace_transactional("state", &old_owner, 0, "committed", || {
+            replace_store.replace_transactional("state", &old_owner, 0, "committed", &[], || {
                 locked_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
             })
@@ -605,7 +635,7 @@ mod tests {
 
         let mut stale = open_concurrent_store(&path);
         assert_eq!(
-            stale.replace_transactional("state", &old.owner, 999, "stale", || {}),
+            stale.replace_transactional("state", &old.owner, 999, "stale", &[], || {}),
             Err(StoreError::Fenced)
         );
     }
@@ -626,7 +656,7 @@ mod tests {
         let mut second_store = open_concurrent_store(&path);
         let first_owner = owned.owner.clone();
         let first = thread::spawn(move || {
-            first_store.replace_transactional("state", &first_owner, 0, "first", || {
+            first_store.replace_transactional("state", &first_owner, 0, "first", &[], || {
                 locked_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
             })
@@ -637,7 +667,7 @@ mod tests {
         let second_owner = owned.owner.clone();
         let second = thread::spawn(move || {
             started_tx.send(()).unwrap();
-            second_store.replace_transactional("state", &second_owner, 0, "second", || {})
+            second_store.replace_transactional("state", &second_owner, 0, "second", &[], || {})
         });
         assert_contender_waits(started_rx, &second);
         release_tx.send(()).unwrap();
@@ -695,7 +725,7 @@ mod tests {
         assert_eq!(second_owned.owner.fence(), 2);
         assert_eq!(
             second
-                .replace("state", &first_owned.owner, 0, "stale")
+                .replace("state", &first_owned.owner, 0, "stale", &[])
                 .await,
             Err(StoreError::Fenced)
         );
@@ -707,7 +737,7 @@ mod tests {
         let mut store = SqliteStore::open(file.path()).unwrap();
         let first = store.acquire("state", OwnerId::new()).await.unwrap();
         store
-            .replace("state", &first.owner, 0, "content")
+            .replace("state", &first.owner, 0, "content", &[])
             .await
             .unwrap();
         drop(store);
@@ -778,7 +808,7 @@ mod tests {
 
         assert!(matches!(
             store
-                .replace("state", &owned.owner, MAX_SQL_REVISION, "overflow")
+                .replace("state", &owned.owner, MAX_SQL_REVISION, "overflow", &[])
                 .await,
             Err(StoreError::NotCommitted(message))
                 if message == "SQLite durability revision overflow"

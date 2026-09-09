@@ -87,7 +87,8 @@ pub mod contract {
 /// Code Mode results and observation contracts for the embedded WASM runtime.
 pub mod code_mode {
     pub use crate::embedded::{
-        CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate, NestedToolCall,
+        CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,
+        NestedToolCall,
     };
 }
 

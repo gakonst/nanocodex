@@ -107,11 +107,7 @@ export function destroy(owner) {
         fence,
       );
       storage.sql.exec(
-        "DELETE FROM nanocodex_durable_chunk_heads WHERE state_id = ?",
-        stateId,
-      );
-      storage.sql.exec(
-        "DELETE FROM nanocodex_durable_state_chunks WHERE state_id = ?",
+        "DELETE FROM nanocodex_durable_records WHERE state_id = ?",
         stateId,
       );
       storage.sql.exec(
@@ -125,7 +121,7 @@ export function destroy(owner) {
 }
 
 /** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
-export async function exportDurabilityState(owner, request) {
+export async function exportDurabilityState(owner, request, headOnly = false) {
   const context = reserveInactiveLifecycle(owner, "exporting durability state");
   try {
     const storage = context.storage;
@@ -136,12 +132,15 @@ export async function exportDurabilityState(owner, request) {
       throw new Error("Cloudflare Agent has no durability state to export");
     }
     return request === undefined
-      ? await exportPortableState(durability, stateId)
+      ? await exportPortableState(durability, stateId, { headOnly })
       : await exportPortableStatePage(durability, stateId, request);
   } finally {
     lifecycleFor(context).creating = false;
   }
 }
+
+/** Internal managed cutover: records are transferred through its bounded archive. */
+export function exportDurabilityHead(owner) { return exportDurabilityState(owner, undefined, true); }
 
 /** Imports provider-neutral state into a pristine Cloudflare Agent owner. */
 export async function importDurabilityState(owner, archive, module) {
@@ -177,7 +176,7 @@ export async function importDurabilityState(owner, archive, module) {
     if (retainedSessionId !== undefined || retainedStateId !== undefined) {
       if (retainedSessionId !== undefined
         && retainedStateId === archive?.stateId
-        && archive?.format === "nanocodex-durability-state-v1") {
+        && archive?.format === "nanocodex-durability-state-v2") {
         const retained = await durability.load(retainedStateId);
         if (retained.revision === validated.revision
           && retained.payload === validated.payload) {
@@ -203,11 +202,7 @@ export async function importDurabilityState(owner, archive, module) {
       try {
         storage.transactionSync(() => {
           storage.sql.exec(
-            "DELETE FROM nanocodex_durable_chunk_heads WHERE state_id = ?",
-            archive.stateId,
-          );
-          storage.sql.exec(
-            "DELETE FROM nanocodex_durable_state_chunks WHERE state_id = ?",
+            "DELETE FROM nanocodex_durable_records WHERE state_id = ?",
             archive.stateId,
           );
           storage.sql.exec(

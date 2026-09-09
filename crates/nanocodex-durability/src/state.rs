@@ -3,68 +3,182 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
-const STATE_FORMAT: u8 = 3;
+const STATE_FORMAT: u8 = 4;
+const RECORD_BYTES: usize = 256_000;
 
-/// A typed value erased only for storage in a heterogeneous state.
-///
-/// The wrapper preserves the original JSON representation. Consumers recover
-/// concrete Rust types with [`Self::decode`]; hosts treat the containing state
-/// as opaque bytes.
-#[derive(Clone, Debug, serde::Serialize)]
+/// An immutable payload reference. Content is loaded only for its consumer.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub struct EncodedPayload(Arc<str>);
-
-impl<'de> serde::Deserialize<'de> for EncodedPayload {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        struct PayloadVisitor;
-        impl serde::de::Visitor<'_> for PayloadVisitor {
-            type Value = EncodedPayload;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("retained JSON text")
-            }
-
-            fn visit_str<E: serde::de::Error>(
-                self,
-                value: &str,
-            ) -> std::result::Result<Self::Value, E> {
-                // A streaming JSON decoder already owns its unescape buffer.
-                // Copy straight into the shared allocation instead of first
-                // materializing another full String/Box<str> for Arc's visitor.
-                Ok(EncodedPayload(Arc::from(value)))
-            }
-        }
-        deserializer.deserialize_str(PayloadVisitor)
-    }
+pub struct EncodedPayload {
+    pub(crate) key: Arc<str>,
+    #[serde(skip)]
+    content: Option<Arc<str>>,
+    #[serde(skip)]
+    pending: Vec<crate::StoreRecord>,
 }
 
 impl EncodedPayload {
     pub(crate) fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Self> {
-        serde_json::to_string(value)
-            .map(|json| Self(Arc::from(json)))
-            .map_err(Error::InvalidPayload)
+        let json = serde_json::to_string(value).map_err(Error::InvalidPayload)?;
+        Ok(Self {
+            key: record_key(&json).into(),
+            content: Some(json.into()),
+            pending: Vec::new(),
+        })
     }
 
-    /// Decodes this payload into its expected concrete type.
+    /// Decodes a payload loaded by its durable session.
     pub fn decode<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_str(&self.0).map_err(Error::InvalidPayload)
+        serde_json::from_str(self.json()?).map_err(Error::InvalidPayload)
     }
 
-    /// Returns the exact retained JSON text.
-    #[must_use]
-    pub fn json(&self) -> &str {
-        &self.0
+    /// Returns content loaded by a session operation.
+    pub fn json(&self) -> Result<&str> {
+        self.content.as_deref().ok_or_else(|| {
+            Error::InvalidState(
+                "resolve the payload through its durable session before reading it".into(),
+            )
+        })
     }
+
+    pub(crate) fn reference(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            content: None,
+            pending: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_records(mut self, records: Vec<crate::StoreRecord>) -> Self {
+        self.pending = records;
+        self
+    }
+
+    pub(crate) fn stage(&mut self, records: &mut Vec<crate::StoreRecord>) {
+        records.append(&mut self.pending);
+        let Some(content) = self.content.take() else {
+            return;
+        };
+        if content.len() < RECORD_BYTES {
+            records.push(crate::StoreRecord {
+                key: self.key.to_string(),
+                value: format!("={content}"),
+            });
+            return;
+        }
+        let mut offset = 0;
+        let mut count = 0;
+        while offset < content.len() {
+            let mut end = (offset + RECORD_BYTES).min(content.len());
+            while !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            records.push(crate::StoreRecord {
+                key: format!("{}/{count}", self.key),
+                value: content[offset..end].to_owned(),
+            });
+            count += 1;
+            offset = end;
+        }
+        records.push(crate::StoreRecord {
+            key: self.key.to_string(),
+            value: format!("+{count}"),
+        });
+    }
+
+    pub(crate) async fn load(
+        &self,
+        store: &mut dyn crate::StateStore,
+        state_id: &str,
+    ) -> Result<Self> {
+        if self.content.is_some() {
+            return Ok(self.clone());
+        }
+        let record = store
+            .read_record(state_id, &self.key)
+            .await?
+            .ok_or_else(|| Error::InvalidState(format!("missing payload record {}", self.key)))?;
+        self.load_record(store, state_id, record).await
+    }
+
+    pub(crate) async fn load_many(
+        values: &[Self],
+        store: &mut dyn crate::StateStore,
+        state_id: &str,
+    ) -> Result<Vec<Self>> {
+        let mut result = Vec::with_capacity(values.len());
+        for page in values.chunks(16) {
+            let keys: Vec<_> = page.iter().map(|value| value.key.to_string()).collect();
+            let records = store.read_records(state_id, &keys).await?;
+            if records.len() != page.len() {
+                return Err(Error::InvalidState("record batch length mismatch".into()));
+            }
+            for (value, record) in page.iter().zip(records) {
+                let record = record.ok_or_else(|| {
+                    Error::InvalidState(format!("missing payload record {}", value.key))
+                })?;
+                result.push(value.load_record(store, state_id, record).await?);
+            }
+        }
+        Ok(result)
+    }
+
+    async fn load_record(
+        &self,
+        store: &mut dyn crate::StateStore,
+        state_id: &str,
+        record: String,
+    ) -> Result<Self> {
+        let content = if let Some(content) = record.strip_prefix('=') {
+            content.to_owned()
+        } else {
+            let count: usize = record
+                .strip_prefix('+')
+                .ok_or_else(|| Error::InvalidState("invalid payload record".into()))?
+                .parse()
+                .map_err(|_| Error::InvalidState("invalid payload record count".into()))?;
+            let mut content = String::new();
+            for index in 0..count {
+                let chunk = store
+                    .read_record(state_id, &format!("{}/{index}", self.key))
+                    .await?
+                    .ok_or_else(|| {
+                        Error::InvalidState(format!("missing payload chunk {}/{index}", self.key))
+                    })?;
+                content.push_str(&chunk);
+            }
+            content
+        };
+        if record_key(&content) != self.key.as_ref() {
+            return Err(Error::InvalidState(format!(
+                "payload record checksum mismatch {}",
+                self.key
+            )));
+        }
+        Ok(Self {
+            key: self.key.clone(),
+            content: Some(content.into()),
+            pending: Vec::new(),
+        })
+    }
+}
+
+fn record_key(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(64);
+    for byte in Sha256::digest(value.as_bytes()) {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 15) as usize] as char);
+    }
+    encoded
 }
 
 impl PartialEq for EncodedPayload {
     fn eq(&self, other: &Self) -> bool {
-        self.json() == other.json()
+        self.key == other.key
     }
 }
-
 impl Eq for EncodedPayload {}
 
 /// One Rust-owned durable state entry.
@@ -246,6 +360,8 @@ pub struct OperationState {
     /// Model batches already incorporated in the current conversation.
     #[serde(default)]
     pub retired_model_calls: u32,
+    /// Steering inputs already incorporated in the current conversation.
+    pub retired_steers: u32,
     /// Original opaque operation input.
     pub input: EncodedPayload,
     /// Current operation status.
@@ -271,6 +387,18 @@ impl OperationState {
             }
         }
         self.steps.clear();
+        let consumed = self
+            .steers
+            .iter()
+            .take_while(|steer| {
+                steer
+                    .model_call_index
+                    .is_some_and(|index| index <= self.retired_model_calls)
+            })
+            .count();
+        // Accepted indexes already fit u32; retirement preserves that total.
+        self.retired_steers += consumed as u32;
+        self.steers.drain(..consumed);
     }
 }
 
@@ -309,6 +437,42 @@ struct RetainedCheckpointRef<'a> {
 }
 
 impl DurableState {
+    pub(crate) fn stage_records(&mut self) -> Vec<crate::StoreRecord> {
+        let mut records = Vec::new();
+        for operation in self.operations.values_mut() {
+            operation.input.stage(&mut records);
+            if let Some(value) = &mut operation.continuation {
+                value.stage(&mut records);
+            }
+            match &mut operation.status {
+                OperationStatus::Completed { checkpoint, output } => {
+                    checkpoint.stage(&mut records);
+                    output.stage(&mut records);
+                }
+                OperationStatus::Failed { checkpoint, .. } => checkpoint.stage(&mut records),
+                OperationStatus::Cancelled {
+                    checkpoint: Some(value),
+                } => value.stage(&mut records),
+                _ => {}
+            }
+            for step in operation.steps.values_mut() {
+                step.input.stage(&mut records);
+                if let StepStatus::Completed(output) = &mut step.status {
+                    output.stage(&mut records);
+                }
+            }
+            for steer in &mut operation.steers {
+                steer.input.stage(&mut records);
+            }
+        }
+        if let Some((_, value)) = &mut self.latest_checkpoint {
+            value.stage(&mut records);
+        }
+        records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        records.dedup_by(|a, b| a.key == b.key);
+        records
+    }
+
     /// Current optimistic store revision.
     #[must_use]
     pub const fn revision(&self) -> u64 {
@@ -364,7 +528,7 @@ impl DurableState {
     }
 
     pub(crate) fn checkpoint_payload(&self) -> Result<String> {
-        crate::encoding::encode(&RetainedCheckpointRef {
+        serde_json::to_string(&RetainedCheckpointRef {
             nanocodex_durable_state: DurableCheckpointRef {
                 format: STATE_FORMAT,
                 operations: &self.operations,
@@ -465,7 +629,7 @@ impl DurableState {
                 {
                     return Err(Error::InvalidState(format!(
                         "steer {} in operation `{operation_id}` has an invalid model boundary",
-                        offset + 1
+                        offset + 1 + operation.retired_steers as usize
                     )));
                 }
                 match steer.model_call_index {
@@ -473,13 +637,13 @@ impl DurableState {
                         if saw_unbound_steer {
                             return Err(Error::InvalidState(format!(
                                 "steer {} in operation `{operation_id}` was bound after an unbound steer",
-                                offset + 1
+                                offset + 1 + operation.retired_steers as usize
                             )));
                         }
                         if previous_model_call_index.is_some_and(|previous| current < previous) {
                             return Err(Error::InvalidState(format!(
                                 "steer {} in operation `{operation_id}` moved before an earlier steer",
-                                offset + 1
+                                offset + 1 + operation.retired_steers as usize
                             )));
                         }
                         previous_model_call_index = Some(current);
@@ -674,7 +838,7 @@ impl DurableState {
                 let operation = self.pending_operation(operation_id)?;
                 let expected = u32::try_from(operation.steers.len())
                     .ok()
-                    .and_then(|length| length.checked_add(1))
+                    .and_then(|length| length.checked_add(operation.retired_steers)?.checked_add(1))
                     .ok_or_else(|| {
                         Error::InvalidState(format!(
                             "operation `{operation_id}` exceeded the steer counter range"
@@ -699,7 +863,8 @@ impl DurableState {
                 }
                 let operation = self.pending_operation(operation_id)?;
                 let steer = steer_index
-                    .checked_sub(1)
+                    .checked_sub(operation.retired_steers)
+                    .and_then(|index| index.checked_sub(1))
                     .and_then(|index| usize::try_from(index).ok())
                     .and_then(|index| operation.steers.get(index))
                     .ok_or_else(|| {
@@ -718,8 +883,11 @@ impl DurableState {
                         "steer {steer_index} in operation `{operation_id}` was bound more than once"
                     )));
                 }
-                if *steer_index > 1 {
-                    let previous_index = usize::try_from(*steer_index - 2).map_err(|_| {
+                if *steer_index - operation.retired_steers > 1 {
+                    let previous_index = usize::try_from(
+                        *steer_index - operation.retired_steers - 2,
+                    )
+                    .map_err(|_| {
                         Error::InvalidState(format!(
                             "steer {steer_index} in operation `{operation_id}` has an invalid index"
                         ))
@@ -802,6 +970,7 @@ impl DurableState {
                     OperationState {
                         continuation: None,
                         retired_model_calls: 0,
+                        retired_steers: 0,
                         input,
                         status: OperationStatus::Pending,
                         steps: BTreeMap::new(),
@@ -868,11 +1037,12 @@ impl DurableState {
                 model_call_index,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
-                let index = usize::try_from(steer_index - 1).map_err(|_| {
-                    Error::InvalidState(format!(
-                        "steer {steer_index} in operation `{operation_id}` has an invalid index"
-                    ))
-                })?;
+                let index =
+                    usize::try_from(steer_index - operation.retired_steers - 1).map_err(|_| {
+                        Error::InvalidState(format!(
+                            "steer {steer_index} in operation `{operation_id}` has an invalid index"
+                        ))
+                    })?;
                 operation.steers[index].model_call_index = Some(model_call_index);
             }
             Transition::OperationCompleted {
@@ -970,7 +1140,7 @@ impl DurableState {
 
 fn ensure_completed_steers_consumed(operation_id: &str, operation: &OperationState) -> Result<()> {
     for (offset, steer) in operation.steers.iter().enumerate() {
-        let steer_index = offset + 1;
+        let steer_index = offset + 1 + operation.retired_steers as usize;
         let model_call_index = steer.model_call_index.ok_or_else(|| {
             Error::InvalidState(format!(
                 "operation `{operation_id}` completed with unbound steer {steer_index}"
@@ -1017,6 +1187,58 @@ fn ensure_nonempty(value: &str, name: &str) -> Result<()> {
 #[cfg(test)]
 mod continuation_tests {
     use super::*;
+
+    #[test]
+    fn a_long_turn_retires_consumed_steers_without_reusing_their_indices() -> Result<()> {
+        let mut state = DurableState::default();
+        let id = "turn".to_owned();
+        let payload = EncodedPayload::encode(&"context")?;
+        state.apply_transition(
+            1,
+            Transition::OperationAccepted {
+                operation_id: id.clone(),
+                input: payload.clone(),
+            },
+        )?;
+        for model_call in 1..=257 {
+            let mut apply = |entry| state.apply_transition(state.revision() + 1, entry);
+            if model_call > 1 {
+                apply(Transition::SteerBound {
+                    operation_id: id.clone(),
+                    steer_index: model_call - 1,
+                    model_call_index: model_call,
+                })?;
+            }
+            apply(Transition::StepStarted {
+                operation_id: id.clone(),
+                step_id: format!("model-{model_call}"),
+                kind: "model_call".into(),
+                input: payload.clone(),
+            })?;
+            if model_call <= 256 {
+                apply(Transition::SteerAccepted {
+                    operation_id: id.clone(),
+                    steer_index: model_call,
+                    accepted_after_model_call_index: model_call,
+                    input: payload.clone(),
+                })?;
+            }
+            apply(Transition::StepCompleted {
+                operation_id: id.clone(),
+                step_id: format!("model-{model_call}"),
+                output: payload.clone(),
+            })?;
+            apply(Transition::ExecutionAdvanced {
+                operation_id: id.clone(),
+                continuation: payload.clone(),
+            })?;
+            let operation = state.operation(&id).unwrap();
+            assert_eq!(operation.retired_steers, model_call - 1);
+            assert_eq!(operation.steers.len(), usize::from(model_call <= 256));
+            assert!(operation.steps.is_empty());
+        }
+        Ok(())
+    }
 
     #[test]
     fn advancing_preserves_steer_consumption_and_rejects_pending_or_retired_work() -> Result<()> {

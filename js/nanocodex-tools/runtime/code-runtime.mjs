@@ -77,6 +77,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         toolMetadata(result, `tool ${name} metadata`),
       );
     } catch (error) {
+      if (error?.code === "host_interrupted") throw error;
       return encodeToolOutput(errorMessage(error), false, null);
     } finally {
       activeExecutions.delete(execution);
@@ -179,6 +180,11 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
           });
         } catch (error) {
+          if (error?.code === "host_interrupted") {
+            execution.interruption = error;
+            controller.abort(error);
+            throw error;
+          }
           const message = errorMessage(error);
           Object.assign(recordedCall, {
             output: message,
@@ -331,12 +337,15 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       } catch (error) {
         if (error !== EXIT) throw error;
       }
+      if (execution.interruption) throw execution.interruption;
       return JSON.stringify({
         output: withStatus("Script completed", startedAt, content),
         success: true,
         nested_calls: nestedCalls,
       });
     } catch (error) {
+      if (execution.interruption) throw execution.interruption;
+      if (error?.code === "host_interrupted") throw error;
       return JSON.stringify({
         output: `Script failed\nWall time ${wallTime(startedAt)} seconds\nOutput:\n${errorMessage(error)}`,
         success: false,
@@ -353,7 +362,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     return observeOperation(sessionId, parentCallId, (observation) => {
       const options = parseExec(source);
       const cell = {
-        id: `${cellGeneration}:${nextCellId++}`, sessionId, controller: new AbortController(),
+        id: `${cellGeneration}:${nextCellId++}`, sessionId, parentCallId, controller: new AbortController(),
         content: [], updates: [], completedCalls: [], notifications: [], turn: turns.get(sessionId) ?? 0,
         budget: options.max_output_tokens ?? 10_000, result: undefined, observing: false,
       };
@@ -373,6 +382,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         cell.result = { success: completed.success };
         cell.wake?.();
       }, (error) => {
+        if (error?.code === "host_interrupted") cell.interruption = error;
         cell.content.push({ type: "input_text", text: errorMessage(error) });
         cell.result = { success: false };
         cell.wake?.();
@@ -403,9 +413,12 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     const observation = createCodeObservation(sessionId, turns.get(sessionId) ?? 0);
     codeObservations.get(key)?.close();
     codeObservations.set(key, observation);
-    return Promise.resolve().then(() => operation(observation)).catch((error) => JSON.stringify({
-      output: `Script failed\nOutput:\n${errorMessage(error)}`, success: false, nested_calls: [],
-    })).finally(() => observation.close());
+    return Promise.resolve().then(() => operation(observation)).catch((error) => {
+      if (error?.code === "host_interrupted") throw error;
+      return JSON.stringify({
+        output: `Script failed\nOutput:\n${errorMessage(error)}`, success: false, nested_calls: [],
+      });
+    }).finally(() => observation.close());
   }
 
   async function observeCell(cell, observation, yieldTime, budget) {
@@ -424,6 +437,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
           timer = setTimeout(resolve, Math.min(yieldTime, 2_147_483_647));
         });
       }
+      if (cell.interruption) throw cell.interruption;
       cell.yieldRequested = false;
       const result = cell.result;
       const status = cell.terminated ? "Script terminated"
@@ -438,6 +452,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       return JSON.stringify({
         output: limited,
         success: cell.terminated || (result?.success ?? true),
+        cell: { origin_call_id: cell.parentCallId, running: !result },
         nested_calls: cell.completedCalls.splice(0),
         notifications: cell.notifications.splice(0),
       });

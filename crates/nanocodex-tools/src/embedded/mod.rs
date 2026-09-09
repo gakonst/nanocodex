@@ -31,6 +31,7 @@
 //!     ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
 //!         Box::pin(async move {
 //!             Ok(CodeModeExecution {
+//!                 cell: None,
 //!                 output: ToolOutputBody::Text(format!("evaluated: {source}")),
 //!                 success: true,
 //!                 nested_calls: Vec::new(),
@@ -59,8 +60,8 @@ use crate::{ToolContext, ToolDefinition, ToolInput, ToolOutput};
 pub use input::{prepare_output_images, prepare_user_input};
 pub use runtime::{EmbeddedToolRuntime, EmbeddedToolRuntimeControl};
 pub use types::{
-    CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate, NestedToolCall,
-    OwnedToolContext,
+    CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,
+    NestedToolCall, OwnedToolContext,
 };
 
 /// Binds a caller-owned Code Mode host to one immutable [`crate::Tools`] recipe.

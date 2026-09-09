@@ -57,15 +57,16 @@ export type DurabilityStoredState = Readonly<{
 
 /** JSON-safe exact state archive used for an offline provider cutover. */
 export type DurabilityPortableStateArchive = DurabilityStoredState & Readonly<{
-  format: "nanocodex-durability-state-v1";
+  format: "nanocodex-durability-state-v2";
   stateId: string;
+  records: readonly DurabilityRecord[];
 }>;
 
 export type DurabilityExportCursor = string;
 
 /** One deterministic page of the total-state replacement from `from` (exclusive) to `to` (inclusive). */
 export type DurabilityPortableStatePage = Readonly<{
-  format: "nanocodex-durability-state-page-v1";
+  format: "nanocodex-durability-state-page-v2";
   stateId: string;
   from: DurabilityRevision;
   /** SHA-256 over the UTF-8 JSON tuple `[from, fromPayload]`. */
@@ -76,6 +77,7 @@ export type DurabilityPortableStatePage = Readonly<{
   /** Total UTF-16 code units in the opaque state payload. */
   payloadLength: number;
   payload: string;
+  records: readonly DurabilityRecord[];
 }>;
 
 export type DurabilityExportPageRequest = Readonly<{
@@ -98,7 +100,10 @@ export type DurabilityAcquiredState = DurabilityStoredState & Readonly<{
   fence: DurabilityFence;
 }>;
 
+export type DurabilityRecord = Readonly<{ key: string; value: string }>;
+
 export type DurabilityReplaceRequest = Readonly<{
+  records: readonly DurabilityRecord[];
   ownerId: string;
   fence: DurabilityFence;
   expectedRevision: DurabilityRevision;
@@ -113,6 +118,9 @@ export type DurabilityReplaceResult =
 
 /** Host capability consumed by the Rust/WASM durability driver. */
 export type DurabilityStore = Readonly<{
+  readRecord(stateId: string, key: string): string | null | Promise<string | null>;
+  /** Optional single-query implementation; Rust requests at most 16 records. */
+  readRecords?(stateId: string, keys: readonly string[]): readonly (string | null)[] | Promise<readonly (string | null)[]>;
   load(stateId: string): DurabilityStoredState | Promise<DurabilityStoredState>;
   acquire(
     stateId: string,
@@ -126,10 +134,13 @@ export type DurabilityStore = Readonly<{
 
 /** Store that can atomically restore an exact revision into an empty destination. */
 export type DurabilityPortableStore = DurabilityStore & Readonly<{
+  scanRecords(stateId: string, after?: string, limit?: number): readonly DurabilityRecord[] | Promise<readonly DurabilityRecord[]>;
+  importRecords(stateId: string, records: readonly DurabilityRecord[]): void | Promise<void>;
   importState(
     stateId: string,
     state: DurabilityStoredState,
     options?: Readonly<{
+      records?: readonly DurabilityRecord[];
       expectedRevision?: DurabilityRevision | undefined;
       /** When supplied, compare the complete expected state atomically before importing. */
       expectedPayload?: string | null | undefined;

@@ -230,13 +230,16 @@ impl ExecutionPolicy for ProviderSteps {
     fn continuation<'a>(
         &'a self,
         _operation_id: String,
-    ) -> ExecutionFuture<'a, nanocodex_agent::Result<Option<String>>> {
+    ) -> ExecutionFuture<
+        'a,
+        nanocodex_agent::Result<Option<nanocodex_agent::execution::ExecutionContinuation>>,
+    > {
         Box::pin(async { Ok(None) })
     }
     fn advance<'a>(
         &'a self,
         _operation_id: String,
-        _state_json: String,
+        _state: nanocodex_agent::execution::ExecutionContinuation,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
         Box::pin(async { Ok(()) })
     }

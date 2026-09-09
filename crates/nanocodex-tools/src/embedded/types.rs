@@ -82,10 +82,22 @@ impl OwnedToolContext {
     }
 }
 
+/// Identity and lifetime of the code cell observed by an exec or wait call.
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeModeCell {
+    /// Original exec call, preserved across subsequent wait calls.
+    pub origin_call_id: String,
+    /// Whether this cell can produce more updates.
+    pub running: bool,
+}
+
 /// Complete result of one Code Mode cell observation.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodeModeExecution {
+    /// Cell lifetime, absent when no cell was observed.
+    pub cell: Option<CodeModeCell>,
     /// Ordered model-visible output emitted by the cell.
     pub output: ToolOutputBody,
     /// Whether the JavaScript cell reached a successful terminal state.

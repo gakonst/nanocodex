@@ -40,7 +40,7 @@ test("the memory durability store replaces one complete opaque state", () => {
     revision: "0",
     payload: null,
   });
-  assert.deepEqual(store.replace("state-1", {
+  assert.deepEqual(store.replace("state-1", { records: [],
     ownerId: "owner-1",
     fence: "1",
     expectedRevision: "0",
@@ -52,19 +52,19 @@ test("the memory durability store replaces one complete opaque state", () => {
     revision: "1",
     payload: "{\"entry\":1}",
   });
-  assert.deepEqual(store.replace("state-1", {
+  assert.deepEqual(store.replace("state-1", { records: [],
     ownerId: "owner-1",
     fence: "1",
     expectedRevision: "0",
     payload: "stale",
   }), { status: "fenced" });
-  assert.deepEqual(store.replace("state-1", {
+  assert.deepEqual(store.replace("state-1", { records: [],
     ownerId: "owner-2",
     fence: "2",
     expectedRevision: "0",
     payload: "conflicting",
   }), { status: "conflict", actualRevision: "1" });
-  assert.deepEqual(store.replace("state-1", {
+  assert.deepEqual(store.replace("state-1", { records: [],
     ownerId: "owner-2",
     fence: "2",
     expectedRevision: "1",
@@ -81,7 +81,7 @@ test("the memory durability store replaces one complete opaque state", () => {
     revision: "0",
     payload: null,
   });
-  assert.deepEqual(store.replace("child", {
+  assert.deepEqual(store.replace("child", { records: [],
     ownerId: "child-owner",
     fence: "1",
     expectedRevision: "0",
@@ -127,7 +127,7 @@ test("the memory durability store replaces one complete opaque state", () => {
     payload: "retained",
   });
   const exhaustedOwner = exhausted.acquire("exhausted", { ownerId: "owner" });
-  assert.deepEqual(exhausted.replace("exhausted", {
+  assert.deepEqual(exhausted.replace("exhausted", { records: [],
     ownerId: exhaustedOwner.ownerId,
     fence: exhaustedOwner.fence,
     expectedRevision: "18446744073709551615",
@@ -170,7 +170,7 @@ test("the SQLite durability store owns revision validation and compare-and-repla
   const store = createSqliteDurabilityStore({
     transaction: (callback) => callback(query),
   });
-  assert.equal(sqliteDurabilitySchema.length, 2);
+  assert.equal(sqliteDurabilitySchema.length, 3);
 
   assert.deepEqual(store.load("state-1"), { revision: "0", payload: null });
   const firstOwner = store.acquire("state-1", { ownerId: "owner-1" });
@@ -180,19 +180,19 @@ test("the SQLite durability store owns revision validation and compare-and-repla
     revision: "0",
     payload: null,
   });
-  assert.deepEqual(store.replace("state-1", {
+  assert.deepEqual(store.replace("state-1", { records: [],
     ownerId: firstOwner.ownerId,
     fence: firstOwner.fence,
     expectedRevision: "0",
     payload: "opaque",
   }), { status: "replaced", revision: "1" });
-  assert.deepEqual(store.replace("state-1", {
+  assert.deepEqual(store.replace("state-1", { records: [],
     ownerId: firstOwner.ownerId,
     fence: firstOwner.fence,
     expectedRevision: "0",
     payload: "stale",
   }), { status: "conflict", actualRevision: "1" });
-  assert.deepEqual(store.replace("state-1", {
+  assert.deepEqual(store.replace("state-1", { records: [],
     ownerId: firstOwner.ownerId,
     fence: firstOwner.fence,
     expectedRevision: "1",
@@ -204,7 +204,7 @@ test("the SQLite durability store owns revision validation and compare-and-repla
   });
   states.set("exhausted", { revision: "18446744073709551615", payload: "retained" });
   const exhaustedOwner = store.acquire("exhausted", { ownerId: "owner-exhausted" });
-  assert.deepEqual(store.replace("exhausted", {
+  assert.deepEqual(store.replace("exhausted", { records: [],
     ownerId: exhaustedOwner.ownerId,
     fence: exhaustedOwner.fence,
     expectedRevision: "18446744073709551615",
@@ -226,7 +226,7 @@ test("the SQLite durability store owns revision validation and compare-and-repla
     revision: "0",
     payload: null,
   });
-  assert.deepEqual(store.replace("state-1", {
+  assert.deepEqual(store.replace("state-1", { records: [],
     ownerId: firstOwner.ownerId,
     fence: firstOwner.fence,
     expectedRevision: "0",
@@ -585,6 +585,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
         "1",
         "0",
         "opaque-rust-state",
+        "[]",
       )),
       { status: "replaced", revision: "1" },
     );
@@ -596,6 +597,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
         "1",
         "0",
         "stale",
+        "[]",
       )),
       { status: "conflict", actual_revision: "1" },
     );
@@ -607,6 +609,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
         "1",
         "1",
         "definite-failure",
+        "[]",
       )),
       { status: "not_committed", message: "transaction rolled back" },
     );
@@ -631,6 +634,7 @@ test("the WASM host bridge routes owner-fenced durability per Agent binding", as
         "1",
         "1",
         "stale-owner",
+        "[]",
       )),
       { status: "fenced" },
     );

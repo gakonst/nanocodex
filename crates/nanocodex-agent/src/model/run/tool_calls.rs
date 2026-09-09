@@ -38,6 +38,7 @@ impl ActiveNestedToolCall {
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct CompletedToolCall {
+    pub(super) cell: Option<nanocodex_tools::code_mode::CodeModeCell>,
     pub(super) call_id: String,
     pub(super) tool: String,
     pub(super) success: bool,
@@ -161,18 +162,28 @@ async fn execute_code_call(
     context: ToolContext<'_>,
     observer: &mut dyn CodeModeObserver,
     tool_span: &tracing::Span,
-) -> CodeModeExecution {
+) -> Result<CodeModeExecution> {
     if let Some(context) = owned_context {
         tools
             .execute_code_owned_with_updates(&call.input, context, observer)
             .instrument(tool_span.clone())
             .await
+            .map_err(interrupted_tool_host)
     } else {
         tools
             .wait_for_code_with_updates(&call.input, context, observer)
             .instrument(tool_span.clone())
             .await
+            .map_err(interrupted_tool_host)
     }
+}
+
+fn interrupted_tool_host(error: nanocodex_tools::embedded::CodeModeHostError) -> NanocodexError {
+    NanocodexError::execution_policy_with_disposition(
+        "tool host interrupted",
+        crate::ExecutionPolicyDisposition::Reopen,
+        error,
+    )
 }
 
 impl<S> ModelRun<S>
@@ -382,6 +393,18 @@ where
         completed: CompletedToolCall,
         progress: &Mutex<ActiveToolProgress>,
     ) -> Result<Vec<ResponseItem>> {
+        if !completed
+            .cell
+            .as_ref()
+            .is_some_and(|cell| cell.running && cell.origin_call_id == completed.call_id)
+        {
+            self.tool_call_indices.remove(completed.call_id.as_str());
+        }
+        if let Some(cell) = &completed.cell {
+            if !cell.running {
+                self.tool_call_indices.remove(cell.origin_call_id.as_str());
+            }
+        }
         self.stats.tool_work_duration_ns += completed.work_duration_ns;
         let _ = self.finish_active_tool_progress(progress);
         Ok(completed.response_items)
@@ -498,6 +521,7 @@ where
             CodeCallKind::ToolSearch => tool_search_output(active.call_id.clone(), Vec::new()),
         };
         CompletedToolCall {
+            cell: None,
             call_id: active.call_id.clone(),
             tool: active.name.clone(),
             success: false,
@@ -538,6 +562,7 @@ where
                 CodeCallKind::ToolSearch => tool_search_output(call.call_id.clone(), Vec::new()),
             };
             return Ok(CompletedToolCall {
+                cell: None,
                 call_id: call.call_id,
                 tool: qualified_name,
                 success: false,
@@ -564,26 +589,24 @@ where
             .with_host_context(host_context);
             let mut execution = match call.kind {
                 CodeCallKind::Function => match RawValue::from_string(call.input.clone()) {
-                    Ok(input) => {
-                        tools
-                            .execute_tool(&qualified_name, ToolInput::Function(input), context)
-                            .instrument(tool_span.clone())
-                            .await
-                    }
+                    Ok(input) => tools
+                        .execute_tool(&qualified_name, ToolInput::Function(input), context)
+                        .instrument(tool_span.clone())
+                        .await
+                        .map_err(interrupted_tool_host)?,
                     Err(error) => ToolOutput::error(format!(
                         "failed to encode {qualified_name} arguments: {error}"
                     )),
                 },
-                CodeCallKind::Custom => {
-                    tools
-                        .execute_tool(
-                            &qualified_name,
-                            ToolInput::Freeform(call.input.clone()),
-                            context,
-                        )
-                        .instrument(tool_span.clone())
-                        .await
-                }
+                CodeCallKind::Custom => tools
+                    .execute_tool(
+                        &qualified_name,
+                        ToolInput::Freeform(call.input.clone()),
+                        context,
+                    )
+                    .instrument(tool_span.clone())
+                    .await
+                    .map_err(interrupted_tool_host)?,
                 CodeCallKind::ToolSearch => {
                     unreachable!("tool search is not an ordinary direct tool")
                 }
@@ -598,6 +621,7 @@ where
             tool_span.record("otel.status_code", otel_status(execution.success));
             tool_span.record("duration_ns", duration_ns);
             return Ok(CompletedToolCall {
+                cell: None,
                 call_id: call.call_id.clone(),
                 tool: qualified_name,
                 success: execution.success,
@@ -630,12 +654,11 @@ where
             )
             .with_host_context(host_context);
             let execution = match RawValue::from_string(call.input.clone()) {
-                Ok(input) => {
-                    tools
-                        .execute_tool("tool_search", ToolInput::Function(input), context)
-                        .instrument(tool_span.clone())
-                        .await
-                }
+                Ok(input) => tools
+                    .execute_tool("tool_search", ToolInput::Function(input), context)
+                    .instrument(tool_span.clone())
+                    .await
+                    .map_err(interrupted_tool_host)?,
                 Err(error) => {
                     ToolOutput::error(format!("failed to encode tool_search arguments: {error}"))
                 }
@@ -657,6 +680,7 @@ where
                 Vec::new()
             };
             return Ok(CompletedToolCall {
+                cell: None,
                 call_id: call.call_id.clone(),
                 tool: qualified_name,
                 success: execution.success,
@@ -693,7 +717,7 @@ where
             &mut observer,
             tool_span,
         )
-        .await;
+        .await?;
         let update_error = observer.error.take();
         drop(observer);
         if let Some(error) = update_error {
@@ -727,6 +751,7 @@ where
             }),
         );
         Ok(CompletedToolCall {
+            cell: execution.cell,
             call_id: call.call_id,
             tool: qualified_name,
             success: execution.success,

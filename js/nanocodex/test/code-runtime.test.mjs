@@ -311,6 +311,7 @@ for (const evaluator of ["native", "quickjs", "worker"]) test(`${evaluator} supp
     text("世界".repeat(200));
   `, "helpers", "exec-helpers"), "helpers", "exec-helpers");
   assert.deepEqual(first.notifications, [{ call_id: "exec-helpers", text: "progress" }]);
+  assert.deepEqual(first.cell, { origin_call_id: "exec-helpers", running: true });
   const cellId = outputText(first.output).match(/cell ID ([^\s]+)/)[1];
   let last;
   for (let index = 0; index < 10; index++) {
@@ -320,6 +321,7 @@ for (const evaluator of ["native", "quickjs", "worker"]) test(`${evaluator} supp
   }
   assert.equal(last.success, true);
   assert.deepEqual(last.notifications, []);
+  assert.deepEqual(last.cell, { origin_call_id: "exec-helpers", running: false });
   assert.equal(last.output.find((item) => item.type === "input_image").detail, "original");
   assert.equal(last.output.find((item) => item.type === "input_audio").audio_url, "data:audio/wav;base64,AAAA");
   assert.match(outputText(last.output), /output truncated/);

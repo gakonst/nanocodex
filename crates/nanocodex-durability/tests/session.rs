@@ -63,6 +63,14 @@ struct StepGateStore {
 }
 
 impl StateStore for StepGateStore {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, std::result::Result<Option<String>, StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -77,6 +85,7 @@ impl StateStore for StepGateStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         let matches = match self.moment {
             StepGateMoment::BeforeStartCommit => payload.contains("\"status\":\"effect_pending\""),
@@ -90,13 +99,13 @@ impl StateStore for StepGateStore {
                     entered.notify_one();
                     release.notified().await;
                     self.inner
-                        .replace(state_id, owner, expected_revision, payload)
+                        .replace(state_id, owner, expected_revision, payload, records)
                         .await
                 }),
                 StepGateMoment::AfterCompletionCommit => Box::pin(async move {
                     let revision = self
                         .inner
-                        .replace(state_id, owner, expected_revision, payload)
+                        .replace(state_id, owner, expected_revision, payload, records)
                         .await?;
                     entered.notify_one();
                     release.notified().await;
@@ -105,11 +114,19 @@ impl StateStore for StepGateStore {
             };
         }
         self.inner
-            .replace(state_id, owner, expected_revision, payload)
+            .replace(state_id, owner, expected_revision, payload, records)
     }
 }
 
 impl StateStore for SeededStore {
+    fn read_record<'a>(
+        &'a mut self,
+        _state_id: &'a str,
+        _key: &'a str,
+    ) -> StoreFuture<'a, std::result::Result<Option<String>, StoreError>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn acquire<'a>(
         &'a mut self,
         _state_id: &'a str,
@@ -130,6 +147,7 @@ impl StateStore for SeededStore {
         _owner: &'a OwnerToken,
         _expected_revision: u64,
         _payload: &'a str,
+        _records: &'a [nanocodex_durability::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async {
             Err(StoreError::Backend(
@@ -140,6 +158,14 @@ impl StateStore for SeededStore {
 }
 
 impl StateStore for NotCommittedOnceStore {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, std::result::Result<Option<String>, StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -154,6 +180,7 @@ impl StateStore for NotCommittedOnceStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         if expected_revision == self.fail_at_revision && !self.failed.swap(true, Ordering::SeqCst) {
             return Box::pin(async {
@@ -163,11 +190,19 @@ impl StateStore for NotCommittedOnceStore {
             });
         }
         self.inner
-            .replace(state_id, owner, expected_revision, payload)
+            .replace(state_id, owner, expected_revision, payload, records)
     }
 }
 
 impl StateStore for CommitThenFailStore {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, std::result::Result<Option<String>, StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -182,11 +217,12 @@ impl StateStore for CommitThenFailStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async move {
             let revision = self
                 .inner
-                .replace(state_id, owner, expected_revision, payload)
+                .replace(state_id, owner, expected_revision, payload, records)
                 .await?;
             if expected_revision == self.fail_after_revision {
                 return Err(StoreError::Backend(
@@ -567,7 +603,7 @@ async fn rejects_every_inconsistent_store_state_shape() {
 #[tokio::test]
 async fn rejects_unknown_outer_state_fields() {
     let error = match DurableSession::open(
-        seeded_store(&[r#"{"nanocodex_durable_state":{"format":3,"operations":{},"latest_checkpoint":null},"unknown":true}"#]),
+        seeded_store(&[r#"{"nanocodex_durable_state":{"format":4,"operations":{},"latest_checkpoint":null},"unknown":true}"#]),
         "unknown-outer-field",
     )
     .await
@@ -580,7 +616,7 @@ async fn rejects_unknown_outer_state_fields() {
 
 #[tokio::test]
 async fn rejects_noncanonical_checkpoint_fields() {
-    let payload = r#"{"nanocodex_durable_state":{"format":3,"operations":{},"latest_checkpoint":null,"generation":1}}"#;
+    let payload = r#"{"nanocodex_durable_state":{"format":4,"operations":{},"latest_checkpoint":null,"generation":1}}"#;
     let error = match DurableSession::open(
         SeededStore {
             state: StoredState {
@@ -603,7 +639,7 @@ async fn rejects_noncanonical_checkpoint_fields() {
 async fn rejects_retry_attempt_counter_overflow_without_advancing_state() {
     let revision = u64::from(u32::MAX);
     let payload = format!(
-        r#"{{"nanocodex_durable_state":{{"format":3,"operations":{{"turn":{{"input":"\"prompt\"","status":"pending","steps":{{"model":{{"kind":"model","input":"\"retry\"","status":"effect_pending","attempts":{}}}}},"accepted_order":1}}}},"latest_checkpoint":null}}}}"#,
+        r#"{{"nanocodex_durable_state":{{"format":4,"operations":{{"turn":{{"input":"d5c35dc42880af8ea51f2aed62e8aa32127127a3354052e17726ff172b2e38a5","status":"pending","steps":{{"model":{{"kind":"model","input":"edf916f660660da65a1f21d7ab77d99621262f447acf39a4202ea81551863e66","status":"effect_pending","attempts":{}}}}},"retired_steers":0,"accepted_order":1}}}},"latest_checkpoint":null}}}}"#,
         u32::MAX,
     );
     let session = DurableSession::open(
@@ -673,7 +709,7 @@ async fn rejects_noncanonical_transition_shape() {
 
 #[tokio::test]
 async fn rejects_a_checkpoint_terminal_that_crosses_pending_work() {
-    let payload = r#"{"nanocodex_durable_state":{"format":3,"operations":{"turn-1":{"input":"\"first\"","status":"pending","steps":{},"accepted_order":1},"turn-2":{"input":"\"second\"","status":{"completed":{"checkpoint":"\"crossed\"","output":"\"done\""}},"steps":{},"accepted_order":2}},"latest_checkpoint":"\"crossed\""}}"#;
+    let payload = r#"{"nanocodex_durable_state":{"format":4,"operations":{"turn-1":{"input":"de5f2cbf4c10a0d146f2a671aac363e8640fefc469ad42ac25364f19e4bc194f","status":"pending","steps":{},"retired_steers":0,"accepted_order":1},"turn-2":{"input":"38e452b56a63d9b5f397354cbd207b0e548ef8e4f49729a6f6dd8d6a9a57ab23","status":{"completed":{"checkpoint":"00d8d638b0f3dcaa7292ace7056e5f83732cc6befae942c987a99d4c796b7686","output":"58bf5b5478e5d1fb7441daeff9fd1ed60a4ad5fbfabc64715cd8608f3f59f6da"}},"steps":{},"retired_steers":0,"accepted_order":2}},"latest_checkpoint":"00d8d638b0f3dcaa7292ace7056e5f83732cc6befae942c987a99d4c796b7686"}}"#;
     let error = match DurableSession::open(
         SeededStore {
             state: StoredState {
@@ -694,7 +730,7 @@ async fn rejects_a_checkpoint_terminal_that_crosses_pending_work() {
 
 #[tokio::test]
 async fn rejects_the_deleted_checkpoint_effect_field() {
-    let payload = r#"{"nanocodex_durable_state":{"format":3,"operations":{"turn":{"input":"\"prompt\"","status":"pending","steps":{},"accepted_order":1}},"latest_checkpoint":null,"checkpoint_effect_pending":true}}"#;
+    let payload = r#"{"nanocodex_durable_state":{"format":4,"operations":{"turn":{"input":"d5c35dc42880af8ea51f2aed62e8aa32127127a3354052e17726ff172b2e38a5","status":"pending","steps":{},"retired_steers":0,"accepted_order":1}},"latest_checkpoint":null,"checkpoint_effect_pending":true}}"#;
     let error =
         match DurableSession::open(seeded_store(&[payload]), "crossed-checkpoint-effect").await {
             Ok(_) => panic!("standalone checkpoint effects must not cross pending operations"),
@@ -706,7 +742,7 @@ async fn rejects_the_deleted_checkpoint_effect_field() {
 
 #[tokio::test]
 async fn reopens_a_restarted_step() {
-    let payload = r#"{"nanocodex_durable_state":{"format":3,"operations":{"turn":{"input":"\"prompt\"","status":"pending","steps":{"tool-1":{"kind":"tool","input":"\"charge\"","status":"effect_pending","attempts":2}},"accepted_order":1}},"latest_checkpoint":null}}"#;
+    let payload = r#"{"nanocodex_durable_state":{"format":4,"operations":{"turn":{"input":"d5c35dc42880af8ea51f2aed62e8aa32127127a3354052e17726ff172b2e38a5","status":"pending","steps":{"tool-1":{"kind":"tool","input":"33829e45a9ddc70421baedb51413eb99d06e96e518c550c5d59998156f239b69","status":"effect_pending","attempts":2}},"retired_steers":0,"accepted_order":1}},"latest_checkpoint":null}}"#;
     let session = DurableSession::open(seeded_store(&[payload]), "restarted-step")
         .await
         .unwrap();
@@ -771,11 +807,20 @@ async fn reopens_a_seeded_step_completion() {
 
     let state = session.state().await.unwrap();
     let operation = state.operation("turn").unwrap();
-    assert!(matches!(
-        operation.steps.get("tool-1").map(|step| &step.status),
-        Some(nanocodex_durability::StepStatus::Completed(output))
-            if output.decode::<String>().unwrap() == "receipt"
-    ));
+    let Some(nanocodex_durability::StepStatus::Completed(output)) =
+        operation.steps.get("tool-1").map(|step| &step.status)
+    else {
+        panic!("missing completion");
+    };
+    assert_eq!(
+        session
+            .resolve(output)
+            .await
+            .unwrap()
+            .decode::<String>()
+            .unwrap(),
+        "receipt"
+    );
 }
 
 #[tokio::test]

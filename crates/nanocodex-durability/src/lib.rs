@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod agent;
-mod encoding;
+mod context;
 mod memory;
 #[cfg(all(feature = "postgres", not(target_family = "wasm")))]
 mod postgres;
@@ -30,7 +30,7 @@ pub use state::{
     StepStatus, Transition,
 };
 pub use store::{
-    OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoredState,
+    OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
 };
 
 /// Result returned by durability operations.

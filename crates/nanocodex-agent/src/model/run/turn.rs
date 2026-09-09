@@ -294,6 +294,17 @@ where
                 Ok(ModelTurnOutcome::Cancelled(checkpoint))
             }
             Err(error) => {
+                if self.execution_steps.is_some()
+                    && error.execution_policy_disposition()
+                        == Some(crate::ExecutionPolicyDisposition::Reopen)
+                {
+                    // An interrupted host did not settle its effect. Leave the
+                    // durable batch intact; do not invent failed tool outputs.
+                    if let Some(tools) = &self.active_tools {
+                        tools.cancel_turn().await;
+                    }
+                    return Err(error);
+                }
                 if error
                     .responses_error()
                     .is_some_and(ResponsesError::is_context_window_exceeded)

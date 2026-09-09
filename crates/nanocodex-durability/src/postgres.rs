@@ -2,7 +2,11 @@ use tokio_postgres::Client;
 
 use crate::{OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoredState};
 
-const POSTGRES_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS nanocodex_durable_owners (
+const POSTGRES_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS nanocodex_durable_records (
+       state_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+       PRIMARY KEY (state_id, key)
+     );
+     CREATE TABLE IF NOT EXISTS nanocodex_durable_owners (
        state_id TEXT PRIMARY KEY,
        owner_id TEXT NOT NULL,
        fence NUMERIC(20, 0) NOT NULL
@@ -45,6 +49,23 @@ impl PostgresStore {
 }
 
 impl StateStore for PostgresStore {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            self.client
+                .query_opt(
+                    "SELECT value FROM nanocodex_durable_records WHERE state_id = $1 AND key = $2",
+                    &[&state_id, &key],
+                )
+                .await
+                .map(|row| row.map(|row| row.get(0)))
+                .map_err(backend)
+        })
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -97,6 +118,7 @@ impl StateStore for PostgresStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async move {
             let transaction = self.client.transaction().await.map_err(backend)?;
@@ -135,6 +157,12 @@ impl StateStore for PostgresStore {
                     expected: expected_revision,
                     actual,
                 });
+            }
+            for record in records {
+                transaction.execute(
+                    "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3)
+                     ON CONFLICT (state_id, key) DO NOTHING", &[&state_id, &record.key, &record.value],
+                ).await.map_err(backend)?;
             }
             let revision = actual.checked_add(1).ok_or_else(|| {
                 StoreError::NotCommitted("Postgres durability revision overflow".to_owned())

@@ -15,7 +15,7 @@ test("IndexedDB durability validates one complete retained state", async () => {
   });
   const owner = await store.acquire("thread", { ownerId: "owner-1" });
   await assert.rejects(
-    store.replace("thread", {
+    store.replace("thread", { records: [],
       ownerId: owner.ownerId,
       fence: owner.fence,
       expectedRevision: "01",
@@ -24,7 +24,7 @@ test("IndexedDB durability validates one complete retained state", async () => {
     /unsigned 64-bit decimal string/,
   );
   await assert.rejects(
-    store.replace("thread", {
+    store.replace("thread", { records: [],
       ownerId: owner.ownerId,
       fence: owner.fence,
       expectedRevision: "10",
@@ -39,8 +39,8 @@ test("IndexedDB durability serializes atomic compare-and-replace transactions", 
   const store = createIndexedDbDurabilityStore({ indexedDB, databaseName: "atomic" });
   const owner = await store.acquire("thread", { ownerId: "owner-1" });
   const results = await Promise.all([
-    store.replace("thread", { ...owner, expectedRevision: "0", payload: "left" }),
-    store.replace("thread", { ...owner, expectedRevision: "0", payload: "right" }),
+    store.replace("thread", { records: [], ...owner, expectedRevision: "0", payload: "left" }),
+    store.replace("thread", { records: [], ...owner, expectedRevision: "0", payload: "right" }),
   ]);
 
   assert.equal(results.filter(({ status }) => status === "replaced").length, 1);
@@ -54,7 +54,7 @@ test("IndexedDB durability serializes atomic compare-and-replace transactions", 
 
   indexedDB.failNextStatePut("atomic");
   await assert.rejects(
-    store.replace("thread", { ...owner, expectedRevision: "1", payload: "rolled back" }),
+    store.replace("thread", { records: [], ...owner, expectedRevision: "1", payload: "rolled back" }),
     /injected state failure/,
   );
   assert.deepEqual(await store.load("thread"), state);
@@ -68,11 +68,11 @@ test("IndexedDB durability serializes atomic compare-and-replace transactions", 
     payload: null,
   });
   assert.deepEqual(
-    await store.replace("thread", { ...owner, expectedRevision: "0", payload: "stale" }),
+    await store.replace("thread", { records: [], ...owner, expectedRevision: "0", payload: "stale" }),
     { status: "fenced" },
   );
   assert.deepEqual(
-    await store.replace("thread", {
+    await store.replace("thread", { records: [],
       ...owner,
       expectedRevision: "not-a-revision",
       payload: new Uint8Array(),
@@ -80,7 +80,7 @@ test("IndexedDB durability serializes atomic compare-and-replace transactions", 
     { status: "fenced" },
   );
   assert.deepEqual(
-    await store.replace("thread", {
+    await store.replace("thread", { records: [],
       ...replacement,
       expectedRevision: "1",
       payload: new Uint8Array(),
@@ -100,11 +100,11 @@ test("IndexedDB durability atomically increments concurrent owner acquisitions",
   assert.equal(first.fence, "1");
   assert.equal(second.fence, "2");
   assert.deepEqual(
-    await store.replace("thread", { ...first, expectedRevision: "99", payload: "stale" }),
+    await store.replace("thread", { records: [], ...first, expectedRevision: "99", payload: "stale" }),
     { status: "fenced" },
   );
   assert.deepEqual(
-    await store.replace("thread", { ...second, expectedRevision: "0", payload: "current" }),
+    await store.replace("thread", { records: [], ...second, expectedRevision: "0", payload: "current" }),
     { status: "replaced", revision: "1" },
   );
 });
@@ -118,7 +118,7 @@ test("IndexedDB durability reports u64 overflow without committing", async () =>
   const owner = await store.acquire("thread", { ownerId: "owner" });
 
   assert.deepEqual(
-    await store.replace("thread", { ...owner, expectedRevision: maximum, payload: "never" }),
+    await store.replace("thread", { records: [], ...owner, expectedRevision: maximum, payload: "never" }),
     {
       status: "not_committed",
       message: "IndexedDB durability revision overflow",
@@ -130,11 +130,11 @@ test("IndexedDB durability reports u64 overflow without committing", async () =>
   });
 });
 
-test("IndexedDB durability creates only owner and state stores", async () => {
+test("IndexedDB durability creates owner, head, and immutable record stores", async () => {
   const indexedDB = createFakeIndexedDb();
   const store = createIndexedDbDurabilityStore({ indexedDB, databaseName: "upgrade" });
   await store.load("thread");
-  assert.deepEqual(indexedDB.storeNames("upgrade"), ["owners", "states"]);
+  assert.deepEqual(indexedDB.storeNames("upgrade"), ["owners", "records", "states"]);
 });
 
 test("IndexedDB durability rejects stores with incompatible key semantics", async () => {
@@ -160,7 +160,7 @@ test("IndexedDB durability retries failed opens and reopens retained state after
   await assert.rejects(store.load("thread"), /injected open failure/);
   const owner = await store.acquire("thread", { ownerId: "owner" });
   assert.deepEqual(
-    await store.replace("thread", { ...owner, expectedRevision: "0", payload: "retained" }),
+    await store.replace("thread", { records: [], ...owner, expectedRevision: "0", payload: "retained" }),
     { status: "replaced", revision: "1" },
   );
   assert.equal(indexedDB.openCount("reopen"), 2, "a rejected open is not cached");

@@ -64,6 +64,7 @@ export type HostedToolsStateRow = {
   lease_id: string | null;
   lease_expires_at: number;
   catalog_json: string | null;
+  machines_json: string | null;
 };
 
 export type HostedToolsCallRow = {
@@ -392,6 +393,7 @@ export class HostedToolsBrokerCore {
       lease_id: null,
       lease_expires_at: REVOKED_ROUTE_LEASE_EXPIRES_AT,
       catalog_json: null,
+      machines_json: null,
     });
     return active;
   }
@@ -458,25 +460,22 @@ export class HostedToolsBrokerCore {
     return attachment?.machines?.find(({ id }) => id === machineId);
   }
 
-  /** Returns the live, non-secret user-machine snapshot for the account-owned host. */
+  /** Transport presence is separate from the retained machine identity. */
+  machineOnline(machineId: string): boolean {
+    return this.#sortedStates().some((state) => this.machineOnRoute(state.route_id, machineId) !== undefined);
+  }
+
+  /** Machine identity survives transport loss; dispatch still requires its live route. */
   machines(): readonly HostedMachine[] {
-    const machines: Array<{ routeId: string; machine: HostedMachine }> = [];
-    const ids = new Set<string>();
+    const machines = new Map<string, HostedMachine>();
     for (const state of this.#sortedStates()) {
-      const socket = this.#liveRoutingSocketForState(state);
-      if (socket === undefined) continue;
-      const attachment = this.#attachment(socket);
-      if (attachment?.connectGrantId !== undefined) continue;
-      for (const machine of attachment?.machines ?? []) {
-        if (ids.has(machine.id)) return [];
-        ids.add(machine.id);
-        machines.push({ routeId: state.route_id, machine });
+      if (!state.catalog_json || !state.machines_json) continue;
+      for (const machine of JSON.parse(state.machines_json) as HostedMachine[]) {
+        if (machines.has(machine.id)) return [];
+        machines.set(machine.id, machine);
       }
     }
-    return machines
-      .sort((left, right) => left.machine.id.localeCompare(right.machine.id)
-        || left.routeId.localeCompare(right.routeId))
-      .map(({ machine }) => machine);
+    return [...machines.values()].sort((left, right) => left.id.localeCompare(right.id));
   }
 
   accept(
@@ -843,6 +842,7 @@ export class HostedToolsBrokerCore {
         lease_id: leaseId,
         lease_expires_at: expiresAt,
         catalog_json: catalogJson,
+        machines_json: frame.machines?.length ? JSON.stringify(frame.machines) : null,
       });
     });
     if (replaced?.lease_id) {
@@ -1040,6 +1040,10 @@ export class HostedToolsBrokerCore {
     request: HostedToolsInvokeRequest,
   ): Promise<HostedToolsInvocationOutcome> {
     const retained = this.#persistence.callBySource(request.sessionId, request.callId);
+    if (!retained && !this.#routingSocketForState(this.#persistence.state(binding.routeId))) {
+      return Promise.resolve(preAdmissionUnavailable("Hosted machine is reconnecting"));
+    }
+
     const leaseId = binding.leaseId;
     const now = this.#now();
     const deadlineAt = request.deadlineAt === undefined && retained
@@ -1375,10 +1379,11 @@ export class HostedToolsBrokerCore {
   ): HostedToolsCatalogBinding[] {
     const bindings: HostedToolsCatalogBinding[] = [];
     for (const state of this.#sortedStates()) {
-      if (state.route_id === excludeRouteId || !state.host_id || !state.lease_id || !state.catalog_json) continue;
+      if (state.route_id === excludeRouteId || !state.catalog_json) continue;
       const socket = this.#liveRoutingSocketForState(state);
-      if (!socket) continue;
-      const attachment = this.#attachment(socket);
+      const savedMachines = state.machines_json ? JSON.parse(state.machines_json) as HostedMachine[] : [];
+      if (!socket && savedMachines.length === 0) continue;
+      const attachment = socket ? this.#attachment(socket) : undefined;
       const connectGrantId = this.#activeConnectGrantId(state);
       const appToolCatalogDigest = this.#activeAppToolCatalogDigest(state);
       let entries: HostedToolCatalogEntry[];
@@ -1388,11 +1393,11 @@ export class HostedToolsBrokerCore {
         continue;
       }
       for (const entry of entries) {
-        const machine = attachment?.machines?.[0];
+        const machine = attachment?.machines?.[0] ?? savedMachines[0];
         bindings.push(Object.freeze({
           routeId: state.route_id,
-          hostId: state.host_id,
-          leaseId: state.lease_id,
+          hostId: state.host_id ?? "offline",
+          leaseId: state.lease_id ?? "offline",
           generation: state.generation,
           wireName: entry.definition.name,
           ...(machine === undefined ? {} : { machine }),
@@ -1426,8 +1431,9 @@ export class HostedToolsBrokerCore {
     for (const state of this.#sortedStates()) {
       if (state.route_id === excludeRouteId) continue;
       const socket = this.#liveRoutingSocketForState(state);
-      if (!socket) continue;
-      const attachment = this.#attachment(socket);
+      const savedMachines = state.machines_json ? JSON.parse(state.machines_json) as HostedMachine[] : [];
+      if (!socket && savedMachines.length === 0) continue;
+      const attachment = socket ? this.#attachment(socket) : undefined;
       if (attachment?.connectGrantId !== undefined) continue;
       for (const machine of attachment?.machines ?? []) ids.push(machine.id);
     }
@@ -1456,6 +1462,7 @@ function emptyState(routeId: string): HostedToolsStateRow {
     lease_id: null,
     lease_expires_at: 0,
     catalog_json: null,
+    machines_json: null,
   };
 }
 

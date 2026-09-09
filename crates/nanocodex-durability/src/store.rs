@@ -44,7 +44,7 @@ impl OwnerToken {
     }
 }
 
-/// Complete opaque durable state retained by a host store.
+/// Small opaque execution head retained by a host store.
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct StoredState {
     /// Current compare-and-replace revision.
@@ -96,47 +96,105 @@ pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[cfg(target_family = "wasm")]
 pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
+/// One immutable record published with an execution-state update.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StoreRecord {
+    /// Content-derived record identity, scoped to the state.
+    pub key: String,
+    /// Exact record contents.
+    pub value: String,
+}
+
 /// Minimal host-owned persistence contract.
 ///
-/// `acquire` atomically installs a fresh fencing owner and returns the complete
-/// state from the same transaction. `replace` verifies that owner and the
-/// expected revision, then atomically replaces the complete opaque payload and
-/// advances the revision by exactly one.
+/// `acquire` atomically installs a fencing owner and returns the execution head.
+/// `read_record` reads immutable content on demand. `replace` verifies ownership
+/// and revision, then atomically publishes its records and the new head. A head
+/// must never become visible before all its records commit. Hosts do not decode
+/// agent state or make recovery decisions; Rust owns that lifecycle.
 #[cfg(not(target_family = "wasm"))]
 pub trait StateStore: Send {
-    /// Acquires exclusive authority and loads one complete state.
+    /// Reads one immutable record without hydrating any other durable content.
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, Result<Option<String>, StoreError>>;
+
+    /// Reads a bounded group of immutable records in the requested order.
+    /// Backends may override this to use one query or language-boundary crossing.
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(async move {
+            let mut records = Vec::with_capacity(keys.len());
+            for key in keys {
+                records.push(self.read_record(state_id, key).await?);
+            }
+            Ok(records)
+        })
+    }
+
+    /// Acquires exclusive authority and loads only the execution head.
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
         owner_id: OwnerId,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>>;
 
-    /// Atomically replaces the complete opaque state.
+    /// Atomically publishes immutable records and replaces the execution head.
     fn replace<'a>(
         &'a mut self,
         state_id: &'a str,
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>>;
 }
 
 /// Minimal host-owned persistence contract.
 #[cfg(target_family = "wasm")]
 pub trait StateStore {
-    /// Acquires exclusive authority and loads one complete state.
+    /// Reads one immutable record without hydrating any other durable content.
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, Result<Option<String>, StoreError>>;
+
+    /// Reads a bounded group of immutable records in the requested order.
+    /// Backends may override this to use one query or language-boundary crossing.
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(async move {
+            let mut records = Vec::with_capacity(keys.len());
+            for key in keys {
+                records.push(self.read_record(state_id, key).await?);
+            }
+            Ok(records)
+        })
+    }
+
+    /// Acquires exclusive authority and loads only the execution head.
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
         owner_id: OwnerId,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>>;
 
-    /// Atomically replaces the complete opaque state.
+    /// Atomically publishes immutable records and replaces the execution head.
     fn replace<'a>(
         &'a mut self,
         state_id: &'a str,
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>>;
 }

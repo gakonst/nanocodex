@@ -64,6 +64,9 @@ export type Agent<extended extends object = {}> =
 export function destroy(owner: DurableObjectOwner): void;
 
 /** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
+/** Execution head for a host that transfers its immutable records separately. */
+export function exportDurabilityHead(owner: DurableObjectOwner): Promise<DurabilityPortableStateArchive>;
+
 export function exportDurabilityState(
   owner: DurableObjectOwner,
 ): Promise<DurabilityPortableStateArchive>;

@@ -27,6 +27,7 @@ type AccountHostedTool = HostedToolsCatalogCandidate & Readonly<{
 }>;
 
 type AccountHostedMachine = Readonly<{
+  online: boolean;
   machine: HostedMachine;
   tools: readonly Readonly<{
     name: HostedMachineToolName;
@@ -206,6 +207,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         }), ...this.#remote.tools()],
         machines: this.#broker.machines().map((machine) => ({
           machine,
+          online: this.#broker.machineOnline(machine.id),
           tools: HOSTED_MACHINE_TOOL_NAMES.flatMap((name) => {
             const tool = this.#broker.machineTool(machine.id, name);
             return tool?.routeToken === undefined ? [] : [{
@@ -298,7 +300,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 /** Dynamic provider proxy from one agent DO to its account's shared hand DO. */
 export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   readonly sourceId = "account-hands";
-  readonly #stub: DurableObjectStub<AccountHostedTools>;
+  readonly #namespace: DurableObjectNamespace<AccountHostedTools>;
   readonly #ownerId: string;
   readonly #allowed: (context?: AuthorizationContext) => boolean;
   #definitions: readonly HostedToolsCodeDefinition[] = [];
@@ -315,7 +317,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     ownerId: string,
     allowed: (context?: AuthorizationContext) => boolean,
   ) {
-    this.#stub = namespace.getByName(ownerId);
+    this.#namespace = namespace;
     this.#ownerId = ownerId;
     this.#allowed = allowed;
   }
@@ -346,8 +348,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
 
   refresh(): Promise<void> {
     if (this.#refreshing) return this.#refreshing;
-    const refreshing = this.#load().finally(() => {
-      this.#loaded = true;
+    const refreshing = this.#load().then(() => { this.#loaded = true; }).finally(() => {
       if (this.#refreshing === refreshing) this.#refreshing = undefined;
     });
     this.#refreshing = refreshing;
@@ -367,7 +368,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     let snapshot: unknown;
     try {
       snapshot = await fetchResponseWithDeadline(
-        this.#stub,
+        this.#namespace.getByName(this.#ownerId),
         "https://account-tools.internal/snapshot",
         {
           method: "POST",
@@ -376,11 +377,14 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         },
         10_000,
         "account hand discovery",
-        async (response) => response.ok ? await response.json<unknown>() : undefined,
+        async (response) => {
+          if (response.status === 404) return { tools: [], machines: [] };
+          if (!response.ok) throw new Error(`Account hand discovery failed: ${response.status}`);
+          return response.json<unknown>();
+        },
       );
-    } catch {
-      this.#publish({ tools: [], machines: [] });
-      return;
+    } catch (error) {
+      throw Object.assign(new Error("Account hand discovery interrupted", { cause: error }), { code: "host_interrupted" });
     }
     if (!validSnapshot(snapshot)) {
       this.#publish({ tools: [], machines: [] });
@@ -453,7 +457,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     }
     let response: Response;
     try {
-      response = await this.#stub.fetch("https://account-tools.internal/invoke", {
+      response = await this.#namespace.getByName(this.#ownerId).fetch("https://account-tools.internal/invoke", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -468,12 +472,20 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         } satisfies InvocationRequest),
         signal: context.signal,
       });
-    } catch {
+    } catch (error) {
+      if (machineId !== undefined) throw Object.assign(new Error("Account hand transport interrupted", { cause: error }), {
+        code: "host_interrupted",
+      });
       return failedToolResult("Account hand invocation outcome is unknown", "ambiguous");
     }
     if (!response.ok) {
       try { await response.body?.cancel(); } catch { /* No call was admitted for 404/409. */ }
       const preAdmission = response.status === 404 || response.status === 409;
+      if (machineId !== undefined && (preAdmission || response.status >= 500)) {
+        // No tool result exists. The Rust owner retains this effect and reopens
+        // the runtime; its existing session/call identity resolves any receipt.
+        throw Object.assign(new Error("Account hand is not ready"), { code: "host_interrupted" });
+      }
       return failedToolResult("Account hand is unavailable", "unavailable", preAdmission);
     }
     try {
@@ -482,6 +494,9 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         || !Object.hasOwn(result, "output") || !Object.hasOwn(result, "structured_result")
         || !Object.hasOwn(result, "metadata") || !Object.hasOwn(result, "value")) {
         throw new Error("invalid account hand result");
+      }
+      if (machineId !== undefined && result.pre_admission_unavailable === true) {
+        throw Object.assign(new Error("Account hand is reconnecting"), { code: "host_interrupted" });
       }
       const branded = {
         [TOOL_RESULT]: true,
@@ -495,7 +510,10 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
           : {}),
       };
       return Object.freeze(branded);
-    } catch {
+    } catch (error) {
+      if (machineId !== undefined) throw Object.assign(new Error("Account hand transport interrupted", { cause: error }), {
+        code: "host_interrupted",
+      });
       return failedToolResult("Account hand invocation outcome is unknown", "ambiguous");
     }
   }

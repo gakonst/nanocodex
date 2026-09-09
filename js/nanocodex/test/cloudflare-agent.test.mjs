@@ -21,6 +21,7 @@ const SECOND_OBJECT_ID = "b".repeat(64);
 class MemoryStorage {
   constructor() {
     this.states = [];
+    this.records = new Map();
     this.chunks = [];
     this.chunkHeads = new Map();
     this.events = [];
@@ -130,21 +131,18 @@ class MemoryStorage {
       rows = this.states
         .filter((batch) => batch.stateId === args[0])
         .map(({ revision, payload }) => ({ revision, payload }));
-    } else if (statement.startsWith(
-      "SELECT revision, chunk_count FROM nanocodex_durable_chunk_heads",
-    )) {
-      const head = this.chunkHeads.get(args[0]);
-      rows = head ? [head] : [];
-    } else if (statement.startsWith(
-      "SELECT revision, chunk_index, payload FROM nanocodex_durable_state_chunks",
-    )) {
-      rows = this.chunks
-        .filter((chunk) => chunk.stateId === args[0])
-        .map((chunk) => ({
-          revision: chunk.revision,
-          chunk_index: chunk.chunkIndex,
-          payload: chunk.payload,
-        }));
+    } else if (statement.startsWith("SELECT key, value FROM nanocodex_durable_records")) {
+      rows = [...this.records].map(([address, value]) => ({ address: JSON.parse(address), value }))
+        .filter(({ address: [stateId, key] }) => stateId === args[0] && (statement.includes("key IN") ? args.slice(1).includes(key) : key > args[1]))
+        .map(({ address: [, key], value }) => ({ key, value })).sort((a, b) => a.key < b.key ? -1 : 1);
+      if (statement.includes("LIMIT")) rows = rows.slice(0, args[2]);
+    } else if (statement.startsWith("SELECT value FROM nanocodex_durable_records")) {
+      const value = this.records.get(JSON.stringify(args));
+      rows = value === undefined ? [] : [{ value }];
+    } else if (statement.startsWith("INSERT INTO nanocodex_durable_records")) {
+      this.records.set(JSON.stringify(args.slice(0, 2)), args[2]);
+    } else if (statement.startsWith("DELETE FROM nanocodex_durable_records")) {
+      for (const key of this.records.keys()) if (!args.length || JSON.parse(key)[0] === args[0]) this.records.delete(key);
     } else if (statement.startsWith("INSERT INTO nanocodex_durable_states")) {
       this.stateRevisions.set(args[0], args[1]);
       this.states = this.states.filter((batch) => batch.stateId !== args[0]);
@@ -174,7 +172,7 @@ class MemoryStorage {
     } else {
       throw new Error(`unexpected SQL: ${statement}`);
     }
-    return { rowsWritten, toArray: () => rows };
+    return { rowsWritten, toArray: () => rows, [Symbol.iterator]: () => rows[Symbol.iterator]() };
   }
 }
 
@@ -915,12 +913,12 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
   const ownership = store.acquire(stateId, { ownerId: "seed" });
   const payload = JSON.stringify({
     nanocodex_durable_state: {
-      format: 3,
+      format: 4,
       operations: {},
       latest_checkpoint: null,
     },
   });
-  assert.deepEqual(store.replace(stateId, {
+  assert.deepEqual(store.replace(stateId, { records: [],
     ownerId: ownership.ownerId,
     fence: ownership.fence,
     expectedRevision: ownership.revision,
@@ -929,7 +927,7 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
 
   const archive = await exportDurabilityState(sourceOwner);
   assert.deepEqual(archive, {
-    format: "nanocodex-durability-state-v1",
+    format: "nanocodex-durability-state-v2", records: [],
     stateId,
     revision: "1",
     payload,
@@ -980,7 +978,7 @@ test("Cloudflare Agent rejects corrupt canonical state before importing it", asy
   const owner = durableOwner(storage);
   await assert.rejects(
     bindAgent(module).importDurabilityState(owner, {
-      format: "nanocodex-durability-state-v1",
+      format: "nanocodex-durability-state-v2", records: [],
       stateId: "corrupt-canonical-state",
       revision: "1",
       payload: "{}",
@@ -1002,7 +1000,7 @@ test("Cloudflare Agent portability refuses active and non-pristine owners", asyn
   await assert.rejects(importDurabilityState(owner, {}), /shutdown must complete/);
   await agent.session.shutdown();
   await assert.rejects(importDurabilityState(owner, {
-    format: "nanocodex-durability-state-v1",
+    format: "nanocodex-durability-state-v2", records: [],
     stateId: "another-state",
     revision: "0",
     payload: null,
@@ -1038,6 +1036,7 @@ test("Cloudflare Agent prunes retained receipts before runtime construction", as
       input: JSON.stringify("prompt"),
       status: { cancelled: { checkpoint: null } },
       steps: {},
+      retired_steers: 0,
       accepted_order: index * 2 + 1,
     },
   ]));
@@ -1046,7 +1045,7 @@ test("Cloudflare Agent prunes retained receipts before runtime construction", as
     revision: "20",
     payload: JSON.stringify({
       nanocodex_durable_state: {
-        format: 3,
+        format: 4,
         operations,
         latest_checkpoint: null,
       },
@@ -1063,7 +1062,7 @@ test("Cloudflare Agent prunes retained receipts before runtime construction", as
   assert.equal(storage.states.length, 1);
   assert.equal(storage.states[0].revision, "20");
   let checkpoint = JSON.parse(storage.states[0].payload).nanocodex_durable_state;
-  assert.equal(checkpoint.format, 3);
+  assert.equal(checkpoint.format, 4);
   assert.equal(Object.keys(checkpoint.operations).length, 10);
 
   await pruneDurableReceipts(module, owner, {
@@ -1087,13 +1086,14 @@ test("Cloudflare receipt pruning reserves lifecycle authority against create", a
     revision: "1",
     payload: JSON.stringify({
       nanocodex_durable_state: {
-        format: 3,
+        format: 4,
         operations: {
           "turn-compaction-race": {
             input: JSON.stringify("prompt"),
             status: "pending",
             steps: {},
-            accepted_order: 1,
+            retired_steers: 0,
+      accepted_order: 1,
           },
         },
         latest_checkpoint: null,
@@ -1231,7 +1231,7 @@ test("Cloudflare Agent destroy owns idempotent adapter cleanup", async () => {
   const stateId = storage.stateId;
   const staleOwner = { ...storage.owners.get(stateId) };
   assert.equal(staleOwner.fence, "2");
-  storage.chunks.push({ stateId, revision: "1", chunkIndex: 0, payload: "retained" });
+  storage.records.set(JSON.stringify([stateId, "fixture"]), "retained");
   storage.subagents.set("child-session", {
     agentId: "1",
     descriptorJson: JSON.stringify({
@@ -1257,7 +1257,7 @@ test("Cloudflare Agent destroy owns idempotent adapter cleanup", async () => {
   destroy(owner);
 
   assert.equal(storage.states.length, 0);
-  assert.equal(storage.chunks.length, 0);
+  assert.equal(storage.records.size, 0);
   assert.equal(storage.stateRevisions.size, 0);
   assert.equal(storage.events.length, 0);
   assert.equal(storage.subagents.size, 0);

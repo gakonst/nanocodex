@@ -25,7 +25,7 @@ use serde_json::json;
 
 use nanocodex_durability::{
     DurableAgentExt, DurableSession, MemoryStore, OperationStatus, OwnedState, OwnerId, OwnerToken,
-    StateStore, StepStatus, StoreError, StoreFuture,
+    StateStore, StoreError, StoreFuture,
 };
 
 fn temporary_workspace(label: &str) -> Result<PathBuf> {
@@ -47,6 +47,14 @@ struct CrashAtReplace {
 }
 
 impl StateStore for CrashAtReplace {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, std::result::Result<Option<String>, StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         id: &'a str,
@@ -61,11 +69,14 @@ impl StateStore for CrashAtReplace {
         owner: &'a OwnerToken,
         revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> StoreFuture<'a, std::result::Result<u64, StoreError>> {
         Box::pin(async move {
             if revision == self.revision && !self.fired.swap(true, Ordering::SeqCst) {
                 if self.after_commit {
-                    self.inner.replace(id, owner, revision, payload).await?;
+                    self.inner
+                        .replace(id, owner, revision, payload, records)
+                        .await?;
                     return Err(StoreError::Backend(
                         "lost acknowledgement after commit".into(),
                     ));
@@ -74,7 +85,9 @@ impl StateStore for CrashAtReplace {
                     "write rejected before commit".into(),
                 ));
             }
-            self.inner.replace(id, owner, revision, payload).await
+            self.inner
+                .replace(id, owner, revision, payload, records)
+                .await
         })
     }
 }
@@ -256,6 +269,14 @@ struct GateFirstChildAcquire {
 }
 
 impl crate::StateStore for GateFirstChildAcquire {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, crate::StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -279,13 +300,22 @@ impl crate::StateStore for GateFirstChildAcquire {
         owner: &'a crate::OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
         self.inner
-            .replace(state_id, owner, expected_revision, payload)
+            .replace(state_id, owner, expected_revision, payload, records)
     }
 }
 
 impl crate::StateStore for CountingAcquires {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, crate::StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -304,23 +334,16 @@ impl crate::StateStore for CountingAcquires {
         owner: &'a crate::OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
         self.inner
-            .replace(state_id, owner, expected_revision, payload)
+            .replace(state_id, owner, expected_revision, payload, records)
     }
 }
 
 // Fault injection inspects Rust-owned state after decoding its storage envelope.
 fn checkpoint_value(payload: &str) -> serde_json::Value {
-    use base64::Engine as _;
-    if let Some(encoded) = payload.strip_prefix("nanocodex-durable-state-gzip-v1:") {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .unwrap();
-        serde_json::from_reader(flate2::read::GzDecoder::new(bytes.as_slice())).unwrap()
-    } else {
-        serde_json::from_str(payload).unwrap()
-    }
+    serde_json::from_str(payload).unwrap()
 }
 
 #[derive(Clone)]
@@ -332,6 +355,14 @@ struct FailEntryOnce {
 }
 
 impl crate::StateStore for FailEntryOnce {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, crate::StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -346,6 +377,7 @@ impl crate::StateStore for FailEntryOnce {
         owner: &'a crate::OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
         let state = checkpoint_value(payload);
         let operation_status =
@@ -363,7 +395,7 @@ impl crate::StateStore for FailEntryOnce {
             });
         }
         self.inner
-            .replace(state_id, owner, expected_revision, payload)
+            .replace(state_id, owner, expected_revision, payload, records)
     }
 }
 
@@ -375,6 +407,14 @@ struct GateCompactionAuthorization {
 }
 
 impl crate::StateStore for GateCompactionAuthorization {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, crate::StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -389,6 +429,7 @@ impl crate::StateStore for GateCompactionAuthorization {
         owner: &'a crate::OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
         let state = checkpoint_value(payload).to_string();
         if state.contains("\"status\":\"effect_pending\"")
@@ -400,16 +441,24 @@ impl crate::StateStore for GateCompactionAuthorization {
                 started.notify_one();
                 release.notified().await;
                 self.inner
-                    .replace(state_id, owner, expected_revision, payload)
+                    .replace(state_id, owner, expected_revision, payload, records)
                     .await
             });
         }
         self.inner
-            .replace(state_id, owner, expected_revision, payload)
+            .replace(state_id, owner, expected_revision, payload, records)
     }
 }
 
 impl crate::StateStore for FailReplaceOnce {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, crate::StoreError>> {
+        self.inner.read_record(state_id, key)
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -424,6 +473,7 @@ impl crate::StateStore for FailReplaceOnce {
         owner: &'a crate::OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex_durability::StoreRecord],
     ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
         if expected_revision == self.expected_revision
             && !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -435,7 +485,7 @@ impl crate::StateStore for FailReplaceOnce {
             });
         }
         self.inner
-            .replace(state_id, owner, expected_revision, payload)
+            .replace(state_id, owner, expected_revision, payload, records)
     }
 }
 
@@ -617,13 +667,16 @@ impl ExecutionPolicy for GatedCompletedPolicy {
     fn continuation<'a>(
         &'a self,
         _operation_id: String,
-    ) -> ExecutionFuture<'a, nanocodex_agent::Result<Option<String>>> {
+    ) -> ExecutionFuture<
+        'a,
+        nanocodex_agent::Result<Option<nanocodex_agent::execution::ExecutionContinuation>>,
+    > {
         unexpected_policy()
     }
     fn advance<'a>(
         &'a self,
         _operation_id: String,
-        _state_json: String,
+        _state: nanocodex_agent::execution::ExecutionContinuation,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
         unexpected_policy()
     }
@@ -742,13 +795,16 @@ impl ExecutionPolicy for FailClosedDefaultsPolicy {
     fn continuation<'a>(
         &'a self,
         _operation_id: String,
-    ) -> ExecutionFuture<'a, nanocodex_agent::Result<Option<String>>> {
+    ) -> ExecutionFuture<
+        'a,
+        nanocodex_agent::Result<Option<nanocodex_agent::execution::ExecutionContinuation>>,
+    > {
         unexpected_policy()
     }
     fn advance<'a>(
         &'a self,
         _operation_id: String,
-        _state_json: String,
+        _state: nanocodex_agent::execution::ExecutionContinuation,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
         unexpected_policy()
     }
@@ -1632,7 +1688,7 @@ async fn configured_durability_automatically_persists_plain_prompts() -> Result<
         .ok_or_else(|| eyre!("automatic durable operation is missing"))?;
     assert_eq!(generated_id, &generated_request_id);
     assert!(generated_request_id.parse::<SessionId>().is_ok());
-    assert!(durable_state.latest_checkpoint().await?.is_some());
+    assert!(durable_state.agent_snapshot().await?.is_some());
 
     agent.shutdown().await?;
     drop((agent, events));
@@ -1667,10 +1723,10 @@ async fn acknowledged_developer_context_survives_a_cold_reopen() -> Result<()> {
     drop((agent, events));
 
     let retained = state
-        .latest_checkpoint()
+        .agent_snapshot()
         .await?
         .ok_or_else(|| eyre!("developer context was acknowledged without a checkpoint"))?;
-    assert!(retained.json().contains("durable adapter marker"));
+    assert!(serde_json::to_string(&retained)?.contains("durable adapter marker"));
 
     let reopened = crate::DurableSession::open(store, "durable-developer-context").await?;
     let (resumed, resumed_events) = Nanocodex::builder(openai()?)
@@ -1771,12 +1827,11 @@ async fn developer_context_during_an_active_turn_acks_only_after_durable_commit(
         Err(NanocodexError::TurnCancelled)
     ));
     append.await??;
-    assert!(
-        state
-            .latest_checkpoint()
-            .await?
-            .is_some_and(|checkpoint| checkpoint.json().contains("active durable marker"))
-    );
+    assert!(state.agent_snapshot().await?.is_some_and(|checkpoint| {
+        serde_json::to_string(&checkpoint)
+            .unwrap()
+            .contains("active durable marker")
+    }));
 
     agent.shutdown().await?;
     drop((agent, events));
@@ -1853,10 +1908,10 @@ async fn queued_developer_context_waits_for_provider_retry_to_terminalize() -> R
         "durable recovery must retry a provider effect whose output was not committed",
     );
     let checkpoint = state
-        .latest_checkpoint()
+        .agent_snapshot()
         .await?
         .ok_or_else(|| eyre!("developer acknowledgment omitted its checkpoint"))?;
-    assert!(checkpoint.json().contains("ordered developer marker"));
+    assert!(serde_json::to_string(&checkpoint)?.contains("ordered developer marker"));
 
     agent.shutdown().await?;
     drop((agent, events));
@@ -1917,7 +1972,7 @@ async fn idle_routed_prompt_is_durably_admitted_and_checkpointed() -> Result<()>
             .operation(request_id)
             .is_some_and(|operation| operation.status.is_terminal())
     );
-    assert!(durable_state.latest_checkpoint().await?.is_some());
+    assert!(durable_state.agent_snapshot().await?.is_some());
     assert_eq!(generations.load(Ordering::SeqCst), 1);
 
     agent.shutdown().await?;
@@ -1986,7 +2041,7 @@ async fn cold_reopen_recovers_idle_routed_prompt_without_a_second_model_call() -
         1,
         "cold recovery must replay the durable model output",
     );
-    assert!(state.latest_checkpoint().await?.is_some());
+    assert!(state.agent_snapshot().await?.is_some());
 
     reopened.shutdown().await?;
     drop((reopened, reopened_events));
@@ -2040,10 +2095,9 @@ async fn active_routed_input_is_retained_in_the_durable_checkpoint() -> Result<(
     assert!(observed_steer.load(Ordering::Acquire));
     assert_eq!(generations.load(Ordering::SeqCst), 2);
     let checkpoint = state
-        .latest_checkpoint()
+        .agent_snapshot()
         .await?
-        .ok_or_else(|| eyre!("active routed turn did not commit a checkpoint"))?
-        .decode::<nanocodex_agent::session::SessionSnapshot>()?;
+        .ok_or_else(|| eyre!("active routed turn did not commit a checkpoint"))?;
     assert!(serde_json::to_string(&checkpoint)?.contains("retain this routed steer"));
 
     agent.shutdown().await?;
@@ -2113,10 +2167,10 @@ async fn exact_id_retry_replays_steer_at_its_original_model_boundary() -> Result
         "retry must replay both completed model effects without changing their definitions"
     );
     let checkpoint = state
-        .latest_checkpoint()
+        .agent_snapshot()
         .await?
         .ok_or_else(|| eyre!("steered retry did not commit a checkpoint"))?;
-    assert!(checkpoint.json().contains("retain this routed steer"));
+    assert!(serde_json::to_string(&checkpoint)?.contains("retain this routed steer"));
 
     agent.shutdown().await?;
     drop((agent, events));
@@ -2207,9 +2261,12 @@ async fn durable_terminal_replays_emit_one_terminal_without_model_execution() ->
         .await?
         .result()
         .await?;
-    let snapshot = completed
-        .snapshot()
-        .expect("local turns always retain a snapshot");
+    assert!(completed.snapshot().is_some());
+    let snapshot = state
+        .latest_checkpoint()
+        .await?
+        .unwrap()
+        .decode::<serde_json::Value>()?;
     assert_eq!(generations.load(std::sync::atomic::Ordering::SeqCst), 1);
     seed.shutdown().await?;
     drop((seed, seed_events));
@@ -2621,10 +2678,9 @@ async fn sequential_model_owners_preserve_history_and_cache_lineage() -> Result<
         .build()?;
     first.prompt("first retained turn").await?.result().await?;
     let first_checkpoint = state
-        .latest_checkpoint()
+        .agent_snapshot()
         .await?
-        .ok_or_else(|| eyre!("first owner did not commit a checkpoint"))?
-        .decode::<nanocodex_agent::session::SessionSnapshot>()?;
+        .ok_or_else(|| eyre!("first owner did not commit a checkpoint"))?;
     let first_json = serde_json::to_value(&first_checkpoint)?;
     let cache_key = first_json["prompt_cache_key"]
         .as_str()
@@ -2644,10 +2700,9 @@ async fn sequential_model_owners_preserve_history_and_cache_lineage() -> Result<
         .result()
         .await?;
     let second_checkpoint = state
-        .latest_checkpoint()
+        .agent_snapshot()
         .await?
-        .ok_or_else(|| eyre!("second owner did not commit a checkpoint"))?
-        .decode::<nanocodex_agent::session::SessionSnapshot>()?;
+        .ok_or_else(|| eyre!("second owner did not commit a checkpoint"))?;
     let second_json = serde_json::to_value(&second_checkpoint)?;
     assert_eq!(second_json["prompt_cache_key"], cache_key);
     let encoded = serde_json::to_string(&second_checkpoint)?;
@@ -2860,7 +2915,7 @@ async fn active_cancel_does_not_invent_an_outcome_for_an_unfinished_tool() -> Re
     let operation = state
         .operation("cancel-never-tool")
         .expect("cancelled operation remains retained");
-    let checkpoint = match &operation.status {
+    let _checkpoint = match &operation.status {
         OperationStatus::Cancelled {
             checkpoint: Some(checkpoint),
         } => checkpoint,
@@ -2872,7 +2927,8 @@ async fn active_cancel_does_not_invent_an_outcome_for_an_unfinished_tool() -> Re
     );
     assert!(operation.continuation.is_none());
     assert!(
-        !checkpoint.json().contains("external outcome"),
+        !serde_json::to_string(&reopened.agent_snapshot().await?.unwrap())?
+            .contains("external outcome"),
         "cancellation must not invent a synthetic tool outcome"
     );
 
@@ -3771,14 +3827,7 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
             .await
             .expect_err("the injected crash boundary must stop before the next model call");
         assert!(first.to_string().contains("injected replacement failure"));
-        let retained = state.state().await?;
-        let recorded_input = retained
-            .operation("turn-1")
-            .unwrap()
-            .continuation
-            .as_ref()
-            .map(|state| state.decode::<serde_json::Value>())
-            .transpose()?;
+        let recorded_input = state.agent_continuation("turn-1").await?;
         agent.shutdown().await?;
         drop((agent, events));
 
@@ -3815,8 +3864,17 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
             if pending { 3 } else { 2 }
         );
         if let Some(input) = recorded_input {
-            let mut expected = input["prefix"].as_array().unwrap().clone();
-            expected.extend(input["history"].as_array().unwrap().iter().cloned());
+            let mut expected = serde_json::to_value(&input.prefix)?
+                .as_array()
+                .unwrap()
+                .clone();
+            expected.extend(
+                serde_json::to_value(&input.history)?
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+            );
             for item in &mut expected {
                 item.as_object_mut().unwrap().remove("id");
             }
@@ -4169,12 +4227,13 @@ async fn long_turn_retires_batches_and_recovers_only_current_work() -> Result<()
                 size < 250_000,
                 "31 batches retained {size} bytes; historical requests must not accumulate"
             );
-            let saved = operation
-                .continuation
-                .as_ref()
-                .unwrap()
-                .decode::<serde_json::Value>()?;
+            let saved = state.agent_continuation("long-turn").await?.unwrap();
+            let saved: serde_json::Value = serde_json::from_str(&saved.state_json)?;
             assert!(saved["stats"]["model_calls"].as_u64().unwrap() >= 30);
+            assert!(
+                saved["tool_call_indices"].as_object().unwrap().is_empty(),
+                "completed tool origins must retire"
+            );
             drop(retained);
             let before = calls.lock().unwrap().len();
             let (agent, events) = Nanocodex::builder(openai()?)

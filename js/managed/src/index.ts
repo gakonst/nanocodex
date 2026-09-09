@@ -720,7 +720,8 @@ type CredentialBindingOwnership = Readonly<{
 }>;
 
 type PortableDurabilityArchive = Readonly<{
-  format: "nanocodex-durability-state-v1";
+  records: readonly Readonly<{ key: string; value: string }>[];
+  format: "nanocodex-durability-state-v2";
   payload: string;
   revision: string;
   stateId: string;
@@ -728,7 +729,8 @@ type PortableDurabilityArchive = Readonly<{
 
 type ManagedDurabilityArchive = Readonly<{
   durability: PortableDurabilityArchive;
-  format: "nanocodex-managed-durability-state-v1";
+  format: "nanocodex-managed-durability-state-v2";
+  managed_durability_records: ManagedPortableArchiveIdentity;
   managed_events: ManagedEventPortability;
   managed_realtime: ManagedRealtimePortability;
   managed_session: ManagedSessionPortability;
@@ -737,6 +739,7 @@ type ManagedDurabilityArchive = Readonly<{
 }>;
 
 type ManagedTurnArchiveAdoption = Readonly<{
+  durability_records: ManagedPortableArchiveIdentity;
   events: ManagedEventPortability;
   realtime: ManagedRealtimePortability;
   session: ManagedSessionPortability;
@@ -1420,12 +1423,12 @@ async function managedFetch(
       );
       if (response.status === 404) return json({ data: [] }, { headers: { "cache-control": "no-store" } });
       if (!response.ok) return json({ error: "hands_unavailable" }, { status: 503 });
-      const snapshot = await response.json<{ machines: Array<{ machine: {
+      const snapshot = await response.json<{ machines: Array<{ online: boolean; machine: {
         id: string; name: string; capabilities: readonly string[];
       } }> }>();
       // Expose only the public machine projection, never routing tokens, tool
       // credentials, or the host's physical workspace path.
-      return json({ data: snapshot.machines.map(({ machine }) => ({
+      return json({ data: snapshot.machines.filter(({ online }) => online).map(({ machine }) => ({
         id: machine.id, name: machine.name, workspace: machineMountRoot(machine.id),
         capabilities: machine.capabilities,
       })) }, { headers: { "cache-control": "no-store" } });
@@ -1602,7 +1605,7 @@ async function managedFetch(
         try {
           if (typeof durabilityArchive === "object" && durabilityArchive !== null
             && (durabilityArchive as { format?: unknown }).format
-              === "nanocodex-managed-durability-state-v1") {
+              === "nanocodex-managed-durability-state-v2") {
             managedArchive = validateManagedDurabilityArchive(durabilityArchive);
             durabilityStateId = managedArchive.durability.stateId;
             const importedSettings = managedArchive.managed_session.settings
@@ -5949,6 +5952,22 @@ export class DurableAgentSession extends DurableComputerSession {
       return json({ error: "durability_import_conflict" }, { status: 409 });
     }
     try {
+      if (archive.turn_archive_adoption) {
+        this.#portabilityArchive.prepareDurabilityImport(importReceipt.state_id);
+        const records = await this.#portabilityArchive.adoptBatch(
+          "durability",
+          archive.turn_archive_adoption.source_storage_id,
+          archive.turn_archive_adoption.durability_records,
+          () => this.#assertDurabilityImportOwnership(ownership),
+        );
+        this.#assertDurabilityImportOwnership(ownership);
+        if (!records.complete) {
+          return json({ stage: "adopting_durability" }, {
+            status: 202,
+            headers: { "cache-control": "no-store", "retry-after": "1" },
+          });
+        }
+      }
       const imported = await CloudflareAgent.importDurabilityState(
         this,
         archive.durability as Parameters<typeof CloudflareAgent.importDurabilityState>[1],
@@ -8468,14 +8487,18 @@ export class DurableAgentSession extends DurableComputerSession {
     if ((await this.#sealEventArchive(true)).sealed) return undefined;
     if ((await this.#sealTurnArchive(true, 0)).sealed) return undefined;
     if ((await this.#sealRealtimeArchive(true)).sealed) return undefined;
-    const [turns, events, realtime] = await Promise.all([
+    const durability = await CloudflareAgent.exportDurabilityHead(this);
+    if (!await this.#portabilityArchive.sealDurabilityRecords(durability.stateId)) return undefined;
+    const [turns, events, realtime, records] = await Promise.all([
       this.#turnArchive.identityBatch(),
       this.#portabilityArchive.identityBatch("events"),
       this.#portabilityArchive.identityBatch("realtime"),
+      this.#portabilityArchive.identityBatch("durability"),
     ]);
     if (!turns.complete || !turns.identity
       || !events.complete || !events.identity
-      || !realtime.complete || !realtime.identity) return undefined;
+      || !realtime.complete || !realtime.identity
+      || !records.complete || !records.identity) return undefined;
     const sessionState = this.ctx.storage.sql.exec<{
       accepted_turns: number;
       completed_turns: number;
@@ -8486,10 +8509,10 @@ export class DurableAgentSession extends DurableComputerSession {
       `SELECT accepted_turns, completed_turns, first_prompt, last_active, stream_error
        FROM session_state WHERE singleton = 1`,
     ).one();
-    const durability = await CloudflareAgent.exportDurabilityState(this);
     return {
       durability: durability as PortableDurabilityArchive,
-      format: "nanocodex-managed-durability-state-v1",
+      format: "nanocodex-managed-durability-state-v2",
+      managed_durability_records: records.identity,
       managed_events: {
         archive: events.identity,
         state: this.#eventArchive.portableState(),
@@ -9459,7 +9482,7 @@ async function resolveManagedDurabilityImport(
   timeoutMs: number,
 ): Promise<ManagedDurabilityImport> {
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || (value as { format?: unknown }).format !== "nanocodex-managed-durability-state-v1") {
+    || (value as { format?: unknown }).format !== "nanocodex-managed-durability-state-v2") {
     return { durability: value };
   }
   const archive = validateManagedDurabilityArchive(value);
@@ -9501,6 +9524,7 @@ async function resolveManagedDurabilityImport(
   return {
     durability: authoritative.durability,
     turn_archive_adoption: {
+      durability_records: authoritative.managed_durability_records,
       events: authoritative.managed_events,
       realtime: authoritative.managed_realtime,
       session: authoritative.managed_session,
@@ -9523,20 +9547,23 @@ function validateManagedDurabilityArchive(value: unknown): ManagedDurabilityArch
   if (Object.keys(archive).some((key) => ![
     "durability",
     "format",
+    "managed_durability_records",
     "managed_events",
     "managed_realtime",
     "managed_session",
     "managed_turn_receipts",
     "source_agent_id",
   ].includes(key))
-    || archive.format !== "nanocodex-managed-durability-state-v1"
+    || archive.format !== "nanocodex-managed-durability-state-v2"
     || typeof archive.source_agent_id !== "string" || !SESSION_ID.test(archive.source_agent_id)
     || !durability || Array.isArray(durability)
-    || Object.keys(durability).some((key) => !["format", "stateId", "revision", "payload"].includes(key))
-    || durability.format !== "nanocodex-durability-state-v1"
+    || Object.keys(durability).some((key) => !["format", "stateId", "revision", "payload", "records"].includes(key))
+    || durability.format !== "nanocodex-durability-state-v2"
     || typeof durability.stateId !== "string" || durability.stateId.length === 0
     || typeof durability.revision !== "string" || !/^[1-9][0-9]*$/.test(durability.revision)
     || typeof durability.payload !== "string"
+    || !Array.isArray(durability.records) || durability.records.length !== 0
+    || !validManagedPortableArchiveIdentity(archive.managed_durability_records)
     || !identity || Array.isArray(identity)
     || Object.keys(identity).some((key) => ![
       "archived_bytes",
@@ -9705,8 +9732,8 @@ function portableDurabilityStateId(value: unknown): string {
     throw new Error("portable durability archive is invalid");
   }
   const archive = value as Record<string, unknown>;
-  if (Object.keys(archive).some((key) => !["format", "stateId", "revision", "payload"].includes(key))
-    || archive.format !== "nanocodex-durability-state-v1"
+  if (Object.keys(archive).some((key) => !["format", "stateId", "revision", "payload", "records"].includes(key))
+    || archive.format !== "nanocodex-durability-state-v2"
     || typeof archive.stateId !== "string" || archive.stateId.length === 0
     || typeof archive.revision !== "string" || !/^[1-9][0-9]*$/.test(archive.revision)
     || typeof archive.payload !== "string") {

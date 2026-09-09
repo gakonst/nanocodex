@@ -244,6 +244,7 @@ async function check() {
   void stateDigest;
   void sqliteOptions;
   const durabilityStore: DurabilityStore = {
+    readRecord: () => null,
     load: () => storedState,
     acquire: (
       _stateId: string,
@@ -260,7 +261,7 @@ async function check() {
   };
   const acquired = await durabilityStore.acquire("typed-leaf", { ownerId: "typed-owner" });
   const fence: DurabilityFence = acquired.fence;
-  await durabilityStore.replace("typed-leaf", {
+  await durabilityStore.replace("typed-leaf", { records: [],
     ownerId: acquired.ownerId,
     fence,
     expectedRevision: acquired.revision,

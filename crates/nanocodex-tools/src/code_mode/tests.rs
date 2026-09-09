@@ -118,7 +118,8 @@ await Promise.all([
 ",
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(state.maximum.load(Ordering::SeqCst), 1);
@@ -154,6 +155,7 @@ async fn nested_tool_calls_are_bounded_at_128() -> Result<()> {
                 test_context(&history),
             )
             .await
+            .unwrap()
     });
 
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -221,8 +223,8 @@ const previous = globalThis.__nanocodexContextGeneration;
 globalThis.__nanocodexContextGeneration = (previous || 0) + 1;
 text({ previous: previous ?? null, current: globalThis.__nanocodexContextGeneration });
 ";
-    let first = tools.execute_code(source, context).await;
-    let second = tools.execute_code(source, context).await;
+    let first = tools.execute_code(source, context).await.unwrap();
+    let second = tools.execute_code(source, context).await.unwrap();
 
     assert!(first.success);
     assert!(second.success);
@@ -246,13 +248,15 @@ text(({}).__nanocodexPoisoned);
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     let second = tools
         .execute_code(
             r#"text(({}).__nanocodexPoisoned ?? "clean");"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(first.success, "{}", execution_output(&first));
     assert!(second.success, "{}", execution_output(&second));
@@ -273,8 +277,8 @@ async fn execution_local_bindings_do_not_leak_across_quickjs_calls() -> Result<(
 const executionLocal = 1;
 text(executionLocal);
 ";
-    let first = tools.execute_code(source, context).await;
-    let second = tools.execute_code(source, context).await;
+    let first = tools.execute_code(source, context).await.unwrap();
+    let second = tools.execute_code(source, context).await.unwrap();
 
     assert!(first.success, "{}", execution_output(&first));
     assert!(second.success, "{}", execution_output(&second));
@@ -304,7 +308,8 @@ text({
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(
@@ -333,7 +338,8 @@ text(ALL_TOOLS.map((tool) => ({
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     let metadata = serde_json::from_str::<Value>(emitted_text(&execution)?)?;
@@ -366,7 +372,8 @@ try {
 ",
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(execution.nested_calls.len(), 1);
@@ -389,7 +396,8 @@ text(value);
 ",
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(!execution.success);
     assert!(execution_output(&execution).contains("Script error:"));
@@ -412,7 +420,8 @@ text(result.output);
 "#,
             test_context_with_call(&history, "call-first"),
         )
-        .await;
+        .await
+        .unwrap();
     let second = tools
         .execute_code(
             r#"
@@ -422,7 +431,8 @@ text(result.output);
 "#,
             test_context_with_call(&history, "call-second"),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution_output(&first).contains("Script running with cell ID 1"));
     assert!(execution_output(&second).contains("Script running with cell ID 2"));
@@ -432,13 +442,15 @@ text(result.output);
             r#"{"cell_id":"2","yield_time_ms":5000}"#,
             test_context_with_call(&history, "call-wait-second"),
         )
-        .await;
+        .await
+        .unwrap();
     let first = tools
         .wait_for_code(
             r#"{"cell_id":"1","yield_time_ms":5000}"#,
             test_context_with_call(&history, "call-wait-first"),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(second.success, "{}", execution_output(&second));
     assert!(
@@ -481,7 +493,7 @@ text({ first: first.exit_code, second: second.exit_code });
 "#,
             test_context(&history),
         )
-        .await;
+        .await.unwrap();
 
     assert!(execution.success);
     assert_eq!(
@@ -531,7 +543,7 @@ await Promise.all([
             test_context(&history),
             &mut timeline,
         )
-        .await;
+        .await.unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(
@@ -564,7 +576,8 @@ try {
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success);
     assert!(emitted_text(&execution)?.contains("unable to locate image"));
@@ -610,7 +623,8 @@ text(observed);
             ),
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(
@@ -654,7 +668,7 @@ text({ closed, exit_code: interrupted.exit_code });
 "#,
             test_context(&history),
         )
-        .await;
+        .await.unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(
@@ -687,7 +701,8 @@ text({
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     let result = serde_json::from_str::<Value>(emitted_text(&execution)?)?;
@@ -712,7 +727,8 @@ async fn image_helper_requires_data_urls() -> Result<()> {
             r#"image("https://example.com/image.png");"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(!remote.success);
     let remote_output = execution_output(&remote);
     assert!(remote_output.contains(
@@ -722,7 +738,8 @@ async fn image_helper_requires_data_urls() -> Result<()> {
 
     let invalid = tools
         .execute_code(r#"image("not-an-image");"#, test_context(&history))
-        .await;
+        .await
+        .unwrap();
     assert!(!invalid.success);
     let invalid_output = execution_output(&invalid);
     assert!(invalid_output.contains(
@@ -748,7 +765,8 @@ throw new Error("boom");
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(!execution.success);
     let ToolOutputBody::Content(content) = &execution.output else {
@@ -785,7 +803,8 @@ async fn image_helper_normalizes_detail_and_honors_override() -> Result<()> {
             r#"image({ image_url: "data:image/png;base64,a", detail: "low" }, "ORIGINAL");"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     let ToolOutputBody::Content(content) = &execution.output else {
@@ -819,7 +838,8 @@ try {
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(
@@ -855,7 +875,8 @@ text(returnsUndefined);
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     let ToolOutputBody::Content(content) = &execution.output else {
@@ -888,7 +909,8 @@ generatedImage({
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     let ToolOutputBody::Content(content) = &execution.output else {
@@ -911,7 +933,8 @@ generatedImage({
             r#"generatedImage({ image_url: "data:image/png;base64,a", output_hint: 1 });"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(!invalid.success);
     assert!(
         execution_output(&invalid)
@@ -932,7 +955,8 @@ async fn notify_serializes_values_and_rejects_empty_text() -> Result<()> {
             r#"notify({ phase: "working" }); text("done");"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(execution.notifications.len(), 1);
@@ -941,7 +965,8 @@ async fn notify_serializes_values_and_rejects_empty_text() -> Result<()> {
 
     let empty = tools
         .execute_code(r#"notify("  ");"#, test_context(&history))
-        .await;
+        .await
+        .unwrap();
     assert!(!empty.success);
     assert!(execution_output(&empty).contains("Script error:\nnotify expects non-empty text"));
     assert!(!execution_output(&empty).contains("at notify"));
@@ -964,7 +989,8 @@ value.kept = 99;
 ",
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(write.success, "{}", execution_output(&write));
 
     let read = tools
@@ -972,7 +998,8 @@ value.kept = 99;
             r"text(load(42));",
             test_context_with_call(&history, "call-read"),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(read.success, "{}", execution_output(&read));
     assert_eq!(
         serde_json::from_str::<Value>(emitted_text(&read)?)?,
@@ -990,7 +1017,8 @@ async fn store_rejects_non_serializable_values_at_the_call_boundary() -> Result<
     let history = Vec::new();
     let execution = tools
         .execute_code(r#"store("candidate", undefined);"#, test_context(&history))
-        .await;
+        .await
+        .unwrap();
 
     assert!(!execution.success);
     let output = execution_output(&execution);
@@ -1004,7 +1032,8 @@ async fn store_rejects_non_serializable_values_at_the_call_boundary() -> Result<
             r#"text(load("candidate"));"#,
             test_context_with_call(&history, "call-read"),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(read.success, "{}", execution_output(&read));
     assert_eq!(emitted_text(&read)?, "undefined");
 
@@ -1027,7 +1056,8 @@ text("after");
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success);
     assert!(execution_output(&execution).contains("Script running with cell ID 1"));
@@ -1038,7 +1068,8 @@ text("after");
             r#"{"cell_id":"1","yield_time_ms":5000}"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(completed.success);
     assert!(execution_output(&completed).contains("Script completed"));
     assert!(execution_output(&completed).contains("after"));
@@ -1066,7 +1097,8 @@ text(result.output);
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert!(execution_output(&execution).contains("Script running with cell ID 1"));
@@ -1076,7 +1108,8 @@ text(result.output);
             r#"{"cell_id":"1","yield_time_ms":5000}"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(completed.success, "{}", execution_output(&completed));
     assert!(execution_output(&completed).contains("finished"));
     std::fs::remove_dir_all(workspace)?;
@@ -1098,7 +1131,8 @@ text("done");
             test_context(&history),
         ),
     )
-    .await?;
+    .await
+    .unwrap()?;
 
     assert!(completed.success, "{}", execution_output(&completed));
     assert_eq!(emitted_text(&completed)?, "done");
@@ -1124,7 +1158,8 @@ await new Promise(() => {});
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(yielded.success, "{}", execution_output(&yielded));
     let threads_with_timers = std::fs::read_dir("/proc/self/task")?.count();
     let terminated = tools
@@ -1132,7 +1167,8 @@ await new Promise(() => {});
             r#"{"cell_id":"1","terminate":true}"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     std::fs::remove_dir_all(workspace)?;
 
     assert!(terminated.success, "{}", execution_output(&terminated));
@@ -1161,7 +1197,8 @@ await new Promise(() => {});
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(yielded.success, "{}", execution_output(&yielded));
     assert!(execution_output(&yielded).contains("before"));
@@ -1176,7 +1213,8 @@ await new Promise(() => {});
             r#"{"cell_id":"1","terminate":true}"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(terminated.success, "{}", execution_output(&terminated));
     assert!(execution_output(&terminated).contains("Script terminated"));
     assert!(execution_output(&terminated).contains("after"));
@@ -1198,7 +1236,8 @@ text("done");
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(yielded.success, "{}", execution_output(&yielded));
 
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1207,7 +1246,8 @@ text("done");
             r#"{"cell_id":"1","terminate":true}"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(completed.success, "{}", execution_output(&completed));
     assert!(execution_output(&completed).contains("Script completed"));
     assert!(execution_output(&completed).contains("done"));
@@ -1228,7 +1268,8 @@ text(result.output);
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert!(
@@ -1253,7 +1294,8 @@ text(result);
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     let output = execution_output(&execution);
@@ -1287,7 +1329,8 @@ text(completed.output);
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     let output = execution_output(&execution);
@@ -1321,7 +1364,8 @@ await new Promise(() => {});
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(started.success, "{}", execution_output(&started));
     let started = execution_output(&started);
     assert!(
@@ -1333,7 +1377,8 @@ await new Promise(() => {});
     control.cancel_turn().await;
     let missing_cell = tools
         .wait_for_code(r#"{"cell_id":"1"}"#, test_context(&history))
-        .await;
+        .await
+        .unwrap();
     assert!(!missing_cell.success);
     assert!(
         execution_output(&missing_cell).contains("exec cell 1 not found"),
@@ -1351,7 +1396,8 @@ await new Promise(() => {});
             }))?),
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(resumed.success);
     let ToolOutputBody::Text(resumed) = resumed.output else {
         return Err(eyre!("write_stdin returned non-text output"));
@@ -1371,7 +1417,8 @@ await new Promise(() => {});
             }))?),
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(!missing.success);
     let ToolOutputBody::Text(missing) = missing.output else {
         return Err(eyre!("missing-session failure returned non-text output"));
@@ -1404,7 +1451,10 @@ text(command.session_id);
         let tools = Arc::clone(&tools);
         tokio::spawn(async move {
             let history = Vec::new();
-            tools.execute_code(source, test_context(&history)).await
+            tools
+                .execute_code(source, test_context(&history))
+                .await
+                .unwrap()
         })
     };
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -1434,7 +1484,8 @@ text(command.session_id);
             }))?),
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(resumed.success);
     let ToolOutputBody::Text(resumed) = resumed.output else {
         return Err(eyre!("write_stdin returned non-text output"));
@@ -1470,7 +1521,10 @@ text(command.session_id);
         let tools = Arc::clone(&tools);
         tokio::spawn(async move {
             let history = Vec::new();
-            tools.execute_code(source, test_context(&history)).await
+            tools
+                .execute_code(source, test_context(&history))
+                .await
+                .unwrap()
         })
     };
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -1499,7 +1553,8 @@ text(command.session_id);
             }))?),
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(!missing.success);
     let ToolOutputBody::Text(missing) = missing.output else {
         return Err(eyre!("missing-session failure returned non-text output"));
@@ -1542,6 +1597,7 @@ text(command.session_id);
                     test_context(&history),
                 )
                 .await
+                .unwrap()
         })
     };
     tools.wait_for_code_mode_admission_attempt().await;
@@ -1588,6 +1644,7 @@ async fn turn_cancellation_invalidates_code_cells_already_waiting_for_admission(
             tools
                 .execute_code(r#"text("escaped");"#, test_context(&history))
                 .await
+                .unwrap()
         })
     };
     tools.wait_for_code_mode_admission_attempt().await;
@@ -1636,6 +1693,7 @@ await tools.concurrency_probe({});
                 test_context(&history),
             )
             .await
+            .unwrap()
     });
 
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -1695,7 +1753,8 @@ text(result);
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(
         execution_output(&yielded).contains("Script running with cell ID 1"),
         "{}",
@@ -1714,6 +1773,7 @@ text(result);
                 &mut observer,
             )
             .await
+            .unwrap()
     });
     tokio::time::timeout(Duration::from_secs(2), observing_rx).await??;
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -1728,7 +1788,8 @@ text(result);
             r#"{"cell_id":"1","yield_time_ms":0}"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(!busy.success);
     assert!(
         execution_output(&busy).contains("exec cell 1 already has an active observer"),
@@ -1748,7 +1809,8 @@ text(result);
             r#"{"cell_id":"1","yield_time_ms":5000}"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(completed.success, "{}", execution_output(&completed));
     assert!(
@@ -1775,13 +1837,15 @@ while (true) {}
 ",
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(execution_output(&execution).contains("Script running with cell ID 1"));
 
     tokio::time::timeout(std::time::Duration::from_secs(2), control.cancel()).await?;
     let recovered = tools
         .execute_code(r#"text("recovered")"#, test_context(&history))
-        .await;
+        .await
+        .unwrap();
 
     assert!(recovered.success, "{}", execution_output(&recovered));
     assert_eq!(emitted_text(&recovered)?, "recovered");
@@ -1803,13 +1867,15 @@ await tools.exec_command({ cmd: "sleep 5", login: false });
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(execution_output(&execution).contains("Script running with cell ID 1"));
 
     tokio::time::timeout(std::time::Duration::from_secs(2), control.cancel()).await?;
     let recovered = tools
         .execute_code(r#"text("recovered")"#, test_context(&history))
-        .await;
+        .await
+        .unwrap();
 
     assert!(recovered.success, "{}", execution_output(&recovered));
     assert_eq!(emitted_text(&recovered)?, "recovered");
@@ -1832,7 +1898,8 @@ text("done");
 "#,
             test_context_with_call(&history, "call-original-exec"),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success);
     assert!(execution.notifications.is_empty());
@@ -1842,7 +1909,8 @@ text("done");
             r#"{"cell_id":"1","yield_time_ms":1000}"#,
             test_context_with_call(&history, "call-wait"),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(completed.success, "{}", execution_output(&completed));
     assert_eq!(completed.notifications.len(), 1);
     assert_eq!(completed.notifications[0].call_id, "call-original-exec");
@@ -1865,7 +1933,7 @@ text(result);
 "#,
             test_context(&history),
         )
-        .await;
+        .await.unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(emitted_text(&execution)?, "{}");
@@ -1901,7 +1969,7 @@ try {
 "#,
             test_context(&history),
         )
-        .await;
+        .await.unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert!(
@@ -1932,7 +2000,8 @@ text(result);
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert_eq!(emitted_text(&execution)?, "{}");
@@ -1950,7 +2019,8 @@ async fn exec_pragma_and_wait_limit_direct_output() -> Result<()> {
             "// @exec: {\"max_output_tokens\": 2}\ntext(\"abcdefghijklmnop\")",
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(execution.success);
     assert!(execution_output(&execution).contains("Warning: truncated output"));
 
@@ -1962,14 +2032,16 @@ text("abcdefghijklmnop");
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(yielded.success);
     let completed = tools
         .wait_for_code(
             r#"{"cell_id":"2","yield_time_ms":1000,"max_tokens":2}"#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(completed.success);
     assert!(execution_output(&completed).contains("Warning: truncated output"));
     std::fs::remove_dir_all(workspace)?;
@@ -2000,7 +2072,8 @@ try {
 "#,
             test_context(&history),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success, "{}", execution_output(&execution));
     assert!(
@@ -2295,6 +2368,7 @@ fn test_live_cell(
 ) -> Arc<LiveCell> {
     Arc::new(LiveCell {
         id,
+        origin_call_id: "test-exec".into(),
         turn_id: AtomicU64::new(0),
         output_token_budget: crate::contract::DEFAULT_TOOL_OUTPUT_TOKENS,
         observation: Arc::new(tokio::sync::Mutex::new(CellObservationState {

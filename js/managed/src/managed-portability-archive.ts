@@ -1,3 +1,4 @@
+import { createCloudflareDurabilityStore } from "nanocodex/durability/cloudflare";
 import { sha256Hex } from "./archive-hash";
 
 const VERSION = 1;
@@ -7,7 +8,7 @@ const COPY_CONCURRENCY = 4;
 const EMPTY_DIGEST = "0".repeat(64);
 const encoder = new TextEncoder();
 
-export type ManagedPortableArchiveKind = "events" | "realtime";
+export type ManagedPortableArchiveKind = "events" | "realtime" | "durability";
 
 export type ManagedPortableArchiveIdentity = Readonly<{
   bytes: number;
@@ -48,16 +49,22 @@ export class ManagedPortabilityArchive {
     this.#storageId = storageId;
     this.#storage = storage;
     storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS managed_portability_manifest_progress (
-        kind TEXT PRIMARY KEY CHECK (kind IN ('events', 'realtime')),
+      CREATE TABLE IF NOT EXISTS managed_durability_record_import (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1), state_id TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS managed_durability_record_export (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1), last_key TEXT NOT NULL, complete INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS managed_portability_manifests (
+        kind TEXT PRIMARY KEY CHECK (kind IN ('events', 'realtime', 'durability')),
         last_key TEXT,
         digest TEXT NOT NULL,
         bytes INTEGER NOT NULL DEFAULT 0,
         objects INTEGER NOT NULL DEFAULT 0,
         complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1))
       );
-      CREATE TABLE IF NOT EXISTS managed_portability_adoption_progress (
-        kind TEXT PRIMARY KEY CHECK (kind IN ('events', 'realtime')),
+      CREATE TABLE IF NOT EXISTS managed_portability_adoptions (
+        kind TEXT PRIMARY KEY CHECK (kind IN ('events', 'realtime', 'durability')),
         source_storage_id TEXT NOT NULL,
         manifest_digest TEXT NOT NULL,
         last_key TEXT,
@@ -69,15 +76,44 @@ export class ManagedPortabilityArchive {
     `);
   }
 
+  /** Seals at most sixteen immutable records; a restart repeats the same object. */
+  async sealDurabilityRecords(stateId: string): Promise<boolean> {
+    const progress = this.#storage.sql.exec<{ last_key: string; complete: number }>(
+      "SELECT last_key, complete FROM managed_durability_record_export WHERE singleton = 1",
+    ).toArray()[0];
+    if (progress?.complete === 1) return true;
+    const records = await createCloudflareDurabilityStore(this.#storage).scanRecords(stateId, progress?.last_key ?? "", 16);
+    if (records.length) {
+      const body = encoder.encode(JSON.stringify(records));
+      const digest = await sha256Hex(body);
+      const key = `${prefix(this.#storageId, "durability")}records/${digest}.json`;
+      const stored = await this.#bucket.put(key, body, {
+        onlyIf: { etagDoesNotMatch: "*" }, sha256: digest,
+        httpMetadata: { contentType: "application/json" },
+        customMetadata: { kind: "durable_record_page", sha256: digest, version: String(VERSION) },
+      });
+      if (!stored) {
+        const existing = await this.#bucket.head(key);
+        if (existing?.customMetadata?.sha256 !== digest || existing.size !== body.byteLength) throw new Error("durability archive record conflict");
+      }
+    }
+    const complete = records.length < 16;
+    this.#storage.sql.exec(
+      "INSERT INTO managed_durability_record_export (singleton, last_key, complete) VALUES (1, ?, ?) ON CONFLICT (singleton) DO UPDATE SET last_key = excluded.last_key, complete = excluded.complete",
+      records.at(-1)?.key ?? progress?.last_key ?? "", complete ? 1 : 0,
+    );
+    return complete;
+  }
+
   async identityBatch(kind: ManagedPortableArchiveKind): Promise<ManagedPortableArchiveBatch> {
     let progress = this.#storage.sql.exec<Progress>(
       `SELECT last_key, digest, bytes, objects, complete
-       FROM managed_portability_manifest_progress WHERE kind = ?`,
+       FROM managed_portability_manifests WHERE kind = ?`,
       kind,
     ).toArray()[0];
     if (!progress) {
       this.#storage.sql.exec(
-        `INSERT INTO managed_portability_manifest_progress (kind, digest)
+        `INSERT INTO managed_portability_manifests (kind, digest)
          VALUES (?, ?)`,
         kind,
         EMPTY_DIGEST,
@@ -91,7 +127,7 @@ export class ManagedPortabilityArchive {
     const next = await advance(progress, page.items);
     const complete = !page.truncated;
     this.#storage.sql.exec(
-      `UPDATE managed_portability_manifest_progress
+      `UPDATE managed_portability_manifests
        SET last_key = ?, digest = ?, bytes = ?, objects = ?, complete = ?
        WHERE kind = ?`,
       page.lastKey ?? progress.last_key,
@@ -125,7 +161,7 @@ export class ManagedPortabilityArchive {
     }>(
       `SELECT source_storage_id, manifest_digest, last_key, scan_digest AS digest,
               bytes, objects, complete
-       FROM managed_portability_adoption_progress WHERE kind = ?`,
+       FROM managed_portability_adoptions WHERE kind = ?`,
       kind,
     ).toArray()[0];
     if (progress) {
@@ -138,7 +174,7 @@ export class ManagedPortabilityArchive {
       }
     } else {
       this.#storage.sql.exec(
-        `INSERT INTO managed_portability_adoption_progress (
+        `INSERT INTO managed_portability_adoptions (
            kind, source_storage_id, manifest_digest, scan_digest
          ) VALUES (?, ?, ?, ?)`,
         kind,
@@ -172,6 +208,14 @@ export class ManagedPortabilityArchive {
         throw new Error(`managed ${kind} archive source checksum mismatch`);
       }
       assertOwnership();
+      if (kind === "durability") {
+        const records = JSON.parse(new TextDecoder().decode(body));
+        const stateId = this.#storage.sql.exec<{ state_id: string }>(
+          "SELECT state_id FROM managed_durability_record_import WHERE singleton = 1",
+        ).one().state_id;
+        await createCloudflareDurabilityStore(this.#storage).importRecords(stateId, records);
+        assertOwnership();
+      }
       const destinationKey = `${prefix(this.#storageId, kind)}${item.suffix}`;
       const stored = await this.#bucket.put(destinationKey, body, {
         onlyIf: { etagDoesNotMatch: "*" },
@@ -199,7 +243,7 @@ export class ManagedPortabilityArchive {
     this.#storage.transactionSync(() => {
       assertOwnership();
       this.#storage.sql.exec(
-        `UPDATE managed_portability_adoption_progress
+        `UPDATE managed_portability_adoptions
          SET last_key = ?, scan_digest = ?, bytes = ?, objects = ?, complete = ?
          WHERE kind = ?`,
         page.lastKey ?? progress.last_key,
@@ -217,10 +261,19 @@ export class ManagedPortabilityArchive {
     };
   }
 
+  prepareDurabilityImport(stateId: string): void {
+    this.#storage.sql.exec("CREATE TABLE IF NOT EXISTS managed_durability_record_import (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), state_id TEXT NOT NULL)");
+    const previous = this.#storage.sql.exec<{ state_id: string }>("SELECT state_id FROM managed_durability_record_import WHERE singleton = 1").toArray()[0];
+    if (previous && previous.state_id !== stateId) throw new Error("durability record import changed its state identity");
+    this.#storage.sql.exec("INSERT OR IGNORE INTO managed_durability_record_import (singleton, state_id) VALUES (1, ?)", stateId);
+  }
+
   clearLocalState(): void {
     this.#storage.sql.exec(`
-      DELETE FROM managed_portability_manifest_progress;
-      DELETE FROM managed_portability_adoption_progress;
+      DELETE FROM managed_durability_record_import;
+      DELETE FROM managed_durability_record_export;
+      DELETE FROM managed_portability_manifests;
+      DELETE FROM managed_portability_adoptions;
     `);
   }
 
@@ -275,6 +328,7 @@ function prefix(storageId: string, kind: ManagedPortableArchiveKind): string {
 }
 
 function validObject(kind: ManagedPortableArchiveKind, suffix: string, objectKind: string): boolean {
+  if (kind === "durability") return /^records\/[0-9a-f]{64}\.json$/.test(suffix) && objectKind === "durable_record_page";
   if (kind === "realtime") {
     return /^by-id\/[0-9a-f]{64}\.json$/.test(suffix)
       && objectKind === "managed_realtime_receipt";

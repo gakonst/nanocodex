@@ -6,12 +6,10 @@ use super::*;
 struct CurrentExecution {
     phase: ExecutionPhase,
     workspace: String,
-    history: Vec<ResponseItem>,
     canonical_context: ResponseItem,
     context_baseline: ContextBaseline,
     context_usage: Option<Usage>,
     server_reasoning_included: bool,
-    prefix: Vec<ResponseItem>,
     prompt_cache_key: String,
     model: String,
     effort: Thinking,
@@ -51,7 +49,8 @@ where
         let Some(steps) = &self.execution_steps else {
             return Ok(None);
         };
-        let Some(mut saved) = steps.continuation::<CurrentExecution>().await? else {
+        let Some((mut saved, history, prefix)) = steps.continuation::<CurrentExecution>().await?
+        else {
             return Ok(None);
         };
         if saved.stats.model_calls == u32::MAX {
@@ -80,7 +79,7 @@ where
             .factory
             .with_request_content(
                 saved.prompt_cache_key,
-                saved.prefix.into(),
+                prefix.into(),
                 saved.model_id_prefix,
                 saved
                     .reasoning_mode
@@ -89,11 +88,10 @@ where
                 saved.store_responses,
             )
             .for_logical_turn(logical_turn);
-        session.conversation = if saved.history.is_empty() && saved.phase == ExecutionPhase::Compact
-        {
+        session.conversation = if history.is_empty() && saved.phase == ExecutionPhase::Compact {
             ConversationState::empty(saved.canonical_context)
         } else {
-            ConversationState::resume(saved.canonical_context, saved.history)?
+            ConversationState::resume(saved.canonical_context, history)?
         };
         session
             .conversation
@@ -172,12 +170,10 @@ where
         let saved = CurrentExecution {
             phase,
             workspace: session.workspace.clone(),
-            history: session.conversation.flattened_history(),
             canonical_context: (*session.conversation.canonical_context).clone(),
             context_baseline: session.context.baseline(),
             context_usage: session.conversation.managed.context_usage().0.cloned(),
             server_reasoning_included: session.conversation.managed.context_usage().1,
-            prefix: session.factory.profile().prefix().to_vec(),
             prompt_cache_key: session.factory.profile().prompt_cache_key().to_owned(),
             model: self.model.as_str().to_owned(),
             effort: self.thinking,
@@ -194,7 +190,13 @@ where
             force_compaction: self.force_compaction,
             tool_call_indices: self.tool_call_indices.clone(),
         };
-        steps.advance(&saved).await?;
+        steps
+            .advance(
+                &saved,
+                session.conversation.flattened_history(),
+                session.factory.profile().prefix().to_vec(),
+            )
+            .await?;
         Ok(())
     }
 }

@@ -35,6 +35,25 @@ export function abandon(host, routeId) {
   if (ownership?.host === host && ownership.references === 0) hosts.delete(routeId);
 }
 
+export async function readRecords(routeId, stateId, encodedKeys) {
+  const keys = JSON.parse(encodedKeys);
+  if (!Array.isArray(keys) || keys.length > 16 || keys.some((key) => typeof key !== "string")) {
+    throw new TypeError("invalid bounded durability record batch");
+  }
+  const store = requiredRoute(routeId).store;
+  const values = store.readRecords
+    ? await store.readRecords(stateId, keys)
+    : await Promise.all(keys.map((key) => store.readRecord(stateId, key)));
+  if (!Array.isArray(values) || values.length !== keys.length) throw new TypeError("invalid durability record batch result");
+  const encoder = new TextEncoder();
+  return values.map((value) => value === null ? null : encoder.encode(string(value, "durability record")));
+}
+
+export async function readRecord(routeId, stateId, key) {
+  const value = await requiredRoute(routeId).store.readRecord(stateId, key);
+  return value === null ? null : new TextEncoder().encode(string(value, "durability record"));
+}
+
 export async function acquire(routeId, stateId, ownerId) {
   const stored = await requiredRoute(routeId).store.acquire(stateId, { ownerId });
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
@@ -71,12 +90,14 @@ export async function replace(
   fence,
   expectedRevision,
   payload,
+  records,
 ) {
   const result = await requiredRoute(routeId).store.replace(stateId, {
     ownerId,
     fence,
     expectedRevision,
     payload,
+    records: JSON.parse(records),
   });
   if (result?.status === "replaced") {
     exactKeys(result, ["status", "revision"], "durability replaced result");

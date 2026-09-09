@@ -100,7 +100,7 @@ fn spawned_cell_preserves_the_parent_span_for_nested_tools() {
         )
     });
 
-    assert!(execution.success);
+    assert!(execution.unwrap().success);
     assert!(*has_tool_call_ancestor.lock().unwrap());
     std::fs::remove_dir_all(workspace).unwrap();
 }
@@ -138,7 +138,7 @@ fn direct_runtime_execution_emits_the_tools_owned_span() {
         runtime.block_on(tools.execute_tool("update_plan", ToolInput::Function(input), context))
     });
 
-    assert!(execution.success);
+    assert!(execution.unwrap().success);
     assert_eq!(span_count.load(Ordering::Relaxed), 1);
     std::fs::remove_dir_all(workspace).unwrap();
 }

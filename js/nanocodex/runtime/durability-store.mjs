@@ -1,13 +1,17 @@
 const MAX_REVISION = 18_446_744_073_709_551_615n;
 const MAX_REVISION_TEXT = String(MAX_REVISION);
-const PORTABLE_FORMAT = "nanocodex-durability-state-v1";
-const PORTABLE_PAGE_FORMAT = "nanocodex-durability-state-page-v1";
+const PORTABLE_FORMAT = "nanocodex-durability-state-v2";
+const PORTABLE_PAGE_FORMAT = "nanocodex-durability-state-page-v2";
 const PORTABLE_EXPORT_OWNER = "nanocodex-portable-export";
 const PORTABLE_IMPORT_OWNER = "nanocodex-portable-import";
 const DEFAULT_EXPORT_PAGE_SIZE = 256 * 1024;
 const MAX_EXPORT_PAGE_SIZE = 1024 * 1024;
 
 export const sqliteDurabilitySchema = Object.freeze([
+  `CREATE TABLE IF NOT EXISTS nanocodex_durable_records (
+     state_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+     PRIMARY KEY (state_id, key)
+   ) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS nanocodex_durable_owners (
      state_id TEXT PRIMARY KEY,
      owner_id TEXT NOT NULL,
@@ -69,7 +73,8 @@ export async function exportDurabilityStatePage(store, stateId, request) {
     fromDigest = durabilityStateDigestText(request.fromDigest);
   }
   const requestedTo = request?.to === undefined ? undefined : durabilityRevision(request.to);
-  const offset = decodeExportCursor(request?.cursor);
+  const recordCursor = typeof request?.cursor === "string" && request.cursor.startsWith("v2:r:");
+  const offset = recordCursor ? 0 : decodeExportCursor(request?.cursor);
   const limit = exportPageSize(request?.limit);
   const acquired = await store.acquire(stateId, { ownerId: PORTABLE_EXPORT_OWNER });
   exactObject(acquired, ["ownerId", "fence", "revision", "payload"], "durability export acquisition");
@@ -86,10 +91,18 @@ export async function exportDurabilityStatePage(store, stateId, request) {
     throw new RangeError("durability export from revision must be less than to revision");
   }
   const payload = state.payload ?? "";
+  if (recordCursor) {
+    const after = decodeURIComponent(request.cursor.slice(5));
+    const records = checkedRecords(await store.scanRecords(stateId, after, 16));
+    return Object.freeze({ format: PORTABLE_PAGE_FORMAT, stateId, from, fromDigest, to,
+      cursor: request.cursor, nextCursor: records.length === 16 ? recordExportCursor(records.at(-1).key) : null,
+      payloadLength: payload.length, payload: "", records,
+    });
+  }
   if (offset > payload.length) throw new TypeError("durability export cursor is out of range");
   let end = Math.min(offset + limit, payload.length);
   if (end < payload.length && end > offset && isHighSurrogate(payload.charCodeAt(end - 1))) end -= 1;
-  const nextCursor = end < payload.length ? encodeExportCursor(end) : null;
+  const nextCursor = end < payload.length ? encodeExportCursor(end) : recordExportCursor("");
   return Object.freeze({
     format: PORTABLE_PAGE_FORMAT,
     stateId,
@@ -100,6 +113,7 @@ export async function exportDurabilityStatePage(store, stateId, request) {
     nextCursor,
     payloadLength: payload.length,
     payload: payload.slice(offset, end),
+    records: [],
   });
 }
 
@@ -108,19 +122,19 @@ export async function importDurabilityStatePages(store, pages) {
   if (!store || typeof store.importState !== "function") {
     throw new TypeError("durability import requires a portable state store");
   }
-  if (!pages || typeof pages[Symbol.iterator] !== "function") {
+  if (!pages || (typeof pages[Symbol.iterator] !== "function" && typeof pages[Symbol.asyncIterator] !== "function")) {
     throw new TypeError("durability import pages must be iterable");
   }
   let first;
   let cursor = encodeExportCursor(0);
   let payload = "";
   let complete = false;
-  for (const page of pages) {
+  for await (const page of pages) {
     exactObject(
       page,
       [
         "format", "stateId", "from", "fromDigest", "to", "cursor", "nextCursor",
-        "payloadLength", "payload",
+        "payloadLength", "payload", "records",
       ],
       "durability export page",
     );
@@ -143,26 +157,28 @@ export async function importDurabilityStatePages(store, pages) {
       || identity.to !== first.to || identity.payloadLength !== first.payloadLength) {
       throw new TypeError("durability export pages describe different revision ranges");
     }
-    const offset = decodeExportCursor(page.cursor);
-    if (complete || page.cursor !== cursor || offset !== payload.length) {
-      throw new TypeError("durability export pages are missing, duplicated, or out of order");
-    }
-    payload += page.payload;
-    if (payload.length > first.payloadLength) {
-      throw new TypeError("durability export pages exceed their declared payload length");
-    }
-    if (page.nextCursor === null) {
-      if (payload.length !== first.payloadLength) {
-        throw new TypeError("durability export pages are incomplete");
+    if (complete || page.cursor !== cursor) throw new TypeError("durability export pages are missing, duplicated, or out of order");
+    const records = checkedRecords(page.records);
+    if (page.cursor.startsWith("v2:r:")) {
+      if (payload.length !== first.payloadLength || page.payload !== "") throw new TypeError("durability record pages preceded the complete head");
+      let after = decodeURIComponent(page.cursor.slice(5));
+      if (records.length > 16) throw new TypeError("durability record page exceeds its bound");
+      for (const record of records) {
+        if (record.key <= after) throw new TypeError("durability record pages are out of order");
+        after = record.key;
       }
-      complete = true;
+      if (page.nextCursor !== null && (records.length === 0 || page.nextCursor !== recordExportCursor(after))) throw new TypeError("invalid durability record cursor");
+      await store.importRecords(first.stateId, records);
+      complete = page.nextCursor === null;
+    } else {
+      if (records.length !== 0 || decodeExportCursor(page.cursor) !== payload.length) throw new TypeError("durability export pages are missing, duplicated, or out of order");
+      payload += page.payload;
+      if (payload.length > first.payloadLength) throw new TypeError("durability export pages exceed their declared payload length");
+      const expected = payload.length === first.payloadLength ? recordExportCursor("") : encodeExportCursor(payload.length);
+      if (page.nextCursor !== expected) throw new TypeError("durability export page cursor does not match its payload");
     }
-    else {
-      if (page.nextCursor !== encodeExportCursor(payload.length)) {
-        throw new TypeError("durability export page cursor does not match its payload");
-      }
-      cursor = page.nextCursor;
-    }
+    cursor = page.nextCursor;
+
   }
   if (!first || !complete) throw new TypeError("durability export pages are incomplete");
   if (BigInt(first.from) >= BigInt(first.to)) {
@@ -182,7 +198,7 @@ export async function importDurabilityStatePages(store, pages) {
 }
 
 /** Fences a source store and exports one coherent provider-neutral state archive. */
-export async function exportDurabilityState(store, stateId) {
+export async function exportDurabilityState(store, stateId, { headOnly = false } = {}) {
   requireId(stateId, "state");
   if (!store || typeof store.acquire !== "function") {
     throw new TypeError("durability export requires a state store");
@@ -199,7 +215,17 @@ export async function exportDurabilityState(store, stateId) {
   }
   durabilityFence(acquired.fence);
   const state = copyState({ revision: acquired.revision, payload: acquired.payload });
-  return Object.freeze({ format: PORTABLE_FORMAT, stateId, ...state });
+  const records = [];
+  if (!headOnly) {
+    let after = "";
+    while (true) {
+      const page = await store.scanRecords(stateId, after, 16);
+      records.push(...page);
+      if (page.length < 16) break;
+      after = page.at(-1).key;
+    }
+  }
+  return Object.freeze({ format: PORTABLE_FORMAT, stateId, ...state, records });
 }
 
 /** Restores an exact provider-neutral archive into an empty portable store. */
@@ -209,7 +235,7 @@ export async function importDurabilityState(store, archive) {
   }
   exactObject(
     archive,
-    ["format", "stateId", "revision", "payload"],
+    ["format", "stateId", "revision", "payload", "records"],
     "durability export archive",
   );
   if (archive.format !== PORTABLE_FORMAT) {
@@ -217,7 +243,8 @@ export async function importDurabilityState(store, archive) {
   }
   requireId(archive.stateId, "exported state");
   const state = copyState({ revision: archive.revision, payload: archive.payload });
-  const imported = await store.importState(archive.stateId, state);
+  const records = checkedRecords(archive.records);
+  const imported = await store.importState(archive.stateId, state, { records });
   return copyState(imported);
 }
 
@@ -244,6 +271,7 @@ function durabilityUint64(value, field) {
 
 export function createMemoryDurabilityStore(stateId, initial) {
   requireId(stateId, "state");
+  const records = new Map();
   const states = new Map([[stateId, {
     state: copyState(initial ?? { revision: "0", payload: null }),
     owner: undefined,
@@ -256,6 +284,24 @@ export function createMemoryDurabilityStore(stateId, initial) {
   };
   return Object.freeze({
     stateId,
+    scanRecords(selected, after = "", limit = 16) {
+      return [...records].flatMap(([address, value]) => {
+        const [state, key] = JSON.parse(address);
+        return state === selected && key > after ? [{ key, value }] : [];
+      }).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0).slice(0, limit);
+    },
+    importRecords(selected, incoming) {
+      const checked = checkedRecords(incoming);
+      for (const record of checked) {
+        const previous = records.get(JSON.stringify([selected, record.key]));
+        if (previous !== undefined && previous !== record.value) throw new Error("immutable record conflict");
+      }
+      for (const record of checked) records.set(JSON.stringify([selected, record.key]), record.value);
+    },
+    readRecord(selected, key) {
+      return records.get(JSON.stringify([selected, key])) ?? null;
+    },
+
     load(selected) {
       return select(selected).state;
     },
@@ -303,6 +349,12 @@ export function createMemoryDurabilityStore(stateId, initial) {
       }
       const payload = requirePayload(request?.payload);
       const revision = durabilityRevision(BigInt(expectedRevision) + 1n);
+      for (const record of request.records) {
+        const address = JSON.stringify([selected, record.key]);
+        const previous = records.get(address);
+        if (previous !== undefined && previous !== record.value) throw new Error("immutable record conflict");
+      }
+      for (const record of request.records) records.set(JSON.stringify([selected, record.key]), record.value);
       entry.state = Object.freeze({ revision, payload });
       return { status: "replaced", revision };
     },
@@ -324,11 +376,17 @@ export function createMemoryDurabilityStore(stateId, initial) {
           || expectedPayload.present && entry.state.payload !== expectedPayload.value) {
         throw new DurabilityImportConflictError(selected, expectedRevision, entry.state.revision);
       }
+      const incoming = checkedRecords(options?.records ?? []);
+      for (const record of incoming) {
+        const previous = records.get(JSON.stringify([selected, record.key]));
+        if (previous !== undefined && previous !== record.value) throw new Error("immutable record conflict");
+      }
       const owner = Object.freeze({
         ownerId: PORTABLE_IMPORT_OWNER,
         fence: durabilityFence(BigInt(entry.owner?.fence ?? "0") + 1n),
       });
       if (existing === undefined) states.set(selected, entry);
+      for (const record of incoming) records.set(JSON.stringify([selected, record.key]), record.value);
       entry.owner = owner;
       entry.state = next;
       return entry.state;
@@ -344,6 +402,42 @@ export function createSqliteDurabilityStore(options) {
     throw new TypeError("SQLite durability requires a transaction function");
   }
   return Object.freeze({
+    scanRecords(stateId, after = "", limit = 16) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 16) throw new TypeError("invalid durability record page size");
+      return options.transaction((query) => query(
+        "SELECT key, value FROM nanocodex_durable_records WHERE state_id = ? AND key > ? ORDER BY key LIMIT ?", [stateId, after, limit],
+      ));
+    },
+    importRecords(stateId, incoming) {
+      const records = checkedRecords(incoming);
+      return options.transaction((query) => {
+        let pending;
+        for (const record of records) pending = mapMaybePromise(pending, () => mapMaybePromise(
+          query("SELECT value FROM nanocodex_durable_records WHERE state_id = ? AND key = ?", [stateId, record.key]),
+          (rows) => {
+            if (rows.length && rows[0].value !== record.value) throw new Error("immutable record conflict");
+            return query("INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES (?, ?, ?) ON CONFLICT (state_id, key) DO NOTHING", [stateId, record.key, record.value]);
+          },
+        ));
+        return pending;
+      });
+    },
+    readRecords(stateId, keys) {
+      if (!Array.isArray(keys) || keys.length > 16) throw new TypeError("durability record batch exceeds 16 records");
+      if (keys.length === 0) return [];
+      return options.transaction((query) => mapMaybePromise(
+        query(`SELECT key, value FROM nanocodex_durable_records WHERE state_id = ? AND key IN (${keys.map(() => "?").join(",")})`, [stateId, ...keys]),
+        (rows) => { const records = new Map(rows.map(({ key, value }) => [key, value])); return keys.map((key) => records.get(key) ?? null); },
+      ));
+    },
+
+    readRecord(stateId, key) {
+      return options.transaction((query) => mapMaybePromise(
+        query("SELECT value FROM nanocodex_durable_records WHERE state_id = ? AND key = ?", [stateId, key]),
+        (rows) => rows[0]?.value ?? null,
+      ));
+    },
+
     load(stateId) {
       requireId(stateId, "state");
       return options.transaction((query) => loadSqliteState(query, stateId));
@@ -432,7 +526,14 @@ export function createSqliteDurabilityStore(options) {
             }
             const payload = requirePayload(request?.payload);
             const revision = durabilityRevision(BigInt(expectedRevision) + 1n);
-            return mapMaybePromise(
+            let pending;
+            for (const record of request.records) {
+              pending = mapMaybePromise(pending, () => query(
+                `INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES (?, ?, ?)
+                 ON CONFLICT (state_id, key) DO NOTHING`, [stateId, record.key, record.value],
+              ));
+            }
+            return mapMaybePromise(pending, () => mapMaybePromise(
               query(
                 `INSERT INTO nanocodex_durable_states (state_id, revision, payload) VALUES (?, ?, ?)
                  ON CONFLICT (state_id) DO UPDATE
@@ -440,7 +541,7 @@ export function createSqliteDurabilityStore(options) {
                 [stateId, revision, payload],
               ),
               () => ({ status: "replaced", revision }),
-            );
+            ));
           });
         },
       ));
@@ -481,7 +582,12 @@ export function createSqliteDurabilityStore(options) {
               const previousFence = durabilityFence(owners[0]?.fence ?? "0");
               if (previousFence === MAX_REVISION_TEXT) throw new RangeError("SQLite durability fence overflow");
               const fence = durabilityFence(BigInt(previousFence) + 1n);
-              return mapMaybePromise(
+              let staged;
+              for (const record of checkedRecords(importOptions?.records ?? [])) staged = mapMaybePromise(staged, () => query(
+                "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES (?, ?, ?) ON CONFLICT (state_id, key) DO NOTHING",
+                [stateId, record.key, record.value],
+              ));
+              return mapMaybePromise(staged, () => mapMaybePromise(
                 query(
                   `INSERT INTO nanocodex_durable_owners (state_id, owner_id, fence) VALUES (?, ?, ?)
                    ON CONFLICT (state_id) DO UPDATE
@@ -499,7 +605,7 @@ export function createSqliteDurabilityStore(options) {
                     ),
                     () => state,
                   ),
-              );
+              ));
             },
           );
         },
@@ -520,13 +626,15 @@ function exportPageSize(value) {
   return value;
 }
 
+function recordExportCursor(key) { return `v2:r:${encodeURIComponent(key)}`; }
+
 function encodeExportCursor(offset) {
-  return `v1:${offset}`;
+  return `v2:${offset}`;
 }
 
 function decodeExportCursor(value) {
   if (value === undefined) return 0;
-  if (typeof value !== "string" || !/^v1:(0|[1-9][0-9]*)$/.test(value)) {
+  if (typeof value !== "string" || !/^v2:(0|[1-9][0-9]*)$/.test(value)) {
     throw new TypeError("durability export cursor is invalid");
   }
   const offset = Number(value.slice(3));
@@ -604,6 +712,19 @@ function requireId(value, kind) {
     throw new TypeError(`durability ${kind} ID must be a non-empty string`);
   }
   return value;
+}
+
+function checkedRecords(records) {
+  if (!Array.isArray(records)) throw new TypeError("durability records must be an array");
+  const seen = new Map();
+  for (const record of records) {
+    exactObject(record, ["key", "value"], "durability record");
+    requireId(record.key, "record");
+    requirePayload(record.value);
+    if (seen.has(record.key) && seen.get(record.key) !== record.value) throw new Error("immutable record conflict");
+    seen.set(record.key, record.value);
+  }
+  return [...seen].map(([key, value]) => ({ key, value }));
 }
 
 function requirePayload(value) {

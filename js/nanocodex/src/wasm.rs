@@ -140,6 +140,20 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = toolDefinitions)]
     fn host_tool_definitions(definition_host_id: u32, session_id: &str) -> Result<String, JsValue>;
 
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = durabilityReadRecords)]
+    fn host_durability_read_records(
+        route_id: &str,
+        state_id: &str,
+        keys: &str,
+    ) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = durabilityReadRecord)]
+    fn host_durability_read_record(
+        route_id: &str,
+        state_id: &str,
+        key: &str,
+    ) -> Result<Promise, JsValue>;
+
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = durabilityAcquire)]
     fn host_durability_acquire(
         route_id: &str,
@@ -155,6 +169,7 @@ extern "C" {
         fence: &str,
         expected_revision: &str,
         payload: &str,
+        records: &str,
     ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = readWorkspaceFile)]
@@ -355,6 +370,67 @@ enum JavaScriptReplaceResult {
 }
 
 impl StateStore for JavaScriptDurabilityStore {
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(async move {
+            let keys_json = serde_json::to_string(keys)
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
+            let promise = host_durability_read_records(&self.route_id, state_id, &keys_json)
+                .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
+            let value = JsFuture::from(promise)
+                .await
+                .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
+            let values = value
+                .dyn_ref::<js_sys::Array>()
+                .ok_or_else(|| StoreError::Backend("invalid durability record batch".into()))?;
+            if values.length() as usize != keys.len() {
+                return Err(StoreError::Backend(
+                    "durability record batch length mismatch".into(),
+                ));
+            }
+            values
+                .iter()
+                .map(|value| {
+                    if value.is_null() {
+                        return Ok(None);
+                    }
+                    let bytes = value.dyn_ref::<js_sys::Uint8Array>().ok_or_else(|| {
+                        StoreError::Backend("invalid durability record bytes".into())
+                    })?;
+                    String::from_utf8(bytes.to_vec())
+                        .map(Some)
+                        .map_err(|error| StoreError::Backend(error.to_string()))
+                })
+                .collect()
+        })
+    }
+
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            let promise = host_durability_read_record(&self.route_id, state_id, key)
+                .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
+            let value = JsFuture::from(promise)
+                .await
+                .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
+            if value.is_null() {
+                return Ok(None);
+            }
+            let bytes = value
+                .dyn_ref::<js_sys::Uint8Array>()
+                .ok_or_else(|| StoreError::Backend("invalid durability record bytes".into()))?;
+            String::from_utf8(bytes.to_vec())
+                .map(Some)
+                .map_err(|error| StoreError::Backend(error.to_string()))
+        })
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -366,13 +442,7 @@ impl StateStore for JavaScriptDurabilityStore {
             let value = JsFuture::from(promise)
                 .await
                 .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
-            let stored = if let Some(encoded) = value.as_string() {
-                // Accept the former host ABI when embedding against an older
-                // host, but current hosts pass the payload without nesting it.
-                serde_json::from_str::<JavaScriptOwnedState>(&encoded).map_err(|error| {
-                    StoreError::Backend(format!("invalid durability acquire result: {error}"))
-                })?
-            } else {
+            let stored = {
                 let field = |name: &str| {
                     js_sys::Reflect::get(&value, &JsValue::from_str(name))
                         .map_err(|error| StoreError::Backend(host_error_message(&error)))
@@ -430,6 +500,7 @@ impl StateStore for JavaScriptDurabilityStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex::durability::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async move {
             let fence = owner.fence().to_string();
@@ -441,6 +512,8 @@ impl StateStore for JavaScriptDurabilityStore {
                 &fence,
                 &expected,
                 payload,
+                &serde_json::to_string(records)
+                    .map_err(|error| StoreError::NotCommitted(error.to_string()))?,
             )
             .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
             let value = JsFuture::from(promise)

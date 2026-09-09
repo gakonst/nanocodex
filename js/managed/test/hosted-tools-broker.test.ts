@@ -447,7 +447,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     fixture.broker.webSocketClose(routeB.webSocket, 1000, "done");
     expect(fixture.broker.provider().definitions()).toEqual([]);
-    expect(fixture.broker.machines()).toEqual([]);
+    expect(fixture.broker.machines().map(({ id }) => id)).toEqual(["machine-b"]);
   });
 
   it("keeps a resolved canonical machine tool pinned to its admitted generation", async () => {
@@ -534,12 +534,13 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       machines: [{ id: "machine-b", name: "Machine B", workspace: "/b", capabilities: ["shell"] }],
     }));
     fixture.persistence.routes.get("user:machine-a")!.lease_expires_at = NOW;
+    fixture.broker.expire();
 
-    expect(fixture.broker.machines().map((machine) => machine.id)).toEqual(["machine-b"]);
+    expect(fixture.broker.machines().map((machine) => machine.id)).toEqual(["machine-a", "machine-b"]);
     expect(routeA.closed).toMatchObject({ code: 1008 });
     expect(routeB.closed).toBeUndefined();
     expect(fixture.broker.provider().definitions().map((definition) => definition.name))
-      .toEqual(["user_machine-b_beta"]);
+      .toEqual(["user_machine-a_alpha", "user_machine-b_beta"]);
   });
 
   it("keeps a dispatched call pinned when another named route is replaced", async () => {
@@ -623,7 +624,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     });
   });
 
-  it("removes machines when an open host lease expires", async () => {
+  it("preserves machine identity when its transport lease expires", async () => {
     const fixture = createFixture();
     const host = fixture.socket();
     await fixture.broker.message(host.webSocket, JSON.stringify({
@@ -638,8 +639,9 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       }],
     }));
     fixture.persistence.routes.get("user:laptop")!.lease_expires_at = NOW;
+    fixture.broker.expire();
 
-    expect(fixture.broker.machines()).toEqual([]);
+    expect(fixture.broker.machines().map(({ id }) => id)).toEqual(["laptop"]);
     expect(host.closed).toMatchObject({ code: 1008 });
   });
 
@@ -968,6 +970,26 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(host.sent).toEqual([]);
   });
 
+  it("keeps an offline machine namespace across cold ownership without admitting calls", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog", attachment_id: "machine-a", tools: [machineEntry("exec_command")],
+      machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
+    }));
+    fixture.broker.webSocketClose(host.webSocket, 1006, "transport lost");
+    const resumed = new HostedToolsBroker(fixture.context, { persistence: fixture.persistence, now: () => NOW });
+    expect(resumed.machines().map(({ id }) => id)).toEqual(["machine-a"]);
+    const tool = resumed.machineTool("machine-a", "exec_command")!;
+    expect(tool).toBeDefined();
+    const result = await tool.handler({ cmd: "touch receipt" }, { sessionId: "agent", callId: "unsettled" });
+    expect((result as Record<PropertyKey, unknown>)[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]).toBe(true);
+    expect(fixture.persistence.calls.size).toBe(0);
+    resumed.revokeRoute("user:machine-a", "machine removed");
+    expect(resumed.machines()).toEqual([]);
+    expect(resumed.machineTool("machine-a", "exec_command")).toBeUndefined();
+  });
+
   it("resumes every exact live route after a hibernating owner wakes", async () => {
     const fixture = createFixture();
     const left = fixture.socket();
@@ -1095,6 +1117,7 @@ class MemoryPersistence implements HostedToolsBrokerPersistence {
       lease_id: null,
       lease_expires_at: 0,
       catalog_json: null,
+      machines_json: null,
     });
   }
 
@@ -1123,7 +1146,7 @@ class MemoryPersistence implements HostedToolsBrokerPersistence {
       host_id: null,
       lease_id: null,
       lease_expires_at: 0,
-      catalog_json: null,
+      catalog_json: current.machines_json ? current.catalog_json : null,
     });
   }
   clearCatalog(leaseId: string, generation: number): void {
@@ -1133,6 +1156,7 @@ class MemoryPersistence implements HostedToolsBrokerPersistence {
     this.routes.set(current.route_id, {
       ...current,
       catalog_json: null,
+      machines_json: null,
     });
   }
   readonly calls = new Map<string, CallRow>();

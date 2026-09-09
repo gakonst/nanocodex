@@ -96,16 +96,17 @@ a complete task tree requires a separate durable registry.
 
 ## Store contract
 
-The live store protocol implements two operations:
+The live store protocol implements three operations:
 
 1. `acquire(state_id, owner_id)` atomically advances the owner fence and
    returns the new token with one coherent state value.
-2. `replace(state_id, owner_token, expected_revision, payload)` first checks
+2. `read_record(state_id, key)` loads one immutable record; the optional batch
+   implementation reads up to 16 records per storage call.
+3. `replace(state_id, owner_token, expected_revision, payload, records)` first checks
    the owner token, then the expected revision, and atomically replaces the old
-   opaque Rust payload with the complete new value while advancing the revision.
+   opaque Rust head and publishes every new record in the same transaction.
 
-There is exactly zero or one retained payload. Multiple historical batches are
-corruption and are rejected. Receipt retention is a normal state transition,
+There is exactly zero or one execution head and an immutable record table. Receipt retention is a normal state transition,
 not log-prefix compaction. Hosts never deserialize state.
 
 With bounded receipt retention, terminal operations retain their exact input,
@@ -120,22 +121,30 @@ inside the Rust owner so preparing a replacement does not deep-copy every receip
 Managed sessions keep 16 inner terminal receipts; their managed inbox and archive
 continue to own public exact-ID replay beyond that tail.
 
-State format 3 uses the `nanocodex_durable_state` envelope. Small states retain
-that JSON directly. Above 256 KiB, serialization streams into gzip and base64
-with the `nanocodex-durable-state-gzip-v1:` prefix, avoiding a complete
-uncompressed crossover allocation. Recovery accepts both encodings and
-validates the gzip checksum and complete envelope before admitting operations.
-The serialized payload remains opaque to every host and transfer adapter.
-Runtime versions predating this encoding cannot reopen compressed states.
-Format 1, the former `nanocodex_journal_state` envelope, and individual event
-batches remain rejected.
+State format 4 uses the `nanocodex_durable_state` head envelope and SHA-256
+addressed payload records. Bodies over 256,000 UTF-8 bytes are split into records.
+Persistent 64-message context pages share prior records. Each boundary publishes
+only new messages and changed pages, with its head in one atomic transaction.
+The old inline/compressed storage formats are rejected.
+
+Cold acquisition reads the head only. Execution resolves current model context
+and active effects in batches of at most 16 records. Current-context hashes are
+primed on recovery so continuing an old thread does not rewrite old messages.
+Resident memory is O(current model context + active tool working memory + bounded
+I/O); historical storage grows with completed work. No turn duration or step
+count cap is imposed. Arbitrary allocations inside user tools are outside this
+bound and belong on an appropriate execution host.
 
 ## Provider portability
 
 The JavaScript memory, SQLite, Cloudflare Durable Object SQLite, and PostgreSQL
 adapters also implement an offline transfer extension. `exportDurabilityState`
 acquires a fresh owner fence at the source and returns one JSON-safe archive
-containing the stable state ID, exact revision, and opaque total-state payload.
+containing the stable state ID, exact revision, execution head, and immutable records.
+This full archive materializes all records; large histories use the asynchronous
+paged export/import APIs. Pages stage immutable records before publishing the
+head. Managed exports seal at most 16 records per R2 object and copy bounded
+batches, with resumable progress in SQLite and the head published last.
 `importDurabilityState` installs that exact revision into an empty destination
 and creates a fence before any destination agent can acquire it.
 

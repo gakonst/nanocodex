@@ -10,7 +10,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
 }, async (t) => {
   const key = process.env.NANOCODEX_DURABILITY_TEST_API_KEY;
   assert.ok(key, "NANOCODEX_ASTRA_MANAGED_API_KEY is required for deployed durability evidence");
-  const origin = "https://nanocodex.gakonst.workers.dev";
+  const origin = process.env.NANOCODEX_MANAGED_URL ?? "https://nanocodex.gakonst.workers.dev";
   const run = `durability-${process.env.GITHUB_RUN_ID ?? "local"}-${randomUUID()}`;
   let diagnosticTurnId;
   const request = async (path, method = "GET", body, idempotencyKey) => {
@@ -42,7 +42,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
       }
       if (text !== undefined) {
         if (response.ok) {
-          if (attempt > 1) t.diagnostic(`${method} ${path} recovered after ${attempt} attempts`);
+          if (attempt > 1) console.info(`${method} ${path} recovered after ${attempt} attempts`);
           // A malformed successful response is a contract failure, not a
           // transport failure that should reissue the request.
           return text ? JSON.parse(text) : undefined;
@@ -71,12 +71,12 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     ]);
     const [view, state, history, capacity] = results.map((result, index) => {
       if (result.status === "fulfilled") return result.value;
-      t.diagnostic(`diagnostic ${["turn", "state", "history", "capacity"][index]} failed: ${result.reason.message}`);
+      console.info(`diagnostic ${["turn", "state", "history", "capacity"][index]} failed: ${result.reason.message}`);
       return {};
     });
     // Log state and event identities only. Never log prompts, provider frames,
     // reasoning, tool arguments, or tool output from retained conversations.
-    t.diagnostic(JSON.stringify({
+    console.info(JSON.stringify({
       turn: { id: view.turn_id, state: view.state, attempt_count: view.attempt_count,
         retry_at: view.retry_at, updated_at: view.updated_at },
       agent: { loaded: state.agent_loaded, active_turns: state.active_turns,
@@ -92,7 +92,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     try {
       await diagnose(`/v1/agents/${encodeURIComponent(process.env.NANOCODEX_DURABILITY_DIAGNOSE_AGENT)}`,
         process.env.NANOCODEX_DURABILITY_DIAGNOSE_TURN ?? "turn-60");
-    } catch (error) { t.diagnostic(`retained-agent diagnostics unavailable: ${error.message}`); }
+    } catch (error) { console.info(`retained-agent diagnostics unavailable: ${error.message}`); }
   }
   const created = await request("/v1/agents", "POST", {
     settings: {
@@ -102,7 +102,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
   const id = created.id ?? created.agent_id;
   assert.equal(typeof id, "string");
   const base = `/v1/agents/${encodeURIComponent(id)}`;
-  t.diagnostic(`synthetic agent ${id}; deployment ${process.env.GITHUB_SHA ?? "local"}`);
+  console.info(`synthetic agent ${id}; deployment ${process.env.GITHUB_SHA ?? "local"}`);
   let passed = false;
   const terminal = async (turnId, agentBase = base) => {
     const started = Date.now();
@@ -113,18 +113,18 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     while (Date.now() < deadline) {
       const view = await request(`${agentBase}/turns/${turnId}`);
       if (["completed", "failed", "cancelled"].includes(view.state)) {
-        if (diagnosed) t.diagnostic(`${turnId} settled as ${view.state} after ${Date.now() - started}ms`);
+        if (diagnosed) console.info(`${turnId} settled as ${view.state} after ${Date.now() - started}ms`);
         return view;
       }
       if (!diagnosed && Date.now() - started >= 120_000) {
         diagnosed = true;
         try { await diagnose(agentBase, turnId); }
-        catch (error) { t.diagnostic(`slow-turn diagnostics unavailable: ${error.message}`); }
+        catch (error) { console.info(`slow-turn diagnostics unavailable: ${error.message}`); }
       }
       await delay(500);
     }
     try { await diagnose(agentBase, turnId); }
-    catch (error) { t.diagnostic(`timeout diagnostics unavailable: ${error.message}`); }
+    catch (error) { console.info(`timeout diagnostics unavailable: ${error.message}`); }
     assert.fail(`turn ${turnId} did not settle within seven minutes, including provider idle recovery`);
   };
   try {
@@ -139,7 +139,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
       const continued = await terminal(followOnId, retainedBase);
       assert.equal(continued.state, "completed");
       assert.match(continued.terminal.final_message, /RECOVERED/);
-      t.diagnostic(`retained failing thread ${fixture.agent}/${fixture.turn} recovered and continued`);
+      console.info(`retained failing thread ${fixture.agent}/${fixture.turn} recovered and continued`);
     }
     const completed = [];
     const context = Array.from({ length: 160 }, (_, index) =>
@@ -162,7 +162,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
         const retained = await request(`${base}/turns/${old.turnId}`);
         assert.deepEqual(retained.terminal, old.view.terminal);
         assert.equal(retained.terminal_cursor, old.view.terminal_cursor);
-        t.diagnostic(`${index + 1} ordered turns; exact replay verified`);
+        console.info(`${index + 1} ordered turns; exact replay verified`);
       }
     }
     // Cross the default 512-receipt hot window without hundreds of extra
@@ -173,9 +173,9 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
       await request(`${base}/turns/${turnId}/cancel`, "POST");
       await request(`${base}/turns`, "POST", { id: turnId, input: "Cancelled archive fixture." });
       assert.equal((await terminal(turnId)).state, "cancelled");
-      if (index % 32 === 31) t.diagnostic(`${index + 1} cancellation receipts settled`);
+      if (index % 32 === 31) console.info(`${index + 1} cancellation receipts settled`);
     }
-    t.diagnostic("528 settled operations; crossed the default 512-receipt hot window");
+    console.info("528 settled operations; crossed the default 512-receipt hot window");
     // Status reads do not keep the runtime warm. Observe the configured idle
     // shutdown before the next turn, rather than guessing with a fixed sleep.
     const idleDeadline = Date.now() + 180_000;
@@ -191,9 +191,9 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     assert.ok(capacity.archived_turns.archived_receipts >= 16,
       "old receipts must actually move into the archive before replay verification");
     assert.ok(capacity.turns.terminal_rows <= 512, "receipt hot storage must stay bounded");
-    t.diagnostic(JSON.stringify({ durable_state: capacity.durable_state,
+    console.info(JSON.stringify({ durable_state: capacity.durable_state,
       archived_turns: capacity.archived_turns, hot_terminal_rows: capacity.turns.terminal_rows }));
-    t.diagnostic("long thread unloaded; testing cold continuation");
+    console.info("long thread unloaded; testing cold continuation");
     const archived = completed[0];
     const replay = await request(`${base}/turns`, "POST", {
       id: archived.turnId, input: archived.input,
@@ -202,7 +202,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     const retained = await request(`${base}/turns/${archived.turnId}`);
     assert.deepEqual(retained.terminal, archived.view.terminal);
     assert.equal(retained.terminal_cursor, archived.view.terminal_cursor);
-    t.diagnostic("oldest completed receipt replayed exactly after archive and idle unload");
+    console.info("oldest completed receipt replayed exactly after archive and idle unload");
     // A deterministic pre-admission cancellation cannot race a fast model
     // completion. The next prompt must progress without manual recovery.
     await request(`${base}/turns/cancelled/cancel`, "POST");
@@ -231,13 +231,13 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
     const state = await request(base);
     assert.deepEqual(state.active_turns, []);
     passed = true;
-    t.diagnostic("96 long turns, 432 archive cancellations, old-turn replays, idle reopen, cancellation, and a tool follow-on passed");
+    console.info("96 long turns, 432 archive cancellations, old-turn replays, idle reopen, cancellation, and a tool follow-on passed");
   } catch (error) {
     try { await diagnose(base, diagnosticTurnId ?? "turn-95"); }
-    catch (diagnosticError) { t.diagnostic(`failure diagnostics unavailable: ${diagnosticError.message}`); }
+    catch (diagnosticError) { console.info(`failure diagnostics unavailable: ${diagnosticError.message}`); }
     throw error;
   } finally {
     if (passed) await request(base, "DELETE");
-    else t.diagnostic(`retained synthetic failing agent ${id} for diagnosis`);
+    else console.info(`retained synthetic failing agent ${id} for diagnosis`);
   }
 });

@@ -15,6 +15,7 @@ export type ManagedCapacitySnapshot = Readonly<{
   durable_state: CountAndBytes & Readonly<{
     revision: string;
   }>;
+  durable_records: CountAndBytes;
   known_payload_bytes: number;
   managed_events: CountAndBytes;
   raw_events: CountAndBytes;
@@ -65,6 +66,7 @@ export function managedCapacitySnapshot(
   archivedRealtime: ManagedRealtimeArchiveCapacity,
 ): ManagedCapacitySnapshot {
   const durableState = durableStateCapacity(storage, cloudflareStateId(storage, sessionId));
+  const durableRecords = eventCapacity(storage, "nanocodex_durable_records", "value");
   const managedEvents = managedEventCapacity(storage);
   const rawEvents = eventCapacity(
     storage,
@@ -78,6 +80,7 @@ export function managedCapacitySnapshot(
   );
   const turns = turnCapacity(storage);
   const knownPayloadBytes = durableState.bytes
+    + durableRecords.bytes
     + managedEvents.bytes
     + rawEvents.bytes
     + realtimeOperations.bytes
@@ -91,6 +94,7 @@ export function managedCapacitySnapshot(
     archived_turns: archivedTurns,
     database_size_bytes: databaseSizeBytes,
     durable_state: durableState,
+    durable_records: durableRecords,
     known_payload_bytes: knownPayloadBytes,
     managed_events: managedEvents,
     raw_events: rawEvents,
@@ -123,20 +127,7 @@ function durableStateCapacity(
   if (!tableExists(storage, "nanocodex_durable_states")) {
     return { ...EMPTY_AGGREGATE, revision: "0" };
   }
-  if (tableExists(storage, "nanocodex_durable_state_chunks")) {
-    return storage.sql.exec<DurableStateRow>(
-      `SELECT COUNT(*) AS rows,
-              COALESCE(SUM(LENGTH(CAST(s.payload AS BLOB))), 0)
-                + COALESCE((SELECT SUM(LENGTH(CAST(c.payload AS BLOB)))
-                            FROM nanocodex_durable_state_chunks c
-                            WHERE c.state_id = ?), 0) AS bytes,
-              COALESCE(MAX(s.revision), '0') AS revision
-       FROM nanocodex_durable_states s
-       WHERE s.state_id = ?`,
-      stateId,
-      stateId,
-    ).toArray()[0] ?? { ...EMPTY_AGGREGATE, revision: "0" };
-  }
+
   return storage.sql.exec<DurableStateRow>(
     `SELECT COUNT(*) AS rows,
             COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS bytes,
@@ -149,8 +140,8 @@ function durableStateCapacity(
 
 function eventCapacity(
   storage: DurableObjectStorage,
-  table: "managed_events" | "managed_realtime_operations" | "nanocodex_cloudflare_events",
-  column: "event_json" | "message_json" | "response_json",
+  table: "managed_events" | "managed_realtime_operations" | "nanocodex_cloudflare_events" | "nanocodex_durable_records",
+  column: "event_json" | "message_json" | "response_json" | "value",
 ): CountAndBytes {
   if (!tableExists(storage, table)) return EMPTY_AGGREGATE;
   return storage.sql.exec<AggregateRow>(

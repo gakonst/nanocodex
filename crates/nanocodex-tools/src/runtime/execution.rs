@@ -263,14 +263,19 @@ impl ToolRuntime {
     }
 
     /// Starts or resumes a Code Mode cell and observes its first terminal boundary.
-    pub async fn execute_code(&self, source: &str, context: ToolContext<'_>) -> CodeModeExecution {
-        self.code_mode
+    pub async fn execute_code(
+        &self,
+        source: &str,
+        context: ToolContext<'_>,
+    ) -> Result<CodeModeExecution, crate::embedded::CodeModeHostError> {
+        Ok(self
+            .code_mode
             .execute(
                 source,
                 Arc::clone(&self.registry),
                 OwnedToolContext::from_context(context),
             )
-            .await
+            .await)
     }
 
     #[doc(hidden)]
@@ -279,15 +284,16 @@ impl ToolRuntime {
         source: &str,
         context: ToolContext<'_>,
         observer: &mut dyn CodeModeObserver,
-    ) -> CodeModeExecution {
-        self.code_mode
+    ) -> Result<CodeModeExecution, crate::embedded::CodeModeHostError> {
+        Ok(self
+            .code_mode
             .execute_with_updates(
                 source,
                 Arc::clone(&self.registry),
                 OwnedToolContext::from_context(context),
                 observer,
             )
-            .await
+            .await)
     }
 
     /// Executes Code Mode without copying an already-owned history snapshot.
@@ -296,10 +302,11 @@ impl ToolRuntime {
         &self,
         source: &str,
         context: OwnedToolContext,
-    ) -> CodeModeExecution {
-        self.code_mode
+    ) -> Result<CodeModeExecution, crate::embedded::CodeModeHostError> {
+        Ok(self
+            .code_mode
             .execute(source, Arc::clone(&self.registry), context)
-            .await
+            .await)
     }
 
     #[doc(hidden)]
@@ -308,15 +315,20 @@ impl ToolRuntime {
         source: &str,
         context: OwnedToolContext,
         observer: &mut dyn CodeModeObserver,
-    ) -> CodeModeExecution {
-        self.code_mode
+    ) -> Result<CodeModeExecution, crate::embedded::CodeModeHostError> {
+        Ok(self
+            .code_mode
             .execute_with_updates(source, Arc::clone(&self.registry), context, observer)
-            .await
+            .await)
     }
 
     /// Waits for a previously yielded Code Mode cell.
-    pub async fn wait_for_code(&self, input: &str, context: ToolContext<'_>) -> CodeModeExecution {
-        self.code_mode.wait(input, context).await
+    pub async fn wait_for_code(
+        &self,
+        input: &str,
+        context: ToolContext<'_>,
+    ) -> Result<CodeModeExecution, crate::embedded::CodeModeHostError> {
+        Ok(self.code_mode.wait(input, context).await)
     }
 
     #[doc(hidden)]
@@ -325,8 +337,8 @@ impl ToolRuntime {
         input: &str,
         _context: ToolContext<'_>,
         observer: &mut dyn CodeModeObserver,
-    ) -> CodeModeExecution {
-        self.code_mode.wait_with_updates(input, observer).await
+    ) -> Result<CodeModeExecution, crate::embedded::CodeModeHostError> {
+        Ok(self.code_mode.wait_with_updates(input, observer).await)
     }
 
     /// Executes one registered or dynamically activated tool through this
@@ -343,8 +355,8 @@ impl ToolRuntime {
         name: &str,
         input: ToolInput,
         context: ToolContext<'_>,
-    ) -> ToolOutput {
-        self.registry.execute_direct(name, input, context).await
+    ) -> Result<ToolOutput, crate::embedded::CodeModeHostError> {
+        Ok(self.registry.execute_direct(name, input, context).await)
     }
 }
 

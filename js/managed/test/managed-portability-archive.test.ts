@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { env, runInDurableObject } from "cloudflare:test";
+import { createCloudflareDurabilityStore } from "nanocodex/durability/cloudflare";
+import type { DurableAgentSession } from "../src/index";
 
 import { sha256Hex } from "../src/archive-hash";
 import { ManagedPortabilityArchive } from "../src/managed-portability-archive";
@@ -7,6 +10,42 @@ const SOURCE_STORAGE_ID = "a".repeat(64);
 const DESTINATION_STORAGE_ID = "b".repeat(64);
 
 describe("managed portability archive", () => {
+  it("transfers immutable execution records in bounded restartable R2 pages before publishing the head", async () => {
+    const bindings = env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>; NANOCODEX_HISTORY: R2Bucket };
+    const sourceStub = bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID());
+    const targetStub = bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID());
+    const stateId = crypto.randomUUID();
+    const sourceId = sourceStub.id.toString();
+    const identity = await runInDurableObject(sourceStub, async (_session, ctx) => {
+      const store = createCloudflareDurabilityStore(ctx.storage);
+      const owner = await store.acquire(stateId, { ownerId: "source" });
+      const records = Array.from({ length: 65 }, (_, index) => ({ key: String(index).padStart(4, "0"), value: `${index}:` + "r".repeat(160_000) }));
+      await store.replace(stateId, { ...owner, expectedRevision: owner.revision, payload: "complete execution head", records });
+      let batches = 0;
+      // Reconstruct archive state each batch: progress must live in SQLite.
+      while (!await new ManagedPortabilityArchive(ctx.storage, bindings.NANOCODEX_HISTORY, sourceId).sealDurabilityRecords(stateId)) batches++;
+      expect(batches).toBe(4);
+      const archive = new ManagedPortabilityArchive(ctx.storage, bindings.NANOCODEX_HISTORY, sourceId);
+      let result = await archive.identityBatch("durability");
+      while (!result.complete) result = await archive.identityBatch("durability");
+      expect(result.identity?.objects).toBe(5);
+      return result.identity!;
+    });
+    await runInDurableObject(targetStub, async (_session, ctx) => {
+      const store = createCloudflareDurabilityStore(ctx.storage);
+      const archive = new ManagedPortabilityArchive(ctx.storage, bindings.NANOCODEX_HISTORY, targetStub.id.toString());
+      archive.prepareDurabilityImport(stateId);
+      let result = await archive.adoptBatch("durability", sourceId, identity, () => {});
+      expect(result.complete).toBe(false); // 8 MiB page budget.
+      expect(await store.load(stateId)).toEqual({ revision: "0", payload: null });
+      const reopened = new ManagedPortabilityArchive(ctx.storage, bindings.NANOCODEX_HISTORY, targetStub.id.toString());
+      result = await reopened.adoptBatch("durability", sourceId, identity, () => {});
+      expect(result.complete).toBe(true);
+      expect((await store.readRecord(stateId, "0064"))?.startsWith("64:")).toBe(true);
+      await store.importState(stateId, { revision: "1" as never, payload: "complete execution head" });
+      expect(await store.load(stateId)).toEqual({ revision: "1", payload: "complete execution head" });
+    });
+  });
   it("exports and adopts a live event segment larger than 16 MiB", async () => {
     const bucket = new MemoryR2Bucket();
     // Portability validates the immutable object's content-addressed identity;
@@ -88,11 +127,11 @@ class PortabilityStorage {
       if (normalized.startsWith("SELECT last_key, digest")) {
         return cursor<Row>(optionalRow(this.#manifests.get(String(bindings[0]))));
       }
-      if (normalized.startsWith("INSERT INTO managed_portability_manifest_progress")) {
+      if (normalized.startsWith("INSERT INTO managed_portability_manifests")) {
         this.#manifests.set(String(bindings[0]), emptyProgress());
         return cursor<Row>([]);
       }
-      if (normalized.startsWith("UPDATE managed_portability_manifest_progress")) {
+      if (normalized.startsWith("UPDATE managed_portability_manifests")) {
         this.#manifests.set(String(bindings[5]), {
           last_key: bindings[0] as string | null,
           digest: String(bindings[1]),
@@ -105,7 +144,7 @@ class PortabilityStorage {
       if (normalized.startsWith("SELECT source_storage_id, manifest_digest")) {
         return cursor<Row>(optionalRow(this.#adoptions.get(String(bindings[0]))));
       }
-      if (normalized.startsWith("INSERT INTO managed_portability_adoption_progress")) {
+      if (normalized.startsWith("INSERT INTO managed_portability_adoptions")) {
         this.#adoptions.set(String(bindings[0]), {
           ...emptyProgress(),
           source_storage_id: String(bindings[1]),
@@ -113,7 +152,7 @@ class PortabilityStorage {
         });
         return cursor<Row>([]);
       }
-      if (normalized.startsWith("UPDATE managed_portability_adoption_progress")) {
+      if (normalized.startsWith("UPDATE managed_portability_adoptions")) {
         const kind = String(bindings[5]);
         const retained = this.#adoptions.get(kind)!;
         this.#adoptions.set(kind, {

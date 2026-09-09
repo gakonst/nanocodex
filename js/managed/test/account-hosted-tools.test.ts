@@ -58,7 +58,7 @@ describe("account Hosted Tools provider", () => {
         }),
       } as unknown as DurableObjectNamespace<AccountHostedTools>, ACCOUNT_A, () => true);
 
-      const initial = provider.refresh();
+      const initial = expect(provider.refresh()).rejects.toMatchObject({ code: "host_interrupted" });
       await vi.advanceTimersByTimeAsync(10_000);
       await initial;
       expect(provider.machines()).toEqual([]);

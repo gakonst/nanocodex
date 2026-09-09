@@ -65,31 +65,15 @@ class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
 
   initialize(now: number): readonly HostedToolsStateRow[] {
     this.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS hosted_tools_state (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        generation INTEGER NOT NULL DEFAULT 0,
-        host_id TEXT,
-        lease_id TEXT,
-        lease_expires_at INTEGER NOT NULL DEFAULT 0,
-        catalog_json TEXT
-      );
-      INSERT OR IGNORE INTO hosted_tools_state (singleton) VALUES (1);
-      CREATE TABLE IF NOT EXISTS hosted_tools_routes (
+      CREATE TABLE IF NOT EXISTS hosted_tool_routes (
         route_id TEXT PRIMARY KEY,
         generation INTEGER NOT NULL DEFAULT 0,
         host_id TEXT,
         lease_id TEXT,
         lease_expires_at INTEGER NOT NULL DEFAULT 0,
-        catalog_json TEXT
+        catalog_json TEXT,
+        machines_json TEXT
       );
-      INSERT OR IGNORE INTO hosted_tools_routes
-        (route_id, generation, host_id, lease_id, lease_expires_at, catalog_json)
-        SELECT '$legacy', generation, host_id, lease_id, lease_expires_at, catalog_json
-        FROM hosted_tools_state
-        WHERE singleton = 1;
-      UPDATE hosted_tools_state
-        SET host_id = NULL, lease_id = NULL, lease_expires_at = 0, catalog_json = NULL
-        WHERE singleton = 1;
       CREATE TABLE IF NOT EXISTS hosted_tool_calls (
         call_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -139,15 +123,15 @@ class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
 
   states(): readonly HostedToolsStateRow[] {
     return this.storage.sql.exec<HostedToolsStateRow>(
-      `SELECT route_id, generation, host_id, lease_id, lease_expires_at, catalog_json
-       FROM hosted_tools_routes ORDER BY route_id`,
+      `SELECT route_id, generation, host_id, lease_id, lease_expires_at, catalog_json, machines_json
+       FROM hosted_tool_routes ORDER BY route_id`,
     ).toArray();
   }
 
   state(routeId: string): HostedToolsStateRow | undefined {
     const row = this.storage.sql.exec<HostedToolsStateRow>(
-      `SELECT route_id, generation, host_id, lease_id, lease_expires_at, catalog_json
-       FROM hosted_tools_routes WHERE route_id = ?`,
+      `SELECT route_id, generation, host_id, lease_id, lease_expires_at, catalog_json, machines_json
+       FROM hosted_tool_routes WHERE route_id = ?`,
       routeId,
     ).toArray()[0];
     return row;
@@ -155,29 +139,31 @@ class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
 
   replaceHost(row: HostedToolsStateRow): void {
     this.storage.sql.exec(
-      `INSERT INTO hosted_tools_routes
-         (route_id, generation, host_id, lease_id, lease_expires_at, catalog_json)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO hosted_tool_routes
+         (route_id, generation, host_id, lease_id, lease_expires_at, catalog_json, machines_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(route_id) DO UPDATE SET
          generation = excluded.generation,
          host_id = excluded.host_id,
          lease_id = excluded.lease_id,
          lease_expires_at = excluded.lease_expires_at,
-         catalog_json = excluded.catalog_json`,
+         catalog_json = excluded.catalog_json,
+         machines_json = excluded.machines_json`,
       row.route_id,
       row.generation,
       row.host_id,
       row.lease_id,
       row.lease_expires_at,
       row.catalog_json,
+      row.machines_json,
     );
   }
 
   clearHost(leaseId: string, generation: number): void {
     this.storage.sql.exec(
-      `UPDATE hosted_tools_routes
+      `UPDATE hosted_tool_routes
        SET host_id = NULL, lease_id = NULL, lease_expires_at = 0,
-           catalog_json = NULL
+           catalog_json = CASE WHEN machines_json IS NOT NULL THEN catalog_json ELSE NULL END
        WHERE lease_id = ? AND generation = ?`,
       leaseId,
       generation,
@@ -186,8 +172,8 @@ class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
 
   clearCatalog(leaseId: string, generation: number): void {
     this.storage.sql.exec(
-      `UPDATE hosted_tools_routes
-       SET catalog_json = NULL
+      `UPDATE hosted_tool_routes
+       SET catalog_json = NULL, machines_json = NULL
        WHERE lease_id = ? AND generation = ?`,
       leaseId,
       generation,
@@ -320,9 +306,9 @@ class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
          SELECT call_id FROM hosted_tool_calls
          WHERE state NOT IN ('admitted', 'dispatched')
            AND NOT EXISTS (
-             SELECT 1 FROM hosted_tools_routes
-             WHERE hosted_tools_routes.lease_id = hosted_tool_calls.lease_id
-               AND hosted_tools_routes.generation = hosted_tool_calls.generation
+             SELECT 1 FROM hosted_tool_routes
+             WHERE hosted_tool_routes.lease_id = hosted_tool_calls.lease_id
+               AND hosted_tool_routes.generation = hosted_tool_calls.generation
            )
          ORDER BY updated_at DESC, call_id DESC LIMIT -1 OFFSET ?
        )`,

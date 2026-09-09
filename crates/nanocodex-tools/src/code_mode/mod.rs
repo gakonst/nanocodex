@@ -26,7 +26,8 @@ use tracing::{Instrument, info_span};
 
 use super::{ToolContext, ToolOutputBody, ToolOutputContent};
 pub use crate::embedded::{
-    CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate, NestedToolCall,
+    CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,
+    NestedToolCall,
 };
 use crate::runtime::{OwnedToolContext, ToolRegistry};
 use embedded::EmbeddedHost;
@@ -131,6 +132,7 @@ struct CellRegistry {
 
 struct LiveCell {
     id: u64,
+    origin_call_id: String,
     turn_id: AtomicU64,
     output_token_budget: usize,
     observation: Arc<Mutex<CellObservationState>>,
@@ -420,7 +422,7 @@ impl CodeModeRuntime {
             .yield_time_ms
             .map_or(INITIAL_YIELD, Duration::from_millis);
         let yield_after = observer_yield_timeout(yield_after);
-        let (execution, running) = observe_cell(
+        let (mut execution, running) = observe_cell(
             &cell,
             observation,
             started_at,
@@ -429,6 +431,10 @@ impl CodeModeRuntime {
             observer,
         )
         .await;
+        execution.cell = Some(CodeModeCell {
+            origin_call_id: cell.origin_call_id.clone(),
+            running,
+        });
         tracing::Span::current().record("running", running);
         if !running {
             self.remove_and_join(&cell).await;
@@ -489,7 +495,7 @@ impl CodeModeRuntime {
         let continued_output_token_budget = cell.output_token_budget;
         if arguments.terminate {
             cell.request_terminate();
-            let (execution, running) = observe_cell(
+            let (mut execution, running) = observe_cell(
                 &cell,
                 observation,
                 started_at,
@@ -501,6 +507,10 @@ impl CodeModeRuntime {
             if !running {
                 self.remove_and_join(&cell).await;
             }
+            execution.cell = Some(CodeModeCell {
+                origin_call_id: cell.origin_call_id.clone(),
+                running,
+            });
             return execution;
         }
         let yield_time = Duration::from_millis(
@@ -513,7 +523,7 @@ impl CodeModeRuntime {
             .max_tokens
             .unwrap_or(continued_output_token_budget)
             .max(1);
-        let (execution, running) = observe_cell(
+        let (mut execution, running) = observe_cell(
             &cell,
             observation,
             started_at,
@@ -525,6 +535,10 @@ impl CodeModeRuntime {
         if !running {
             self.remove_and_join(&cell).await;
         }
+        execution.cell = Some(CodeModeCell {
+            origin_call_id: cell.origin_call_id.clone(),
+            running,
+        });
         execution
     }
 
@@ -747,6 +761,7 @@ impl LiveCell {
             status = tracing::field::Empty,
             duration_ns = tracing::field::Empty,
         );
+        let origin_call_id = context.call_id.clone();
         let task = tokio::spawn(
             run_cell_actor(
                 host,
@@ -764,6 +779,7 @@ impl LiveCell {
         );
         Self {
             id,
+            origin_call_id,
             turn_id: AtomicU64::new(turn_id),
             output_token_budget,
             observation: Arc::new(Mutex::new(CellObservationState {
@@ -1048,6 +1064,7 @@ fn observed_execution(
     expose_running_shell_sessions(&mut content, &nested_calls);
     let content = output::truncate_content(content, max_output_tokens);
     CodeModeExecution {
+        cell: None,
         output: with_status(status, started_at.elapsed().as_secs_f64(), content),
         success,
         nested_calls: ordered_calls(nested_calls),
@@ -1423,6 +1440,7 @@ fn failed_execution(
 ) -> CodeModeExecution {
     let wall_time = started_at.elapsed().as_secs_f64();
     CodeModeExecution {
+        cell: None,
         output: ToolOutputBody::Text(format!(
             "Script failed\nWall time {wall_time:.1} seconds\nOutput:\n{message}"
         )),

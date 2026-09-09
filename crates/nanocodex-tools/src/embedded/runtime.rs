@@ -6,12 +6,12 @@ use std::{
 
 use nanocodex_oai_api::{
     responses::CustomToolFormat,
-    tools::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolOutputBody},
+    tools::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput},
 };
 
 use super::{
-    CodeModeExecution, CodeModeHost, CodeModeNotification, CodeModeObserver, EmbeddedToolMode,
-    NestedToolCall, OwnedToolContext,
+    CodeModeExecution, CodeModeHost, CodeModeHostError, CodeModeObserver, EmbeddedToolMode,
+    OwnedToolContext,
 };
 use crate::{
     ToolExposure, Tools,
@@ -333,35 +333,39 @@ impl EmbeddedToolRuntime {
         name: &str,
         input: ToolInput,
         context: ToolContext<'_>,
-    ) -> ToolOutput {
+    ) -> Result<ToolOutput, CodeModeHostError> {
         if let Some(tool) = self.local.iter().find(|tool| tool.name.as_ref() == name) {
-            return tool
+            return Ok(tool
                 .handler
                 .execute(input, context)
                 .await
-                .unwrap_or_else(|error| ToolOutput::error(error.to_string()));
+                .unwrap_or_else(|error| ToolOutput::error(error.to_string())));
         }
         let Some(host) = &self.host else {
-            return ToolOutput::error("no embedded tool adapter is configured");
+            return Err(CodeModeHostError::new(
+                "no embedded tool adapter is configured",
+            ));
         };
         if !self.contains(name) {
-            return ToolOutput::error(format!("direct embedded tool `{name}` is unavailable"));
+            return Ok(ToolOutput::error(format!(
+                "direct embedded tool `{name}` is unavailable"
+            )));
         }
-        match host.execute_tool(name, input, context).await {
-            Ok(output) => output,
-            Err(error) => ToolOutput::error(error.to_string()),
-        }
+        host.execute_tool(name, input, context).await
     }
 
     /// Executes one Code Mode cell through the embedding host.
-    pub async fn execute_code(&self, source: &str, context: ToolContext<'_>) -> CodeModeExecution {
+    pub async fn execute_code(
+        &self,
+        source: &str,
+        context: ToolContext<'_>,
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
         let Some(host) = &self.host else {
-            return failed("no embedded Code Mode adapter is configured");
+            return Err(CodeModeHostError::new(
+                "no embedded Code Mode adapter is configured",
+            ));
         };
-        match host.execute(source, context).await {
-            Ok(execution) => execution,
-            Err(error) => failed(&error.to_string()),
-        }
+        host.execute(source, context).await
     }
 
     /// Executes Code Mode from independently owned invocation state.
@@ -369,7 +373,7 @@ impl EmbeddedToolRuntime {
         &self,
         source: &str,
         context: OwnedToolContext,
-    ) -> CodeModeExecution {
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
         self.execute_code(source, context.as_context()).await
     }
 
@@ -380,21 +384,22 @@ impl EmbeddedToolRuntime {
         source: &str,
         context: OwnedToolContext,
         observer: &mut dyn CodeModeObserver,
-    ) -> CodeModeExecution {
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
         let Some(host) = &self.host else {
-            return failed("no embedded Code Mode adapter is configured");
+            return Err(CodeModeHostError::new(
+                "no embedded Code Mode adapter is configured",
+            ));
         };
-        match host
-            .execute_with_updates(source, context.as_context(), observer)
+        host.execute_with_updates(source, context.as_context(), observer)
             .await
-        {
-            Ok(execution) => execution,
-            Err(error) => failed(&error.to_string()),
-        }
     }
 
     /// Observes a yielded cell through a capable embedding host.
-    pub async fn wait_for_code(&self, input: &str, context: ToolContext<'_>) -> CodeModeExecution {
+    pub async fn wait_for_code(
+        &self,
+        input: &str,
+        context: ToolContext<'_>,
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
         self.wait_for_code_with_updates(input, context, &mut IgnoreUpdates)
             .await
     }
@@ -405,14 +410,13 @@ impl EmbeddedToolRuntime {
         input: &str,
         context: ToolContext<'_>,
         observer: &mut dyn CodeModeObserver,
-    ) -> CodeModeExecution {
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
         let Some(host) = &self.host else {
-            return failed("no embedded Code Mode adapter is configured");
+            return Err(CodeModeHostError::new(
+                "no embedded Code Mode adapter is configured",
+            ));
         };
-        match host.wait_with_updates(input, context, observer).await {
-            Ok(execution) => execution,
-            Err(error) => failed(&error.to_string()),
-        }
+        host.wait_with_updates(input, context, observer).await
     }
 }
 
@@ -478,15 +482,6 @@ impl EmbeddedToolRuntimeControl {
                 "embedded Code Mode cancellation failed"
             );
         }
-    }
-}
-
-fn failed(message: &str) -> CodeModeExecution {
-    CodeModeExecution {
-        output: ToolOutputBody::Text(format!("Script failed\nOutput:\n{message}")),
-        success: false,
-        nested_calls: Vec::<NestedToolCall>::new(),
-        notifications: Vec::<CodeModeNotification>::new(),
     }
 }
 
@@ -610,6 +605,7 @@ mod tests {
         ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
             Box::pin(async move {
                 Ok(CodeModeExecution {
+                    cell: None,
                     output: ToolOutputBody::Text(format!(
                         "{source}:{}:{}",
                         context.session_id(),
@@ -887,7 +883,8 @@ mod tests {
                 ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert!(output.success);
         assert_eq!(output.structured_result()["session_id"], "session-1");
     }
@@ -920,7 +917,8 @@ mod tests {
                 ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(output.structured_result(), json!({"private": true}));
     }
 
@@ -952,7 +950,8 @@ mod tests {
                 ),
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert!(output.success);
 
         let output = runtime
@@ -961,7 +960,8 @@ mod tests {
                 ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
                 ToolContext::new("gpt-5", "session-1", "call-2", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert!(output.success);
         assert_eq!(output.structured_result()["name"], "mcp__mercator__search");
     }
@@ -991,7 +991,8 @@ mod tests {
                 ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert!(output.success);
         assert_eq!(output.structured_result()["name"], "mcp__viem__search_docs");
         assert_eq!(definition_reads.load(Ordering::Relaxed), 3);
@@ -1006,7 +1007,8 @@ mod tests {
                 "echo",
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         let ToolOutputBody::Text(output) = execution.output else {
             panic!("expected text output");
         };

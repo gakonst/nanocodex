@@ -1,9 +1,10 @@
 import { durabilityRevision } from "../runtime/durability-store.mjs";
 
-const DATABASE_NAME = "nanocodex-browser-durability-v2";
+const DATABASE_NAME = "nanocodex-browser-durability-v4";
 const DATABASE_VERSION = 1;
 const OWNERS = "owners";
 const STATES = "states";
+const RECORDS = "records";
 const MAX_REVISION = "18446744073709551615";
 
 /** Creates the Worker-local IndexedDB durability capability. */
@@ -28,6 +29,14 @@ export function createIndexedDbDurabilityStore(options = {}) {
   };
 
   return Object.freeze({
+    async readRecord(stateId, key) {
+      const db = await open();
+      const transaction = db.transaction([RECORDS], "readonly");
+      const completed = transactionCompletion(transaction);
+      const record = await requestResult(transaction.objectStore(RECORDS).get([stateId, key]));
+      await completed;
+      return record?.value ?? null;
+    },
     async load(stateId) {
       requireId(stateId, "durability state ID");
       const db = await open();
@@ -41,7 +50,7 @@ export function createIndexedDbDurabilityStore(options = {}) {
       requireId(stateId, "durability state ID");
       const ownerId = requireId(request?.ownerId, "durability owner ID");
       const db = await open();
-      const transaction = db.transaction([OWNERS, STATES], "readwrite");
+      const transaction = db.transaction([OWNERS, STATES, RECORDS], "readwrite");
       const completed = transactionCompletion(transaction);
       try {
         const owners = transaction.objectStore(OWNERS);
@@ -65,7 +74,7 @@ export function createIndexedDbDurabilityStore(options = {}) {
       const ownerId = requireId(request?.ownerId, "durability owner ID");
       const fence = durabilityRevision(request?.fence);
       const db = await open();
-      const transaction = db.transaction([OWNERS, STATES], "readwrite");
+      const transaction = db.transaction([OWNERS, STATES, RECORDS], "readwrite");
       const completed = transactionCompletion(transaction);
       try {
         const ownerValue = await requestResult(transaction.objectStore(OWNERS).get(stateId));
@@ -87,6 +96,9 @@ export function createIndexedDbDurabilityStore(options = {}) {
         }
         const payload = requirePayload(request?.payload);
         const revision = durabilityRevision(BigInt(expectedRevision) + 1n);
+        for (const record of request.records) {
+          await requestResult(transaction.objectStore(RECORDS).put({ stateId, ...record }));
+        }
         await requestResult(states.put({ stateId, revision, payload }));
         await completed;
         return { status: "replaced", revision };
@@ -107,6 +119,7 @@ function openDatabase(indexedDb, databaseName, invalidate) {
       const database = request.result;
       database.createObjectStore(OWNERS, { keyPath: "stateId" });
       database.createObjectStore(STATES, { keyPath: "stateId" });
+      database.createObjectStore(RECORDS, { keyPath: ["stateId", "key"] });
     };
     request.onerror = () => settle(reject, request.error ?? new Error("opening browser durability failed"));
     request.onblocked = () => settle(reject, new Error("opening browser durability was blocked"));
@@ -114,8 +127,8 @@ function openDatabase(indexedDb, databaseName, invalidate) {
       const opened = request.result;
       if (settled) return opened.close();
       const stores = Array.from(opened.objectStoreNames).sort();
-      if (stores.length !== 2 || stores[0] !== OWNERS || stores[1] !== STATES
-        || !validStoreSchema(opened, OWNERS) || !validStoreSchema(opened, STATES)) {
+      if (stores.length !== 3 || stores[0] !== OWNERS || stores[1] !== RECORDS || stores[2] !== STATES
+        || !stores.every((name) => validStoreSchema(opened, name))) {
         opened.close();
         return settle(reject, new Error("incompatible IndexedDB durability schema; delete the database"));
       }
@@ -135,7 +148,7 @@ function openDatabase(indexedDb, databaseName, invalidate) {
 function validStoreSchema(database, name) {
   try {
     const store = database.transaction([name], "readonly").objectStore(name);
-    return store.keyPath === "stateId" && store.autoIncrement === false;
+    return (name === RECORDS ? JSON.stringify(store.keyPath) === JSON.stringify(["stateId", "key"]) : store.keyPath === "stateId") && store.autoIncrement === false;
   } catch {
     return false;
   }
