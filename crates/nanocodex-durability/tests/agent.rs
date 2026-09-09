@@ -3497,12 +3497,10 @@ async fn portable_state_replays_a_completed_model_step_after_terminal_commit_fai
     let terminals = std::iter::from_fn(|| events.try_recv_timed())
         .filter(|event| event.event.kind.is_terminal())
         .collect::<Vec<_>>();
-    assert_eq!(
-        terminals.len(),
-        1,
-        "an accepted turn must publish exactly one terminal event even when settlement fails"
+    assert!(
+        terminals.is_empty(),
+        "an unconfirmed settlement must not publish a false run terminal"
     );
-    assert_eq!(terminals[0].event.kind, AgentEventKind::RunFailed);
     agent.shutdown().await?;
     drop((agent, events));
 
@@ -3512,7 +3510,7 @@ async fn portable_state_replays_a_completed_model_step_after_terminal_commit_fai
         .session_id(test_session_id())
         .durability(state)
         .await?;
-    let (resumed, resumed_events) = builder.build()?;
+    let (resumed, mut resumed_events) = builder.build()?;
     let recovered_turn = resumed.prompt("replay this exact turn").await?;
     assert_eq!(recovered_turn.request_id(), Some(first_request_id.as_str()));
     let result = recovered_turn.result().await?;
@@ -3523,6 +3521,11 @@ async fn portable_state_replays_a_completed_model_step_after_terminal_commit_fai
         1,
         "the recovered operation must use the Rust-durable model output",
     );
+    let terminals = std::iter::from_fn(|| resumed_events.try_recv_timed())
+        .filter(|event| event.event.kind.is_terminal())
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].event.kind, AgentEventKind::RunCompleted);
     resumed.shutdown().await?;
     drop((resumed, resumed_events));
     std::fs::remove_dir_all(workspace)?;

@@ -215,13 +215,12 @@ where
         factory: &ResponsesAttemptFactory,
         span: &tracing::Span,
     ) -> Result<Option<WarmupExecution>> {
-        if let Some(steps) = &self.execution_steps {
-            if let crate::agent::ExecutionStep::Replay(output) = steps
+        if let Some(steps) = &self.execution_steps
+            && let crate::agent::ExecutionStep::Replay(output) = steps
                 .begin::<_, Option<WarmupExecution>>("warmup", "warmup", &())
                 .await?
-            {
-                return Ok(output);
-            }
+        {
+            return Ok(output);
         }
         let success = match self
             .client
@@ -235,10 +234,9 @@ where
                 if !error
                     .responses_error()
                     .is_some_and(|source| source.is_misalignment_policy_violation())
+                    && let Some(steps) = &self.execution_steps
                 {
-                    if let Some(steps) = &self.execution_steps {
-                        steps.complete("warmup", &None::<WarmupExecution>).await?;
-                    }
+                    steps.complete("warmup", &None::<WarmupExecution>).await?;
                 }
                 return Err(error);
             }

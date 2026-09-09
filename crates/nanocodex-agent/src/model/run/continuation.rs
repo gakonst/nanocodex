@@ -62,15 +62,15 @@ where
         session.validate_workspace(requested_workspace)?;
         self.model = saved
             .model
-            .parse()
-            .map_err(|error| NanocodexError::InvalidExecutionPolicy(format!("{error}")))?;
+            .parse::<crate::Model>()
+            .map_err(NanocodexError::InvalidExecutionPolicy)?;
         self.thinking = saved.effort;
         self.fast_mode = saved.fast_mode;
         let config = Arc::make_mut(&mut self.config);
         config.reasoning_mode = saved
             .reasoning_mode
-            .parse()
-            .map_err(|error| NanocodexError::InvalidExecutionPolicy(format!("{error}")))?;
+            .parse::<crate::ReasoningMode>()
+            .map_err(NanocodexError::InvalidExecutionPolicy)?;
         config.model_id_prefix = saved.model_id_prefix.clone().map(Arc::from);
         config.store_responses = saved.store_responses;
         config.context_window_tokens = saved.context_window_tokens;
@@ -83,8 +83,8 @@ where
                 saved.model_id_prefix,
                 saved
                     .reasoning_mode
-                    .parse()
-                    .map_err(|error| NanocodexError::InvalidExecutionPolicy(format!("{error}")))?,
+                    .parse::<crate::ReasoningMode>()
+                    .map_err(NanocodexError::InvalidExecutionPolicy)?,
                 saved.store_responses,
             )
             .for_logical_turn(logical_turn);

@@ -926,6 +926,7 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
   }), { status: "replaced", revision: "1" });
 
   const archive = await exportDurabilityState(sourceOwner);
+  assert.deepEqual(await bindAgent(module).exportDurabilityHead(sourceOwner), { ...archive, records: [] });
   assert.deepEqual(archive, {
     format: "nanocodex-durability-state-v2", records: [],
     stateId,

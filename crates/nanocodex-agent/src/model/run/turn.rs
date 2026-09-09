@@ -194,6 +194,15 @@ where
         fast_mode: bool,
         error: &NanocodexError,
     ) -> Result<()> {
+        if matches!(
+            error.execution_policy_disposition(),
+            Some(
+                crate::ExecutionPolicyDisposition::Retry
+                    | crate::ExecutionPolicyDisposition::Reopen
+            )
+        ) {
+            return Ok(());
+        }
         self.thinking = thinking;
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();

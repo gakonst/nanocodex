@@ -66,6 +66,7 @@ export function bindAgent(module, hostAgent = HostAgent) {
     createEphemeral: (owner, options) => createEphemeral(module, owner, options),
     destroy,
     exportDurabilityState,
+    exportDurabilityHead,
     importDurabilityState: (owner, archive) => importDurabilityState(owner, archive, module),
     route,
   });
@@ -185,44 +186,19 @@ export async function importDurabilityState(owner, archive, module) {
       }
       throw new Error("Cloudflare Agent durability import requires a pristine Durable Object");
     }
-    const imported = await importPortableState(durability, archive);
     const sessionId = uuidV7();
-    try {
-      storage.transactionSync(() => {
-        storage.sql.exec(
-          "INSERT INTO nanocodex_cloudflare_agent (singleton, session_id) VALUES (1, ?)",
-          sessionId,
-        );
-        storage.sql.exec(
-          "INSERT INTO nanocodex_cloudflare_durability (singleton, state_id) VALUES (1, ?)",
-          archive.stateId,
-        );
-      });
-    } catch (error) {
-      try {
-        storage.transactionSync(() => {
-          storage.sql.exec(
-            "DELETE FROM nanocodex_durable_records WHERE state_id = ?",
-            archive.stateId,
-          );
-          storage.sql.exec(
-            "DELETE FROM nanocodex_durable_states WHERE state_id = ?",
-            archive.stateId,
-          );
-          storage.sql.exec(
-            "DELETE FROM nanocodex_durable_owners WHERE state_id = ?",
-            archive.stateId,
-          );
-        });
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [error, rollbackError],
-          "Cloudflare Agent durability import metadata and rollback both failed",
-        );
-      }
-      throw error;
-    }
-    return imported;
+    // Publish identity and the imported head together. Records staged by a
+    // bounded host transfer survive rollback and can be reused on retry.
+    return storage.transactionSync(() => {
+      const imported = durability.importState(archive.stateId, validated, { records: archive.records });
+      storage.sql.exec(
+        "INSERT INTO nanocodex_cloudflare_agent (singleton, session_id) VALUES (1, ?)", sessionId,
+      );
+      storage.sql.exec(
+        "INSERT INTO nanocodex_cloudflare_durability (singleton, state_id) VALUES (1, ?)", archive.stateId,
+      );
+      return imported;
+    });
   } finally {
     lifecycleFor(context).creating = false;
   }

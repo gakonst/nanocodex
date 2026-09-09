@@ -1,10 +1,34 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { createCloudflareDurabilityStore } from "nanocodex/durability/cloudflare";
+import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
 import { durabilityRevision } from "nanocodex/durability";
 import type { DurableAgentSession } from "../src/index";
 
 describe("Cloudflare execution records", () => {
+  it("publishes imported identity and head atomically while preserving staged records on failure", async () => {
+    const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_session, state) => {
+      let fail = true;
+      const storage = {
+        sql: { exec<Row extends Record<string, string | number | null>>(sql: string, ...args: Array<string | number | null>) {
+          if (fail && sql.startsWith("INSERT INTO nanocodex_cloudflare_durability")) throw new Error("fixture identity interruption");
+          return state.storage.sql.exec<Row>(sql, ...args);
+        } },
+        transactionSync<T>(callback: () => T) { return state.storage.transactionSync(callback); },
+      };
+      const store = createCloudflareDurabilityStore(storage);
+      await store.importRecords("import-fixture", [{ key: "staged", value: "exact retained content" }]);
+      const archive = { format: "nanocodex-durability-state-v2" as const, stateId: "import-fixture", revision: durabilityRevision("1"), payload: JSON.stringify({ nanocodex_durable_state: { format: 4, operations: {}, latest_checkpoint: null } }), records: [] };
+      const owner = { ctx: { storage, acceptWebSocket() {}, getWebSockets() { return []; } } };
+      await expect(CloudflareAgent.importDurabilityState(owner, archive)).rejects.toThrow("fixture identity interruption");
+      expect(await store.load(archive.stateId)).toEqual({ revision: "0", payload: null });
+      expect(await store.readRecord(archive.stateId, "staged")).toBe("exact retained content");
+      fail = false;
+      await CloudflareAgent.importDurabilityState(owner, archive);
+      expect(await store.load(archive.stateId)).toEqual({ revision: "1", payload: archive.payload });
+    });
+  });
   it("publishes records and their execution head in one transaction", async () => {
     const sessions = (env as unknown as {
       NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;

@@ -400,10 +400,10 @@ where
         {
             self.tool_call_indices.remove(completed.call_id.as_str());
         }
-        if let Some(cell) = &completed.cell {
-            if !cell.running {
-                self.tool_call_indices.remove(cell.origin_call_id.as_str());
-            }
+        if let Some(cell) = &completed.cell
+            && !cell.running
+        {
+            self.tool_call_indices.remove(cell.origin_call_id.as_str());
         }
         self.stats.tool_work_duration_ns += completed.work_duration_ns;
         let _ = self.finish_active_tool_progress(progress);

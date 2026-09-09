@@ -1046,18 +1046,22 @@ where
                         self.execution.release_claim(operation_id).await;
                     }
                     model.set_events(events);
-                    let emitted = model.emit_failed_before_start(
-                        &prompt,
-                        self.workspace.as_deref(),
-                        thinking,
-                        fast_mode,
-                        &error,
-                    );
-                    model.set_events(self.events.clone());
                     let outcome = self
                         .execution
-                        .recover_failure(execution_operation.as_deref(), emitted.and(Err(error)))
+                        .recover_failure(execution_operation.as_deref(), Err(error))
                         .await;
+                    let emitted = match &outcome {
+                        Err(error) => model.emit_failed_before_start(
+                            &prompt,
+                            self.workspace.as_deref(),
+                            thinking,
+                            fast_mode,
+                            error,
+                        ),
+                        Ok(_) => Ok(()),
+                    };
+                    model.set_events(self.events.clone());
+                    let outcome = emitted.and(outcome);
                     let reopen = outcome.as_ref().is_err_and(|error| {
                         error.execution_policy_disposition()
                             == Some(crate::ExecutionPolicyDisposition::Reopen)
@@ -1420,10 +1424,7 @@ where
                         terminal_failure_committed = true;
                         latest_fork_checkpoint = Some(Arc::clone(&checkpoint));
                     }
-                    let persisted = match committed {
-                        Ok(()) => model.emit_terminal("completed"),
-                        Err(error) => model.emit_terminal("failed").and(Err(error)),
-                    };
+                    let persisted = committed;
                     (
                         persisted.map(|()| TurnResult {
                             request_id: execution_operation.clone(),
@@ -1452,13 +1453,8 @@ where
                         latest_fork_checkpoint = Some(Arc::clone(&checkpoint));
                     }
                     let (persisted, cancellation_persisted) = match committed {
-                        Ok(()) => (model.emit_terminal("cancelled"), Ok(())),
-                        Err(error) => (
-                            model
-                                .emit_terminal("failed")
-                                .and(Err(duplicate_policy_error(&error))),
-                            Err(error),
-                        ),
+                        Ok(()) => (Ok(()), Ok(())),
+                        Err(error) => (Err(duplicate_policy_error(&error)), Err(error)),
                     };
                     model.replace_client(ResponsesClient::new((self.spawner.service_factory)(
                         Arc::clone(&self.spawner.config),
@@ -1478,7 +1474,7 @@ where
                     ));
                     match error.execution_policy_disposition() {
                         Some(crate::ExecutionPolicyDisposition::Reopen) => {
-                            (model.emit_terminal("failed").and(Err(error)), false, None)
+                            (Err(error), false, None)
                         }
                         disposition => {
                             let retryable = error
@@ -1499,10 +1495,7 @@ where
                                 latest_fork_checkpoint = Some(checkpoint);
                                 terminal_failure_committed = true;
                             }
-                            let persisted = match committed {
-                                Ok(()) => model.emit_terminal("failed"),
-                                Err(error) => model.emit_terminal("failed").and(Err(error)),
-                            };
+                            let persisted = committed;
                             (persisted.and(Err(error)), false, None)
                         }
                     }
@@ -1511,7 +1504,7 @@ where
                     provider_requires_stop = error_requires_stop(&error);
                     match error.execution_policy_disposition() {
                         Some(crate::ExecutionPolicyDisposition::Reopen) => {
-                            (model.emit_terminal("failed").and(Err(error)), false, None)
+                            (Err(error), false, None)
                         }
                         _ => {
                             let persisted = self
@@ -1519,10 +1512,6 @@ where
                                 .fail_without_checkpoint(execution_turn)
                                 .instrument(turn_span.clone())
                                 .await;
-                            let persisted = match persisted {
-                                Ok(()) => model.emit_terminal("failed"),
-                                Err(error) => model.emit_terminal("failed").and(Err(error)),
-                            };
                             (persisted.and(Err(error)), false, None)
                         }
                     }
@@ -1532,6 +1521,29 @@ where
                 .execution
                 .recover_failure(execution_operation.as_deref(), outcome)
                 .await;
+            // A run terminal describes durable settlement, never an attempt.
+            // Classify recovery first so consumers cannot mistake a retry/reopen
+            // for a completed turn and abandon its still-running tools.
+            let terminal = match &outcome {
+                Ok(_) => Some("completed"),
+                Err(NanocodexError::TurnCancelled) => Some("cancelled"),
+                Err(error)
+                    if matches!(
+                        error.execution_policy_disposition(),
+                        Some(
+                            crate::ExecutionPolicyDisposition::Retry
+                                | crate::ExecutionPolicyDisposition::Reopen
+                        )
+                    ) =>
+                {
+                    None
+                }
+                Err(_) => Some("failed"),
+            };
+            let outcome = match terminal {
+                Some(status) => model.emit_terminal(status).and(outcome),
+                None => outcome,
+            };
             if !commands_open
                 && !terminal_failure_committed
                 && let Err(error) = &outcome

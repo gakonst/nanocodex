@@ -7,6 +7,7 @@ use std::{
 
 use eyre::{Result, WrapErr as _, eyre};
 use futures_util::{SinkExt as _, StreamExt as _};
+use nanocodex_durability::{DurableSession, OperationStatus, SqliteStore};
 use rusqlite::{Connection, OptionalExtension as _};
 use serde_json::{Value, json};
 use tokio::{
@@ -208,13 +209,7 @@ async fn sigkill_redispatches_only_the_uncommitted_model_effect() -> Result<()> 
     .await?;
     assert_success(&reopened, "recovered durable run")?;
     join_server(recovery_server, "recovery-generation server").await?;
-    assert_completed_model_effect(
-        &retained_payload(&database)?.ok_or_else(|| {
-            eyre!("recovered run did not retain its completed durable model receipt")
-        })?,
-        2,
-        "recovered durable answer",
-    )?;
+    assert_completed_operation(&database, "recovered durable answer").await?;
 
     let replay = run_without_provider_connection(
         durable_command(&endpoint, workspace.path(), &database, PROMPT),
@@ -346,13 +341,7 @@ async fn second_process_fences_the_first_owner_and_redispatches_the_uncommitted_
         "first owner did not report its durability fence:\n{stderr}"
     );
     join_server(server, "fencing server").await?;
-    assert_completed_model_effect(
-        &retained_payload(&database)?.ok_or_else(|| {
-            eyre!("replacement owner did not retain its completed durable model receipt")
-        })?,
-        2,
-        "replacement durable answer",
-    )?;
+    assert_completed_operation(&database, "replacement durable answer").await?;
 
     let replay = run_without_provider_connection(
         durable_command(&endpoint, workspace.path(), &database, PROMPT),
@@ -587,20 +576,21 @@ fn assert_pending_model_effect(payload: &Value) -> Result<()> {
     Ok(())
 }
 
-fn assert_completed_model_effect(
-    payload: &Value,
-    expected_attempts: u64,
-    expected_answer: &str,
-) -> Result<()> {
-    let step = &payload["nanocodex_durable_state"]["operations"][REQUEST_ID]["steps"]["model-1"];
-    if step["kind"] != "model_call"
-        || step["status"].get("completed").is_none()
-        || step["attempts"] != expected_attempts
-        || !step["input"].is_string()
-        || !step["status"].to_string().contains(expected_answer)
-    {
-        return Err(eyre!("unexpected completed durable model receipt: {step}"));
-    }
+async fn assert_completed_operation(database: &Path, expected_answer: &str) -> Result<()> {
+    let session = DurableSession::open(SqliteStore::open(database)?, STATE_ID).await?;
+    let state = session.state().await?;
+    let operation = state
+        .operation(REQUEST_ID)
+        .ok_or_else(|| eyre!("missing operation"))?;
+    let OperationStatus::Completed { output, .. } = &operation.status else {
+        return Err(eyre!("operation was not completed"));
+    };
+    let output: Value = session.resolve(output).await?.decode()?;
+    assert_eq!(output["final_message"], expected_answer);
+    assert!(
+        operation.steps.is_empty(),
+        "settled effects must be retired"
+    );
     Ok(())
 }
 
@@ -615,16 +605,7 @@ fn retained_payload(database: &Path) -> Result<Option<Value>> {
         )
         .optional()?;
     payload
-        .map(|payload| {
-            use base64::Engine as _;
-            if let Some(encoded) = payload.strip_prefix("nanocodex-durable-state-gzip-v1:") {
-                let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-                serde_json::from_reader(flate2::read::GzDecoder::new(bytes.as_slice()))
-                    .map_err(Into::into)
-            } else {
-                serde_json::from_str(&payload).map_err(Into::into)
-            }
-        })
+        .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
         .transpose()
 }
 

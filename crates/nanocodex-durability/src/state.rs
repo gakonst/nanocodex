@@ -377,13 +377,13 @@ pub struct OperationState {
 impl OperationState {
     fn retire_steps(&mut self) {
         for (id, step) in &self.steps {
-            if step.kind == "model_call" && matches!(step.status, StepStatus::Completed(_)) {
-                if let Some(index) = id
+            if step.kind == "model_call"
+                && matches!(step.status, StepStatus::Completed(_))
+                && let Some(index) = id
                     .strip_prefix("model-")
                     .and_then(|id| id.parse::<u32>().ok())
-                {
-                    self.retired_model_calls = self.retired_model_calls.max(index);
-                }
+            {
+                self.retired_model_calls = self.retired_model_calls.max(index);
             }
         }
         self.steps.clear();

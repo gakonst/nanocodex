@@ -53,10 +53,13 @@ test("a long WASM turn resumes its current batch after a lost checkpoint acknowl
   const options = { module, harness: false, tools: [], durability, durabilityId,
     transport: Transport.openAi({ apiKey: "fixture", WebSocketImpl: ModelSocket, websocketWarmup: false }) };
   let agent = await Agent.create(options);
+  const terminals = [];
+  agent.events.watch().onEvent(event => { if (["run.failed", "run.completed"].includes(event.type)) terminals.push(event); });
   try {
     await assert.rejects(agent.turn.prompt({ input: "complete 64 batches" }).result(), /lost checkpoint acknowledgement/);
     assert.equal(failed, true);
     assert.equal(generations, 31);
+    assert.deepEqual(terminals, [], "an interrupted durable attempt must not terminate its observer");
     await agent.session.shutdown().catch(() => {});
     agent = await Agent.create(options);
     assert.equal((await agent.turn.prompt({ input: "complete 64 batches" }).result()).finalMessage, "finished");

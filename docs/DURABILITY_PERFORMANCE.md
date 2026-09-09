@@ -8,6 +8,8 @@ one transaction, so a crash cannot expose a partial revision.
 This replaces compressed whole-state snapshots and whole-turn replay. It does
 not require a client retry journal, duplicated request records, or a turn step
 limit. Hosts report interrupted execution; Rust resumes its retained position.
+Run terminal events describe settled operations; interrupted attempts cannot
+publish a false failure that makes a client abandon running work.
 Ordinary machine identities survive socket loss so recovery cannot accidentally
 select a different execution host. Explicit revocation still removes access.
 
@@ -38,6 +40,7 @@ The checked-in gates exercise actual Rust/WASM and deployed Worker behavior:
 | Same turn, immutable writes | Largest publication 35,741 bytes for a 512 KiB conversation |
 | Paged import into a fresh store and cold continuation | 18 pages; only 7,163 new bytes written |
 | Real `nanocodex2`, 64 dependent native effects, steering and Worker redeploy | Exactly one completion per call, no duplicate fixture effects, fresh CLI reopen |
+| Export that real 64-effect thread, import into a fresh DO, continue with `nanocodex2` | Bounded record transfer and imported-history continuation passed |
 | Real DO, 96 long turns and 432 cancellations | 528 operations; archived old receipt replay, idle cold reopen, tool follow-on; 3,614-byte head |
 | Worker SQLite interruption at record 51 of 64 | Old head and records remain intact; retry publishes the complete batch |
 | Worker R2 transfer larger than 8 MiB | Bounded source/destination batches resume from durable progress |

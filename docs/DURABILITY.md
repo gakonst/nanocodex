@@ -135,6 +135,13 @@ I/O); historical storage grows with completed work. No turn duration or step
 count cap is imposed. Arbitrary allocations inside user tools are outside this
 bound and belong on an appropriate execution host.
 
+A run terminal is emitted only after settlement and recovery classification.
+An interrupted attempt classified as retry or reopen emits no `run.failed` or
+`run.completed`. A later attempt or exact receipt replay emits the committed
+terminal. Otherwise a streaming consumer can exit on a failed attempt while its
+server continues the same durable turn, disconnecting resources it still needs.
+This rule belongs to the Rust driver, before any WASM or host event projection.
+
 ## Provider portability
 
 The JavaScript memory, SQLite, Cloudflare Durable Object SQLite, and PostgreSQL
