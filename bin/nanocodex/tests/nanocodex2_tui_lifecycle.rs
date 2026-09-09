@@ -59,6 +59,11 @@ impl Terminal {
             command.args(["attach", AGENT]);
         }
         command.cwd(workspace.path());
+        // This PTY is not a tmux client, regardless of the developer's shell.
+        // Inheriting TMUX used to skip a broken terminal capability probe.
+        command.env_remove("TMUX");
+        command.env_remove("TMUX_PANE");
+        command.env_remove("TERM_PROGRAM");
         command.env("TERM", "xterm-256color");
         command.env("NANOCODEX_MANAGED_URL", origin);
         command.env(

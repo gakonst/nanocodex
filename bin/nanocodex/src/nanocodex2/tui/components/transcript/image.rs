@@ -171,22 +171,25 @@ struct TmuxClient {
 pub(crate) fn initialize() {
     let inside_tmux = env::var_os("TMUX").is_some();
     let tmux_client = inside_tmux.then(tmux_client).flatten();
-    let mut picker = if queries_terminal_for_image_capabilities(inside_tmux) {
-        Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
-    } else {
-        tmux_client
-            .as_ref()
-            .and_then(|client| client.font_size)
-            .map(picker_from_font_size)
-            .unwrap_or_else(Picker::halfblocks)
-    };
+    // The capability probe leaves a stdin reader behind on timeout. Keyboard
+    // input must have one owner, even when a terminal never answers queries.
+    let mut picker = tmux_client
+        .as_ref()
+        .and_then(|client| client.font_size)
+        .or_else(|| {
+            crossterm::terminal::window_size()
+                .ok()
+                .and_then(window_font_size)
+        })
+        .map(picker_from_font_size)
+        .unwrap_or_else(Picker::halfblocks);
     let term = env::var("TERM").ok();
     let term_program = env::var("TERM_PROGRAM").ok();
     let native_transport =
         !inside_tmux || picker_supports_tmux_passthrough(term.as_deref(), term_program.as_deref());
     if let Some(protocol) = protocol_override(
         picker.protocol_type(),
-        term_program.as_deref(),
+        term_program.as_deref().or(term.as_deref()),
         tmux_client.as_ref().map(|client| client.termtype.as_str()),
         inside_tmux,
         native_transport,
@@ -196,8 +199,10 @@ pub(crate) fn initialize() {
     drop(PICKER.set(picker));
 }
 
-const fn queries_terminal_for_image_capabilities(inside_tmux: bool) -> bool {
-    !inside_tmux
+fn window_font_size(size: crossterm::terminal::WindowSize) -> Option<FontSize> {
+    let width = size.width.checked_div(size.columns)?;
+    let height = size.height.checked_div(size.rows)?;
+    (width > 0 && height > 0).then(|| FontSize::new(width, height))
 }
 
 #[allow(deprecated)]
@@ -217,8 +222,11 @@ fn protocol_hint(
         .into_iter()
         .flatten()
         .filter_map(|terminal| terminal.split_ascii_whitespace().next())
-        .any(|terminal| terminal.eq_ignore_ascii_case("ghostty"))
-        .then_some(ProtocolType::Kitty)
+        .find_map(|terminal| match terminal.to_ascii_lowercase().as_str() {
+            "ghostty" | "kitty" | "xterm-kitty" => Some(ProtocolType::Kitty),
+            "iterm.app" | "wezterm" => Some(ProtocolType::Iterm2),
+            _ => None,
+        })
 }
 
 fn protocol_override(
@@ -576,7 +584,7 @@ mod tests {
     use super::{
         Cache, JOB_QUEUE_CAPACITY, LayoutChange, LoadResult, PROTOCOL_CACHE_CAPACITY,
         SOURCE_CACHE_CAPACITY, Target, picker_supports_tmux_passthrough, protocol_hint,
-        protocol_override, queries_terminal_for_image_capabilities, supports_inline_images,
+        protocol_override, supports_inline_images,
     };
     use ratatui::layout::Size;
     use ratatui_image::picker::ProtocolType;
@@ -652,9 +660,41 @@ mod tests {
     }
 
     #[test]
-    fn tmux_image_initialization_does_not_block_on_terminal_queries() {
-        assert!(!queries_terminal_for_image_capabilities(true));
-        assert!(queries_terminal_for_image_capabilities(false));
+    fn terminal_geometry_and_hints_need_no_input_probe() {
+        use crossterm::terminal::WindowSize;
+        let size = WindowSize {
+            rows: 24,
+            columns: 80,
+            width: 800,
+            height: 480,
+        };
+        let font = super::window_font_size(size).unwrap();
+        assert_eq!((font.width, font.height), (10, 20));
+        for size in [
+            WindowSize {
+                rows: 0,
+                columns: 80,
+                width: 800,
+                height: 480,
+            },
+            WindowSize {
+                rows: 24,
+                columns: 80,
+                width: 0,
+                height: 0,
+            },
+        ] {
+            assert!(super::window_font_size(size).is_none());
+        }
+        assert_eq!(
+            protocol_hint(Some("xterm-kitty"), None, true),
+            Some(ProtocolType::Kitty)
+        );
+        assert_eq!(
+            protocol_hint(Some("iTerm.app"), None, true),
+            Some(ProtocolType::Iterm2)
+        );
+        assert_eq!(protocol_hint(Some("xterm-256color"), None, true), None);
     }
 
     #[test]

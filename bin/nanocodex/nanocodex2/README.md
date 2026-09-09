@@ -7,6 +7,11 @@ Running `nanocodex2` opens a new interactive session;
 `nanocodex2 attach AGENT_URL_OR_ID` resumes an existing one with local workspace
 tools.
 
+Image rendering uses terminal geometry and known terminal hints without reading
+keyboard input for capability probes. Recognized Kitty, Ghostty, iTerm2, and
+WezTerm environments use native images where supported; other terminals use
+half-block images.
+
 ## Account sign-in
 
 ```bash
