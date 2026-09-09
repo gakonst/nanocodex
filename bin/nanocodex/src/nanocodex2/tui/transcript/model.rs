@@ -69,6 +69,7 @@ pub(crate) struct TranscriptModel {
     run_started_at_unix_ms: VecDeque<u64>,
     transient: Option<TransientStatus>,
     pending_error: Option<String>,
+    last_run_failure: Option<EntryId>,
     pending_compaction_error: Option<String>,
 }
 
@@ -304,15 +305,15 @@ impl TranscriptModel {
                         }
                     })
             }
+            "managed.turn_failed" => self.decode_local::<ErrorPayload>(record).map(|payload| {
+                self.managed_turn_failed(payload.error);
+            }),
             "worker.turns_interrupted" => return self.apply_interruption(record),
-            "worker.steer_failed" => {
-                self.decode_local::<WorkerSteerFailed>(record)
-                    .map(|payload| {
-                        self.push(EntryKind::Error {
-                            message: format!("Could not steer response: {}", payload.error),
-                        });
-                    })
-            }
+            "worker.steer_failed" => self.decode_local::<ErrorPayload>(record).map(|payload| {
+                self.push(EntryKind::Error {
+                    message: format!("Could not steer response: {}", payload.error),
+                });
+            }),
             "worker.stopped" => self.decode_local::<WorkerStopped>(record).map(|payload| {
                 if let Some(error) = payload.error {
                     self.pending_error = Some(error);
@@ -425,6 +426,7 @@ impl TranscriptModel {
             "assistant.message" => self.assistant_message(record),
             "reasoning.summary.delta" => self.reasoning_delta(record),
             "run.started" => {
+                self.last_run_failure = None;
                 self.active_runs = self.active_runs.saturating_add(1);
                 self.run_started_at_unix_ms
                     .push_back(record.recorded_at_unix_ms());
@@ -443,6 +445,9 @@ impl TranscriptModel {
             "run.failed" => {
                 self.run_started_at_unix_ms.pop_front();
                 self.finish_failed(None);
+                self.last_run_failure = self.entries.last().and_then(|entry| {
+                    matches!(entry.kind, EntryKind::Error { .. }).then_some(entry.id)
+                });
                 Ok(true)
             }
             "tool.call" => self.tool_call(record),
@@ -889,6 +894,21 @@ impl TranscriptModel {
         self.push(EntryKind::TurnCompleted { duration_ns });
     }
 
+    fn managed_turn_failed(&mut self, error: String) {
+        // A nested run terminal can precede its authoritative managed envelope.
+        // Update that notice even if a local queued prompt was inserted meanwhile;
+        // settling twice would consume the following run's activity/timing.
+        if let Some(id) = self.last_run_failure.take() {
+            self.pending_error = None;
+            self.update(id, |kind| *kind = EntryKind::Error { message: error });
+            return;
+        }
+        if self.active_runs > 0 {
+            self.run_started_at_unix_ms.pop_front();
+        }
+        self.finish_failed(Some(error));
+    }
+
     fn finish_failed(&mut self, error: Option<String>) {
         self.pending_compaction_error = None;
         if error.is_none()
@@ -902,7 +922,7 @@ impl TranscriptModel {
             return;
         }
         let message = error
-            .or_else(|| self.pending_error.take())
+            .or(self.pending_error.take())
             .unwrap_or_else(|| "The agent run failed".to_owned());
         if !self.entries.last().is_some_and(|entry| {
             matches!(&entry.kind, EntryKind::Error { message: existing } if existing == &message)
@@ -1150,6 +1170,7 @@ fn visibility(source: &str, kind: &str) -> EventVisibility {
             "user.submitted"
             | "reflection.started"
             | "worker.turns_interrupted"
+            | "managed.turn_failed"
             | "effort.changed"
             | "fast_mode.changed" => EventVisibility::Persistent,
             "worker.turn_finished" | "worker.stopped" | "session.ended" => {
@@ -1518,11 +1539,6 @@ struct WorkerTurnsInterrupted {
 }
 
 #[derive(Deserialize)]
-struct WorkerSteerFailed {
-    error: String,
-}
-
-#[derive(Deserialize)]
 struct WorkerStopped {
     error: Option<String>,
 }
@@ -1582,6 +1598,60 @@ mod tests {
     use nanocodex::agent::events::{AgentEvent, AgentEventKind};
     use serde_json::{Value, json, value::to_raw_value};
     use std::sync::Arc;
+
+    #[test]
+    fn managed_failure_settles_once_with_or_without_nested_terminal() {
+        use crate::tui::transcript::{LocalEvent, TurnId};
+        for nested_terminal in [false, true] {
+            let mut model = TranscriptModel::default();
+            model.apply(&agent_record(1, AgentEventKind::RunStarted, json!({})));
+            if nested_terminal {
+                model.apply(&agent_record(2, AgentEventKind::RunFailed, json!({})));
+            }
+            model.apply(
+                &TranscriptRecord::from_local(
+                    3,
+                    30,
+                    LocalEvent::UserSubmitted {
+                        id: TurnId::new(3),
+                        text: "queued followup".to_owned(),
+                    },
+                )
+                .unwrap(),
+            );
+            model.apply(
+                &TranscriptRecord::from_local(
+                    4,
+                    40,
+                    LocalEvent::ManagedTurnFailed {
+                        error: "authoritative restore failure".to_owned(),
+                    },
+                )
+                .unwrap(),
+            );
+            let errors = model
+                .entries()
+                .iter()
+                .filter_map(|entry| match &entry.kind {
+                    EntryKind::Error { message } => Some(message.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(errors, ["authoritative restore failure"]);
+            assert_eq!(model.active_runs, 0);
+            assert!(model.run_started_at_unix_ms.is_empty());
+            model.apply(&agent_record(5, AgentEventKind::RunStarted, json!({})));
+            assert_eq!(model.active_runs, 1);
+            model.apply(&agent_record(6, AgentEventKind::RunCompleted, json!({})));
+            assert!(matches!(
+                model.entries().last().unwrap().kind,
+                EntryKind::TurnCompleted {
+                    duration_ns: 10_000_000,
+                }
+            ));
+            assert_eq!(model.active_runs, 0);
+        }
+    }
 
     fn agent_record(sequence: u64, kind: AgentEventKind, payload: Value) -> TranscriptRecord {
         TranscriptRecord::from_agent(

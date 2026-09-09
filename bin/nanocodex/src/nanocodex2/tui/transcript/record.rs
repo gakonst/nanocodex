@@ -106,6 +106,9 @@ pub(crate) enum LocalEvent {
         id: TurnId,
         error: Option<String>,
     },
+    ManagedTurnFailed {
+        error: String,
+    },
     WorkerTurnsInterrupted {
         count: usize,
         error: Option<String>,
@@ -227,14 +230,16 @@ impl TranscriptRecord {
                 "worker.turn_finished",
                 to_raw_value(&WorkerTurnFinished { id, error })?,
             ),
+            LocalEvent::ManagedTurnFailed { error } => {
+                ("managed.turn_failed", to_raw_value(&EventError { error })?)
+            }
             LocalEvent::WorkerTurnsInterrupted { count, error } => (
                 "worker.turns_interrupted",
                 to_raw_value(&WorkerTurnsInterrupted { count, error })?,
             ),
-            LocalEvent::WorkerSteerFailed { error } => (
-                "worker.steer_failed",
-                to_raw_value(&WorkerSteerFailed { error })?,
-            ),
+            LocalEvent::WorkerSteerFailed { error } => {
+                ("worker.steer_failed", to_raw_value(&EventError { error })?)
+            }
             LocalEvent::WorkerStopped { error } => {
                 ("worker.stopped", to_raw_value(&WorkerStopped { error })?)
             }
@@ -362,7 +367,7 @@ struct WorkerTurnsInterrupted {
 }
 
 #[derive(Serialize)]
-struct WorkerSteerFailed {
+struct EventError {
     error: String,
 }
 

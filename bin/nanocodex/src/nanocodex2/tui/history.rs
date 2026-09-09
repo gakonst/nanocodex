@@ -189,8 +189,18 @@ pub(super) fn live_managed_projection(
                 None,
             )
         }
-        ManagedEventData::TurnFailed { error, .. }
-        | ManagedEventData::TurnRetryable { error, .. } => {
+        ManagedEventData::TurnFailed { error, .. } => {
+            let record = TranscriptRecord::from_local(
+                *next_sequence,
+                timestamp,
+                LocalEvent::ManagedTurnFailed { error },
+            )
+            .map_err(|error| {
+                ManagedError::Configuration(format!("TUI managed event error: {error}"))
+            })?;
+            (record, None)
+        }
+        ManagedEventData::TurnRetryable { error, .. } => {
             let record = TranscriptRecord::from_local(
                 *next_sequence,
                 timestamp,
@@ -327,8 +337,20 @@ fn history_projection_range_with_sequences(
                         None,
                     )))
                 }
-                ManagedEventData::TurnFailed { error, .. }
-                | ManagedEventData::TurnRetryable { error, .. } => {
+                ManagedEventData::TurnFailed { error, .. } => {
+                    let record = TranscriptRecord::from_local(
+                        sequence,
+                        timestamp,
+                        LocalEvent::ManagedTurnFailed {
+                            error: error.clone(),
+                        },
+                    )
+                    .map_err(|error| {
+                        ManagedError::Configuration(format!("TUI history error: {error}"))
+                    })?;
+                    Ok(Some((Arc::new(record), None)))
+                }
+                ManagedEventData::TurnRetryable { error, .. } => {
                     let record = TranscriptRecord::from_local(
                         sequence,
                         timestamp,
@@ -410,6 +432,44 @@ mod tests {
     use super::{HistoryPrefetch, HistoryWindow};
     use nanocodex_managed::{EventHistoryPage, ManagedEvent, ManagedEventData};
     use serde_json::json;
+
+    #[test]
+    fn managed_failure_is_visible_without_nested_run_events_live_and_replayed() {
+        use crate::tui::transcript::{EntryKind, TranscriptModel};
+        use std::path::Path;
+
+        let failure = ManagedEvent {
+            cursor: "46".to_owned(),
+            created_at: Some(1000.0),
+            turn_id: Some("failed-turn".to_owned()),
+            data: ManagedEventData::TurnFailed {
+                id: "failed-turn".to_owned(),
+                error: "durability state cannot be restored".to_owned(),
+            },
+        };
+        let (retained, _, _) =
+            super::history_projection(vec![failure.clone()], "agent", Path::new(".")).unwrap();
+        let mut sequence = 1;
+        let (live, _) =
+            super::live_managed_projection(failure, "agent", Path::new("."), &mut sequence)
+                .unwrap()
+                .unwrap();
+        for record in [live, retained[0].clone()] {
+            let mut model = TranscriptModel::default();
+            model.apply(&record);
+            model.apply(&record);
+            assert_eq!(
+                model.entries().len(),
+                1,
+                "replay must not duplicate the failure"
+            );
+            assert!(
+                matches!(&model.entries()[0].kind, EntryKind::Error { message }
+                if message == "durability state cannot be restored")
+            );
+            assert!(!model.is_active());
+        }
+    }
 
     #[test]
     fn prefetch_fetches_ahead_without_replaying_until_requested() {

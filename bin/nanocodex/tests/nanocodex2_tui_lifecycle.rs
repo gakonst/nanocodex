@@ -226,6 +226,16 @@ async fn state(State(service): State<Service>) -> Json<Value> {
     }))
 }
 
+async fn submit(State(service): State<Service>, Json(input): Json<Value>) -> Json<Value> {
+    service.submitted.send(input.clone()).unwrap();
+    Json(json!({
+        "turn_id": input["id"], "state": "accepted", "input": input["input"],
+        "accepted_cursor": "1", "terminal_cursor": null,
+        "created_at": 1, "accepted_at": 1, "updated_at": 1, "attempt_count": 1,
+        "retry_at": null, "error": null, "terminal": null
+    }))
+}
+
 async fn steer(
     State(service): State<Service>,
     axum::extract::Path((_, turn)): axum::extract::Path<(String, String)>,
@@ -291,6 +301,14 @@ impl Fixture {
         let (cancelled, cancellations) = mpsc::unbounded_channel();
         let history = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
+            .route(
+                "/v1/agents",
+                post(|| async {
+                    Json(json!({"agent_id": AGENT, "session_id": AGENT,
+                    "events_url": format!("/v1/agents/{AGENT}/events"),
+                    "websocket_url": format!("/v1/agents/{AGENT}/ws")}))
+                }),
+            )
             .route("/v1/agents/live", get(socket))
             .route("/v1/agents/{agent}", get(state))
             .route("/v1/agents/{agent}/ws", get(socket))
@@ -300,6 +318,7 @@ impl Fixture {
                     Json(json!({"data": [], "has_more": false, "latest_cursor": "0"}))
                 }),
             )
+            .route("/v1/agents/{agent}/turns", post(submit))
             .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer))
             .route("/v1/agents/{agent}/turns/{turn}/cancel", post(cancel))
             .with_state(Service {
@@ -455,6 +474,26 @@ async fn terminal_does_not_retry_accepted_steer_with_ack_after_terminal() {
     let next = fixture.submission("only the queued followup").await;
     fixture.complete(&next);
     assert!(fixture.submissions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_displays_restore_failure_without_nested_run_events_and_after_reconnect() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("hi hi", "\r");
+    let turn = fixture.submission("hi hi").await;
+    fixture.emit(
+        &turn,
+        json!({"type": "turn_failed", "id": turn,
+        "error": "durability state cannot be restored"}),
+    );
+    fixture
+        .terminal
+        .wait_text("durability state cannot be restored")
+        .await;
+    fixture.reconnect().await;
+    fixture.terminal.prompt("next prompt", "\r");
+    let next = fixture.submission("next prompt").await;
+    fixture.complete(&next);
 }
 
 #[tokio::test]
