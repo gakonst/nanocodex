@@ -22,7 +22,7 @@ struct ScheduledJobsView: View {
                 }
             }
             if !model.schedulesLoaded && model.scheduledJobs.isEmpty && model.schedulesError == nil {
-                ProgressView("Loading scheduled jobs…")
+                ProgressView().accessibilityLabel("Loading scheduled jobs")
             } else if model.schedulesLoaded && model.scheduledJobs.isEmpty && model.schedulesError == nil {
                 ContentUnavailableView("No scheduled jobs yet", systemImage: "clock",
                     description: Text("Ask an agent to run a task on a schedule. It will appear here."))
@@ -114,7 +114,7 @@ private struct ScheduledJobDetailView: View {
                             .accessibilityIdentifier("scheduled-job-source-chat")
                     }
                     if let error { Section { Text(error).foregroundStyle(.secondary) } }
-                    if opening { ProgressView("Opening chat…") }
+                    if opening { ProgressView().accessibilityLabel("Opening conversation") }
                 }
                 .navigationTitle(job.triggerID)
                 .disabled(opening)

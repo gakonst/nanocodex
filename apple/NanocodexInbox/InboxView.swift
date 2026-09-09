@@ -29,13 +29,33 @@ struct InboxView: View {
     @State private var showScheduledJobs = false
     @State private var showSettings = false
     @State private var showScreens = false
+    @State private var screenFraction = 0.46
+    @GestureState private var screenResize: CGFloat = 0
+    @State private var tabScrub: TabScrub?
+    @State private var tabScrubEdge = 0
+    @State private var toolbarBounds = CGRect.zero
+    @GestureState private var draggingTabs = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @ScaledMetric(relativeTo: .subheadline) private var tabWidth = 154.0
+    @ScaledMetric(relativeTo: .subheadline) private var tabHeight = 44.0
     @FocusState private var composerFocused: Bool
+
+    private struct TabScrub {
+        let ids: [String]
+        var index: Int
+        var translation: CGFloat = 0
+        var remainder: CGFloat = 0
+        var selectedID: String { ids[index] }
+    }
+
+    private var highlightedTabID: String? { tabScrub?.selectedID ?? model.focused?.id }
 
     var body: some View {
         NavigationStack {
             inbox
                 #if os(iOS)
-                .navigationTitle("Inbox")
+                .navigationTitle("Conversations")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar(.hidden, for: .navigationBar)
                 #endif
@@ -59,14 +79,6 @@ struct InboxView: View {
         }
         .foregroundStyle(Ink.text)
         .tint(Ink.accent)
-        .sheet(isPresented: $showScreens) {
-            NavigationStack {
-                if let service = model.remoteService {
-                    RemoteDashboard(service: service).id(ObjectIdentifier(service))
-                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showScreens = false } } }
-                }
-            }
-        }
         .sheet(isPresented: $showOverview) {
             ConversationOverview(model: model) { id in
                 selectConversation(id)
@@ -85,6 +97,21 @@ struct InboxView: View {
         .onChange(of: model.connected) { _, connected in
             if !connected { showScreens = false; showScheduledJobs = false; showSettings = false; showOverview = false; readingPositions.values.removeAll() }
         }
+        .onChange(of: draggingTabs) { _, dragging in
+            if !dragging { tabScrub = nil; tabScrubEdge = 0 }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { tabScrub = nil; tabScrubEdge = 0 }
+        }
+        .task(id: tabScrubEdge) {
+            guard tabScrubEdge != 0 else { return }
+            let direction = tabScrubEdge
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
+                guard let scrub = tabScrub else { return }
+                moveTabScrub(to: scrub.index + direction)
+            }
+        }
     }
 
     private var inbox: some View {
@@ -99,14 +126,29 @@ struct InboxView: View {
     }
     private var inboxContent: some View {
         VStack(spacing: 0) {
-            browserTabs
-            header.padding(.horizontal, 16).padding(.vertical, 4)
-            if let identity = model.focusedConversationIdentity {
-                ConversationView(model: model, composerFocused: $composerFocused,
-                                 identity: identity, readingPositions: readingPositions)
-                    .id(identity)
-            } else {
-                emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
+            browserTabs.padding(.vertical, 4)
+                .modifier(InboxHeaderGlass())
+                .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 6)
+            ConnectionStatusView(status: model.threadLoading ? "" : model.connection, retry: { model.retryConnection() }, signIn: { showSettings = true })
+                .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 16)
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    if showScreens, let service = model.remoteService {
+                        let available = geometry.size.height
+                        let height = screenHeight(available: available, translation: screenResize)
+                        RemoteDashboard(service: service, onClose: { showScreens = false })
+                            .id(ObjectIdentifier(service))
+                            .frame(height: height).clipped()
+                        screenDivider(available: available)
+                    }
+                    if let identity = model.focusedConversationIdentity {
+                        ConversationView(model: model, composerFocused: $composerFocused,
+                                         identity: identity, readingPositions: readingPositions)
+                            .id(identity)
+                    } else {
+                        emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
             }
             if let error = model.error {
                 HStack(alignment: .top) {
@@ -132,37 +174,71 @@ struct InboxView: View {
         }
     }
 
+    private func screenHeight(available: CGFloat, translation: CGFloat = 0) -> CGFloat {
+        // Give the preview more of the remaining space when the composer opens
+        // the keyboard, while keeping history and the resize handle reachable.
+        let fraction = screenFraction + (composerFocused ? 0.2 : 0)
+        let maximum = max(0, available - (composerFocused ? 44 : 100) - 24)
+        let base = min(max(100, available * fraction), maximum)
+        return min(max(100, base + translation), maximum)
+    }
+
+    private func screenDivider(available: CGFloat) -> some View {
+        Capsule().fill(Ink.muted.opacity(0.45)).frame(width: 36, height: 4)
+            .frame(maxWidth: .infinity).frame(height: 24)
+            .background(Ink.background).contentShape(Rectangle())
+            .gesture(DragGesture().updating($screenResize) { value, state, _ in
+                state = value.translation.height
+            }.onEnded { value in
+                let height = screenHeight(available: available, translation: value.translation.height)
+                screenFraction = min(0.75, max(0.25, height / max(1, available) - (composerFocused ? 0.2 : 0)))
+            })
+            .accessibilityElement().accessibilityLabel("Screen height")
+            .accessibilityValue("\(Int(screenHeight(available: available) / max(1, available) * 100)) percent")
+            .accessibilityHint("Drag to resize the screen and conversation")
+            .accessibilityAdjustableAction { direction in
+                screenFraction = min(0.75, max(0.25, screenFraction + (direction == .increment ? 0.1 : -0.1)))
+            }
+            .accessibilityIdentifier("screen-pane-divider")
+    }
+
     private var browserTabs: some View {
-        ScrollViewReader { scroll in
-            ScrollView(.horizontal) {
-                HStack(spacing: 6) {
-                    ForEach(model.tabCards) { card in
-                        Button { selectConversation(card.id) } label: {
-                            HStack(spacing: 6) {
-                                Circle().fill(card.isRunning ? Color.green : Ink.muted.opacity(0.5))
-                                    .frame(width: 6, height: 6)
-                                Text(card.title).font(.system(size: 13, weight: model.focused?.id == card.id ? .semibold : .regular))
-                                    .lineLimit(1).frame(maxWidth: 130)
+        GeometryReader { geometry in
+            let width = min(tabWidth, geometry.size.width)
+            ScrollViewReader { scroll in
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 6) {
+                        ForEach(model.tabCards) { card in
+                            Button { selectConversation(card.id) } label: {
+                                HStack(spacing: 6) {
+                                    Text(card.title).font(.subheadline.weight(highlightedTabID == card.id ? .semibold : .regular))
+                                        .lineLimit(1).frame(maxWidth: width - 24)
+                                }
+                                .padding(.horizontal, 12).frame(height: tabHeight - 8)
+                                .background(highlightedTabID == card.id ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(highlightedTabID == card.id ? Ink.border : Color.clear))
                             }
-                            .padding(.horizontal, 12).frame(height: 36)
-                            .background(model.focused?.id == card.id ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 12))
-                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(model.focused?.id == card.id ? Ink.border : Color.clear))
+                            // Stable widths keep distant selections accurate in a lazy strip.
+                            .frame(width: width, height: tabHeight).id(card.id)
+                            .accessibilityLabel(card.title)
+                            .accessibilityValue(card.status)
+                            .accessibilityAddTraits(model.focused?.id == card.id ? [.isSelected] : [])
+                            .accessibilityIdentifier("browser-tab:" + card.id)
                         }
-                        .frame(minHeight: 44).id(card.id)
-                        .accessibilityLabel(card.title)
-                        .accessibilityValue(card.status)
-                        .accessibilityAddTraits(model.focused?.id == card.id ? [.isSelected] : [])
-                        .accessibilityIdentifier("browser-tab:" + card.id)
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .onChange(of: highlightedTabID, initial: true) { _, id in
+                    guard let id else { return }
+                    withAnimation(tabScrub == nil || reduceMotion ? nil : .interactiveSpring(response: 0.18, dampingFraction: 0.92)) {
+                        scroll.scrollTo(id, anchor: .center)
                     }
                 }
             }
-            .scrollIndicators(.hidden)
-            .onChange(of: model.focused?.id, initial: true) { _, id in
-                if let id { scroll.scrollTo(id, anchor: .center) }
-            }
-        }.accessibilityIdentifier("browser-tabs")
+            .accessibilityIdentifier("browser-tabs")
+        }
         .buttonStyle(.plain).padding(.horizontal, 8)
-        .background(Ink.background)
+        .frame(height: tabHeight)
     }
 
     private var browserToolbar: some View {
@@ -173,26 +249,39 @@ struct InboxView: View {
             .accessibilityLabel("Back").accessibilityIdentifier("conversation-back")
             .disabled(!model.canGoBack)
             Spacer(minLength: 0)
+            Button { composerFocused = false; showScreens.toggle() } label: {
+                Image(systemName: "display").frame(width: 44, height: 44)
+                    .background(showScreens ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+            }
+            .accessibilityLabel("Remote screens").disabled(model.remoteService == nil)
+            .accessibilityValue(showScreens ? "Visible" : "Hidden")
+            .accessibilityIdentifier("conversation-remote-screens")
+            Spacer(minLength: 0)
             Button(action: createAgent) {
                 Image(systemName: "plus").frame(width: 44, height: 44)
             }
             .accessibilityLabel("New conversation").accessibilityIdentifier("new-conversation")
             .keyboardShortcut("n", modifiers: .command)
             Spacer(minLength: 0)
-            Button { composerFocused = false; showOverview = true } label: {
+            Button {
+                guard !draggingTabs else { return }
+                composerFocused = false; showOverview = true
+            } label: {
                 Text(String(model.cards.count)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
                     .frame(minWidth: 23, minHeight: 25)
                     .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Ink.text, lineWidth: 1.5))
                     .frame(width: 44, height: 44)
             }
             .accessibilityLabel("Conversation overview").accessibilityValue("\(model.cards.count) conversations")
+            .accessibilityHint("Tap to show windows. Drag left or right to move through tabs; hold at an edge to keep scrolling.")
             .accessibilityIdentifier("tab-overview")
-            Spacer(minLength: 0)
-            Button { composerFocused = false; showScreens = true } label: {
-                Image(systemName: "display").frame(width: 44, height: 44)
+            .highPriorityGesture(tabScrubGesture)
+            .accessibilityAdjustableAction { direction in
+                let ids = model.tabCards.map(\.id)
+                guard let current = ids.firstIndex(of: model.focused?.id ?? "") else { return }
+                let next = direction == .increment ? current + 1 : current - 1
+                if ids.indices.contains(next) { selectConversation(ids[next]) }
             }
-            .accessibilityLabel("Remote screens").disabled(model.remoteService == nil)
-            .accessibilityIdentifier("conversation-remote-screens")
             Spacer(minLength: 0)
             Menu {
                 Button { composerFocused = false; showScheduledJobs = true } label: {
@@ -209,6 +298,59 @@ struct InboxView: View {
         .padding(.horizontal, 16).padding(.bottom, 2).frame(maxWidth: 620)
         .frame(maxWidth: .infinity).background(Ink.background)
         .overlay(alignment: .top) { Rectangle().fill(Ink.border.opacity(0.35)).frame(height: 0.5) }
+        .background(GeometryReader { geometry in
+            Color.clear.onAppear { toolbarBounds = geometry.frame(in: .global) }
+                .onChange(of: geometry.frame(in: .global)) { _, frame in toolbarBounds = frame }
+        })
+        .overlay(alignment: .top) {
+            if let scrub = tabScrub {
+                HStack(spacing: 12) {
+                    Text(model.cards.first(where: { $0.id == scrub.selectedID })?.title ?? "Conversation")
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("\(scrub.index + 1) / \(scrub.ids.count)").monospacedDigit().foregroundStyle(.secondary)
+                }
+                .font(.system(size: 14, weight: .medium)).padding(.horizontal, 16).padding(.vertical, 12)
+                .modifier(InboxHeaderGlass()).frame(maxWidth: 320).padding(.horizontal, 16)
+                .offset(y: -56).allowsHitTesting(false).accessibilityIdentifier("tab-scrub-preview")
+            }
+        }
+    }
+
+    private var tabScrubGesture: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
+            .updating($draggingTabs) { _, dragging, _ in dragging = true }
+            .onChanged { value in
+                if tabScrub == nil {
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    let ids = model.tabCards.map(\.id)
+                    guard ids.count > 1, let origin = ids.firstIndex(of: model.focused?.id ?? "") else { return }
+                    tabScrub = TabScrub(ids: ids, index: origin)
+                }
+                guard var scrub = tabScrub else { return }
+                scrub.remainder += value.translation.width - scrub.translation
+                scrub.translation = value.translation.width
+                let steps = Int(scrub.remainder / 28)
+                scrub.remainder -= CGFloat(steps) * 28
+                tabScrub = scrub
+                moveTabScrub(to: scrub.index - steps)
+                tabScrubEdge = value.location.x < toolbarBounds.minX + 24 ? 1
+                    : value.location.x > toolbarBounds.maxX - 24 ? -1 : 0
+            }
+            .onEnded { _ in
+                let selected = tabScrub?.selectedID
+                tabScrub = nil; tabScrubEdge = 0
+                // Scrubbing only moves the lightweight strip. Load history once,
+                // after release, instead of opening every conversation passed.
+                if let selected { selectConversation(selected) }
+            }
+    }
+
+    private func moveTabScrub(to index: Int) {
+        guard var scrub = tabScrub else { return }
+        let next = min(max(index, 0), scrub.ids.count - 1)
+        guard next != scrub.index else { return }
+        scrub.index = next; tabScrub = scrub
+        UISelectionFeedbackGenerator().selectionChanged()
     }
 
     private func selectConversation(_ id: String) {
@@ -217,48 +359,27 @@ struct InboxView: View {
     }
     private var accountRestoration: some View {
         VStack(spacing: 20) {
-            Text("Nanocodex").font(.system(size: 20, weight: .medium))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer()
-            Image(systemName: "tray").font(.system(size: 38)).foregroundStyle(Ink.muted)
             if let error = model.restorationError {
-                Text("Couldn’t open your inbox").font(.title3.weight(.semibold))
+                Image(systemName: "tray").font(.system(size: 38)).foregroundStyle(Ink.muted)
+                Text("Couldn’t open your conversations").font(.title3.weight(.semibold))
                 Text(error).font(.subheadline).foregroundStyle(Ink.muted).multilineTextAlignment(.center)
                 Button("Retry") { Task { await model.restoreSavedAccount() } }
                     .buttonStyle(.borderedProminent).disabled(model.signingIn)
                     .accessibilityIdentifier("retry-account-restoration")
             } else {
                 ProgressView()
-                Text("Opening your inbox…").font(.subheadline).foregroundStyle(Ink.muted)
+                    .accessibilityLabel("Opening conversations")
             }
-            Spacer()
         }
-        .padding(24).frame(maxWidth: 620)
+        .padding(24).frame(maxWidth: 620, maxHeight: .infinity)
         .accessibilityIdentifier("account-restoration")
     }
-    private var header: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.focused?.title ?? "Nanocodex").font(.system(size: 17, weight: .semibold))
-                    .lineLimit(1).accessibilityIdentifier("agent-title")
-                if let card = model.focused {
-                    HStack(spacing: 5) {
-                        Circle().fill(card.isRunning ? Color.green : Ink.muted).frame(width: 5, height: 5)
-                        Text(card.status).font(.caption).foregroundStyle(Ink.muted).lineLimit(1)
-                    }.accessibilityElement(children: .combine)
-                }
-            }.frame(maxWidth: .infinity, alignment: .leading)
-            ConnectionStatusView(status: model.connection, retry: { model.retryConnection() }, signIn: { showSettings = true })
-        }.foregroundStyle(Ink.text).buttonStyle(.plain).frame(height: 44)
-            .shadow(color: .black.opacity(0.09), radius: 12, y: 4)
-    }
-
     private var emptyState: some View {
         VStack(spacing: 18) {
-            Image(systemName: "tray").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(Ink.accent)
-            Text(model.filter == .running ? "Nothing running" : model.filter == .inbox ? "Nothing in your inbox" : "You're caught up").font(.title2.weight(.medium))
+            Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(Ink.accent)
+            Text(model.filter == .running ? "No running conversations" : "No conversations").font(.title2.weight(.medium))
             Text("Start a conversation with +.").font(.subheadline).foregroundStyle(Ink.muted).multilineTextAlignment(.center)
-            Button("New agent") { createAgent() }.buttonStyle(.borderedProminent).foregroundStyle(Ink.background)
+            Button("New conversation") { createAgent() }.buttonStyle(.borderedProminent).foregroundStyle(Ink.background)
             Button("Context from other apps") { model.showContext = true }
         }.padding(24).accessibilityElement(children: .contain).accessibilityIdentifier("inbox-empty")
     }
@@ -283,8 +404,8 @@ struct InboxView: View {
                 }
             }
             Section("Controls") {
-                Text("Tap a tab at the top to switch conversations. The bottom bar has Back, + for a new conversation, the conversation overview, Remote screens, and the app menu.")
-                Text("The overview shows the latest conversation history. A green border and status dot identify running agents. Drafts and reading positions stay with each conversation.").font(.caption)
+                Text("Tap a tab at the top to switch conversations. The bottom bar has Back, Screens, + for a new conversation, the tab selector, and the app menu. Tap the tab selector to see all windows, or drag it to switch tabs.")
+                Text("The overview shows the latest conversation history. A green border identifies running agents. Drafts and reading positions stay with each conversation.").font(.caption)
                 Text("Scroll up to read earlier messages. Send queues a message; Steer now stops the current turn so the queued message can start. ⌘Return sends your message.").font(.caption)
             }
         }
@@ -303,6 +424,19 @@ struct InboxView: View {
 
 }
 
+private struct InboxHeaderGlass: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(Ink.card, in: RoundedRectangle(cornerRadius: 24))
+        } else if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
+        } else {
+            content.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        }
+    }
+}
+
 private struct ConversationOverview: View {
     @ObservedObject var model: InboxModel
     var select: (String) -> Void
@@ -310,9 +444,18 @@ private struct ConversationOverview: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var query = ""
     @State private var runningOnly = false
+    @State private var order: [String]
+
+    init(model: InboxModel, select: @escaping (String) -> Void) {
+        self.model = model
+        self.select = select
+        _order = State(initialValue: model.cards.sorted(by: AgentCard.mostRecentFirst).map(\.id))
+    }
+
     private var visibleCards: [AgentCard] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return model.cards.sorted(by: AgentCard.mostRecentFirst).filter { card in
+        let cards = Dictionary(uniqueKeysWithValues: model.cards.map { ($0.id, $0) })
+        return order.compactMap { cards[$0] }.filter { card in
             (!runningOnly || card.isRunning) && (text.isEmpty || card.title.localizedCaseInsensitiveContains(text)
                 || card.id.localizedCaseInsensitiveContains(text) || card.preview.localizedCaseInsensitiveContains(text))
         }
@@ -339,7 +482,9 @@ private struct ConversationOverview: View {
                     ForEach(visibleCards) { card in
                         Button { select(card.id) } label: {
                             VStack(alignment: .leading, spacing: 9) {
-                                ConversationMiniature(model: model, card: card)
+                                Text(card.title).font(.system(size: 15, weight: .semibold)).lineLimit(2, reservesSpace: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                ConversationMiniature(model: model, card: card, rows: model.overviewRows(for: card.id)).equatable()
                                     .frame(height: 230)
                                     .background(Ink.background)
                                     .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -349,13 +494,6 @@ private struct ConversationOverview: View {
                                                           lineWidth: card.isRunning || model.focused?.id == card.id ? 2 : 0.75)
                                     }
                                     .accessibilityIdentifier("overview-preview:" + card.id)
-                                Text(card.title).font(.system(size: 15, weight: .semibold)).lineLimit(2)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                HStack(spacing: 6) {
-                                    Circle().fill(card.isRunning ? Color.green : Ink.muted).frame(width: 6, height: 6)
-                                    Text(card.status)
-                                        .font(.caption).foregroundStyle(Ink.muted).lineLimit(2)
-                                }.accessibilityIdentifier("overview-status:" + card.id)
                             }
                             .contentShape(Rectangle())
                         }
@@ -394,23 +532,40 @@ private struct ConversationOverview: View {
             }
         }
         .presentationDetents([.large]).presentationDragIndicator(.visible)
+        .onChange(of: model.cards.map(\.id)) { _, ids in
+            // Live history updates must not move another window under a tap.
+            let available = Set(ids)
+            order.removeAll { !available.contains($0) }
+            let known = Set(order)
+            order.append(contentsOf: ids.filter { !known.contains($0) })
+        }
         .onDisappear { model.stopOverview() }
     }
 }
 
-private struct ConversationMiniature: View {
-    @ObservedObject var model: InboxModel
+private struct ConversationMiniature: View, Equatable {
+    let model: InboxModel
     let card: AgentCard
+    let rows: [TranscriptRow]
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.card.id == rhs.card.id && lhs.card.activeTurns == rhs.card.activeTurns
+            && lhs.card.error == rhs.card.error && lhs.card.checked == rhs.card.checked
+            && lhs.card.turnCount == rhs.card.turnCount && lhs.rows == rhs.rows
+    }
     private let scale: CGFloat = 0.48
 
     var body: some View {
         GeometryReader { viewport in
-            let rows = model.overviewRows(for: card.id)
-            let items = Array(ConversationItem.group(rows, activeTurns: Set(card.activeTurns)).suffix(16))
+            let items = Array(ConversationItem.group(rows, activeTurns: Set(card.activeTurns)).suffix(4))
             VStack(alignment: .leading, spacing: 18) {
                 if items.isEmpty {
-                    Text(card.error ?? (card.previewRows.isEmpty ? "Send a message to begin." : "Loading conversation…"))
-                        .font(.system(size: 17)).foregroundStyle(Ink.muted)
+                    if let error = card.error {
+                        Text(error).font(.system(size: 17)).foregroundStyle(Ink.muted)
+                    } else if card.checked, card.turnCount == 0, card.previewRows.isEmpty {
+                        Text("Send a message to begin.").font(.system(size: 17)).foregroundStyle(Ink.muted)
+                    } else {
+                        ProgressView().frame(maxWidth: .infinity)
+                    }
                 }
                 ForEach(items) { item in
                     if let row = item.message {
@@ -452,16 +607,11 @@ private struct ConnectionStatusView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if status == "Demo" {
-                Text("Demo").accessibilityIdentifier("connection")
-            } else if status == "Sign in again" {
+            if status == "Sign in again" {
                 Button("Sign in again", action: signIn).accessibilityIdentifier("connection-sign-in")
             } else if isWaiting, showDelay {
                 Button(action: retry) {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("Updates delayed")
-                        Text("Retry").fontWeight(.medium)
-                    }
+                    ProgressView()
                 }
                 .frame(minHeight: 44)
                 .accessibilityLabel("Updates delayed. Retry connection")
@@ -601,7 +751,7 @@ private struct AgentComposerView: View {
                 }
             }
             if model.preparingAttachments {
-                ProgressView("Preparing attachments…").font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                ProgressView().accessibilityLabel("Preparing attachments").font(.caption).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16).padding(.vertical, 8).accessibilityIdentifier("preparing-attachments")
             }
             if let error = pickerError ?? model.attachmentError {
@@ -744,9 +894,10 @@ private struct CameraPicker: UIViewControllerRepresentable {
 private struct PulsingText: View {
     let text: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         Text(text)
-            .phaseAnimator(reduceMotion ? [false] : [false, true]) { content, dimmed in
+            .phaseAnimator(reduceMotion || scenePhase != .active ? [false] : [false, true]) { content, dimmed in
                 content.opacity(dimmed ? 0.4 : 1)
             } animation: { _ in .easeInOut(duration: 1.1) }
     }
@@ -816,7 +967,7 @@ private struct VideoAttachmentView: View {
                 Button {
                     loading = true; error = nil
                 } label: {
-                    if loading { ProgressView("Loading video…") }
+                    if loading { ProgressView().accessibilityLabel("Loading video") }
                     else { Label("Play video", systemImage: "play.circle.fill") }
                 }.disabled(loading).accessibilityIdentifier("play-original-video")
                 if let error { Text(error).font(.caption).foregroundStyle(Ink.muted) }
@@ -1026,6 +1177,25 @@ private struct ConversationMessageView: View {
     let agentID: String
     var pending: PendingMessage? = nil
     var body: some View {
+        ConversationMessageContent(row: row, model: model, agentID: agentID, pending: pending,
+                                   attachmentURLs: (pending?.attachments ?? []).map { model.attachmentURL($0) },
+                                   movieURLs: (pending?.attachments ?? []).map { model.attachmentMovieURL($0) }).equatable()
+    }
+}
+
+private struct ConversationMessageContent: View, Equatable {
+    let row: TranscriptRow
+    let model: InboxModel
+    let agentID: String
+    let pending: PendingMessage?
+    let attachmentURLs: [URL?]
+    let movieURLs: [URL?]
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row == rhs.row && lhs.agentID == rhs.agentID && lhs.pending == rhs.pending
+            && lhs.attachmentURLs == rhs.attachmentURLs && lhs.movieURLs == rhs.movieURLs
+            && lhs.model === rhs.model
+    }
+    var body: some View {
         HStack(alignment: .top, spacing: 0) {
             if row.role == "You" { Spacer(minLength: 44) }
             VStack(alignment: .leading, spacing: 10) {
@@ -1094,11 +1264,46 @@ private final class ConversationReadingPositions {
 }
 
 private struct ConversationView: View {
-    private let verticalPadding: CGFloat = 24
     @ObservedObject var model: InboxModel
     @FocusState.Binding var composerFocused: Bool
     let identity: String
     let readingPositions: ConversationReadingPositions
+
+    var body: some View {
+        ConversationContentView(model: model, composerFocused: $composerFocused,
+                                identity: identity, readingPositions: readingPositions,
+                                revision: .init(rows: model.rows, pending: model.focusedPending,
+                                                title: model.focused?.title ?? "Conversation",
+                                                activeTurns: model.focused?.activeTurns ?? [],
+                                                loading: model.threadLoading, error: model.threadError,
+                                                hasOlder: model.hasOlder, loadingOlder: model.loadingOlder,
+                                                draft: model.draft, composerFocused: composerFocused))
+            .equatable()
+    }
+}
+
+private struct ConversationContentView: View, Equatable {
+    struct Revision: Equatable {
+        var rows: [TranscriptRow]
+        var pending: [PendingMessage]
+        var title: String
+        var activeTurns: [String]
+        var loading: Bool
+        var error: String?
+        var hasOlder: Bool
+        var loadingOlder: Bool
+        var draft: String
+        var composerFocused: Bool
+    }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.identity == rhs.identity && lhs.revision == rhs.revision && lhs.model === rhs.model
+    }
+    private let verticalPadding: CGFloat = 24
+    let model: InboxModel
+    @FocusState.Binding var composerFocused: Bool
+    let identity: String
+    let readingPositions: ConversationReadingPositions
+    let revision: Revision
     @State private var hasInitialPosition = false
     @State private var pendingReadingRestore: ConversationReadingPositions.Position?
     @State private var rowFrames: [String: CGRect] = [:]
@@ -1163,6 +1368,23 @@ private struct ConversationView: View {
             }
             .map { ($0.key, $0.value.minY + frame.minY, $0.value.height) }
     }
+    private func restoreReadingPosition(using scroll: ScrollViewProxy, in viewport: GeometryProxy) {
+        guard let targets = resizeRestore else { return }
+        let viewportFrame = viewport.frame(in: .global)
+        for target in targets {
+            guard let current = rowFrames[target.id] else { continue }
+            // Native scrolling often already preserves the point. Correct only
+            // when keyboard resizing or asynchronous Markdown moved that row.
+            if abs(current.minY + viewportFrame.minY - target.y) < 1 { return }
+            let available = viewportFrame.height - current.height
+            guard abs(available) > 0.5 else { continue }
+            let anchorY = (target.y - viewportFrame.minY) / available
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { scroll.scrollTo(target.id, anchor: UnitPoint(x: 0, y: anchorY)) }
+            break
+        }
+    }
     private func saveReadingPosition(in viewport: GeometryProxy) {
         guard model.focusedConversationIdentity == identity, hasInitialPosition,
               pendingReadingRestore == nil, historyReady, historyContent.isMeasured,
@@ -1187,11 +1409,16 @@ private struct ConversationView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    if model.threadLoading { ProgressView("Loading conversation…") }
                     if model.rows.isEmpty, pendingSubmissions.isEmpty, !model.threadLoading, model.threadError == nil {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Start a conversation").font(.title2.weight(.medium))
-                            Text("Send a message to begin.").foregroundStyle(Ink.muted)
+                            if model.hasOlder {
+                                Text("Earlier messages").font(.title2.weight(.medium))
+                                Button("Load earlier messages") { Task { await model.loadOlder() } }
+                                    .disabled(model.loadingOlder).accessibilityIdentifier("load-older")
+                            } else {
+                                Text("Start a conversation").font(.title2.weight(.medium))
+                                Text("Send a message to begin.").foregroundStyle(Ink.muted)
+                            }
                         }.padding(.top, 24).accessibilityElement(children: .contain).accessibilityIdentifier("conversation-empty")
                     }
                     if let error = model.threadError { Text(error).font(.subheadline).foregroundStyle(Ink.muted) }
@@ -1245,6 +1472,7 @@ private struct ConversationView: View {
             .coordinateSpace(name: "conversation-viewport")
             .onPreferenceChange(ConversationRowFrames.self) {
                 rowFrames = $0
+                restoreReadingPosition(using: scroll, in: viewport)
                 if let target = pendingReadingRestore, let id = target.rowID, let frame = $0[id] {
                     if abs(frame.minY - target.offsetY) < 1 {
                         pendingReadingRestore = nil
@@ -1277,25 +1505,8 @@ private struct ConversationView: View {
             .onChange(of: model.draft) { _, _ in
                 if resizeRestore == nil { rememberReadingPosition(in: viewport) }
             }
-            .onChange(of: viewport.frame(in: .global)) { _, frame in
-                // Modern scroll views retain their top edge when only the
-                // viewport changes. A second scrollTo using lazy row estimates
-                // can move the reader when the keyboard resizes the sheet.
-                if #available(iOS 18.0, macOS 15.0, *) { return }
-                // Keep the same screen position through keyboard and composer resizing.
-                // A clipped row can require an impossible unit anchor; prefer a fully
-                // visible row and try the other captured rows before moving anything.
-                guard let targets = resizeRestore else { return }
-                for target in targets {
-                    let available = frame.height - target.height
-                    guard abs(available) > 0.5 else { continue }
-                    let anchorY = (target.y - frame.minY) / available
-                    guard (0...1).contains(anchorY) else { continue }
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) { scroll.scrollTo(target.id, anchor: UnitPoint(x: 0, y: anchorY)) }
-                    break
-                }
+            .onChange(of: viewport.frame(in: .global)) { _, _ in
+                restoreReadingPosition(using: scroll, in: viewport)
             }
             .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { _ in
                 resizeRestore = nil
@@ -1303,9 +1514,18 @@ private struct ConversationView: View {
                 if hasInitialPosition { historyReady = true }
             })
             .background(Ink.background)
+            .accessibilityLabel(revision.title)
             .accessibilityIdentifier("conversation")
+            .overlay {
+                if model.threadLoading {
+                    ProgressView()
+                        .accessibilityLabel("Loading conversation")
+                        .accessibilityIdentifier("conversation-loading")
+                        .allowsHitTesting(false)
+                }
+            }
             if model.loadingOlder {
-                ProgressView("Loading earlier messages…").font(.caption)
+                ProgressView().font(.caption)
                     .padding(10).background(Ink.background, in: Capsule())
                     .allowsHitTesting(false)
                     .accessibilityElement(children: .ignore)

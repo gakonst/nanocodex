@@ -225,7 +225,7 @@ private struct AddContextView: View {
                     TextField("Text", text: $text, axis: .vertical).lineLimit(4...12).accessibilityIdentifier("capture-text")
                     TextField("Web link (optional)", text: $link).accessibilityIdentifier("capture-link")
                     Button("Import text from a file") { importFile = true }.disabled(importing)
-                    if importing { ProgressView("Extracting text on this device…") }
+                    if importing { ProgressView().accessibilityLabel("Extracting text on this device") }
                     if !filename.isEmpty { Text("Text from \(filename)").font(.caption).foregroundStyle(.secondary) }
                 }
                 Section("Optional details") {

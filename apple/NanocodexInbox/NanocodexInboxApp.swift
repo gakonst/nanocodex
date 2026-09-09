@@ -2,12 +2,14 @@ import SwiftUI
 
 @main
 struct NanocodexInboxApp: App {
+    init() { InboxModel.shared.configureAgentNotifications() }
     @StateObject private var model = InboxModel.shared
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup("Nanocodex", id: "inbox") {
             InboxView(model: model)
                 .onAppear { Task { await model.start() } }
+                .onOpenURL { model.openAgentActivity($0) }
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     if phase == .background {
                         model.voice.stop()

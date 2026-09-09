@@ -12,6 +12,7 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public var latestCursor: Cursor = .zero
     public var status = "Checking"
     private var statusCursor = Cursor.zero
+    public var outcomeCursor: Cursor { statusCursor }
     private var terminalStatus: String?
     public var model = ""
     private var previewCursor: Cursor = .zero
@@ -24,6 +25,11 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public private(set) var previewRows: [TranscriptRow] = []
     public var checked = false
     public var error: String?
+    /// Local receipt time, independent of the server's history timestamps.
+    public private(set) var observedAt: Date?
+    public private(set) var activitySummary = "Working"
+    public private(set) var activityDetail = ""
+    public private(set) var outcomeSummary = ""
     public init(id: String, title: String, updatedAt: Double = 0, turnCount: Int = 0, mayHaveScheduledJobs: Bool = true) {
         self.id = id; self.title = title; self.updatedAt = updatedAt; self.turnCount = turnCount
         self.mayHaveScheduledJobs = mayHaveScheduledJobs
@@ -62,16 +68,22 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
         guard let cursor = Cursor(rawValue: state["latest_event_cursor"].string), state["agent_id"].string == id,
               case .array = state["active_turns"] else { throw APIError.invalidResponse }
         guard cursor >= stateCursor else { return }
+        observedAt = Date()
+        let previousTurns = activeTurns
         activeTurns = state["active_turns"].array.map(\.string)
+        if previousTurns != activeTurns { activitySummary = "Working"; activityDetail = "" }
         stateCursor = cursor; latestCursor = max(latestCursor, cursor)
         model = state["settings"]["model"].string
         checked = true; error = nil
         if isRunning {
+            if status != "Running" { activitySummary = "Working" }
             status = "Running"; terminalStatus = nil
             statusCursor = max(statusCursor, cursor)
         } else if status == "Running" || status == "Checking" { status = terminalStatus ?? "Idle" }
     }
     public mutating func apply(events: [AgentEvent], transcriptRows: [TranscriptRow]? = nil) {
+        let previousTurns = activeTurns
+        if events.contains(where: { $0.cursor > latestCursor }) { observedAt = Date() }
         for event in events {
             // Replayed history must not become recent merely because it was read.
             if case .number(let time) = event.data["created_at"], time.isFinite, time >= 0 {
@@ -89,18 +101,35 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
             // snapshot can include voice/transport events after the last reply.
             if event.cursor >= statusCursor {
                 if event.type == "turn_accepted" {
-                    statusCursor = event.cursor; terminalStatus = nil
+                    statusCursor = event.cursor; terminalStatus = nil; outcomeSummary = ""
                 } else if ["turn_completed", "turn_cancelled", "turn_failed"].contains(event.type) {
                     statusCursor = event.cursor
                     terminalStatus = event.type == "turn_completed" ? "Ready" : event.type == "turn_failed" ? "Failed" : "Stopped"
+                    outcomeSummary = AgentActivityText.excerpt(event.data[event.type == "turn_completed" ? "final_message" : "error"].string)
                 }
             }
         }
+        if previousTurns != activeTurns { activitySummary = "Working"; activityDetail = "" }
         if isRunning { status = "Running" }
         else if let terminalStatus { status = terminalStatus }
         else if ["Running", "Ready", "Failed", "Stopped"].contains(status) { status = "Idle" }
         if let position = events.last?.cursor, position >= previewCursor {
             let rows = transcriptRows ?? transcript(events)
+            // Only describe the current turn. Never present an old command or
+            // a previous answer as work that is happening now.
+            if isRunning, let row = rows.last(where: { row in
+                row.turnID.map { activeTurns.contains($0) } == true && row.agentID == nil
+                    && ["Thinking", "Tool", "Agent"].contains(row.role)
+            }) {
+                activityDetail = ""
+                if let tool = row.tool {
+                    activitySummary = tool.status == "Running" ? tool.title : "Working"
+                } else if row.role == "Thinking" { activitySummary = "Thinking" }
+                else {
+                    activitySummary = row.phase == "commentary" ? "Working" : "Writing response"
+                    if row.phase == "commentary" { activityDetail = AgentActivityText.excerpt(row.text) }
+                }
+            }
             let user = rows.lastIndex(where: { $0.role == "You" })
             let reply = rows.dropFirst(user.map { $0 + 1 } ?? 0)
                 .last(where: { $0.role == "Agent" && $0.phase != "commentary" && $0.agentID == nil && !$0.text.isEmpty })

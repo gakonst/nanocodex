@@ -2,6 +2,44 @@ import XCTest
 @testable import NanocodexUI
 
 final class ChatMarkdownTests: XCTestCase {
+    @MainActor
+    func testMarkdownWorkerKeepsMainActorAvailableAndHonorsCancellation() async throws {
+        let source = String(repeating: "## Heading\n\nA **bold** paragraph with [a link](https://example.com).\n\n", count: 1500)
+        let parser = ChatMarkdownParser()
+        let task = Task { try await parser.blocks(for: source) }
+        let responsive = expectation(description: "Main queue remains available")
+        DispatchQueue.main.async { responsive.fulfill() }
+        await fulfillment(of: [responsive], timeout: 1)
+        let blocks = try await task.value
+        XCTAssertEqual(blocks.count, 3000)
+        let cached = try await parser.blocks(for: source)
+        XCTAssertEqual(cached.map(\.id), blocks.map(\.id))
+        let cancelled = Task { try await parser.blocks(for: "cancelled") }
+        cancelled.cancel()
+        do { _ = try await cancelled.value; XCTFail("Cancelled parse must not publish") }
+        catch is CancellationError { }
+    }
+
+    @MainActor
+    func testContinuousStreamingPublishesBeforeTheStreamEnds() async throws {
+        let renderer = ChatMarkdownRenderer()
+        defer { renderer.cancel() }
+        var source = "# Streaming\n\n", advancedDuringStream = false
+        for index in 0..<60 {
+            source += "word "; renderer.update(source)
+            try await Task.sleep(for: .milliseconds(5))
+            if index > 5, index < 59, (renderer.rendered?.source.count ?? 0) > 30 { advancedDuringStream = true }
+        }
+        XCTAssertTrue(advancedDuringStream, "Frequent deltas must not indefinitely postpone visible progress")
+        let deadline = Date().addingTimeInterval(2)
+        while renderer.rendered?.source != source, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(renderer.rendered?.source, source)
+        renderer.update("replacement"); renderer.cancel(); renderer.update("new conversation")
+        let replacementDeadline = Date().addingTimeInterval(2)
+        while renderer.rendered?.source != "new conversation", Date() < replacementDeadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(renderer.rendered?.source, "new conversation")
+    }
+
     func testCodePreservesIndentationAndLiteralMarkdown() {
         let blocks = ChatMarkdownBlock.parse("Before\n\n```swift\n    let marker = \"**literal**\"\n```\n\nAfter")
         XCTAssertEqual(blocks.count, 3)

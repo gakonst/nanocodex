@@ -228,7 +228,12 @@ private struct VoiceSettingsView: View {
                     Text("Off").tag(Optional(false))
                 }
                 Section("Speaking style") {
-                    TextEditor(text: $draft.instructions).frame(minHeight: 80)
+                    TextEditor(text: $draft.instructions)
+                        .frame(height: 112)
+                        .padding(8)
+                        .scrollContentBackground(.hidden)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.primary.opacity(0.08)))
                         .accessibilityLabel("Speaking preferences")
                     Text("For example: Keep answers short and speak Greek unless I ask otherwise.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -252,6 +257,9 @@ private struct VoiceSettingsView: View {
                 }
                 if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("voice-settings-error") }
             }
+            #if os(macOS)
+            .formStyle(.grouped)
+            #endif
             .navigationTitle("Voice settings")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
@@ -272,15 +280,16 @@ private struct VoiceSettingsView: View {
             if testingAudio, level > 0.015 { receivedTestAudio = true }
         }
         #if os(macOS)
-        .frame(width: 480, height: 480)
+        .frame(width: 560, height: 600)
         #endif
     }
 }
 
 private struct VoiceSpinnerStyle: ProgressViewStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     func makeBody(configuration: Configuration) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || scenePhase != .active)) { timeline in
             Circle().trim(from: 0.08, to: 0.88)
                 .stroke(AngularGradient(colors: [.gray.opacity(0.02), .gray.opacity(0.55)], center: .center),
                         style: StrokeStyle(lineWidth: 3, lineCap: .round))

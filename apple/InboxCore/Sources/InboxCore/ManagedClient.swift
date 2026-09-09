@@ -205,6 +205,43 @@ public final class ManagedClient: @unchecked Sendable {
         let path = try Self.agentPath(id) + "/events/history?limit=128" + (before.map { "&before=" + $0.rawValue } ?? "")
         return try EventPage(try await json(path: path))
     }
+    /// Return a readable opening window without waiting for a state request.
+    /// Transport-only tails must not turn an existing conversation into an empty
+    /// composer. Bound recovery to four pages and the mobile history byte budget.
+    public func conversationHistory(_ id: String) async throws -> ConversationHistory {
+        var page = try await history(id)
+        let latest = page.latest
+        var events = page.events
+        var rows = transcript(events)
+        for _ in 1..<4 {
+            try Task.checkCancellation()
+            guard page.hasMore, !rows.contains(where: { $0.role == "You" || $0.role == "Agent" }),
+                  let before = events.first?.cursor else { break }
+            let older = try await history(id, before: before)
+            let added = older.events.filter { $0.cursor < before }
+            page = older
+            guard !added.isEmpty else { break }
+            events.insert(contentsOf: added, at: 0)
+            rows = transcript(events)
+        }
+        assert(!Thread.isMainThread)
+        let encoder = JSONEncoder()
+        var counts = try events.map { event in
+            try Task.checkCancellation()
+            return try encoder.encode(event.data).count
+        }
+        var bytes = counts.reduce(0, +), removed = 0
+        while events.count - removed > 1, bytes > 16 * 1024 * 1024 {
+            bytes -= counts[removed]; removed += 1
+        }
+        if removed > 0 {
+            events.removeFirst(removed); counts.removeFirst(removed)
+            rows = transcript(events)
+        }
+        try Task.checkCancellation()
+        return ConversationHistory(events: events, latest: latest, hasMore: page.hasMore || removed > 0,
+                                   byteCounts: counts, rows: rows)
+    }
     @discardableResult
     public func command(_ command: AgentCommand) async throws -> JSON {
         let spec = try command.requestSpec()
@@ -376,6 +413,14 @@ public enum AgentRefreshHistory: Sendable {
 public struct AgentRefreshResult: Sendable {
     public let state: JSON
     public let page: EventPage?
+}
+
+public struct ConversationHistory: Sendable {
+    public let events: [AgentEvent]
+    public let latest: Cursor
+    public let hasMore: Bool
+    public let byteCounts: [Int]
+    public let rows: [TranscriptRow]
 }
 
 public struct EventPage: Sendable {

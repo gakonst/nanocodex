@@ -1,6 +1,54 @@
 import XCTest
 
 final class RemoteScreenLifecycleUITests: XCTestCase {
+    @MainActor
+    func testInlineScreenKeepsHistoryComposerAndSession() throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
+            throw XCTSkip("Run fixtures/remote-screen.mjs on loopback port 18965")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo"]
+        app.launchEnvironment["NANOCODEX_DEMO_SCREENS"] = "1"
+        app.launchEnvironment["NANOCODEX_DEMO_PROFILE"] = "screen-pane-" + UUID().uuidString
+        app.launch()
+        let screens = app.buttons["conversation-remote-screens"]
+        XCTAssertTrue(screens.waitForExistence(timeout: 15)); screens.tap()
+        let desktop = app.buttons["remote-screen:fixture:desktop"]
+        XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap()
+        let watching = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Watching"), object: app.staticTexts["remote-status"])
+        XCTAssertEqual(XCTWaiter.wait(for: [watching], timeout: 15), .completed, app.debugDescription)
+        let canvas = app.descendants(matching: .any)["remote-canvas"].firstMatch
+        let composer = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
+        XCTAssertTrue(canvas.exists); XCTAssertTrue(composer.exists)
+        XCTAssertLessThan(canvas.frame.maxY, composer.frame.minY)
+        let initial = canvas.frame.height
+        let divider = app.descendants(matching: .any)["screen-pane-divider"].firstMatch
+        divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
+            thenDragTo: divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).withOffset(CGVector(dx: 0, dy: 60)))
+        XCTAssertGreaterThan(canvas.frame.height, initial)
+        app.buttons["browser-tab:inbox"].tap()
+        XCTAssertEqual(app.staticTexts["remote-status"].label, "Watching")
+        composer.tap(); composer.typeText("Keep the screen visible while I write")
+        XCTAssertLessThan(canvas.frame.maxY, composer.frame.minY)
+        XCTAssertGreaterThan(canvas.frame.height, 20)
+        let keyboardHeight = canvas.frame.height
+        divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
+            thenDragTo: divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).withOffset(CGVector(dx: 0, dy: -30)))
+        XCTAssertLessThan(canvas.frame.height, keyboardHeight - 10, "The resized height must persist when the keyboard is open")
+        let evidence = XCTAttachment(screenshot: app.screenshot())
+        evidence.name = "mobile-screen-and-composer"; evidence.lifetime = .keepAlways; add(evidence)
+        app.buttons["close-screen-pane"].tap()
+        XCTAssertFalse(canvas.exists)
+        XCTAssertEqual(composer.value as? String, "Keep the screen visible while I write")
+        screens.tap(); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap()
+        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Watching"), object: app.staticTexts["remote-status"])
+        XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 15), .completed)
+        let full = XCTAttachment(screenshot: app.screenshot())
+        full.name = "mobile-screen-and-history"; full.lifetime = .keepAlways; add(full)
+        app.buttons["close-screen-pane"].tap()
+    }
+
     // This separate opt-in fixture sends shell input. The caller must inspect
     // the selected VM and confirm an idle terminal owned by the test first.
     @MainActor
@@ -32,6 +80,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         }
         func command(_ value: String) {
             let field = app.textFields["Type on remote screen"]
+            if !field.exists { app.buttons["Remote keyboard"].tap() }
             XCTAssertTrue(field.waitForExistence(timeout: 10)); field.tap(); field.typeText(value)
             app.buttons["Send"].tap(); app.buttons["Return"].tap()
         }
@@ -90,7 +139,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         app.buttons["Screens"].tap()
         XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap()
         _ = try requireDecodedFrame(app, status: status, label: "reselection")
-        app.buttons["Done"].tap()
+        app.buttons["close-screen-pane"].tap()
         XCTAssertTrue(screens.waitForExistence(timeout: 10))
     }
 
@@ -115,7 +164,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
             screenshot.name = "phone-vm-first-frame-\(sample)"; screenshot.lifetime = .keepAlways; add(screenshot)
             app.buttons["Screens"].tap()
         }
-        app.buttons["Done"].tap()
+        app.buttons["close-screen-pane"].tap()
     }
 
     @MainActor
@@ -188,7 +237,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
                 evidence.lifetime = .keepAlways
                 add(evidence)
             }
-            app.buttons["Done"].tap()
+            app.buttons["close-screen-pane"].tap()
             XCTAssertTrue(screens.waitForExistence(timeout: 10))
             XCTAssertEqual(app.state, .runningForeground)
         }

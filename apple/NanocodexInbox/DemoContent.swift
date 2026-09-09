@@ -86,6 +86,21 @@ enum DemoContent {
             }
             card.latestCursor = Cursor(rawValue: "12")!; card.stateCursor = card.latestCursor
             if value.2 == "Running" { card.activeTurns = ["demo-turn-" + value.0] }
+            if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_ACTIVITY"] == "1" {
+                try? card.apply(state: .object(["agent_id": .string(card.id),
+                    "latest_event_cursor": .string("12"),
+                    "active_turns": .array(card.activeTurns.map(JSON.string)),
+                    "settings": .object(["model": .string(card.model)])]))
+                let event: JSON = card.isRunning
+                    ? .object(["type": .string("event"), "cursor": .string("13"), "turn_id": .string("demo-turn-" + card.id),
+                        "event": .object(["type": .string("assistant.message"), "payload": .object([
+                            "phase": .string("commentary"), "text": .string(value.3)])])])
+                    : .object(["type": .string(card.status == "Failed" ? "turn_failed" : "turn_completed"),
+                        "cursor": .string("13"), "turn_id": .string("demo-turn-" + card.id),
+                        "error": .string("Browser Hand disconnected. Reconnect it to continue."),
+                        "final_message": .string(value.3)])
+                if let envelope = try? AgentEvent(event) { card.apply(events: [envelope]) }
+            }
             return card
         }
     }
@@ -206,3 +221,83 @@ enum DemoContent {
                 .init(id: "agent-" + id, role: "Agent", text: card.preview, running: card.isRunning)]
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+import CryptoKit
+
+/// Simulator-only transport fixture exercises real account restoration, history
+/// ownership, and cancellation without signing into or modifying a live account.
+enum StartupFixture {
+    static var enabled: Bool { ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_FIXTURE"] == "1" }
+    static let credential: AccountCredential = {
+        let profile = ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_PROFILE"] ?? "default"
+        let value = try! AccountCredential(origin: "https://startup-fixture-\(profile).invalid",
+                                          apiKey: "ncx_live_abcdefgh1234_" + String(repeating: "x", count: 43))
+        let scope = SHA256.hash(data: Data((value.origin + ":" + String(value.apiKey.prefix(21))).utf8)).map { String(format: "%02x", $0) }.joined()
+        let key = "inbox.selectedTab." + scope
+        if UserDefaults.standard.string(forKey: key) == nil { UserDefaults.standard.set("saved", forKey: key) }
+        return value
+    }()
+    static var configuration: URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StartupFixtureProtocol.self]
+        return configuration
+    }
+}
+
+private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
+    private static let queue = DispatchQueue(label: "nanocodex.startup-fixture")
+    private var stopped = false
+    private let requestID = UUID().uuidString
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasPrefix("startup-fixture-") == true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    private func record(_ phase: String) {
+        let event: [String: Any] = ["phase": phase, "request": requestID, "path": request.url!.path,
+                                    "time": ProcessInfo.processInfo.systemUptime, "process": ProcessInfo.processInfo.processIdentifier]
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("startup-requests.jsonl")
+        let data = (try! JSONSerialization.data(withJSONObject: event)) + Data("\n".utf8)
+        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+        if let file = try? FileHandle(forWritingTo: url) {
+            defer { try? file.close() }
+            _ = try? file.seekToEnd(); try? file.write(contentsOf: data)
+        }
+    }
+    override func startLoading() {
+        Self.queue.async { [self] in
+            guard !stopped else { return }
+            record("start")
+            let path = request.url!.path
+            let id = request.url!.pathComponents.dropFirst(3).first ?? "saved"
+            let isStream = path.hasSuffix("/events")
+            var status = 200, delay = 0.05, body = "{}"
+            if path == "/v1/agents" {
+                delay = 6
+                if ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_REJECT"] == "1" { status = 401 }
+                body = #"{"data":["saved","other","slow"],"summaries":{"saved":{"title":"Saved conversation","updated_at":3,"turn_count":1,"may_have_scheduled_jobs":true},"other":{"title":"Other conversation","updated_at":2,"turn_count":1,"may_have_scheduled_jobs":true},"slow":{"title":"Background conversation","updated_at":1,"turn_count":1,"may_have_scheduled_jobs":true}}}"#
+            } else if path.hasSuffix("/events/history") {
+                delay = id == "slow" ? 20 : 10
+                body = "{\"data\":[{\"cursor\":\"1\",\"type\":\"turn_completed\",\"turn_id\":\"t\",\"final_message\":\"Loaded \(id) conversation.\"}],\"has_more\":false,\"latest_cursor\":\"1\"}"
+            } else if path.hasSuffix("/triggers") {
+                body = #"{"data":[]}"#
+            } else if isStream {
+                body = ": keepalive\n\n"
+            } else {
+                body = "{\"agent_id\":\"\(id)\",\"latest_event_cursor\":\"1\",\"active_turns\":[]}"
+            }
+            let responseBody = body, responseStatus = status
+            Self.queue.asyncAfter(deadline: .now() + delay) { [self] in
+                guard !stopped else { return }
+                record("response")
+                let response = HTTPURLResponse(url: request.url!, statusCode: responseStatus, httpVersion: "HTTP/1.1",
+                                               headerFields: ["Content-Type": isStream ? "text/event-stream" : "application/json"])!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data(responseBody.utf8))
+                if !isStream { client?.urlProtocolDidFinishLoading(self) }
+            }
+        }
+    }
+    override func stopLoading() {
+        Self.queue.async { [self] in stopped = true; record("stop") }
+    }
+}
+#endif

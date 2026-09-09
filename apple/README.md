@@ -25,7 +25,9 @@ the existing workspace.
 Each tab opens the full conversation directly. Overview cards render miniature
 transcripts with the same message components and latest available content.
 Unchanged Markdown stays behind an equality boundary, so typing, scrolling, and
-another row's streamed updates do not reparse completed messages. The
+another row's streamed updates do not reparse completed messages. Parsing runs on
+a background actor with a bounded cache; streamed changes coalesce for 32 ms,
+and cancelled parses cannot replace newer content. The
 `ChatMarkdownParse` Points of Interest signpost measures actual parsing work.
 
 Generated attachments appear directly in conversations and their overview previews, outside
@@ -81,7 +83,15 @@ typed codes submit automatically once, with an explicit retry after errors.
 Resend cooldowns and errors are handled in the app.
 The HTTPS service origin can be changed under **Advanced**. Drafts and seen
 positions are stored on this device, scoped to that connection.
-Release builds restore the saved account or show SMS sign-in and use the
+On cold launch, the last tab's history request overlaps the authenticated account
+list. History is published only after the account list confirms that tab still
+exists. Other conversations and scheduled-job prefetch wait for the initial
+focused history request, leaving bandwidth available for the first conversation.
+Switching tabs, changing accounts, or backgrounding cancels owned history reads.
+Normal account, conversation, preview, and reconnect loading uses spinners;
+authentication failures retain the sign-in action.
+
+Release builds restore the saved account and last selected tab, or show SMS sign-in, and use the
 managed-agent API for all agent work. They ignore `--demo` and have no demo entry
 point or sample-data fallback. Debug builds retain **Explore the demo** and the
 `--demo` launch argument for existing CI fixtures, with explicitly labeled sample
@@ -90,7 +100,12 @@ agents and simulated actions.
 ## Interaction
 
 Use **Remote screens** from the inbox or a conversation to watch a published
-Hand desktop and take control. The iPhone/iPad and native Mac app share the
+Hand desktop and take control. The viewer opens above the conversation, with
+history and the composer below. Drag the divider to adjust its height; the
+keyboard gives more of the remaining space to the screen. Switching agent tabs
+keeps the selected screen connected. Close the pane with **×** or the Screens
+button. Remote typing controls are behind the keyboard button after taking control.
+The iPhone/iPad and native Mac app share the
 `NanocodexRemote` WebRTC viewer, including video, pointer, keyboard, and control
 leases. Desktop-enabled factory VMs publish automatically; the screen list
 refreshes while open. Shell-only VM images have no graphical desktop. Cloudflare
@@ -134,7 +149,7 @@ existing per-agent triggers API and shows the prompt, cron expression, time zone
 next run, last dispatch, and last skipped occurrence. Dispatch does not imply
 successful completion; open the linked conversation to read the result. Pull to
 refresh or use Refresh to pick up changes, including jobs created in chat.
-Schedules prefetch from the inbox using the sign-in agent list. Reads use a rolling
+Schedules prefetch after the opening conversation history using the sign-in agent list. Reads use a rolling
 four-request limit and publish each agent's jobs immediately; one slow agent does
 not block the others. The account summary's `may_have_scheduled_jobs` hint skips
 known-empty conversations, including the new conversations created by cron runs.
@@ -592,3 +607,17 @@ It never captures microphone audio or claims to validate spoken interaction.
 connections, received test-phrase audio, minimizing, and ending on a signed-in
 iPhone with `NANOCODEX_VOICE_UI_LIVE=1`. The first call activates the microphone;
 the second is muted during startup and must still receive test-phrase audio.
+
+### Mobile work scheduling
+
+Focused conversations, overview streams, history pagination, and background roster
+refreshes use `TranscriptPreparation` to build transcript rows and measure JSON
+payloads off the main actor. One projection per observed stream batches arrivals;
+new frames received during a projection schedule the next batch. Account and tab
+observation tokens fence every result. Cached tabs retain prepared rows and byte
+counts, so switching tabs does not synchronously rebuild history.
+
+Draft and queue writes use an ordered background preferences queue. Send and Stop
+await earlier writes before issuing their durable command, reconnect waits before
+restoring the account, and backgrounding gives outstanding saves execution time.
+SwiftUI rendering and the final model mutations stay on the main actor.

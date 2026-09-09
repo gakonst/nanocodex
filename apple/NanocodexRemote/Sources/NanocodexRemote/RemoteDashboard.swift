@@ -15,6 +15,8 @@ enum RemoteHostIdentity {
 
 public struct RemoteDashboard: View {
     private let service: RemoteService
+    private let onClose: (() -> Void)?
+    private var embedded: Bool { onClose != nil }
     @StateObject private var viewer = RemoteViewer()
     @Environment(\.scenePhase) private var scenePhase
     @State private var hands: [RemoteHand] = []
@@ -22,6 +24,7 @@ public struct RemoteDashboard: View {
     @State private var error: String?
     @State private var discoveryError: String?
     @State private var text = ""
+    @State private var showKeyboard = false
 #if os(macOS)
     @StateObject private var host: RemoteMacHost
     @StateObject private var phoneHost: RemoteMacHost
@@ -36,28 +39,48 @@ public struct RemoteDashboard: View {
     // default changed the machine identity on every new dashboard/relaunch.
     private let machineID = RemoteHostIdentity.load()
 #endif
-    public init(service: RemoteService) {
-        self.service = service
+    public init(service: RemoteService, onClose: (() -> Void)? = nil) {
+        self.service = service; self.onClose = onClose
 #if os(macOS)
         _host = StateObject(wrappedValue: RemoteMacHost()); _phoneHost = StateObject(wrappedValue: RemoteMacHost()); ownsHosts = true
 #endif
     }
 #if os(macOS)
-    public init(service: RemoteService, host: RemoteMacHost, phoneHost: RemoteMacHost) {
-        self.service = service; _host = StateObject(wrappedValue: host); _phoneHost = StateObject(wrappedValue: phoneHost); ownsHosts = false
+    public init(service: RemoteService, host: RemoteMacHost, phoneHost: RemoteMacHost, onClose: (() -> Void)? = nil) {
+        self.service = service; self.onClose = onClose
+        _host = StateObject(wrappedValue: host); _phoneHost = StateObject(wrappedValue: phoneHost); ownsHosts = false
     }
 #endif
     public var body: some View {
-        VStack(spacing: 12) {
-            if let hand = viewer.hand {
-                HStack {
+        VStack(spacing: embedded ? 6 : 12) {
+            HStack(spacing: 8) {
+                if let hand = viewer.hand {
                     Button { viewer.close() } label: { Label("Screens", systemImage: "chevron.left") }
-                    Text(hand.machineName + " · " + hand.name).lineLimit(1)
+                        .labelStyle(.iconOnly).frame(minWidth: 32, minHeight: 32)
+                    Text(hand.machineName + " · " + hand.name).lineLimit(1).font(.subheadline)
+                    Spacer(minLength: 0)
+                    if viewer.controlling {
+                        Button("Release control") { viewer.releaseControl() }.font(.caption)
+                    } else if hand.controllable {
+                        Button("Take control") { viewer.takeControl() }
+                            .font(.caption).disabled(!viewer.connected || !hand.controllable)
+                    } else {
+                        Text("View only").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Label("Screens", systemImage: "display").font(.headline)
                     Spacer()
-                    if viewer.controlling { Button("Release control") { viewer.releaseControl() }.buttonStyle(.borderedProminent) }
-                    else { Button("Take control") { viewer.takeControl() }.disabled(!viewer.connected || !hand.controllable) }
+                    Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel("Refresh screens")
                 }
+                if let onClose {
+                    Button(action: onClose) { Image(systemName: "xmark").frame(width: 32, height: 32) }
+                        .accessibilityLabel("Close screen pane").accessibilityIdentifier("close-screen-pane")
+                }
+            }
+            if viewer.hand != nil {
                 RemoteCanvas(viewer: viewer).accessibilityIdentifier("remote-canvas")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
                     .overlay {
                         if viewer.connecting { ProgressView(viewer.status).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
                     }
@@ -72,10 +95,16 @@ public struct RemoteDashboard: View {
 #if os(macOS)
                     Text("⌘⇧Esc releases control").font(.caption).foregroundStyle(.secondary)
 #else
-                    Text("Tap to click · drag to move · two fingers to scroll").font(.caption2).foregroundStyle(.secondary)
+                    if viewer.controlling {
+                        Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
+                            .accessibilityLabel("Remote keyboard")
+                            .accessibilityValue(showKeyboard ? "Visible" : "Hidden")
+                    } else if !embedded {
+                        Text("Tap to click · drag to move · two fingers to scroll").font(.caption2).foregroundStyle(.secondary)
+                    }
 #endif
                 }
-                if viewer.controlling {
+                if viewer.controlling && (!embedded || showKeyboard) {
                     VStack(spacing: 8) {
                         HStack {
                             TextField("Type on remote screen", text: $text).textFieldStyle(.roundedBorder).onSubmit(sendText)
@@ -96,12 +125,15 @@ public struct RemoteDashboard: View {
                     }
                 }
             } else {
-                HStack { Text("Screens").font(.title2.bold()); Spacer(); Button("Refresh") { Task { await refresh() } } }
                 if !discoveryLoaded {
                     ProgressView("Loading remote screens…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if hands.isEmpty {
-                    ContentUnavailableView("No screens available", systemImage: "display", description: Text("VM desktops appear here when ready. To view a Mac, start screen sharing on that Mac."))
+                    VStack(spacing: 6) {
+                        Text("No screens available").font(.headline)
+                        Text("VM desktops appear when ready. Start screen sharing on a Mac to view it here.")
+                            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(hands, id: \.identity) { hand in
                         Button { Task { await viewer.connect(service: service, hand: hand) } } label: {
@@ -119,78 +151,82 @@ public struct RemoteDashboard: View {
             if let message = error ?? discoveryError { Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
 #if os(macOS)
             Divider()
-            HStack {
-                if host.sharing || host.reconnecting {
-                    Label(host.reconnecting ? "Reconnecting screen sharing…" : "Sharing this Mac · \(host.viewerCount) viewing", systemImage: "record.circle").foregroundStyle(.red)
-                    Spacer()
-                    if host.reconnecting {
-                        ProgressView().controlSize(.small)
-                    } else if host.surface?.controllable == true {
-                        Button("Revoke control") { host.revokeControl() }
-                    } else {
-                        Button("Enable control") {
-                            guard let surfaceID = host.surface?.id else { return }
-                            guard MacScreen.requestInputPermission() else {
-                                error = "Enable Nanocodex in System Settings → Privacy & Security → Accessibility, then choose Enable control again."
-                                return
-                            }
-                            Task {
-                                error = nil
-                                await host.start(service: service, machineID: machineID, name: Host.current().localizedName ?? "Mac", surfaceID: surfaceID)
-                                await refresh()
-                            }
-                        }
-                    }
-                    Button("Stop sharing") { Task { await host.stopSharing(); await refresh() } }
-                } else {
-                    if displays.isEmpty {
-                        Button("Choose a screen to share…") { Task { await chooseScreen() } }
-                    } else {
-                        Picker("Screen", selection: $displayID) { ForEach(displays) { Text($0.name).tag($0.id) } }.frame(maxWidth: 260)
-                        Button("Share this screen") {
-                            starting = true
-                            Task {
-                                _ = MacScreen.requestInputPermission()
-                                await host.start(service: service, machineID: machineID, name: Host.current().localizedName ?? "Mac", surfaceID: displayID)
-                                starting = false; await refresh()
-                            }
-                        }.disabled(starting || displayID.isEmpty)
-                    }
-                    Spacer(); Text(host.status).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            HStack {
-                if phoneHost.sharing {
-                    Label("Sharing paired iPhone · \(phoneHost.viewerCount) viewing", systemImage: "iphone").foregroundStyle(.red)
-                    Spacer()
-                    Button("Revoke control") { phoneHost.revokeControl() }
-                    Button("Stop sharing iPhone") { Task { await phoneHost.stop(); await refresh() } }
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Button("Find paired iPhones") { Task { await findPhones() } }.disabled(starting)
-                            if !phones.isEmpty {
-                                Picker("iPhone", selection: $phoneID) { ForEach(phones) { Text($0.name).tag($0.id) } }.frame(maxWidth: 260)
-                            }
-                            Button(phoneRunner.isEmpty ? "Choose signed runner…" : "Change runner…") { choosePhoneRunner() }.disabled(starting)
-                            Button("Share iPhone") {
-                                starting = true
-                                Task {
-                                    let configuration = PhoneBridgeConfiguration(deviceID: phoneID, runner: URL(fileURLWithPath: phoneRunner))
-                                    await phoneHost.startPhone(service: service, machineID: machineID + "-phone-" + phoneID,
-                                        name: phones.first(where: { $0.id == phoneID })?.name ?? "Paired iPhone", bridge: configuration)
-                                    starting = false; await refresh()
+            DisclosureGroup("Share a screen") {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if host.sharing || host.reconnecting {
+                                Label(host.reconnecting ? "Reconnecting screen sharing…" : "Sharing this Mac · \(host.viewerCount) viewing", systemImage: "record.circle").foregroundStyle(.red)
+                                if host.reconnecting {
+                                    ProgressView().controlSize(.small)
+                                } else if host.surface?.controllable == true {
+                                    Button("Revoke control") { host.revokeControl() }
+                                } else {
+                                    Button("Enable control") {
+                                        guard let surfaceID = host.surface?.id else { return }
+                                        guard MacScreen.requestInputPermission() else {
+                                            error = "Enable Nanocodex in System Settings → Privacy & Security → Accessibility, then choose Enable control again."
+                                            return
+                                        }
+                                        Task {
+                                            error = nil
+                                            await host.start(service: service, machineID: machineID, name: Host.current().localizedName ?? "Mac", surfaceID: surfaceID)
+                                            await refresh()
+                                        }
+                                    }
                                 }
-                            }.disabled(starting || phoneRunner.isEmpty || !phones.contains(where: { $0.id == phoneID }))
+                                Button("Stop sharing") { Task { await host.stopSharing(); await refresh() } }
+                            } else {
+                                if displays.isEmpty {
+                                    Button("Choose a screen to share…") { Task { await chooseScreen() } }
+                                } else {
+                                    Picker("Screen", selection: $displayID) { ForEach(displays) { Text($0.name).tag($0.id) } }.frame(maxWidth: 260)
+                                    Button("Share this screen") {
+                                        starting = true
+                                        Task {
+                                            _ = MacScreen.requestInputPermission()
+                                            await host.start(service: service, machineID: machineID, name: Host.current().localizedName ?? "Mac", surfaceID: displayID)
+                                            starting = false; await refresh()
+                                        }
+                                    }.disabled(starting || displayID.isEmpty)
+                                }
+                                Text(host.status).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
-                        Text("Requires a trusted, paired iPhone with Developer Mode and a WebDriverAgent runner signed in Xcode.").font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 8) {
+                            if phoneHost.sharing {
+                                Label("Sharing paired iPhone · \(phoneHost.viewerCount) viewing", systemImage: "iphone").foregroundStyle(.red)
+                                Button("Revoke control") { phoneHost.revokeControl() }
+                                Button("Stop sharing iPhone") { Task { await phoneHost.stop(); await refresh() } }
+                            } else {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Button("Find paired iPhones") { Task { await findPhones() } }.disabled(starting)
+                                        if !phones.isEmpty {
+                                            Picker("iPhone", selection: $phoneID) { ForEach(phones) { Text($0.name).tag($0.id) } }.frame(maxWidth: 260)
+                                        }
+                                        Button(phoneRunner.isEmpty ? "Choose signed runner…" : "Change runner…") { choosePhoneRunner() }.disabled(starting)
+                                        Button("Share iPhone") {
+                                            starting = true
+                                            Task {
+                                                let configuration = PhoneBridgeConfiguration(deviceID: phoneID, runner: URL(fileURLWithPath: phoneRunner))
+                                                await phoneHost.startPhone(service: service, machineID: machineID + "-phone-" + phoneID,
+                                                name: phones.first(where: { $0.id == phoneID })?.name ?? "Paired iPhone", bridge: configuration)
+                                                starting = false; await refresh()
+                                            }
+                                        }.disabled(starting || phoneRunner.isEmpty || !phones.contains(where: { $0.id == phoneID }))
+                                    }
+                                    Text("Requires a trusted, paired iPhone with Developer Mode and a WebDriverAgent runner signed in Xcode.").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Text(phoneHost.status).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     }
-                    Spacer(); Text(phoneHost.status).font(.caption).foregroundStyle(.secondary)
-                }
+                }.frame(maxHeight: 180)
             }
 #endif
         }
-        .padding()
+        .padding(embedded ? 8 : 16)
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
@@ -205,7 +241,7 @@ public struct RemoteDashboard: View {
             if phase == .background { viewer.suspend() }
 #endif
         }
-        .onChange(of: viewer.controlling) { _, controlling in if !controlling { text = "" } }
+        .onChange(of: viewer.controlling) { _, controlling in if !controlling { text = ""; showKeyboard = false } }
         .onDisappear {
             viewer.close()
 #if os(macOS)

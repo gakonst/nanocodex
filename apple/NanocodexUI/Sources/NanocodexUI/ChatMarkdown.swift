@@ -19,6 +19,7 @@ public struct ChatMarkdown: View {
 /// reparse unchanged messages. Environment changes still update this view.
 private struct ChatMarkdownContent: View, Equatable {
     let text: String
+    @StateObject private var renderer = ChatMarkdownRenderer()
     #if os(macOS)
     @ScaledMetric(relativeTo: .body) private var textSize = 16
     #else
@@ -28,7 +29,21 @@ private struct ChatMarkdownContent: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.text == rhs.text }
 
     var body: some View {
-        let blocks = ChatMarkdownBlock.parse(text)
+        Group {
+            if let rendered = renderer.rendered, rendered.source == text || text.hasPrefix(rendered.source) {
+                content(rendered.blocks)
+            } else {
+                Text(text).lineSpacing(5).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.system(size: textSize))
+        .task(id: text) { renderer.update(text) }
+        .onDisappear { renderer.cancel() }
+    }
+
+    private func content(_ blocks: [ChatMarkdownBlock]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             ForEach(blocks) { block in
                 switch block.kind {
@@ -103,8 +118,65 @@ private struct ChatMarkdownContent: View, Equatable {
     }
 }
 
-struct ChatMarkdownBlock: Identifiable {
-    enum Kind {
+/// At most one parse per visible message is in flight. New deltas replace the
+/// queued source, rather than repeatedly cancelling work and starving a stream.
+@MainActor
+final class ChatMarkdownRenderer: ObservableObject {
+    @Published private(set) var rendered: (source: String, blocks: [ChatMarkdownBlock])?
+    private var latest = ""
+    private var task: Task<Void, Never>?
+    private var generation = 0
+    func update(_ text: String) {
+        latest = text
+        guard task == nil, rendered?.source != text else { return }
+        let generation = generation
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.generation == generation { self.task = nil } }
+            do {
+                if self.rendered != nil { try await Task.sleep(for: .milliseconds(32)) }
+                while !Task.isCancelled {
+                    let source = self.latest
+                    let blocks = try await ChatMarkdownParser.shared.blocks(for: source)
+                    try Task.checkCancellation()
+                    // A parsed prefix is useful while a reply is streaming; a
+                    // replaced/corrected message must not show obsolete content.
+                    if self.latest == source || self.latest.hasPrefix(source) { self.rendered = (source, blocks) }
+                    if self.latest == source { return }
+                    try await Task.sleep(for: .milliseconds(32))
+                }
+            } catch { }
+        }
+    }
+    func cancel() { generation += 1; task?.cancel(); task = nil }
+}
+
+/// Parsing runs on this actor's executor, with a bounded cache for revisited
+/// messages. Theme and Dynamic Type styling remain in the SwiftUI renderer.
+actor ChatMarkdownParser {
+    static let shared = ChatMarkdownParser()
+    private var cache: [String: [ChatMarkdownBlock]] = [:]
+    private var recent: [String] = []
+    private var bytes = 0
+    func blocks(for text: String) throws -> [ChatMarkdownBlock] {
+        assert(!Thread.isMainThread)
+        try Task.checkCancellation()
+        if let blocks = cache[text] { return blocks }
+        let blocks = ChatMarkdownBlock.parse(text)
+        try Task.checkCancellation()
+        let cost = text.utf8.count
+        if cost <= 1_000_000 {
+            cache[text] = blocks; recent.append(text); bytes += cost
+            while recent.count > 64 || bytes > 4_000_000 {
+                let old = recent.removeFirst(); bytes -= old.utf8.count; cache.removeValue(forKey: old)
+            }
+        }
+        return blocks
+    }
+}
+
+struct ChatMarkdownBlock: Identifiable, Sendable {
+    enum Kind: Sendable {
         case text(heading: Int, marker: String?, quote: Bool)
         case code(String)
         case table([[AttributedString]])

@@ -57,6 +57,7 @@ private struct GeneratedImage: View {
 
 private struct GeneratedMedia: View {
     let output: ChatGeneratedOutput
+    @Environment(\.scenePhase) private var scenePhase
     @State private var player: AVPlayer?
     @State private var playing = false
     @State private var failed = false
@@ -88,6 +89,9 @@ private struct GeneratedMedia: View {
                 } catch { if !Task.isCancelled { failed = true } }
             }
             .onDisappear { player?.pause(); playing = false }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { player?.pause(); playing = false }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { event in
                 if let item = event.object as? AVPlayerItem, item === player?.currentItem { playing = false }
             }
@@ -110,8 +114,13 @@ private struct GeneratedFile: View {
             } else { ProgressView(output.title) }
         }.font(.subheadline).accessibilityIdentifier("generated-file")
             .task(id: output.id) {
+                file = nil; failed = false
                 guard output.source?.hasPrefix("data:") == true else { return }
-                do { file = try await GeneratedAsset.playableURL(output) }
+                do {
+                    let url = try await GeneratedAsset.playableURL(output)
+                    guard !Task.isCancelled else { return }
+                    file = url
+                }
                 catch { if !Task.isCancelled { failed = true } }
             }
     }
