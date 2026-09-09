@@ -101,6 +101,129 @@ impl ClientHarness {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "manual compiled-server HTTP test for durable steer withdrawal"]
+async fn http_steer_withdrawal_removes_only_latest_unconsumed_input() -> Result<()> {
+    nanocodex::oai::transport::install_default_rustls_crypto_provider();
+    let fixture = tempfile::tempdir()?;
+    let workspace = fixture.path().join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    let provider_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let provider_endpoint = format!("ws://{}", provider_listener.local_addr()?);
+    let address = unused_loopback_address()?;
+    let sqlite = fixture.path().join("managed.sqlite3");
+    let bearer = format!("ncx_live_{}_{}", "m".repeat(12), "n".repeat(43));
+    let mut server =
+        spawn_managed_server(address, &sqlite, &workspace, &provider_endpoint, &bearer)?;
+    wait_for_listener(&mut server, address).await?;
+    let http = reqwest::Client::builder()
+        .timeout(PROCESS_TIMEOUT)
+        .build()?;
+    let origin = format!("http://{address}/v1/agents");
+    let created: Value = http
+        .post(&origin)
+        .bearer_auth(&bearer)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let agent_id = created["agent_id"]
+        .as_str()
+        .ok_or_else(|| eyre!("create omitted agent_id"))?;
+    let agent_url = format!("{origin}/{agent_id}");
+    let state: Value = http
+        .get(&agent_url)
+        .bearer_auth(&bearer)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        state["settings"],
+        json!({
+            "model": nanocodex::Model::default().as_str(),
+            "thinking": nanocodex::Thinking::default(),
+            "reasoning_mode": nanocodex::ReasoningMode::default().as_str(),
+            "fast_mode": false,
+        })
+    );
+    let submitted: Value = http
+        .post(format!("{agent_url}/turns"))
+        .bearer_auth(&bearer)
+        .header("idempotency-key", "withdraw-http-turn")
+        .json(&json!({"input": "hold at the provider boundary"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let turn_id = submitted["turn_id"]
+        .as_str()
+        .ok_or_else(|| eyre!("submit omitted turn_id"))?;
+    let turn_url = format!("{agent_url}/turns/{turn_id}");
+    let (provider_stream, _) = timeout(PROVIDER_TIMEOUT, provider_listener.accept()).await??;
+    let mut provider = accept_async(provider_stream).await?;
+    let calls = AtomicUsize::new(0);
+    let initial = timeout(PROVIDER_TIMEOUT, next_generation(&mut provider, &calls)).await??;
+    assert_request_contains(&initial, "hold at the provider boundary")?;
+
+    // Withholding the provider completion keeps both steers before consumption.
+    for (id, input) in [
+        ("keep", "RETAINED_HTTP_STEER"),
+        ("undo", "WITHDRAWN_HTTP_STEER"),
+    ] {
+        let accepted = http
+            .post(format!("{turn_url}/steer"))
+            .bearer_auth(&bearer)
+            .json(&json!({"message_id": id, "input": input}))
+            .send()
+            .await?;
+        accepted.error_for_status()?;
+    }
+    for (id, expected) in [
+        ("keep", false),
+        ("unknown", false),
+        ("undo", true),
+        ("undo", false),
+    ] {
+        let receipt: Value = http
+            .post(format!("{turn_url}/withdraw-steer"))
+            .bearer_auth(&bearer)
+            .json(&json!({"message_id": id}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(
+            receipt,
+            json!({"turn_id": turn_id, "message_id": id, "withdrawn": expected})
+        );
+    }
+    send_completed(&mut provider, "resp-http-boundary", "boundary answer").await?;
+    let steered = timeout(PROVIDER_TIMEOUT, next_generation(&mut provider, &calls)).await??;
+    assert_request_contains(&steered, "RETAINED_HTTP_STEER")?;
+    assert!(!steered.to_string().contains("WITHDRAWN_HTTP_STEER"));
+    let consumed: Value = http
+        .post(format!("{turn_url}/withdraw-steer"))
+        .bearer_auth(&bearer)
+        .json(&json!({"message_id": "keep"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(consumed["withdrawn"], false);
+    send_completed(&mut provider, "resp-http-final", "retained final answer").await?;
+    wait_for_managed_turn_state(&sqlite, turn_id, "completed").await?;
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    send_signal(&server, "-TERM").await?;
+    assert!(timeout(PROCESS_TIMEOUT, server.wait()).await??.success());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "manual compiled-binary E2E for the loopback managed server and nanocodex2"]
 async fn nanocodex2_drives_durable_replay_detach_steer_and_cancel() -> Result<()> {
     let fixture = tempfile::tempdir()?;

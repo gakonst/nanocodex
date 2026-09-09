@@ -299,3 +299,23 @@ describe("managed durable turn admission", () => {
     });
   });
 });
+
+
+describe("managed steer withdrawal admission", () => {
+  it("rejects malformed identities before looking up or recovering a turn", async () => {
+    const sessions = (env as unknown as {
+      NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
+    }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session) => {
+      for (const body of ["null", "[]", "{}", JSON.stringify({ message_id: "../invalid" })]) {
+        const response = await session.fetch(new Request("https://session.internal/turns/absent/withdraw-steer", { method: "POST", body }));
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ error: "invalid_request" });
+      }
+      const missing = await session.fetch(new Request("https://session.internal/turns/absent/withdraw-steer", {
+        method: "POST", body: JSON.stringify({ message_id: "pending" }),
+      }));
+      expect(missing.status).toBe(404);
+    });
+  });
+});

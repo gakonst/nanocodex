@@ -192,6 +192,44 @@ struct PastedImage {
     data_url: String,
 }
 
+impl From<Submission> for ComposerDraft {
+    fn from(prompt: Submission) -> Self {
+        let (text, images) = prompt.into_parts();
+        let images: Vec<_> = images
+            .map(|(range, data_url)| PastedImage { range, data_url })
+            .collect();
+        let next_image = images
+            .iter()
+            .filter_map(|image| {
+                text.get(image.range.clone())?
+                    .strip_prefix("[Image #")?
+                    .strip_suffix(']')?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1);
+        Self {
+            cursor: text.len(),
+            text,
+            images,
+            next_image,
+        }
+    }
+}
+
+impl ComposerDraft {
+    pub(crate) fn into_submission(self) -> Submission {
+        Submission::multimodal(
+            self.text,
+            self.images
+                .into_iter()
+                .map(|image| (image.range, image.data_url)),
+        )
+    }
+}
+
 struct CachedLayout {
     width: usize,
     cursor: usize,

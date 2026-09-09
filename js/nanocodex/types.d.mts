@@ -408,7 +408,9 @@ export type LifecycleTurn = Readonly<{
   }>;
   accepted(): Promise<string | undefined>;
   result(): Promise<LifecycleTurnResult>;
-  steer(options: { input: PromptInput }): Promise<void>;
+  steer(options: { input: PromptInput; messageId?: string }): Promise<void>;
+  /** Removes this identified steer only while it is still pending. */
+  withdrawSteer(options: { messageId: string }): Promise<boolean>;
   cancel(): Promise<void>;
   dispose(): void;
 }>;
@@ -433,7 +435,9 @@ export type Turn<agent extends Agent<object> = Agent<object>> = Readonly<{
    * Agent is stale and the same durable turn may be resumed only on a new Agent.
    */
   result(): Promise<TurnResult>;
-  steer(options: { input: PromptInput }): Promise<void>;
+  steer(options: { input: PromptInput; messageId?: string }): Promise<void>;
+  /** Removes this identified steer only while it is still pending. */
+  withdrawSteer(options: { messageId: string }): Promise<boolean>;
   cancel(): Promise<void>;
   /** Releases this handle without cancelling its accepted turn. */
   dispose(): void;

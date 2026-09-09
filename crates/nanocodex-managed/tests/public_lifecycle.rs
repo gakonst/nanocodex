@@ -423,6 +423,10 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
                 post(steer_turn),
             )
             .route(
+                "/v1/agents/{agent_id}/turns/{turn_id}/withdraw-steer",
+                post(withdraw_steer),
+            )
+            .route(
                 "/v1/agents/{agent_id}/turns/{turn_id}/cancel",
                 post(cancel_turn),
             )
@@ -499,9 +503,18 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
         let steer_release = Arc::new(Notify::new());
         *lock(&fixture.inner.steer_release) = Some(steer_release.clone());
         let steering_control = control.clone();
-        let steering =
-            tokio::spawn(async move { steering_control.steer("follow-up steering").await });
+        let steering = tokio::spawn(async move {
+            steering_control
+                .steer_with_id("correction-1".to_owned(), "follow-up steering")
+                .await
+        });
         fixture.inner.steer_entered.notified().await;
+        let withdrawal_control = control.clone();
+        let withdrawal = tokio::spawn(async move {
+            withdrawal_control
+                .withdraw_steer("correction-1".to_owned())
+                .await
+        });
         fixture
             .send_event(accepted_event(41, ACTIVE_REQUEST_ID, "live prompt"))
             .await;
@@ -519,6 +532,13 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
             .await
             .unwrap()
             .expect("public turn control should steer");
+        assert!(
+            withdrawal
+                .await
+                .unwrap()
+                .expect("pending withdrawal should succeed")
+        );
+        assert!(!control.withdraw_steer("consumed".to_owned()).await.unwrap());
         let shutdown_agent = agent.clone();
         let shutdown = shutdown_agent.shutdown();
         tokio::pin!(shutdown);
@@ -826,7 +846,7 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
             assert_eq!(actions[1].turn_id, ACTIVE_REQUEST_ID);
             assert_eq!(
                 actions[1].body,
-                Some(json!({"input": "follow-up steering"}))
+                Some(json!({"input": "follow-up steering", "message_id": "correction-1"}))
             );
             assert_eq!(actions[2].kind, "cancel");
             assert_eq!(actions[2].agent_id, AGENT_ID);
@@ -1118,6 +1138,19 @@ async fn steer_turn(
         release.notified().await;
     }
     Json(json!({"turn_id": turn_id, "state": "cancelling"}))
+}
+
+async fn withdraw_steer(
+    State(fixture): State<Fixture>,
+    Path((_agent_id, turn_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    authorize(&fixture, &headers);
+    let message_id = body["message_id"].as_str().unwrap();
+    Json(
+        json!({"turn_id": turn_id, "message_id": message_id, "withdrawn": message_id == "correction-1"}),
+    )
 }
 
 async fn cancel_turn(

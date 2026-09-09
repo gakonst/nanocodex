@@ -274,6 +274,14 @@ impl TranscriptModel {
             "user.submitted" => self.decode_local::<UserSubmitted>(record).map(|payload| {
                 self.push(EntryKind::User { text: payload.text });
             }),
+            "user.steer_withdrawn" => self.decode_local::<UserSteered>(record).map(|payload| {
+                self.push(EntryKind::User {
+                    text: format!(
+                        "[steering withdrawn before model received it]\n{}",
+                        payload.text
+                    ),
+                });
+            }),
             "user.steered" => self.decode_local::<UserSteered>(record).map(|payload| {
                 self.push(EntryKind::User {
                     text: format!("[steering accepted]\n{}", payload.text),

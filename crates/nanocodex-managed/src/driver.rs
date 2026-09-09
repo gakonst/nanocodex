@@ -41,6 +41,17 @@ pub(crate) enum Command {
         Prompt,
         tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
     ),
+    SteerWithId(
+        BackendTurnKey,
+        String,
+        Prompt,
+        tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
+    ),
+    WithdrawSteer(
+        BackendTurnKey,
+        String,
+        tokio::sync::oneshot::Sender<nanocodex_agent::Result<bool>>,
+    ),
     Cancel(
         BackendTurnKey,
         tokio::sync::oneshot::Sender<nanocodex_agent::Result<()>>,
@@ -193,6 +204,32 @@ impl LifecycleBackend for ManagedAgent {
         let commands = self.commands.clone();
         Box::pin(async move {
             Self::request(commands, |result| Command::Steer(key, prompt, result)).await
+        })
+    }
+
+    fn steer_with_id(
+        &self,
+        key: BackendTurnKey,
+        id: String,
+        prompt: Prompt,
+    ) -> BackendFuture<nanocodex_agent::Result<()>> {
+        let commands = self.commands.clone();
+        Box::pin(async move {
+            Self::request(commands, |result| {
+                Command::SteerWithId(key, id, prompt, result)
+            })
+            .await
+        })
+    }
+
+    fn withdraw_steer(
+        &self,
+        key: BackendTurnKey,
+        id: String,
+    ) -> BackendFuture<nanocodex_agent::Result<bool>> {
+        let commands = self.commands.clone();
+        Box::pin(async move {
+            Self::request(commands, |result| Command::WithdrawSteer(key, id, result)).await
         })
     }
 
@@ -398,6 +435,25 @@ where
                             });
                         self.dispatch_control(request, result).await;
                     }
+                    Some(Command::SteerWithId(key, message_id, prompt, result)) => {
+                        let request = self
+                            .turns_by_key
+                            .get(&key)
+                            .cloned()
+                            .ok_or(NanocodexError::TurnNotSteerable)
+                            .and_then(|turn_id| {
+                                Ok(ManagedRequest::SteerWithId {
+                                    agent_id: self.agent_id.clone(),
+                                    turn_id,
+                                    message_id,
+                                    input: managed_prompt(prompt)?,
+                                })
+                            });
+                        self.dispatch_control(request, result).await;
+                    }
+                    Some(Command::WithdrawSteer(key, message_id, result)) => {
+                        self.dispatch_withdrawal(key, message_id, result).await;
+                    }
                     Some(Command::Cancel(key, result)) => {
                         let request = self
                             .turns_by_key
@@ -457,7 +513,9 @@ where
             }
         };
         let (turn_id, steering) = match &request {
-            ManagedRequest::Steer { turn_id, .. } => (turn_id.clone(), true),
+            ManagedRequest::Steer { turn_id, .. } | ManagedRequest::SteerWithId { turn_id, .. } => {
+                (turn_id.clone(), true)
+            }
             ManagedRequest::Cancel { turn_id, .. } => (turn_id.clone(), false),
             _ => unreachable!("only turn controls are dispatched concurrently"),
         };
@@ -504,6 +562,46 @@ where
         } else {
             self.controls.push(control);
         }
+    }
+
+    async fn dispatch_withdrawal(
+        &mut self,
+        key: BackendTurnKey,
+        message_id: String,
+        result: tokio::sync::oneshot::Sender<nanocodex_agent::Result<bool>>,
+    ) {
+        let Some(turn_id) = self.turns_by_key.get(&key).cloned() else {
+            drop(result.send(Ok(false)));
+            return;
+        };
+        let service = match self.service.ready().await {
+            Ok(service) => service,
+            Err(error) => {
+                drop(result.send(Err(backend_error(error))));
+                return;
+            }
+        };
+        let response = service.call(ManagedRequest::WithdrawSteer {
+            agent_id: self.agent_id.clone(),
+            turn_id: turn_id.clone(),
+            message_id: message_id.clone(),
+        });
+        // Share admission ordering with steering; cancellation and event delivery remain independent.
+        self.steers.push_back(Box::pin(async move {
+            let outcome = match response.await.map_err(backend_error) {
+                Ok(ManagedResponse::SteerWithdrawn(receipt))
+                    if receipt.turn_id == turn_id && receipt.message_id == message_id =>
+                {
+                    Ok(receipt.withdrawn)
+                }
+                Ok(ManagedResponse::SteerWithdrawn(_)) => Err(NanocodexError::BackendContract {
+                    detail: "managed withdrawal acknowledged a different steer",
+                }),
+                Ok(_) => Err(unexpected_response()),
+                Err(error) => Err(error),
+            };
+            drop(result.send(outcome));
+        }));
     }
 
     async fn submit(

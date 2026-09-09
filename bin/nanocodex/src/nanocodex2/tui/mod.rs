@@ -69,6 +69,7 @@ type SteerCompletion = (
     SteerTarget,
     Result<(), SteerFailure>,
 );
+type WithdrawalCompletion = (PaneId, components::QueueId, u64, Result<bool, String>);
 type WaitingSteer = (PaneId, components::QueueId, Submission);
 enum CancelTarget {
     Local {
@@ -98,7 +99,7 @@ impl CancelTarget {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SteerTarget {
     Local(TurnId),
     Managed { agent_id: String, turn_id: String },
@@ -497,6 +498,10 @@ struct DriverRuntime {
     admissions: JoinSet<Admission>,
     completions: JoinSet<Completion>,
     steers: JoinSet<SteerCompletion>,
+    steer_receipts: HashMap<(PaneId, components::QueueId), (u64, SteerTarget, String)>,
+    pending_withdrawals: HashSet<(PaneId, components::QueueId)>,
+    withdrawals: JoinSet<WithdrawalCompletion>,
+    pending_steer_target: Option<(components::QueueId, SteerTarget)>,
     waiting_steers: VecDeque<WaitingSteer>,
     unconfirmed_steer: Option<(components::QueueId, u64, SteerTarget)>,
     cancellations: JoinSet<CancelCompletion>,
@@ -919,6 +924,7 @@ impl DriverRuntime {
             && self.admissions.is_empty()
             && self.completions.is_empty()
             && self.steers.is_empty()
+            && self.withdrawals.is_empty()
             && self.waiting_steers.is_empty()
             && self.unconfirmed_steer.is_none()
             && self.cancellations.is_empty()
@@ -979,6 +985,21 @@ impl DriverRuntime {
             (pane, target, outcome)
         });
     }
+}
+
+fn withdraw_waiting_steer(
+    waiting: &mut VecDeque<WaitingSteer>,
+    pane: PaneId,
+    id: components::QueueId,
+) -> bool {
+    let Some(index) = waiting
+        .iter()
+        .position(|(owner, queued, _)| *owner == pane && *queued == id)
+    else {
+        return false;
+    };
+    waiting.remove(index);
+    true
 }
 
 fn take_waiting_steer_failures(
@@ -1147,6 +1168,10 @@ async fn run_inner(
         admissions: JoinSet::new(),
         completions: JoinSet::new(),
         steers: JoinSet::new(),
+        steer_receipts: HashMap::new(),
+        pending_withdrawals: HashSet::new(),
+        withdrawals: JoinSet::new(),
+        pending_steer_target: None,
         waiting_steers: VecDeque::new(),
         unconfirmed_steer: None,
         cancellations: JoinSet::new(),
@@ -1501,6 +1526,9 @@ async fn run_inner(
                             }
                             runtime.connection_generation =
                                 runtime.connection_generation.wrapping_add(1);
+                            runtime.steer_receipts.clear();
+                            runtime.pending_withdrawals.clear();
+                            runtime.withdrawals = JoinSet::new();
                             runtime.managed_events = Some(managed_events);
                             runtime.managed_events_open = true;
                             runtime.agent_id = agent_id;
@@ -1804,8 +1832,13 @@ async fn run_inner(
             result = runtime.steers.join_next(), if !runtime.steers.is_empty() => {
                 if let Some(result) = result {
                     let (pane, id, generation, target, outcome) = result.map_err(|error| ManagedError::Configuration(format!("steer task failed: {error}")))?;
-                    let update = match runtime.resolve_steer(generation, &target, outcome) {
-                        SteerResolution::Admitted => app.update(AppEvent::SteerAdmitted { pane, id }),
+                    runtime.pending_steer_target = None;
+                    let withdraw = runtime.pending_withdrawals.remove(&(pane, id));
+                    let mut update = match runtime.resolve_steer(generation, &target, outcome) {
+                        SteerResolution::Admitted => {
+                            runtime.steer_receipts.retain(|(owner, candidate), _| *owner != pane || *candidate == id);
+                            app.update(AppEvent::SteerAdmitted { pane, id })
+                        }
                         SteerResolution::Unconfirmed { error, active } => {
                             if active {
                                 runtime.unconfirmed_steer = Some((id, generation, target));
@@ -1815,8 +1848,36 @@ async fn run_inner(
                             // for explicit review even after the owning turn finishes.
                             app.update(AppEvent::SteerUnconfirmed { pane, id })
                         }
-                        SteerResolution::Failed => app.update(AppEvent::SteerFailed { pane, id }),
+                        SteerResolution::Failed if withdraw => {
+                            runtime.steer_receipts.remove(&(pane, id));
+                            app.update(AppEvent::SteerWithdrawn { pane, id })
+                        }
+                        SteerResolution::Failed => {
+                            runtime.steer_receipts.remove(&(pane, id));
+                            app.update(AppEvent::SteerFailed { pane, id })
+                        }
                         SteerResolution::Stale => continue,
+                    };
+                    if withdraw && runtime.steer_receipts.contains_key(&(pane, id)) {
+                        update.effects.push(AppEffect::Pane { pane, effect: RootEffect::WithdrawSteer { id } });
+                    }
+                    stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                }
+            }
+            result = runtime.withdrawals.join_next(), if !runtime.withdrawals.is_empty() => {
+                if let Some(result) = result {
+                    let (pane, id, generation, outcome) = result.map_err(|error| ManagedError::Configuration(format!("withdrawal task failed: {error}")))?;
+                    if generation != runtime.connection_generation { continue; }
+                    let update = match outcome {
+                        Ok(true) => {
+                            runtime.steer_receipts.remove(&(pane, id));
+                            if runtime.unconfirmed_steer.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
+                                runtime.unconfirmed_steer = None;
+                            }
+                            app.update(AppEvent::SteerWithdrawn { pane, id })
+                        }
+                        Ok(false) => app.update(AppEvent::SteerWithdrawalFailed { pane, id, error: "Message already received by the model or no longer withdrawable.".to_owned() }),
+                        Err(error) => app.update(AppEvent::SteerWithdrawalFailed { pane, id, error: format!("Withdrawal unconfirmed: {error}. The message has not been restored.") }),
                     };
                     stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                 }
@@ -2101,9 +2162,15 @@ async fn apply_update(
                         {
                             let generation = runtime.connection_generation;
                             let target = SteerTarget::Local(turn_id);
+                            let message_id = uuid::Uuid::now_v7().to_string();
+                            runtime.steer_receipts.insert(
+                                (pane, id),
+                                (generation, target.clone(), message_id.clone()),
+                            );
+                            runtime.pending_steer_target = Some((id, target.clone()));
                             runtime.steers.spawn(async move {
                                 let result = control
-                                    .steer(prompt.agent_prompt())
+                                    .steer_with_id(message_id, prompt.agent_prompt())
                                     .await
                                     .map_err(SteerFailure::backend);
                                 (pane, id, generation, target, result)
@@ -2123,9 +2190,15 @@ async fn apply_update(
                                         agent_id: agent_id.clone(),
                                         turn_id: turn_id.clone(),
                                     };
+                                    let message_id = uuid::Uuid::now_v7().to_string();
+                                    runtime.steer_receipts.insert(
+                                        (pane, id),
+                                        (generation, target.clone(), message_id.clone()),
+                                    );
+                                    runtime.pending_steer_target = Some((id, target.clone()));
                                     runtime.steers.spawn(async move {
                                         let result = client
-                                            .steer(&agent_id, &turn_id, &input)
+                                            .steer_with_id(&agent_id, &turn_id, &message_id, &input)
                                             .await
                                             .map_err(SteerFailure::managed)
                                             .and_then(|action| {
@@ -2169,6 +2242,101 @@ async fn apply_update(
                                 scheduler,
                             );
                         }
+                    }
+                    RootEffect::WithdrawSteer { id } => {
+                        if withdraw_waiting_steer(&mut runtime.waiting_steers, pane, id) {
+                            absorb(
+                                app.update(AppEvent::SteerWithdrawn { pane, id }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            continue;
+                        }
+                        if runtime
+                            .pending_steer_target
+                            .as_ref()
+                            .is_some_and(|(pending, _)| *pending == id)
+                        {
+                            // Wait for admission to settle: withdrawing before the POST could
+                            // otherwise race a successful late admission of the same message.
+                            runtime.pending_withdrawals.insert((pane, id));
+                            continue;
+                        }
+                        let Some((generation, target, message_id)) =
+                            runtime.steer_receipts.get(&(pane, id)).cloned()
+                        else {
+                            absorb(
+                                app.update(AppEvent::SteerWithdrawalFailed {
+                                    pane,
+                                    id,
+                                    error: "Cannot confirm withdrawal of this message.".to_owned(),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            continue;
+                        };
+                        if generation != runtime.connection_generation {
+                            absorb(
+                                app.update(AppEvent::SteerWithdrawalFailed {
+                                    pane,
+                                    id,
+                                    error: "Connection changed; withdrawal was not confirmed."
+                                        .to_owned(),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            continue;
+                        }
+                        match target {
+                            SteerTarget::Local(turn_id) => {
+                                if let Some(control) = runtime.controls.get(&turn_id).cloned() {
+                                    runtime.withdrawals.spawn(async move {
+                                        (
+                                            pane,
+                                            id,
+                                            generation,
+                                            control
+                                                .withdraw_steer(message_id)
+                                                .await
+                                                .map_err(|error| error.to_string()),
+                                        )
+                                    });
+                                } else {
+                                    absorb(app.update(AppEvent::SteerWithdrawalFailed { pane, id, error: "The turn has ended; this message cannot be withdrawn.".to_owned() }), &mut effects, scheduler);
+                                }
+                            }
+                            SteerTarget::Managed { agent_id, turn_id } => {
+                                let client = runtime.client.clone();
+                                runtime.withdrawals.spawn(async move {
+                                    let result = client
+                                        .withdraw_steer(&agent_id, &turn_id, &message_id)
+                                        .await
+                                        .map_err(|error| error.to_string())
+                                        .and_then(|response| {
+                                            if response.turn_id == turn_id
+                                                && response.message_id == message_id
+                                            {
+                                                Ok(response.withdrawn)
+                                            } else {
+                                                Err("Withdrawal acknowledged a different message"
+                                                    .to_owned())
+                                            }
+                                        });
+                                    (pane, id, generation, result)
+                                });
+                            }
+                        }
+                    }
+                    RootEffect::PersistSteerWithdrawal { text } => {
+                        let record =
+                            runtime.local_record(LocalEvent::UserSteerWithdrawn { text })?;
+                        absorb(
+                            app.update(AppEvent::Transcript { pane, record }),
+                            &mut effects,
+                            scheduler,
+                        );
                     }
                     RootEffect::PersistSteer { id, text } => {
                         // Only this request's own acknowledgement may release its fence.
@@ -2769,6 +2937,10 @@ mod tests {
             admissions: JoinSet::new(),
             completions: JoinSet::new(),
             steers: JoinSet::new(),
+            steer_receipts: HashMap::new(),
+            pending_withdrawals: HashSet::new(),
+            withdrawals: JoinSet::new(),
+            pending_steer_target: None,
             waiting_steers: VecDeque::new(),
             unconfirmed_steer: None,
             cancellations: JoinSet::new(),
@@ -2981,6 +3153,29 @@ mod tests {
         );
         assert!(!fences.begin_managed("turn-7"));
         assert!(fences.begin_managed("turn-8"));
+    }
+
+    #[test]
+    fn undo_waiting_steer_removes_only_the_exact_message_once() {
+        let first = QueueId::new(1);
+        let second = QueueId::new(2);
+        let mut waiting = VecDeque::from([
+            (PaneId::Main, first, Submission::text("first".to_owned())),
+            (PaneId::Main, second, Submission::text("second".to_owned())),
+        ]);
+        assert!(super::withdraw_waiting_steer(
+            &mut waiting,
+            PaneId::Main,
+            second
+        ));
+        assert!(!super::withdraw_waiting_steer(
+            &mut waiting,
+            PaneId::Main,
+            second
+        ));
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].1, first);
+        assert_eq!(waiting[0].2.display_text(), "first");
     }
 
     #[test]

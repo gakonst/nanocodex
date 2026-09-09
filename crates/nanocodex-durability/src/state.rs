@@ -231,6 +231,13 @@ pub enum Transition {
         /// Exact typed steering prompt.
         input: EncodedPayload,
     },
+    /// The latest unbound steer was withdrawn before model consumption.
+    SteerWithdrawn {
+        /// Accepted operation identity.
+        operation_id: String,
+        /// One-based position of the latest accepted steer.
+        steer_index: u32,
+    },
     /// Accepted steering input was bound to its consuming model boundary.
     SteerBound {
         /// Accepted operation identity.
@@ -850,6 +857,26 @@ impl DurableState {
                     )));
                 }
             }
+            Transition::SteerWithdrawn {
+                operation_id,
+                steer_index,
+            } => {
+                self.ensure_prior_operations_terminal(operation_id)?;
+                let operation = self.pending_operation(operation_id)?;
+                if steer_index
+                    .checked_sub(operation.retired_steers)
+                    .and_then(|index| usize::try_from(index).ok())
+                    != Some(operation.steers.len())
+                    || !operation
+                        .steers
+                        .last()
+                        .is_some_and(|steer| steer.model_call_index.is_none())
+                {
+                    return Err(Error::InvalidState(format!(
+                        "steer {steer_index} in operation `{operation_id}` is not the latest unbound steer"
+                    )));
+                }
+            }
             Transition::SteerBound {
                 operation_id,
                 steer_index,
@@ -1045,6 +1072,9 @@ impl DurableState {
                     })?;
                 operation.steers[index].model_call_index = Some(model_call_index);
             }
+            Transition::SteerWithdrawn { operation_id, .. } => {
+                self.pending_operation_mut(&operation_id)?.steers.pop();
+            }
             Transition::OperationCompleted {
                 operation_id,
                 checkpoint,
@@ -1169,6 +1199,7 @@ impl Transition {
             | Self::StepCompleted { operation_id, .. }
             | Self::SteerAccepted { operation_id, .. }
             | Self::SteerBound { operation_id, .. }
+            | Self::SteerWithdrawn { operation_id, .. }
             | Self::OperationCompleted { operation_id, .. }
             | Self::OperationFailed { operation_id, .. }
             | Self::OperationCancelled { operation_id, .. } => Some(operation_id),
@@ -1316,6 +1347,154 @@ mod continuation_tests {
         assert_eq!(operation.retired_model_calls, 2);
         assert!(operation.continuation.is_none());
         assert!(operation.steps.is_empty());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod withdrawal_tests {
+    use super::*;
+
+    #[test]
+    fn withdrawal_is_replayable_and_rejects_consumed_or_nonlatest_steers() -> Result<()> {
+        let mut state = DurableState::default();
+        let payload = EncodedPayload::encode(&"input")?;
+        let mut transitions = Vec::new();
+        let mut apply = |entry: Transition| {
+            state.apply_transition(state.revision() + 1, entry.clone())?;
+            transitions.push(entry);
+            Ok::<_, Error>(())
+        };
+        apply(Transition::OperationAccepted {
+            operation_id: "turn".into(),
+            input: payload.clone(),
+        })?;
+        for steer_index in 1..=2 {
+            apply(Transition::SteerAccepted {
+                operation_id: "turn".into(),
+                steer_index,
+                accepted_after_model_call_index: 1,
+                input: payload.clone(),
+            })?;
+        }
+        assert!(
+            apply(Transition::SteerWithdrawn {
+                operation_id: "turn".into(),
+                steer_index: 1
+            })
+            .is_err()
+        );
+        apply(Transition::SteerWithdrawn {
+            operation_id: "turn".into(),
+            steer_index: 2,
+        })?;
+        apply(Transition::SteerBound {
+            operation_id: "turn".into(),
+            steer_index: 1,
+            model_call_index: 2,
+        })?;
+        assert!(
+            apply(Transition::SteerWithdrawn {
+                operation_id: "turn".into(),
+                steer_index: 1
+            })
+            .is_err()
+        );
+        let mut replay = DurableState::default();
+        for entry in transitions {
+            let encoded = serde_json::to_string(&entry)?;
+            replay.apply_transition(replay.revision() + 1, serde_json::from_str(&encoded)?)?;
+        }
+        assert_eq!(replay.operation("turn").unwrap().steers.len(), 1);
+        assert_eq!(
+            replay.operation("turn").unwrap().steers[0].model_call_index,
+            Some(2)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn withdrawal_uses_absolute_indices_after_consumed_steers_are_retired() -> Result<()> {
+        let mut state = DurableState::default();
+        let payload = EncodedPayload::encode(&"input")?;
+        let mut transitions = Vec::new();
+        let mut apply = |entry: Transition| {
+            state.apply_transition(state.revision() + 1, entry.clone())?;
+            transitions.push(entry);
+            Ok::<_, Error>(())
+        };
+        apply(Transition::OperationAccepted {
+            operation_id: "turn".into(),
+            input: payload.clone(),
+        })?;
+        apply(Transition::SteerAccepted {
+            operation_id: "turn".into(),
+            steer_index: 1,
+            accepted_after_model_call_index: 1,
+            input: payload.clone(),
+        })?;
+        apply(Transition::SteerBound {
+            operation_id: "turn".into(),
+            steer_index: 1,
+            model_call_index: 2,
+        })?;
+        apply(Transition::StepStarted {
+            operation_id: "turn".into(),
+            step_id: "model-2".into(),
+            kind: "model_call".into(),
+            input: payload.clone(),
+        })?;
+        apply(Transition::StepCompleted {
+            operation_id: "turn".into(),
+            step_id: "model-2".into(),
+            output: payload.clone(),
+        })?;
+        apply(Transition::ExecutionAdvanced {
+            operation_id: "turn".into(),
+            continuation: payload.clone(),
+        })?;
+        for steer_index in 2..=3 {
+            apply(Transition::SteerAccepted {
+                operation_id: "turn".into(),
+                steer_index,
+                accepted_after_model_call_index: 2,
+                input: payload.clone(),
+            })?;
+        }
+        assert!(
+            apply(Transition::SteerWithdrawn {
+                operation_id: "turn".into(),
+                steer_index: 2
+            })
+            .is_err()
+        );
+        apply(Transition::SteerWithdrawn {
+            operation_id: "turn".into(),
+            steer_index: 3,
+        })?;
+        apply(Transition::SteerBound {
+            operation_id: "turn".into(),
+            steer_index: 2,
+            model_call_index: 3,
+        })?;
+        assert!(
+            apply(Transition::SteerWithdrawn {
+                operation_id: "turn".into(),
+                steer_index: 2
+            })
+            .is_err()
+        );
+        let mut replay = DurableState::default();
+        for entry in transitions {
+            let encoded = serde_json::to_string(&entry)?;
+            replay.apply_transition(replay.revision() + 1, serde_json::from_str(&encoded)?)?;
+        }
+        assert_eq!(replay.operation("turn").unwrap().retired_steers, 1);
+        assert_eq!(replay.operation("turn").unwrap().steers.len(), 1);
+        assert_eq!(
+            replay.operation("turn").unwrap().steers[0].model_call_index,
+            Some(3)
+        );
         Ok(())
     }
 }

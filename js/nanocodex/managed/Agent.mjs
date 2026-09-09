@@ -464,8 +464,8 @@ function managedTurn(client, agentId, eventStream, options) {
       const accepted = await submission;
       return client.json(turnPath(agentId, requiredString(accepted, "turn_id")), { signal });
     },
-    steer: async ({ input }) => {
-      const body = JSON.stringify({ input });
+    steer: async ({ input, messageId }) => {
+      const body = JSON.stringify({ input, message_id: messageId });
       // Preserve this turn's correction order across concurrent HTTP requests.
       // Cancellation deliberately bypasses this queue.
       const steering = steeringTail.then(async () => {
@@ -478,6 +478,25 @@ function managedTurn(client, agentId, eventStream, options) {
       });
       steeringTail = steering.then(() => {}, () => {});
       return steering;
+    },
+    withdrawSteer: async ({ messageId }) => {
+      if (typeof messageId !== "string" || !messageId) throw new TypeError("messageId must be a non-empty string");
+      // Await admission of earlier steers so withdrawal cannot overtake them.
+      const withdrawal = steeringTail.then(async () => {
+        const accepted = await submission;
+        const turnId = requiredString(accepted, "turn_id");
+        const receipt = await client.json(`${turnPath(agentId, turnId)}/withdraw-steer`, {
+          method: "POST",
+          body: JSON.stringify({ message_id: messageId }),
+          signal,
+        });
+        if (receipt?.turn_id !== turnId || receipt?.message_id !== messageId || typeof receipt?.withdrawn !== "boolean") {
+          throw new TypeError("managed withdrawal returned an invalid receipt");
+        }
+        return receipt;
+      });
+      steeringTail = withdrawal.then(() => {}, () => {});
+      return withdrawal;
     },
     cancel: async () => {
       const turnId = id ?? requiredString(await submission, "turn_id");

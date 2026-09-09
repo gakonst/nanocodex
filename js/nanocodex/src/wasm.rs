@@ -2833,16 +2833,20 @@ impl WasmTurn {
     /// # Errors
     ///
     /// Rejects if the turn is not active or its driver stopped.
-    pub async fn steer(&self, instruction: &str) -> Result<(), JsValue> {
+    pub async fn steer(
+        &self,
+        instruction: &str,
+        message_id: Option<String>,
+    ) -> Result<(), JsValue> {
         if instruction.trim().is_empty() {
             return Err(js_error("steer instruction must not be empty"));
         }
-        self.control()
-            .await
-            .map_err(js_error)?
-            .steer(Prompt::new(instruction))
-            .await
-            .map_err(js_error)
+        let control = self.control().await.map_err(js_error)?;
+        match message_id {
+            Some(id) => control.steer_with_id(id, Prompt::new(instruction)).await,
+            None => control.steer(Prompt::new(instruction)).await,
+        }
+        .map_err(js_error)
     }
 
     /// Injects browser-safe multimodal input at the active turn's next boundary.
@@ -2851,14 +2855,43 @@ impl WasmTurn {
     ///
     /// Rejects malformed input or a turn that is no longer active.
     #[wasm_bindgen(js_name = steerContent)]
-    pub async fn steer_content(&self, content_json: &str) -> Result<(), JsValue> {
+    pub async fn steer_content(
+        &self,
+        content_json: &str,
+        message_id: Option<String>,
+    ) -> Result<(), JsValue> {
         let prompt = parse_browser_prompt(content_json)?;
-        self.control()
-            .await
-            .map_err(js_error)?
-            .steer(prompt)
-            .await
-            .map_err(js_error)
+        let control = self.control().await.map_err(js_error)?;
+        match message_id {
+            Some(id) => control.steer_with_id(id, prompt).await,
+            None => control.steer(prompt).await,
+        }
+        .map_err(js_error)
+    }
+
+    /// Removes the latest identified steer while it is still pending.
+    /// Returns false after successful turn completion.
+    ///
+    /// # Errors
+    ///
+    /// Rejects if the driver has stopped or withdrawal is unsupported.
+    #[wasm_bindgen(js_name = withdrawSteer)]
+    pub async fn withdraw_steer(&self, message_id: String) -> Result<bool, JsValue> {
+        match self.control().await {
+            Ok(control) => control.withdraw_steer(message_id).await.map_err(js_error),
+            Err(_)
+                if self
+                    .state
+                    .borrow()
+                    .completed
+                    .as_ref()
+                    .is_some_and(Result::is_ok) =>
+            {
+                // A completed turn has already consumed or discarded its pending input.
+                Ok(false)
+            }
+            Err(error) => Err(js_error(error)),
+        }
     }
 
     /// Cancels this exact active or queued turn.

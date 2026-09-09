@@ -129,6 +129,7 @@ async function connectAgent(managed, connection, transport, tools, signal) {
           accepted: () => turn.accepted(),
           state: () => turn.state(),
           steer: (options) => turn.steer(options),
+          withdrawSteer: (options) => turn.withdrawSteer(options),
           cancel: () => turn.cancel(),
           async result(options) {
             const result = await turn.result(options);

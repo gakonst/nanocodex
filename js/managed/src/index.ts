@@ -2134,7 +2134,7 @@ async function managedFetch(
       );
     }
     const turnMatch = resource.match(
-      /^turns\/([^/]+)(?:\/(steer|cancel))?$/,
+      /^turns\/([^/]+)(?:\/(steer|withdraw-steer|cancel))?$/,
     );
     if (turnMatch) {
       // SDK paths percent-encode ':' in cron and other stable turn IDs.
@@ -3455,7 +3455,7 @@ export class DurableAgentSession extends DurableComputerSession {
         headers: { "cache-control": "no-store" },
       });
     }
-    const turnRoute = url.pathname.match(/^\/turns\/([A-Za-z0-9._:-]{1,128})(?:\/(steer|cancel))?$/);
+    const turnRoute = url.pathname.match(/^\/turns\/([A-Za-z0-9._:-]{1,128})(?:\/(steer|withdraw-steer|cancel))?$/);
     if (turnRoute) {
       if (this.#deleting) return json({ error: "agent_deleting" }, { status: 409 });
       const turnId = turnRoute[1]!;
@@ -3469,6 +3469,9 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       if (request.method === "POST" && turnRoute[2] === "steer") {
         return this.#steerHttpTurn(turnId, request, turnAuthorization);
+      }
+      if (request.method === "POST" && turnRoute[2] === "withdraw-steer") {
+        return this.#withdrawSteerHttpTurn(turnId, request, turnAuthorization);
       }
       if (request.method === "POST" && turnRoute[2] === "cancel") {
         return this.#cancelHttpTurn(turnId);
@@ -5243,7 +5246,7 @@ export class DurableAgentSession extends DurableComputerSession {
         request,
         MAX_REQUEST_BODY_BYTES,
       );
-      const value = JSON.parse(encoded) as { input?: unknown };
+      const value = JSON.parse(encoded) as { input?: unknown; message_id?: unknown };
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new ProtocolError(
           "invalid_request",
@@ -5251,7 +5254,10 @@ export class DurableAgentSession extends DurableComputerSession {
         );
       }
       validatePromptInput(value.input);
-      await this.#steerManagedTurn(id, value.input as PromptInput, authorization);
+      if (value.message_id !== undefined && (typeof value.message_id !== "string" || !TURN_ID.test(value.message_id))) {
+        throw new ProtocolError("invalid_request", "message_id must be a valid identifier");
+      }
+      await this.#steerManagedTurn(id, value.input as PromptInput, authorization, value.message_id as string | undefined);
       return json({ turn_id: id, state: "steering" }, { status: 202 });
     } catch (error) {
       if (error instanceof SyntaxError)
@@ -5273,7 +5279,35 @@ export class DurableAgentSession extends DurableComputerSession {
     id: string,
     input: PromptInput,
     authorization: TurnAuthorization,
+    messageId?: string,
   ): Promise<void> {
+    const turn = await this.#steerableManagedTurn(id, authorization);
+    await turn.steer({ input, messageId });
+  }
+
+  async #withdrawSteerHttpTurn(id: string, request: Request, authorization: TurnAuthorization): Promise<Response> {
+    try {
+      this.#assertDurabilityAdmissionActive();
+      const value = JSON.parse(await readBoundedRequestText(request, MAX_REQUEST_BODY_BYTES)) as { message_id?: unknown };
+      if (!value || typeof value !== "object" || Array.isArray(value)
+        || typeof value.message_id !== "string" || !TURN_ID.test(value.message_id)) {
+        throw new ProtocolError("invalid_request", "message_id must be a valid identifier");
+      }
+      const turn = await this.#steerableManagedTurn(id, authorization).catch((error: unknown) => {
+        // The retained authorization is checked before the terminal-state check.
+        if (error instanceof ManagedRequestError && error.code === "turn_not_steerable") return undefined;
+        throw error;
+      });
+      const withdrawn = turn ? await turn.withdrawSteer({ messageId: value.message_id }) : false;
+      return json({ turn_id: id, message_id: value.message_id, withdrawn });
+    } catch (error) {
+      if (error instanceof SyntaxError) return json({ error: "invalid_json" }, { status: 400 });
+      if (error instanceof ProtocolError) return json({ error: error.code, message: error.message }, { status: 400 });
+      return managedErrorResponse(error, "withdraw_steer_failed");
+    }
+  }
+
+  async #steerableManagedTurn(id: string, authorization: TurnAuthorization) {
     let row = await this.#findManagedTurn(id);
     if (!row) throw new ManagedRequestError(404, "turn_not_found", `turn ${id} does not exist`);
     let retainedAuthorization: TurnAuthorization;
@@ -5314,7 +5348,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!turn || this.#pendingTurnIds.has(id)) {
       throw new ManagedRequestError(503, "turn_recovering", "the durable turn is recovering; retry steering");
     }
-    await turn.steer({ input });
+    return turn;
   }
 
   async #cancelHttpTurn(id: string): Promise<Response> {

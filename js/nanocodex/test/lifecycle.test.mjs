@@ -300,6 +300,46 @@ test("steering joins the active turn at the next model boundary", async () => {
   await server.close();
 });
 
+test("durable identified steering withdraws only the latest pending input before the model boundary", async (t) => {
+  const server = await startResponsesServer();
+  const initialSeen = deferred();
+  const releaseInitial = deferred();
+  const agent = await createWarmAgent({
+    apiKey: "test-key", websocketUrl: server.url, thinking: "low",
+    sessionId: "018f1f9a-7b3c-7a21-8000-000000000021",
+    durability: createMemoryDurabilityStore("withdraw-steer"), durabilityId: "withdraw-steer",
+  });
+  t.after(async () => {
+    agent.dispose();
+    await server.close();
+  });
+  const scenario = (async () => {
+    const socket = await server.nextConnection();
+    const reader = messageReader(socket);
+    await reader.next();
+    sendWarmup(socket, "resp-withdraw-warmup");
+    await reader.next();
+    initialSeen.resolve();
+    await releaseInitial.promise;
+    sendFinal(socket, "resp-withdraw-initial", "BOUNDARY");
+    const steered = await reader.next();
+    assert.match(JSON.stringify(steered.input), /retained correction/);
+    assert.doesNotMatch(JSON.stringify(steered.input), /withdrawn correction/);
+    sendFinal(socket, "resp-withdraw-final", "DONE");
+  })();
+  const turn = agent.turn.prompt({ input: "initial task", id: "withdraw-operation" });
+  await initialSeen.promise;
+  await turn.steer({ input: "retained correction", messageId: "first" });
+  await turn.steer({ input: "withdrawn correction", messageId: "last" });
+  assert.equal(await turn.withdrawSteer({ messageId: "first" }), false);
+  assert.equal(await turn.withdrawSteer({ messageId: "last" }), true);
+  assert.equal(await turn.withdrawSteer({ messageId: "last" }), false);
+  releaseInitial.resolve();
+  assert.equal((await turn.result()).finalMessage, "DONE");
+  assert.equal(await turn.withdrawSteer({ messageId: "first" }), false);
+  await scenario;
+});
+
 test("cancellation stops the active socket and replays only committed and aborted input", async () => {
   const server = await startResponsesServer();
   const activeSeen = deferred();

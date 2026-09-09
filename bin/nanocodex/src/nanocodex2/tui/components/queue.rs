@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 
 const STEERING_TEXT: &str = "steering";
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct QueueId(u64);
 
 impl QueueId {
@@ -106,6 +106,27 @@ impl MessageQueue {
         self.selected = self.steer_lane_len().saturating_sub(1);
         self.sync_steering_wave();
         (id, prompt)
+    }
+
+    /// Queue order can change; IDs preserve submission order across both lanes.
+    pub(super) fn latest(&self) -> Option<(QueueId, bool)> {
+        self.items
+            .iter()
+            .max_by_key(|item| item.id)
+            .map(|item| (item.id, item.state == QueueItemState::Queued))
+    }
+
+    pub(super) fn prompt(&self, id: QueueId) -> Option<Submission> {
+        self.items
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.prompt.clone())
+    }
+
+    pub(super) fn withdraw(&mut self, id: QueueId) -> Option<Submission> {
+        let prompt = self.remove_id(id);
+        self.sync_steering_wave();
+        prompt
     }
 
     pub(super) fn finish_edit(&mut self, id: QueueId, text: String) -> bool {
@@ -395,6 +416,7 @@ impl MessageQueue {
                     "e edit",
                     "enter steer",
                     "d delete",
+                    "alt+u undo last",
                     "esc back",
                 ],
                 &["↑↓ select", "e edit", "enter steer", "d delete", "esc back"],
@@ -607,6 +629,19 @@ mod tests {
             .chunks(usize::from(width))
             .map(|row| row.iter().map(|cell| cell.symbol()).collect())
             .collect()
+    }
+
+    #[test]
+    fn undo_latest_tracks_submission_order_after_reordering() {
+        let mut queue = MessageQueue::default();
+        queue.push("first".to_owned());
+        queue.push("last".to_owned());
+        let (latest, local) = queue.latest().unwrap();
+        assert!(local);
+        queue.update(key(KeyCode::Up, KeyModifiers::SHIFT));
+        assert_eq!(queue.latest(), Some((latest, true)));
+        assert_eq!(queue.withdraw(latest).unwrap().display_text(), "last");
+        assert_eq!(queue.drain_ready()[0].display_text(), "first");
     }
 
     #[test]
@@ -1050,7 +1085,7 @@ mod tests {
 
         assert!(
             rows[2]
-                .contains(" ↑↓ select · ⇧↑↓ reorder · e edit · enter steer · d delete · esc back ")
+                .contains(" ↑↓ select · ⇧↑↓ reorder · e edit · enter steer · d delete · alt+u undo last · esc back ")
         );
     }
 

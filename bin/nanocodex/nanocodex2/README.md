@@ -58,6 +58,11 @@ in again replaces the saved key without revoking previous account keys.
 
 Press Enter to send steering input during a response, or Tab to queue a
 follow-up for when the current turn finishes. Esc twice interrupts the turn.
+Press Alt+U to undo the latest queued or steered message before the model receives it.
+Confirmed withdrawal restores the message and its images to the composer. If you
+are already writing another draft, clear the composer and press Ctrl+Z to restore
+the withdrawn message. Failed or unconfirmed withdrawals preserve the original.
+
 Rapid steering instructions are sent in order. The terminal records its own
 successful acknowledgements as **steering accepted**. This confirms admission,
 not application at a model boundary. Shared steering telemetry can originate

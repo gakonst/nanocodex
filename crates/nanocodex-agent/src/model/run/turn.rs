@@ -777,7 +777,7 @@ where
     pub(super) async fn drive_session(
         &mut self,
         session: &mut ModelSessionState,
-        mut steers: tokio::sync::mpsc::Receiver<QueuedSteer>,
+        steers: crate::agent::execution::SteerQueue,
         retained_steers: Vec<QueuedSteer>,
         resumed: bool,
         model_call_index: Arc<tokio::sync::Mutex<u32>>,
@@ -803,9 +803,7 @@ where
             if can_drain_steers {
                 let mut current_call_index = model_call_index.lock().await;
                 *current_call_index = call_index;
-                while let Ok(steer) = steers.try_recv() {
-                    pending_steers.push_back(steer);
-                }
+                pending_steers.extend(steers.lock().await.drain(..));
                 drop(current_call_index);
                 self.drain_steers(&mut session.conversation, &mut pending_steers, call_index)
                     .await?;
@@ -863,7 +861,17 @@ where
                     can_drain_steers = !compacted;
                     continue;
                 }
-                if !steers.is_empty() || !pending_steers.is_empty() {
+                pending_steers.extend(steers.lock().await.drain(..));
+                let mut live_steers = VecDeque::new();
+                while let Some(steer) = pending_steers.pop_front() {
+                    if *steer.delivery.lock().await
+                        != crate::agent::execution::SteerDelivery::Withdrawn
+                    {
+                        live_steers.push_back(steer);
+                    }
+                }
+                pending_steers = live_steers;
+                if !pending_steers.is_empty() {
                     // The completed response is retained by previous_response_id;
                     // the next delta contains only newly drained steer messages.
                     session.conversation.clear_delta();
@@ -944,6 +952,12 @@ where
             let steer = pending_steers
                 .pop_front()
                 .expect("eligible steering input disappeared");
+            let mut delivery = steer.delivery.lock().await;
+            if *delivery == crate::agent::execution::SteerDelivery::Withdrawn {
+                continue;
+            }
+            *delivery = crate::agent::execution::SteerDelivery::Consumed;
+            drop(delivery);
             if steer.model_call_index.is_none()
                 && let (Some(steps), Some(index)) = (&self.execution_steps, steer.durable_index)
             {

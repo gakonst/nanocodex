@@ -197,6 +197,7 @@ function managedTurn(agent, turn, settled) {
       .then((completed) => managedTurnResult(completed))
       .finally(settled),
     steer: async (options) => { await turn.steer(options); },
+    withdrawSteer: async (options) => (await turn.withdrawSteer(options)).withdrawn,
     cancel: async () => { await turn.cancel(); },
     dispose() {},
   });

@@ -194,6 +194,11 @@ pub(crate) enum RootEvent {
     ConfirmReviewDownload,
     UpdateAvailable(Version),
     SteerAdmitted(QueueId),
+    SteerWithdrawn(QueueId),
+    SteerWithdrawalFailed {
+        id: QueueId,
+        error: String,
+    },
     SteerUnconfirmed(QueueId),
     SteerFailed {
         id: QueueId,
@@ -260,6 +265,12 @@ pub(crate) enum RootEffect {
     Steer {
         id: QueueId,
         prompt: Submission,
+    },
+    WithdrawSteer {
+        id: QueueId,
+    },
+    PersistSteerWithdrawal {
+        text: String,
     },
     PersistSteer {
         id: QueueId,
@@ -345,6 +356,11 @@ pub(crate) struct RootNode {
     key_confirmation: Option<KeyConfirmation>,
     notification: Option<Notification>,
     discarded_draft: Option<ComposerDraft>,
+    last_admitted_steer: Option<(QueueId, Submission)>,
+    withdrawn_draft: Option<ComposerDraft>,
+    withdrawing_steer: Option<QueueId>,
+    withdrawing_prompt: Option<Submission>,
+    withdrawing_remote: bool,
     queue_edit: Option<QueueEdit>,
     selection: Selection,
     selection_auto_scroll: Option<SelectionAutoScroll>,
@@ -387,6 +403,11 @@ impl RootNode {
             key_confirmation: None,
             notification: None,
             discarded_draft: None,
+            last_admitted_steer: None,
+            withdrawn_draft: None,
+            withdrawing_steer: None,
+            withdrawing_prompt: None,
+            withdrawing_remote: false,
             queue_edit: None,
             selection: Selection::default(),
             selection_auto_scroll: None,
@@ -508,6 +529,7 @@ impl RootNode {
     ) {
         let current_draft = self.composer.component_mut().take_draft();
         let previous_discarded_draft = self.discarded_draft.take();
+        let withdrawn_draft = self.withdrawn_draft.take();
         let replaced_draft = current_draft.is_some() && matches!(draft_reset, DraftReset::Clear);
         let (preserved_draft, discarded_draft) = match draft_reset {
             DraftReset::Clear => (None, current_draft.or(previous_discarded_draft)),
@@ -519,6 +541,7 @@ impl RootNode {
         *self = Self::new(workspace, thinking);
         self.set_reasoning_modes(reasoning_mode, preferred_reasoning_mode);
         self.discarded_draft = discarded_draft;
+        self.withdrawn_draft = withdrawn_draft;
         self.fork_available = fork_available;
         self.theme_mode = theme_mode;
         self.set_max_subagents(max_subagents);
@@ -883,6 +906,12 @@ impl RootNode {
         }
         if self.overlay.is_some() {
             return self.update_overlay(event, Instant::now());
+        }
+        if matches!(&event, Event::Key(key)
+            if key.code == KeyCode::Char('u') && key.modifiers == KeyModifiers::ALT
+                && key.kind == KeyEventKind::Press)
+        {
+            return self.undo_latest_message();
         }
         if is_control_key(&event, 'z')
             && !self.queue.component().focused()
@@ -2279,10 +2308,14 @@ impl RootNode {
     }
 
     fn restore_discarded_draft(&mut self) -> ComponentUpdate<RootEffect> {
-        if !self.composer.component().draft().is_empty() {
+        if !self.composer.component().draft().is_empty() || self.composer.component().has_images() {
             return ComponentUpdate::none();
         }
-        let Some(draft) = self.discarded_draft.take() else {
+        let Some(draft) = self
+            .withdrawn_draft
+            .take()
+            .or_else(|| self.discarded_draft.take())
+        else {
             return ComponentUpdate::none();
         };
         self.composer.component_mut().restore_draft(draft);
@@ -2409,8 +2442,104 @@ impl RootNode {
         update
     }
 
+    fn undo_latest_message(&mut self) -> ComponentUpdate<RootEffect> {
+        if self.withdrawing_steer.is_some() {
+            return ComponentUpdate::none();
+        }
+        if self.withdrawn_draft.is_some() {
+            self.notification = Some(Notification::plain(
+                "Restore the withdrawn draft with Ctrl+Z first.".to_owned(),
+                Color::Yellow,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        let queued = self.queue.component().latest();
+        let admitted = self
+            .last_admitted_steer
+            .as_ref()
+            .map(|(id, _)| (*id, false));
+        let Some((id, local)) = queued.into_iter().chain(admitted).max_by_key(|(id, _)| *id) else {
+            self.notification = Some(Notification::plain(
+                "No queued message to undo.".to_owned(),
+                Color::Yellow,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        };
+        self.withdrawing_prompt = self.queue.component().prompt(id).or_else(|| {
+            self.last_admitted_steer
+                .as_ref()
+                .filter(|(candidate, _)| *candidate == id)
+                .map(|(_, prompt)| prompt.clone())
+        });
+        self.withdrawing_steer = Some(id);
+        self.withdrawing_remote = !local;
+        if local {
+            return self.steer_withdrawn(id);
+        }
+        self.notification = Some(Notification::plain(
+            "Withdrawing message…".to_owned(),
+            Color::Yellow,
+        ));
+        ComponentUpdate {
+            effects: vec![RootEffect::WithdrawSteer { id }],
+            render: RenderRequest::Immediate,
+        }
+    }
+
+    fn steer_withdrawn(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
+        if self.withdrawing_steer != Some(id) {
+            return ComponentUpdate::none();
+        }
+        self.withdrawing_steer = None;
+        let prompt = self.queue.component_mut().withdraw(id).or_else(|| {
+            if self
+                .last_admitted_steer
+                .as_ref()
+                .is_some_and(|(candidate, _)| *candidate == id)
+            {
+                self.last_admitted_steer.take().map(|(_, prompt)| prompt)
+            } else {
+                None
+            }
+        });
+        let Some(prompt) = prompt.or_else(|| self.withdrawing_prompt.take()) else {
+            return ComponentUpdate::none();
+        };
+        self.withdrawing_prompt = None;
+        let effects = if self.withdrawing_remote {
+            vec![RootEffect::PersistSteerWithdrawal {
+                text: prompt.display_text().to_owned(),
+            }]
+        } else {
+            Vec::new()
+        };
+        self.withdrawing_remote = false;
+        self.queue.component_mut().set_focused(false);
+        let message = if self.composer.component().draft().is_empty()
+            && !self.composer.component().has_images()
+            && self.queue_edit.is_none()
+            && !self.reflection_input
+            && self.overlay.is_none()
+        {
+            self.composer.component_mut().restore_draft(prompt.into());
+            "Message withdrawn · edit and send again."
+        } else {
+            // Never overwrite text typed while the server was deciding withdrawal.
+            self.withdrawn_draft = Some(prompt.into());
+            "Message withdrawn · clear the composer, then Ctrl+Z to restore."
+        };
+        self.notification = Some(Notification::plain(message.to_owned(), Color::Green));
+        ComponentUpdate {
+            effects,
+            render: RenderRequest::Immediate,
+        }
+    }
+
     fn steer_admitted(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
         let accepted = self.queue.component_mut().steer_admitted(id);
+        if let Some(accepted) = &accepted {
+            self.last_admitted_steer = Some(accepted.clone());
+        }
         self.finish_accepted_steer(accepted)
     }
 
@@ -2445,7 +2574,7 @@ impl RootNode {
         if !self.interactive || self.has_active_turns() {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
-        if self.queue.component().has_pending_steer() {
+        if self.withdrawing_steer.is_some() || self.queue.component().has_pending_steer() {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         let prompts = self.queue.component_mut().drain_ready();
@@ -2945,6 +3074,15 @@ impl Component for RootNode {
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
             RootEvent::SteerAdmitted(id) => self.steer_admitted(id),
+            RootEvent::SteerWithdrawn(id) => self.steer_withdrawn(id),
+            RootEvent::SteerWithdrawalFailed { id, error } => {
+                if self.withdrawing_steer == Some(id) {
+                    self.withdrawing_steer = None;
+                    self.withdrawing_prompt = None;
+                    self.notification = Some(Notification::plain(error, Color::Yellow));
+                }
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             RootEvent::SteerUnconfirmed(id) => self.steer_unconfirmed(id),
             RootEvent::SteerFailed { id } => self.steer_failed(id),
             RootEvent::AnimationFrame(now) => self.update_animation(now),
@@ -3423,6 +3561,150 @@ mod live_control_tests {
 
     fn key(code: KeyCode) -> RootEvent {
         RootEvent::Terminal(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    fn undo_message() -> RootEvent {
+        RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::ALT,
+        )))
+    }
+
+    #[test]
+    fn undo_latest_queued_message_uses_submission_order() {
+        let mut root = root_with_draft("");
+        root.in_flight_turns = 1;
+        root.queue.component_mut().push("older followup".to_owned());
+        let (id, _) = root
+            .queue
+            .component_mut()
+            .begin_steer("newer steer".to_owned().into());
+        root.queue.component_mut().steer_failed(id);
+        let update = root.update(undo_message());
+        assert!(update.effects.is_empty());
+        assert_eq!(root.composer.component().draft(), "newer steer");
+        assert_eq!(root.queue.component().len(), 1);
+    }
+
+    #[test]
+    fn undo_queued_image_message_restores_the_original_image_payload() {
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        let mut root = root_with_draft("inspect ");
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,original".to_owned(),
+        ));
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        root.in_flight_turns = 1;
+        root.queue.component_mut().push(draft.into_submission());
+        root.update(undo_message());
+        assert!(root.composer.component().has_images());
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        let PromptInput::Content(content) = draft.into_submission().agent_prompt().instruction
+        else {
+            panic!("expected content")
+        };
+        assert!(content.iter().any(|item| matches!(item, UserInput::Image { image_url, .. } if image_url == "data:image/png;base64,original")));
+    }
+
+    #[test]
+    fn undo_steer_waits_for_confirmed_withdrawal_and_ignores_duplicate_shortcut() {
+        let mut root = root_with_draft("change direction");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        let update = root.update(undo_message());
+        assert_eq!(update.effects, [RootEffect::WithdrawSteer { id }]);
+        assert!(root.composer.component().draft().is_empty());
+        assert_eq!(root.queue.component().len(), 1);
+        assert!(root.update(undo_message()).effects.is_empty());
+        root.update(RootEvent::SteerAdmitted(id));
+        assert!(root.composer.component().draft().is_empty());
+        root.update(RootEvent::SteerWithdrawn(id));
+        assert_eq!(root.composer.component().draft(), "change direction");
+        assert!(root.queue.component().is_empty());
+        assert!(root.last_admitted_steer.is_none());
+    }
+
+    #[test]
+    fn undo_failure_never_restores_or_removes_the_steer() {
+        let mut root = root_with_draft("already received");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(undo_message());
+        root.update(RootEvent::SteerWithdrawalFailed {
+            id,
+            error: "Already received by the model".to_owned(),
+        });
+        assert!(root.composer.component().draft().is_empty());
+        assert_eq!(root.queue.component().len(), 1);
+        assert!(root.withdrawing_steer.is_none());
+    }
+
+    #[test]
+    fn undo_preserves_its_prompt_when_a_newer_steer_is_admitted() {
+        let mut root = root_with_draft("withdraw first");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(RootEvent::SteerAdmitted(id));
+        root.update(undo_message());
+        root.composer
+            .component_mut()
+            .replace_draft("new steer".to_owned());
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id: newer, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let newer = *newer;
+        root.update(RootEvent::SteerAdmitted(newer));
+        root.update(RootEvent::SteerWithdrawn(id));
+        assert_eq!(root.composer.component().draft(), "withdraw first");
+        assert_eq!(root.last_admitted_steer.as_ref().unwrap().0, newer);
+    }
+
+    #[test]
+    fn confirmed_undo_preserves_an_image_only_composer() {
+        let mut root = root_with_draft("withdraw me");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(RootEvent::SteerAdmitted(id));
+        root.update(undo_message());
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,new-image".to_owned(),
+        ));
+        let image_draft = root.composer.component().draft().to_owned();
+        root.update(RootEvent::SteerWithdrawn(id));
+        root.restore_discarded_draft();
+        assert_eq!(root.composer.component().draft(), image_draft);
+        assert!(root.composer.component().has_images());
+        assert!(root.withdrawn_draft.is_some());
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        let nanocodex::agent::input::PromptInput::Content(content) =
+            draft.into_submission().agent_prompt().instruction
+        else {
+            panic!("expected image content")
+        };
+        assert!(content.iter().any(|item| matches!(item,
+            nanocodex::agent::input::UserInput::Image { image_url, .. }
+                if image_url == "data:image/png;base64,new-image")));
+        root.restore_discarded_draft();
+        assert_eq!(root.composer.component().draft(), "withdraw me");
+        assert!(!root.composer.component().has_images());
+        assert!(root.withdrawn_draft.is_none());
     }
 
     fn root_with_draft(draft: &str) -> RootNode {

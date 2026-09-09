@@ -14,8 +14,8 @@ use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
     EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse, ManagedApiKey,
     ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord, PromptInput,
-    ReadSessionBody, ReadSessionRequest, ReadSessionResponse, TurnAction, TurnSteer,
-    TurnSubmission, TurnView,
+    ReadSessionBody, ReadSessionRequest, ReadSessionResponse, SteerWithdrawal, TurnAction,
+    TurnSteer, TurnSubmission, TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;
@@ -644,9 +644,35 @@ impl ManagedClient {
         turn_id: &str,
         input: &PromptInput,
     ) -> Result<TurnAction, ManagedError> {
+        self.steer_identified(agent_id, turn_id, input, None).await
+    }
+
+    /// Adds input with a caller-selected identity for pending withdrawal.
+    ///
+    /// # Errors
+    /// Returns a validation, transport, HTTP, or response-schema failure.
+    pub async fn steer_with_id(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        message_id: &str,
+        input: &PromptInput,
+    ) -> Result<TurnAction, ManagedError> {
+        validate_id("message", message_id)?;
+        self.steer_identified(agent_id, turn_id, input, Some(message_id))
+            .await
+    }
+
+    async fn steer_identified(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        input: &PromptInput,
+        message_id: Option<&str>,
+    ) -> Result<TurnAction, ManagedError> {
         loop {
             let result = self
-                .turn_action(agent_id, turn_id, "steer", Some(input))
+                .turn_action(agent_id, turn_id, "steer", Some(input), message_id)
                 .await;
             if matches!(&result, Err(ManagedError::Http { status, code, .. })
                 if *status == reqwest::StatusCode::SERVICE_UNAVAILABLE && code == "turn_recovering")
@@ -668,7 +694,39 @@ impl ManagedClient {
     /// Returns an identifier-validation, transport, HTTP, size, or
     /// response-schema failure.
     pub async fn cancel(&self, agent_id: &str, turn_id: &str) -> Result<TurnAction, ManagedError> {
-        self.turn_action(agent_id, turn_id, "cancel", None).await
+        self.turn_action(agent_id, turn_id, "cancel", None, None)
+            .await
+    }
+
+    /// Atomically withdraws an identified steer if it is still pending.
+    ///
+    /// # Errors
+    /// Returns a validation, transport, HTTP, or response-schema failure.
+    pub async fn withdraw_steer(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        message_id: &str,
+    ) -> Result<SteerWithdrawal, ManagedError> {
+        validate_id("agent", agent_id)?;
+        validate_id("turn", turn_id)?;
+        validate_id("message", message_id)?;
+        let body = serde_json::to_vec(&serde_json::json!({"message_id": message_id}))
+            .map_err(|_| ManagedError::InvalidResponse("failed to encode withdrawal"))?;
+        let receipt: SteerWithdrawal = self
+            .json(
+                Method::POST,
+                &format!("{}/turns/{turn_id}/withdraw-steer", agent_path(agent_id)),
+                Some(&body),
+                None,
+            )
+            .await?;
+        if receipt.turn_id != turn_id || receipt.message_id != message_id {
+            return Err(ManagedError::InvalidResponse(
+                "withdrawal acknowledged a different steer",
+            ));
+        }
+        Ok(receipt)
     }
 
     /// Opens a resumable durable event stream starting at a validated cursor.
@@ -695,11 +753,12 @@ impl ManagedClient {
         turn_id: &str,
         action: &str,
         input: Option<&PromptInput>,
+        message_id: Option<&str>,
     ) -> Result<TurnAction, ManagedError> {
         validate_id("agent", agent_id)?;
         validate_id("turn", turn_id)?;
         let body = input
-            .map(|input| serde_json::to_vec(&TurnSteer { input }))
+            .map(|input| serde_json::to_vec(&TurnSteer { input, message_id }))
             .transpose()
             .map_err(|_| ManagedError::InvalidResponse("failed to encode steer"))?;
         self.json(
@@ -1034,6 +1093,61 @@ mod tests {
             assert_eq!(attempts.load(Ordering::SeqCst), expected_attempts);
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn identified_steers_and_withdrawals_preserve_identity() {
+        let app = Router::new()
+            .route("/v1/agents/agent-1/turns/turn-1/steer", axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                assert_eq!(body, serde_json::json!({"input": "correction", "message_id": "pending"}));
+                axum::Json(serde_json::json!({"turn_id": "turn-1", "state": "steering"}))
+            }))
+            .route("/v1/agents/agent-1/turns/turn-1/withdraw-steer", axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                let id = body["message_id"].as_str().unwrap();
+                axum::Json(serde_json::json!({"turn_id": "turn-1", "message_id": if id == "mismatch" { "other" } else { id }, "withdrawn": id == "pending"}))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(key()).unwrap(),
+        )
+        .unwrap();
+        client
+            .steer_with_id(
+                "agent-1",
+                "turn-1",
+                "pending",
+                &PromptInput::Text("correction".to_owned()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            client
+                .withdraw_steer("agent-1", "turn-1", "pending")
+                .await
+                .unwrap()
+                .withdrawn
+        );
+        assert!(
+            !client
+                .withdraw_steer("agent-1", "turn-1", "consumed")
+                .await
+                .unwrap()
+                .withdrawn
+        );
+        assert!(matches!(
+            client.withdraw_steer("agent-1", "turn-1", "mismatch").await,
+            Err(ManagedError::InvalidResponse(_))
+        ));
+        assert!(
+            client
+                .withdraw_steer("agent-1", "turn-1", "../invalid")
+                .await
+                .is_err()
+        );
+        server.abort();
     }
 
     #[tokio::test]

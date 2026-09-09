@@ -79,6 +79,11 @@ async function checkManaged() {
     input: [{ type: "text", text: "hello" }],
     idempotencyKey: "request-1",
   });
+  await turn.steer({ input: "correction", messageId: "steer-1" });
+  const withdrawn: boolean = (await turn.withdrawSteer({ messageId: "steer-1" })).withdrawn;
+  void withdrawn;
+  // @ts-expect-error withdrawal requires a steer identity.
+  await turn.withdrawSteer({});
   const accepted: string = await turn.accepted();
   const result: ManagedTurnResult = await turn.result();
   await turn.result({ signal: new AbortController().signal });

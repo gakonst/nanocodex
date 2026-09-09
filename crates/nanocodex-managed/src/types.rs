@@ -665,8 +665,21 @@ pub(crate) struct TurnSubmission<'a> {
     pub(crate) input: &'a PromptInput,
 }
 
+/// Receipt for a pending steer withdrawal.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SteerWithdrawal {
+    /// Stable managed turn identifier.
+    pub turn_id: String,
+    /// Caller-selected steer identifier.
+    pub message_id: String,
+    /// Whether the pending steer was atomically removed.
+    pub withdrawn: bool,
+}
+
 #[derive(Serialize)]
 pub(crate) struct TurnSteer<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) message_id: Option<&'a str>,
     pub(crate) input: &'a PromptInput,
 }
 
