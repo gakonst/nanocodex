@@ -156,8 +156,13 @@ export function steer(turn, options) {
   const state = turnState(turn);
   const input = actionInput(options);
   return typeof input === "string"
-    ? state.raw.steer(input)
-    : state.raw.steerContent(JSON.stringify(input));
+    ? state.raw.steer(input, options.messageId)
+    : state.raw.steerContent(JSON.stringify(input), options.messageId);
+}
+
+export function withdrawSteer(turn, { messageId }) {
+  if (typeof messageId !== "string" || !messageId) throw new TypeError("messageId must be a non-empty string");
+  return turnState(turn).raw.withdrawSteer(messageId);
 }
 
 export function cancel(turn) {
@@ -974,6 +979,7 @@ function createTurn(raw, agent) {
     accepted: () => awaitTurnAcceptance(turn),
     result: () => getTurnResult(turn),
     steer: (input) => steer(turn, input),
+    withdrawSteer: (options) => withdrawSteer(turn, options),
     cancel: () => cancel(turn),
     dispose() {
       if (state.disposed) return;

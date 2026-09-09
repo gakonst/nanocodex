@@ -56,6 +56,10 @@ test("Agent.create opens an existing managed identity with the common Turn lifec
         },
       }, { status: 202 });
     }
+    if (request.method === "POST" && path.endsWith("/withdraw-steer")) {
+      assert.deepEqual(await request.json(), { message_id: "correction-1" });
+      return Response.json({ turn_id: serverTurnId, message_id: "correction-1", withdrawn: true });
+    }
     if (request.method === "POST" && path.endsWith("/steer")) {
       assert(path.includes(`/${serverTurnId}/`));
       assert.deepEqual(await request.json(), { input: "more" });
@@ -88,6 +92,7 @@ test("Agent.create opens an existing managed identity with the common Turn lifec
   assert.equal(turn.agent, agent);
   assert.equal(await turn.accepted(), requestId);
   await turn.steer({ input: "more" });
+  assert.equal(await turn.withdrawSteer({ messageId: "correction-1" }), true);
   await turn.cancel();
   const result = await turn.result();
   assert.equal(result.finalMessage, "managed hello");

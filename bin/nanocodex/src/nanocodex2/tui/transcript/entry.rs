@@ -109,6 +109,8 @@ pub(crate) struct ToolEntry {
     pub(crate) execution: ToolExecution,
     pub(crate) substeps: Vec<String>,
     pub(crate) child_count: usize,
+    /// Display-only exec output after removing exact echoes of semantic children.
+    pub(crate) code_display_result: Option<Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

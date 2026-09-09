@@ -292,7 +292,11 @@ pub(super) async fn begin_shutdown(
             Command::Context { result } => {
                 drop(result.send(Err(NanocodexError::AgentStopped)));
             }
-            Command::Steer { result, .. }
+            Command::WithdrawSteer { result, .. } => {
+                drop(result.send(Err(NanocodexError::AgentStopped)));
+            }
+            Command::SteerWithId { result, .. }
+            | Command::Steer { result, .. }
             | Command::Cancel { result, .. }
             | Command::SetModel { result, .. }
             | Command::SetThinking { result, .. }
@@ -377,7 +381,10 @@ pub(super) fn handle_idle_command<S>(
             );
             drop(result.send(outcome));
         }
-        Command::Steer { result, .. } => {
+        Command::WithdrawSteer { result, .. } => {
+            drop(result.send(Ok(false)));
+        }
+        Command::SteerWithId { result, .. } | Command::Steer { result, .. } => {
             drop(result.send(Err(NanocodexError::TurnNotSteerable)));
         }
         Command::RoutePrompt {

@@ -6,6 +6,7 @@ import {
   getTurnUsage,
   prompt as promptTurn,
   steer as steerTurn,
+  withdrawSteer as withdrawTurnSteer,
 } from "../internal.mjs";
 
 export function prompt(agent, options) {
@@ -34,4 +35,8 @@ export function steer(turn, options) {
 
 export function cancel(turn) {
   return cancelTurn(turn);
+}
+
+export function withdrawSteer(turn, options) {
+  return withdrawTurnSteer(turn, options);
 }

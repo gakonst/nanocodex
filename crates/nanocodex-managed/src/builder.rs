@@ -22,7 +22,7 @@ use nanocodex_tools::{
 use crate::attachment::AttachmentSupervisor;
 use crate::{
     AgentReceipt, AgentSettings, AgentState, EventCursor, ManagedClient, ManagedError,
-    ManagedEvent, ManagedEvents, PromptInput, TurnAction, TurnView,
+    ManagedEvent, ManagedEvents, PromptInput, SteerWithdrawal, TurnAction, TurnView,
     driver::{ManagedAgent, ManagedDriver},
     websocket::ManagedSocket,
 };
@@ -67,6 +67,26 @@ pub enum ManagedRequest {
         turn_id: String,
         /// Additional managed prompt input.
         input: PromptInput,
+    },
+    /// Adds identified input to an active turn.
+    SteerWithId {
+        /// Stable managed agent identifier.
+        agent_id: String,
+        /// Server-owned turn identifier.
+        turn_id: String,
+        /// Caller-selected steer identifier.
+        message_id: String,
+        /// Additional prompt input.
+        input: PromptInput,
+    },
+    /// Withdraws a pending identified steer.
+    WithdrawSteer {
+        /// Stable managed agent identifier.
+        agent_id: String,
+        /// Server-owned turn identifier.
+        turn_id: String,
+        /// Caller-selected steer identifier.
+        message_id: String,
     },
     /// Requests cancellation of an active turn.
     Cancel {
@@ -125,6 +145,8 @@ pub enum ManagedResponse {
     Submitted(TurnView),
     /// Receipt for a steer operation.
     Steered(TurnAction),
+    /// Receipt for a pending steer withdrawal.
+    SteerWithdrawn(SteerWithdrawal),
     /// Receipt for a cancel operation.
     Cancelled(TurnAction),
     /// Complete settings after a successful mutation.
@@ -285,6 +307,23 @@ impl Service<ManagedRequest> for ManagedService {
                     .steer(&agent_id, &turn_id, &input)
                     .await
                     .map(ManagedResponse::Steered),
+                ManagedRequest::SteerWithId {
+                    agent_id,
+                    turn_id,
+                    message_id,
+                    input,
+                } => client
+                    .steer_with_id(&agent_id, &turn_id, &message_id, &input)
+                    .await
+                    .map(ManagedResponse::Steered),
+                ManagedRequest::WithdrawSteer {
+                    agent_id,
+                    turn_id,
+                    message_id,
+                } => client
+                    .withdraw_steer(&agent_id, &turn_id, &message_id)
+                    .await
+                    .map(ManagedResponse::SteerWithdrawn),
                 ManagedRequest::Cancel { agent_id, turn_id } => client
                     .cancel(&agent_id, &turn_id)
                     .await

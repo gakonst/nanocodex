@@ -35,6 +35,7 @@ test("Worker Agent preserves synchronous prompt handles, independent results, an
   assert.equal(typeof turn.result, "function");
   const pending = turn.result();
   await turn.steer({ input: "carefully" });
+  assert.equal(await turn.withdrawSteer({ messageId: "pending" }), true);
   fixture.emit("root", 1);
   fixture.emit("root", 2);
   await tick();
@@ -1755,6 +1756,7 @@ function createFixture(options = {}) {
           },
           result: () => result,
           async steer(steering) { log.push(["steer", sessionId, steering]); },
+          async withdrawSteer(messageId) { assert.equal(messageId, "pending"); return true; },
           async cancel() { log.push(["cancel", sessionId]); },
           free() { log.push(["turn-dispose", sessionId]); },
         };

@@ -2121,3 +2121,36 @@ async function within(promise, milliseconds, label) {
 function sse(id, event, data) {
   return `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
+
+
+test("identified steer withdrawal waits for admission and preserves the receipt", async () => {
+  const admitted = deferredPromise();
+  const entered = deferredPromise();
+  const requests = [];
+  const turn = Agent.open(agentId, {
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      const body = await request.json();
+      if (path.endsWith("/turns")) return Response.json({ turn_id: "undo", state: "accepted", accepted_cursor: "1" });
+      requests.push([path.split("/").at(-1), body]);
+      if (path.endsWith("/steer")) {
+        entered.resolve();
+        await admitted.promise;
+        return Response.json({ turn_id: "undo", state: "steering" });
+      }
+      return Response.json({ turn_id: "undo", message_id: body.message_id, withdrawn: body.message_id === "pending" });
+    },
+  }).turn.prompt({ id: "undo", input: "original" });
+  const steering = turn.steer({ input: "correction", messageId: "pending" });
+  const withdrawal = turn.withdrawSteer({ messageId: "pending" });
+  await entered.promise;
+  assert.deepEqual(requests, [["steer", { input: "correction", message_id: "pending" }]]);
+  admitted.resolve();
+  await steering;
+  assert.deepEqual(await withdrawal, { turn_id: "undo", message_id: "pending", withdrawn: true });
+  assert.deepEqual(requests.at(-1), ["withdraw-steer", { message_id: "pending" }]);
+  assert.equal((await turn.withdrawSteer({ messageId: "consumed" })).withdrawn, false);
+  await assert.rejects(turn.withdrawSteer({ messageId: "" }), /messageId/);
+});

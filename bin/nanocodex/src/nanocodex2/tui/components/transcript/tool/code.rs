@@ -19,7 +19,8 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
             .and_then(Value::as_str)
             .unwrap_or("<source unavailable>")
     });
-    let emitted = tool.result.as_ref().map_or(0, emitted_count);
+    let result = tool.code_display_result.as_ref().or(tool.result.as_ref());
+    let emitted = result.map_or(0, emitted_count);
     let child_count = tool.child_count;
     let subject = if child_count > 1 {
         format!("{child_count} tools")
@@ -37,7 +38,7 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
         super::super::markdown::render(&format!("```javascript\n{source}\n```"), width, theme)
             .lines;
     let mut presentation = presentation.unselectable_details(details);
-    if let Some(result) = &tool.result {
+    if let Some(result) = result {
         if let Some(items) = result.as_array() {
             for item in items {
                 presentation = with_emitted_item(presentation, item, width, theme);
@@ -46,11 +47,9 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
             presentation = with_emitted_item(presentation, result, width, theme);
         }
     }
-    let size = tool
-        .result
-        .as_ref()
-        .map_or(0, |result| result.to_string().len());
-    presentation.footer(format!("{emitted} outputs · {}", format_bytes(size)))
+    let size = result.map_or(0, |result| result.to_string().len());
+    let noun = if emitted == 1 { "output" } else { "outputs" };
+    presentation.footer(format!("{emitted} {noun} · {}", format_bytes(size)))
 }
 
 fn emitted_count(result: &Value) -> usize {
@@ -139,4 +138,36 @@ fn wait(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presenta
         presentation = presentation.selectable_details(source, details);
     }
     presentation.footer("wait diagnostics")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::transcript::ToolState;
+    use serde_json::json;
+
+    #[test]
+    fn batch_display_renders_unique_output_without_child_echo() {
+        let tool = ToolEntry {
+            name: "exec".to_owned(),
+            arguments: json!("text(await tools.example({}))"),
+            started_at_unix_ms: 0,
+            state: ToolState::Succeeded,
+            duration_ns: None,
+            result: Some(json!(["child echo", "unique discovery"])),
+            metadata: None,
+            execution: ToolEntry::inferred_execution("exec", &Value::Null, None),
+            substeps: Vec::new(),
+            child_count: 2,
+            code_display_result: Some(json!(["unique discovery"])),
+        };
+        let rendered = super::super::render_expanded(&tool, 100, &Theme::default())
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("unique discovery"), "{rendered}");
+        assert!(!rendered.contains("child echo"), "{rendered}");
+        assert!(rendered.contains("1 output ·"), "{rendered}");
+    }
 }

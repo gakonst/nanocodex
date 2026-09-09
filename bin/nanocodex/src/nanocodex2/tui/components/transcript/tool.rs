@@ -10,6 +10,7 @@ mod memory;
 mod patch;
 mod plan;
 mod sandbox;
+mod session;
 mod shell;
 mod subagent;
 mod web;
@@ -173,6 +174,9 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
         "browser" | "browser_execute" => browser::present(tool, width, theme, expanded),
         "view_image" | "image_gen__imagegen" => media::present(tool, width, theme, expanded),
         "memory" => memory::present(tool, width, theme, expanded),
+        "find_session" | "find_sessions" | "read_session" => {
+            session::present(tool, width, theme, expanded)
+        }
         "exec" | "wait" => code::present(tool, width, theme, expanded),
         _ => generic(tool, width, theme, expanded),
     }
@@ -615,25 +619,13 @@ pub(super) fn selectable_result(
         );
     }
     let source = bounded_json(&value);
-    let details = wrap_plain(
-        &source,
-        width,
-        Style::default()
-            .fg(theme.code_text())
-            .bg(theme.code_background()),
-    );
+    let details = wrap_plain(&source, width, Style::default().fg(theme.text()));
     (source, details)
 }
 
 pub(super) fn pretty_value(value: &Value, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let rendered = bounded_json(value);
-    wrap_plain(
-        &rendered,
-        width,
-        Style::default()
-            .fg(theme.code_text())
-            .bg(theme.code_background()),
-    )
+    wrap_plain(&rendered, width, Style::default().fg(theme.text()))
 }
 
 pub(super) fn format_bytes(bytes: usize) -> String {
@@ -908,6 +900,7 @@ mod tests {
             execution,
             substeps: Vec::new(),
             child_count: 0,
+            code_display_result: None,
         }
     }
 

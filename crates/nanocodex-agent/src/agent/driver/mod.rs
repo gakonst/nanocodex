@@ -2,7 +2,9 @@ mod branch;
 mod control;
 mod telemetry;
 
-use super::execution::{AdmittedExecution, ExecutionTurn, QueuedSteer};
+use super::execution::{
+    AdmittedExecution, ExecutionTurn, SteerDelivery, SteerQueue, SteerReceipt, SteerSender,
+};
 use super::spawn::{validate_model_reasoning_mode, validate_model_thinking};
 use super::*;
 pub(super) use branch::{AgentOrigin, BranchSpawner};
@@ -695,7 +697,10 @@ where
                                             break execution.as_mut().await;
                                         }
                                     }
-                                    Some(Command::Steer { result, .. }) => {
+                                    Some(Command::WithdrawSteer { result, .. }) => {
+                                        drop(result.send(Ok(false)));
+                                    }
+                                    Some(Command::SteerWithId { result, .. } | Command::Steer { result, .. }) => {
                                         drop(result.send(Err(NanocodexError::TurnNotSteerable)));
                                     }
                                     Some(command @ (Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
@@ -1084,7 +1089,10 @@ where
                 .as_ref()
                 .map(|_| latest_fork_checkpoint.clone());
             let execution_steps = execution_turn.steps();
-            let (steers, steer_rx) = mpsc::channel(STEER_CAPACITY);
+            let steer_rx: SteerQueue = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
+            let steers = Arc::downgrade(&steer_rx);
+            let mut accepted_steers = Vec::new();
+            let mut steer_ids = std::collections::HashSet::new();
             let model_call_index = Arc::new(tokio::sync::Mutex::new(1_u32));
             let (cancel, cancel_rx) = oneshot::channel();
             let (fork_snapshots, mut fork_snapshot_rx) = watch::channel(None);
@@ -1192,6 +1200,8 @@ where
                                 }
                                 let outcome = accept_turn_steer(
                                     &steers,
+                                    &mut accepted_steers,
+                                    None,
                                     &execution_turn,
                                     &model_call_index,
                                     prompt,
@@ -1214,6 +1224,47 @@ where
                                     break execution.as_mut().await;
                                 }
                             }
+                            Some(Command::SteerWithId { key: target, id, prompt, result }) => {
+                                if target != key {
+                                    drop(result.send(Err(NanocodexError::TurnNotSteerable)));
+                                    continue;
+                                }
+                                if !steer_ids.insert(id.clone()) {
+                                    drop(result.send(Err(NanocodexError::InvalidRequest("steer identity was already used in this turn".into()))));
+                                    continue;
+                                }
+                                let outcome = accept_turn_steer(&steers, &mut accepted_steers, Some(id), &execution_turn, &model_call_index, prompt).await;
+                                let reopen = outcome_requires_reopen(&outcome);
+                                drop(result.send(outcome));
+                                if reopen {
+                                    if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
+                                    begin_shutdown(&mut self.commands, &mut queued_turns, default_thinking, default_fast_mode).await;
+                                    commands_open = false;
+                                    break execution.as_mut().await;
+                                }
+                            }
+                            Some(Command::WithdrawSteer { key: target, id, result }) => {
+                                let outcome = if target == key {
+                                    match accepted_steers.last() {
+                                        Some((Some(retained_id), steer)) if *retained_id == id => execution_turn.withdraw_steer(steer).await,
+                                        _ => Ok(false),
+                                    }
+                                } else { Ok(false) };
+                                if matches!(outcome, Ok(true))
+                                    && let Some((_, receipt)) = accepted_steers.pop()
+                                    && let Some(queue) = steers.upgrade()
+                                {
+                                    queue.lock().await.retain(|steer| !Arc::ptr_eq(&steer.delivery, &receipt.delivery));
+                                }
+                                let reopen = outcome_requires_reopen(&outcome);
+                                drop(result.send(outcome));
+                                if reopen {
+                                    if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
+                                    begin_shutdown(&mut self.commands, &mut queued_turns, default_thinking, default_fast_mode).await;
+                                    commands_open = false;
+                                    break execution.as_mut().await;
+                                }
+                            }
                             Some(Command::RoutePrompt {
                                 prompt,
                                 route_result,
@@ -1221,6 +1272,8 @@ where
                             }) => {
                                 let outcome = accept_turn_steer(
                                     &steers,
+                                    &mut accepted_steers,
+                                    None,
                                     &execution_turn,
                                     &model_call_index,
                                     prompt,
@@ -1702,20 +1755,36 @@ fn error_requires_stop(error: &NanocodexError) -> bool {
 }
 
 async fn accept_turn_steer(
-    steers: &mpsc::Sender<QueuedSteer>,
+    steers: &SteerSender,
+    accepted: &mut Vec<(Option<String>, SteerReceipt)>,
+    id: Option<String>,
     execution_turn: &ExecutionTurn,
     model_call_index: &tokio::sync::Mutex<u32>,
     prompt: Prompt,
 ) -> Result<()> {
-    let permit = steers.try_reserve().map_err(|error| match error {
-        mpsc::error::TrySendError::Full(_) => NanocodexError::SteerQueueFull,
-        mpsc::error::TrySendError::Closed(_) => NanocodexError::TurnNotSteerable,
-    })?;
+    let steers = steers.upgrade().ok_or(NanocodexError::TurnNotSteerable)?;
+    let mut pending = Vec::new();
+    for receipt in accepted.drain(..) {
+        if *receipt.1.delivery.lock().await == SteerDelivery::Pending {
+            pending.push(receipt);
+        }
+    }
+    *accepted = pending;
+    if accepted.len() >= STEER_CAPACITY {
+        return Err(NanocodexError::SteerQueueFull);
+    }
     // Holding the boundary lock through persistence makes acceptance linearize
     // before either this model-call drain or the following one.
     let call_index = model_call_index.lock().await;
     let steer = execution_turn.accept_steer(prompt, *call_index).await?;
-    permit.send(steer);
+    accepted.push((
+        id,
+        SteerReceipt {
+            durable_index: steer.durable_index,
+            delivery: Arc::clone(&steer.delivery),
+        },
+    ));
+    steers.lock().await.push_back(steer);
     Ok(())
 }
 

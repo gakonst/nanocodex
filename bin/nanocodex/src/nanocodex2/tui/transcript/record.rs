@@ -68,6 +68,9 @@ pub(crate) enum LocalEvent {
         id: TurnId,
         text: String,
     },
+    UserSteerWithdrawn {
+        text: String,
+    },
     UserSteered {
         text: String,
     },
@@ -168,6 +171,9 @@ impl TranscriptRecord {
             LocalEvent::SessionStarted(payload) => ("session.started", to_raw_value(&payload)?),
             LocalEvent::UserSubmitted { id, text } => {
                 ("user.submitted", to_raw_value(&UserSubmitted { id, text })?)
+            }
+            LocalEvent::UserSteerWithdrawn { text } => {
+                ("user.steer_withdrawn", to_raw_value(&UserSteered { text })?)
             }
             LocalEvent::UserSteered { text } => {
                 ("user.steered", to_raw_value(&UserSteered { text })?)

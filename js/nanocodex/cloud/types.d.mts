@@ -81,7 +81,8 @@ export type AgentTurn = Readonly<{
   idempotencyKey: string;
   accepted(): Promise<string>;
   state(): Promise<import("../managed/Agent.mjs").TurnView>;
-  steer(options: Readonly<{ input: import("../types.mjs").PromptInput }>): Promise<Readonly<{
+  withdrawSteer(options: Readonly<{ messageId: string }>): Promise<Readonly<{ turn_id: string; message_id: string; withdrawn: boolean }>>;
+  steer(options: Readonly<{ input: import("../types.mjs").PromptInput; messageId?: string }>): Promise<Readonly<{
     turn_id: string;
     state: "steering";
   }>>;

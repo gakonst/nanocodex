@@ -6,7 +6,7 @@ mod platform;
 #[path = "disabled.rs"]
 mod platform;
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{collections::VecDeque, future::Future, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -188,6 +188,19 @@ pub trait ExecutionPolicy: Send + Sync {
         Box::pin(async { Ok(Vec::new()) })
     }
 
+    /// Durably removes the latest unbound steering input.
+    fn withdraw_steer<'a>(
+        &'a self,
+        _operation_id: String,
+        _steer_index: u32,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "withdraw_steer",
+            })
+        })
+    }
+
     /// Binds retained steering input to the model boundary that consumes it.
     fn bind_steer<'a>(
         &'a self,
@@ -342,6 +355,19 @@ pub trait ExecutionPolicy: Send + Sync {
     ) -> ExecutionFuture<'a, Result<Vec<ExecutionSteer>>> {
         Box::pin(async { Ok(Vec::new()) })
     }
+    /// Durably removes the latest unbound steering input.
+    fn withdraw_steer<'a>(
+        &'a self,
+        _operation_id: String,
+        _steer_index: u32,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "withdraw_steer",
+            })
+        })
+    }
+
     /// Binds retained steering input to the model boundary that consumes it.
     fn bind_steer<'a>(
         &'a self,
@@ -782,10 +808,26 @@ pub(crate) struct ExecutionSteps {
 
 #[derive(Clone)]
 pub(crate) struct QueuedSteer {
+    pub(crate) delivery: Arc<tokio::sync::Mutex<SteerDelivery>>,
     pub(crate) durable_index: Option<u32>,
     pub(crate) accepted_after_model_call_index: u32,
     pub(crate) model_call_index: Option<u32>,
     pub(crate) prompt: nanocodex_oai_api::Prompt,
+}
+
+pub(crate) struct SteerReceipt {
+    pub(crate) durable_index: Option<u32>,
+    pub(crate) delivery: Arc<tokio::sync::Mutex<SteerDelivery>>,
+}
+
+pub(crate) type SteerQueue = Arc<tokio::sync::Mutex<VecDeque<QueuedSteer>>>;
+pub(crate) type SteerSender = std::sync::Weak<tokio::sync::Mutex<VecDeque<QueuedSteer>>>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SteerDelivery {
+    Pending,
+    Consumed,
+    Withdrawn,
 }
 
 pub(crate) enum ExecutionStep<O> {
@@ -924,6 +966,7 @@ impl ExecutionTurn {
             .into_iter()
             .map(|steer| {
                 Ok(QueuedSteer {
+                    delivery: Arc::new(tokio::sync::Mutex::new(SteerDelivery::Pending)),
                     durable_index: Some(steer.index),
                     accepted_after_model_call_index: steer.accepted_after_model_call_index,
                     model_call_index: steer.model_call_index,
@@ -931,6 +974,20 @@ impl ExecutionTurn {
                 })
             })
             .collect()
+    }
+
+    pub(crate) async fn withdraw_steer(&self, steer: &SteerReceipt) -> Result<bool> {
+        let mut delivery = steer.delivery.lock().await;
+        if *delivery != SteerDelivery::Pending {
+            return Ok(false);
+        }
+        if let (Some(policy), Some(operation_id), Some(index)) =
+            (&self.policy, &self.operation_id, steer.durable_index)
+        {
+            policy.withdraw_steer(operation_id.clone(), index).await?;
+        }
+        *delivery = SteerDelivery::Withdrawn;
+        Ok(true)
     }
 
     pub(crate) async fn accept_steer(
@@ -951,6 +1008,7 @@ impl ExecutionTurn {
             _ => None,
         };
         Ok(QueuedSteer {
+            delivery: Arc::new(tokio::sync::Mutex::new(SteerDelivery::Pending)),
             durable_index,
             accepted_after_model_call_index,
             model_call_index: None,

@@ -97,6 +97,15 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         id: QueueId,
     },
+    SteerWithdrawn {
+        pane: PaneId,
+        id: QueueId,
+    },
+    SteerWithdrawalFailed {
+        pane: PaneId,
+        id: QueueId,
+        error: String,
+    },
     SteerUnconfirmed {
         pane: PaneId,
         id: QueueId,
@@ -308,6 +317,12 @@ impl AppNode {
             AppEvent::TurnsCancelled(pane) => self.update_root(pane, RootEvent::TurnsCancelled),
             AppEvent::SteerAdmitted { pane, id } => {
                 self.update_root(pane, RootEvent::SteerAdmitted(id))
+            }
+            AppEvent::SteerWithdrawn { pane, id } => {
+                self.update_root(pane, RootEvent::SteerWithdrawn(id))
+            }
+            AppEvent::SteerWithdrawalFailed { pane, id, error } => {
+                self.update_root(pane, RootEvent::SteerWithdrawalFailed { id, error })
             }
             AppEvent::SteerUnconfirmed { pane, id } => {
                 self.update_root(pane, RootEvent::SteerUnconfirmed(id))

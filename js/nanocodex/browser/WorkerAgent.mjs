@@ -524,6 +524,7 @@ async function dispatch(message, state) {
     const resultId = state.allocateResult(result);
     return { finalMessage: result.finalMessage, resultId };
   }
+  if (method === "turn.withdrawSteer") return required(turns, args[0], "turn").withdrawSteer(args[1]);
   if (method === "turn.steer") return required(turns, args[0], "turn").steer(args[1]);
   if (method === "turn.cancel") return required(turns, args[0], "turn").cancel();
   if (method === "turn.dispose") {
@@ -861,8 +862,9 @@ class WorkerConnection {
           .finally(release);
         return result;
       },
-      steer(input) { return accepted.then(() => thisConnection().rpc("turn.steer", [turnId, { input }])); },
-      steerContent(input) { return accepted.then(() => thisConnection().rpc("turn.steer", [turnId, { input: JSON.parse(input) }])); },
+      steer(input, messageId) { return accepted.then(() => thisConnection().rpc("turn.steer", [turnId, { input, messageId }])); },
+      steerContent(input, messageId) { return accepted.then(() => thisConnection().rpc("turn.steer", [turnId, { input: JSON.parse(input), messageId }])); },
+      withdrawSteer(messageId) { return accepted.then(() => thisConnection().rpc("turn.withdrawSteer", [turnId, { messageId }])); },
       cancel() { return accepted.then(() => thisConnection().rpc("turn.cancel", [turnId])); },
       free() {
         if (disposed) return;

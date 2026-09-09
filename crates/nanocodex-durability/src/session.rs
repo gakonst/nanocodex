@@ -215,6 +215,12 @@ enum Command {
         operation_id: String,
         result: oneshot::Sender<Result<Vec<StoredSteer>>>,
     },
+    WithdrawSteer {
+        caller: Caller,
+        operation_id: String,
+        steer_index: u32,
+        result: oneshot::Sender<Result<()>>,
+    },
     BindSteer {
         caller: Caller,
         operation_id: String,
@@ -586,6 +592,21 @@ impl Driver {
                                 }
                             }
                             error.map_or(Ok(steers), Err)
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::WithdrawSteer {
+                    caller,
+                    operation_id,
+                    steer_index,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => {
+                            self.withdraw_steer(&caller, operation_id, steer_index)
+                                .await
                         }
                         Err(error) => Err(error),
                     };
@@ -996,6 +1017,21 @@ impl Driver {
                 Ok(StoredSteer { index, state })
             })
             .collect()
+    }
+
+    async fn withdraw_steer(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        steer_index: u32,
+    ) -> Result<()> {
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
+        self.apply(Transition::SteerWithdrawn {
+            operation_id,
+            steer_index,
+        })
+        .await
     }
 
     async fn bind_steer(
@@ -2090,6 +2126,22 @@ impl DurableOwner {
         self.send(Command::RetainedSteers {
             caller: self.caller()?,
             operation_id,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn withdraw_steer(
+        &self,
+        operation_id: String,
+        steer_index: u32,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::WithdrawSteer {
+            caller: self.caller()?,
+            operation_id,
+            steer_index,
             result,
         })
         .await?;

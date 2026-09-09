@@ -366,6 +366,20 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn withdraw_steer<'a>(
+        &'a self,
+        operation_id: String,
+        steer_index: u32,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            self.owner()
+                .await?
+                .withdraw_steer(operation_id, steer_index)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
     fn bind_steer<'a>(
         &'a self,
         operation_id: String,
