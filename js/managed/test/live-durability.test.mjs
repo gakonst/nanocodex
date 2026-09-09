@@ -6,7 +6,8 @@ import test from "node:test";
 // Explicitly invoked by the production deployment job, never by the unit suite.
 // Exercise the public API with synthetic conversations under the CI account.
 test("deployed durable threads survive long histories, replay, tools, and cancellation", {
-  timeout: 18 * 60_000,
+  // Real provider latency puts the 96-turn journey near 20 minutes.
+  timeout: 25 * 60_000,
 }, async (t) => {
   const key = process.env.NANOCODEX_DURABILITY_TEST_API_KEY;
   assert.ok(key, "NANOCODEX_ASTRA_MANAGED_API_KEY is required for deployed durability evidence");

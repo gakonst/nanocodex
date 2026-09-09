@@ -263,7 +263,7 @@ jobs:
     name: exercise deployed durable threads
     needs: production
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     environment: cloudflare-production
     permissions:
       contents: read

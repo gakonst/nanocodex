@@ -1841,7 +1841,7 @@ mod tests {
         let footer = if crate::installation::current().is_development() {
             "╰─ / actions · @ paths · @@ sessions ─────── ◉ dev  /work ─╯"
         } else {
-            "╰─ / actions · @ paths · @@ sessions ───────────────── /work ─╯"
+            "╰─ Enter send · / actions · @ paths · @@ sessions ─ /work ─╯"
         };
 
         assert_eq!(
