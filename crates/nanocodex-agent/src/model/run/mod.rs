@@ -1,9 +1,11 @@
+mod continuation;
 mod lifecycle;
 mod responses;
 mod state;
 mod tool_calls;
 mod turn;
 
+use continuation::ExecutionPhase;
 use lifecycle::*;
 use responses::*;
 use state::*;
@@ -32,7 +34,7 @@ use nanocodex_oai_api::{
         CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesAttempt, ResponsesClient,
         ResponsesOutput, ResponsesServiceResponse,
     },
-    transport::{ResponsesError, ResponsesTransport, TransportStats},
+    transport::{ResponsesError, ResponsesTransport, TransportStats, TransportStatsSnapshot},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
@@ -81,6 +83,7 @@ pub(crate) struct ModelRun<S> {
     transport_stats: Arc<TransportStats>,
     started_at: Instant,
     stats: RunStats,
+    transport_baseline: TransportStatsSnapshot,
     session: Option<ModelSessionState>,
     active_tools: Option<ToolRuntimeControl>,
     active_tool_calls: Vec<ActiveToolCall>,
@@ -247,6 +250,7 @@ impl<S> ModelRun<S> {
             transport_stats,
             started_at: Instant::now(),
             stats: RunStats::default(),
+            transport_baseline: TransportStatsSnapshot::default(),
             session: None,
             active_tools: None,
             active_tool_calls: Vec::new(),
@@ -316,6 +320,7 @@ impl<S> ModelRun<S> {
             transport_stats,
             started_at: Instant::now(),
             stats: RunStats::default(),
+            transport_baseline: TransportStatsSnapshot::default(),
             session: Some(ModelSessionState {
                 workspace: checkpoint.workspace,
                 tools: runtime,

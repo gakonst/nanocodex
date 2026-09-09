@@ -19,7 +19,7 @@ const SYNTHETIC_OUTPUT_ID_NAMESPACE: uuid::Uuid =
 #[derive(Clone)]
 pub struct ContextManager {
     items: ResponseHistory,
-    last_token_usage: Option<Usage>,
+    pub(super) last_token_usage: Option<Usage>,
     calls: CallIds,
 }
 

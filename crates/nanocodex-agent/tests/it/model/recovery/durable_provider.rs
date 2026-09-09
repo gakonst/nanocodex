@@ -227,6 +227,20 @@ impl ProviderSteps {
 }
 
 impl ExecutionPolicy for ProviderSteps {
+    fn continuation<'a>(
+        &'a self,
+        _operation_id: String,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn advance<'a>(
+        &'a self,
+        _operation_id: String,
+        _state_json: String,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn admit<'a>(
         &'a self,
         _operation_id: String,

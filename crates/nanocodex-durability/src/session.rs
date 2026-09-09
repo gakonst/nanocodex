@@ -142,6 +142,17 @@ struct AgentAcquisition {
 }
 
 enum Command {
+    Continuation {
+        caller: Caller,
+        operation_id: String,
+        result: oneshot::Sender<Result<Option<EncodedPayload>>>,
+    },
+    Advance {
+        caller: Caller,
+        operation_id: String,
+        continuation: EncodedPayload,
+        result: oneshot::Sender<Result<()>>,
+    },
     RecoverFailure {
         caller: Caller,
         operation_id: String,
@@ -200,13 +211,6 @@ enum Command {
         steer_index: u32,
         model_call_index: u32,
         result: oneshot::Sender<Result<()>>,
-    },
-    RetainedStepInput {
-        caller: Caller,
-        operation_id: String,
-        step_id: String,
-        kind: String,
-        result: oneshot::Sender<Result<Option<EncodedPayload>>>,
     },
     BeginStep {
         caller: Caller,
@@ -340,6 +344,40 @@ impl Driver {
                 self.handle_release(release);
             }
             match command {
+                Command::Continuation {
+                    caller,
+                    operation_id,
+                    result,
+                } => {
+                    let outcome = self.authorize(&caller).and_then(|()| {
+                        self.require_claimed(&caller, &operation_id)?;
+                        self.require_running(&operation_id)?;
+                        Ok(self
+                            .state
+                            .operation(&operation_id)
+                            .and_then(|op| op.continuation.clone()))
+                    });
+                    drop(result.send(outcome));
+                }
+                Command::Advance {
+                    caller,
+                    operation_id,
+                    continuation,
+                    result,
+                } => {
+                    let outcome = async {
+                        self.authorize(&caller)?;
+                        self.require_claimed(&caller, &operation_id)?;
+                        self.require_running(&operation_id)?;
+                        self.apply(Transition::ExecutionAdvanced {
+                            operation_id,
+                            continuation,
+                        })
+                        .await
+                    }
+                    .await;
+                    drop(result.send(outcome));
+                }
                 Command::RecoverFailure {
                     caller,
                     operation_id,
@@ -493,30 +531,6 @@ impl Driver {
                         }
                         Err(error) => Err(error),
                     };
-                    drop(result.send(outcome));
-                }
-                Command::RetainedStepInput {
-                    caller,
-                    operation_id,
-                    step_id,
-                    kind,
-                    result,
-                } => {
-                    let outcome = self.authorize(&caller).and_then(|()| {
-                        self.require_claimed(&caller, &operation_id)?;
-                        self.require_running(&operation_id)?;
-                        self.state.operation(&operation_id)
-                            .and_then(|operation| operation.steps.get(&step_id))
-                            .map(|step| {
-                                if step.kind != kind {
-                                    return Err(Error::InvalidState(format!(
-                                        "step `{step_id}` in operation `{operation_id}` changed kind"
-                                    )));
-                                }
-                                Ok(step.input.clone())
-                            })
-                            .transpose()
-                    });
                     drop(result.send(outcome));
                 }
                 Command::BeginStep {
@@ -1750,6 +1764,36 @@ pub(crate) struct DurableOwner {
 }
 
 impl DurableOwner {
+    pub(crate) async fn continuation(
+        &self,
+        operation_id: String,
+    ) -> Result<Option<EncodedPayload>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Continuation {
+            caller: self.caller()?,
+            operation_id,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn advance(
+        &self,
+        operation_id: String,
+        continuation: EncodedPayload,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Advance {
+            caller: self.caller()?,
+            operation_id,
+            continuation,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
     pub(crate) async fn recover_failure(
         &self,
         operation_id: String,
@@ -1897,24 +1941,6 @@ impl DurableOwner {
             operation_id,
             steer_index,
             model_call_index,
-            result,
-        })
-        .await?;
-        receive(receiver).await
-    }
-
-    pub(crate) async fn retained_step_input(
-        &self,
-        operation_id: String,
-        step_id: String,
-        kind: String,
-    ) -> Result<Option<EncodedPayload>> {
-        let (result, receiver) = oneshot::channel();
-        self.send(Command::RetainedStepInput {
-            caller: self.caller()?,
-            operation_id,
-            step_id,
-            kind,
             result,
         })
         .await?;
@@ -2672,6 +2698,8 @@ mod tests {
 
         fn operation(status: OperationStatus, steers: Vec<SteerState>) -> OperationState {
             OperationState {
+                continuation: None,
+                retired_model_calls: 0,
                 input: EncodedPayload::encode(&"prompt").unwrap(),
                 status,
                 steps: BTreeMap::new(),
@@ -2686,7 +2714,7 @@ mod tests {
                 payload: Some(
                     serde_json::json!({
                         "nanocodex_durable_state": {
-                            "format": 2,
+                            "format": 3,
                             "operations": BTreeMap::from([("turn".to_owned(), operation)]),
                             "latest_checkpoint": null
                         }

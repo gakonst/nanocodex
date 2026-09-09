@@ -191,17 +191,18 @@ pub trait ExecutionPolicy: Send + Sync {
         })
     }
 
-    /// Reads the original input of an existing step before reconstructing its request.
-    /// Stateless policies have no retained input. Beginning the step still authorizes
-    /// execution and validates its definition before any external effect runs.
-    fn retained_step_input<'a>(
+    /// Reads the current conversation and execution position of an interrupted turn.
+    fn continuation<'a>(
         &'a self,
-        _operation_id: String,
-        _step_id: String,
-        _kind: String,
-    ) -> ExecutionFuture<'a, Result<Option<String>>> {
-        Box::pin(async { Ok(None) })
-    }
+        operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Option<String>>>;
+
+    /// Atomically replaces the current execution state and retires its settled effects.
+    fn advance<'a>(
+        &'a self,
+        operation_id: String,
+        state_json: String,
+    ) -> ExecutionFuture<'a, Result<()>>;
 
     /// Begins or replays one typed external effect.
     fn begin_step<'a>(
@@ -343,17 +344,18 @@ pub trait ExecutionPolicy: Send + Sync {
             })
         })
     }
-    /// Reads the original input of an existing step before reconstructing its request.
-    /// Stateless policies have no retained input. Beginning the step still authorizes
-    /// execution and validates its definition before any external effect runs.
-    fn retained_step_input<'a>(
+    /// Reads the current conversation and execution position of an interrupted turn.
+    fn continuation<'a>(
         &'a self,
-        _operation_id: String,
-        _step_id: String,
-        _kind: String,
-    ) -> ExecutionFuture<'a, Result<Option<String>>> {
-        Box::pin(async { Ok(None) })
-    }
+        operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Option<String>>>;
+
+    /// Atomically replaces the current execution state and retires its settled effects.
+    fn advance<'a>(
+        &'a self,
+        operation_id: String,
+        state_json: String,
+    ) -> ExecutionFuture<'a, Result<()>>;
 
     /// Begins or replays one external effect.
     fn begin_step<'a>(
@@ -781,20 +783,18 @@ pub(crate) enum ExecutionStep<O> {
 }
 
 impl ExecutionSteps {
-    pub(crate) async fn retained_input(
-        &self,
-        step_id: &str,
-        kind: &str,
-    ) -> Result<Option<Box<serde_json::value::RawValue>>> {
+    pub(crate) async fn continuation<T: DeserializeOwned>(&self) -> Result<Option<T>> {
         self.policy
-            .retained_step_input(
-                self.operation_id.clone(),
-                step_id.to_owned(),
-                kind.to_owned(),
-            )
+            .continuation(self.operation_id.clone())
             .await?
-            .map(|input| decode(&input))
+            .map(|state| decode(&state))
             .transpose()
+    }
+
+    pub(crate) async fn advance<T: Serialize>(&self, state: &T) -> Result<()> {
+        self.policy
+            .advance(self.operation_id.clone(), encode(state)?)
+            .await
     }
 
     pub(crate) async fn bind_steer(&self, steer_index: u32, model_call_index: u32) -> Result<()> {

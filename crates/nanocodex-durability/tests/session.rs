@@ -567,7 +567,7 @@ async fn rejects_every_inconsistent_store_state_shape() {
 #[tokio::test]
 async fn rejects_unknown_outer_state_fields() {
     let error = match DurableSession::open(
-        seeded_store(&[r#"{"nanocodex_durable_state":{"format":2,"operations":{},"latest_checkpoint":null},"unknown":true}"#]),
+        seeded_store(&[r#"{"nanocodex_durable_state":{"format":3,"operations":{},"latest_checkpoint":null},"unknown":true}"#]),
         "unknown-outer-field",
     )
     .await
@@ -580,7 +580,7 @@ async fn rejects_unknown_outer_state_fields() {
 
 #[tokio::test]
 async fn rejects_noncanonical_checkpoint_fields() {
-    let payload = r#"{"nanocodex_durable_state":{"format":2,"operations":{},"latest_checkpoint":null,"generation":1}}"#;
+    let payload = r#"{"nanocodex_durable_state":{"format":3,"operations":{},"latest_checkpoint":null,"generation":1}}"#;
     let error = match DurableSession::open(
         SeededStore {
             state: StoredState {
@@ -603,7 +603,7 @@ async fn rejects_noncanonical_checkpoint_fields() {
 async fn rejects_retry_attempt_counter_overflow_without_advancing_state() {
     let revision = u64::from(u32::MAX);
     let payload = format!(
-        r#"{{"nanocodex_durable_state":{{"format":2,"operations":{{"turn":{{"input":"\"prompt\"","status":"pending","steps":{{"model":{{"kind":"model","input":"\"retry\"","status":"effect_pending","attempts":{}}}}},"accepted_order":1}}}},"latest_checkpoint":null}}}}"#,
+        r#"{{"nanocodex_durable_state":{{"format":3,"operations":{{"turn":{{"input":"\"prompt\"","status":"pending","steps":{{"model":{{"kind":"model","input":"\"retry\"","status":"effect_pending","attempts":{}}}}},"accepted_order":1}}}},"latest_checkpoint":null}}}}"#,
         u32::MAX,
     );
     let session = DurableSession::open(
@@ -673,7 +673,7 @@ async fn rejects_noncanonical_transition_shape() {
 
 #[tokio::test]
 async fn rejects_a_checkpoint_terminal_that_crosses_pending_work() {
-    let payload = r#"{"nanocodex_durable_state":{"format":2,"operations":{"turn-1":{"input":"\"first\"","status":"pending","steps":{},"accepted_order":1},"turn-2":{"input":"\"second\"","status":{"completed":{"checkpoint":"\"crossed\"","output":"\"done\""}},"steps":{},"accepted_order":2}},"latest_checkpoint":"\"crossed\""}}"#;
+    let payload = r#"{"nanocodex_durable_state":{"format":3,"operations":{"turn-1":{"input":"\"first\"","status":"pending","steps":{},"accepted_order":1},"turn-2":{"input":"\"second\"","status":{"completed":{"checkpoint":"\"crossed\"","output":"\"done\""}},"steps":{},"accepted_order":2}},"latest_checkpoint":"\"crossed\""}}"#;
     let error = match DurableSession::open(
         SeededStore {
             state: StoredState {
@@ -694,7 +694,7 @@ async fn rejects_a_checkpoint_terminal_that_crosses_pending_work() {
 
 #[tokio::test]
 async fn rejects_the_deleted_checkpoint_effect_field() {
-    let payload = r#"{"nanocodex_durable_state":{"format":2,"operations":{"turn":{"input":"\"prompt\"","status":"pending","steps":{},"accepted_order":1}},"latest_checkpoint":null,"checkpoint_effect_pending":true}}"#;
+    let payload = r#"{"nanocodex_durable_state":{"format":3,"operations":{"turn":{"input":"\"prompt\"","status":"pending","steps":{},"accepted_order":1}},"latest_checkpoint":null,"checkpoint_effect_pending":true}}"#;
     let error =
         match DurableSession::open(seeded_store(&[payload]), "crossed-checkpoint-effect").await {
             Ok(_) => panic!("standalone checkpoint effects must not cross pending operations"),
@@ -706,7 +706,7 @@ async fn rejects_the_deleted_checkpoint_effect_field() {
 
 #[tokio::test]
 async fn reopens_a_restarted_step() {
-    let payload = r#"{"nanocodex_durable_state":{"format":2,"operations":{"turn":{"input":"\"prompt\"","status":"pending","steps":{"tool-1":{"kind":"tool","input":"\"charge\"","status":"effect_pending","attempts":2}},"accepted_order":1}},"latest_checkpoint":null}}"#;
+    let payload = r#"{"nanocodex_durable_state":{"format":3,"operations":{"turn":{"input":"\"prompt\"","status":"pending","steps":{"tool-1":{"kind":"tool","input":"\"charge\"","status":"effect_pending","attempts":2}},"accepted_order":1}},"latest_checkpoint":null}}"#;
     let session = DurableSession::open(seeded_store(&[payload]), "restarted-step")
         .await
         .unwrap();

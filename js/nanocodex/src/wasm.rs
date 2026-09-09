@@ -94,13 +94,13 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = console, js_name = error)]
     fn host_console_error(message: &str, error: &JsValue) -> Result<(), JsValue>;
 
-    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = emitEvent)]
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = emitEvent)]
     fn host_emit_event(
         session_id: &str,
         event: &str,
         encoded_bytes: u32,
         subagent_id: Option<&str>,
-    );
+    ) -> Result<(), JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = executeCode)]
     fn host_execute_code(
@@ -3081,12 +3081,14 @@ fn forward_events(mut events: AgentEvents, forwarding: Rc<Cell<bool>>) {
                 continue;
             }
             if let Ok(encoded) = serde_json::to_string(&event) {
-                host_emit_event(
+                if let Err(error) = host_emit_event(
                     event.request_id.as_ref(),
                     &encoded,
                     u32::try_from(encoded.len()).unwrap_or(u32::MAX),
                     None,
-                );
+                ) {
+                    let _ = host_console_error("Nanocodex event forwarding failed", &error);
+                }
             }
         }
     });
@@ -3124,12 +3126,16 @@ fn forward_subagent_updates(
                         && let Ok(encoded) = serde_json::to_string(&event)
                     {
                         let id = id.to_string();
-                        host_emit_event(
+                        // A released or failing observer must not unwind this
+                        // task and strand all subsequent registry updates.
+                        if let Err(error) = host_emit_event(
                             event.request_id.as_ref(),
                             &encoded,
                             u32::try_from(encoded.len()).unwrap_or(u32::MAX),
                             Some(&id),
-                        );
+                        ) {
+                            report_subagent_host_error("forwarding a subagent event", &error);
+                        }
                     }
                 }
                 SubagentUpdate::Status {

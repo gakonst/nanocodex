@@ -915,7 +915,7 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
   const ownership = store.acquire(stateId, { ownerId: "seed" });
   const payload = JSON.stringify({
     nanocodex_durable_state: {
-      format: 2,
+      format: 3,
       operations: {},
       latest_checkpoint: null,
     },
@@ -1046,7 +1046,7 @@ test("Cloudflare Agent prunes retained receipts before runtime construction", as
     revision: "20",
     payload: JSON.stringify({
       nanocodex_durable_state: {
-        format: 2,
+        format: 3,
         operations,
         latest_checkpoint: null,
       },
@@ -1063,7 +1063,7 @@ test("Cloudflare Agent prunes retained receipts before runtime construction", as
   assert.equal(storage.states.length, 1);
   assert.equal(storage.states[0].revision, "20");
   let checkpoint = JSON.parse(storage.states[0].payload).nanocodex_durable_state;
-  assert.equal(checkpoint.format, 2);
+  assert.equal(checkpoint.format, 3);
   assert.equal(Object.keys(checkpoint.operations).length, 10);
 
   await pruneDurableReceipts(module, owner, {
@@ -1087,7 +1087,7 @@ test("Cloudflare receipt pruning reserves lifecycle authority against create", a
     revision: "1",
     payload: JSON.stringify({
       nanocodex_durable_state: {
-        format: 2,
+        format: 3,
         operations: {
           "turn-compaction-race": {
             input: JSON.stringify("prompt"),

@@ -3,7 +3,7 @@ use std::time::Duration;
 use nanocodex_oai_api::{
     __private::ModelConfig, Thinking, responses::Usage, transport::TransportStatsDelta,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use web_time::Instant;
 
@@ -127,7 +127,7 @@ pub(super) struct ToolResultEvent<'a> {
 }
 
 #[allow(clippy::struct_field_names)]
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub(super) struct UsageTotals {
     pub(super) input_tokens: u64,
     pub(super) cached_input_tokens: u64,
@@ -198,7 +198,7 @@ mod usage_tests {
     }
 }
 
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub(super) struct RunStats {
     pub(super) model_calls: u32,
     pub(super) steers: u32,
@@ -222,12 +222,12 @@ pub(super) struct RunStats {
 
 impl RunStats {
     pub(super) const fn apply_transport(&mut self, delta: TransportStatsDelta) {
-        self.connection_attempts = delta.connection_attempts;
-        self.websocket_reconnects = delta.websocket_reconnects;
-        self.response_attempts = delta.response_attempts;
-        self.response_retries = delta.response_retries;
-        self.connection_duration_ns = delta.connection_duration_ns;
-        self.retry_backoff_duration_ns = delta.retry_backoff_duration_ns;
+        self.connection_attempts += delta.connection_attempts;
+        self.websocket_reconnects += delta.websocket_reconnects;
+        self.response_attempts += delta.response_attempts;
+        self.response_retries += delta.response_retries;
+        self.connection_duration_ns += delta.connection_duration_ns;
+        self.retry_backoff_duration_ns += delta.retry_backoff_duration_ns;
     }
 
     pub(super) fn turn_usage(&self) -> TurnUsage {

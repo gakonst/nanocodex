@@ -82,8 +82,8 @@ impl StateStore for CrashAtReplace {
 #[tokio::test]
 async fn every_first_turn_write_recovers_before_and_after_commit() -> Result<()> {
     for after_commit in [false, true] {
-        // Admission, warmup intent/output, model intent/output, terminal.
-        for revision in 0..6 {
+        // Admission, current state, warmup intent/output, current state, model intent/output, terminal.
+        for revision in 0..8 {
             let store = CrashAtReplace {
                 inner: MemoryStore::new()?,
                 revision,
@@ -614,6 +614,20 @@ where
 }
 
 impl ExecutionPolicy for GatedCompletedPolicy {
+    fn continuation<'a>(
+        &'a self,
+        _operation_id: String,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<Option<String>>> {
+        unexpected_policy()
+    }
+    fn advance<'a>(
+        &'a self,
+        _operation_id: String,
+        _state_json: String,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
+        unexpected_policy()
+    }
+
     fn admit<'a>(
         &'a self,
         _operation_id: String,
@@ -725,6 +739,20 @@ impl ExecutionPolicy for GatedCompletedPolicy {
 }
 
 impl ExecutionPolicy for FailClosedDefaultsPolicy {
+    fn continuation<'a>(
+        &'a self,
+        _operation_id: String,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<Option<String>>> {
+        unexpected_policy()
+    }
+    fn advance<'a>(
+        &'a self,
+        _operation_id: String,
+        _state_json: String,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
+        unexpected_policy()
+    }
+
     fn admit<'a>(
         &'a self,
         _operation_id: String,
@@ -1761,7 +1789,7 @@ async fn queued_developer_context_waits_for_provider_retry_to_terminalize() -> R
     let store = crate::MemoryStore::new()?;
     let failing = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 4,
+        expected_revision: 6,
         failed: Arc::new(AtomicBool::new(false)),
     };
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1903,7 +1931,7 @@ async fn cold_reopen_recovers_idle_routed_prompt_without_a_second_model_call() -
     let store = crate::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 5,
+        expected_revision: 7,
         failed: Arc::new(AtomicBool::new(false)),
     };
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2029,7 +2057,7 @@ async fn exact_id_retry_replays_steer_at_its_original_model_boundary() -> Result
     let store = crate::MemoryStore::new()?;
     let failing = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 9,
+        expected_revision: 12,
         failed: Arc::new(AtomicBool::new(false)),
     };
     let state = crate::DurableSession::open(failing, "steered-exact-id-retry").await?;
@@ -2101,7 +2129,7 @@ async fn shutdown_reclaims_a_definitely_uncommitted_queued_terminalization() -> 
     let store = crate::MemoryStore::new()?;
     let failing = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 8,
+        expected_revision: 10,
         failed: Arc::new(AtomicBool::new(false)),
     };
     let started = Arc::new(AtomicBool::new(false));
@@ -2428,25 +2456,15 @@ async fn cancelled_standalone_compaction_does_not_block_a_cold_follow_on() -> Re
     let compaction = retained
         .operations()
         .iter()
-        .find(|(_, operation)| {
-            operation
-                .steps
-                .values()
-                .any(|step| step.kind == "compaction")
-        })
+        .find(|(_, operation)| matches!(operation.status, OperationStatus::Cancelled { .. }))
         .ok_or_else(|| eyre!("cancelled standalone compaction receipt was not retained"))?
         .1;
     assert!(matches!(
         compaction.status,
         OperationStatus::Cancelled { .. }
     ));
-    let provider_step = compaction
-        .steps
-        .values()
-        .find(|step| step.kind == "compaction")
-        .ok_or_else(|| eyre!("pending compaction has no provider step"))?;
-    assert!(matches!(provider_step.status, StepStatus::EffectPending));
-    assert_eq!(provider_step.attempts, 1);
+    assert!(compaction.steps.is_empty());
+    assert!(compaction.continuation.is_none());
     drop(retained);
 
     let (resumed, resumed_events) = Nanocodex::builder(openai()?)
@@ -2649,7 +2667,7 @@ async fn failed_completed_compaction_persistence_restores_the_committed_live_bou
     let store = MemoryStore::new()?;
     let failing = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 6,
+        expected_revision: 8,
         failed: Arc::new(AtomicBool::new(false)),
     };
     let openai = || {
@@ -2848,13 +2866,11 @@ async fn active_cancel_does_not_invent_an_outcome_for_an_unfinished_tool() -> Re
         } => checkpoint,
         status => panic!("expected terminal cancellation checkpoint, found {status:?}"),
     };
-    let tool_step = operation
-        .steps
-        .values()
-        .find(|step| step.kind == "tool_call")
-        .expect("the unfinished tool step remains retained");
-    assert!(matches!(tool_step.status, StepStatus::EffectPending));
-    assert_eq!(tool_step.attempts, 1);
+    assert!(
+        operation.steps.is_empty(),
+        "terminal receipts retire effect scratch data"
+    );
+    assert!(operation.continuation.is_none());
     assert!(
         !checkpoint.json().contains("external outcome"),
         "cancellation must not invent a synthetic tool outcome"
@@ -3080,8 +3096,8 @@ async fn takeover_during_automatic_compaction_authorization_fences_before_provid
         .await?;
     assert_eq!(
         compactions.load(Ordering::SeqCst),
-        0,
-        "a cold recovery may recompute below the proactive threshold, but must never inherit the stale owner's provider admission"
+        1,
+        "cold recovery preserves the compaction decision and obtains fresh provider admission"
     );
     assert_eq!(generations.load(Ordering::SeqCst), 2);
 
@@ -3096,7 +3112,7 @@ async fn assert_cold_model_replay_forces_full_history(store_responses: bool) -> 
     let store = crate::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 5,
+        expected_revision: 7,
         failed: Arc::new(AtomicBool::new(false)),
     };
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3392,7 +3408,7 @@ async fn portable_state_replays_a_completed_model_step_after_terminal_commit_fai
     let store = crate::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 5,
+        expected_revision: 7,
         failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3462,7 +3478,7 @@ async fn exact_id_retry_reclaims_a_definitely_uncommitted_terminal_replace() -> 
     let store = crate::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {
         inner: store,
-        expected_revision: 5,
+        expected_revision: 7,
         failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3514,7 +3530,7 @@ async fn portable_state_retries_an_unfinished_tool() -> Result<()> {
     let store = crate::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 6,
+        expected_revision: 8,
         failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3615,7 +3631,7 @@ async fn completed_tool_output_replays_after_tool_is_removed() -> Result<()> {
     let store = crate::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {
         inner: store.clone(),
-        expected_revision: 7,
+        expected_revision: 9,
         failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3704,9 +3720,9 @@ async fn completed_tool_output_replays_after_tool_is_removed() -> Result<()> {
 }
 
 #[tokio::test]
-async fn model_recovery_uses_recorded_requests_across_runtime_changes() -> Result<()> {
+async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Result<()> {
     for (warmup, pending) in [(false, false), (false, true), (true, false), (true, true)] {
-        let expected_revision = 5 + u64::from(warmup) * 2 + u64::from(pending);
+        let expected_revision = 8 + u64::from(warmup) * 2 + u64::from(pending);
         let store = crate::MemoryStore::new()?;
         let failing_store = FailReplaceOnce {
             inner: store.clone(),
@@ -3759,9 +3775,9 @@ async fn model_recovery_uses_recorded_requests_across_runtime_changes() -> Resul
         let recorded_input = retained
             .operation("turn-1")
             .unwrap()
-            .steps
-            .get("model-2")
-            .map(|step| step.input.decode::<serde_json::Value>())
+            .continuation
+            .as_ref()
+            .map(|state| state.decode::<serde_json::Value>())
             .transpose()?;
         agent.shutdown().await?;
         drop((agent, events));
@@ -3799,8 +3815,11 @@ async fn model_recovery_uses_recorded_requests_across_runtime_changes() -> Resul
             if pending { 3 } else { 2 }
         );
         if let Some(input) = recorded_input {
-            let mut expected = input["request_prefix"].as_array().unwrap().clone();
-            expected.extend(input["prompt_history"].as_array().unwrap().iter().cloned());
+            let mut expected = input["prefix"].as_array().unwrap().clone();
+            expected.extend(input["history"].as_array().unwrap().iter().cloned());
+            for item in &mut expected {
+                item.as_object_mut().unwrap().remove("id");
+            }
             assert_eq!(
                 requests.lock().unwrap().last().unwrap(),
                 &json!(expected),
@@ -4016,5 +4035,175 @@ async fn blocked_child_state_acquisition_does_not_block_the_parent_driver() -> R
     agent.shutdown().await?;
     drop((agent, events));
     std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+struct LongTurnService {
+    calls: Arc<std::sync::Mutex<Vec<u32>>>,
+}
+
+impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for LongTurnService {
+    type Response = nanocodex_oai_api::tower::ResponsesServiceResponse;
+    type Error = ResponseError;
+    type Future = std::future::Ready<std::result::Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: nanocodex_oai_api::tower::ResponsesAttempt) -> Self::Future {
+        use nanocodex_oai_api::{
+            responses::{ContentItem, MessageRole, ResponseItem, Usage},
+            tower::{
+                CodeCall, CodeCallKind, GenerationOutput, ResponsePipelineStats, ResponsesOutput,
+                ResponsesServiceResponse,
+            },
+        };
+        let index = request.model_call_index().expect("generation only");
+        self.calls.lock().unwrap().push(index);
+        let done = index == 65;
+        let call_id = format!("long-tool-{index}");
+        let mut output_items = vec![ResponseItem::message(
+            MessageRole::Assistant,
+            [ContentItem::output_text(if done {
+                "finished".to_owned()
+            } else {
+                format!("batch {index}: {}", "x".repeat(4096))
+            })],
+        )];
+        let code_calls = if done {
+            Vec::new()
+        } else {
+            output_items.push(serde_json::from_value(json!({
+                "type": "function_call", "call_id": call_id, "name": "count_once", "arguments": "{}"
+            })).unwrap());
+            vec![CodeCall {
+                call_id,
+                name: "count_once".into(),
+                namespace: None,
+                input: "{}".into(),
+                kind: CodeCallKind::Function,
+            }]
+        };
+        std::future::ready(Ok(ResponsesServiceResponse::new(
+            ResponsesOutput::Generation(GenerationOutput {
+                id: format!("long-response-{index}"),
+                status: "completed".into(),
+                end_turn: Some(done),
+                final_message: done.then(|| "finished".into()),
+                output_items,
+                code_calls,
+                usage: Some(Usage {
+                    input_tokens: 100,
+                    output_tokens: 10,
+                    total_tokens: 110,
+                    ..Usage::default()
+                }),
+                time_to_first_event_ns: 0,
+                time_to_first_output_ns: None,
+                pipeline_stats: ResponsePipelineStats::default(),
+            }),
+        )))
+    }
+}
+
+#[tokio::test]
+async fn long_turn_retires_batches_and_recovers_only_current_work() -> Result<()> {
+    // Crash before/after replacing the conversation, admitting the next model
+    // call, and recording its output. All earlier tools must remain settled.
+    for revision in [157, 158, 159] {
+        for after_commit in [false, true] {
+            let store = CrashAtReplace {
+                inner: MemoryStore::new()?,
+                revision,
+                after_commit,
+                fired: Arc::new(AtomicBool::new(false)),
+            };
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let tool_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let workspace = temporary_workspace("long-current-execution")?;
+            let openai = || {
+                OpenAi::builder("test-key")
+                    .websocket_warmup(false)
+                    .service({
+                        let calls = Arc::clone(&calls);
+                        move || LongTurnService {
+                            calls: Arc::clone(&calls),
+                        }
+                    })
+                    .build()
+            };
+            let tools = || {
+                Tools::builder()
+                    .without_defaults()
+                    .tool(CountingDurableTool {
+                        calls: Arc::clone(&tool_calls),
+                    })
+                    .build()
+            };
+            let request = || PromptRequest::new("complete 64 batches").request_id("long-turn");
+            let state = DurableSession::open(store.clone(), "long-turn").await?;
+            let (agent, events) = Nanocodex::builder(openai()?)
+                .workspace(&workspace)
+                .tools(tools()?)
+                .durability(state)
+                .await?
+                .build()?;
+            assert!(agent.prompt(request()).await?.result().await.is_err());
+            assert!(store.fired.load(Ordering::SeqCst));
+            let _ = agent.shutdown().await;
+            drop((agent, events));
+
+            let state = DurableSession::open(store, "long-turn").await?;
+            let retained = state.state().await?;
+            let operation = retained.operation("long-turn").unwrap();
+            assert!(
+                operation.steps.len() <= 2,
+                "only the current model/tool batch is retained"
+            );
+            let size = serde_json::to_vec(operation)?.len();
+            assert!(
+                size < 250_000,
+                "31 batches retained {size} bytes; historical requests must not accumulate"
+            );
+            let saved = operation
+                .continuation
+                .as_ref()
+                .unwrap()
+                .decode::<serde_json::Value>()?;
+            assert!(saved["stats"]["model_calls"].as_u64().unwrap() >= 30);
+            drop(retained);
+            let before = calls.lock().unwrap().len();
+            let (agent, events) = Nanocodex::builder(openai()?)
+                .workspace(&workspace)
+                .tools(tools()?)
+                .durability(state.clone())
+                .await?
+                .build()?;
+            let result = agent.prompt(request()).await?.result().await?;
+            assert_eq!(result.final_message(), "finished");
+            assert_eq!(
+                tool_calls.load(Ordering::SeqCst),
+                64,
+                "settled tools cannot run twice"
+            );
+            assert!(
+                calls.lock().unwrap()[before..]
+                    .iter()
+                    .all(|index| *index >= 32)
+            );
+            assert_eq!(result.usage().unwrap().total_tokens(), 65 * 110);
+            let terminal = state.state().await?;
+            let operation = terminal.operation("long-turn").unwrap();
+            assert!(operation.continuation.is_none());
+            assert!(operation.steps.is_empty());
+            agent.shutdown().await?;
+            drop((agent, events));
+            std::fs::remove_dir_all(workspace)?;
+        }
+    }
     Ok(())
 }

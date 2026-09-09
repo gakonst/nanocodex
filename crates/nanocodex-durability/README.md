@@ -70,6 +70,15 @@ This deliberately permits duplicate provider billing and duplicate external
 tool effects. Standalone compaction follows the same rule: a committed
 checkpoint replays, while an unfinished transform runs again.
 
+An active turn retains one current conversation, its execution phase and counters,
+and only the effects in the current model/tool batch. Advancing to the next batch
+atomically replaces that conversation and removes the settled effects. Recovery
+starts at this position; it does not rerun earlier model/tool batches or retain
+copies of their requests. Warmup and pre-turn compaction have explicit phases so
+an interruption cannot repeat prompt preparation or lose its original context.
+The Rust adapter owns these boundaries; hosts do not manage pruning or recovery.
+Format 3 is a clean break from the previous whole-turn replay representation.
+
 Completed tool outputs replay exactly without consulting the recovered runtime's
 current tool catalog. Tool availability matters only when an unfinished step
 must execute. Capabilities represented by a tool result, such as spawned-agent
@@ -84,7 +93,7 @@ orchestrator that assigns separate tree-local IDs, mailboxes, roles, or status
 must persist that topology independently and map those IDs to agent session
 IDs when it needs cold tree reconstruction.
 
-Small retained states use the existing format-2 JSON representation. Once a
+Small retained states use the format-3 JSON representation. Once a
 serialized state crosses 256 KiB, the Rust encoder streams it through gzip and
 base64 under the `nanocodex-durable-state-gzip-v1:` prefix. Recovery accepts both
 representations and decompresses directly into the reducer. Hosts must keep the

@@ -331,18 +331,31 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
-    fn retained_step_input<'a>(
+    fn continuation<'a>(
         &'a self,
         operation_id: String,
-        step_id: String,
-        kind: String,
     ) -> ExecutionFuture<'a, AgentResult<Option<String>>> {
         Box::pin(async move {
             self.owner()
                 .await?
-                .retained_step_input(operation_id, step_id, kind)
+                .continuation(operation_id)
                 .await
-                .map(|input| input.map(|input| input.json().to_owned()))
+                .map(|value| value.map(|value| value.json().to_owned()))
+                .map_err(agent_error)
+        })
+    }
+
+    fn advance<'a>(
+        &'a self,
+        operation_id: String,
+        state_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<()>> {
+        Box::pin(async move {
+            let state = crate::EncodedPayload::encode(&raw(state_json)?).map_err(agent_error)?;
+            self.owner()
+                .await?
+                .advance(operation_id, state)
+                .await
                 .map_err(agent_error)
         })
     }

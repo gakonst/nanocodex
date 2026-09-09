@@ -111,12 +111,16 @@ not log-prefix compaction. Hosts never deserialize state.
 With bounded receipt retention, terminal operations retain their exact input,
 checkpoint, and result, but discard intermediate step and steer payloads. These
 payloads are recovery scratch data and cannot be used after settlement. Pending
-operations keep every recovery record. Encoded payloads share immutable storage
+agent operations retain one current conversation and execution phase, plus only
+the current batch of effect records. A single replacement saves the next
+conversation and retires settled effects; advancing past an unfinished effect is
+rejected. Recovery resumes this batch, with original request settings and token
+usage, without replaying earlier batches or storing historical request copies. Encoded payloads share immutable storage
 inside the Rust owner so preparing a replacement does not deep-copy every receipt.
 Managed sessions keep 16 inner terminal receipts; their managed inbox and archive
 continue to own public exact-ID replay beyond that tail.
 
-State format 2 uses the `nanocodex_durable_state` envelope. Small states retain
+State format 3 uses the `nanocodex_durable_state` envelope. Small states retain
 that JSON directly. Above 256 KiB, serialization streams into gzip and base64
 with the `nanocodex-durable-state-gzip-v1:` prefix, avoiding a complete
 uncompressed crossover allocation. Recovery accepts both encodings and

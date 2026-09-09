@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 
-const STATE_FORMAT: u8 = 2;
+const STATE_FORMAT: u8 = 3;
 
 /// A typed value erased only for storage in a heterogeneous state.
 ///
@@ -71,6 +71,14 @@ impl Eq for EncodedPayload {}
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Transition {
+    /// Replaces the current execution position after all preceding effects settled.
+    /// The conversation in this value subsumes those effects' recovery receipts.
+    ExecutionAdvanced {
+        /// Accepted operation identity.
+        operation_id: String,
+        /// Opaque current agent state, rather than a history of requests.
+        continuation: EncodedPayload,
+    },
     /// A host-visible operation was durably accepted.
     OperationAccepted {
         /// Caller-provided idempotency identity.
@@ -232,6 +240,12 @@ pub struct SteerState {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationState {
+    /// Current conversation and execution position; settled batches are retired atomically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<EncodedPayload>,
+    /// Model batches already incorporated in the current conversation.
+    #[serde(default)]
+    pub retired_model_calls: u32,
     /// Original opaque operation input.
     pub input: EncodedPayload,
     /// Current operation status.
@@ -242,6 +256,22 @@ pub struct OperationState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steers: Vec<SteerState>,
     pub(crate) accepted_order: u64,
+}
+
+impl OperationState {
+    fn retire_steps(&mut self) {
+        for (id, step) in &self.steps {
+            if step.kind == "model_call" && matches!(step.status, StepStatus::Completed(_)) {
+                if let Some(index) = id
+                    .strip_prefix("model-")
+                    .and_then(|id| id.parse::<u32>().ok())
+                {
+                    self.retired_model_calls = self.retired_model_calls.max(index);
+                }
+            }
+        }
+        self.steps.clear();
+    }
 }
 
 /// Complete state reduced from an complete retained state.
@@ -358,6 +388,7 @@ impl DurableState {
             // and write volume across long conversations.
             changed |= !operation.steps.is_empty() || !operation.steers.is_empty();
             operation.steps.clear();
+            changed |= operation.continuation.take().is_some();
             operation.steers.clear();
         }
         changed
@@ -401,6 +432,19 @@ impl DurableState {
                 return Err(Error::InvalidState(format!(
                     "operation `{operation_id}` has an invalid compacted acceptance order"
                 )));
+            }
+            if operation.status.is_terminal() && operation.continuation.is_some() {
+                return Err(Error::InvalidState(
+                    "terminal operation retained active execution state".into(),
+                ));
+            }
+            if !operation.status.is_terminal()
+                && operation.retired_model_calls != 0
+                && operation.continuation.is_none()
+            {
+                return Err(Error::InvalidState(
+                    "retired model batches have no current conversation".into(),
+                ));
             }
             for (step_id, step) in &operation.steps {
                 ensure_nonempty(step_id, "step ID")?;
@@ -449,7 +493,9 @@ impl DurableState {
             if matches!(
                 &operation.status,
                 OperationStatus::Cancelled { checkpoint: None }
-            ) && (!operation.steps.is_empty() || !operation.steers.is_empty())
+            ) && (operation.retired_model_calls != 0
+                || !operation.steps.is_empty()
+                || !operation.steers.is_empty())
             {
                 return Err(Error::InvalidState(format!(
                     "started operation `{operation_id}` was cancelled without a checkpoint"
@@ -533,6 +579,19 @@ impl DurableState {
             ensure_nonempty(operation_id, "operation ID")?;
         }
         match entry {
+            Transition::ExecutionAdvanced { operation_id, .. } => {
+                self.ensure_prior_operations_terminal(operation_id)?;
+                let operation = self.pending_operation(operation_id)?;
+                if operation
+                    .steps
+                    .values()
+                    .any(|step| matches!(step.status, StepStatus::EffectPending))
+                {
+                    return Err(Error::InvalidState(format!(
+                        "operation `{operation_id}` cannot advance past an unsettled effect"
+                    )));
+                }
+            }
             Transition::OperationAccepted { operation_id, .. } => {
                 if self.operations.contains_key(operation_id) {
                     return Err(Error::InvalidState(format!(
@@ -550,6 +609,16 @@ impl DurableState {
                 ensure_nonempty(kind, "step kind")?;
                 self.ensure_prior_operations_terminal(operation_id)?;
                 let operation = self.pending_operation(operation_id)?;
+                if kind == "model_call"
+                    && step_id
+                        .strip_prefix("model-")
+                        .and_then(|id| id.parse::<u32>().ok())
+                        .is_some_and(|index| index <= operation.retired_model_calls)
+                {
+                    return Err(Error::InvalidState(
+                        "cannot execute a retired model batch".into(),
+                    ));
+                }
                 if let Some(step) = operation.steps.get(step_id) {
                     if step.kind != *kind || step.input != *input {
                         return Err(Error::InvalidState(format!(
@@ -693,7 +762,11 @@ impl DurableState {
                 let operation = self.pending_operation(operation_id)?;
                 if checkpoint.is_some() {
                     self.ensure_prior_operations_terminal(operation_id)?;
-                } else if !operation.steps.is_empty() || !operation.steers.is_empty() {
+                } else if operation.continuation.is_some()
+                    || operation.retired_model_calls != 0
+                    || !operation.steps.is_empty()
+                    || !operation.steers.is_empty()
+                {
                     return Err(Error::InvalidState(format!(
                         "started operation `{operation_id}` was cancelled without a checkpoint"
                     )));
@@ -712,6 +785,14 @@ impl DurableState {
 
     fn apply(&mut self, revision: u64, entry: Transition) -> Result<()> {
         match entry {
+            Transition::ExecutionAdvanced {
+                operation_id,
+                continuation,
+            } => {
+                let operation = self.pending_operation_mut(&operation_id)?;
+                operation.continuation = Some(continuation);
+                operation.retire_steps();
+            }
             Transition::OperationAccepted {
                 operation_id,
                 input,
@@ -719,6 +800,8 @@ impl DurableState {
                 self.operations.insert(
                     operation_id,
                     OperationState {
+                        continuation: None,
+                        retired_model_calls: 0,
                         input,
                         status: OperationStatus::Pending,
                         steps: BTreeMap::new(),
@@ -798,6 +881,9 @@ impl DurableState {
                 output,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
+                if operation.continuation.take().is_some() {
+                    operation.retire_steps();
+                }
                 operation.status = OperationStatus::Completed {
                     checkpoint: checkpoint.clone(),
                     output,
@@ -810,6 +896,9 @@ impl DurableState {
                 error,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
+                if operation.continuation.take().is_some() {
+                    operation.retire_steps();
+                }
                 operation.status = OperationStatus::Failed {
                     checkpoint: checkpoint.clone(),
                     error,
@@ -821,6 +910,9 @@ impl DurableState {
                 checkpoint,
             } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
+                if operation.continuation.take().is_some() {
+                    operation.retire_steps();
+                }
                 operation.status = OperationStatus::Cancelled {
                     checkpoint: checkpoint.clone(),
                 };
@@ -885,9 +977,10 @@ fn ensure_completed_steers_consumed(operation_id: &str, operation: &OperationSta
             ))
         })?;
         let step_id = format!("model-{model_call_index}");
-        let consumed = operation.steps.get(&step_id).is_some_and(|step| {
-            step.kind == "model_call" && matches!(step.status, StepStatus::Completed(_))
-        });
+        let consumed = model_call_index <= operation.retired_model_calls
+            || operation.steps.get(&step_id).is_some_and(|step| {
+                step.kind == "model_call" && matches!(step.status, StepStatus::Completed(_))
+            });
         if !consumed {
             return Err(Error::InvalidState(format!(
                 "operation `{operation_id}` completed before steer {steer_index} was consumed by `{step_id}`"
@@ -900,7 +993,8 @@ fn ensure_completed_steers_consumed(operation_id: &str, operation: &OperationSta
 impl Transition {
     fn operation_id(&self) -> Option<&str> {
         match self {
-            Self::OperationAccepted { operation_id, .. }
+            Self::ExecutionAdvanced { operation_id, .. }
+            | Self::OperationAccepted { operation_id, .. }
             | Self::StepStarted { operation_id, .. }
             | Self::StepCompleted { operation_id, .. }
             | Self::SteerAccepted { operation_id, .. }
@@ -918,4 +1012,88 @@ fn ensure_nonempty(value: &str, name: &str) -> Result<()> {
         return Err(Error::InvalidState(format!("{name} must not be empty")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod continuation_tests {
+    use super::*;
+
+    #[test]
+    fn advancing_preserves_steer_consumption_and_rejects_pending_or_retired_work() -> Result<()> {
+        let mut state = DurableState::default();
+        let id = "turn".to_owned();
+        let payload = EncodedPayload::encode(&"state")?;
+        let mut apply = |entry| state.apply_transition(state.revision() + 1, entry);
+        apply(Transition::OperationAccepted {
+            operation_id: id.clone(),
+            input: payload.clone(),
+        })?;
+        apply(Transition::StepStarted {
+            operation_id: id.clone(),
+            step_id: "model-1".into(),
+            kind: "model_call".into(),
+            input: payload.clone(),
+        })?;
+        apply(Transition::SteerAccepted {
+            operation_id: id.clone(),
+            steer_index: 1,
+            accepted_after_model_call_index: 1,
+            input: payload.clone(),
+        })?;
+        apply(Transition::StepCompleted {
+            operation_id: id.clone(),
+            step_id: "model-1".into(),
+            output: payload.clone(),
+        })?;
+        apply(Transition::ExecutionAdvanced {
+            operation_id: id.clone(),
+            continuation: payload.clone(),
+        })?;
+        apply(Transition::SteerBound {
+            operation_id: id.clone(),
+            steer_index: 1,
+            model_call_index: 2,
+        })?;
+        apply(Transition::StepStarted {
+            operation_id: id.clone(),
+            step_id: "model-2".into(),
+            kind: "model_call".into(),
+            input: payload.clone(),
+        })?;
+        assert!(
+            apply(Transition::ExecutionAdvanced {
+                operation_id: id.clone(),
+                continuation: payload.clone()
+            })
+            .is_err()
+        );
+        apply(Transition::StepCompleted {
+            operation_id: id.clone(),
+            step_id: "model-2".into(),
+            output: payload.clone(),
+        })?;
+        apply(Transition::ExecutionAdvanced {
+            operation_id: id.clone(),
+            continuation: payload.clone(),
+        })?;
+        assert!(
+            apply(Transition::StepStarted {
+                operation_id: id.clone(),
+                step_id: "model-1".into(),
+                kind: "model_call".into(),
+                input: payload.clone()
+            })
+            .is_err()
+        );
+        apply(Transition::OperationCompleted {
+            operation_id: id.clone(),
+            checkpoint: payload.clone(),
+            output: payload,
+        })?;
+        let operation = state.operation(&id).unwrap();
+        assert_eq!(operation.retired_model_calls, 2);
+        assert!(operation.continuation.is_none());
+        assert!(operation.steps.is_empty());
+        Ok(())
+    }
 }
