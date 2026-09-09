@@ -193,8 +193,8 @@ test("managed live watcher delivers partial chunks before authoritative completi
     events: {
       async page() { return { data: [], hasMore: false, latestCursor: "0" }; },
       async *watch() {
-        yield raw("1", "Hel");
-        yield raw("2", "lo");
+        yield raw("1", "Hell");
+        yield raw("2", "o");
         await completion;
         yield { cursor: "3", createdAt: 1, turnId: "stream-turn", type: "turn_completed" as const,
           data: { type: "turn_completed" as const, cursor: "3", created_at: 1, turn_id: "stream-turn", id: "stream-turn", final_message: "Hello!", usage: null, citations: [] } };
@@ -215,7 +215,7 @@ test("managed live watcher delivers partial chunks before authoritative completi
     if (event.type === "run.completed") done();
   });
   await partialReady;
-  assert.deepEqual(received.map(event => [event.type, event.payload.text]), [["assistant.delta", "Hel"], ["assistant.delta", "lo"]]);
+  assert.deepEqual(received.map(event => [event.type, event.payload.text]), [["assistant.delta", "Hell"], ["assistant.delta", "o"]]);
   assert.ok(received.every(event => event.request_id === FIRST_AGENT_ID && event.payload.turn_id === "stream-turn"));
   release();
   await finished;

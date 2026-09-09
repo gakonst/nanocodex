@@ -708,14 +708,14 @@ test("live assistant chunks publish before completion and reconcile without a du
     await act(async () => { await controller.submit("Hello"); });
     await act(async () => {
       source.emit(event(1, "run.started", { turn_id: "turn-1" }));
-      source.emit(event(2, "assistant.delta", { text: "Hel", turn_id: "turn-1" }));
+      source.emit(event(2, "assistant.delta", { text: "Hell", turn_id: "turn-1" }));
     });
     await flushFrames(frames);
-    assert.equal(root.toJSON().children[0], "Hel");
+    assert.equal(root.toJSON().children[0], "Hell");
     assert.equal(controller.running, true);
     assert.equal(controller.entries.at(-1).streaming, true);
     const id = controller.entries.at(-1).id;
-    await act(async () => source.emit(event(3, "assistant.delta", { text: "lo", turn_id: "turn-1" })));
+    await act(async () => source.emit(event(3, "assistant.delta", { text: "o", turn_id: "turn-1" })));
     await flushFrames(frames);
     assert.equal(root.toJSON().children[0], "Hello");
     assert.equal(controller.entries.at(-1).id, id);
@@ -805,8 +805,8 @@ test("late chunks cannot reopen canonical items and child lifecycle cannot end t
 test("null provider identity fields reconcile with omitted final fields", async () => {
   const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
   const state = applyAgentEvents(initialState(), [
-    event(1, "assistant.delta", { turn_id: "turn", text: "Hel", item_id: null, phase: null }),
-    event(2, "assistant.delta", { turn_id: "turn", text: "lo" }),
+    event(1, "assistant.delta", { turn_id: "turn", text: "Hell", item_id: null, phase: null }),
+    event(2, "assistant.delta", { turn_id: "turn", text: "o" }),
     event(3, "assistant.message", { turn_id: "turn", text: "Hello!", item_id: null, phase: null }),
   ]);
   assert.deepEqual(state.entries.map(({ text, streaming }) => ({ text, streaming })), [{ text: "Hello!", streaming: false }]);
