@@ -96,7 +96,7 @@ export type AgentEntry = Readonly<(
   | { id: string; kind: "tool"; tool: ToolActivity }
   | { id: string; kind: "plan"; update: PlanUpdate }
   | { id: string; kind: "error"; text: string }
-) & { turnId?: string | undefined }>;
+) & { turnId?: string | undefined; responseComplete?: boolean | undefined; responseIdentity?: Readonly<{ agentId?: number | undefined; itemId?: string | undefined; phase?: string | undefined; modelCallIndex?: number | undefined }> | undefined }>;
 
 export type AgentControllerEvent = Readonly<{
   type: string;

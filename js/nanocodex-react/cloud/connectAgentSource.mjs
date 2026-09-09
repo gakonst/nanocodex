@@ -358,6 +358,8 @@ function compactEnvelopeRetention(envelopes, seen) {
       continue;
     }
     const removable = [...groups.values()]
+      // Live answers must survive history reprojection without losing their prefix.
+      .filter((group) => group.complete)
       .flatMap((group) => group.envelopes.filter((envelope) => !group.mandatory.has(envelope)))
       .sort((left, right) => compareCursor(left.cursor, right.cursor))[0];
     if (!removable) return;
@@ -515,6 +517,7 @@ function rawEvent(envelope, sessionId, sequence) {
     seq: sequence,
     payload: {
       ...value.payload,
+      ...(envelope.data.agent_id == null ? {} : { managed_agent_id: envelope.data.agent_id }),
       managed_event_cursor: envelope.cursor,
       managed_event_created_at: envelope.createdAt,
       ...(envelope.turnId ? { turn_id: envelope.turnId } : {}),
@@ -532,10 +535,11 @@ function terminalTurnId(envelope) {
 function rawAssistantMessageTurns(envelopes) {
   const turns = new Set();
   for (const envelope of envelopes) {
-    if (!envelope.turnId || envelope.data.type !== "event") continue;
+    if (!envelope.turnId || envelope.data.type !== "event" || envelope.data.agent_id != null) continue;
     const event = envelope.data.event;
     if (event && typeof event === "object" && !Array.isArray(event)
-      && event.type === "assistant.message") {
+      && event.type === "assistant.message"
+      && (event.payload?.phase == null || event.payload.phase === "final_answer")) {
       turns.add(envelope.turnId);
     }
   }

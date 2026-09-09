@@ -533,6 +533,49 @@ test("managed event history forwards caller cancellation to the fetch boundary",
   assert.equal(historySignal.aborted, true);
 });
 
+test("assistant chunks cross fragmented SSE frames before the response completes", { timeout: 5_000 }, async () => {
+  const connections = [];
+  const agent = await Agent.create({
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST") return Response.json({ agent_id: agentId }, { status: 201 });
+      const connection = controlledEventStream(request.signal, () => {});
+      connections.push(connection);
+      return connection.response;
+    },
+  });
+  const events = agent.events.watch({ cursor: "0" });
+  try {
+    const first = events.next();
+    await waitFor(() => connections.length === 1);
+    const delta = (cursor, text) => ({
+      ...eventData(cursor), turn_id: "turn-1",
+      event: { type: "assistant.delta", payload: { model_call_index: 0, item_id: "answer", phase: "final_answer", text } },
+    });
+    const frame = sse("1", "event", delta("1", "1, "));
+    // Split inside a JSON payload, as a real HTTP response may do.
+    const split = frame.indexOf('"payload"') + 4;
+    connections[0].send(frame.slice(0, split));
+    connections[0].send(frame.slice(split));
+    assert.equal((await first).value.data.event.payload.text, "1, ");
+
+    const second = events.next();
+    connections[0].send(sse("2", "event", delta("2", "2, 3")));
+    assert.equal((await second).value.data.event.payload.text, "2, 3");
+
+    // Only send completion after both partial answers have been consumed.
+    const final = events.next();
+    connections[0].send(sse("3", "event", {
+      ...delta("3", "1, 2, 3"),
+      event: { type: "assistant.message", payload: { model_call_index: 0, item_id: "answer", phase: "final_answer", text: "1, 2, 3" } },
+    }));
+    assert.equal((await final).value.data.event.type, "assistant.message");
+  } finally {
+    await events.return();
+  }
+});
+
 test("latest event tails adopt the server cursor before reconnecting", async () => {
   const connections = [];
   const requestedCursors = [];

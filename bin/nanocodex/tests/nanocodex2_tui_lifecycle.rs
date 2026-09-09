@@ -978,3 +978,65 @@ async fn terminal_requires_explicit_edit_and_save_to_retry_unknown_delivery() {
     fixture.complete(&next);
     assert!(fixture.steers.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn terminal_streams_each_chunk_before_completion_without_duplicate_answers() {
+    fn screen(terminal: &Terminal) -> String {
+        let mut parser = vt100::Parser::new(32, 160, 0);
+        parser.process(&terminal.output.lock().unwrap());
+        parser.screen().contents()
+    }
+    async fn wait_screen(terminal: &Terminal, text: &str) {
+        tokio::time::timeout(TIMEOUT, async {
+            while !screen(terminal).contains(text) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("terminal should render {text:?}: {}", screen(terminal)));
+    }
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("stream an answer", "\r");
+    let turn = fixture.submission("stream an answer").await;
+    let payload = |item: &str, phase: &str, text: &str| json!({"model_call_index": 1, "item_id": item, "phase": phase, "text": text});
+
+    fixture.nested(
+        &turn,
+        "assistant.delta",
+        payload("comment", "commentary", "STREAM_COMMENT"),
+    );
+    wait_screen(&fixture.terminal, "STREAM_COMMENT").await;
+    fixture.nested(
+        &turn,
+        "assistant.message",
+        payload("comment", "commentary", "STREAM_COMMENT"),
+    );
+    fixture.nested(
+        &turn,
+        "assistant.delta",
+        payload("answer", "final_answer", "STREAM_FIRST"),
+    );
+    // Completion is deliberately withheld until the terminal has rendered each
+    // chunk. A client that buffers until assistant.message times out here.
+    wait_screen(&fixture.terminal, "STREAM_FIRST").await;
+    fixture.nested(
+        &turn,
+        "assistant.delta",
+        payload("answer", "final_answer", "_SECOND"),
+    );
+    wait_screen(&fixture.terminal, "STREAM_FIRST_SECOND").await;
+    let rendered = screen(&fixture.terminal);
+    assert_eq!(rendered.matches("STREAM_FIRST").count(), 1, "{rendered}");
+
+    fixture.nested(
+        &turn,
+        "assistant.message",
+        payload("answer", "final_answer", "STREAM_FIRST_SECOND_FINAL"),
+    );
+    fixture.complete(&turn);
+    wait_screen(&fixture.terminal, "STREAM_FIRST_SECOND_FINAL").await;
+    wait_screen(&fixture.terminal, "Enter send").await;
+    let rendered = screen(&fixture.terminal);
+    assert_eq!(rendered.matches("STREAM_FIRST").count(), 1, "{rendered}");
+    assert_eq!(rendered.matches("STREAM_COMMENT").count(), 1, "{rendered}");
+}

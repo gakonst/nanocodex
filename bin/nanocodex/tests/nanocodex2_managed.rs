@@ -214,6 +214,100 @@ struct TestState {
 }
 
 #[tokio::test]
+async fn run_flushes_each_assistant_delta_before_completion() {
+    use tokio::io::AsyncBufReadExt;
+
+    let next = Arc::new(tokio::sync::Notify::new());
+    let gate = Arc::clone(&next);
+    let app = Router::new().route("/v1/agents/live", get(move |upgrade: WebSocketUpgrade| {
+        let gate = Arc::clone(&gate);
+        async move {
+            upgrade.on_upgrade(move |mut socket| async move {
+                send_ready(&mut socket, "0", false).await;
+                let Some(Ok(Message::Text(prompt))) = socket.recv().await else { return; };
+                let prompt: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+                let turn = prompt["id"].as_str().unwrap();
+                send_accepted(&mut socket, turn, "stream answer", 1).await;
+                for (seq, text) in [(1, "first"), (2, " second")] {
+                    socket.send(Message::Text(serde_json::json!({
+                        "cursor": (seq + 1).to_string(), "turn_id": turn, "type": "event",
+                        "event": {"protocol_version": 1, "request_id": turn, "seq": seq,
+                            "type": "assistant.delta", "payload": {
+                                "model_call_index": 1, "item_id": "answer", "phase": "final_answer", "text": text
+                            }}
+                    }).to_string().into())).await.unwrap();
+                    // The next event cannot arrive until stdout exposes this one.
+                    gate.notified().await;
+                }
+                send_turn_messages(&mut socket, turn, "first second", 4, 3).await;
+            })
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let workspace = tempfile::tempdir().unwrap();
+    let (config_home, decoy) = configure_workspace(workspace.path());
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .args([
+            "run",
+            "stream answer",
+            "--idempotency-key",
+            "stream-request",
+        ])
+        .env("NANOCODEX_MANAGED_URL", origin)
+        .env(
+            "NC_API_KEY",
+            format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
+        )
+        .env_remove("NANOCODEX_API_KEY")
+        .env("NANOCODEX_HOME", config_home.path())
+        .env_remove("OPENAI_API_KEY")
+        .current_dir(decoy.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    for expected in ["first", " second"] {
+        let line = tokio::time::timeout(PROCESS_TIMEOUT, lines.next_line())
+            .await
+            .expect("assistant delta was buffered until completion")
+            .unwrap()
+            .unwrap();
+        let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(event["type"], "assistant.delta");
+        assert_eq!(event["payload"]["text"], expected);
+        assert!(child.try_wait().unwrap().is_none());
+        next.notify_one();
+    }
+    let output = tokio::time::timeout(PROCESS_TIMEOUT, child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut remaining = Vec::new();
+    while let Some(line) = lines.next_line().await.unwrap() {
+        remaining.push(serde_json::from_str::<serde_json::Value>(&line).unwrap());
+    }
+    assert_eq!(remaining.len(), 2);
+    assert_eq!(remaining[0]["type"], "assistant.message");
+    assert_eq!(remaining[1]["type"], "run.completed");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr)
+            .matches("first second")
+            .count(),
+        1
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
     let api_key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

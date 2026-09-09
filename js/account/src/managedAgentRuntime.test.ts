@@ -177,3 +177,106 @@ test("account changes discard thread snapshots, including a watcher detached aft
   next.watcher.off();
   assert.equal(source.pages, 2);
 });
+
+test("managed live watcher delivers partial chunks before authoritative completion", async (t) => {
+  t.after(() => appQueryClient.clear());
+  let release!: () => void;
+  const completion = new Promise<void>(resolve => { release = resolve; });
+  const raw = (cursor: string, text: string): ManagedEvent => ({
+    cursor, createdAt: 1, turnId: "stream-turn", type: "event",
+    data: { type: "event", cursor, created_at: 1, turn_id: "stream-turn", event: {
+      protocol_version: 1, request_id: "internal", seq: Number(cursor), type: "assistant.delta", payload: { text },
+    } },
+  });
+  const source: ManagedTerminalSource = {
+    id: FIRST_AGENT_ID, type: "managed",
+    events: {
+      async page() { return { data: [], hasMore: false, latestCursor: "0" }; },
+      async *watch() {
+        yield raw("1", "Hel");
+        yield raw("2", "lo");
+        await completion;
+        yield { cursor: "3", createdAt: 1, turnId: "stream-turn", type: "turn_completed" as const,
+          data: { type: "turn_completed" as const, cursor: "3", created_at: 1, turn_id: "stream-turn", id: "stream-turn", final_message: "Hello!", usage: null, citations: [] } };
+      },
+    },
+    turn: { prompt() { throw new Error("not used"); } },
+  };
+  const watcher = managedTerminalAgent(source, { accountId: "live-stream-test" }).events.watch();
+  t.after(() => { release(); watcher.off(); });
+  const received: AgentEvent[] = [];
+  let partial!: () => void;
+  let done!: () => void;
+  const partialReady = new Promise<void>(resolve => { partial = resolve; });
+  const finished = new Promise<void>(resolve => { done = resolve; });
+  watcher.onEvent(event => {
+    received.push(event);
+    if (received.length === 2) partial();
+    if (event.type === "run.completed") done();
+  });
+  await partialReady;
+  assert.deepEqual(received.map(event => [event.type, event.payload.text]), [["assistant.delta", "Hel"], ["assistant.delta", "lo"]]);
+  assert.ok(received.every(event => event.request_id === FIRST_AGENT_ID && event.payload.turn_id === "stream-turn"));
+  release();
+  await finished;
+  assert.deepEqual(received.map(event => event.type), ["assistant.delta", "assistant.delta", "assistant.message", "run.completed"]);
+  assert.equal(received[2]!.payload.text, "Hello!");
+});
+
+test("incomplete live answers retain every chunk for history reprojection beyond the envelope count limit", async (t) => {
+  t.after(() => appQueryClient.clear());
+  const { MAX_MANAGED_RETAINED_ENVELOPES, managedHistoryEvents } = await import("./managedAgentRuntime.ts");
+  const count = MAX_MANAGED_RETAINED_ENVELOPES + 20;
+  let delivered!: () => void;
+  const ready = new Promise<void>(resolve => { delivered = resolve; });
+  const source: ManagedTerminalSource = {
+    id: FIRST_AGENT_ID, type: "managed", turn: { prompt() { throw new Error("not used"); } },
+    events: {
+      async page() { return { data: [], hasMore: false, latestCursor: "0" }; },
+      async *watch({ signal } = {}) {
+        for (let seq = 1; seq <= count; seq++) yield {
+          cursor: String(seq), createdAt: 1, turnId: "long", type: "event",
+          data: { type: "event" as const, cursor: String(seq), created_at: 1, turn_id: "long", event: {
+            type: "assistant.delta", payload: { text: seq === 1 ? "prefix" : "x", item_id: "answer" },
+          } },
+        };
+        delivered();
+        if (!signal?.aborted) await new Promise<void>(resolve => signal?.addEventListener("abort", () => resolve(), { once: true }));
+      },
+    },
+  };
+  const watcher = managedTerminalAgent(source, { accountId: "long-answer" }).events.watch();
+  t.after(() => watcher.off());
+  await ready;
+  watcher.off();
+  const cached = appQueryClient.getQueryCache().findAll().map(q => q.state.data).find((data): data is { envelopes: ManagedEvent[] } =>
+    !!data && typeof data === "object" && "envelopes" in data);
+  assert.equal(cached?.envelopes.length, count);
+  const projected = managedHistoryEvents(cached!.envelopes, FIRST_AGENT_ID, undefined);
+  assert.equal(projected.map(event => event.payload.text).join(""), "prefix" + "x".repeat(count - 1));
+});
+
+test("helper and commentary messages preserve identity and cannot suppress the authoritative root final", async () => {
+  const { managedHistoryEvents } = await import("./managedAgentRuntime.ts");
+  const history: ManagedEvent[] = [
+    { cursor: "1", createdAt: 1, turnId: "turn", type: "event", data: { type: "event", cursor: "1", created_at: 1, turn_id: "turn", agent_id: 1,
+      event: { type: "assistant.message", payload: { text: "Helper", phase: "final_answer", item_id: "helper" } } } },
+    { cursor: "2", createdAt: 1, turnId: "turn", type: "event", data: { type: "event", cursor: "2", created_at: 1, turn_id: "turn",
+      event: { type: "assistant.message", payload: { text: "Working", phase: "commentary", item_id: "comment" } } } },
+    { cursor: "3", createdAt: 1, turnId: "turn", type: "turn_completed", data: { type: "turn_completed", cursor: "3", created_at: 1, turn_id: "turn", id: "turn", final_message: "Root", usage: null, citations: [] } },
+  ];
+  const projected = managedHistoryEvents(history, FIRST_AGENT_ID, undefined);
+  assert.equal(projected[0]!.payload.managed_agent_id, 1);
+  assert.deepEqual(projected.filter(event => event.type === "assistant.message").map(event => event.payload.text), ["Helper", "Working", "Root"]);
+});
+
+
+test("null-phase root message does not synthesize a duplicate final", async () => {
+  const { managedHistoryEvents } = await import("./managedAgentRuntime.ts");
+  const history: ManagedEvent[] = [
+    { cursor: "1", createdAt: 1, turnId: "turn", type: "event", data: { type: "event", cursor: "1", created_at: 1, turn_id: "turn",
+      event: { type: "assistant.message", payload: { text: "Root", phase: null, item_id: null } } } },
+    { cursor: "2", createdAt: 1, turnId: "turn", type: "turn_completed", data: { type: "turn_completed", cursor: "2", created_at: 1, turn_id: "turn", id: "turn", final_message: "Root", usage: null, citations: [] } },
+  ];
+  assert.equal(managedHistoryEvents(history, FIRST_AGENT_ID, undefined).filter(event => event.type === "assistant.message").length, 1);
+});

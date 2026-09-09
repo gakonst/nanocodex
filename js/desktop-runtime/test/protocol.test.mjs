@@ -339,6 +339,44 @@ test("stream snapshots protect nested history and stay stable while new events a
   assert.equal(latest.events[1].data.event.payload.text, " world");
   assert.equal((await runtime.openThread(agentId)).events[0].data.event.payload.text, "hello");
 });
+test("desktop publishes successive assistant chunks while the turn is still running", { timeout: 5_000 }, async t => {
+  const agentId = "019a65fe-a456-7000-8000-000000000005";
+  const stream = deferred();
+  const baseUrl = await service(t, (request, response) => {
+    if (request.url.includes("/events/history")) response.end(JSON.stringify({ data: [], latest_cursor: "0", has_more: false }));
+    else if (request.url.includes("/events?")) {
+      response.setHeader("content-type", "text/event-stream");
+      response.flushHeaders(); stream.resolve(response);
+    } else if (request.url === `/v1/agents/${agentId}`) response.end(JSON.stringify({ active_turns: ["turn-1"] }));
+    else response.end(JSON.stringify({ data: [] }));
+  });
+  const runtime = new DesktopRuntime({ baseUrl, apiKey: key });
+  t.after(() => runtime.close());
+  const frames = [deferred(), deferred(), deferred()];
+  runtime.on("event", event => {
+    if (event.type === "thread") frames[event.thread.events.length - 1]?.resolve(event.thread);
+  });
+  await runtime.refresh();
+  await runtime.openThread(agentId);
+  const response = await stream.promise;
+  const send = (cursor, type, text) => {
+    const event = { cursor, created_at: Number(cursor), turn_id: "turn-1", type: "event", event: {
+      type, payload: { model_call_index: 0, item_id: "answer", phase: "final_answer", text },
+    } };
+    response.write(`id: ${cursor}\nevent: message\ndata: ${JSON.stringify(event)}\n\n`);
+  };
+  send("1", "assistant.delta", "1, ");
+  const first = await frames[0].promise;
+  assert.equal(first.events[0].data.event.payload.text, "1, ");
+  assert.deepEqual(first.activeTurns, ["turn-1"]);
+  send("2", "assistant.delta", "2, 3");
+  const second = await frames[1].promise;
+  assert.deepEqual(second.events.map(event => event.data.event.payload.text), ["1, ", "2, 3"]);
+  assert.deepEqual(second.activeTurns, ["turn-1"]);
+  assert.equal(first.events.length, 1, "Earlier UI snapshots remain stable");
+  send("3", "assistant.message", "1, 2, 3");
+  assert.equal((await frames[2].promise).events[2].data.event.type, "assistant.message");
+});
 test("saved drafts and Hand grants are private and account scoped", async t => {
   const path = await directory(t);
   const first = await desktopPreferences({ directory: path, apiKey: key });

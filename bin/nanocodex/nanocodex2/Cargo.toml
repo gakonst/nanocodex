@@ -59,6 +59,7 @@ nanocodex-vm.workspace = true
 nix.workspace = true
 
 [dev-dependencies]
+vt100 = "0.15.2"
 portable-pty.workspace = true
 axum = { workspace = true, features = ["ws"] }
 criterion.workspace = true

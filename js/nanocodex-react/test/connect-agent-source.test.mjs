@@ -443,3 +443,45 @@ async function waitFor(predicate, attempts = 100, delayMilliseconds = 0) {
   }
   throw new Error("condition was not met");
 }
+
+test("Connect preserves helper response identity and synthesizes root final after commentary", async () => {
+  const helper = rawEnvelope("1", "turn", "assistant.message", { text: "Helper", item_id: "helper", phase: "final_answer" });
+  helper.data.agent_id = 1;
+  const commentary = rawEnvelope("2", "turn", "assistant.message", { text: "Working", item_id: "comment", phase: "commentary" });
+  const terminal = outerEnvelope("3", "turn", { type: "turn_completed", id: "turn", final_message: "Root", usage: null });
+  const source = createConnectAgentSource({
+    id: "identity", sessionId: "identity",
+    events: {
+      async page() { return { data: [helper, commentary, terminal], hasMore: false, latestCursor: "3" }; },
+      async *watch({ signal }) { await aborted(signal); },
+    },
+    turn: { prompt() { throw new Error("not used"); } },
+  }, { history: true });
+  const watcher = source.events.watch();
+  try {
+    const events = await new Promise(resolve => watcher.onHistory(resolve));
+    assert.equal(events[0].payload.managed_agent_id, 1);
+    assert.deepEqual(historyText(events), ["Helper", "Working", "Root"]);
+    const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+    assert.deepEqual(applyAgentEvents(initialState(), events).entries.filter(e => e.kind === "assistant").map(e => e.text), ["Helper", "Working", "Root"]);
+  } finally { watcher.off(); }
+});
+
+
+test("Connect null-phase root message does not synthesize a duplicate final", async () => {
+  const message = rawEnvelope("1", "turn", "assistant.message", { text: "Root", item_id: null, phase: null });
+  const terminal = outerEnvelope("2", "turn", { type: "turn_completed", id: "turn", final_message: "Root", usage: null });
+  const source = createConnectAgentSource({
+    id: "null-identity", sessionId: "null-identity",
+    events: {
+      async page() { return { data: [message, terminal], hasMore: false, latestCursor: "2" }; },
+      async *watch({ signal }) { await aborted(signal); },
+    },
+    turn: { prompt() { throw new Error("not used"); } },
+  }, { history: true });
+  const watcher = source.events.watch();
+  try {
+    const events = await new Promise(resolve => watcher.onHistory(resolve));
+    assert.equal(events.filter(event => event.type === "assistant.message").length, 1);
+  } finally { watcher.off(); }
+});

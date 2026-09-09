@@ -2,6 +2,33 @@ import XCTest
 @testable import Nanocodex
 
 final class ProtocolTests: XCTestCase {
+    func testStreamedAnswerSurvivesInterleavedEventsAndFinalization() throws {
+        func output(_ cursor: String, _ type: String, _ text: String, agent: String? = nil) -> ManagedEvent {
+            var data: [String: JSONValue] = ["type": .string("event"), "event": .object([
+                "type": .string(type), "payload": .object(["text": .string(text), "phase": .string("final_answer"), "item_id": .string("answer")])])]
+            if let agent { data["agent_id"] = .string(agent) }
+            return .init(cursor: cursor, turnId: "turn", data: .object(data))
+        }
+        var events = [output("1", "assistant.delta", "Hello")]
+        var cache = TimelineProjection()
+        let first = try XCTUnwrap(cache.project(events).first)
+        XCTAssertEqual(first.text, "Hello")
+        XCTAssertTrue(first.streaming)
+        events += [output("2", "assistant.delta", "Helper", agent: "helper"), output("3", "assistant.delta", " world")]
+        let growing = cache.project(events).filter { $0.agent == nil }
+        XCTAssertEqual(growing.map(\.text), ["Hello world"])
+        XCTAssertEqual(growing.first?.id, first.id)
+        let terminalOnly = events + [.init(cursor: "terminal", turnId: "turn", data: .object(["type": .string("turn_completed"), "final_message": .string("Hello world!")]))]
+        XCTAssertEqual(projectTimeline(terminalOnly).filter { $0.agent == nil }.map(\.text), ["Hello world!"])
+        events += [output("4", "assistant.delta", " update", agent: "helper"), output("5", "assistant.message", "Hello world!")]
+        XCTAssertEqual(cache.project(events).first?.text, "Hello world!")
+        XCTAssertFalse(try XCTUnwrap(cache.project(events).first).streaming)
+        events += [output("6", "assistant.message", "Helper update", agent: "helper"), .init(cursor: "7", turnId: "turn", data: .object(["type": .string("turn_completed"), "final_message": .string("Hello world!")]))]
+        let final = cache.project(events + events).filter { $0.agent == nil }
+        XCTAssertEqual(final.map(\.text), ["Hello world!"])
+        XCTAssertEqual(final.first?.id, first.id)
+    }
+
     @MainActor
     func testBrowserSplitLayoutsPersistReopenAndRetainEditors() async throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-browser-fixture")

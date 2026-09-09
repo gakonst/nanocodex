@@ -18,6 +18,8 @@ type InternalEventListener = (
 ) => void;
 
 const REPLAY_EVENTS = new Set([
+  // Clients need chunks before assistant.message completes the response.
+  "assistant.delta",
   "assistant.message",
   "reasoning.summary.delta",
   "run.started",
@@ -60,7 +62,7 @@ export function watchManagedAgentFamilyEvents(
     // Raw frames can contain prompts, tool schemas, and cumulative response
     // bodies. Cloudflare traces retain the request path; never copy payloads
     // into either replay storage or application logs.
-    if (event.type !== "api.event" && event.type !== "assistant.delta") {
+    if (event.type !== "api.event") {
       listeners.observe(event);
     }
   });

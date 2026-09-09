@@ -316,6 +316,59 @@ test("Connect sends managed reads as POST so browsers retain exact app-origin ad
   assert.equal(requests[0].headers.get("authorization"), "Bearer grant-session-test");
 });
 
+test("Connect streams authorized reply chunks before completion and filters commentary", { timeout: 5_000 }, async () => {
+  const agentId = "019fc927-b280-79a7-8445-1b9996ad2fb0";
+  let ready;
+  const opened = new Promise(resolve => { ready = resolve; });
+  const client = Client.create({
+    appId: "stream-workspace",
+    dialog: Dialog.memory(),
+    provider: { request() { throw new Error("wallet should not be used"); } },
+    transport: Transport.from({
+      key: "stream", name: "stream", type: "stream",
+      setup() {
+        return {
+          baseUrl: "https://connect.example",
+          async fetch() {
+            return new Response(new ReadableStream({ start(controller) { ready(controller); } }), {
+              headers: { "content-type": "text/event-stream" },
+            });
+          },
+          async request() { throw new Error("control-plane request was unexpected"); },
+        };
+      },
+    }),
+  });
+  client._setSessionToken("grant-session-test");
+  const connection = connectionFromWire(testConnectionWire({
+    agentId, expiry: Math.floor(Date.now() / 1_000) + 3_600,
+    keyId: "0x1111111111111111111111111111111111111111",
+    capabilities: ["nanocodex.agent", "agent.output.final", "chatgpt"],
+  }));
+  const agent = await client.agent.create({ connection });
+  const events = agent.events.watch({ cursor: "0" });
+  try {
+    const first = events.next();
+    const controller = await opened;
+    const send = (cursor, type, phase, text) => {
+      const event = { cursor, created_at: Number(cursor), turn_id: "turn-1", type: "event",
+        event: { type, payload: { model_call_index: 0, item_id: phase, phase, text } } };
+      controller.enqueue(new TextEncoder().encode(`id: ${cursor}\nevent: message\ndata: ${JSON.stringify(event)}\n\n`));
+    };
+    send("1", "assistant.delta", "commentary", "Private progress");
+    send("2", "assistant.delta", "final_answer", "1, ");
+    assert.equal((await first).value.data.event.payload.text, "1, ");
+    const second = events.next();
+    send("3", "assistant.delta", "final_answer", "2, 3");
+    assert.equal((await second).value.data.event.payload.text, "2, 3");
+    const final = events.next();
+    send("4", "assistant.message", "final_answer", "1, 2, 3");
+    assert.equal((await final).value.data.event.payload.text, "1, 2, 3");
+  } finally {
+    await events.return();
+  }
+});
+
 test("Connect POST-tunnels only the complete managed read surface", () => {
   for (const path of ["", "/events", "/events/history", "/turns/turn-1"]) {
     assert.equal(isManagedReadPath(path), true, path);
