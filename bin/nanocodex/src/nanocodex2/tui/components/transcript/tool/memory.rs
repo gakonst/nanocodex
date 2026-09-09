@@ -528,6 +528,7 @@ mod tests {
             execution,
             substeps: Vec::new(),
             child_count: 0,
+            code_display_result: None,
         }
     }
 

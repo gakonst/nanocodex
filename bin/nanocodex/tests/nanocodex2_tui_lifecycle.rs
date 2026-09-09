@@ -1040,3 +1040,109 @@ async fn terminal_streams_each_chunk_before_completion_without_duplicate_answers
     assert_eq!(rendered.matches("STREAM_FIRST").count(), 1, "{rendered}");
     assert_eq!(rendered.matches("STREAM_COMMENT").count(), 1, "{rendered}");
 }
+
+#[tokio::test]
+async fn terminal_batch_children_expand_independently_and_collapse_with_parent() {
+    fn screen(terminal: &Terminal) -> String {
+        let mut parser = vt100::Parser::new(32, 160, 0);
+        parser.process(&terminal.output.lock().unwrap());
+        parser.screen().contents()
+    }
+
+    async fn wait_screen(terminal: &Terminal, text: &str, present: bool) {
+        tokio::time::timeout(TIMEOUT, async {
+            while screen(terminal).contains(text) != present {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "terminal text {text:?} should have presence={present}: {}",
+                screen(terminal)
+            )
+        });
+    }
+
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.nested(
+        REMOTE_TURN,
+        "tool.call",
+        json!({
+            "call_id": "batch", "tool": "exec", "arguments": "await runChecks()"
+        }),
+    );
+    for (id, command, output) in [
+        ("batch/code-0", "check-first", "FIRST_CHILD_OUTPUT"),
+        ("batch/code-1", "check-second", "SECOND_CHILD_OUTPUT"),
+    ] {
+        fixture.nested(
+            REMOTE_TURN,
+            "tool.call",
+            json!({
+                "call_id": id, "tool": "exec_command", "arguments": {"cmd": command}
+            }),
+        );
+        fixture.nested(
+            REMOTE_TURN,
+            "tool.result",
+            json!({
+                "call_id": id, "tool": "exec_command", "status": "completed",
+                "duration_ns": 1, "result": {"output": output, "exit_code": 0}
+            }),
+        );
+    }
+    fixture.nested(
+        REMOTE_TURN,
+        "tool.result",
+        json!({
+            "call_id": "batch", "tool": "exec", "status": "completed",
+            "duration_ns": 1, "result": null
+        }),
+    );
+    fixture.complete(REMOTE_TURN);
+    wait_screen(&fixture.terminal, "2 tools", true).await;
+    wait_screen(&fixture.terminal, "check-first", false).await;
+    wait_screen(&fixture.terminal, "check-second", false).await;
+
+    fn click_row(terminal: &mut Terminal, text: &str) {
+        let row = screen(terminal)
+            .lines()
+            .position(|line| line.contains(text))
+            .unwrap()
+            + 1;
+        terminal.input(&format!("\x1b[<0;2;{row}M\x1b[<0;2;{row}m"));
+    }
+
+    click_row(&mut fixture.terminal, "2 tools");
+    wait_screen(&fixture.terminal, "check-first", true).await;
+    wait_screen(&fixture.terminal, "check-second", true).await;
+    wait_screen(&fixture.terminal, "FIRST_CHILD_OUTPUT", false).await;
+    wait_screen(&fixture.terminal, "SECOND_CHILD_OUTPUT", false).await;
+    let rendered = screen(&fixture.terminal);
+    assert!(
+        rendered
+            .lines()
+            .find(|line| line.contains("check-first"))
+            .unwrap()
+            .contains("├─")
+    );
+
+    click_row(&mut fixture.terminal, "check-first");
+    wait_screen(&fixture.terminal, "FIRST_CHILD_OUTPUT", true).await;
+    wait_screen(&fixture.terminal, "SECOND_CHILD_OUTPUT", false).await;
+    click_row(&mut fixture.terminal, "2 tools");
+    wait_screen(&fixture.terminal, "check-first", false).await;
+    wait_screen(&fixture.terminal, "check-second", false).await;
+    wait_screen(&fixture.terminal, "FIRST_CHILD_OUTPUT", false).await;
+
+    click_row(&mut fixture.terminal, "2 tools");
+    wait_screen(&fixture.terminal, "FIRST_CHILD_OUTPUT", true).await;
+    wait_screen(&fixture.terminal, "check-second", true).await;
+    wait_screen(&fixture.terminal, "SECOND_CHILD_OUTPUT", false).await;
+    click_row(&mut fixture.terminal, "check-second");
+    wait_screen(&fixture.terminal, "SECOND_CHILD_OUTPUT", true).await;
+    click_row(&mut fixture.terminal, "check-first");
+    wait_screen(&fixture.terminal, "FIRST_CHILD_OUTPUT", false).await;
+    wait_screen(&fixture.terminal, "SECOND_CHILD_OUTPUT", true).await;
+}

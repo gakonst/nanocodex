@@ -376,6 +376,7 @@ impl TranscriptModel {
             execution: ToolEntry::local_execution(),
             substeps: Vec::new(),
             child_count: 0,
+            code_display_result: None,
         }));
         self.local_shells.insert(payload.id, id);
         self.running_tools.insert(id);
@@ -650,9 +651,10 @@ impl TranscriptModel {
                 execution,
                 substeps: Vec::new(),
                 child_count: 0,
+                code_display_result: None,
             }),
             hidden,
-            None,
+            parent,
         );
         if let Some(parent) = parent {
             self.register_code_child(parent, id);
@@ -704,9 +706,10 @@ impl TranscriptModel {
                         ),
                         substeps: Vec::new(),
                         child_count: 0,
+                        code_display_result: None,
                     }),
                     false,
-                    None,
+                    parent,
                 );
                 if let Some(parent) = parent {
                     self.register_code_child(parent, id);
@@ -817,8 +820,54 @@ impl TranscriptModel {
         {
             self.fail_unfinished_code_children(parent);
         }
+        // A child may finish after the exec envelope, or receive shell follow-up
+        // output. Refresh the parent's projection without changing its raw result.
+        let code_parents: Vec<_> = self
+            .code_children
+            .iter()
+            .filter(|(parent, children)| {
+                **parent == id
+                    || children.contains(&id)
+                    || resumed_shell.is_some_and(|shell| children.contains(&shell))
+            })
+            .map(|(parent, _)| *parent)
+            .collect();
+        for parent in code_parents {
+            self.refresh_code_display_result(parent);
+        }
         self.transient = self.is_active().then_some(TransientStatus::Thinking);
         Ok(true)
+    }
+
+    fn refresh_code_display_result(&mut self, parent: EntryId) {
+        let Some(TranscriptEntry {
+            kind: EntryKind::Tool(tool),
+            ..
+        }) = self.entry(parent)
+        else {
+            return;
+        };
+        let Some(result) = tool.result.as_ref() else {
+            return;
+        };
+        let children: Vec<_> = self
+            .code_children
+            .get(&parent)
+            .into_iter()
+            .flatten()
+            .filter_map(|child| match &self.entry(*child)?.kind {
+                EntryKind::Tool(tool) => tool.result.as_ref(),
+                _ => None,
+            })
+            .collect();
+        let display = distinct_code_output(result, &children);
+        if tool.code_display_result.as_ref() != Some(&display) {
+            self.update(parent, |kind| {
+                if let EntryKind::Tool(tool) = kind {
+                    tool.code_display_result = Some(display);
+                }
+            });
+        }
     }
 
     fn compaction_completed(
@@ -1085,7 +1134,7 @@ impl TranscriptModel {
         self.entries[index].revision = self.entries[index].revision.saturating_add(1);
 
         let child_index = self.index_of(child).expect("code child is retained");
-        self.entries[child_index].parent = None;
+        self.entries[child_index].parent = Some(parent);
     }
 
     fn trim_message_history(&mut self) -> Option<EntryId> {
@@ -1268,6 +1317,49 @@ fn code_mode_value_has_output(
         }
         Value::Bool(_) | Value::Number(_) => true,
         Value::Null => false,
+    }
+}
+
+// Only remove whole emitted items: additional commentary or discovery output
+// must survive even when another item repeats a child's result.
+fn distinct_code_output(result: &Value, children: &[&Value]) -> Value {
+    // Each child accounts for one echo; additional identical emits are retained.
+    let mut remaining = children.to_vec();
+    let mut duplicate = |item: &Value| {
+        let Some(index) = remaining.iter().position(|child| {
+            values_duplicate(item, child)
+                || item
+                    .as_str()
+                    .or_else(|| {
+                        let fields = item.as_object()?;
+                        let text = fields.get("text")?.as_str()?;
+                        let text_only = fields.len() == 1;
+                        let transport_envelope = fields.len() == 2
+                            && matches!(
+                                fields.get("type").and_then(Value::as_str),
+                                Some("text" | "input_text")
+                            );
+                        (text_only || transport_envelope).then_some(text)
+                    })
+                    .is_some_and(|text| text_duplicates_value(code_mode_output_text(text), child))
+        }) else {
+            return false;
+        };
+        remaining.remove(index);
+        true
+    };
+    if duplicate(result) {
+        return Value::Null;
+    }
+    match result {
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .filter(|item| !duplicate(item))
+                .cloned()
+                .collect(),
+        ),
+        _ => result.clone(),
     }
 }
 
@@ -1578,7 +1670,7 @@ struct ConnectionPayload {
 
 #[cfg(test)]
 mod tests {
-    use super::{EntryKind, ToolState, TranscriptModel, TranscriptRecord};
+    use super::{EntryKind, ToolState, TranscriptModel, TranscriptRecord, distinct_code_output};
     use nanocodex::agent::events::{AgentEvent, AgentEventKind};
     use serde_json::{Value, json, value::to_raw_value};
     use std::sync::Arc;
@@ -1709,8 +1801,8 @@ mod tests {
         assert!(!model.entries()[0].hidden);
         assert!(!model.entries()[1].hidden);
         assert!(!model.entries()[2].hidden);
-        assert!(model.entries()[1].parent.is_none());
-        assert!(model.entries()[2].parent.is_none());
+        assert_eq!(model.entries()[1].parent, Some(model.entries()[0].id));
+        assert_eq!(model.entries()[2].parent, Some(model.entries()[0].id));
         let EntryKind::Tool(wrapper) = &model.entries()[0].kind else {
             panic!("wrapper should remain a tool entry");
         };
@@ -1985,6 +2077,114 @@ mod tests {
 
         assert!(model.entries()[0].hidden);
         assert!(!model.entries()[1].hidden);
+    }
+
+    #[test]
+    fn batch_display_deduplicates_children_and_preserves_raw_and_unique_output() {
+        let first = json!({"status": "ready"});
+        let second = json!({"image_url": "data:image/png;base64,abc"});
+        let raw = json!([
+            {"type": "input_text", "text": first.to_string()},
+            {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+            {"type": "input_text", "text": "Discovered another tool"},
+            {"status": "ready", "extra": "unique summary"}
+        ]);
+        let mut model = TranscriptModel::default();
+        model.apply(&call(1, "batch", "exec", json!("source")));
+        model.apply(&call(2, "batch/code-0", "accountInfo", json!({})));
+        model.apply(&call(3, "batch/code-1", "other", json!({})));
+        model.apply(&result(
+            4,
+            "batch/code-0",
+            "accountInfo",
+            first.clone(),
+            first,
+            Value::Null,
+        ));
+        model.apply(&result(
+            5,
+            "batch",
+            "exec",
+            raw.clone(),
+            Value::Null,
+            Value::Null,
+        ));
+        let revision = model.entries()[0].revision;
+        model.apply(&result(
+            6,
+            "batch/code-1",
+            "other",
+            second.clone(),
+            second,
+            Value::Null,
+        ));
+        let parent = &model.entries()[0];
+        assert!(parent.revision > revision);
+        assert!(!parent.hidden);
+        let EntryKind::Tool(tool) = &parent.kind else {
+            panic!("expected batch");
+        };
+        assert_eq!(tool.result.as_ref(), Some(&raw));
+        assert_eq!(
+            tool.code_display_result,
+            Some(json!([raw[2].clone(), raw[3].clone()]))
+        );
+    }
+
+    #[test]
+    fn batch_display_preserves_additional_identical_emits() {
+        let child = json!({"ok": true});
+        let output = json!([child, child.to_string(), child]);
+        assert_eq!(
+            distinct_code_output(&output, &[&child]),
+            json!([child.to_string(), child])
+        );
+        assert_eq!(
+            distinct_code_output(&output, &[&child, &child]),
+            json!([child])
+        );
+    }
+
+    #[test]
+    fn batch_display_keeps_nonmatching_and_standalone_outputs() {
+        let child = json!({"ok": true});
+        let output = json!([child, "discovery", {"ok": true, "extra": 1}]);
+        assert_eq!(distinct_code_output(&output, &[]), output);
+        assert_eq!(
+            distinct_code_output(&output, &[&child]),
+            json!(["discovery", {"ok": true, "extra": 1}])
+        );
+        assert_eq!(
+            distinct_code_output(&json!(child.to_string()), &[&child]),
+            Value::Null
+        );
+        assert_eq!(
+            distinct_code_output(&json!("prefix {\"ok\":true}"), &[&child]),
+            json!("prefix {\"ok\":true}")
+        );
+    }
+
+    #[test]
+    fn batch_display_preserves_extra_fields_beside_duplicate_text() {
+        for child in [json!("same"), json!({"ok": true})] {
+            let text = child
+                .as_str()
+                .map_or_else(|| child.to_string(), str::to_owned);
+            for emitted in [
+                json!({"text": text, "extra": "unique application output"}),
+                json!({"type": "summary", "text": text}),
+                json!({"type": "input_text", "text": text, "extra": "unique metadata"}),
+            ] {
+                assert_eq!(distinct_code_output(&emitted, &[&child]), emitted);
+            }
+            for emitted in [
+                json!({"text": text}),
+                json!({"type": "text", "text": text}),
+                json!({"type": "input_text", "text": text}),
+            ] {
+                assert_eq!(distinct_code_output(&emitted, &[&child]), Value::Null);
+            }
+        }
     }
 
     #[test]
