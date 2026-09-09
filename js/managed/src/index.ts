@@ -1819,12 +1819,6 @@ async function managedFetch(
       const routeBase = "/v1/agents";
       const websocketUrl = new URL(`${routeBase}/${agentId}/ws`, url);
       websocketUrl.protocol = websocketUrl.protocol === "https:" ? "wss:" : "ws:";
-      ctx.waitUntil(stub.prewarm({
-        capabilities: principal.capabilities,
-        ...(principal.connectGrant === undefined
-          ? {}
-          : { connectGrant: principal.connectGrant }),
-      }));
       observeManagedPrincipal(env, "managed.agent.created", principal, {
         agent_id: agentId,
         thread_id: agentId,
@@ -2599,8 +2593,6 @@ export class DurableAgentSession extends DurableComputerSession {
   #brainStorage?: R2Bucket;
   #agent?: CloudflareAgent.Agent;
   #agentPromise?: Promise<CloudflareAgent.Agent>;
-  #agentPrewarmTask?: Promise<void>;
-  #runtimePrewarmTouchedAt?: number;
   #agentConstruction?: AgentConstructionOwnership;
   readonly #agentConstructions = new Set<AgentConstructionOwnership>();
   #agentShutdownPromise?: Promise<void>;
@@ -2881,10 +2873,6 @@ export class DurableAgentSession extends DurableComputerSession {
         this.#resumeClientReplays();
       }
     });
-  }
-
-  prewarm(authorization: TurnAuthorization): void {
-    this.#prewarmAgent(parseTurnAuthorization(JSON.stringify(authorization)));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -3171,7 +3159,7 @@ export class DurableAgentSession extends DurableComputerSession {
         || this.#cancellationTasks.size > 0 || this.#realtimeOperations.size > 0
         || this.#pendingDeviceToolCalls.size > 0 || this.#inFlight.size > 0
         || this.#hostedTools.hasPendingCalls()
-        || this.#agentPromise !== undefined || this.#agentPrewarmTask !== undefined
+        || this.#agentPromise !== undefined
         || this.#accountMcpRefreshTask !== undefined
         || this.#managedRealtimeSession() !== undefined
         || this.ctx.storage.sql.exec<{ count: number }>(
@@ -3348,7 +3336,6 @@ export class DurableAgentSession extends DurableComputerSession {
           : parseCursor(requested);
       if (cursor === undefined)
         return json({ error: "invalid_cursor" }, { status: 400 });
-      this.#prewarmAgent(turnAuthorization);
       return this.#eventLog.streamWithPage(
         cursor,
         this.#eventArchive.latestCursor(this.#eventLog),
@@ -3376,7 +3363,6 @@ export class DurableAgentSession extends DurableComputerSession {
       if (!Number.isSafeInteger(limit) || limit > MAX_HISTORY_PAGE_SIZE) {
         return json({ error: "invalid_history_page" }, { status: 400 });
       }
-      this.#prewarmAgent(turnAuthorization);
       let page;
       try {
         page = await this.#eventArchive.history(this.#eventLog, before, limit);
@@ -3588,7 +3574,6 @@ export class DurableAgentSession extends DurableComputerSession {
       this.#retireDeviceHost(socket, reason || "peer closed");
     }
     closeSocket(socket, code, reason || "peer closed");
-    this.#runtimePrewarmTouchedAt = Date.now();
     this.ctx.waitUntil(this.#scheduleNextAlarm());
   }
 
@@ -3599,7 +3584,6 @@ export class DurableAgentSession extends DurableComputerSession {
       this.#retireDeviceHost(socket, "WebSocket failed");
     }
     closeSocket(socket, 1011, "WebSocket failed");
-    this.#runtimePrewarmTouchedAt = Date.now();
     this.ctx.waitUntil(this.#scheduleNextAlarm());
   }
 
@@ -3660,8 +3644,8 @@ export class DurableAgentSession extends DurableComputerSession {
     const session = this.#session();
     if ((this.#agent || this.#agentPromise)
       && session !== undefined
-      && (this.#hasLiveSocket()
-        || Math.max(session.last_active, this.#runtimePrewarmTouchedAt ?? 0)
+      && (this.#managedRealtimeSession() !== undefined
+        || session.last_active
           + this.#idleTimeoutMs() > Date.now())) {
       await this.#scheduleNextAlarm();
       return;
@@ -3685,8 +3669,8 @@ export class DurableAgentSession extends DurableComputerSession {
     // admission during that I/O owns the runtime now, even if this alarm
     // originally observed an idle session.
     if (this.#recoverableTurnCount() > 0 || this.#agentPromise
-      || this.#hasLiveSocket()
-      || Math.max(this.#session()?.last_active ?? 0, this.#runtimePrewarmTouchedAt ?? 0)
+      || this.#managedRealtimeSession() !== undefined
+      || (this.#session()?.last_active ?? 0)
         + this.#idleTimeoutMs() > Date.now()) {
       this.#scheduleRecovery();
       await this.#scheduleNextAlarm();
@@ -3940,7 +3924,6 @@ export class DurableAgentSession extends DurableComputerSession {
       settings: this.#settings(),
     });
     if (cursor !== latestCursor) void this.#replayClientSocket(server, cursor);
-    this.#prewarmAgent(authorization);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -3990,34 +3973,6 @@ export class DurableAgentSession extends DurableComputerSession {
         void this.#replayClientSocket(socket, attachment.replayAfter);
       }
     }
-  }
-
-  #prewarmAgent(authorization: TurnAuthorization): void {
-    if (!authorization.capabilities.includes("agents:write")
-      || !authorization.capabilities.includes("tools:use")) return;
-    if (authorization.connectGrant
-      && !authorization.connectGrant.connectors.includes("chatgpt")) return;
-    if (this.#deleting || this.#deleted || this.#durabilityExported
-      || this.#durabilityImportState === "pending") return;
-    this.#runtimePrewarmTouchedAt = Date.now();
-    if (this.#agentPrewarmTask) return;
-
-    const prewarm = (this.#agent || this.#agentPromise
-      ? this.#scheduleNextAlarm()
-      : this.#ensureAgent().then(() => this.#scheduleNextAlarm()))
-      .catch((error) => {
-        console.warn({
-          type: "managed.agent_prewarm_failed",
-          error_kind: errorKind(error),
-        });
-      })
-      .finally(() => {
-        if (this.#agentPrewarmTask === prewarm) this.#agentPrewarmTask = undefined;
-    });
-    this.#agentPrewarmTask = prewarm;
-    // Durable Objects stay active while this task owns pending I/O; unlike a
-    // Worker ExecutionContext, DurableObjectState.waitUntil does not extend
-    // the object's lifetime.
   }
 
   #upgradeDeviceHost(): Response {
@@ -8829,7 +8784,6 @@ export class DurableAgentSession extends DurableComputerSession {
         return settings;
       }
 
-      if (this.#agentPrewarmTask) await this.#agentPrewarmTask;
       this.#assertSettingsLifecycle();
       const agent = this.#agentPromise === undefined
         ? this.#agent
@@ -9149,12 +9103,9 @@ export class DurableAgentSession extends DurableComputerSession {
     // handles; the alarm must still reconstruct the accepted work.
     if (unfinished) targets.push(now + MAX_RETRY_DELAY_MS);
     if (!unfinished && (this.#agent || this.#agentPromise)
-      && !this.#hasLiveSocket()) {
+      && this.#managedRealtimeSession() === undefined) {
       const session = this.#session();
-      const lastActive = Math.max(
-        session?.last_active ?? now,
-        this.#runtimePrewarmTouchedAt ?? 0,
-      );
+      const lastActive = session?.last_active ?? now;
       targets.push(Math.max(now + 1, lastActive + this.#idleTimeoutMs()));
     }
     if (!this.#streamError) {
@@ -9199,10 +9150,6 @@ export class DurableAgentSession extends DurableComputerSession {
       return;
     }
     await this.ctx.storage.setAlarm(Math.max(now + 1, Math.min(...targets)));
-  }
-
-  #hasLiveSocket(): boolean {
-    return this.ctx.getWebSockets().some((socket) => socket.readyState === WebSocket.OPEN);
   }
 
   #capabilities(): AgentCapabilities {
