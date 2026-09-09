@@ -621,3 +621,9 @@ Draft and queue writes use an ordered background preferences queue. Send and Sto
 await earlier writes before issuing their durable command, reconnect waits before
 restoring the account, and backgrounding gives outstanding saves execution time.
 SwiftUI rendering and the final model mutations stay on the main actor.
+
+Live transcript projection processes each new event once per reading window;
+older-history pagination and retained-prefix changes rebuild the projection.
+Inactive tabs share a 24 MiB serialized-payload budget (at most eight tabs),
+in addition to the focused reading window. Backgrounding and iOS memory warnings
+release inactive tab caches without removing service history or drafts.

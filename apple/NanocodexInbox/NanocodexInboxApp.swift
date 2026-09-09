@@ -9,6 +9,9 @@ struct NanocodexInboxApp: App {
         WindowGroup("Nanocodex", id: "inbox") {
             InboxView(model: model)
                 .onAppear { Task { await model.start() } }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                    model.releaseInactiveHistory()
+                }
                 .onOpenURL { model.openAgentActivity($0) }
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     if phase == .background {

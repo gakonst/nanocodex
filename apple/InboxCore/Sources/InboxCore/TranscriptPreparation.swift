@@ -49,3 +49,29 @@ public final class InboxPreferencesWriter: @unchecked Sendable {
         }
     }
 }
+
+/// Each observed stream owns one projector. Immutable cursor prefixes are reused;
+/// pagination, trimming, and conversation replacement rebuild the reading window.
+public actor TranscriptStreamProjection {
+    private var projection = TranscriptProjection()
+    private var first: Cursor?
+    private var last: Cursor?
+    private var count = 0
+
+    public init() {}
+
+    public func rows(_ events: [AgentEvent]) throws -> [TranscriptRow] {
+        try Task.checkCancellation()
+        if first != events.first?.cursor || events.count < count
+            || (count > 0 && events[count - 1].cursor != last) {
+            projection = TranscriptProjection()
+            count = 0
+        }
+        projection.append(events.dropFirst(count))
+        first = events.first?.cursor
+        last = events.last?.cursor
+        count = events.count
+        try Task.checkCancellation()
+        return projection.rows
+    }
+}

@@ -46,6 +46,8 @@ final class InboxModel: ObservableObject {
     private var overviewEvents: [String: [AgentEvent]] = [:]
     private var overviewBytes: [String: [Int]] = [:]
     private var overviewByteCounts: [String: Int] = [:]
+    private var overviewProjectors: [String: TranscriptStreamProjection] = [:]
+    private var streamProjector = TranscriptStreamProjection()
     private var overviewProjections: [String: Task<Void, Never>] = [:]
     @Published var busy = Set<String>()
     @Published var connection = "Disconnected" { didSet { scheduleAgentNotifications() } }
@@ -632,7 +634,7 @@ final class InboxModel: ObservableObject {
         }
         if active { refreshContext() }
         if active { if isDemo { connection = "Demo" } else { resume() }; resumeOverview() }
-        else { focusedState?.cancel(); focusedState = nil; focusedHistoryRequest?.cancel(); focusedHistoryRequest = nil; finishPreferencesInBackground(); suspendOverview(); scheduleHandRefresh(); polling?.cancel(); streaming?.cancel(); streaming = nil; observation = UUID(); connection = "Paused" }
+        else { releaseInactiveHistory(); focusedState?.cancel(); focusedState = nil; focusedHistoryRequest?.cancel(); focusedHistoryRequest = nil; finishPreferencesInBackground(); suspendOverview(); scheduleHandRefresh(); polling?.cancel(); streaming?.cancel(); streaming = nil; observation = UUID(); connection = "Paused" }
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         updateAgentNotifications()
     }
@@ -1029,6 +1031,23 @@ final class InboxModel: ObservableObject {
         pinnedThreadID = id
         filter = .all; deck.focus(id); observeFocused()
     }
+    private func trimTabCache() {
+        let bytes = recentTabs.map { tabHistories[$0]?.bytes.reduce(0, +) ?? 0 }
+        let removed = TranscriptRetention.cachedPrefixCount(byteCounts: bytes,
+            byteLimit: 24 * 1024 * 1024, countLimit: 8)
+        for id in recentTabs.prefix(removed) { tabHistories[id] = nil }
+        recentTabs.removeFirst(removed)
+    }
+
+    func releaseInactiveHistory() {
+        tabHistories = [:]; recentTabs = []
+        // Keep the visible conversation and its cursor. Evicted tabs reopen
+        // from durable history; clearing a cache never clears service history.
+        for id in Array(overviewTranscripts.keys) where !overviewVisible.contains(id) {
+            overviewTranscripts[id] = nil
+        }
+    }
+
     private func observeFocused(restart: Bool = false) {
         let changed = observedAgentID != deck.focusedID
         guard changed || restart else { return }
@@ -1036,13 +1055,13 @@ final class InboxModel: ObservableObject {
             // Preserve loaded history along with each tab's draft.
             tabHistories[previous] = TabHistory(events: events, cursor: cursor, hasOlder: hasOlder, bytes: eventBytes, rows: rows)
             recentTabs.removeAll { $0 == previous }; recentTabs.append(previous)
-            while recentTabs.count > 8 { tabHistories[recentTabs.removeFirst()] = nil }
+            trimTabCache()
         }
         observedAgentID = deck.focusedID
         if let id = observedAgentID { cancelOverview(id) }
         focusedState?.cancel(); focusedState = nil
         focusedHistoryRequest?.cancel(); focusedHistoryRequest = nil
-        streaming?.cancel(); streaming = nil; projection?.cancel(); projection = nil; observation = UUID(); projectedFirstCursor = nil; loadingOlder = false
+        streaming?.cancel(); streaming = nil; projection?.cancel(); projection = nil; streamProjector = TranscriptStreamProjection(); observation = UUID(); projectedFirstCursor = nil; loadingOlder = false
         threadError = nil
         if changed {
             focusedHistoryLoaded = false
@@ -1061,7 +1080,8 @@ final class InboxModel: ObservableObject {
         }
         if pendingCreations.contains(id) { threadLoading = false; return }
         if isDemo { rows = demoRows[id] ?? DemoContent.rows(id); connection = "Demo"; threadLoading = false; return }
-        if changed, let cached = tabHistories[id] {
+        if changed, let cached = tabHistories.removeValue(forKey: id) {
+            recentTabs.removeAll { $0 == id }
             focusedHistoryLoaded = true
             events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder
             eventBytes = cached.bytes; retainedBytes = eventBytes.reduce(0, +)
@@ -1179,11 +1199,12 @@ final class InboxModel: ObservableObject {
                 tabHistories[id] = TabHistory(events: history, cursor: history.last?.cursor ?? .zero,
                                              hasOlder: true, bytes: bytes, rows: projected)
                 recentTabs.removeAll { $0 == id }; recentTabs.append(id)
-                while recentTabs.count > 8 { tabHistories[recentTabs.removeFirst()] = nil }
+                trimTabCache()
             }
         }
         overviewTasks.removeValue(forKey: id)?.cancel(); overviewTokens[id] = nil
         overviewProjections.removeValue(forKey: id)?.cancel()
+        overviewProjectors[id] = nil
         overviewEvents[id] = nil; overviewBytes[id] = nil; overviewByteCounts[id] = nil
     }
     private func resumeOverview() {
@@ -1195,6 +1216,7 @@ final class InboxModel: ObservableObject {
               cards.contains(where: { $0.id == id }), let client else { return }
         let epoch = generation, token = UUID()
         overviewTokens[id] = token
+        overviewProjectors[id] = TranscriptStreamProjection()
         overviewTasks[id] = Task { [weak self] in
             // A fast fling should not open a network stream for every card it passes.
             do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
@@ -1257,15 +1279,15 @@ final class InboxModel: ObservableObject {
     private func trimOverview(_ id: String) {
         let removed = TranscriptRetention.removablePrefixCount(byteCounts: overviewBytes[id] ?? [],
             retainedBytes: overviewByteCounts[id] ?? 0, byteLimit: 8 * 1024 * 1024)
-        for _ in 0..<removed {
-            overviewEvents[id]?.removeFirst()
-            overviewByteCounts[id, default: 0] -= overviewBytes[id]?.removeFirst() ?? 0
-        }
+        overviewByteCounts[id, default: 0] -= overviewBytes[id]?.prefix(removed).reduce(0, +) ?? 0
+        overviewEvents[id]?.removeFirst(removed)
+        overviewBytes[id]?.removeFirst(removed)
     }
     private func projectOverview(_ id: String, epoch: UUID, token: UUID) async {
+        guard let projector = overviewProjectors[id] else { return }
         while generation == epoch, overviewTokens[id] == token, !Task.isCancelled {
             let history = overviewEvents[id] ?? []
-            guard let projected = try? await TranscriptPreparation.rows(history),
+            guard let projected = try? await projector.rows(history),
                   generation == epoch, overviewTokens[id] == token, !Task.isCancelled else { return }
             if overviewTranscripts[id] != projected { overviewTranscripts[id] = projected }
             if let index = cards.firstIndex(where: { $0.id == id }) {
@@ -1291,8 +1313,9 @@ final class InboxModel: ObservableObject {
             // Bound bytes, not token count: a live response can contain thousands of deltas.
             let removed = TranscriptRetention.removablePrefixCount(byteCounts: eventBytes,
                 retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
-            for _ in 0..<removed {
-                events.removeFirst(); retainedBytes -= eventBytes.removeFirst(); hasOlder = true
+            if removed > 0 {
+                retainedBytes -= eventBytes.prefix(removed).reduce(0, +)
+                events.removeFirst(removed); eventBytes.removeFirst(removed); hasOlder = true
             }
             olderBefore = events.first?.cursor
             scheduleProjection(id: id, epoch: epoch, token: token)
@@ -1321,7 +1344,7 @@ final class InboxModel: ObservableObject {
     private func projectEvents(id: String, epoch: UUID, token: UUID) async -> Bool {
         guard generation == epoch, observation == token, !Task.isCancelled else { return false }
         let history = events, revision = eventsRevision
-        guard let projected = try? await TranscriptPreparation.rows(history),
+        guard let projected = try? await streamProjector.rows(history),
               generation == epoch, observation == token, !Task.isCancelled else { return false }
         // A prepend/trim changes the reading window. Never replace it with an
         // older projection; appended stream frames can still publish progress.
@@ -1339,8 +1362,11 @@ final class InboxModel: ObservableObject {
     }
     private func trimMeasuredEvents() {
         retainedBytes = eventBytes.reduce(0, +)
-        while events.count > 1 && retainedBytes > 16 * 1024 * 1024 {
-            events.removeFirst(); retainedBytes -= eventBytes.removeFirst(); hasOlder = true
+        let removed = TranscriptRetention.removablePrefixCount(byteCounts: eventBytes,
+            retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
+        if removed > 0 {
+            retainedBytes -= eventBytes.prefix(removed).reduce(0, +)
+            events.removeFirst(removed); eventBytes.removeFirst(removed); hasOlder = true
         }
     }
     func loadOlder() async {

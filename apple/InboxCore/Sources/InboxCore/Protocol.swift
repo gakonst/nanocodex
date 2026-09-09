@@ -141,149 +141,159 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
 
 /// Same durable envelope vocabulary as the existing macOS client (PR #256).
 /// Stream identity includes both the turn and subagent to prevent mixed output.
-public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
-    var rows: [TranscriptRow] = []
-    var seen = Set<String>()
-    var seenToolCalls = Set<String>()
-    var seenToolResults = Set<String>()
-    var terminalSessions: [String: Int] = [:]
-    var terminalPolls: [String: Int] = [:]
-    var toolStartedAt: [String: Double] = [:]
-    func elapsedSeconds(_ id: String, at value: JSON) -> Double? {
+public struct TranscriptProjection: Sendable {
+    public private(set) var rows: [TranscriptRow] = []
+    private var seen = Set<String>()
+    private var seenToolCalls = Set<String>()
+    private var seenToolResults = Set<String>()
+    private var terminalSessions: [String: Int] = [:]
+    private var terminalPolls: [String: Int] = [:]
+    private var toolStartedAt: [String: Double] = [:]
+    public init() {}
+
+    private func elapsedSeconds(_ id: String, at value: JSON) -> Double? {
         guard let start = toolStartedAt[id], case .number(let end) = value,
               end.isFinite, end >= start else { return nil }
         return (end - start) / 1_000
     }
-    for envelope in events where seen.insert(envelope.cursor.rawValue).inserted {
-        let d = envelope.data, turn = envelope.turnID
-        let firstNewRow = rows.count
-        let prefix = turn + ":" + d["agent_id"].pretty
-        let id = prefix + ":" + envelope.cursor.rawValue
-        if envelope.type == "turn_accepted" {
-            let input = d["input"]
-            let media = VideoAttachmentContent.project(input.array)
-            let text = input.array.isEmpty ? input.string : media.remaining.compactMap {
-                $0["type"].string == "image" ? nil : $0["type"].string == "audio" ? "[Audio]" : $0["text"].string
-            }.joined(separator: "\n")
-            let images = media.remaining.filter { $0["type"].string == "image" }.map { $0["image_url"].string }
-            if let spoken = RealtimeTranscript.project(text) {
-                for (index, entry) in spoken.enumerated() {
-                    rows.append(.init(id: id + ":voice:\(index)", role: entry.speaker == "user" ? "You" : "Agent", text: entry.text))
-                }
-            } else {
-                var row = TranscriptRow(id: id, role: "You", text: text, images: images.isEmpty ? nil : images)
-                row.videos = media.videos.isEmpty ? nil : media.videos
-                rows.append(row)
-            }
-        } else if envelope.type == "turn_completed" {
-            let final = d["final_message"].string
-            if !final.isEmpty {
-                if let last = rows.lastIndex(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" && ($0.phase == "final_answer" || $0.phase == nil) }),
-                   last > (rows.lastIndex(where: { $0.id.hasPrefix(turn + ":") && $0.role == "You" }) ?? -1) {
-                    rows[last].text = final; rows[last].phase = "final_answer"
-                } else if let index = rows.lastIndex(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" && $0.text == final }) {
-                    rows[index].phase = "final_answer"
-                } else {
-                    var row = TranscriptRow(id: id, role: "Agent", text: final)
-                    row.phase = "final_answer"; rows.append(row)
-                }
-            }
-            for index in rows.indices where rows[index].id.hasPrefix(turn + ":") {
-                if rows[index].running, rows[index].tool != nil {
-                    rows[index].tool?.status = envelope.type == "turn_cancelled" ? "Stopped" : "Result unavailable"
-                }
-                rows[index].running = false
-            }
-        } else if envelope.type == "turn_failed" || envelope.type == "turn_cancelled" {
-            rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : (d["error"].string.isEmpty ? "This turn failed. Open its activity for details." : d["error"].string)))
-            for index in rows.indices where rows[index].id.hasPrefix(turn + ":") {
-                if rows[index].running, rows[index].tool != nil {
-                    rows[index].tool?.status = envelope.type == "turn_cancelled" ? "Stopped" : "Result unavailable"
-                }
-                rows[index].running = false
-            }
-        } else if envelope.type == "event" {
-            let event = d["event"], p = event["payload"], type = event["type"].string
-            let role = type == "reasoning.summary.delta" ? "Thinking" : "Agent"
-            let phase = p["phase"].string.isEmpty ? nil : p["phase"].string
-            let itemID = p["item_id"].string.isEmpty ? nil : p["item_id"].string
-            switch type {
-            case "assistant.delta", "reasoning.summary.delta":
-                if let last = rows.lastIndex(where: { $0.id.hasPrefix(prefix + ":") && $0.role == role }), rows[last].running,
-                   rows[last].phase == phase, rows[last].itemID == itemID {
-                    rows[last].text += p["text"].string
-                } else { rows.append(.init(id: id, role: role, text: p["text"].string, running: true)) }
-            case "assistant.message":
-                if let last = rows.lastIndex(where: { $0.id.hasPrefix(prefix + ":") && $0.role == "Agent" }), rows[last].running,
-                   (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID) {
-                    if !p["text"].string.isEmpty { rows[last].text = p["text"].string }
-                    rows[last].running = false
-                } else { rows.append(.init(id: id, role: "Agent", text: p["text"].string)) }
-            case "tool.call":
-                let toolID = prefix + ":tool:" + p["call_id"].string
-                guard seenToolCalls.insert(toolID).inserted, !seenToolResults.contains(toolID) else { continue }
-                if case .number(let time) = d["created_at"], time.isFinite, time >= 0 {
-                    toolStartedAt[toolID] = time
-                }
-                if p["tool"].string == "write_stdin",
-                   let index = terminalSessions[d["agent_id"].pretty + ":" + p["arguments"]["session_id"].pretty] {
-                    terminalPolls[prefix + ":tool:" + p["call_id"].string] = index
-                    if p["arguments"]["chars"].string.isEmpty { continue }
-                }
-                let tool = ToolPresentation(name: p["tool"].string, arguments: p["arguments"], metadata: p["metadata"])
-                rows.append(.init(id: prefix + ":tool:" + p["call_id"].string, role: "Tool", text: tool.title, running: true, tool: tool))
-            case "tool.result":
-                let toolID = prefix + ":tool:" + p["call_id"].string
-                guard seenToolResults.insert(toolID).inserted else { continue }
-                guard let result = envelope.preparedToolResult else { break }
-                if result.terminalCommand == true {
-                    let result = p["structured_result"] == .null ? p["result"] : p["structured_result"]
-                    if let index = terminalPolls.removeValue(forKey: toolID) {
-                        let previous = rows[index].tool?.output.first(where: { $0.label == "Output" })?.value ?? ""
-                        let decoded = ToolPresentation.decoded(result)
-                        var combined: [String: JSON]
-                        if case .object(let object) = decoded { combined = object }
-                        else { combined = ["output": decoded] }
-                        let output = previous + combined["output", default: .null].string
-                        combined["output"] = .string(output.count > 4_000 ? "…\n" + String(output.suffix(3_998)) : output)
-                        let elapsed = elapsedSeconds(rows[index].id, at: d["created_at"])
-                        rows[index].tool?.finish(.object(combined), failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], rawResult: p["result"], elapsedSeconds: elapsed)
-                        rows[index].running = rows[index].tool?.status == "Running"
-                        if !rows.contains(where: { $0.id == toolID }) { continue }
+    public mutating func append(_ events: ArraySlice<AgentEvent>) {
+        for envelope in events where seen.insert(envelope.cursor.rawValue).inserted {
+            let d = envelope.data, turn = envelope.turnID
+            let firstNewRow = rows.count
+            let prefix = turn + ":" + d["agent_id"].pretty
+            let id = prefix + ":" + envelope.cursor.rawValue
+            if envelope.type == "turn_accepted" {
+                let input = d["input"]
+                let media = VideoAttachmentContent.project(input.array)
+                let text = input.array.isEmpty ? input.string : media.remaining.compactMap {
+                    $0["type"].string == "image" ? nil : $0["type"].string == "audio" ? "[Audio]" : $0["text"].string
+                }.joined(separator: "\n")
+                let images = media.remaining.filter { $0["type"].string == "image" }.map { $0["image_url"].string }
+                if let spoken = RealtimeTranscript.project(text) {
+                    for (index, entry) in spoken.enumerated() {
+                        rows.append(.init(id: id + ":voice:\(index)", role: entry.speaker == "user" ? "You" : "Agent", text: entry.text))
                     }
-                    if let index = rows.firstIndex(where: { $0.id == toolID }) {
-                        rows[index].tool?.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], rawResult: p["result"], elapsedSeconds: elapsedSeconds(toolID, at: d["created_at"]))
-                        rows[index].running = rows[index].tool?.status == "Running"
-                        let session = ToolPresentation.decoded(result)["session_id"]
-                        if p["tool"].string == "exec_command", session != .null {
-                            terminalSessions[d["agent_id"].pretty + ":" + session.pretty] = index
+                } else {
+                    var row = TranscriptRow(id: id, role: "You", text: text, images: images.isEmpty ? nil : images)
+                    row.videos = media.videos.isEmpty ? nil : media.videos
+                    rows.append(row)
+                }
+            } else if envelope.type == "turn_completed" {
+                let final = d["final_message"].string
+                if !final.isEmpty {
+                    if let last = rows.lastIndex(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" && ($0.phase == "final_answer" || $0.phase == nil) }),
+                       last > (rows.lastIndex(where: { $0.id.hasPrefix(turn + ":") && $0.role == "You" }) ?? -1) {
+                        rows[last].text = final; rows[last].phase = "final_answer"
+                    } else if let index = rows.lastIndex(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" && $0.text == final }) {
+                        rows[index].phase = "final_answer"
+                    } else {
+                        var row = TranscriptRow(id: id, role: "Agent", text: final)
+                        row.phase = "final_answer"; rows.append(row)
+                    }
+                }
+                for index in rows.indices where rows[index].id.hasPrefix(turn + ":") {
+                    if rows[index].running, rows[index].tool != nil {
+                        rows[index].tool?.status = envelope.type == "turn_cancelled" ? "Stopped" : "Result unavailable"
+                    }
+                    rows[index].running = false
+                }
+            } else if envelope.type == "turn_failed" || envelope.type == "turn_cancelled" {
+                rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : (d["error"].string.isEmpty ? "This turn failed. Open its activity for details." : d["error"].string)))
+                for index in rows.indices where rows[index].id.hasPrefix(turn + ":") {
+                    if rows[index].running, rows[index].tool != nil {
+                        rows[index].tool?.status = envelope.type == "turn_cancelled" ? "Stopped" : "Result unavailable"
+                    }
+                    rows[index].running = false
+                }
+            } else if envelope.type == "event" {
+                let event = d["event"], p = event["payload"], type = event["type"].string
+                let role = type == "reasoning.summary.delta" ? "Thinking" : "Agent"
+                let phase = p["phase"].string.isEmpty ? nil : p["phase"].string
+                let itemID = p["item_id"].string.isEmpty ? nil : p["item_id"].string
+                switch type {
+                case "assistant.delta", "reasoning.summary.delta":
+                    if let last = rows.lastIndex(where: { $0.id.hasPrefix(prefix + ":") && $0.role == role }), rows[last].running,
+                       rows[last].phase == phase, rows[last].itemID == itemID {
+                        rows[last].text += p["text"].string
+                    } else { rows.append(.init(id: id, role: role, text: p["text"].string, running: true)) }
+                case "assistant.message":
+                    if let last = rows.lastIndex(where: { $0.id.hasPrefix(prefix + ":") && $0.role == "Agent" }), rows[last].running,
+                       (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID) {
+                        if !p["text"].string.isEmpty { rows[last].text = p["text"].string }
+                        rows[last].running = false
+                    } else { rows.append(.init(id: id, role: "Agent", text: p["text"].string)) }
+                case "tool.call":
+                    let toolID = prefix + ":tool:" + p["call_id"].string
+                    guard seenToolCalls.insert(toolID).inserted, !seenToolResults.contains(toolID) else { continue }
+                    if case .number(let time) = d["created_at"], time.isFinite, time >= 0 {
+                        toolStartedAt[toolID] = time
+                    }
+                    if p["tool"].string == "write_stdin",
+                       let index = terminalSessions[d["agent_id"].pretty + ":" + p["arguments"]["session_id"].pretty] {
+                        terminalPolls[prefix + ":tool:" + p["call_id"].string] = index
+                        if p["arguments"]["chars"].string.isEmpty { continue }
+                    }
+                    let tool = ToolPresentation(name: p["tool"].string, arguments: p["arguments"], metadata: p["metadata"])
+                    rows.append(.init(id: prefix + ":tool:" + p["call_id"].string, role: "Tool", text: tool.title, running: true, tool: tool))
+                case "tool.result":
+                    let toolID = prefix + ":tool:" + p["call_id"].string
+                    guard seenToolResults.insert(toolID).inserted else { continue }
+                    guard let result = envelope.preparedToolResult else { break }
+                    if result.terminalCommand == true {
+                        let result = p["structured_result"] == .null ? p["result"] : p["structured_result"]
+                        if let index = terminalPolls.removeValue(forKey: toolID) {
+                            let previous = rows[index].tool?.output.first(where: { $0.label == "Output" })?.value ?? ""
+                            let decoded = ToolPresentation.decoded(result)
+                            var combined: [String: JSON]
+                            if case .object(let object) = decoded { combined = object }
+                            else { combined = ["output": decoded] }
+                            let output = previous + combined["output", default: .null].string
+                            combined["output"] = .string(output.count > 4_000 ? "…\n" + String(output.suffix(3_998)) : output)
+                            let elapsed = elapsedSeconds(rows[index].id, at: d["created_at"])
+                            rows[index].tool?.finish(.object(combined), failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], rawResult: p["result"], elapsedSeconds: elapsed)
+                            rows[index].running = rows[index].tool?.status == "Running"
+                            if !rows.contains(where: { $0.id == toolID }) { continue }
+                        }
+                        if let index = rows.firstIndex(where: { $0.id == toolID }) {
+                            let elapsed = elapsedSeconds(toolID, at: d["created_at"])
+                            rows[index].tool?.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], rawResult: p["result"], elapsedSeconds: elapsed)
+                            rows[index].running = rows[index].tool?.status == "Running"
+                            let session = ToolPresentation.decoded(result)["session_id"]
+                            if p["tool"].string == "exec_command", session != .null {
+                                terminalSessions[d["agent_id"].pretty + ":" + session.pretty] = index
+                            }
+                        } else {
+                            // History can start after a call. Its result must remain readable.
+                            var tool = ToolPresentation(name: p["tool"].string, arguments: .null, metadata: p["metadata"])
+                            tool.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], rawResult: p["result"])
+                            rows.append(.init(id: toolID, role: "Tool", text: tool.title, running: tool.status == "Running", tool: tool))
                         }
                     } else {
-                        // History can start after a call. Its result must remain readable.
-                        var tool = ToolPresentation(name: p["tool"].string, arguments: .null, metadata: p["metadata"])
-                        tool.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], rawResult: p["result"])
-                        rows.append(.init(id: toolID, role: "Tool", text: tool.title, running: tool.status == "Running", tool: tool))
+                        if let index = rows.firstIndex(where: { $0.id == toolID }) {
+                            rows[index].running = result.status == "Running"
+                            rows[index].tool?.applyCompletion(result, metadata: p["metadata"])
+                        } else {
+                            // History can start after a call. Its result must remain readable.
+                            rows.append(.init(id: toolID, role: "Tool", text: result.title, running: result.status == "Running", tool: result))
+                        }
                     }
-                } else {
-                    if let index = rows.firstIndex(where: { $0.id == toolID }) {
-                        rows[index].running = result.status == "Running"
-                        rows[index].tool?.applyCompletion(result, metadata: p["metadata"])
-                    } else {
-                        // History can start after a call. Its result must remain readable.
-                        rows.append(.init(id: toolID, role: "Tool", text: result.title, running: result.status == "Running", tool: result))
-                    }
+                case "run.steered": rows.append(.init(id: id, role: "Status", text: "Direction updated"))
+                case "run.error": rows.append(.init(id: id, role: "Status", text: p["message"].string))
+                default: break
                 }
-            case "run.steered": rows.append(.init(id: id, role: "Status", text: "Direction updated"))
-            case "run.error": rows.append(.init(id: id, role: "Status", text: p["message"].string))
-            default: break
+                for index in firstNewRow..<rows.count { rows[index].phase = phase; rows[index].itemID = itemID }
             }
-            for index in firstNewRow..<rows.count { rows[index].phase = phase; rows[index].itemID = itemID }
-        }
-        for index in firstNewRow..<rows.count {
-            rows[index].cursor = envelope.cursor
-            rows[index].turnID = turn
-            rows[index].agentID = d["agent_id"].pretty.isEmpty ? nil : d["agent_id"].pretty
+            for index in firstNewRow..<rows.count {
+                rows[index].cursor = envelope.cursor
+                rows[index].turnID = turn
+                rows[index].agentID = d["agent_id"].pretty.isEmpty ? nil : d["agent_id"].pretty
+            }
         }
     }
-    return rows
+}
+
+public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
+    var projection = TranscriptProjection()
+    projection.append(events[...])
+    return projection.rows
 }
